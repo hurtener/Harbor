@@ -149,7 +149,18 @@ func newImpersonationHandler(t *testing.T) (*control.Handler, events.EventBus, f
 // returns the recorded response.
 func do(t *testing.T, h http.Handler, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
+	// Production always fronts this handler with the mux's identity
+	// middleware, so a request arrives with its identity already
+	// established. Seat the same triple the test bodies carry; a request
+	// without one is refused before dispatch, which
+	// TestServeHTTP_NoEstablishedIdentity_FailsClosed pins separately.
+	ctx, err := identity.WithVerified(t.Context(), identity.Identity{
+		TenantID: "t1", UserID: "u1", SessionID: "s1",
+	})
+	if err != nil {
+		t.Fatalf("seat verified identity: %v", err)
+	}
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	// The bare handler does not get a PathValue unless mounted on a mux
 	// with the {method} wildcard; mount it so r.PathValue works.
@@ -157,6 +168,26 @@ func do(t *testing.T, h http.Handler, target, body string) *httptest.ResponseRec
 	mux.Handle(control.RoutePattern, h)
 	mux.ServeHTTP(rec, req)
 	return rec
+}
+
+// TestServeHTTP_NoEstablishedIdentity_FailsClosed — a request that
+// reaches the handler with no established identity is refused before
+// dispatch. The body's identity scope is caller-supplied input; it never
+// stands in for the authority the transport was supposed to establish.
+func TestServeHTTP_NoEstablishedIdentity_FailsClosed(t *testing.T) {
+	h, cleanup := newTestHandler(t)
+	defer cleanup()
+
+	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/control/start", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.Handle(control.RoutePattern, h)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestNewHandler_NilSurface_FailsLoud(t *testing.T) {
@@ -293,7 +324,7 @@ func TestServeHTTP_Control_NoLiveRun_404(t *testing.T) {
 	// Simulate the auth middleware: the verified caller (the run's owning
 	// user) rides on the request context. Authority resolves to owner_user,
 	// so the surface proceeds to the inbox Lookup, which misses → 404.
-	ctx, err := identity.With(context.Background(), identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"})
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"})
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}

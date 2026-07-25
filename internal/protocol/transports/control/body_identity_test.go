@@ -16,7 +16,7 @@ package control_test
 //
 // Neither surface has an admin-elevation path that widens the tenant, so
 // (3) is a flat refusal — the same shape the start/control adapter
-// applies at control.go's assertBodyMatchesAuthedIdentity.
+// applies at control.go's shared body-identity gate.
 
 import (
 	"context"
@@ -229,23 +229,24 @@ func TestAppsIdentity_EmptyBodyTriple_BackfilledFromCtx(t *testing.T) {
 	}
 }
 
-// TestAppsIdentity_NoVerifiedIdentity_BodyAuthoritative pins the
-// unchanged no-middleware posture: with no verified identity in ctx the
-// body triple is authoritative and the adapter is a no-op.
-func TestAppsIdentity_NoVerifiedIdentity_BodyAuthoritative(t *testing.T) {
+// TestAppsIdentity_NoVerifiedIdentity_FailsClosed pins the fail-closed
+// leg: a request that reached the handler with no established identity
+// has nothing for the gate to reconcile against, so it is refused and
+// the surface is never reached. The body triple is caller-supplied
+// input; it never stands in for the missing authority.
+func TestAppsIdentity_NoVerifiedIdentity_FailsClosed(t *testing.T) {
 	t.Parallel()
 	surf := &recordingSurface{}
 	h := newBodyIdentityHandler(t, surf, identity.Identity{})
 	status, perr := postMethod(t, h, methods.MethodMCPReadResource, scopeBody("t9", "u9", "s9"))
-	if status != http.StatusOK {
-		t.Fatalf("status = %d (code %q), want 200", status, perr.Code)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("status = %d (code %q), want 401", status, perr.Code)
 	}
-	calls, got := surf.snapshot()
-	if calls != 1 {
-		t.Fatalf("AppsSurface.Dispatch called %d times, want 1", calls)
+	if perr.Code != protoerrors.CodeIdentityRequired {
+		t.Errorf("code = %q, want %q", perr.Code, protoerrors.CodeIdentityRequired)
 	}
-	if got.Tenant != "t9" {
-		t.Errorf("dispatched scope = %+v, want tenant t9", got)
+	if calls, _ := surf.snapshot(); calls != 0 {
+		t.Errorf("AppsSurface.Dispatch called %d times, want 0", calls)
 	}
 }
 
@@ -329,21 +330,20 @@ func TestMCPIdentity_EmptyBodyTriple_BackfilledFromCtx(t *testing.T) {
 	}
 }
 
-// TestMCPIdentity_NoVerifiedIdentity_BodyAuthoritative pins the
-// unchanged no-middleware posture on the MCP surface.
-func TestMCPIdentity_NoVerifiedIdentity_BodyAuthoritative(t *testing.T) {
+// TestMCPIdentity_NoVerifiedIdentity_FailsClosed mirrors the MCP Apps
+// case on the connection-catalog surface.
+func TestMCPIdentity_NoVerifiedIdentity_FailsClosed(t *testing.T) {
 	t.Parallel()
 	surf := &recordingSurface{}
 	h := newBodyIdentityHandler(t, surf, identity.Identity{})
 	status, perr := postMethod(t, h, methods.MethodMCPServersList, scopeBody("t9", "u9", "s9"))
-	if status != http.StatusOK {
-		t.Fatalf("status = %d (code %q), want 200", status, perr.Code)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("status = %d (code %q), want 401", status, perr.Code)
 	}
-	calls, got := surf.snapshot()
-	if calls != 1 {
-		t.Fatalf("MCPSurface.Dispatch called %d times, want 1", calls)
+	if perr.Code != protoerrors.CodeIdentityRequired {
+		t.Errorf("code = %q, want %q", perr.Code, protoerrors.CodeIdentityRequired)
 	}
-	if got.Tenant != "t9" {
-		t.Errorf("dispatched scope = %+v, want tenant t9", got)
+	if calls, _ := surf.snapshot(); calls != 0 {
+		t.Errorf("MCPSurface.Dispatch called %d times, want 0", calls)
 	}
 }

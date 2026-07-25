@@ -21,7 +21,7 @@ import (
 // identity-backfill path is exercised.
 func withIdentity(h http.Handler, id identity.Identity) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, err := identity.With(r.Context(), id)
+		ctx, err := identity.WithVerified(r.Context(), id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -53,7 +53,10 @@ func newPostureHandler(t *testing.T, surf control.PostureSurface) http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.Handle(control.RoutePattern, h)
-	return mux
+	// Production fronts the handler with the mux's identity middleware;
+	// seat the same triple the test bodies carry so the request arrives
+	// with its identity established.
+	return withIdentity(mux, identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"})
 }
 
 func TestPostureHandler_HappyPath_DispatchesToPostureSurface(t *testing.T) {
@@ -255,7 +258,7 @@ func TestPostureHandler_BodyUserMismatch_RejectsClosed(t *testing.T) {
 
 // TestPostureHandler_MatchingBodyIdentity_Accepted pins that a body
 // whose identity matches the verified JWT (every component) is
-// accepted — the non-backfill path of backfillPostureIdentity.
+// accepted — the non-backfill path of the posture body-identity gate.
 func TestPostureHandler_MatchingBodyIdentity_Accepted(t *testing.T) {
 	t.Parallel()
 	cs, cleanup := newTestSurface(t)

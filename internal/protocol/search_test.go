@@ -48,7 +48,7 @@ func TestSearchSurface_RejectsNilRequest(t *testing.T) {
 	t.Parallel()
 	reg, _ := search.NewRegistry()
 	surf, _ := protocol.NewSearchSurface(reg, func(context.Context) bool { return false })
-	ctx, _ := identity.With(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"})
+	ctx, _ := identity.WithVerified(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"})
 	_, err := surf.Dispatch(ctx, methods.MethodSearchSessions, nil)
 	var pe *protoerrors.Error
 	if !errors.As(err, &pe) || pe.Code != protoerrors.CodeInvalidRequest {
@@ -60,7 +60,7 @@ func TestSearchSurface_NoSearcherForIndex_ReturnsUnknownMethod(t *testing.T) {
 	t.Parallel()
 	reg, _ := search.NewRegistry()
 	surf, _ := protocol.NewSearchSurface(reg, func(context.Context) bool { return false })
-	ctx, _ := identity.With(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"})
+	ctx, _ := identity.WithVerified(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"})
 	_, err := surf.Dispatch(ctx, methods.MethodSearchSessions, &types.SearchRequest{})
 	var pe *protoerrors.Error
 	if !errors.As(err, &pe) || pe.Code != protoerrors.CodeUnknownMethod {
@@ -96,7 +96,7 @@ func TestSearchSurface_CrossTenantWithoutAdmin_MapsTo_CodeScopeMismatch(t *testi
 	reg, _ := search.NewRegistry(es)
 	surf, _ := protocol.NewSearchSurface(reg, func(context.Context) bool { return false })
 
-	ctx, _ := identity.With(context.Background(), identity.Identity{TenantID: "t1", UserID: "u", SessionID: "s"})
+	ctx, _ := identity.WithVerified(context.Background(), identity.Identity{TenantID: "t1", UserID: "u", SessionID: "s"})
 	_, err = surf.Dispatch(ctx, methods.MethodSearchEvents, &types.SearchRequest{
 		Filter: types.SearchFilter{TenantIDs: []string{"t1", "t2"}},
 	})
@@ -137,7 +137,7 @@ func TestSearchSurface_QueryDispatch_ConcurrentSafe(t *testing.T) {
 	errs := make(chan error, N)
 	for range N {
 		go func() {
-			ctx, _ := identity.With(context.Background(), identity.Identity{
+			ctx, _ := identity.WithVerified(context.Background(), identity.Identity{
 				TenantID:  "t1",
 				UserID:    "u",
 				SessionID: "s",

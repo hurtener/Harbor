@@ -22,7 +22,7 @@ func TestDispatchStart_OutputSchema_EdgeRejectionTable(t *testing.T) {
 	fx := newSurfaceFixture(t)
 
 	scope := types.IdentityScope{Tenant: "tenant-a", User: "user-1", Session: "session-x"}
-	idCtx, err := identity.With(context.Background(), identity.Identity{
+	idCtx, err := identity.WithVerified(context.Background(), identity.Identity{
 		TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session,
 	})
 	if err != nil {
@@ -88,7 +88,7 @@ func TestDispatchStart_OutputSchema_EdgeRejectionTable(t *testing.T) {
 func TestDispatchStart_NoOutputSchema_SpawnsSchemaless(t *testing.T) {
 	fx := newSurfaceFixture(t)
 	scope := types.IdentityScope{Tenant: "tenant-a", User: "user-1", Session: "session-y"}
-	idCtx, err := identity.With(context.Background(), identity.Identity{
+	idCtx, err := identity.WithVerified(context.Background(), identity.Identity{
 		TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session,
 	})
 	if err != nil {

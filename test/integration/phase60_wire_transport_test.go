@@ -159,7 +159,7 @@ func submitStart(t *testing.T, baseURL, session string) string {
 	t.Helper()
 	body := fmt.Sprintf(`{"identity":{"tenant":%q,"user":%q,"session":%q},"query":"e2e"}`,
 		"t1", "u1", session)
-	resp, err := http.Post(baseURL+"/v1/control/start", "application/json", strings.NewReader(body))
+	resp, err := postCarrierJSON(baseURL+"/v1/control/start", []byte(body), "t1", "u1", session)
 	if err != nil {
 		t.Fatalf("POST /v1/control/start: %v", err)
 	}

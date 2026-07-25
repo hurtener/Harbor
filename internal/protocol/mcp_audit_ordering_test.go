@@ -43,7 +43,7 @@ func TestSetRawHTMLTrust_AuditEmitFailure_LeavesTrustUnchanged(t *testing.T) {
 		t.Fatalf("NewMCPSurface: %v", err)
 	}
 
-	adminCtx := auth.WithScopes(context.Background(), []auth.Scope{auth.ScopeAdmin})
+	adminCtx := auth.WithScopes(verifiedCtx(t), []auth.Scope{auth.ScopeAdmin})
 	_, err = s.Dispatch(adminCtx, methods.MethodMCPServersSetRawHTMLTrust,
 		&types.MCPServerSetRawHTMLTrustRequest{Identity: validScope(), Name: "github-server", Trusted: true})
 	if err == nil {
@@ -78,7 +78,7 @@ func TestSetRawHTMLTrust_AuditSucceeds_TrustApplied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMCPSurface: %v", err)
 	}
-	adminCtx := auth.WithScopes(context.Background(), []auth.Scope{auth.ScopeAdmin})
+	adminCtx := auth.WithScopes(verifiedCtx(t), []auth.Scope{auth.ScopeAdmin})
 	if _, err := s.Dispatch(adminCtx, methods.MethodMCPServersSetRawHTMLTrust,
 		&types.MCPServerSetRawHTMLTrustRequest{Identity: validScope(), Name: "github-server", Trusted: true}); err != nil {
 		t.Fatalf("set_raw_html_trust: %v", err)

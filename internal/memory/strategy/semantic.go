@@ -250,6 +250,24 @@ func (e *semanticExec) isClosed() bool {
 // vectors are scoped under, even when the incoming ctx carries a
 // different (or no) identity.
 func embedCtx(ctx context.Context, id identity.Quadruple) (context.Context, error) {
+	// A record from another tenant reaches here only behind a listing the
+	// caller was already authorized for; seat that as an audited crossing
+	// so the attribution names the tenant it reads and why.
+	if verified, ok := identity.FromVerified(ctx); ok && id.TenantID != verified.TenantID {
+		ectx, err := identity.WithElevated(ctx, id.Identity,
+			"memory semantic strategy: attributing an embedding call to the identity the stored vectors are scoped under")
+		if err != nil {
+			return nil, fmt.Errorf("memory/strategy/semantic: identity: %w", err)
+		}
+		if id.RunID == "" {
+			return ectx, nil
+		}
+		ectx, err = identity.WithRun(ectx, id.Identity, id.RunID)
+		if err != nil {
+			return nil, fmt.Errorf("memory/strategy/semantic: identity: %w", err)
+		}
+		return ectx, nil
+	}
 	if id.RunID != "" {
 		ectx, err := identity.WithRun(ctx, id.Identity, id.RunID)
 		if err != nil {

@@ -14,6 +14,7 @@ import (
 	eventsinmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/sessions"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
@@ -466,4 +467,93 @@ func spawnFailed(t *testing.T, reg tasks.TaskRegistry, id identity.Identity) {
 	if err := reg.MarkFailed(ctx, h.ID, tasks.TaskError{Code: "boom", Message: "failed"}); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
+}
+
+// TestCounterEnricher_UnreadableRegistryRead_SetsPartial — the partial
+// marker covers the REGISTRY reads, not only the bounded event scan.
+//
+// A rollup that could not take a read leaves TasksCount / HasFailedTask /
+// HasPendingIntervention at their zero values. A zero that means "we
+// could not look" and a zero that means "we looked and there were none"
+// are different answers, and a caller sorting or faceting on the counter
+// cannot tell them apart unless the row says so.
+//
+// The unreadable case here is a row whose tenant the rollup may not
+// reach: the ctx carries a verified anchor in one tenant, the row belongs
+// to another, and no audited crossing is in force.
+func TestCounterEnricher_UnreadableRegistryRead_SetsPartial(t *testing.T) {
+	t.Parallel()
+	bus := newReplayBus(t, 64)
+	reg := newTaskRegistry(t, bus)
+	enr := newEnricher(t, bus, reg, pauseresume.New())
+
+	anchored, err := identity.WithVerified(context.Background(), sid("t1", "u1", "s1"))
+	if err != nil {
+		t.Fatalf("seat verified identity: %v", err)
+	}
+	// A row the rollup cannot re-scope to: the enricher's own audited
+	// re-scope is what makes a foreign row readable, so a row it may not
+	// reach at all must report itself unmeasured.
+	unreachable := identity.Identity{TenantID: "t-other", UserID: "", SessionID: "s9"}
+
+	c := enr.Counters(anchored, unreachable, "s9")
+	if !c.Partial {
+		t.Error("Partial = false, want true — a registry read the rollup could not take must be marked, never reported as an exact zero")
+	}
+	if c.TasksCount != 0 {
+		t.Errorf("TasksCount = %d, want 0 — an unreadable count stays zero, but Partial is what says so", c.TasksCount)
+	}
+}
+
+// TestCounterEnricher_ForeignRowUnderAnAnchorIsReadInFull — the
+// companion: under the claim a fleet listing carries, the rollup's audited
+// re-scope makes a foreign-tenant row readable, so it is NOT partial.
+// Without this pin the test above would pass for a rollup that simply
+// never reads anything.
+func TestCounterEnricher_ForeignRowUnderAnAnchorIsReadInFull(t *testing.T) {
+	t.Parallel()
+	bus := newReplayBus(t, 64)
+	reg := newTaskRegistry(t, bus)
+	enr := newEnricher(t, bus, reg, pauseresume.New())
+
+	c := enr.Counters(fleetCtx(t, sid("t1", "u1", "s1")), sid("t-other", "u9", "s9"), "s9")
+	if c.Partial {
+		t.Error("Partial = true for a complete foreign row, want false — the rollup re-scopes to the row's own identity and reads it in full")
+	}
+}
+
+// TestCounterEnricher_ForeignRowWithoutTheClaimIsRefusedAndMarked — the
+// rollup re-checks the admin-tier claim where it mints the crossing rather
+// than inheriting the listing's check. A foreign row on a request carrying
+// no claim is refused, and the row says its counters are unmeasured
+// instead of reporting zeros.
+func TestCounterEnricher_ForeignRowWithoutTheClaimIsRefusedAndMarked(t *testing.T) {
+	t.Parallel()
+	bus := newReplayBus(t, 64)
+	reg := newTaskRegistry(t, bus)
+	enr := newEnricher(t, bus, reg, pauseresume.New())
+
+	anchored, err := identity.WithVerified(context.Background(), sid("t1", "u1", "s1"))
+	if err != nil {
+		t.Fatalf("seat verified identity: %v", err)
+	}
+	c := enr.Counters(anchored, sid("t-other", "u9", "s9"), "s9")
+	if !c.Partial {
+		t.Error("Partial = false for a foreign row the rollup may not read; an unentitled crossing must leave the counters unmeasured, not zeroed")
+	}
+	if c.TasksCount != 0 {
+		t.Errorf("TasksCount = %d, want 0 — the refused read reports nothing", c.TasksCount)
+	}
+}
+
+// fleetCtx seats the verified identity AND the admin-tier claim a fleet
+// listing carries, which is the shape the rollup sees in production when
+// it is handed a foreign row.
+func fleetCtx(t *testing.T, id identity.Identity) context.Context {
+	t.Helper()
+	ctx, err := identity.WithVerified(context.Background(), id)
+	if err != nil {
+		t.Fatalf("seat verified identity: %v", err)
+	}
+	return auth.WithScopes(ctx, []auth.Scope{auth.ScopeAdmin})
 }

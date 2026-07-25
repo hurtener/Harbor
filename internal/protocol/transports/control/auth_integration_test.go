@@ -40,7 +40,7 @@ func TestControl_AuthCtx_BodyEmpty_Backfilled(t *testing.T) {
 	h, cleanup := newTestHandler(t)
 	defer cleanup()
 
-	ctx, err := identity.With(t.Context(), identity.Identity{
+	ctx, err := identity.WithVerified(t.Context(), identity.Identity{
 		TenantID: "t1", UserID: "u1", SessionID: "s1",
 	})
 	if err != nil {
@@ -68,7 +68,7 @@ func TestControl_AuthCtx_BodyMatches_Success(t *testing.T) {
 	h, cleanup := newTestHandler(t)
 	defer cleanup()
 
-	ctx, err := identity.With(t.Context(), identity.Identity{
+	ctx, err := identity.WithVerified(t.Context(), identity.Identity{
 		TenantID: "t1", UserID: "u1", SessionID: "s1",
 	})
 	if err != nil {
@@ -89,7 +89,7 @@ func TestControl_AuthCtx_BodyMismatch_Rejected(t *testing.T) {
 	h, cleanup := newTestHandler(t)
 	defer cleanup()
 
-	ctx, err := identity.With(t.Context(), identity.Identity{
+	ctx, err := identity.WithVerified(t.Context(), identity.Identity{
 		TenantID: "t1", UserID: "u1", SessionID: "s1",
 	})
 	if err != nil {
@@ -111,7 +111,7 @@ func TestControl_AuthCtx_ControlMethod_BodyMismatch_Rejected(t *testing.T) {
 	h, cleanup := newTestHandler(t)
 	defer cleanup()
 
-	ctx, err := identity.With(t.Context(), identity.Identity{
+	ctx, err := identity.WithVerified(t.Context(), identity.Identity{
 		TenantID: "t1", UserID: "u1", SessionID: "s1",
 	})
 	if err != nil {
@@ -127,9 +127,10 @@ func TestControl_AuthCtx_ControlMethod_BodyMismatch_Rejected(t *testing.T) {
 	}
 }
 
-// (4) ctx-identity absent → Phase 60 trust-based posture preserved
-// (the body identity wins; the assertion is a no-op).
-func TestControl_NoAuthCtx_BodyIdentityWins(t *testing.T) {
+// (4) ctx-identity absent → the request is refused. A handler reached
+// without an established identity has nothing to reconcile the body
+// against, and a caller-supplied body is not an authority.
+func TestControl_NoAuthCtx_FailsClosed(t *testing.T) {
 	h, cleanup := newTestHandler(t)
 	defer cleanup()
 
@@ -138,8 +139,8 @@ func TestControl_NoAuthCtx_BodyIdentityWins(t *testing.T) {
 	req.SetPathValue("method", string(methods.MethodStart))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: %d, want 200; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: %d, want 401; body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -149,7 +150,7 @@ func TestControl_AuthCtx_ControlMethod_BodyEmpty_Backfilled(t *testing.T) {
 	h, cleanup := newTestHandler(t)
 	defer cleanup()
 
-	ctx, err := identity.With(t.Context(), identity.Identity{
+	ctx, err := identity.WithVerified(t.Context(), identity.Identity{
 		TenantID: "t1", UserID: "u1", SessionID: "s1",
 	})
 	if err != nil {

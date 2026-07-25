@@ -15,7 +15,10 @@ import (
 	"fmt"
 	"time"
 
+	"errors"
+
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/search"
 	sessionsubsys "github.com/hurtener/Harbor/internal/sessions"
@@ -167,13 +170,43 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 
 // tasksGetWithIdentity calls TaskRegistry.Get under a ctx carrying the
 // session's identity so the per-tenant gate inside Get is satisfied.
+//
+// A session inside the caller's verified tenant is ordinary narrowing. A
+// session from ANOTHER tenant is a crossing whose authorization already
+// happened upstream: the fleet fan-in that produced this snapshot was
+// gated on the caller's verified admin-tier claim, and the walk only
+// ever reaches snapshots that fan-in returned. Seating it as an audited
+// re-scope names the tenant being read and why.
 func (s *Searcher) tasksGetWithIdentity(ctx context.Context, ident identity.Identity, id tasksubsys.TaskID) (*tasksubsys.Task, error) {
-	subCtx, err := identity.With(ctx, ident)
+	subCtx, err := s.rowScopedCtx(ctx, ident)
 	if err != nil {
 		return nil, err
 	}
 	return s.tasks.Get(subCtx, id)
 }
+
+// rowScopedCtx seats a matched session's own identity for the per-task
+// read behind it. See tasksGetWithIdentity for why a foreign tenant here
+// is an already-authorized crossing rather than a widening.
+func (s *Searcher) rowScopedCtx(ctx context.Context, ident identity.Identity) (context.Context, error) {
+	verified, anchored := identity.FromVerified(ctx)
+	if !anchored || ident.TenantID == verified.TenantID {
+		return identity.With(ctx, ident)
+	}
+	// Defence in depth: re-check the claim the fan-in gated on, here where
+	// the crossing is minted. A crossing whose safety rests on a caller one
+	// layer up having checked is inherited rather than held.
+	if !auth.HasScope(ctx, auth.ScopeAdmin) && !auth.HasScope(ctx, auth.ScopeConsoleFleet) {
+		return nil, fmt.Errorf("tasks search: %w", errRowScopeUnentitled)
+	}
+	return identity.WithElevated(ctx, ident,
+		"tasks search: reading a task under the identity of a session an authorized fleet fan-in returned")
+}
+
+// errRowScopeUnentitled — a session from another tenant reached the
+// per-task read on a request carrying no admin-tier claim. The search
+// refuses the row rather than reading it.
+var errRowScopeUnentitled = errors.New("session belongs to another tenant and the request carries no admin-tier claim")
 
 func parseFacets(facets []types.SearchFacet) (*tasksubsys.TaskStatus, *tasksubsys.TaskKind) {
 	var status *tasksubsys.TaskStatus

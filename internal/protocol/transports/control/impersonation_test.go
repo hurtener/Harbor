@@ -46,7 +46,7 @@ import (
 // verified identity attached + the admin scope claim attached.
 func authedAdminCtx(t *testing.T) context.Context {
 	t.Helper()
-	ctx, err := identity.With(context.Background(), identity.Identity{
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{
 		TenantID:  "tenant-acme",
 		UserID:    "admin-alice",
 		SessionID: "sess-admin",
@@ -61,7 +61,7 @@ func authedAdminCtx(t *testing.T) context.Context {
 // scope — the canonical "valid bearer but no admin claim" shape.
 func authedNonAdminCtx(t *testing.T, tenant, user, session string) context.Context {
 	t.Helper()
-	ctx, err := identity.With(context.Background(), identity.Identity{
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{
 		TenantID:  tenant,
 		UserID:    user,
 		SessionID: session,

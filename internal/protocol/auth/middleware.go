@@ -67,8 +67,13 @@ func MWLogger(l *slog.Logger) MiddlewareOption {
 //     ErrIdentityClaimMissing / ErrTokenMissing; CodeAuthRejected for
 //     every other sentinel) and returns.
 //  3. On success, attaches the verified identity to r.Context() (via
-//     identity.With) and the verified scope set (via WithScopes),
-//     then calls next with the augmented request.
+//     identity.WithVerified) and the verified scope set (via
+//     WithScopes), then calls next with the augmented request.
+//
+// The two attachments are the request's whole authority record and they
+// are written here and nowhere else: the verified identity is the anchor
+// the body-scope gate reconciles a request body against, and the scope
+// set is what permits a reconciled body to name another tenant.
 //
 // Middleware is a compiled artifact: every field is set once at
 // construction and never mutated. The decorator is safe to share
@@ -160,11 +165,11 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 			}
 
 			ctx := r.Context()
-			ctx, idErr := identity.With(ctx, effectiveID)
+			ctx, idErr := identity.WithVerified(ctx, effectiveID)
 			if idErr != nil {
 				// Unreachable given the explicit tenant/user + session
 				// checks above; kept as a defensive fail-closed (§5).
-				cfg.logger.ErrorContext(r.Context(), "auth: identity.With rejected a checked identity",
+				cfg.logger.ErrorContext(r.Context(), "auth: identity.WithVerified rejected a checked identity",
 					slog.String("error", idErr.Error()))
 				writeProtocolError(w, http.StatusInternalServerError,
 					protoerrors.Newf(protoerrors.CodeRuntimeError,
@@ -172,6 +177,64 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 				return
 			}
 			ctx = WithScopes(ctx, verified.Scopes)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// Identity-carrier header names for the bearer-less posture. The values
+// MUST be identical to the SSE transport's constants; they are
+// duplicated here (rather than imported) because `stream` imports `auth`
+// and the reverse would be an import cycle.
+const (
+	HeaderTenant = "X-Harbor-Tenant"
+	HeaderUser   = "X-Harbor-User"
+)
+
+// CarrierIdentityMiddleware establishes the request identity from the
+// X-Harbor-* carrier headers and seats it as the request's verified
+// identity.
+//
+// It exists because "no bearer token" must not mean "no established
+// identity". Every downstream gate reconciles caller-supplied input
+// against the identity on ctx, so a mux with nothing on ctx would have
+// to fall back to trusting the request body — and a body is chosen by
+// the caller. The carrier posture replaces that fallback with an
+// explicit statement: for this deployment, the carrier headers ARE the
+// identity, and a request that supplies no complete triple is refused
+// 401 before any handler runs.
+//
+// This is not a production default. The mux reaches it only through the
+// explicit bearer-less escape hatch; a mux that supplies neither a
+// validator nor that opt-in fails construction.
+func CarrierIdentityMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// An identity already established upstream wins. An outer
+			// layer that seated one is in-process code, not the wire,
+			// and the carrier headers are the fallback for when nothing
+			// upstream did — never an override of something that did.
+			if _, ok := identity.FromVerified(r.Context()); ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+			id := identity.Identity{
+				TenantID:  strings.TrimSpace(r.Header.Get(HeaderTenant)),
+				UserID:    strings.TrimSpace(r.Header.Get(HeaderUser)),
+				SessionID: strings.TrimSpace(r.Header.Get(HeaderSession)),
+			}
+			ctx, err := identity.WithVerified(r.Context(), id)
+			if err != nil {
+				logger.WarnContext(r.Context(), "auth: carrier posture rejected a request with an incomplete identity triple",
+					slog.String("error", err.Error()))
+				writeProtocolError(w, http.StatusUnauthorized,
+					protoerrors.Newf(protoerrors.CodeIdentityRequired,
+						"identity scope incomplete: the carrier headers must supply a complete (tenant, user, session) triple"))
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

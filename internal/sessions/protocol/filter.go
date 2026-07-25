@@ -29,10 +29,21 @@ func filterMatches(f prototypes.SessionFilter, row prototypes.SessionRow) bool {
 	if f.StartedWindow.To != nil && row.StartedAt.After(*f.StartedWindow.To) {
 		return false
 	}
-	if f.HasIntervention != nil && row.HasPendingIntervention != *f.HasIntervention {
+	if f.HasIntervention != nil && row.HasPendingIntervention != *f.HasIntervention && !row.CountersPartial {
+		// Same honest-partial rule as CostAboveCents below. A PARTIAL row's
+		// HasPendingIntervention is a lower bound too: the pause read that
+		// would have set it may not have been taken, so `false` there can
+		// mean "we could not look" rather than "there is no gate". Excluding
+		// it would drop a session with an OPEN human-approval gate out of the
+		// intervention queue — the false-absence class, arriving through the
+		// counter instead of the row. The row is returned carrying its
+		// CountersPartial flag so the consumer decides.
 		return false
 	}
-	if f.HasFailedTask != nil && row.HasFailedTask != *f.HasFailedTask {
+	if f.HasFailedTask != nil && row.HasFailedTask != *f.HasFailedTask && !row.CountersPartial {
+		// Same rule: a PARTIAL row's HasFailedTask may be an unmeasured
+		// false, so a `has_failed_task=true` filter must not silently drop
+		// a session whose task-registry read failed.
 		return false
 	}
 	if f.CostAboveCents != nil && row.TotalCostCents <= *f.CostAboveCents && !row.CountersPartial {

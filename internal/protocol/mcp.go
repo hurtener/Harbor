@@ -12,6 +12,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/adminwrite"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -408,6 +409,17 @@ func (s *MCPSurface) gate(ctx context.Context, method methods.Method, req any) (
 	if scope == nil {
 		return identity.Identity{}, false, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: request is nil or not a recognised MCP request type", string(method))
+	}
+	// Reconcile the caller-supplied body scope against the ctx verified
+	// identity under this surface's registered policy. Running it HERE
+	// rather than only in the transport is what makes this surface's
+	// transport-agnostic claim true: a second transport, or an embedder
+	// calling Dispatch directly, gets the same answer without
+	// re-deriving the check. The policy pins all three components — the
+	// connection catalog is process-global and the verb gate below mints
+	// no claim that widens the tenant.
+	if _, perr := bodyscope.Reconcile(ctx, bodyscope.ForIdentityScope(scope), bodyscope.SurfaceMCP, nil); perr != nil {
+		return identity.Identity{}, false, perr
 	}
 	id := identity.Identity{
 		TenantID:  scope.Tenant,

@@ -55,7 +55,7 @@ func TestConcurrentReuse_SharedMux_NoCrossTalk(t *testing.T) {
 			if i%2 == 0 {
 				// REST control submission.
 				body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"q"}`
-				resp, err := http.Post(srv.URL+"/v1/control/start", "application/json",
+				resp, err := postControlCarrier(srv.URL+"/v1/control/start",
 					strings.NewReader(body))
 				if err != nil {
 					errs <- err
@@ -306,4 +306,19 @@ func TestConcurrentReuse_StateHistory_NoCrossIdentityBleed(t *testing.T) {
 	if got := settledGoroutines(baseline, 8); got > baseline+8 {
 		t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, got)
 	}
+}
+
+// postControlCarrier drives the control route on a bearer-less mux,
+// supplying the X-Harbor-* carrier headers that posture establishes
+// identity from.
+func postControlCarrier(url string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, url, body) //nolint:noctx // the shared-mux stress drives fire-and-forget requests; the test bounds the run itself.
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Harbor-Tenant", "t1")
+	req.Header.Set("X-Harbor-User", "u1")
+	req.Header.Set("X-Harbor-Session", "s1")
+	return http.DefaultClient.Do(req)
 }
