@@ -337,6 +337,9 @@ func TestDevComposition_BootstrapEndpointRegistered_HarborDev(t *testing.T) {
 	handle := bootDevForTest(t, ctx, false /* serveConsole */)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", strings.NewReader("{}"))
+	// The bootstrap endpoint serves local authorities only; httptest
+	// defaults Host to "example.com".
+	req.Host = "127.0.0.1:18080"
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	handle.Handler().ServeHTTP(rec, req)
@@ -373,6 +376,9 @@ func TestDevComposition_BootstrapEndpointRegistered_HarborConsole(t *testing.T) 
 	handle := bootDevForTest(t, ctx, true /* serveConsole */)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", strings.NewReader("{}"))
+	// The bootstrap endpoint serves local authorities only; httptest
+	// defaults Host to "example.com".
+	req.Host = "127.0.0.1:18080"
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	handle.Handler().ServeHTTP(rec, req)
@@ -392,6 +398,9 @@ func TestDevComposition_BootstrapEndpoint_NonLoopback_Returns403(t *testing.T) {
 	handle := bootDevForTest(t, ctx, false)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", strings.NewReader("{}"))
+	// The bootstrap endpoint serves local authorities only; httptest
+	// defaults Host to "example.com".
+	req.Host = "127.0.0.1:18080"
 	req.RemoteAddr = "192.168.1.5:54321"
 	req.Header.Set("X-Forwarded-For", "127.0.0.1")
 	rec := httptest.NewRecorder()
@@ -469,6 +478,9 @@ func TestServeComposition_BootstrapEndpoint_404(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", strings.NewReader("{}"))
+	// The bootstrap endpoint serves local authorities only; httptest
+	// defaults Host to "example.com".
+	req.Host = "127.0.0.1:18080"
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	handle.Handler().ServeHTTP(rec, req)

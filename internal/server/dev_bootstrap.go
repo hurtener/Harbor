@@ -10,6 +10,14 @@
 // reads r.RemoteAddr directly — no header-based spoofing vector
 // exists.
 //
+// The endpoint additionally validates the request Host, so only a
+// request addressed to a genuinely local authority (the literal name
+// "localhost" or a loopback IP literal, with an optional port) is
+// served, and it strips the CORS allow-headers from its response so
+// the envelope stays readable to same-origin callers only — the
+// posture the Console's one-click attach flow uses, which fetches it
+// from window.location.origin.
+//
 // The endpoint is never registered by harbor serve.
 package server
 
@@ -21,9 +29,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 )
 
 // bootstrapIdentity is the wire shape of the identity triple in the
@@ -114,6 +124,13 @@ func NewBootstrapHandler(
 }
 
 func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// The bootstrap envelope is served to same-origin callers only, so
+	// drop any CORS allow-headers an outer middleware set on this
+	// response before the body is written. Response headers are still
+	// mutable at this point — the CORS middleware sets them before
+	// delegating and nothing has been written yet.
+	stripCrossOriginExposure(w.Header())
+
 	if r.Method != http.MethodPost {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -130,6 +147,19 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{ //nolint:errcheck // best-effort response on error path; 403 status code is the contract, body is informational
 			"code":    "forbidden",
 			"message": "bootstrap endpoint is loopback-only",
+		})
+		return
+	}
+
+	// The socket peer is local; require the request to be ADDRESSED to a
+	// local authority too. A request that arrives over loopback carrying
+	// an external Host is not a local caller's request and is refused.
+	if !isLocalHostHeader(r.Host) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{ //nolint:errcheck // best-effort response on error path; 403 status code is the contract, body is informational
+			"code":    "forbidden",
+			"message": "bootstrap endpoint serves local hosts only",
 		})
 		return
 	}
@@ -257,4 +287,44 @@ func isLoopback(remoteAddr string) bool {
 		return false
 	}
 	return ip.IsLoopback()
+}
+
+// isLocalHostHeader reports whether an HTTP Host authority names a local
+// address: the literal name "localhost" (case-insensitive) or a loopback
+// IP literal (127.0.0.0/8, ::1), each with an optional port, with IPv6
+// brackets tolerated, and with a single trailing root dot tolerated
+// ("localhost." — the fully-qualified form a browser sends for
+// `http://localhost./`). Any other authority — an external DNS name, for
+// instance — returns false, so the endpoint answers only requests
+// addressed to the local Runtime. An absent Host is refused (fail
+// closed).
+func isLocalHostHeader(hostHeader string) bool {
+	if hostHeader == "" {
+		return false
+	}
+	host := hostHeader
+	if stripped, _, err := net.SplitHostPort(host); err == nil {
+		host = stripped
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	// A single trailing dot is the DNS root label; "localhost." and
+	// "localhost" name the same host. Only one is stripped, so "localhost.."
+	// stays invalid.
+	host = strings.TrimSuffix(host, ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// stripCrossOriginExposure removes the CORS allow-headers that let a
+// cross-origin script read a response. The bootstrap envelope is served
+// same-origin only (the Console attaches from window.location.origin),
+// so the endpoint drops the headers regardless of how permissive the
+// operator's dev CORS allowlist is. `Vary: Origin` is deliberately left
+// in place — it stays correct for shared caches.
+func stripCrossOriginExposure(h http.Header) {
+	h.Del(cors.HeaderAccessControlAllowOrigin)
+	h.Del(cors.HeaderAccessControlAllowCredentials)
 }

@@ -102,6 +102,21 @@ if protocol_post '/v1/control/mcp.apps.call_tool' \
 fi
 
 # ----------------------------------------------------------------------------
+# 3b. Body-identity reconciliation: a body triple that does not match the
+#     verified token's triple is refused with identity_required, before the
+#     AppsSurface is reached. Requires a token — without one the transport
+#     has no verified identity to reconcile against, so the case is a SKIP.
+# ----------------------------------------------------------------------------
+if [ -z "${TOKEN_OPERATOR}" ]; then
+    skip 'phase 109a: body identity is reconciled against the verified token (no dev token available)'
+elif protocol_post '/v1/control/mcp.apps.call_tool' \
+    '{"identity":{"tenant":"other-tenant","user":"dev","session":"dev"},"tool":"t"}' \
+    'phase 109a: call_tool reconciles the body identity'; then
+    assert_error_code 'identity_required' \
+        'phase 109a: body identity not matching the verified token is refused'
+fi
+
+# ----------------------------------------------------------------------------
 # 4. Static: the new methods are registered in the single-source methods file.
 # ----------------------------------------------------------------------------
 if grep -q 'mcp.servers.read_resource' internal/protocol/methods/methods.go &&

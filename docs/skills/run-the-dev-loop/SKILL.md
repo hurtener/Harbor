@@ -150,6 +150,7 @@ The response is a ready-to-use connection envelope containing `base_url`, `token
 - **`harbor dev` reboots in a loop with `fsnotify` events.** This used to be the SQLite-WAL trap; the watcher now ignores all SQLite/db files (see §3), so a state DB is no longer the cause. If you still see a loop, look for another tool or build step rewriting a watched file on each cycle.
 - **CORS preflight failing on multi-process Console.** Your `server.allowed_origins` doesn't list the Console's origin. The Runtime defaults to default-deny — explicitly add the Console URL.
 - **Port conflict on `:18080` / `:18790`.** Another `harbor dev` is already running. `lsof -nP -iTCP:18080,18790 -sTCP:LISTEN | awk 'NR>1 {print $2}' | xargs -r kill`.
+- **`403 forbidden` from `/v1/dev/bootstrap.json` on a loopback machine.** The endpoint serves requests addressed to a local authority: `localhost` or a loopback IP literal (`127.0.0.1`, `::1`), with an optional port and a tolerated trailing root dot. Subdomain forms such as `app.localhost:18080`, the wildcard bind address `0.0.0.0:18080`, and any external DNS name pointed at loopback are refused. Address the request to `127.0.0.1` or `localhost` and retry.
 
 ## See also
 

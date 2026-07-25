@@ -40,7 +40,9 @@ import (
 	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -168,6 +170,101 @@ func callArtifacts(t *testing.T, baseURL string, method methods.Method, payload 
 	var decoded map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&decoded)
 	return resp.StatusCode, decoded
+}
+
+// withVerifiedIdentity wraps next so every request carries a verified
+// identity (and optional scope claims) on its ctx — the same shape
+// auth.Middleware installs once a JWT has been validated. It lets a
+// WithoutValidator stack exercise the surface gates that only fire when
+// ctx carries a verified identity, without standing up a JWT key set.
+func withVerifiedIdentity(next http.Handler, id identity.Identity, scopes []auth.Scope) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, err := identity.With(r.Context(), id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if len(scopes) > 0 {
+			ctx = auth.WithScopes(ctx, scopes)
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// TestE2E_ArtifactsGetRef_ForeignTenantRefusedOverTheWire drives
+// artifacts.get_ref through the REAL wire transport with a verified
+// identity on ctx and asserts that a body scope naming a different
+// tenant is refused — for every scope claim, since this method offers no
+// admin elevation.
+//
+// It is deliberately a wire-level test rather than a direct
+// surface.Dispatch call: the transport's own reconciliation
+// (backfillArtifactsIdentity) constrains which shapes can reach the
+// surface at all — it rejects a body User/Session that disagrees with
+// the verified identity — so only a scope carrying the caller's OWN user
+// and session under a foreign tenant is reachable here. Asserting
+// against Dispatch directly would assert a shape the wire cannot
+// produce (CLAUDE.md §17.3, §17.8).
+func TestE2E_ArtifactsGetRef_ForeignTenantRefusedOverTheWire(t *testing.T) {
+	t.Parallel()
+
+	for name, scopes := range map[string][]auth.Scope{
+		"no scopes":     nil,
+		"admin":         {auth.ScopeAdmin},
+		"console:fleet": {auth.ScopeConsoleFleet},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			inner, err := artinmem.New(config.ArtifactsConfig{Driver: "inmem"})
+			if err != nil {
+				t.Fatalf("inmem driver: %v", err)
+			}
+			deps := newArtifactsStack(t, artifactsPresignStub{ArtifactStore: inner})
+			defer deps.cleanup()
+
+			verified := identity.Identity{TenantID: "tenant-a", UserID: "u1", SessionID: "s1"}
+			srv := httptest.NewServer(withVerifiedIdentity(deps.mux, verified, scopes))
+			defer srv.Close()
+
+			// Same-tenant put establishes a real ref id to resolve.
+			ownScope := map[string]any{"tenant": "tenant-a", "user": "u1", "session": "s1"}
+			status, body := callArtifacts(t, srv.URL, methods.MethodArtifactsPut, map[string]any{
+				"scope": ownScope,
+				"bytes": []byte("payload"),
+			})
+			if status != http.StatusOK {
+				t.Fatalf("artifacts.put status = %d, body=%v", status, body)
+			}
+			id := body["ref"].(map[string]any)["id"].(string)
+
+			// Same tenant resolves — the golden path is untouched.
+			status, body = callArtifacts(t, srv.URL, methods.MethodArtifactsGetRef, map[string]any{
+				"scope": ownScope,
+				"id":    id,
+			})
+			if status != http.StatusOK {
+				t.Fatalf("same-tenant get_ref: status = %d, body=%v", status, body)
+			}
+			if url, _ := body["presigned_url"].(string); url == "" {
+				t.Fatalf("same-tenant get_ref: empty presigned_url, body=%v", body)
+			}
+
+			// A foreign tenant is refused regardless of the scope claim.
+			status, body = callArtifacts(t, srv.URL, methods.MethodArtifactsGetRef, map[string]any{
+				"scope": map[string]any{"tenant": "tenant-b", "user": "u1", "session": "s1"},
+				"id":    id,
+			})
+			if status != http.StatusForbidden {
+				t.Fatalf("foreign-tenant get_ref: status = %d, want 403, body=%v", status, body)
+			}
+			if body["code"] != "scope_mismatch" {
+				t.Fatalf("foreign-tenant get_ref: code = %v, want scope_mismatch", body["code"])
+			}
+			if url, _ := body["presigned_url"].(string); url != "" {
+				t.Fatalf("foreign-tenant get_ref: a presigned URL was returned: %v", body)
+			}
+		})
+	}
 }
 
 // TestE2E_Phase73l_ArtifactsPage_DriverParity exercises the artifacts

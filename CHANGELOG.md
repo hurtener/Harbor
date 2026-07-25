@@ -17,6 +17,36 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.21.1] — 2026-07-25
+
+Patch: Protocol body-identity reconciliation and the dev bootstrap endpoint are
+tightened to the same contract the rest of the surface already applies. No
+Protocol wire change, no config schema change, no migration.
+
+### Fixed
+
+- **Body-identity reconciliation validates the full `(tenant, user, session)`
+  triple on the MCP surfaces.** The MCP Apps and MCP-Connections Protocol
+  adapters reconcile a request-body identity scope against the auth-verified
+  identity on all three components; an empty body triple is still backfilled
+  from the verified identity, exactly as before. Neither surface has an
+  admin-elevation path, so a body triple that disagrees with the verified
+  identity fails closed with `identity_required`.
+- **`artifacts.get_ref` reconciles the body scope's tenant before the store
+  read,** so the artifact driver is never consulted for another tenant's scope.
+- **`Boot` fails closed on a nil auth validator.** A validator factory that
+  returns no validator and no error is now rejected with
+  `ErrAuthValidatorRequired`. Identity is mandatory; the serve band never takes
+  the test-kit validator-less path, and that path is unchanged for test kits
+  that call `BuildMux` directly.
+- **The dev bootstrap endpoint serves requests addressed to a local authority**
+  (`localhost` or a loopback IP literal, with an optional port) and emits no
+  CORS allow-headers, so the connection envelope is same-origin local only. The
+  Console's one-click attach fetches it from `window.location.origin`; `curl`
+  against `127.0.0.1`, the CLI, and every smoke script are unaffected. A request
+  addressed to some other authority — including an external name resolved to a
+  loopback address — is refused; address it to `127.0.0.1` or `localhost`.
+
 ## [1.21.0] — 2026-07-24
 
 Minor: durable-by-default per-user skills, and wire-carried per-user credential injection for dynamically-added receiver-style MCP servers.

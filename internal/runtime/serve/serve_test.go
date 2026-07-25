@@ -205,6 +205,22 @@ func TestBoot_NilFactory_FailsLoud(t *testing.T) {
 	}
 }
 
+// TestBoot_NilValidatorFromFactory_FailsLoud — identity is mandatory: a
+// factory that hands back a nil Validator with a nil error is a loud
+// construction error too. BuildMux reads a nil Validator as the test-kit
+// WithoutValidator() opt-out, so Boot refuses it at construction.
+// Identity is mandatory.
+func TestBoot_NilValidatorFromFactory_FailsLoud(t *testing.T) {
+	opts := baseOptions(t)
+	opts.AuthValidatorFactory = func(_ context.Context, _ *config.Config, _ audit.Redactor, _ events.EventBus, _ *slog.Logger) (auth.Validator, error) {
+		return nil, nil
+	}
+	_, err := Boot(context.Background(), opts)
+	if !errors.Is(err, ErrAuthValidatorRequired) {
+		t.Fatalf("want ErrAuthValidatorRequired, got %v", err)
+	}
+}
+
 // TestBoot_SharedSurfacesOnly — with no injection seams composed, the
 // constructor mounts ONLY the shared surfaces: no dev bootstrap route, no
 // Console mount. /healthz answers; the dev-only bootstrap endpoint 404s.

@@ -143,6 +143,20 @@ if protocol_post '' '/v1/control/mcp.servers.list' '{}' \
 fi
 
 # ----------------------------------------------------------------------------
+# 3b. mcp.servers.list whose body triple does not match the verified token's
+#     triple → identity_required. Requires a token; without one the transport
+#     has no verified identity to reconcile against, so the case is a SKIP.
+# ----------------------------------------------------------------------------
+if [ -z "${TOKEN_OPERATOR}" ]; then
+    skip 'phase 73k: mcp.servers.list reconciles the body identity (no dev token available)'
+elif protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.list' \
+    '{"identity":{"tenant":"other-tenant","user":"dev","session":"dev"}}' \
+    'phase 73k: mcp.servers.list reconciles the body identity'; then
+    assert_error_code 'identity_required' \
+        'phase 73k: body identity not matching the verified token → identity_required'
+fi
+
+# ----------------------------------------------------------------------------
 # 4. mcp.servers.get for an unknown server → not_found.
 # ----------------------------------------------------------------------------
 if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.get' \
