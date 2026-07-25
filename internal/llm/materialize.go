@@ -161,7 +161,7 @@ func materializeDataURL(
 		MimeType:  effectiveMIME,
 		Filename:  filename,
 		Namespace: "llm.materialized",
-		Source:    map[string]any{"phase": "32", "stage": "auto_materialize"},
+		Source:    map[string]any{"producer": "llm.auto_materialize"},
 	}
 	ref, err := store.PutBytes(ctx, scope, bytes, opts)
 	if err != nil {
