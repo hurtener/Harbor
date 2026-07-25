@@ -78,6 +78,13 @@ import (
 // stands up an unauthenticated listener. Callers compare via errors.Is.
 var ErrAuthValidatorFactoryRequired = errors.New("serve: auth-validator factory is required (identity is mandatory; nil is never an unauthenticated listener)")
 
+// ErrAuthValidatorRequired is returned by Boot when the configured
+// AuthValidatorFactory returns a nil Validator with a nil error. A nil
+// Validator is the test-kit auth opt-out that BuildMux reads as
+// transports.WithoutValidator(); the serve band never takes that path, so
+// Boot fails construction here instead. Callers compare via errors.Is.
+var ErrAuthValidatorRequired = errors.New("serve: auth-validator factory returned a nil validator (identity is mandatory; nil is never an unauthenticated listener)")
+
 // AuthValidatorFactory builds the Protocol auth validator from the loaded
 // config plus the assembled redactor / bus / logger. The production caller
 // injects a JWKS-backed factory; the dev caller injects one built from its
@@ -568,12 +575,20 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 	closers = append(closers, runLoopDriver.Close)
 
-	// Auth validator — the REQUIRED production path. A factory error fails
-	// Boot loud (never a silent unauthenticated fallback).
+	// Auth validator — the REQUIRED production path. A factory error, or a
+	// factory that hands back a nil Validator, fails Boot loud (never a
+	// silent unauthenticated fallback). The nil check keeps that guarantee
+	// real: BuildMux reads a nil Validator as the test-kit
+	// transports.WithoutValidator() opt-out, and the serve band never
+	// takes that path. Identity is mandatory — CLAUDE.md §6 rule 9.
 	validator, err := opts.AuthValidatorFactory(ctx, cfg, red, bus, opts.Logger)
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("auth: %w", err)
+	}
+	if validator == nil {
+		closeAll(ctx)
+		return nil, ErrAuthValidatorRequired
 	}
 
 	// Optional token-rotate surface (dev-only; nil in production).

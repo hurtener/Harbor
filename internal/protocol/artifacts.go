@@ -468,10 +468,23 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 	}, nil
 }
 
-// handleGetRef serves artifacts.get_ref. It validates identity, bounds
-// the expiry, resolves the ref's metadata, and type-asserts the store to
+// handleGetRef serves artifacts.get_ref. It validates identity, refuses
+// a scope naming a tenant other than the verified one, bounds the
+// expiry, resolves the ref's metadata, and type-asserts the store to
 // artifacts.Presigner — failing loud (CodePresignUnsupported) on a
 // driver that does not implement the capability.
+//
+// The tenant refusal is flat, with no admin elevation. That is narrower
+// than artifacts.list, which does offer an elevation branch, and the
+// asymmetry is deliberate: a list scope is valid with an empty User /
+// Session (they are wildcards), so an operator holding the admin claim
+// can enumerate a whole foreign tenant. A get_ref scope is not — it
+// requires the full triple — so the only foreign-tenant shape that can
+// reach this method already carries the caller's OWN user and session,
+// which is not a fleet-observation shape and so has nothing to elevate.
+// A presigned URL is also a time-bounded bearer capability to the
+// CONTENT, materially broader than the metadata artifacts.list returns,
+// so the elevation is not one to add by analogy.
 func (s *ArtifactsSurface) handleGetRef(ctx context.Context, req *types.ArtifactsGetRefRequest) (any, error) {
 	m := string(methods.MethodArtifactsGetRef)
 
@@ -488,6 +501,19 @@ func (s *ArtifactsSurface) handleGetRef(ctx context.Context, req *types.Artifact
 	if req.ID == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: artifact id is required", m)
+	}
+
+	// Tenant reconciliation. When auth middleware ran, ctx carries the
+	// verified identity; a ref resolution whose scope Tenant differs from
+	// it is refused outright — no scope claim widens this method (see the
+	// godoc above for why the elevation artifacts.list offers does not
+	// carry over). The check runs BEFORE the store read so the driver is
+	// never consulted for another tenant's scope.
+	if verified, ok := identity.From(ctx); ok {
+		if req.Scope.Tenant != verified.TenantID {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: scope tenant does not match the verified identity", m)
+		}
 	}
 
 	expiry := req.NormalisedExpiry()

@@ -172,4 +172,46 @@ case "${STATUS}" in
         ;;
 esac
 
+# ----------------------------------------------------------------------------
+# Assertion 5 — artifacts.get_ref tenant reconciliation.
+# get_ref refuses a body scope naming a tenant other than the verified
+# token's, with scope_mismatch, BEFORE the store is read. Unlike
+# artifacts.list this method offers no admin elevation, so the dev token —
+# which carries admin + console:fleet — is refused too, which is exactly
+# what makes this assertion meaningful with the token the harness has.
+# The body keeps the dev user/session so the transport's own reconciliation
+# passes it through and the surface is the thing under test.
+# ----------------------------------------------------------------------------
+#
+# NOTE ON THE SKIP ARM: 404 is deliberately NOT a SKIP here. Assertions
+# 1-4 above establish that the artifacts surface is wired on this build,
+# so an unwired surface does not explain a 404 at this point — whereas a
+# 404 IS what this probe's id yields when the request reaches the store.
+# Treating 404 as a SKIP would let the regression this assertion guards
+# against pass as a green run (CLAUDE.md §4.2 item 5).
+# ----------------------------------------------------------------------------
+CROSS_GETREF_BODY='{"scope":{"tenant":"t-other","user":"dev","session":"dev"},"id":"smoke_000000000000"}'
+control_post 'artifacts.get_ref' "${CROSS_GETREF_BODY}"
+case "${STATUS}" in
+    405|501|000)
+        skip "artifacts.get_ref foreign-tenant: ${STATUS} (artifacts surface not reachable)"
+        ;;
+    403)
+        if printf '%s' "${BODY}" | jq -e '.code == "scope_mismatch"' >/dev/null 2>&1; then
+            ok "artifacts.get_ref foreign-tenant: 403 scope_mismatch (tenant reconciled against the verified token)"
+        else
+            fail "artifacts.get_ref foreign-tenant: 403 but code is not scope_mismatch (body=${BODY})"
+        fi
+        ;;
+    404)
+        fail "artifacts.get_ref foreign-tenant: 404 — the request reached the store instead of being refused on tenant (body=${BODY})"
+        ;;
+    200)
+        fail "artifacts.get_ref foreign-tenant: 200 — a differing tenant resolved (body=${BODY})"
+        ;;
+    *)
+        fail "artifacts.get_ref foreign-tenant: HTTP ${STATUS} (expected 403 scope_mismatch; body=${BODY})"
+        ;;
+esac
+
 smoke_summary

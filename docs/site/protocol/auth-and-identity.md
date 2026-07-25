@@ -91,7 +91,9 @@ field is ignored. See [task control](./task-control.md).
 
 **Dev** — `harbor dev` mints an ephemeral ES256 keypair at boot and serves
 `POST /v1/dev/bootstrap.json` (loopback-only — non-loopback peers get a flat
-403 regardless of headers). The minted token carries
+403 regardless of headers; the request `Host` must also name a local
+authority such as `localhost` or `127.0.0.1`, with an optional port). The
+minted token carries
 `tenant=dev / user=dev / session=dev (default)` and the full scope set
 `["admin", "console:fleet"]`. It is printed at boot as `HARBOR_DEV_TOKEN=` and
 returned by the bootstrap envelope. The [quickstart](./quickstart.md) uses it.
