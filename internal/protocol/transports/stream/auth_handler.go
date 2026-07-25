@@ -35,6 +35,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -118,7 +119,7 @@ func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Identity at the edge — RFC §5.5, CLAUDE.md §6 rule 9. A missing /
 	// incomplete triple fails closed with CodeIdentityRequired (401).
-	id, err := resolveIdentity(r)
+	id, r, err := resolveIdentity(r)
 	if err != nil {
 		writeAuthError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -134,8 +135,9 @@ func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reconstruct the verified-auth result from ctx. auth.Middleware
-	// stashes the verified identity (identity.With) and the verified
-	// scope set (auth.WithScopes); the RotateSurface consumes both.
+	// seats the verified identity (identity.WithVerified) and the
+	// verified scope set (auth.WithScopes); the RotateSurface consumes
+	// both.
 	scopes, _ := auth.ScopesFrom(r.Context())
 	verified := auth.Verified{Identity: id, Scopes: scopes}
 
@@ -159,6 +161,10 @@ func (h *AuthHandler) serveRotateToken(w http.ResponseWriter, r *http.Request, b
 				"failed to decode auth.rotate_token request: "+err.Error())
 			return
 		}
+	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceAuth); perr != nil {
+		writeAuthError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
 	}
 	resp, err := h.rotate.Rotate(r.Context(), verified, req)
 	if err != nil {

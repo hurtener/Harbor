@@ -90,7 +90,7 @@ func newP203Harness(t *testing.T, allow bool) *p203Harness {
 	mcpReg := mcpdrv.NewRegistry()
 	coord := pauseresume.New(pauseresume.WithBus(bus))
 	attacher := serve.NewMCPConnectionAttacher(cat, mcpReg, bus, nil,
-		identity.Identity{TenantID: p203Tenant, UserID: p203User, SessionID: p203Session}, nil, providerSet)
+		identity.Identity{TenantID: p203Tenant, UserID: p203User, SessionID: p203Session}, nil, providerSet, nil)
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithBus(bus),
 		agentcfgprotocol.WithConnectionAttacher(attacher),

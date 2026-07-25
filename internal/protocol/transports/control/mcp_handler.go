@@ -1,13 +1,14 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 
-	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -15,9 +16,8 @@ import (
 
 // serveMCP is the MCP-Connections REST adapter. It
 // decodes the body into the per-method `mcp.servers.*` request wire
-// type, backfills the body identity from the auth-verified identity in
-// ctx when the body left it empty — reconciling a populated body
-// identity against the verified triple — and dispatches through the
+// type, reconciles the body identity against the request's verified
+// identity through the shared body-identity gate, and dispatches through the
 // configured MCPSurface.
 //
 // The MCPSurface itself enforces identity-mandatory + the admin-scope
@@ -38,15 +38,13 @@ func (h *Handler) serveMCP(w http.ResponseWriter, r *http.Request, method method
 		return
 	}
 
-	// defence-in-depth: when auth.Middleware ran, r.Context() carries the
-	// verified identity; backfill an empty body identity from it, and
-	// reject a body claiming a different (tenant, user, session).
-	if perr := backfillMCPIdentity(r, req); perr != nil {
+	ctx, perr := reconcileMCPIdentity(r, req)
+	if perr != nil {
 		h.writeError(w, r, perr)
 		return
 	}
 
-	resp, derr := h.mcpSurface.Dispatch(r.Context(), method, req)
+	resp, derr := h.mcpSurface.Dispatch(ctx, method, req)
 	if derr != nil {
 		h.writeMCPError(w, r, method, derr)
 		return
@@ -132,41 +130,21 @@ func mcpIdentityScope(req any) *types.IdentityScope {
 	}
 }
 
-// backfillMCPIdentity threads the verified identity into the MCP request
-// body. When ctx carries a verified identity:
+// reconcileMCPIdentity routes the MCP connection-catalog request body
+// through the shared body-identity gate under the surface's registered
+// policy. The policy pins all three components: the catalog is
+// process-global and its verb gate mints no claim that widens the
+// tenant, so the body triple is the caller's own or the request is
+// refused.
 //
-//   - An empty body identity is backfilled from the verified triple —
-//     the verified identity is the source of truth.
-//   - A populated body identity MUST match the verified identity on the
-//     FULL (tenant, user, session) triple. MCPSurface.gate is a
-//     verb-level admin gate over a process-global server catalog; it
-//     mints no scope claim that widens the tenant, so a body triple that
-//     disagrees with the verified one is unconditionally invalid and
-//     fails closed with CodeIdentityRequired (CLAUDE.md §6 rule 9).
-//
-// When ctx carries no verified identity (no middleware ran), the body
-// identity is authoritative and this is a no-op.
-func backfillMCPIdentity(r *http.Request, req any) *protoerrors.Error {
+// It returns the ctx to dispatch under.
+func reconcileMCPIdentity(r *http.Request, req any) (context.Context, *protoerrors.Error) {
 	scope := mcpIdentityScope(req)
 	if scope == nil {
-		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+		return r.Context(), protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"MCP request type is not recognised")
 	}
-	authed, ok := identity.From(r.Context())
-	if !ok {
-		return nil
-	}
-	if scope.Tenant == "" && scope.User == "" && scope.Session == "" {
-		scope.Tenant = authed.TenantID
-		scope.User = authed.UserID
-		scope.Session = authed.SessionID
-		return nil
-	}
-	if scope.Tenant != authed.TenantID || scope.User != authed.UserID || scope.Session != authed.SessionID {
-		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
-			"MCP request body identity (tenant/user/session) does not match the verified JWT identity")
-	}
-	return nil
+	return bodyscope.Reconcile(r.Context(), bodyscope.ForIdentityScope(scope), bodyscope.SurfaceMCP, nil)
 }
 
 // writeMCPError maps an MCPSurface error onto the wire. The MCPSurface

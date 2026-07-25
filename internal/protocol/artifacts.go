@@ -255,10 +255,10 @@ func (s *ArtifactsSurface) handleList(ctx context.Context, req *types.ArtifactsL
 			"method %q: %v", m, err)
 	}
 
-	// Cross-tenant gate. When auth middleware ran, ctx carries
-	// the verified identity; a list whose scope Tenant differs from the
+	// Cross-tenant gate against the request's VERIFIED identity — the
+	// anchor a granted crossing never moves; a list whose scope Tenant differs from the
 	// verified tenant requires the admin (or console:fleet) scope.
-	if verified, ok := identity.From(ctx); ok {
+	if verified, ok := identity.FromVerified(ctx); ok {
 		if req.Scope.Tenant != verified.TenantID {
 			if !auth.HasScope(ctx, auth.ScopeAdmin) && !auth.HasScope(ctx, auth.ScopeConsoleFleet) {
 				return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
@@ -377,7 +377,7 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 	// Cross-tenant body gate. A put whose body Tenant disagrees
 	// with the verified tenant is rejected — there is no silent rewrite,
 	// identity is mandatory at this boundary.
-	if verified, ok := identity.From(ctx); ok {
+	if verified, ok := identity.FromVerified(ctx); ok {
 		if req.Scope.Tenant != verified.TenantID {
 			if !auth.HasScope(ctx, auth.ScopeAdmin) {
 				return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
@@ -509,7 +509,7 @@ func (s *ArtifactsSurface) handleGetRef(ctx context.Context, req *types.Artifact
 	// godoc above for why the elevation artifacts.list offers does not
 	// carry over). The check runs BEFORE the store read so the driver is
 	// never consulted for another tenant's scope.
-	if verified, ok := identity.From(ctx); ok {
+	if verified, ok := identity.FromVerified(ctx); ok {
 		if req.Scope.Tenant != verified.TenantID {
 			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
 				"method %q: scope tenant does not match the verified identity", m)

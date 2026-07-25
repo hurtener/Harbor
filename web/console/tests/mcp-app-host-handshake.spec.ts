@@ -105,6 +105,16 @@ function appDocument(view: string): string {
       var app = new App({ name: 'harbor-e2e-app', version: '1' });
       app.ontoolinput = function (p) { report('tool-input', (p && p.arguments) || {}); };
       app.ontoolresult = function (p) { report('tool-result', p); };
+      // The graceful-teardown obligation, observed from the REAL App: the host
+      // must send ui/resource-teardown before dropping the transport, and the
+      // SDK routes BOTH host-initiated and app-initiated teardown here.
+      app.onteardown = function () { report('teardown', {}); return {}; };
+      // Drive the app→host obligations the host must consume.
+      window.addEventListener('message', function (e) {
+        if (!e.data) return;
+        if (e.data.__mcpSendSize) { app.sendSizeChanged({ width: 400, height: e.data.__mcpSendSize }); }
+        if (e.data.__mcpRequestTeardown) { app.requestTeardown(); }
+      });
       app.onhostcontextchanged = function (ctx) {
         try { if (ctx && ctx.theme) applyDocumentTheme(ctx.theme); } catch (e) {}
         try { if (ctx && ctx.styles && ctx.styles.variables) applyHostStyleVariables(ctx.styles.variables); } catch (e) {}
@@ -117,7 +127,16 @@ function appDocument(view: string): string {
           var ctx = app.getHostContext();
           try { if (ctx && ctx.theme) applyDocumentTheme(ctx.theme); } catch (e) {}
           try { if (ctx && ctx.styles && ctx.styles.variables) applyHostStyleVariables(ctx.styles.variables); } catch (e) {}
-          report('initialized', { theme: ctx && ctx.theme, hasStyles: !!(ctx && ctx.styles && ctx.styles.variables) });
+          report('initialized', {
+            theme: ctx && ctx.theme,
+            hasStyles: !!(ctx && ctx.styles && ctx.styles.variables),
+            // The host-obligation host-context slots, read back off the REAL
+            // App's negotiated context — the §17.8 right-field guard: a value
+            // placed in the wrong slot is invisible to a hand fixture but
+            // simply absent here.
+            toolInfo: ctx && ctx.toolInfo,
+            containerDimensions: ctx && ctx.containerDimensions
+          });
         }, function (err) { report('error', String((err && err.message) || err)); });
       }
       window.addEventListener('message', function (e) { if (e.data && e.data.__mcpStart) start(); });
@@ -171,6 +190,7 @@ test.describe('MCP Apps host↔app handshake (D-342 regression gate)', () => {
           readResource: async (_s: string, u: string) => ({ resourceUri: u, mimeType: 'text/html', content: '' }),
           callTool: async (t: string) => ({ tool: t, content: {}, isError: false }),
           listResources: async () => [],
+          listResourceTemplates: async () => [],
           listTools: async () => [],
           resolveArtifact: async (id: string) => `blob:${id}`,
           toolContext: async () => ({
@@ -184,7 +204,19 @@ test.describe('MCP Apps host↔app handshake (D-342 regression gate)', () => {
         const host = new w.HarborHost.AppBridgeHost({
           client,
           serverID: 'srv',
-          toolCallId: 'tc_e2e_1',
+          // The ALREADY-RESOLVED tool context. The host no longer fetches it
+          // itself — the renderer resolves it before the iframe mounts, so an
+          // unresolvable context never reaches a constructed bridge. This spec
+          // still passed a `toolCallId` + a fetching `client.toolContext` after
+          // that seam moved, so the delivery assertions below were silently
+          // exercising a host that had nothing to deliver (§17.6: fix what the
+          // test finds, wherever the bug lives).
+          toolContext: {
+            tool: 'srv_report',
+            input: { content: { region: 'emea' } },
+            result: { content: { revenue: 1234 } },
+            isError: false,
+          },
           theme: 'dark',
           styles: {
             variables: {
@@ -311,5 +343,171 @@ test.describe('MCP Apps host↔app handshake (D-342 regression gate)', () => {
     expect(summary.errors, 'no App-side handshake/render errors').toEqual([]);
     expect(summary.hostInitialized, 'host bridge stayed initialized across theme toggles').toBe(true);
     expect(summary.ctxChanges).toEqual(['light', 'dark']);
+  });
+
+  // The re-landed host obligations, driven by the REAL vendored App rather than
+  // a hand fixture (§17.8). Each of these was recorded as delivered and was in
+  // fact absent from the source tree; a fixture that encodes our own reading of
+  // the dialect could not have told the difference — the real App either
+  // consumes what we send or it does not.
+  test('host-context toolInfo/containerDimensions reach the App; size-changed is consumed; teardown is graceful both ways', async ({
+    page,
+  }) => {
+    await page.setContent(
+      '<!doctype html><html><head><title>host</title></head><body></body></html>',
+    );
+    await page.evaluate(() => {
+      (window as unknown as { __appLog: Array<{ kind: string; data: unknown }> }).__appLog = [];
+      (window as unknown as { __sizes: number[] }).__sizes = [];
+      window.addEventListener('message', (e) => {
+        const d = e.data as { __mcpE2E?: boolean; kind: string; data: unknown };
+        if (d && d.__mcpE2E) {
+          (window as unknown as { __appLog: Array<{ kind: string; data: unknown }> }).__appLog.push({
+            kind: d.kind,
+            data: d.data,
+          });
+        }
+      });
+    });
+    await page.addScriptTag({ content: hostBundle });
+
+    await page.evaluate(
+      ({ srcdoc, sandbox }) => {
+        const frame = document.createElement('iframe');
+        frame.id = 'app-frame';
+        frame.setAttribute('sandbox', sandbox);
+        frame.setAttribute('allow', '');
+        frame.srcdoc = srcdoc;
+        document.body.appendChild(frame);
+
+        const w = window as unknown as {
+          __host: { connect: (win: Window) => Promise<void>; close: () => Promise<void> };
+          __hostInit: boolean;
+          __sizes: number[];
+          __teardownRequested: boolean;
+          __frame: HTMLIFrameElement;
+          HarborHost: { AppBridgeHost: new (opts: unknown) => never };
+        };
+        w.__hostInit = false;
+        w.__teardownRequested = false;
+        w.__frame = frame;
+        const client = {
+          readResource: async (_s: string, u: string) => ({ resourceUri: u, mimeType: 'text/html', content: '' }),
+          callTool: async (t: string) => ({ tool: t, content: {}, isError: false }),
+          listResources: async () => [],
+          listResourceTemplates: async () => [],
+          listTools: async () => [],
+          resolveArtifact: async (id: string) => `blob:${id}`,
+          toolContext: async () => null,
+          fetchArtifactText: async () => '{}',
+        };
+        const host = new w.HarborHost.AppBridgeHost({
+          client,
+          serverID: 'srv',
+          theme: 'dark',
+          // The two re-landed host-context slots.
+          // The BARE server-side tool name, as the runtime emits it.
+          toolInfo: { toolCallId: 'tc_e2e_2', toolName: 'report' },
+          containerDimensions: { width: 640, maxHeight: 480 },
+          availableDisplayModes: ['inline'],
+          onInitialized: () => {
+            w.__hostInit = true;
+          },
+          onSizeChanged: (s: { height?: number }) => {
+            if (typeof s.height === 'number') w.__sizes.push(s.height);
+          },
+          onRequestTeardown: () => {
+            w.__teardownRequested = true;
+          },
+        }) as unknown as { connect: (win: Window) => Promise<void>; close: () => Promise<void> };
+        w.__host = host;
+
+        function go(): void {
+          const cw = frame.contentWindow;
+          if (!cw) {
+            window.setTimeout(go, 10);
+            return;
+          }
+          void host.connect(cw).then(() => {
+            let ticks = 0;
+            const pump = window.setInterval(() => {
+              ticks += 1;
+              cw.postMessage({ __mcpStart: true }, '*');
+              const w2 = window as unknown as { __appLog: Array<{ kind: string }> };
+              if (ticks > 60 || w2.__appLog.some((m) => m.kind === 'initialized')) {
+                window.clearInterval(pump);
+              }
+            }, 50);
+          });
+        }
+        go();
+      },
+      { srcdoc: appDocument(viewBundle), sandbox: APP_IFRAME_SANDBOX_BASE },
+    );
+
+    await page.waitForFunction(
+      () =>
+        (window as unknown as { __hostInit: boolean }).__hostInit === true &&
+        (window as unknown as { __appLog: Array<{ kind: string }> }).__appLog.some(
+          (m) => m.kind === 'initialized',
+        ),
+      undefined,
+      { timeout: 20_000 },
+    );
+
+    // 1. The host-context slots arrived in the shape the REAL App reads.
+    const init = await page.evaluate(
+      () =>
+        (
+          window as unknown as {
+            __appLog: Array<{
+              kind: string;
+              data: { toolInfo?: { id?: string; tool?: { name?: string } }; containerDimensions?: unknown };
+            }>;
+          }
+        ).__appLog.find((m) => m.kind === 'initialized')?.data,
+    );
+    expect(init?.toolInfo?.id, 'toolInfo.id is the originating tool-call id').toBe('tc_e2e_2');
+    expect(init?.toolInfo?.tool?.name, 'toolInfo.tool.name is the server-side tool').toBe('report');
+    expect(init?.containerDimensions, 'containerDimensions reached the App').toEqual({
+      width: 640,
+      maxHeight: 480,
+    });
+
+    // 2. `ui/notifications/size-changed` is CONSUMED (HA-38). The App emits it
+    //    through the vendored SDK; the host must observe it.
+    await page.evaluate(() => {
+      const w = window as unknown as { __frame: HTMLIFrameElement };
+      w.__frame.contentWindow?.postMessage({ __mcpSendSize: 333 }, '*');
+    });
+    await page.waitForFunction(
+      () => (window as unknown as { __sizes: number[] }).__sizes.includes(333),
+      undefined,
+      { timeout: 20_000 },
+    );
+
+    // 3. App-initiated `request-teardown` is GRANTED: the host sends the
+    //    graceful `ui/resource-teardown` (the App's `onteardown` fires) and
+    //    notifies the renderer.
+    await page.evaluate(() => {
+      const w = window as unknown as { __frame: HTMLIFrameElement };
+      w.__frame.contentWindow?.postMessage({ __mcpRequestTeardown: true }, '*');
+    });
+    await page.waitForFunction(
+      () =>
+        (window as unknown as { __appLog: Array<{ kind: string }> }).__appLog.some(
+          (m) => m.kind === 'teardown',
+        ) && (window as unknown as { __teardownRequested: boolean }).__teardownRequested === true,
+      undefined,
+      { timeout: 20_000 },
+    );
+
+    const errors = await page.evaluate(
+      () =>
+        (window as unknown as { __appLog: Array<{ kind: string; data: unknown }> }).__appLog
+          .filter((m) => m.kind === 'error')
+          .map((m) => m.data),
+    );
+    expect(errors, 'no App-side errors across the obligation round-trips').toEqual([]);
   });
 });

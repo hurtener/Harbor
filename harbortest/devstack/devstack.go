@@ -890,8 +890,18 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// the closer chain so a runtime-added subprocess drains on teardown.
 		var attacher agentcfgprotocol.ConnectionAttacher
 		if stack.Catalog != nil && stack.MCPRegistry != nil {
+			// Thread the tool-context store so a RUNTIME-ADDED server captures
+			// an app-declaring tool call's context exactly as a boot-config one
+			// does — the kit must mirror production here, or an integration test
+			// would pass against a stack that silently cannot capture. The
+			// explicit nil check avoids handing a typed-nil pointer to the
+			// interface (which would read as "a capturer is wired").
+			var mcpToolCtx mcpdrv.ToolContextCapturer
+			if stack.MCPToolContext != nil {
+				mcpToolCtx = stack.MCPToolContext
+			}
 			att := serve.NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, bus, opts.Logger,
-				resolveDevIdentity(opts), stack.OAuthProviders, stack.OAuthProviderSet)
+				resolveDevIdentity(opts), stack.OAuthProviders, stack.OAuthProviderSet, mcpToolCtx)
 			stack.closeFns = append(stack.closeFns, att.Close)
 			attacher = att
 		}

@@ -56,6 +56,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -109,6 +110,10 @@ type Handler struct {
 	bus              events.EventBus // nil ⇒ impersonation accepted-path refused
 	redactor         audit.Redactor  // nil ⇒ impersonation accepted-path refused
 	now              func() time.Time
+	// bodyScopeAuditor is the sink the shared body-identity gate records
+	// a granted identity crossing on. Built once, after the options have
+	// been applied, so it sees the wired bus and redactor.
+	bodyScopeAuditor bodyscope.Auditor
 }
 
 // MCPSurface is the narrow contract the control transport calls into for
@@ -336,6 +341,7 @@ func NewHandler(surface *protocol.ControlSurface, opts ...Option) (*Handler, err
 	for _, opt := range opts {
 		opt(h)
 	}
+	h.bodyScopeAuditor = bodyscope.NewBusAuditor(h.bus, h.redactor, h.logger)
 	return h, nil
 }
 
@@ -463,17 +469,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// when auth.Middleware ran before us, r.Context() carries
-	// the verified identity (via identity.With). The body's
-	// IdentityScope MUST match the verified one — defence in depth so a
-	// caller cannot present a valid JWT for tenant T1 while submitting
-	// a control body claiming tenant T2. Mismatch fails closed (401)
-	// with CodeIdentityRequired before Dispatch is called.
-	//
-	// When NO middleware ran (trust-based posture), there is
-	// no ctx-identity and the check is a no-op — Dispatch's existing
-	// identity-from-body gate covers it.
-	if perr := assertBodyMatchesAuthedIdentity(r, req); perr != nil {
+	// The body's identity scope is caller-supplied input; the verified
+	// identity on ctx is the authority. The shared gate reconciles the
+	// two under the surface's registered policy before Dispatch is
+	// called, and returns the ctx the dispatch runs under.
+	ctx, perr := h.reconcileBodyIdentity(r, req)
+	if perr != nil {
 		h.writeError(w, r, perr)
 		return
 	}
@@ -485,10 +486,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The accepted-path emit (audit.admin_scope_used with a typed
 	// AdminScopeUsedPayload) happens only AFTER Dispatch succeeds, so
 	// a failed Dispatch never reaches the bus.
-	impersonating, perr := h.assertImpersonationShape(r, method, req)
-	if perr != nil {
-		h.writeError(w, r, perr)
+	impersonating, iperr := h.assertImpersonationShape(r, method, req)
+	if iperr != nil {
+		h.writeError(w, r, iperr)
 		return
+	}
+	if impersonating {
+		// The accepted impersonation runs under the impersonated
+		// identity. Seating it as an audited crossing means any
+		// re-scoping the dispatch performs downstream sees the identity
+		// the run actually executes under, with the reason on record.
+		elevated, eperr := h.elevateForImpersonation(ctx, method, req)
+		if eperr != nil {
+			h.writeError(w, r, eperr)
+			return
+		}
+		ctx = elevated
 	}
 
 	// Dispatch is the transport-agnostic surface; the wire transport is
@@ -496,7 +509,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// payload validation all live inside Dispatch — the handler does not
 	// re-implement any of them (CLAUDE.md §13 forbids a second
 	// validator).
-	resp, derr := h.surface.Dispatch(r.Context(), method, req)
+	resp, derr := h.surface.Dispatch(ctx, method, req)
 	if derr != nil {
 		h.writeDispatchError(w, r, method, derr)
 		return
@@ -580,94 +593,80 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, perr *proto
 	h.writeJSON(w, r, HTTPStatus(perr.Code), perr)
 }
 
-// assertBodyMatchesAuthedIdentity is the defence-in-depth
-// check: when auth.Middleware ran before this handler, r.Context()
-// carries the verified identity, and the request body's IdentityScope
-// MUST match it. A mismatch is a malicious / buggy client trying to
-// borrow another tenant's identity using a valid token — fail closed.
+// elevateForImpersonation seats the impersonated identity on ctx as an
+// audited crossing, so a dispatch that re-scopes downstream sees the
+// identity the run actually executes under rather than the admin's own.
 //
-// When no middleware ran (trust-based posture), ctx carries
-// no identity and the check returns nil — Dispatch's existing
-// identity-from-body gate is authoritative.
-//
-// when the body carries `Impersonating`, the top-level
-// Tenant/User/Session components are *deliberately* the impersonated
-// identity, not the JWT identity. The verified JWT identity is carried
-// in `Actor` and checked separately by `assertImpersonationShape`. This
-// helper therefore returns nil for impersonation-shaped bodies — the
-// impersonation gate is the authoritative check for that shape.
-//
-// req is the decoded *types.StartRequest or *types.ControlRequest.
-func assertBodyMatchesAuthedIdentity(r *http.Request, req any) *protoerrors.Error {
-	authed, ok := identity.From(r.Context())
-	if !ok {
-		return nil
-	}
-	var bodyScope types.IdentityScope
+// It runs only after assertImpersonationShape has passed: the admin
+// claim is verified, the actor matches the verified identity, and the
+// bus + redactor are wired for the post-dispatch audit emit. The reason
+// names the surface and the actor so the crossing reads back as
+// "this admin, acting as this identity, through this method".
+func (h *Handler) elevateForImpersonation(ctx context.Context, method methods.Method, req any) (context.Context, *protoerrors.Error) {
+	var scope types.IdentityScope
 	switch v := req.(type) {
 	case *types.StartRequest:
-		bodyScope = v.Identity
+		scope = v.Identity
 	case *types.ControlRequest:
-		bodyScope = v.Identity
-	case *types.TopologySnapshotRequest:
-		// a topology.snapshot body carries a flat
-		// IdentityScope. The body-vs-JWT match still applies — EXCEPT
-		// the cross-tenant case: a topology.snapshot caller MAY name a
-		// tenant other than its JWT's when it holds the admin scope
-		// (the Dispatch-side gate verifies the scope). We
-		// therefore backfill an empty body but do NOT reject a
-		// non-matching tenant here — Dispatch's admin gate owns that
-		// decision. User / Session still must match the JWT (a topology
-		// snapshot is not an impersonation surface).
-		bodyScope = v.Identity
-		if bodyScope.Tenant == "" && bodyScope.User == "" && bodyScope.Session == "" {
-			bodyScope.Tenant = authed.TenantID
-			bodyScope.User = authed.UserID
-			bodyScope.Session = authed.SessionID
-			v.Identity = bodyScope
-			return nil
-		}
-		if bodyScope.User != authed.UserID || bodyScope.Session != authed.SessionID {
-			return protoerrors.Newf(protoerrors.CodeIdentityRequired,
-				"body identity scope does not match the verified JWT identity")
-		}
-		return nil
+		scope = v.Identity
 	default:
-		return nil
+		return ctx, nil
 	}
-	// impersonation-shaped bodies bypass this check; the
-	// dedicated impersonation gate (assertImpersonationShape) owns the
-	// verification of the impersonation triplet against the JWT.
-	if bodyScope.IsImpersonating() {
-		return nil
+	imp := scope.Impersonating
+	if imp == nil {
+		return ctx, nil
 	}
-	// An empty body identity is permitted when ctx carries one — the
-	// body-side gate in Dispatch will see the JWT-derived identity via
-	// the request body once we backfill it. To keep the flat
-	// IdentityScope-on-the-body contract, callers SHOULD echo the
-	// JWT identity in the body; we backfill the body when the body's
-	// IdentityScope is empty so the existing Dispatch gate sees a
-	// matching identity. When the body DOES carry an identity, every
-	// non-empty component MUST match the JWT-verified one.
-	if bodyScope.Tenant == "" && bodyScope.User == "" && bodyScope.Session == "" {
-		// Backfill — the JWT is the source of truth. The body's
-		// `Run` and `Scope` fields are independent and stay as-is.
-		bodyScope.Tenant = authed.TenantID
-		bodyScope.User = authed.UserID
-		bodyScope.Session = authed.SessionID
-		switch v := req.(type) {
-		case *types.StartRequest:
-			v.Identity = bodyScope
-		case *types.ControlRequest:
-			v.Identity = bodyScope
-		}
-		return nil
+	target := identity.Identity{TenantID: imp.Tenant, UserID: imp.User, SessionID: imp.Session}
+	elevated, err := identity.WithElevated(ctx, target,
+		fmt.Sprintf("method %q: admin impersonation accepted under the admin scope claim", string(method)))
+	if err != nil {
+		// Unreachable: assertImpersonationShape already validated the
+		// impersonated triple. Kept as a defensive fail-closed.
+		return ctx, protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: impersonation target identity incomplete: %v", string(method), err)
 	}
-	if bodyScope.Tenant != authed.TenantID || bodyScope.User != authed.UserID || bodyScope.Session != authed.SessionID {
-		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
-			"body identity scope does not match the verified JWT identity")
+	return elevated, nil
+}
+
+// reconcileBodyIdentity routes a decoded control-transport request body
+// through the shared body-identity gate under the surface's registered
+// policy.
+//
+// Two surfaces arrive here. `task.start` and the steering controls hold
+// all three components pinned to the verified identity: acting as
+// another identity travels as the impersonation shape, never as a plain
+// body triple. `topology.snapshot` declares the tenant admin-scoped, so
+// a fleet operator reads another tenant's runtime graph under the admin
+// claim and the gate records the crossing before granting it.
+//
+// An impersonation-shaped body is passed through untouched: its
+// top-level triple is DELIBERATELY the impersonated identity, and
+// assertImpersonationShape owns that shape's verification — it
+// reconciles the body's actor triplet against the verified identity,
+// requires the admin claim, and anchors the audit trail.
+//
+// It returns the ctx to dispatch under.
+func (h *Handler) reconcileBodyIdentity(r *http.Request, req any) (context.Context, *protoerrors.Error) {
+	ctx := r.Context()
+	var scope *types.IdentityScope
+	surface := bodyscope.SurfaceControlTask
+	var aud bodyscope.Auditor
+	switch v := req.(type) {
+	case *types.StartRequest:
+		scope = &v.Identity
+	case *types.ControlRequest:
+		scope = &v.Identity
+	case *types.TopologySnapshotRequest:
+		scope = &v.Identity
+		surface = bodyscope.SurfaceTopology
+		aud = h.bodyScopeAuditor
+	default:
+		return ctx, nil
 	}
-	return nil
+	if scope.IsImpersonating() {
+		return ctx, nil
+	}
+	return bodyscope.Reconcile(ctx, bodyscope.ForIdentityScope(scope), surface, aud)
 }
 
 // assertImpersonationShape is the admin-impersonation gate.

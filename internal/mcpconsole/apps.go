@@ -116,12 +116,15 @@ var ErrAppsMisconfigured = errors.New("mcpconsole: AppsAccessor missing a mandat
 // whose MCP server is currently paused, or a tool that is currently
 // disabled, in the agent's active config. It is an authorization rejection
 // (mapped to CodeScopeMismatch at the wire edge), the functional basis for
-// the operator-legible "paused by a system administrator" overlay. Its
-// message carries the stable "paused or disabled by agent configuration"
-// marker the Protocol edge classifies on (the `protocol` package does not
-// import this package, mirroring the existing not-found / identity-missing
-// markers).
-var ErrAppToolExposureDenied = errors.New("mcpconsole: tool unavailable — paused or disabled by agent configuration")
+// the operator-legible "paused by a system administrator" overlay.
+//
+// It wraps protocol.ErrAccessorScopeDenied so the wire edge classifies it by
+// errors.Is. The edge previously matched this message's TEXT, which a
+// southbound server's error could contribute to; see the Protocol sentinel's
+// godoc for why a refusal must not be mintable from foreign wording.
+var ErrAppToolExposureDenied = fmt.Errorf(
+	"%w: mcpconsole: tool unavailable — paused or disabled by agent configuration",
+	protocol.ErrAccessorScopeDenied)
 
 // NewAppsAccessor builds the MCP Apps host adapter. Registry, Catalog,
 // Store, and Bus are mandatory; a nil fails loud.
@@ -213,7 +216,9 @@ var (
 func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI string) (protocol.MCPResourceContent, error) {
 	content, mime, err := a.reg.ReadResource(ctx, serverID, resourceURI)
 	if err != nil {
-		return protocol.MCPResourceContent{}, err
+		// Translate the driver's not-found sentinel into the Protocol's so the
+		// wire edge classifies by errors.Is (see markNotFound).
+		return protocol.MCPResourceContent{}, markNotFound(err)
 	}
 	out := protocol.MCPResourceContent{ResourceURI: resourceURI, MIMEType: mime}
 	// A `ui://` App document is fetched only by the Console and rendered in
@@ -248,7 +253,15 @@ func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI s
 func (a *AppsAccessor) CallTool(ctx context.Context, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	desc, ok := a.cat.Resolve(tool)
 	if !ok {
-		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %q", tools.ErrToolNotFound, tool)
+		// Wrap the Protocol's not-found SENTINEL alongside the catalog's, so
+		// the wire edge classifies this as CodeNotFound on an assertion THIS
+		// accessor makes ("I resolved it and it is absent") rather than on the
+		// wording of an error chain a southbound server can contribute to. The
+		// App renders a not-found as a permanent verdict, so it must not be
+		// reachable by a transient transport failure that happens to phrase
+		// itself the same way.
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %w: %q",
+			protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool)
 	}
 	if desc.Invoke == nil {
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("mcpconsole: tool %q registered without an Invoke function", tool)

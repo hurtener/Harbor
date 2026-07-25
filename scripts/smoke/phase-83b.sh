@@ -44,6 +44,6 @@ assert_grep_present '^<available_tools>$' "${GOLDEN}" "golden opens <available_t
 assert_grep_present '^</available_tools>$' "${GOLDEN}" "golden closes </available_tools>"
 
 # No un-rendered template markers survived into the fixture.
-assert_grep_absent '{{' "${GOLDEN}" "golden has no '{{' template markers"
+assert_grep_absent '\{\{' "${GOLDEN}" "golden has no '{{' template markers"
 
 smoke_summary

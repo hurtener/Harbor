@@ -43,7 +43,7 @@ var deleteScope = types.ArtifactScope{Tenant: "t-del", User: "u-del", Session: "
 // deleteScope + the admin scope claim.
 func adminCtx(t *testing.T) context.Context {
 	t.Helper()
-	ctx, err := identity.With(context.Background(), identity.Identity{
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{
 		TenantID: deleteScope.Tenant, UserID: deleteScope.User, SessionID: deleteScope.Session,
 	})
 	if err != nil {
@@ -100,7 +100,7 @@ func TestArtifactsDelete_RequiresAdminScope(t *testing.T) {
 	ref := putFixture(t, s, deleteScope, []byte("guarded"), types.ArtifactsPutOpts{})
 
 	// Verified identity but NO admin scope.
-	ctx, err := identity.With(context.Background(), identity.Identity{
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{
 		TenantID: deleteScope.Tenant, UserID: deleteScope.User, SessionID: deleteScope.Session,
 	})
 	if err != nil {

@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
@@ -25,7 +27,13 @@ type stubMCP struct {
 	missingID bool
 }
 
-func mcpNotFoundErr() error  { return stderrors.New("mcp: server not found: x") }
+// The accessor STATES the not-found verdict by wrapping the Protocol
+// sentinel — the edge no longer reads the rendered text, so a stub that
+// only looks like a not-found is (correctly) not one. In production the
+// wrap is applied by mcpconsole.markNotFound at the driver boundary.
+func mcpNotFoundErr() error {
+	return fmt.Errorf("%w: mcp: server not found: x", protocol.ErrAccessorNotFound)
+}
 func mcpMissingIDErr() error { return stderrors.New("mcp: identity missing from ctx") }
 
 func (s *stubMCP) ListServers(_ context.Context, _ protocol.MCPListFilter) ([]protocol.MCPServerRow, string, error) {
@@ -159,6 +167,22 @@ func validScope() types.IdentityScope {
 	return types.IdentityScope{Tenant: "t-1", User: "u-1", Session: "s-1"}
 }
 
+// verifiedCtx is a context carrying the same triple validScope puts on
+// the request body — the shape a transport hands the surface once the
+// request's identity has been established. The surface's body-scope gate
+// reconciles the body against it, so a surface test that dispatches on a
+// bare context is testing an unreachable path.
+func verifiedCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{
+		TenantID: "t-1", UserID: "u-1", SessionID: "s-1",
+	})
+	if err != nil {
+		t.Fatalf("seat verified identity: %v", err)
+	}
+	return ctx
+}
+
 // assertCode asserts err is a *protoerrors.Error with the given Code.
 func assertCode(t *testing.T, err error, want protoerrors.Code) {
 	t.Helper()
@@ -199,7 +223,7 @@ func TestMCPSurface_NewMCPSurface_FailsClosed(t *testing.T) {
 
 func TestMCPSurface_List_Happy(t *testing.T) {
 	s, _ := newMCPSurface(t)
-	resp, err := s.Dispatch(context.Background(), methods.MethodMCPServersList,
+	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersList,
 		&types.MCPServersListRequest{Identity: validScope()})
 	if err != nil {
 		t.Fatalf("Dispatch list: %v", err)
@@ -213,23 +237,51 @@ func TestMCPSurface_List_Happy(t *testing.T) {
 	}
 }
 
+// TestMCPSurface_List_FailsClosed_MissingIdentity — a dispatch whose
+// context carries no established identity has nothing for the body-scope
+// gate to reconcile against, so it is refused. The body's own triple
+// never supplies the missing authority.
 func TestMCPSurface_List_FailsClosed_MissingIdentity(t *testing.T) {
 	s, _ := newMCPSurface(t)
 	_, err := s.Dispatch(context.Background(), methods.MethodMCPServersList,
-		&types.MCPServersListRequest{})
+		&types.MCPServersListRequest{Identity: validScope()})
+	assertCode(t, err, protoerrors.CodeIdentityRequired)
+}
+
+// TestMCPSurface_List_EmptyBodyTripleBackfilled — an empty body triple is
+// the caller saying "use my established identity"; the gate fills it in.
+func TestMCPSurface_List_EmptyBodyTripleBackfilled(t *testing.T) {
+	s, _ := newMCPSurface(t)
+	req := &types.MCPServersListRequest{}
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersList, req); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if req.Identity != validScope() {
+		t.Errorf("body triple = %+v, want the established identity %+v", req.Identity, validScope())
+	}
+}
+
+// TestMCPSurface_List_ForeignTenantBodyRefused — the MCP connection
+// surface has no elevation path, so a body naming another tenant is
+// refused even for a caller holding the admin claim.
+func TestMCPSurface_List_ForeignTenantBodyRefused(t *testing.T) {
+	s, _ := newMCPSurface(t)
+	ctx := auth.WithScopes(verifiedCtx(t), []auth.Scope{auth.ScopeAdmin})
+	_, err := s.Dispatch(ctx, methods.MethodMCPServersList,
+		&types.MCPServersListRequest{Identity: types.IdentityScope{Tenant: "t-other", User: "u-1", Session: "s-1"}})
 	assertCode(t, err, protoerrors.CodeIdentityRequired)
 }
 
 func TestMCPSurface_Get_NotFound(t *testing.T) {
 	s, _ := newMCPSurface(t)
-	_, err := s.Dispatch(context.Background(), methods.MethodMCPServersGet,
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersGet,
 		&types.MCPServerGetRequest{Identity: validScope(), Name: "nope"})
 	assertCode(t, err, protoerrors.CodeNotFound)
 }
 
 func TestMCPSurface_Get_Happy(t *testing.T) {
 	s, _ := newMCPSurface(t)
-	resp, err := s.Dispatch(context.Background(), methods.MethodMCPServersGet,
+	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersGet,
 		&types.MCPServerGetRequest{Identity: validScope(), Name: "github-server"})
 	if err != nil {
 		t.Fatalf("Dispatch get: %v", err)
@@ -245,23 +297,23 @@ func TestMCPSurface_Get_Happy(t *testing.T) {
 
 func TestMCPSurface_Resources_Prompts_Health_Policy_Bindings(t *testing.T) {
 	s, _ := newMCPSurface(t)
-	if _, err := s.Dispatch(context.Background(), methods.MethodMCPServersResources,
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersResources,
 		&types.MCPServerResourcesRequest{Identity: validScope(), Name: "github-server"}); err != nil {
 		t.Fatalf("resources: %v", err)
 	}
-	if _, err := s.Dispatch(context.Background(), methods.MethodMCPServersPrompts,
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersPrompts,
 		&types.MCPServerPromptsRequest{Identity: validScope(), Name: "github-server"}); err != nil {
 		t.Fatalf("prompts: %v", err)
 	}
-	if _, err := s.Dispatch(context.Background(), methods.MethodMCPServersHealth,
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersHealth,
 		&types.MCPServerHealthRequest{Identity: validScope(), Name: "github-server"}); err != nil {
 		t.Fatalf("health: %v", err)
 	}
-	if _, err := s.Dispatch(context.Background(), methods.MethodMCPServersPolicy,
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersPolicy,
 		&types.MCPServerPolicyRequest{Identity: validScope(), Name: "github-server"}); err != nil {
 		t.Fatalf("policy: %v", err)
 	}
-	if _, err := s.Dispatch(context.Background(), methods.MethodMCPServersBindingsList,
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersBindingsList,
 		&types.MCPServerBindingsListRequest{Identity: validScope(), Name: "github-server"}); err != nil {
 		t.Fatalf("bindings.list: %v", err)
 	}
@@ -270,12 +322,12 @@ func TestMCPSurface_Resources_Prompts_Health_Policy_Bindings(t *testing.T) {
 func TestMCPSurface_RefreshDiscovery_RequiresAdmin(t *testing.T) {
 	s, _ := newMCPSurface(t)
 	// Without admin scope → scope_mismatch.
-	_, err := s.Dispatch(context.Background(), methods.MethodMCPServersRefreshDiscovery,
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersRefreshDiscovery,
 		&types.MCPServerRefreshDiscoveryRequest{Identity: validScope(), Name: "github-server"})
 	assertCode(t, err, protoerrors.CodeScopeMismatch)
 
 	// With admin scope → 200.
-	adminCtx := auth.WithScopes(context.Background(), []auth.Scope{auth.ScopeAdmin})
+	adminCtx := auth.WithScopes(verifiedCtx(t), []auth.Scope{auth.ScopeAdmin})
 	resp, err := s.Dispatch(adminCtx, methods.MethodMCPServersRefreshDiscovery,
 		&types.MCPServerRefreshDiscoveryRequest{Identity: validScope(), Name: "github-server"})
 	if err != nil {
@@ -288,18 +340,18 @@ func TestMCPSurface_RefreshDiscovery_RequiresAdmin(t *testing.T) {
 
 func TestMCPSurface_Probe_RequiresAdmin(t *testing.T) {
 	s, _ := newMCPSurface(t)
-	_, err := s.Dispatch(context.Background(), methods.MethodMCPServersProbe,
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersProbe,
 		&types.MCPServerProbeRequest{Identity: validScope(), Name: "github-server"})
 	assertCode(t, err, protoerrors.CodeScopeMismatch)
 }
 
 func TestMCPSurface_RefreshBinding_RequiresAdmin(t *testing.T) {
 	s, _ := newMCPSurface(t)
-	_, err := s.Dispatch(context.Background(), methods.MethodMCPServersRefreshBinding,
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersRefreshBinding,
 		&types.MCPServerRefreshBindingRequest{Identity: validScope(), Name: "github-server"})
 	assertCode(t, err, protoerrors.CodeScopeMismatch)
 
-	adminCtx := auth.WithScopes(context.Background(), []auth.Scope{auth.ScopeAdmin})
+	adminCtx := auth.WithScopes(verifiedCtx(t), []auth.Scope{auth.ScopeAdmin})
 	resp, err := s.Dispatch(adminCtx, methods.MethodMCPServersRefreshBinding,
 		&types.MCPServerRefreshBindingRequest{Identity: validScope(), Name: "github-server"})
 	if err != nil {
@@ -313,7 +365,7 @@ func TestMCPSurface_RefreshBinding_RequiresAdmin(t *testing.T) {
 
 func TestMCPSurface_RevokeBinding_RequiresAdmin(t *testing.T) {
 	s, _ := newMCPSurface(t)
-	_, err := s.Dispatch(context.Background(), methods.MethodMCPServersRevokeBinding,
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersRevokeBinding,
 		&types.MCPServerRevokeBindingRequest{Identity: validScope(), Name: "github-server"})
 	assertCode(t, err, protoerrors.CodeScopeMismatch)
 }
@@ -322,7 +374,7 @@ func TestMCPSurface_SetRawHTMLTrust_RequiresAdmin_AndEmitsAudit(t *testing.T) {
 	s, bus := newMCPSurface(t)
 
 	// Without admin → scope_mismatch.
-	_, err := s.Dispatch(context.Background(), methods.MethodMCPServersSetRawHTMLTrust,
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersSetRawHTMLTrust,
 		&types.MCPServerSetRawHTMLTrustRequest{Identity: validScope(), Name: "github-server", Trusted: true})
 	assertCode(t, err, protoerrors.CodeScopeMismatch)
 
@@ -338,7 +390,7 @@ func TestMCPSurface_SetRawHTMLTrust_RequiresAdmin_AndEmitsAudit(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	adminCtx := auth.WithScopes(context.Background(), []auth.Scope{auth.ScopeAdmin})
+	adminCtx := auth.WithScopes(verifiedCtx(t), []auth.Scope{auth.ScopeAdmin})
 	resp, err := s.Dispatch(adminCtx, methods.MethodMCPServersSetRawHTMLTrust,
 		&types.MCPServerSetRawHTMLTrustRequest{Identity: validScope(), Name: "github-server", Trusted: true})
 	if err != nil {
@@ -361,12 +413,12 @@ func TestMCPSurface_SetRawHTMLTrust_RequiresAdmin_AndEmitsAudit(t *testing.T) {
 
 func TestMCPSurface_Dispatch_UnknownMethod(t *testing.T) {
 	s, _ := newMCPSurface(t)
-	_, err := s.Dispatch(context.Background(), methods.MethodStart, &types.MCPServersListRequest{})
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodStart, &types.MCPServersListRequest{})
 	assertCode(t, err, protoerrors.CodeUnknownMethod)
 }
 
 func TestMCPSurface_Dispatch_InvalidRequestType(t *testing.T) {
 	s, _ := newMCPSurface(t)
-	_, err := s.Dispatch(context.Background(), methods.MethodMCPServersList, nil)
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersList, nil)
 	assertCode(t, err, protoerrors.CodeInvalidRequest)
 }

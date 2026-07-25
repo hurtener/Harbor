@@ -96,11 +96,18 @@ export interface SessionRow {
   /** Who produced `title`: "manual" | "auto" | "" (unset). */
   title_source?: string;
   /**
-   * The bounded per-session counter scan hit its bound (or a retention
-   * gap): `total_cost_cents` / `total_tokens` / `events_count` are then an
-   * HONEST LOWER BOUND, not exact (D-309 WARN-1 / D-311). Render the counts
-   * with a "≥" / lower-bound affordance; a `cost_desc` sort or
-   * `cost_above_cents` filter over a partial row is non-authoritative.
+   * At least one read behind this row's counters could not be taken in
+   * full — the bounded per-session event scan hit its bound (or a
+   * retention gap), or a registry read (tasks / pauses) failed or could
+   * not be scoped to the row (D-309 WARN-1 / D-311 / D-349). EVERY counter
+   * is then an HONEST LOWER BOUND: `total_cost_cents` / `total_tokens` /
+   * `events_count` may undercount, and `has_failed_task` /
+   * `has_pending_intervention` may read false because nobody looked rather
+   * than because there was nothing to find.
+   *
+   * No sort or filter over a partial row is authoritative — the runtime
+   * never silently excludes one. Render the counts with a "≥" /
+   * lower-bound affordance and the booleans as unknown rather than false.
    * Omitted (false) in the common case.
    */
   counters_partial?: boolean;

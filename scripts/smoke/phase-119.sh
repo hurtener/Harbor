@@ -51,7 +51,7 @@ assert_grep_present 'ctx := e.recoveryCtx' "${MEM}/rolling_summary.go" \
 
 # 4. Low cleanups: the MapConcurrent dead select is gone; readAny reuses
 #    one timer instead of allocating time.After per poll cycle.
-assert_grep_absent 'time.After(time.Microsecond)' "${ENG}/engine.go" \
+assert_grep_absent 'time.After\(time.Microsecond\)' "${ENG}/engine.go" \
     "engine: readAny no longer allocates time.After per poll cycle"
 assert_grep_present 'multiChannelPollInterval' "${ENG}/engine.go" \
     "engine: readAny reuses a single poll timer"

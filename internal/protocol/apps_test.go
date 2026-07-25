@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/protocol"
@@ -89,7 +90,7 @@ func TestAppsSurface_ReadResource_InlineProjection(t *testing.T) {
 		ResourceURI: "ui://app/main.html", MIMEType: "text/html", Inline: []byte("<html>x</html>"),
 	}}
 	s := newAppsSurface(t, rr, &stubInvoker{})
-	resp, err := s.Dispatch(context.Background(), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
 		Identity: validScope(), ServerID: "srv-a", ResourceURI: "ui://app/main.html",
 	})
 	if err != nil {
@@ -110,7 +111,7 @@ func TestAppsSurface_ReadResource_ArtifactProjection(t *testing.T) {
 		Artifact:    &protocol.MCPResourceArtifactRow{ID: "mcp-apps_abc", SizeBytes: 9001, SHA256: "deadbeef"},
 	}}
 	s := newAppsSurface(t, rr, &stubInvoker{})
-	resp, err := s.Dispatch(context.Background(), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
 		Identity: validScope(), ServerID: "srv-a", ResourceURI: "ui://app/main.html",
 	})
 	if err != nil {
@@ -124,7 +125,7 @@ func TestAppsSurface_ReadResource_ArtifactProjection(t *testing.T) {
 
 func TestAppsSurface_ReadResource_FailsClosedOnMissingIdentity(t *testing.T) {
 	s := newAppsSurface(t, &stubResourceReader{}, &stubInvoker{})
-	_, err := s.Dispatch(context.Background(), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
 		Identity: types.IdentityScope{Tenant: "t-1"}, // user + session missing
 		ServerID: "srv-a", ResourceURI: "ui://x",
 	})
@@ -133,7 +134,7 @@ func TestAppsSurface_ReadResource_FailsClosedOnMissingIdentity(t *testing.T) {
 
 func TestAppsSurface_ReadResource_RequiresServerAndURI(t *testing.T) {
 	s := newAppsSurface(t, &stubResourceReader{}, &stubInvoker{})
-	_, err := s.Dispatch(context.Background(), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
 		Identity: validScope(), ResourceURI: "ui://x",
 	})
 	assertCode(t, err, protoerrors.CodeInvalidRequest)
@@ -146,7 +147,7 @@ func TestAppsSurface_CallTool_AppRefProjection(t *testing.T) {
 		App:    &protocol.MCPAppRefRow{ServerID: "srv-a", ResourceURI: "ui://weather/view.html", DisplayMode: "inline"},
 	}}
 	s := newAppsSurface(t, &stubResourceReader{}, inv)
-	resp, err := s.Dispatch(context.Background(), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
 		Identity: validScope(), Tool: "srv-a_weather", Arguments: json.RawMessage(`{}`),
 	})
 	if err != nil {
@@ -167,17 +168,36 @@ func TestAppsSurface_CallTool_AppRefProjection(t *testing.T) {
 	}
 }
 
+// TestAppsSurface_CallTool_FailsClosedOnMissingIdentity — a dispatch
+// whose context carries no established identity has nothing for the
+// body-scope gate to reconcile against, so it is refused before the
+// invoker is reached. The body's own triple never supplies the missing
+// authority.
 func TestAppsSurface_CallTool_FailsClosedOnMissingIdentity(t *testing.T) {
 	s := newAppsSurface(t, &stubResourceReader{}, &stubInvoker{})
 	_, err := s.Dispatch(context.Background(), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
-		Identity: types.IdentityScope{}, Tool: "srv-a_x",
+		Identity: validScope(), Tool: "srv-a_x",
 	})
 	assertCode(t, err, protoerrors.CodeIdentityRequired)
 }
 
+// TestAppsSurface_CallTool_EmptyBodyTripleBackfilled — an empty body
+// triple is the caller saying "use my established identity"; the gate
+// fills it in rather than refusing.
+func TestAppsSurface_CallTool_EmptyBodyTripleBackfilled(t *testing.T) {
+	s := newAppsSurface(t, &stubResourceReader{}, &stubInvoker{})
+	req := &types.MCPAppCallToolRequest{Identity: types.IdentityScope{}, Tool: "srv-a_x"}
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, req); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if req.Identity != validScope() {
+		t.Errorf("body triple = %+v, want the established identity %+v", req.Identity, validScope())
+	}
+}
+
 func TestAppsSurface_Dispatch_RejectsNonAppsMethod(t *testing.T) {
 	s := newAppsSurface(t, &stubResourceReader{}, &stubInvoker{})
-	_, err := s.Dispatch(context.Background(), methods.MethodStart, &types.ReadMCPResourceRequest{Identity: validScope()})
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodStart, &types.ReadMCPResourceRequest{Identity: validScope()})
 	assertCode(t, err, protoerrors.CodeUnknownMethod)
 }
 
@@ -189,7 +209,7 @@ func TestAppsSurface_ToolContext_InlineProjection(t *testing.T) {
 		Result:  protocol.AppToolContextPayloadRow{Inline: json.RawMessage(`{"temp":21}`)},
 	}}
 	s := newAppsSurfaceTC(t, &stubResourceReader{}, &stubInvoker{}, tc)
-	resp, err := s.Dispatch(context.Background(), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
+	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
 		Identity: validScope(), ServerID: "srv-a", ToolCallID: "abc123",
 	})
 	if err != nil {
@@ -217,7 +237,7 @@ func TestAppsSurface_ToolContext_ArtifactProjection(t *testing.T) {
 		Result: protocol.AppToolContextPayloadRow{Artifact: &protocol.MCPResourceArtifactRow{ID: "mcp-apps_xyz", SizeBytes: 99000}},
 	}}
 	s := newAppsSurfaceTC(t, &stubResourceReader{}, &stubInvoker{}, tc)
-	resp, err := s.Dispatch(context.Background(), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
+	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
 		Identity: validScope(), ServerID: "srv-a", ToolCallID: "abc123",
 	})
 	if err != nil {
@@ -229,22 +249,24 @@ func TestAppsSurface_ToolContext_ArtifactProjection(t *testing.T) {
 	}
 }
 
+// TestAppsSurface_ToolContext_FailsClosedOnMissingIdentity — see
+// TestAppsSurface_CallTool_FailsClosedOnMissingIdentity.
 func TestAppsSurface_ToolContext_FailsClosedOnMissingIdentity(t *testing.T) {
 	s := newAppsSurface(t, &stubResourceReader{}, &stubInvoker{})
 	_, err := s.Dispatch(context.Background(), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
-		Identity: types.IdentityScope{}, ServerID: "srv-a", ToolCallID: "abc",
+		Identity: validScope(), ServerID: "srv-a", ToolCallID: "abc",
 	})
 	assertCode(t, err, protoerrors.CodeIdentityRequired)
 }
 
 func TestAppsSurface_ToolContext_RequiresServerAndCallID(t *testing.T) {
 	s := newAppsSurface(t, &stubResourceReader{}, &stubInvoker{})
-	if _, err := s.Dispatch(context.Background(), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
 		Identity: validScope(), ToolCallID: "abc",
 	}); true {
 		assertCode(t, err, protoerrors.CodeInvalidRequest)
 	}
-	if _, err := s.Dispatch(context.Background(), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
 		Identity: validScope(), ServerID: "srv-a",
 	}); true {
 		assertCode(t, err, protoerrors.CodeInvalidRequest)
@@ -252,10 +274,59 @@ func TestAppsSurface_ToolContext_RequiresServerAndCallID(t *testing.T) {
 }
 
 func TestAppsSurface_ToolContext_UnknownIDMapsToNotFound(t *testing.T) {
-	tc := &stubToolContextReader{err: errors.New("mcpconsole: tool context not found (server \"srv-a\", call \"nope\"): state: record not found")}
+	// The accessor states the verdict via the sentinel; the edge no longer
+	// classifies on the message text (mcpconsole.ToolContext applies this
+	// wrap in production).
+	tc := &stubToolContextReader{err: fmt.Errorf("%w: mcpconsole: tool context not found (server %q, call %q): state: record not found",
+		protocol.ErrAccessorNotFound, "srv-a", "nope")}
 	s := newAppsSurfaceTC(t, &stubResourceReader{}, &stubInvoker{}, tc)
-	_, err := s.Dispatch(context.Background(), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
 		Identity: validScope(), ServerID: "srv-a", ToolCallID: "nope",
 	})
 	assertCode(t, err, protoerrors.CodeNotFound)
+}
+
+// An app-initiated call naming a tool that does not resolve inside the calling
+// app's own server namespace must surface as CodeNotFound — the outcome an app
+// can act on — not as the undifferentiated CodeRuntimeError ("MCP read failed")
+// it cannot tell apart from a broken southbound transport. The catalog's
+// `tools: tool not found` wrap is the marker the Protocol edge classifies on.
+func TestAppsSurface_CallTool_UnresolvableToolMapsToNotFound(t *testing.T) {
+	inv := &stubInvoker{err: fmt.Errorf("%w: tools: tool not found: %q",
+		protocol.ErrAccessorNotFound, "srv-a_nope")}
+	s := newAppsSurface(t, &stubResourceReader{}, inv)
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: validScope(), Tool: "srv-a_nope",
+	})
+	assertCode(t, err, protoerrors.CodeNotFound)
+}
+
+func TestAppsSurface_CallTool_TransportFailureStaysRuntimeError(t *testing.T) {
+	inv := &stubInvoker{err: errors.New("mcpconsole: stdio transport reset by peer")}
+	s := newAppsSurface(t, &stubResourceReader{}, inv)
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: validScope(), Tool: "srv-a_echo",
+	})
+	assertCode(t, err, protoerrors.CodeRuntimeError)
+}
+
+// THE LAUNDERING GUARD. A southbound MCP server's error text is wrapped
+// verbatim into the chain, so a REMOTE party gets to phrase part of what the
+// Protocol edge reads. Classification must not be reachable from that text: a
+// transport failure whose message happens to contain the words a not-found
+// would use stays CodeRuntimeError. A rendered App treats not-found as a
+// PERMANENT verdict ("this action does not exist here"), so laundering a
+// transient failure into one is a wrong answer the App cannot recover from.
+func TestAppsSurface_CallTool_RemoteErrorTextCannotLaunderIntoNotFound(t *testing.T) {
+	for _, msg := range []string{
+		`mcp: call "srv-a_echo": upstream said: tool not found in cache, retrying`,
+		`mcp: transport failed: server not found upstream (503)`,
+	} {
+		inv := &stubInvoker{err: errors.New(msg)}
+		s := newAppsSurface(t, &stubResourceReader{}, inv)
+		_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+			Identity: validScope(), Tool: "srv-a_echo",
+		})
+		assertCode(t, err, protoerrors.CodeRuntimeError)
+	}
 }

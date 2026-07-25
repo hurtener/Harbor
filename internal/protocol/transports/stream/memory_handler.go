@@ -41,6 +41,7 @@ import (
 	"github.com/hurtener/Harbor/internal/memory"
 	memprotocol "github.com/hurtener/Harbor/internal/memory/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
@@ -210,7 +211,7 @@ func (h *MemoryHandler) serveStrategyTrace(w http.ResponseWriter, r *http.Reques
 			"memory.strategy_trace accepts POST only")
 		return
 	}
-	id, perr := h.resolveAndDecode(w, r)
+	id, r, perr := h.resolveAndDecode(w, r)
 	if perr != nil {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
@@ -220,7 +221,7 @@ func (h *MemoryHandler) serveStrategyTrace(w http.ResponseWriter, r *http.Reques
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
 	}
-	if perr := assertMemoryBodyMatchesIdentity(req.Identity, id); perr != nil {
+	if perr := reconcileMemoryIdentity(r, &req.Identity); perr != nil {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -242,7 +243,7 @@ func (h *MemoryHandler) servePut(w http.ResponseWriter, r *http.Request) {
 			"memory.put accepts POST only")
 		return
 	}
-	id, perr := h.resolveAndDecode(w, r)
+	id, r, perr := h.resolveAndDecode(w, r)
 	if perr != nil {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
@@ -252,7 +253,7 @@ func (h *MemoryHandler) servePut(w http.ResponseWriter, r *http.Request) {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
 	}
-	if perr := assertMemoryBodyMatchesIdentity(req.Identity, id); perr != nil {
+	if perr := reconcileMemoryIdentity(r, &req.Identity); perr != nil {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -278,7 +279,7 @@ func (h *MemoryHandler) serveDelete(w http.ResponseWriter, r *http.Request) {
 			"memory.delete accepts POST only")
 		return
 	}
-	id, perr := h.resolveAndDecode(w, r)
+	id, r, perr := h.resolveAndDecode(w, r)
 	if perr != nil {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
@@ -288,7 +289,7 @@ func (h *MemoryHandler) serveDelete(w http.ResponseWriter, r *http.Request) {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
 	}
-	if perr := assertMemoryBodyMatchesIdentity(req.Identity, id); perr != nil {
+	if perr := reconcileMemoryIdentity(r, &req.Identity); perr != nil {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -334,7 +335,7 @@ func (h *MemoryHandler) serveList(w http.ResponseWriter, r *http.Request) {
 			"memory.list accepts POST only")
 		return
 	}
-	id, perr := h.resolveAndDecode(w, r)
+	id, r, perr := h.resolveAndDecode(w, r)
 	if perr != nil {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
@@ -344,7 +345,7 @@ func (h *MemoryHandler) serveList(w http.ResponseWriter, r *http.Request) {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
 	}
-	if perr := assertMemoryBodyMatchesIdentity(req.Identity, id); perr != nil {
+	if perr := reconcileMemoryIdentity(r, &req.Identity); perr != nil {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -379,7 +380,7 @@ func (h *MemoryHandler) serveGet(w http.ResponseWriter, r *http.Request) {
 			"memory.get accepts POST only")
 		return
 	}
-	id, perr := h.resolveAndDecode(w, r)
+	id, r, perr := h.resolveAndDecode(w, r)
 	if perr != nil {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
@@ -389,7 +390,7 @@ func (h *MemoryHandler) serveGet(w http.ResponseWriter, r *http.Request) {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
 	}
-	if perr := assertMemoryBodyMatchesIdentity(req.Identity, id); perr != nil {
+	if perr := reconcileMemoryIdentity(r, &req.Identity); perr != nil {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -415,7 +416,7 @@ func (h *MemoryHandler) serveHealth(w http.ResponseWriter, r *http.Request) {
 			"memory.health accepts POST only")
 		return
 	}
-	id, perr := h.resolveAndDecode(w, r)
+	id, r, perr := h.resolveAndDecode(w, r)
 	if perr != nil {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
@@ -425,7 +426,7 @@ func (h *MemoryHandler) serveHealth(w http.ResponseWriter, r *http.Request) {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
 	}
-	if perr := assertMemoryBodyMatchesIdentity(req.Identity, id); perr != nil {
+	if perr := reconcileMemoryIdentity(r, &req.Identity); perr != nil {
 		writeMemoryError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -443,17 +444,19 @@ func (h *MemoryHandler) serveHealth(w http.ResponseWriter, r *http.Request) {
 	h.encode(r.Context(), w, id, &resp)
 }
 
-// resolveAndDecode resolves the request identity. A missing / incomplete
-// triple fails closed with CodeIdentityRequired (401).
-func (h *MemoryHandler) resolveAndDecode(_ http.ResponseWriter, r *http.Request) (identity.Identity, *memoryError) {
-	id, err := resolveIdentity(r)
+// resolveAndDecode establishes the request identity and returns the
+// request whose context carries it. A missing / incomplete triple fails
+// closed with CodeIdentityRequired (401). Callers MUST use the returned
+// request: its context is what the body-scope gate reconciles against.
+func (h *MemoryHandler) resolveAndDecode(_ http.ResponseWriter, r *http.Request) (identity.Identity, *http.Request, *memoryError) {
+	id, r, err := resolveIdentity(r)
 	if err != nil {
-		return identity.Identity{}, &memoryError{
+		return identity.Identity{}, r, &memoryError{
 			code: protoerrors.CodeIdentityRequired, status: http.StatusUnauthorized,
 			message: "identity scope incomplete: " + err.Error(),
 		}
 	}
-	return id, nil
+	return id, r, nil
 }
 
 // encode writes a JSON 200 response. An encode failure is logged
@@ -500,23 +503,20 @@ func decodeMemoryBody(w http.ResponseWriter, r *http.Request, dst any) *memoryEr
 	return nil
 }
 
-// assertMemoryBodyMatchesIdentity is the defence-in-depth check: when
-// the request body carries an identity, every non-empty component MUST
-// match the verified identity — a caller cannot present a valid JWT for
-// tenant T1 while submitting a body claiming tenant T2.
-func assertMemoryBodyMatchesIdentity(body prototypes.IdentityScope, verified identity.Identity) *memoryError {
-	if body.Tenant == "" && body.User == "" && body.Session == "" {
+// reconcileMemoryIdentity routes the request body's identity scope
+// through the shared body-identity gate under the memory surface's
+// registered policy: an empty triple is backfilled from the verified
+// identity, and a populated component must match it. A cross-tenant
+// memory read travels in the list filter's tenant set, gated on the
+// verified claim — never in the body triple.
+func reconcileMemoryIdentity(r *http.Request, scope *prototypes.IdentityScope) *memoryError {
+	perr := reconcileBodyScope(r, scope, bodyscope.SurfaceMemory)
+	if perr == nil {
 		return nil
 	}
-	if (body.Tenant != "" && body.Tenant != verified.TenantID) ||
-		(body.User != "" && body.User != verified.UserID) ||
-		(body.Session != "" && body.Session != verified.SessionID) {
-		return &memoryError{
-			code: protoerrors.CodeIdentityRequired, status: http.StatusUnauthorized,
-			message: "body identity scope does not match the verified identity",
-		}
+	return &memoryError{
+		code: perr.Code, status: bodyScopeStatus(perr.Code), message: perr.Message,
 	}
-	return nil
 }
 
 // memoryCrossTenantRequested reports whether the filter's tenant set

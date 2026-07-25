@@ -41,6 +41,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -169,7 +170,7 @@ func (h *FlowsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"flows endpoints accept POST only")
 		return
 	}
-	id, err := resolveIdentity(r)
+	_, r, err := resolveIdentity(r)
 	if err != nil {
 		writeFlowsError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -182,21 +183,20 @@ func (h *FlowsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	adminScoped := auth.HasScope(r.Context(), auth.ScopeAdmin)
-	wireID := prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}
 
 	switch flowsPathSuffix(r.URL.Path) {
 	case "list":
-		h.serveList(w, r, body, wireID, adminScoped)
+		h.serveList(w, r, body, adminScoped)
 	case "describe":
-		h.serveDescribe(w, r, body, wireID, adminScoped)
+		h.serveDescribe(w, r, body, adminScoped)
 	case "runs/list":
-		h.serveRunsList(w, r, body, wireID, adminScoped)
+		h.serveRunsList(w, r, body, adminScoped)
 	case "runs/describe":
-		h.serveRunsDescribe(w, r, body, wireID, adminScoped)
+		h.serveRunsDescribe(w, r, body, adminScoped)
 	case "run":
-		h.serveRun(w, r, body, wireID, adminScoped)
+		h.serveRun(w, r, body, adminScoped)
 	case "metrics":
-		h.serveMetrics(w, r, body, wireID, adminScoped)
+		h.serveMetrics(w, r, body, adminScoped)
 	default:
 		writeFlowsError(w, protoerrors.CodeUnknownMethod, http.StatusNotFound,
 			"unknown flows method route")
@@ -209,14 +209,13 @@ func flowsPathSuffix(path string) string {
 	return strings.TrimPrefix(path, "/v1/flows/")
 }
 
-func (h *FlowsHandler) serveList(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope, adminScoped bool) {
+func (h *FlowsHandler) serveList(w http.ResponseWriter, r *http.Request, body []byte, adminScoped bool) {
 	var req prototypes.FlowListRequest
 	if perr := decodeFlowsBody(body, &req); perr != nil {
 		writeFlowsError(w, perr.code, perr.status, perr.message)
 		return
 	}
-	req.Identity = mergeIdentity(req.Identity, wireID)
-	if perr := assertFlowsIdentity(req.Identity, wireID); perr != nil {
+	if perr := reconcileFlowsIdentity(r, &req.Identity); perr != nil {
 		writeFlowsError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -229,14 +228,13 @@ func (h *FlowsHandler) serveList(w http.ResponseWriter, r *http.Request, body []
 	writeFlowsJSON(w, r, resp, h.logger)
 }
 
-func (h *FlowsHandler) serveDescribe(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope, adminScoped bool) {
+func (h *FlowsHandler) serveDescribe(w http.ResponseWriter, r *http.Request, body []byte, adminScoped bool) {
 	var req prototypes.FlowDescribeRequest
 	if perr := decodeFlowsBody(body, &req); perr != nil {
 		writeFlowsError(w, perr.code, perr.status, perr.message)
 		return
 	}
-	req.Identity = mergeIdentity(req.Identity, wireID)
-	if perr := assertFlowsIdentity(req.Identity, wireID); perr != nil {
+	if perr := reconcileFlowsIdentity(r, &req.Identity); perr != nil {
 		writeFlowsError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -249,14 +247,13 @@ func (h *FlowsHandler) serveDescribe(w http.ResponseWriter, r *http.Request, bod
 	writeFlowsJSON(w, r, resp, h.logger)
 }
 
-func (h *FlowsHandler) serveRunsList(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope, adminScoped bool) {
+func (h *FlowsHandler) serveRunsList(w http.ResponseWriter, r *http.Request, body []byte, adminScoped bool) {
 	var req prototypes.FlowRunsListRequest
 	if perr := decodeFlowsBody(body, &req); perr != nil {
 		writeFlowsError(w, perr.code, perr.status, perr.message)
 		return
 	}
-	req.Identity = mergeIdentity(req.Identity, wireID)
-	if perr := assertFlowsIdentity(req.Identity, wireID); perr != nil {
+	if perr := reconcileFlowsIdentity(r, &req.Identity); perr != nil {
 		writeFlowsError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -269,14 +266,13 @@ func (h *FlowsHandler) serveRunsList(w http.ResponseWriter, r *http.Request, bod
 	writeFlowsJSON(w, r, resp, h.logger)
 }
 
-func (h *FlowsHandler) serveRunsDescribe(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope, adminScoped bool) {
+func (h *FlowsHandler) serveRunsDescribe(w http.ResponseWriter, r *http.Request, body []byte, adminScoped bool) {
 	var req prototypes.FlowRunDescribeRequest
 	if perr := decodeFlowsBody(body, &req); perr != nil {
 		writeFlowsError(w, perr.code, perr.status, perr.message)
 		return
 	}
-	req.Identity = mergeIdentity(req.Identity, wireID)
-	if perr := assertFlowsIdentity(req.Identity, wireID); perr != nil {
+	if perr := reconcileFlowsIdentity(r, &req.Identity); perr != nil {
 		writeFlowsError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -289,14 +285,13 @@ func (h *FlowsHandler) serveRunsDescribe(w http.ResponseWriter, r *http.Request,
 	writeFlowsJSON(w, r, resp, h.logger)
 }
 
-func (h *FlowsHandler) serveRun(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope, adminScoped bool) {
+func (h *FlowsHandler) serveRun(w http.ResponseWriter, r *http.Request, body []byte, adminScoped bool) {
 	var req prototypes.FlowRunRequest
 	if perr := decodeFlowsBody(body, &req); perr != nil {
 		writeFlowsError(w, perr.code, perr.status, perr.message)
 		return
 	}
-	req.Identity = mergeIdentity(req.Identity, wireID)
-	if perr := assertFlowsIdentity(req.Identity, wireID); perr != nil {
+	if perr := reconcileFlowsIdentity(r, &req.Identity); perr != nil {
 		writeFlowsError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -309,14 +304,13 @@ func (h *FlowsHandler) serveRun(w http.ResponseWriter, r *http.Request, body []b
 	writeFlowsJSON(w, r, resp, h.logger)
 }
 
-func (h *FlowsHandler) serveMetrics(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope, adminScoped bool) {
+func (h *FlowsHandler) serveMetrics(w http.ResponseWriter, r *http.Request, body []byte, adminScoped bool) {
 	var req prototypes.FlowMetricsRequest
 	if perr := decodeFlowsBody(body, &req); perr != nil {
 		writeFlowsError(w, perr.code, perr.status, perr.message)
 		return
 	}
-	req.Identity = mergeIdentity(req.Identity, wireID)
-	if perr := assertFlowsIdentity(req.Identity, wireID); perr != nil {
+	if perr := reconcileFlowsIdentity(r, &req.Identity); perr != nil {
 		writeFlowsError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -333,7 +327,7 @@ func (h *FlowsHandler) serveMetrics(w http.ResponseWriter, r *http.Request, body
 // for a read dispatch. When no bus is wired it logs at Info so Flows-
 // page traffic is never fully silent.
 func (h *FlowsHandler) emitPageViewed(r *http.Request, method methods.Method, flowID string, adminScoped bool) {
-	id, _ := resolveIdentity(r) //nolint:errcheck // best-effort audit-observation emit, post-authorization — a re-derivation miss degrades to a zero-value identity tag, never blocks the request.
+	id, _, _ := resolveIdentity(r) //nolint:errcheck // best-effort audit-observation emit, post-authorization — a re-derivation miss degrades to a zero-value identity tag, never blocks the request.
 	h.logger.InfoContext(r.Context(), "flows: page viewed",
 		slog.String("method", string(method)),
 		slog.String("flow_id", flowID),
@@ -360,7 +354,7 @@ func (h *FlowsHandler) emitPageViewed(r *http.Request, method methods.Method, fl
 // emitRunInvoked publishes the `flows.run_invoked` audit observation
 // for an accepted `flows.run` dispatch.
 func (h *FlowsHandler) emitRunInvoked(r *http.Request, flowID, runID string) {
-	id, _ := resolveIdentity(r) //nolint:errcheck // best-effort audit-observation emit, post-authorization — a re-derivation miss degrades to a zero-value identity tag, never blocks the request.
+	id, _, _ := resolveIdentity(r) //nolint:errcheck // best-effort audit-observation emit, post-authorization — a re-derivation miss degrades to a zero-value identity tag, never blocks the request.
 	h.logger.InfoContext(r.Context(), "flows: run invoked",
 		slog.String("flow_id", flowID),
 		slog.String("run_id", runID),
@@ -416,30 +410,20 @@ func decodeFlowsBody(body []byte, v any) *flowsError {
 	return nil
 }
 
-// mergeIdentity backfills an empty body identity scope from the
-// verified identity. A populated body scope is left intact (the
-// assertFlowsIdentity check then enforces it matches).
-func mergeIdentity(body, verified prototypes.IdentityScope) prototypes.IdentityScope {
-	if body.Tenant == "" && body.User == "" && body.Session == "" {
-		return verified
+// reconcileFlowsIdentity routes the request body's identity scope
+// through the shared body-identity gate under the flows surface's
+// registered policy: an empty triple is backfilled from the verified
+// identity, and a populated component must match it. A cross-tenant
+// flow read travels in the request's own filter, gated on the verified
+// claim by the service — never in the body triple.
+func reconcileFlowsIdentity(r *http.Request, scope *prototypes.IdentityScope) *flowsError {
+	perr := reconcileBodyScope(r, scope, bodyscope.SurfaceFlows)
+	if perr == nil {
+		return nil
 	}
-	return body
-}
-
-// assertFlowsIdentity is the defence-in-depth check: when the request
-// body carries an identity, every non-empty component MUST match the
-// verified identity — a caller cannot present a valid JWT for tenant T1
-// while submitting a body claiming tenant T2.
-func assertFlowsIdentity(body, verified prototypes.IdentityScope) *flowsError {
-	if (body.Tenant != "" && body.Tenant != verified.Tenant) ||
-		(body.User != "" && body.User != verified.User) ||
-		(body.Session != "" && body.Session != verified.Session) {
-		return &flowsError{
-			code: protoerrors.CodeIdentityRequired, status: http.StatusUnauthorized,
-			message: "body identity scope does not match the verified identity",
-		}
+	return &flowsError{
+		code: perr.Code, status: bodyScopeStatus(perr.Code), message: perr.Message,
 	}
-	return nil
 }
 
 // classifyFlowsError maps a Surface error onto a canonical Protocol

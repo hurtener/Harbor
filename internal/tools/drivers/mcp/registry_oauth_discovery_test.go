@@ -18,6 +18,9 @@ func newDiscoveryRegistry(t *testing.T) *Registry {
 		URLOrCommand:                 "https://mcp.example.com/rpc",
 		InitialState:                 ServerStateOnline,
 		OAuthDiscoveryAllowedOrigins: []string{"https://as.example.net"},
+		// A runtime-added registration owned by ownerA — the owner every
+		// allowance write in these tests presents. Reads stay owner-blind.
+		Owner: ownerA(),
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}

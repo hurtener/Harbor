@@ -142,6 +142,16 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if deps.Closers == nil {
 		return fmt.Errorf("mcp attach: Closers chain is required (the Provider's subprocess must drain on teardown)")
 	}
+	// Separator safety, checked BEFORE any side effect (no transport spawned,
+	// no catalog rows written), so an ambiguous id is refused cleanly rather
+	// than after a subprocess is live and tools are half-registered. The
+	// Registry re-checks under its own write lock — that is the structural
+	// gate, since it is the single choke point every attach path funnels
+	// through; this is the early, clean-failure copy. Both the boot-declared
+	// and the runtime-attach path reach here.
+	if err := deps.Registry.CheckServerIDUnambiguous(ms.Name); err != nil {
+		return fmt.Errorf("mcp server %q: %w", ms.Name, err)
+	}
 	mode := MCPTransportMode(ms.TransportMode)
 	if mode == "" {
 		mode = TransportAuto

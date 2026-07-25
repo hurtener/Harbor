@@ -487,7 +487,7 @@ func TestPostureDispatch_CrossTenantRequiresAdmin(t *testing.T) {
 
 	// Verified identity is tenant-a; the request asks for tenant-b.
 	verified := identity.Identity{TenantID: "tenant-a", UserID: "u", SessionID: "sess"}
-	ctxVerified, err := identity.With(context.Background(), verified)
+	ctxVerified, err := identity.WithVerified(context.Background(), verified)
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
@@ -678,7 +678,7 @@ func basePostureDeps(t *testing.T) protocol.PostureDeps {
 // mustCtx threads identity into a fresh context or fails the test.
 func mustCtx(t *testing.T, id identity.Identity) context.Context {
 	t.Helper()
-	ctx, err := identity.With(context.Background(), id)
+	ctx, err := identity.WithVerified(context.Background(), id)
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
@@ -748,7 +748,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 
 	dispatch := func(t *testing.T, s *protocol.PostureSurface) *types.RuntimeInfo {
 		t.Helper()
-		ctx, _ := identity.With(context.Background(), identity.Identity{
+		ctx, _ := identity.WithVerified(context.Background(), identity.Identity{
 			TenantID:  "tenant-a",
 			UserID:    "user-1",
 			SessionID: "session-x",

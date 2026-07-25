@@ -1,13 +1,14 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 
-	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -25,10 +26,9 @@ const artifactsMaxBodyBytes = 8 << 20
 
 // serveArtifacts is the artifacts-method REST adapter.
 // It decodes the body into the wire request type the method expects,
-// backfills the body identity from the auth-verified identity in ctx
-// when the body left it empty (same posture as servePosture's
-// backfillPostureIdentity), and dispatches through the configured
-// ArtifactsSurface.
+// reconciles the body scope against the request's verified identity
+// through the shared body-identity gate, and dispatches through the
+// configured ArtifactsSurface under the reconciled ctx.
 //
 // The ArtifactsSurface itself enforces:
 //
@@ -55,17 +55,13 @@ func (h *Handler) serveArtifacts(w http.ResponseWriter, r *http.Request, method 
 		return
 	}
 
-	// defence-in-depth: when auth.Middleware ran, backfill an
-	// empty body identity from the verified JWT, and reject a body whose
-	// user/session disagree with it. The Tenant deliberately may differ
-	// (a cross-tenant artifacts.list is a legitimate admin request the
-	// ArtifactsSurface gates on the admin scope).
-	if perr := backfillArtifactsIdentity(r, scopePtr); perr != nil {
+	ctx, perr := h.reconcileArtifactsIdentity(r, method, scopePtr)
+	if perr != nil {
 		h.writeError(w, r, perr)
 		return
 	}
 
-	resp, derr := h.artifactsSurface.Dispatch(r.Context(), method, req)
+	resp, derr := h.artifactsSurface.Dispatch(ctx, method, req)
 	if derr != nil {
 		h.writeArtifactsError(w, r, method, derr)
 		return
@@ -120,39 +116,32 @@ func decodeArtifactsRequest(method methods.Method, body []byte) (any, *types.Art
 	}
 }
 
-// backfillArtifactsIdentity threads the verified identity into
-// the artifacts request body's ArtifactScope. When ctx carries a
-// verified identity:
+// reconcileArtifactsIdentity routes the artifacts request body's
+// ArtifactScope through the shared body-identity gate under the posture
+// the METHOD carries. The artifacts cluster holds four, and the
+// registry states each: a listing crosses tenants under either admin-tier
+// claim, an upload or a delete takes the administrative claim alone, and
+// a presigned reference crosses for nobody.
 //
-//   - An empty body scope is backfilled from the JWT triple.
-//   - A populated body scope must match the JWT's user/session; the
-//     Tenant may differ (a cross-tenant artifacts.list — the
-//     ArtifactsSurface gates that on the admin scope).
+// Selecting per method matters beyond correctness: it keeps the gate
+// from recording a crossing that the surface one layer down will refuse,
+// so an audit trail of granted crossings stays a trail of crossings that
+// were actually taken.
 //
-// When ctx carries no verified identity (no middleware ran), the body
-// scope is authoritative and this is a no-op.
-func backfillArtifactsIdentity(r *http.Request, scope *types.ArtifactScope) *protoerrors.Error {
-	authed, ok := identity.From(r.Context())
-	if !ok {
-		return nil
+// It returns the ctx to dispatch under, which carries the audited
+// crossing when one was granted.
+func (h *Handler) reconcileArtifactsIdentity(r *http.Request, method methods.Method, scope *types.ArtifactScope) (context.Context, *protoerrors.Error) {
+	surface := bodyscope.SurfaceArtifacts
+	switch method {
+	case methods.MethodArtifactsPut:
+		surface = bodyscope.SurfaceArtifactsPut
+	case methods.MethodArtifactsDelete:
+		surface = bodyscope.SurfaceArtifactsDelete
+	case methods.MethodArtifactsGetRef:
+		surface = bodyscope.SurfaceArtifactsRef
 	}
-	if scope.Tenant == "" && scope.User == "" && scope.Session == "" {
-		scope.Tenant = authed.TenantID
-		scope.User = authed.UserID
-		scope.Session = authed.SessionID
-		return nil
-	}
-	// User / Session must match the verified identity — artifacts are
-	// not an impersonation surface. The Tenant may differ.
-	if scope.User != "" && scope.User != authed.UserID {
-		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
-			"artifacts request body identity (user) does not match the verified JWT identity")
-	}
-	if scope.Session != "" && scope.Session != authed.SessionID {
-		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
-			"artifacts request body identity (session) does not match the verified JWT identity")
-	}
-	return nil
+	return bodyscope.Reconcile(r.Context(), bodyscope.ForArtifactScope(scope),
+		surface, h.bodyScopeAuditor)
 }
 
 // writeArtifactsError maps an ArtifactsSurface error onto the wire. The

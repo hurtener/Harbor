@@ -39,6 +39,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -110,7 +111,7 @@ func (h *SessionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"sessions endpoints accept POST only")
 		return
 	}
-	id, err := resolveIdentity(r)
+	id, r, err := resolveIdentity(r)
 	if err != nil {
 		writeSessionsError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -151,8 +152,8 @@ func (h *SessionsHandler) serveList(w http.ResponseWriter, r *http.Request, body
 			"failed to decode sessions.list request: "+err.Error())
 		return
 	}
-	if perr := assertSessionsIdentity(req.Identity, wireID); perr != "" {
-		writeSessionsError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized, perr)
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceSessions); perr != nil {
+		writeSessionsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = wireID
@@ -171,8 +172,8 @@ func (h *SessionsHandler) serveInspect(w http.ResponseWriter, r *http.Request, b
 			"failed to decode sessions.inspect request: "+err.Error())
 		return
 	}
-	if perr := assertSessionsIdentity(req.Identity, wireID); perr != "" {
-		writeSessionsError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized, perr)
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceSessions); perr != nil {
+		writeSessionsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = wireID
@@ -186,7 +187,7 @@ func (h *SessionsHandler) serveInspect(w http.ResponseWriter, r *http.Request, b
 
 // serveDelete handles `POST /v1/sessions/delete` — the own-session-only
 // data-lifecycle erasure. The body identity must match the verified
-// identity (defence-in-depth via assertSessionsIdentity); a mismatch is
+// identity (reconciled by the shared body-identity gate); a mismatch is
 // rejected identity_required (401) BEFORE any erasure logic, so a foreign
 // target can never be named. There is NO admin / cross-tenant path —
 // adminScoped is deliberately not threaded into Delete.
@@ -197,8 +198,8 @@ func (h *SessionsHandler) serveDelete(w http.ResponseWriter, r *http.Request, bo
 			"failed to decode sessions.delete request: "+err.Error())
 		return
 	}
-	if perr := assertSessionsIdentity(req.Identity, wireID); perr != "" {
-		writeSessionsError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized, perr)
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceSessions); perr != nil {
+		writeSessionsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = wireID
@@ -212,11 +213,11 @@ func (h *SessionsHandler) serveDelete(w http.ResponseWriter, r *http.Request, bo
 
 // serveSetTitle handles `POST /v1/sessions/set_title` — sets or clears a
 // session's human-readable title. The body identity MUST match
-// the verified identity (defence-in-depth via assertSessionsIdentity,
+// the verified identity (reconciled by the shared body-identity gate,
 // mirroring serveDelete) — a mismatch is rejected identity_required (401)
 // BEFORE any set-title logic. Unlike serveDelete, the write scope is
 // (tenant, user), not own-session-only: req.SessionID is a DEDICATED
-// field the assertSessionsIdentity check does NOT constrain, so it may
+// field the body-identity gate does NOT constrain, so it may
 // name a sibling session of the caller's own (tenant, user) — the
 // Service / registry enforce that scope on the target lookup itself.
 func (h *SessionsHandler) serveSetTitle(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
@@ -226,8 +227,8 @@ func (h *SessionsHandler) serveSetTitle(w http.ResponseWriter, r *http.Request, 
 			"failed to decode sessions.set_title request: "+err.Error())
 		return
 	}
-	if perr := assertSessionsIdentity(req.Identity, wireID); perr != "" {
-		writeSessionsError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized, perr)
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceSessions); perr != nil {
+		writeSessionsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = wireID
@@ -249,20 +250,6 @@ func decodeSessionsBody(body []byte, req any) error {
 	dec := json.NewDecoder(bytesReader(body))
 	dec.DisallowUnknownFields()
 	return dec.Decode(req)
-}
-
-// assertSessionsIdentity is the defence-in-depth check: when the
-// request body carries an identity, every non-empty component MUST
-// match the verified identity — a caller cannot present a valid JWT
-// for tenant T1 while submitting a body claiming tenant T2. Returns
-// "" when the body identity is consistent (or empty).
-func assertSessionsIdentity(body, verified prototypes.IdentityScope) string {
-	if (body.Tenant != "" && body.Tenant != verified.Tenant) ||
-		(body.User != "" && body.User != verified.User) ||
-		(body.Session != "" && body.Session != verified.Session) {
-		return "body identity scope does not match the verified identity"
-	}
-	return ""
 }
 
 // writeServiceError maps a sessions/protocol.Service error onto a

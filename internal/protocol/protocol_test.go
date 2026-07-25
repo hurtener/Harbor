@@ -111,7 +111,7 @@ func testRun(run string) identity.Quadruple {
 // authenticates through authCtx rather than passing context.Background().
 func authCtx(t *testing.T, id identity.Identity, scopes ...auth.Scope) context.Context {
 	t.Helper()
-	ctx, err := identity.With(context.Background(), id)
+	ctx, err := identity.WithVerified(context.Background(), id)
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestDispatch_Start_RoutesToTaskRegistry(t *testing.T) {
 	}
 	// The task must actually exist in the registry — proves the surface
 	// reached the real Phase 20 TaskRegistry, not a stub.
-	ctx, err := identity.With(context.Background(), identity.Identity{
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{
 		TenantID: "tenant-a", UserID: "user-1", SessionID: "session-x",
 	})
 	if err != nil {

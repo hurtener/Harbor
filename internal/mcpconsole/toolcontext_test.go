@@ -3,6 +3,7 @@ package mcpconsole_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
+	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/tools"
 	mcp "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
@@ -150,8 +152,14 @@ func TestToolContextStore_UnknownIDNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("unknown id: want error, got nil")
 	}
-	if !strings.Contains(err.Error(), "tool context not found") {
-		t.Errorf("error missing not-found marker: %v", err)
+	// Assert the SENTINEL, not the message text. The Protocol edge classifies
+	// not-found by errors.Is, so a text assertion tests something the edge no
+	// longer reads — it passed with the sentinel wrap deleted, while
+	// `mcp.apps.tool_context` silently regressed 404 → 500 and killed the
+	// renderer's "no longer available" MISS path.
+	if !errors.Is(err, protocol.ErrAccessorNotFound) {
+		t.Errorf("unknown id: err does not wrap protocol.ErrAccessorNotFound (the edge will "+
+			"classify this CodeRuntimeError, not CodeNotFound): %v", err)
 	}
 }
 
@@ -178,7 +186,10 @@ func TestToolContextStore_CrossIdentityNotFound(t *testing.T) {
 	// B with the SAME (serverID, toolCallID) must not find it.
 	if _, err := tc.Load(ctxB, "srv-a", "shared-id"); err == nil {
 		t.Fatal("cross-identity read found a context — isolation breach")
-	} else if !strings.Contains(err.Error(), "tool context not found") {
+	} else if !errors.Is(err, protocol.ErrAccessorNotFound) {
+		// Same reasoning as above, and load-bearing for isolation: a
+		// cross-identity read must be INDISTINGUISHABLE at the wire from an
+		// unknown id, which means both must reach the edge as the sentinel.
 		t.Errorf("cross-identity read returned wrong error: %v", err)
 	}
 }

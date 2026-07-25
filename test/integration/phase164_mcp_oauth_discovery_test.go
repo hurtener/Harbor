@@ -172,7 +172,7 @@ func TestE2E_MCPOAuthDiscovery_ProbeWalksChainAndProjects(t *testing.T) {
 	})
 
 	surface := newDiscoverySurface(t, reg)
-	adminCtx := protoauth.WithScopes(context.Background(), []protoauth.Scope{protoauth.ScopeAdmin})
+	adminCtx := protoauth.WithScopes(verifiedDiscoveryCtx(t), []protoauth.Scope{protoauth.ScopeAdmin})
 
 	// probe (admin) triggers the chain walk.
 	if _, err := surface.Dispatch(adminCtx, methods.MethodMCPServersProbe,
@@ -270,7 +270,7 @@ func TestE2E_MCPOAuthDiscovery_WrongFieldFixture_NoServers(t *testing.T) {
 	})
 
 	surface := newDiscoverySurface(t, reg)
-	adminCtx := protoauth.WithScopes(context.Background(), []protoauth.Scope{protoauth.ScopeAdmin})
+	adminCtx := protoauth.WithScopes(verifiedDiscoveryCtx(t), []protoauth.Scope{protoauth.ScopeAdmin})
 	_, _ = surface.Dispatch(adminCtx, methods.MethodMCPServersProbe,
 		&types.MCPServerProbeRequest{Identity: discoveryIdentity(), Name: "mcp-bad"})
 
@@ -328,7 +328,7 @@ func TestE2E_MCPOAuthDiscovery_ConcurrentProbeAndGet(t *testing.T) {
 	})
 
 	surface := newDiscoverySurface(t, reg)
-	adminCtx := protoauth.WithScopes(context.Background(), []protoauth.Scope{protoauth.ScopeAdmin})
+	adminCtx := protoauth.WithScopes(verifiedDiscoveryCtx(t), []protoauth.Scope{protoauth.ScopeAdmin})
 
 	const n = 32
 	var wg sync.WaitGroup

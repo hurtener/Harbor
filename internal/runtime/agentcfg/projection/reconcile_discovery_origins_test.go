@@ -23,6 +23,16 @@ type fakeOriginReconciler struct {
 	mu       sync.Mutex
 	live     map[string][]string
 	calls    int
+	// owners records the owner presented on each apply — the reconcile passes
+	// the reconciling owner through so the live write is owner-scoped.
+	owners []auth.Owner
+}
+
+// seenOwners returns a copy of the owners presented on the apply calls.
+func (f *fakeOriginReconciler) seenOwners() []auth.Owner {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]auth.Owner(nil), f.owners...)
 }
 
 func newFakeOriginReconciler(live map[string][]string, attached ...string) *fakeOriginReconciler {
@@ -36,10 +46,11 @@ func (f *fakeOriginReconciler) AttachedSources(_ context.Context, _ auth.Owner) 
 	return append([]string(nil), f.attached...)
 }
 
-func (f *fakeOriginReconciler) SetOAuthDiscoveryOrigins(_ context.Context, name string, origins []string) ([]string, error) {
+func (f *fakeOriginReconciler) SetOAuthDiscoveryOrigins(_ context.Context, owner auth.Owner, name string, origins []string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.owners = append(f.owners, owner)
 	prev := append([]string(nil), f.live[name]...)
 	f.live[name] = append([]string(nil), origins...)
 	return prev, nil
@@ -53,6 +64,8 @@ func (f *fakeOriginReconciler) get(name string) []string {
 
 // seedConnectionsWithOrigins writes an active revision declaring one connection
 // with the given allow-list.
+//
+//nolint:unparam // test helper: the connection name is fixed across these cases.
 func seedConnectionsWithOrigins(t *testing.T, reg agentcfg.Registry, name string, origins []string) {
 	t.Helper()
 	payload := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{
@@ -60,6 +73,26 @@ func seedConnectionsWithOrigins(t *testing.T, reg agentcfg.Registry, name string
 	}}}
 	if _, err := reg.SetRevision(context.Background(), projID(), projAgent, agentcfg.ConfigScopeAgent, payload); err != nil {
 		t.Fatalf("seed: %v", err)
+	}
+}
+
+// TestReconcile_PassesReconcilingOwnerToTheLiveApply proves the allowance
+// re-apply carries the reconciling (tenant, agent) owner — the same owner the
+// attached-set view was taken under — so the live write stays scoped to that
+// owner's own runtime-added registrations.
+func TestReconcile_PassesReconcilingOwnerToTheLiveApply(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	seedConnectionsWithOrigins(t, reg, "srv", []string{"https://as.example.net"})
+	rec := newFakeOriginReconciler(nil, "srv")
+
+	if _, err := projection.ReconcileDiscoveryOrigins(ctx, reg, projAgent, projID(), rec); err != nil {
+		t.Fatalf("ReconcileDiscoveryOrigins: %v", err)
+	}
+	want := auth.Owner{Tenant: projTenant, Agent: projAgent}
+	seen := rec.seenOwners()
+	if len(seen) != 1 || seen[0] != want {
+		t.Fatalf("owners presented to the live apply = %v, want [%v]", seen, want)
 	}
 }
 

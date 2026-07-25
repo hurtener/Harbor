@@ -19,6 +19,7 @@
 // in the durable event payloads (the task lifecycle payloads omit it), so the
 // caller folds it in from a single catalog lookup.
 
+import type { McpUiDisplayMode, MCPAppRefView } from '../chat/renderers/app-bridge-host.js';
 import type { ProtocolClient } from '../protocol/client.js';
 import type { StateEvent, StateHistoryResponse } from '../protocol/state.js';
 import { DEFAULT_STATE_HISTORY_LIMIT } from '../protocol/state.js';
@@ -167,6 +168,23 @@ export interface HistoryTurn {
 	 * decisions append no trajectory step, so they emit no reasoning step.
 	 */
 	reasoningSteps: HistoryReasoningStep[];
+	/**
+	 * The interactive MCP App the turn's tool result declared, reconstructed
+	 * from the run's durable `mcp.app_available` event. Deliberately the SAME
+	 * {@link MCPAppRefView} the LIVE discovery path builds (`applyAppAvailable`
+	 * in the Playground page) — NOT a second wire shape — so the hydrated
+	 * message field is assignment-compatible with the live path's and the
+	 * renderer that already mounts a live App mounts a replayed one unchanged.
+	 * Absent when the turn declared no App. Paired with {@link serverID}.
+	 */
+	app?: MCPAppRefView;
+	/**
+	 * The MCP server (source id) hosting {@link app} — the renderer reads the
+	 * app's `ui://` document from this server, and pairs it with the ref's
+	 * `toolCallId` to fetch the persisted tool context. Set exactly when
+	 * `app` is set.
+	 */
+	serverID?: string;
 }
 
 /** Reads the first present string field across PascalCase / snake_case keys. */
@@ -185,6 +203,14 @@ function readNumber(obj: Record<string, unknown>, keys: string[]): number {
 		if (typeof v === 'number' && Number.isFinite(v)) return v;
 	}
 	return 0;
+}
+
+/** Reads the first present boolean across PascalCase / snake_case keys. */
+function readBool(obj: Record<string, unknown>, keys: string[]): boolean {
+	for (const k of keys) {
+		if (obj[k] === true) return true;
+	}
+	return false;
 }
 
 /** Reads a nested object field across PascalCase / snake_case keys. */
@@ -214,6 +240,14 @@ const STEP_APPENDING_DECISION_KINDS = new Set([
 	'SpawnTask',
 	'AwaitTask'
 ]);
+
+/**
+ * The MCP-Apps display modes the host can negotiate. An unrecognised (or
+ * absent) hint normalises to `''` — "the server stated no preference" — which
+ * the renderer reads as inline. Mirrors the live decoder's guard so a
+ * reopened App negotiates the SAME mode a live one did.
+ */
+const KNOWN_DISPLAY_MODES = new Set<string>(['inline', 'fullscreen', 'pip']);
 
 /** The run id an event belongs to — the wire `run` field, or a payload TaskID. */
 function eventRunID(ev: StateEvent): string {
@@ -247,6 +281,13 @@ function eventRunID(ev: StateEvent): string {
  *   - `tool.completed` / `tool.failed` → resolves the matching open row's
  *     status + a short content-free summary (duration / error class), mirroring
  *     the live `applyToolLifecycle` reducer.
+ *   - `mcp.app_available` → the turn's interactive MCP App ref (`app` +
+ *     `serverID`), reconstructed into the SAME `MCPAppRefView` shape the live
+ *     discovery path builds — so a reopened turn re-mounts the App the live
+ *     transcript showed instead of degrading to the deliberately-terse
+ *     model-facing tool text. LAST-WINS within a run (a turn whose tool
+ *     results declared two Apps shows the later one), mirroring the live
+ *     reducer, which overwrites the bubble's `app` on each discovery.
  *   - `task.started` → task-terminal timestamps → the run's active `durationMs`
  *     (a fallback; the Playground prefers the `tasks.list` `duration_ms`).
  *
@@ -370,6 +411,38 @@ export function reduceHistoryTurns(events: readonly StateEvent[]): HistoryTurn[]
 			const msg = readString(p, ['ErrorMessage', 'error_message', 'LastError', 'last_error']);
 			const summary = msg !== '' ? (cls !== '' ? `${cls}: ${msg}` : msg) : cls !== '' ? cls : 'failed';
 			if (tool !== '') resolveToolRow(turn, tool, 'failed', summary);
+		} else if (ev.type === 'mcp.app_available') {
+			// An MCP tool result on this turn declared an interactive `ui://`
+			// App. Reconstruct the SAME `MCPAppRefView` the live discovery path
+			// builds so the renderer mounts a replayed App exactly as it mounts
+			// a live one. `serverID` + `resourceUri` are both load-bearing (the
+			// renderer fetches the document via `readResource(serverID, uri)`),
+			// so a frame missing either declares no App at all — dropped here
+			// for the SAME reason the live decoder drops it, rather than
+			// hydrating a ref that could only mount broken.
+			const serverID = readString(p, ['ServerID', 'server_id']);
+			const resourceUri = readString(p, ['ResourceURI', 'resource_uri']);
+			if (serverID !== '' && resourceUri !== '') {
+				const mode = readString(p, ['DisplayMode', 'display_mode']);
+				turn.app = {
+					resourceUri,
+					displayMode: KNOWN_DISPLAY_MODES.has(mode) ? (mode as McpUiDisplayMode) : '',
+					rawHtmlTrusted: readBool(p, ['RawHTMLTrusted', 'raw_html_trusted']),
+					// The deterministic content-hash correlation key the renderer
+					// pairs with `serverID` to read the PERSISTED tool context
+					// (`mcp.apps.tool_context`). Nothing new is stored for the
+					// replay — the runtime already persisted it under this id.
+					toolCallId: readString(p, ['ToolCallID', 'tool_call_id']),
+					// The server-side tool name that declared the app — display
+					// metadata the host projects onto the `ui/initialize`
+					// host-context `toolInfo`. Read here for the same reason the
+					// live decoder reads it: the two projections must produce
+					// identical refs, and a one-sided omission is the drift the
+					// paired spec exists to catch.
+					toolName: readString(p, ['ToolName', 'tool_name'])
+				};
+				turn.serverID = serverID;
+			}
 		} else if (ev.type === 'task.started') {
 			started.set(runID, ev.occurred_at);
 		}

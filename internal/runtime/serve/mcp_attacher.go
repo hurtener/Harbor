@@ -62,16 +62,41 @@ type MCPConnectionAttacher struct {
 	// resolves against, so an installed provider is bindable. Takes precedence
 	// over oauthProviders. Set once at construction.
 	oauthProviderSet toolauth.ProviderSet
+	// toolContext is the MCP Apps tool-context capturer a runtime-added
+	// server's providers persist an app-declaring tool call's input + lowered
+	// result through — the SAME store the boot-config attach path wires, so a
+	// server attached at runtime is not a second-class citizen. Without it, a
+	// tool on a runtime-added server that declares a `ui://` app would capture
+	// nothing, and a host could not fetch the context that makes the rendered
+	// app show real data. Nil is legitimate (an embedder with no store); the
+	// driver then stamps no tool-call id at all rather than promising a
+	// context that does not exist. Set once at construction.
+	toolContext mcpdrv.ToolContextCapturer
 
 	mu      sync.Mutex
 	closers []func(context.Context) error
 }
 
+// Compile-time assertions that the production concrete satisfies BOTH seams the
+// agent-config service binds it to. The mux binds the applier through an
+// UNCHECKED type assertion (`in.MCPAttacher.(agentcfgprotocol.DiscoveryOriginApplier)`),
+// which degrades silently to "not wired" on a signature drift — the write would
+// keep answering 200 with applied_live=false forever. These pin the shapes at
+// compile time so the drift is a build failure instead.
+var (
+	_ agentcfgprotocol.ConnectionAttacher     = (*MCPConnectionAttacher)(nil)
+	_ agentcfgprotocol.DiscoveryOriginApplier = (*MCPConnectionAttacher)(nil)
+)
+
 // NewMCPConnectionAttacher builds the production attacher. catalog,
 // registry, and bus are mandatory (mcpdrv.Attach validates them too).
 // oauthProviders may be nil when no provider is declared; oauthProviderSet, when
 // non-nil, is the runtime set (boot seed + installs) resolution consults first.
-func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider, oauthProviderSet toolauth.ProviderSet) *MCPConnectionAttacher {
+// toolContext is the MCP Apps tool-context capturer a runtime-added server's
+// providers capture through — pass the runtime's store so a runtime-added
+// server behaves like a boot-config one; nil is legitimate only where no store
+// exists (the driver then stamps no tool-call id).
+func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider, oauthProviderSet toolauth.ProviderSet, toolContext mcpdrv.ToolContextCapturer) *MCPConnectionAttacher {
 	return &MCPConnectionAttacher{
 		catalog:          catalog,
 		registry:         registry,
@@ -80,6 +105,7 @@ func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Regist
 		defaultIdentity:  defaultIdentity,
 		oauthProviders:   oauthProviders,
 		oauthProviderSet: oauthProviderSet,
+		toolContext:      toolContext,
 	}
 }
 
@@ -142,7 +168,12 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 		Closers:          &local,
 		OAuthProviders:   a.oauthProviders,
 		OAuthProviderSet: a.oauthProviderSet,
-		Owner:            owner,
+		// Capture app tool contexts on this connection exactly as the
+		// boot-config attach path does, so a `ui://` app declared by a tool on
+		// a runtime-added server renders with its real data instead of an
+		// empty shell.
+		ToolContext: a.toolContext,
+		Owner:       owner,
 	})
 	// Merge whatever closers Attach appended (a successful Connect appends the
 	// provider's Close even if a later step failed — drain it on teardown).
@@ -174,18 +205,46 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 // delegating to the process-global bare-name registry (identity-mandatory for
 // authorization; the registry is never re-keyed by identity). The revoke-prune
 // of any recorded requirement lives in the registry mutator.
-func (a *MCPConnectionAttacher) SetOAuthDiscoveryOrigins(ctx context.Context, name string, origins []string) (prev []string, err error) {
+//
+// The write is OWNER-SCOPED: (tenant, agentID) is the caller's resolved owner —
+// the same (tenant, agent) tag Attach stamps on the registration — and the
+// registry replaces the allow-list only on a registration carrying that tag,
+// so an allowance write lands on the caller's OWN connection. Both components
+// are mandatory: an incomplete owner is refused loud rather than widened into
+// an unscoped write (the fail-closed twin of Attach's ErrRuntimeAddOwnerMissing
+// guard).
+//
+// The registry classifies "not mine" and "not there" identically (its
+// ErrServerNotFound), which is the right answer AT the registry boundary but
+// the wrong diagnostic for the operator: one degrades to a revision-only write,
+// the other is an authorization refusal. So the OWNER comparison the operator
+// sees is read here from the registry's owner tag — mirroring the same
+// [mcpdrv.Registry.OwnerOf] comparison the same-name attach replace performs —
+// and surfaced as agentcfgprotocol.ErrConnectionOwnerMismatch. The registry's
+// own owner scoping remains the authoritative enforcement (a registration
+// replaced between the two reads still refuses the write and degrades, never
+// applies).
+func (a *MCPConnectionAttacher) SetOAuthDiscoveryOrigins(ctx context.Context, tenant, agentID, name string, origins []string) (prev []string, err error) {
 	if a.registry == nil {
 		return nil, errors.New("serve: mcp attacher has no registry wired for discovery-origin apply")
 	}
-	prev, err = a.registry.SetOAuthDiscoveryOrigins(ctx, name, origins)
+	owner := toolauth.Owner{Tenant: tenant, Agent: agentID}
+	if owner.Tenant == "" || owner.Agent == "" {
+		return nil, fmt.Errorf("%w: discovery-origin write for connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
+			ErrRuntimeAddOwnerMissing, name, owner.Tenant, owner.Agent)
+	}
+	if priorOwner, exists := a.registry.OwnerOf(name); exists && priorOwner != owner {
+		return nil, fmt.Errorf("%w: %q", agentcfgprotocol.ErrConnectionOwnerMismatch, name)
+	}
+	prev, err = a.registry.SetOAuthDiscoveryOrigins(ctx, name, owner, origins)
 	if errors.Is(err, mcpdrv.ErrServerNotFound) {
 		// The connection is declared in the revision but not attached in the live
-		// registry (unreachable server, or awaiting the next run-start reconcile).
-		// Translate to the service-layer sentinel so the setter degrades to a
-		// revision-only write (applied_live=false) instead of failing loud — the
-		// reconcile applies the allowance when the server comes online. Keeps this
-		// the ONLY place that imports the mcp driver's not-found sentinel.
+		// registry under this owner (unreachable server, or awaiting the next
+		// run-start reconcile). Translate to the service-layer sentinel so the
+		// setter degrades to a revision-only write (applied_live=false) instead of
+		// failing loud — the reconcile applies the allowance when the server comes
+		// online. Keeps this the ONLY place that imports the mcp driver's
+		// not-found sentinel.
 		return nil, fmt.Errorf("%w: %q", agentcfgprotocol.ErrDiscoveryTargetNotLive, name)
 	}
 	return prev, err

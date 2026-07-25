@@ -1,24 +1,24 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 
-	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
 // servePosture is the runtime-posture REST adapter.
-// It decodes the body into a `*types.RuntimeInfoRequest`, backfills the
-// body identity from the auth-verified identity in ctx when the body
-// left it empty (same posture as the control transport's
-// `assertBodyMatchesAuthedIdentity`), and dispatches through the
-// configured PostureSurface.
+// It decodes the body into a `*types.RuntimeInfoRequest`, reconciles the
+// body identity against the request's verified identity through the
+// shared body-identity gate, and dispatches through the configured
+// PostureSurface under the reconciled ctx.
 //
 // The PostureSurface itself enforces:
 //
@@ -44,19 +44,13 @@ func (h *Handler) servePosture(w http.ResponseWriter, r *http.Request, method me
 		}
 	}
 
-	// defence-in-depth: when auth.Middleware ran, r.Context()
-	// carries the verified identity. The body's IdentityScope MUST be
-	// consistent with it — backfill an empty body identity from the
-	// JWT, and reject a body claiming a different (tenant, user,
-	// session) than the verified one. When no middleware ran (
-	// trust-based posture) the check is a no-op and the body identity
-	// is authoritative — same posture as the control transport.
-	if perr := backfillPostureIdentity(r, req); perr != nil {
+	ctx, perr := h.reconcilePostureIdentity(r, req)
+	if perr != nil {
 		h.writeError(w, r, perr)
 		return
 	}
 
-	resp, derr := h.postureSurface.Dispatch(r.Context(), method, req)
+	resp, derr := h.postureSurface.Dispatch(ctx, method, req)
 	if derr != nil {
 		h.writePostureError(w, r, method, derr)
 		return
@@ -64,41 +58,18 @@ func (h *Handler) servePosture(w http.ResponseWriter, r *http.Request, method me
 	h.writeJSON(w, r, http.StatusOK, resp)
 }
 
-// backfillPostureIdentity threads the verified identity into
-// the posture request body. When ctx carries a verified identity:
+// reconcilePostureIdentity routes the posture request body through the
+// shared body-identity gate under the posture surface's registered
+// policy. The policy pins the user and the session and declares the
+// tenant admin-scoped: a fleet operator reads another tenant's posture
+// under the admin claim, and the gate records the crossing before
+// granting it.
 //
-//   - An empty body identity is backfilled from the JWT (the JWT is the
-//     source of truth — the same backfill the control transport does).
-//   - A populated body identity must match the JWT's (tenant, user,
-//     session) on every non-empty component, EXCEPT the Tenant — a
-//     cross-tenant posture read with a differing Tenant is a legitimate
-//     admin request the PostureSurface gates on the admin scope. User
-//     and Session mismatches are rejected here closed.
-//
-// When ctx carries no verified identity (no middleware ran), the body
-// identity is authoritative and this is a no-op.
-func backfillPostureIdentity(r *http.Request, req *types.RuntimeInfoRequest) *protoerrors.Error {
-	authed, ok := identity.From(r.Context())
-	if !ok {
-		return nil
-	}
-	scope := req.Identity
-	if scope.Tenant == "" && scope.User == "" && scope.Session == "" {
-		scope.Tenant = authed.TenantID
-		scope.User = authed.UserID
-		scope.Session = authed.SessionID
-		req.Identity = scope
-		return nil
-	}
-	// The User / Session must match the verified identity — they are
-	// not cross-tenant-elevatable. The Tenant deliberately may differ
-	// (a cross-tenant posture read); the PostureSurface gates that on
-	// the admin scope.
-	if scope.User != authed.UserID || scope.Session != authed.SessionID {
-		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
-			"posture request body identity (user/session) does not match the verified JWT identity")
-	}
-	return nil
+// It returns the ctx to dispatch under, which carries the audited
+// crossing when one was granted.
+func (h *Handler) reconcilePostureIdentity(r *http.Request, req *types.RuntimeInfoRequest) (context.Context, *protoerrors.Error) {
+	return bodyscope.Reconcile(r.Context(), bodyscope.ForIdentityScope(&req.Identity),
+		bodyscope.SurfacePosture, h.bodyScopeAuditor)
 }
 
 // writePostureError maps a PostureSurface error onto the wire. The

@@ -103,7 +103,7 @@ func prResourceDoc() []byte {
 // challenge) then the admin get, returning the projected requirement (or nil).
 func probeAndGet(t *testing.T, surface *protocol.MCPSurface, name string) *types.MCPOAuthRequirementView {
 	t.Helper()
-	adminCtx := protoauth.WithScopes(context.Background(), []protoauth.Scope{protoauth.ScopeAdmin})
+	adminCtx := protoauth.WithScopes(verifiedDiscoveryCtx(t), []protoauth.Scope{protoauth.ScopeAdmin})
 	if _, err := surface.Dispatch(adminCtx, methods.MethodMCPServersProbe,
 		&types.MCPServerProbeRequest{Identity: discoveryIdentity(), Name: name}); err != nil {
 		t.Logf("probe returned (expected, stub transport): %v", err)
@@ -309,11 +309,13 @@ func TestE2E_Phase170_IdentityPropagation_MissingIdentityRefused(t *testing.T) {
 	if req := probeAndGet(t, surface, "mcp-id"); prViewStatus(req) == nil {
 		t.Fatalf("valid-identity read should project the requirement")
 	}
-	// Failure mode: a missing-identity read is refused.
-	adminCtx := protoauth.WithScopes(context.Background(), []protoauth.Scope{protoauth.ScopeAdmin})
-	if _, err := surface.Dispatch(adminCtx, methods.MethodMCPServersGet,
-		&types.MCPServerGetRequest{Identity: types.IdentityScope{}, Name: "mcp-id"}); err == nil {
-		t.Fatalf("missing-identity get should be refused")
+	// Failure mode: a read whose context carries no established identity
+	// is refused. The body's own triple is caller-supplied input; it
+	// never stands in for the authority the transport establishes.
+	unestablished := protoauth.WithScopes(context.Background(), []protoauth.Scope{protoauth.ScopeAdmin})
+	if _, err := surface.Dispatch(unestablished, methods.MethodMCPServersGet,
+		&types.MCPServerGetRequest{Identity: discoveryIdentity(), Name: "mcp-id"}); err == nil {
+		t.Fatalf("a read with no established identity should be refused")
 	}
 }
 

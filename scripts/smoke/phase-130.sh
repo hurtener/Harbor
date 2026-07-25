@@ -109,7 +109,7 @@ if command -v curl >/dev/null 2>&1; then
         -d '{"query":"phase-130 seed","description":"sessions.delete smoke"}' >/dev/null 2>&1 || true
 
       # Foreign-target body (tenant != the verified triple) → 401, refused by
-      # assertSessionsIdentity BEFORE any erasure logic (own-session-only).
+      # the body-identity gate BEFORE any erasure logic (own-session-only).
       set +e
       FT=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
         -X POST -H "Authorization: Bearer ${TOKEN}" "${ID_HEADERS[@]}" \

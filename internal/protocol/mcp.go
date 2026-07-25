@@ -12,6 +12,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/adminwrite"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -408,6 +409,17 @@ func (s *MCPSurface) gate(ctx context.Context, method methods.Method, req any) (
 	if scope == nil {
 		return identity.Identity{}, false, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: request is nil or not a recognised MCP request type", string(method))
+	}
+	// Reconcile the caller-supplied body scope against the ctx verified
+	// identity under this surface's registered policy. Running it HERE
+	// rather than only in the transport is what makes this surface's
+	// transport-agnostic claim true: a second transport, or an embedder
+	// calling Dispatch directly, gets the same answer without
+	// re-deriving the check. The policy pins all three components — the
+	// connection catalog is process-global and the verb gate below mints
+	// no claim that widens the tenant.
+	if _, perr := bodyscope.Reconcile(ctx, bodyscope.ForIdentityScope(scope), bodyscope.SurfaceMCP, nil); perr != nil {
+		return identity.Identity{}, false, perr
 	}
 	id := identity.Identity{
 		TenantID:  scope.Tenant,
@@ -1092,20 +1104,32 @@ func mapMCPError(method string, err error) error {
 	}
 }
 
-// isMCPNotFound / isMCPIdentityMissing classify accessor errors by their
-// error-message marker. The `protocol` package does not import the `mcp`
-// driver (no import cycle), so the classification is string-based — the
-// accessor wraps the driver sentinel and the marker is stable.
+// isMCPNotFound classifies an accessor's not-found verdict by SENTINEL.
+//
+// The `protocol` package does not import the `mcp` driver or the `mcpconsole`
+// accessor (no import cycle), which is why this classification was originally
+// string-based. It is not any more: the accessor layer — the only one allowed
+// to know both taxonomies — translates its driver's sentinel into the
+// Protocol's `ErrAccessorNotFound`, and this reads that. See
+// ErrAccessorNotFound for why the text-matching form was unsafe.
+//
+// `isMCPIdentityMissing` below is still marker-based; see its own note.
 func isMCPNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	// The MCP registry surfaces "server not found"; the tool-context store
-	// surfaces "tool context not found" for an unknown or cross-identity
-	// (serverID, toolCallID). Both map to CodeNotFound — existence is never
-	// revealed across identities.
-	return containsMarker(msg, "server not found") || containsMarker(msg, "tool context not found")
+	// SENTINEL ONLY. An accessor states the not-found verdict by wrapping
+	// ErrAccessorNotFound; nothing here reads the rendered message.
+	//
+	// This used to substring-match the chain for "server not found" /
+	// "tool context not found". A southbound MCP server's error text is wrapped
+	// verbatim into that chain, so the match let a REMOTE party's wording decide
+	// a Harbor classification: a transport failure phrased the wrong way became
+	// a typed CodeNotFound, which a rendered MCP App reads as a PERMANENT "this
+	// action does not exist here". The sentinel cannot be forged by text — see
+	// ErrAccessorNotFound and mcpconsole.markNotFound (the only layer allowed to
+	// know both the driver's sentinel and the Protocol's).
+	return stderrors.Is(err, ErrAccessorNotFound)
 }
 
 func isMCPIdentityMissing(err error) bool {
@@ -1113,14 +1137,17 @@ func isMCPIdentityMissing(err error) bool {
 }
 
 // isAppToolExposureDenied classifies the app→host current-state exposure
-// rejection (a paused server / disabled tool in the agent's active config).
-// It maps to CodeScopeMismatch — an authorization rejection, not a
+// rejection (a paused server / disabled tool in the agent's active config) by
+// SENTINEL. It maps to CodeScopeMismatch — an authorization rejection, not a
 // not-found — driving the operator-legible "paused by an administrator"
-// overlay. String-based, like the markers above: the `protocol` package
-// does not import the `mcpconsole` accessor (no import cycle), and the
-// accessor's sentinel message carries this stable marker.
+// overlay.
+//
+// Sentinel rather than marker for the same reason as isMCPNotFound: the
+// accessor wraps ErrAccessorScopeDenied to state its own verdict, so a
+// southbound server whose error text happens to read like an exposure refusal
+// cannot mint one.
 func isAppToolExposureDenied(err error) bool {
-	return err != nil && containsMarker(err.Error(), "paused or disabled by agent configuration")
+	return stderrors.Is(err, ErrAccessorScopeDenied)
 }
 
 // mcpCountToWire converts a runtime int count (tool / resource /

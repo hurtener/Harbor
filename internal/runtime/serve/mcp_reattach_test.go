@@ -136,7 +136,7 @@ func TestMCPConnectionAttacher_ReAttach_ReplacesLiveRegistration(t *testing.T) {
 	bus := mkDriverTestBus(t, auditpatterns.New())
 	a := NewMCPConnectionAttacher(cat, reg, bus,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		identity.Identity{TenantID: "sys", UserID: "sys", SessionID: "sys"}, nil, nil)
+		identity.Identity{TenantID: "sys", UserID: "sys", SessionID: "sys"}, nil, nil, nil)
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
 
 	// Pre-seed a still-LIVE same-name registration + its colliding catalog tool,
@@ -227,7 +227,7 @@ func TestMCPConnectionAttacher_ReAttach_Concurrent(t *testing.T) {
 	bus := mkDriverTestBus(t, auditpatterns.New())
 	a := NewMCPConnectionAttacher(cat, reg, bus,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		identity.Identity{TenantID: "sys", UserID: "sys", SessionID: "sys"}, nil, nil)
+		identity.Identity{TenantID: "sys", UserID: "sys", SessionID: "sys"}, nil, nil, nil)
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
 
 	var wg sync.WaitGroup

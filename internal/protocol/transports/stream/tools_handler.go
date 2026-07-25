@@ -39,6 +39,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -123,7 +124,7 @@ func (h *ToolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Identity at the edge — RFC §5.5, CLAUDE.md §6 rule 9. A missing /
 	// incomplete triple fails closed with CodeIdentityRequired (401).
-	id, err := resolveIdentity(r)
+	id, r, err := resolveIdentity(r)
 	if err != nil {
 		writeToolsError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -190,6 +191,10 @@ func (h *ToolsHandler) serveList(w http.ResponseWriter, r *http.Request, body []
 			"failed to decode tools.list request: "+err.Error())
 		return
 	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceTools); perr != nil {
+		writeToolsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
+	}
 	req.Identity = scope
 	resp, err := h.service.List(r.Context(), req)
 	if err != nil {
@@ -204,6 +209,10 @@ func (h *ToolsHandler) serveGet(w http.ResponseWriter, r *http.Request, body []b
 	if err := decodeToolsBody(body, &req); err != nil {
 		writeToolsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			"failed to decode tools.get request: "+err.Error())
+		return
+	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceTools); perr != nil {
+		writeToolsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = scope
@@ -222,6 +231,10 @@ func (h *ToolsHandler) serveDescribe(w http.ResponseWriter, r *http.Request, bod
 			"failed to decode tools.describe request: "+err.Error())
 		return
 	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceTools); perr != nil {
+		writeToolsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
+	}
 	req.Identity = scope
 	resp, err := h.service.Describe(r.Context(), req)
 	if err != nil {
@@ -236,6 +249,10 @@ func (h *ToolsHandler) serveMetrics(w http.ResponseWriter, r *http.Request, body
 	if err := decodeToolsBody(body, &req); err != nil {
 		writeToolsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			"failed to decode tools.metrics request: "+err.Error())
+		return
+	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceTools); perr != nil {
+		writeToolsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = scope
@@ -254,6 +271,10 @@ func (h *ToolsHandler) serveContentStats(w http.ResponseWriter, r *http.Request,
 			"failed to decode tools.content_stats request: "+err.Error())
 		return
 	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceTools); perr != nil {
+		writeToolsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
+	}
 	req.Identity = scope
 	resp, err := h.service.ContentStats(r.Context(), req)
 	if err != nil {
@@ -270,6 +291,10 @@ func (h *ToolsHandler) serveSetApprovalPolicy(w http.ResponseWriter, r *http.Req
 			"failed to decode tools.set_approval_policy request: "+err.Error())
 		return
 	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceTools); perr != nil {
+		writeToolsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
+	}
 	req.Identity = scope
 	resp, err := h.service.SetApprovalPolicy(r.Context(), req, adminScoped)
 	if err != nil {
@@ -284,6 +309,10 @@ func (h *ToolsHandler) serveRevokeOAuth(w http.ResponseWriter, r *http.Request, 
 	if err := decodeToolsBody(body, &req); err != nil {
 		writeToolsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			"failed to decode tools.revoke_oauth request: "+err.Error())
+		return
+	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceTools); perr != nil {
+		writeToolsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = scope

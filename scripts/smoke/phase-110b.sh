@@ -42,7 +42,7 @@ assert_grep_absent 'func ExtractSkillKeywords' "internal/runtime/runctx/runctx.g
 #    `runctx.*` call sites don't trip the absence check.
 for def in 'func projectMemoryBlocks' 'func projectSkillsContext' \
     'func extractSkillKeywords' 'func extractAssistantAnswer' \
-    ') resolveInputArtifacts(' 'skillKeywordStopwords'; do
+    '\) resolveInputArtifacts\(' 'skillKeywordStopwords'; do
     assert_grep_absent "${def}" "internal/runtime/serve/runloop.go" \
         "cmd runloop no longer defines '${def}'"
 done
@@ -59,7 +59,7 @@ assert_grep_present 'llm\.NewChunkPublisher' "internal/runtime/serve/runloop.go"
 #    THIRD extractSkillKeywords copy the audit found).
 for def in 'devStackProjectMemoryBlocks' 'devStackProjectSkillsContext' \
     'devStackExtractSkillKeywords' 'devStackExtractAssistantAnswer' \
-    'devStackSkillKeywordStopwords' ') resolveInputArtifacts('; do
+    'devStackSkillKeywordStopwords' '\) resolveInputArtifacts\('; do
     assert_grep_absent "${def}" "harbortest/devstack/devstack.go" \
         "devstack no longer defines '${def}'"
 done
@@ -80,9 +80,9 @@ assert_grep_present 'runctx\.FinishAnswerEnvelope' "internal/runtime/serve/runlo
     "devstack MarkComplete builds the envelope via the shared runctx builder"
 assert_grep_present 'planner\.AnswerEnvelope' "internal/runtime/runctx/answer_envelope.go" \
     "the shared builder constructs the canonical planner.AnswerEnvelope"
-assert_grep_absent 'planner\.AnswerEnvelope{' "internal/runtime/serve/runloop.go" \
+assert_grep_absent 'planner\.AnswerEnvelope\{' "internal/runtime/serve/runloop.go" \
     "no hand-rolled envelope literal survives in devstack (§13 one-builder rule)"
-assert_grep_absent 'MarkComplete(taskCtx, taskID, tasks.TaskResult{})' "internal/runtime/serve/runloop.go" \
+assert_grep_absent 'MarkComplete\(taskCtx, taskID, tasks.TaskResult\{\}\)' "internal/runtime/serve/runloop.go" \
     "devstack empty-TaskResult{} completion drift closed"
 
 # 5. The spawn-depth default is single-sourced (D-196 call 4 — the

@@ -15,7 +15,7 @@ import (
 // serveSearch is the search-method REST adapter. It
 // decodes the body into a `*types.SearchRequest`, defends the body
 // identity against the auth-verified identity in ctx (defence in
-// depth, same shape as assertBodyMatchesAuthedIdentity for control
+// depth, same shape as the shared body-identity gate for control
 // methods — but search has no per-request identity in the body, so
 // instead we read the verified identity straight from ctx), and
 // dispatches through the configured SearchSurface.

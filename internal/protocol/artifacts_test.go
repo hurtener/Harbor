@@ -227,7 +227,7 @@ func TestArtifactsListHandler_RejectsCrossTenant_WithoutAdmin(t *testing.T) {
 	t.Parallel()
 	s := newArtifactsSurface(t, newInMemStore(t), "inmem")
 	// Verified identity = tenant A; request scope = tenant B; no admin.
-	ctx, err := identity.With(context.Background(), identity.Identity{
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{
 		TenantID: "tenant-a", UserID: "u1", SessionID: "s1",
 	})
 	if err != nil {
@@ -247,7 +247,7 @@ func TestArtifactsListHandler_RejectsCrossTenant_WithoutAdmin(t *testing.T) {
 func TestArtifactsListHandler_AllowsCrossTenant_WithAdmin(t *testing.T) {
 	t.Parallel()
 	s := newArtifactsSurface(t, newInMemStore(t), "inmem")
-	ctx, err := identity.With(context.Background(), identity.Identity{
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{
 		TenantID: "tenant-a", UserID: "u1", SessionID: "s1",
 	})
 	if err != nil {
@@ -309,7 +309,7 @@ func TestArtifactsPutHandler_RejectsMissingIdentity(t *testing.T) {
 func TestArtifactsPutHandler_RejectsScopeMismatch(t *testing.T) {
 	t.Parallel()
 	s := newArtifactsSurface(t, newInMemStore(t), "inmem")
-	ctx, err := identity.With(context.Background(), identity.Identity{
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{
 		TenantID: "tenant-a", UserID: "u1", SessionID: "s1",
 	})
 	if err != nil {
@@ -502,7 +502,7 @@ func TestArtifactsGetRefHandler_ForeignTenant_Refused(t *testing.T) {
 			ref := putFixture(t, s, scope, []byte("payload"), types.ArtifactsPutOpts{})
 
 			// Verified identity = tenant A; request scope = tenant B.
-			ctx, err := identity.With(context.Background(), identity.Identity{
+			ctx, err := identity.WithVerified(context.Background(), identity.Identity{
 				TenantID: "tenant-a", UserID: "u1", SessionID: "s1",
 			})
 			if err != nil {
@@ -533,7 +533,7 @@ func TestArtifactsGetRefHandler_SameTenant_Allowed(t *testing.T) {
 	scope := types.ArtifactScope{Tenant: "tenant-a", User: "u1", Session: "s1"}
 	ref := putFixture(t, s, scope, []byte("payload"), types.ArtifactsPutOpts{})
 
-	ctx, err := identity.With(context.Background(), identity.Identity{
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{
 		TenantID: "tenant-a", UserID: "u1", SessionID: "s1",
 	})
 	if err != nil {

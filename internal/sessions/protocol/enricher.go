@@ -10,6 +10,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -60,13 +61,19 @@ type SessionCounters struct {
 	// HasFailedTask reports whether the session has at least one failed
 	// task.
 	HasFailedTask bool
-	// Partial is true when the bounded per-session scan that produced the
-	// cost / tokens / events counts hit its bound (ListWindow HasMore /
-	// Truncated) or the windowed-read substrate was unavailable. The counts
-	// are then an HONEST LOWER BOUND, not exact — the facet/sort layer MUST
-	// NOT treat a Partial key as authoritative. TasksCount / HasFailedTask /
-	// HasPendingIntervention (from the registries, not the bounded scan)
-	// stay exact.
+	// Partial is true when ANY of the reads behind this rollup could not
+	// be taken in full: the bounded per-session event scan hit its bound
+	// (ListWindow HasMore / Truncated), the windowed-read substrate was
+	// unavailable, or a registry read (tasks / pauses) failed or could not
+	// be scoped to the row. Every populated count is then an HONEST LOWER
+	// BOUND, not exact, and the facet/sort layer MUST NOT treat a Partial
+	// key as authoritative.
+	//
+	// The marker covers the registry reads deliberately: a failed
+	// registry read leaves TasksCount / HasFailedTask /
+	// HasPendingIntervention at their zero values, and a zero that means
+	// "we could not look" must never be reported as a zero that means
+	// "we looked and there were none".
 	Partial bool
 }
 
@@ -174,13 +181,15 @@ func (e *CounterEnricher) Counters(ctx context.Context, id identity.Identity, se
 	}
 	var out SessionCounters
 
-	// tasks_count / has_failed_task — exact, from the session-scoped task
-	// registry.
-	out.TasksCount, out.HasFailedTask = e.taskCounters(ctx, id)
+	// tasks_count / has_failed_task — from the session-scoped task
+	// registry. A read that could not be taken marks the rollup partial
+	// rather than reporting a zero nobody measured.
+	var tasksRead, pausesRead bool
+	out.TasksCount, out.HasFailedTask, tasksRead = e.taskCounters(ctx, id)
 
-	// has_pending_intervention — exact, from the session-scoped pause
-	// registry.
-	out.HasPendingIntervention = e.pendingIntervention(ctx, id)
+	// has_pending_intervention — from the session-scoped pause registry,
+	// same partial contract.
+	out.HasPendingIntervention, pausesRead = e.pendingIntervention(ctx, id)
 
 	// total_cost_cents / total_tokens / events_count — from the bounded
 	// per-session event scan. A truncated scan (or an unavailable
@@ -190,46 +199,77 @@ func (e *CounterEnricher) Counters(ctx context.Context, id identity.Identity, se
 	out.TotalCostCents = cents
 	out.TotalTokens = tokens
 	out.EventsCount = evCount
-	out.Partial = partial
+	out.Partial = partial || !tasksRead || !pausesRead
 
 	return out
 }
 
-// taskCounters returns the session's task count and whether any task
-// failed. The registry read is session-scoped by the folded identity.
-func (e *CounterEnricher) taskCounters(ctx context.Context, id identity.Identity) (count int, hasFailed bool) {
-	idCtx, err := identity.With(ctx, id)
+// taskCounters returns the session's task count, whether any task
+// failed, and whether the read was actually taken. The registry read is
+// session-scoped by the folded identity; a false third return means the
+// counts are unmeasured and the caller must mark the rollup partial.
+func (e *CounterEnricher) taskCounters(ctx context.Context, id identity.Identity) (count int, hasFailed bool, read bool) {
+	idCtx, err := e.rowScopedCtx(ctx, id)
 	if err != nil {
-		// An incomplete triple is a construction bug at the projector — the
-		// snapshot always carries a full identity. Surface it in the log and
-		// return honest zeros (never a partial marker here: task data is not
-		// part of the bounded-scan dimension).
-		e.logger.WarnContext(ctx, "sessions/protocol: task counter identity scope incomplete",
+		e.logger.WarnContext(ctx, "sessions/protocol: task counter row scope refused",
 			slog.String("session_id", id.SessionID), slog.Any("error", err))
-		return 0, false
+		return 0, false, false
 	}
 	summaries, err := e.tasks.List(idCtx, id, tasks.TaskFilter{})
 	if err != nil {
 		e.logger.WarnContext(ctx, "sessions/protocol: task counter list failed",
 			slog.String("session_id", id.SessionID), slog.Any("error", err))
-		return 0, false
+		return 0, false, false
 	}
 	for _, s := range summaries {
 		if s.Status == tasks.StatusFailed {
 			hasFailed = true
 		}
 	}
-	return len(summaries), hasFailed
+	return len(summaries), hasFailed, true
 }
+
+// rowScopedCtx seats the ROW's own identity for a row-scoped read.
+//
+// A row inside the caller's verified tenant is ordinary narrowing. A row
+// from ANOTHER tenant is a crossing — but the authorization for it
+// already happened upstream: the fleet listing that produced this row
+// was gated on the caller's verified admin-tier claim and recorded, and
+// the projector only ever hands down identities that listing returned.
+// Seating it as an audited re-scope names the tenant being read and why,
+// so the crossing stays visible instead of being an unexplained widening
+// buried in a projector.
+func (e *CounterEnricher) rowScopedCtx(ctx context.Context, id identity.Identity) (context.Context, error) {
+	verified, anchored := identity.FromVerified(ctx)
+	if !anchored || id.TenantID == verified.TenantID {
+		return identity.With(ctx, id)
+	}
+	// Defence in depth: re-check the claim the fleet listing gated on,
+	// here where the crossing is actually minted. The listing upstream
+	// should never hand down a foreign row to a caller without it, but a
+	// crossing that relies on a caller one layer up having checked is a
+	// crossing whose safety is inherited rather than held.
+	if !auth.HasScope(ctx, auth.ScopeAdmin) && !auth.HasScope(ctx, auth.ScopeConsoleFleet) {
+		return nil, fmt.Errorf("sessions counter rollup: %w", errRowScopeUnentitled)
+	}
+	return identity.WithElevated(ctx, id,
+		"sessions counter rollup: reading a row returned by an authorized fleet listing under that row's own identity")
+}
+
+// errRowScopeUnentitled — a row from another tenant reached the rollup on
+// a request carrying no admin-tier claim. The rollup refuses rather than
+// reading it; the row's counters come back unmeasured and the row is
+// marked partial.
+var errRowScopeUnentitled = errors.New("row belongs to another tenant and the request carries no admin-tier claim")
 
 // pendingIntervention reports whether the session has a paused pause record
 // awaiting resume / approval. The pause read is session-scoped.
-func (e *CounterEnricher) pendingIntervention(ctx context.Context, id identity.Identity) bool {
-	idCtx, err := identity.With(ctx, id)
+func (e *CounterEnricher) pendingIntervention(ctx context.Context, id identity.Identity) (pending bool, read bool) {
+	idCtx, err := e.rowScopedCtx(ctx, id)
 	if err != nil {
-		e.logger.WarnContext(ctx, "sessions/protocol: intervention identity scope incomplete",
+		e.logger.WarnContext(ctx, "sessions/protocol: intervention row scope refused",
 			slog.String("session_id", id.SessionID), slog.Any("error", err))
-		return false
+		return false, false
 	}
 	resp, err := e.pauses.List(idCtx, pauseresume.ListRequest{
 		Identity: id,
@@ -247,9 +287,9 @@ func (e *CounterEnricher) pendingIntervention(ctx context.Context, id identity.I
 	if err != nil {
 		e.logger.WarnContext(ctx, "sessions/protocol: intervention list failed",
 			slog.String("session_id", id.SessionID), slog.Any("error", err))
-		return false
+		return false, false
 	}
-	return resp.TotalRows > 0
+	return resp.TotalRows > 0, true
 }
 
 // eventCounters performs the single bounded per-session event scan and

@@ -85,7 +85,10 @@ type AppAvailablePayload struct {
 	// ToolCallID is the stable per-invocation id (a content hash, not a
 	// counter) the client passes to mcp.apps.tool_context to fetch the tool
 	// context — the input + lowered result — that produced this app. Safe
-	// by construction: an opaque hash, never caller content.
+	// by construction: an opaque hash, never caller content. EMPTY when no
+	// context was captured for the invocation (no capturer wired, or the
+	// capture failed): a non-empty id promises a fetchable record, so a
+	// client may treat a miss as an expired one and say so.
 	ToolCallID string
 	// ToolName is the server-side tool name that declared the app — display
 	// metadata only. Safe by construction: a tool name, never content.

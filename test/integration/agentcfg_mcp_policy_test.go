@@ -277,7 +277,7 @@ func TestE2E_AgentConfig_MCPPolicy(t *testing.T) {
 	}
 
 	// --- App→host CallTool is rejected against CURRENT state (CodeScopeMismatch). ---
-	idCtx, err := identity.With(ctx, mpID().Identity)
+	idCtx, err := identity.WithVerified(ctx, mpID().Identity)
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestE2E_AgentConfig_MCPPolicy_Concurrency(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed pause: %v", err)
 	}
-	idCtx, err := identity.With(ctx, mpID().Identity)
+	idCtx, err := identity.WithVerified(ctx, mpID().Identity)
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}

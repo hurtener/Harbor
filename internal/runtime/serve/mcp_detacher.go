@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
@@ -37,6 +38,18 @@ type MCPConnectionDetacher struct {
 	registry *mcpdrv.Registry
 	logger   *slog.Logger
 }
+
+// Compile-time assertions that the production concrete satisfies BOTH reconcile
+// seams the run loop binds it to. The run loop binds the allowance reconciler
+// through an UNCHECKED type assertion
+// (`d.connectionDetacher.(projection.DiscoveryOriginReconciler)`), which
+// degrades silently to a no-op on a signature drift — a rollback past a grant
+// would quietly stop revoking the origin live. These pin the shapes at compile
+// time so the drift is a build failure instead.
+var (
+	_ projection.ConnectionDetacher        = (*MCPConnectionDetacher)(nil)
+	_ projection.DiscoveryOriginReconciler = (*MCPConnectionDetacher)(nil)
+)
 
 // NewMCPConnectionDetacher builds the production detacher. catalog and
 // registry are mandatory (the reconcile is a no-op without them).
@@ -110,13 +123,15 @@ func (d *MCPConnectionDetacher) AttachedSources(_ context.Context, owner toolaut
 // OAuth-discovery cross-origin allow-list to the live registry — the run-start
 // allowance-reconcile leg's live effect (the rollback path for the
 // discovery-allowance write). It delegates to the process-global bare-name
-// registry (identity-mandatory for authorization). Satisfies
+// registry (identity-mandatory for authorization) and passes the reconciling
+// owner through, so the replacement lands only on a registration carrying that
+// owner tag — the same owner the sources came from (AttachedSources). Satisfies
 // projection.DiscoveryOriginReconciler alongside AttachedSources.
-func (d *MCPConnectionDetacher) SetOAuthDiscoveryOrigins(ctx context.Context, name string, origins []string) (prev []string, err error) {
+func (d *MCPConnectionDetacher) SetOAuthDiscoveryOrigins(ctx context.Context, owner toolauth.Owner, name string, origins []string) (prev []string, err error) {
 	if d.registry == nil {
 		return nil, nil
 	}
-	return d.registry.SetOAuthDiscoveryOrigins(ctx, name, origins)
+	return d.registry.SetOAuthDiscoveryOrigins(ctx, name, owner, origins)
 }
 
 // Detach deregisters the source's tools from the catalog (when the catalog

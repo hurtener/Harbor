@@ -60,12 +60,52 @@ ever consulted. The verified claims:
 | `iss` / `aud` / `exp` / `nbf` / `kid` | standard JWT validation against the Runtime's `identity:` config |
 
 The body of a request may also carry an `identity` object
-([`IdentityScope`](./types.md#identityscope)). The simplest correct client
-sends `"identity": {}` and relies on the header — the Runtime backfills the
-body from the verified request identity, and rejects any non-empty body
-component that contradicts it (`401 identity_required`). The body's `run` and
-`scope` fields are independent of the token and survive the backfill (they
-parameterise steering — see [task control](./task-control.md)).
+([`IdentityScope`](./types.md#identityscope)). The body scope is INPUT, not
+authority: the authority is the identity the Runtime verified for the request,
+and one shared gate reconciles the two before any handler acts.
+
+The simplest correct client sends `"identity": {}` and relies on the header —
+the Runtime backfills the body from the verified request identity. When the body
+IS populated, the reconciliation is:
+
+| Body component | Rule |
+|---|---|
+| `user`, `session` | Must equal the verified identity on every surface but one; a contradiction is `401 identity_required`. The exception is `state.history`, which reads another identity's whole timeline as a single unit — see the tenant row. |
+| `tenant` | Must equal the verified identity, EXCEPT on the surfaces that offer a cross-tenant read (below). Elsewhere a differing tenant is `401 identity_required` whatever your claims. |
+
+The surfaces that offer a cross-tenant read, the claim each takes, and what a
+refusal looks like:
+
+| Surface | Body components it will cross | Claim | Refused without it |
+|---|---|---|---|
+| `artifacts.list` | `tenant` | `admin` or `console:fleet` | `403 scope_mismatch` |
+| `artifacts.put` / `artifacts.delete` | `tenant` | `admin` only | `403 scope_mismatch` |
+| `artifacts.get_ref` | — (crosses for nobody) | — | `403 scope_mismatch` |
+| the seven posture reads (`runtime.*`, `metrics.snapshot`, `governance.posture`, `llm.posture`) | `tenant` | `admin` or `console:fleet` | `403 scope_mismatch` |
+| `topology.snapshot` | `tenant` | `admin` only | `403 scope_mismatch` |
+| `state.history` | `tenant`, `user` **and** `session` — a whole cross-identity read | `admin` only | `404 not_found` |
+
+Two of those rows are easy to get wrong, so branch on them deliberately.
+`state.history` is the only surface where a body naming another `user` and
+`session` is granted rather than refused — reading another identity's timeline
+is the point of the method. It is also the only one that answers a missing
+claim with `404 not_found` rather than `403 scope_mismatch`: the refusal is
+deliberately indistinguishable from "that session does not exist", so a caller
+without the claim learns nothing about which sessions are real. Do not treat a
+`404` from `state.history` as proof the session is gone.
+
+Writes take `admin` alone: `artifacts.put`, `artifacts.delete` and
+`topology.snapshot` refuse a read-only `console:fleet` token, which reaches
+`artifacts.list` and the posture reads but neither deposits nor destroys.
+`artifacts.get_ref` crosses for no claim at all — a presigned reference is a
+time-bounded bearer capability to the CONTENT, materially broader than the
+metadata a listing returns.
+
+Every granted crossing publishes `audit.admin_scope_used` naming the verified
+caller.
+
+The body's `run` and `scope` fields are independent of the token and survive the
+backfill (they parameterise steering — see [task control](./task-control.md)).
 
 ## The scope vocabulary (closed set)
 
@@ -130,10 +170,10 @@ Four distinct rejections, one error envelope each
 
 | HTTP | `code` | Meaning | Fix |
 |---|---|---|---|
-| 401 | `identity_required` | No identity resolved: missing bearer, missing session, or a body identity contradicting the token. | Attach the token / the `X-Harbor-Session` header; send `"identity": {}`. |
+| 401 | `identity_required` | No identity resolved: missing bearer, missing session, or a body identity contradicting the token on a component no claim widens. | Attach the token / the `X-Harbor-Session` header; send `"identity": {}`. |
 | 401 | `auth_rejected` | A token was present but failed verification (bad alg / signature / expiry / `kid` / audience / issuer). | Obtain a fresh, correctly-issued token. |
 | 403 | `identity_scope_required` | Authenticated and identified, but the requested cross-tenant fan-in or admin verb needs `admin` / `console:fleet`. | Re-authenticate with a scope-bearing token. |
-| 403 | `scope_mismatch` | A steering control's body `scope` claim is below the control's RFC §6.3 minimum, or cross-tenant steering without `admin`. | Use a sufficient steering scope. |
+| 403 | `scope_mismatch` | A steering control's body `scope` claim is below the control's RFC §6.3 minimum, cross-tenant steering without `admin`, or a body `tenant` naming another tenant on a surface that offers a cross-tenant read, without the claim it needs. `state.history` is the exception — it answers `404 not_found` instead (see above). | Use a sufficient steering scope, or re-authenticate with `admin` / `console:fleet`. |
 
 A useful diagnostic habit: `401` means "the wire doesn't know who you are";
 `403` means "it knows exactly who you are, and that's the problem."
