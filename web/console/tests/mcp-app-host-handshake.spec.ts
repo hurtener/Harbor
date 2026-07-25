@@ -406,7 +406,8 @@ test.describe('MCP Apps host↔app handshake (D-342 regression gate)', () => {
           serverID: 'srv',
           theme: 'dark',
           // The two re-landed host-context slots.
-          toolInfo: { toolCallId: 'tc_e2e_2', toolName: 'srv_report' },
+          // The BARE server-side tool name, as the runtime emits it.
+          toolInfo: { toolCallId: 'tc_e2e_2', toolName: 'report' },
           containerDimensions: { width: 640, maxHeight: 480 },
           availableDisplayModes: ['inline'],
           onInitialized: () => {
@@ -467,7 +468,7 @@ test.describe('MCP Apps host↔app handshake (D-342 regression gate)', () => {
         ).__appLog.find((m) => m.kind === 'initialized')?.data,
     );
     expect(init?.toolInfo?.id, 'toolInfo.id is the originating tool-call id').toBe('tc_e2e_2');
-    expect(init?.toolInfo?.tool?.name, 'toolInfo.tool.name is the server-side tool').toBe('srv_report');
+    expect(init?.toolInfo?.tool?.name, 'toolInfo.tool.name is the server-side tool').toBe('report');
     expect(init?.containerDimensions, 'containerDimensions reached the App').toEqual({
       width: 640,
       maxHeight: 480,

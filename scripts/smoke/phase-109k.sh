@@ -77,7 +77,7 @@ assert_grep_present 'qualifyAppToolName\(serverID, name\)' "${BRIDGE}" \
 # ----------------------------------------------------------------------------
 assert_grep_present 'bridge\.onsizechange' "${BRIDGE}" \
     'phase 109k: size-changed is consumed on the bridge'
-assert_grep_present 'onSizeChanged: onAppSizeChanged' "${RENDERER}" \
+assert_grep_present 'onAppSizeChanged\(size\)' "${RENDERER}" \
     'phase 109k: the renderer drives the frame height from the reported size'
 
 # ----------------------------------------------------------------------------

@@ -699,6 +699,10 @@ export class AppBridgeHost {
   readonly #onInitialized: (() => void) | undefined;
   readonly #onRequestTeardown: (() => void) | undefined;
   #transport: PostMessageTransport | undefined;
+  // Set the instant `close()` is called, BEFORE any await. It is the flag a
+  // still-running `connect()` checks so a close that raced the handshake is not
+  // lost — `#connected` alone cannot express "closed before it ever connected".
+  #closing = false;
   #displayModeRequests: DisplayModeRequest[] = [];
   #connected = false;
   #initialized = false;
@@ -808,9 +812,19 @@ export class AppBridgeHost {
    * for any message the wrapper inspects directly.
    */
   async connect(iframeWindow: Window): Promise<void> {
-    if (this.#connected) return;
+    if (this.#connected || this.#closing) return;
     this.#transport = new PostMessageTransport(iframeWindow, iframeWindow);
     await this.#bridge.connect(this.#transport);
+    // `close()` can land DURING the await above — the renderer's effect cleanup
+    // does not await `connect`, so an unmount racing a slow handshake reaches
+    // `close()` while `#connected` is still false, which the old `close()`
+    // early-returned on. The bridge then finished connecting into an orphan
+    // with a live postMessage listener nobody would ever close. Honour the
+    // close that already happened instead of publishing the connection.
+    if (this.#closing) {
+      await this.#bridge.close();
+      return;
+    }
     this.#connected = true;
   }
 
@@ -961,8 +975,13 @@ export class AppBridgeHost {
    *      the courtesy.
    */
   async close(): Promise<void> {
+    if (this.#closing) return;
+    // Drop liveness BEFORE the first await (see property 2 above). `#closing`
+    // is set even when the bridge never finished connecting, so a `connect()`
+    // still in flight observes it and closes the transport it just built
+    // instead of leaving a live orphan.
+    this.#closing = true;
     if (!this.#connected) return;
-    // Drop liveness BEFORE the first await (see property 2 above).
     this.#connected = false;
     const wasInitialized = this.#initialized;
     this.#initialized = false;

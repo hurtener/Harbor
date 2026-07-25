@@ -43,7 +43,9 @@ function appPayload(over: Record<string, unknown> = {}): Record<string, unknown>
 	return {
 		ServerID: 'reports',
 		ToolCallID: 'tc_9f2c1a',
-		ToolName: 'reports_render',
+		// The BARE server-side tool name — `mcp.app_available` carries the name
+		// the driver called the MCP server with, not the `<source>_<tool>` key.
+		ToolName: 'render',
 		ResourceURI: 'ui://reports/dashboard.html',
 		DisplayMode: 'inline',
 		RawHTMLTrusted: false,
@@ -78,7 +80,7 @@ describe('reduceHistoryTurns — MCP App replay (D-348)', () => {
 			// the `ui/initialize` host-context `toolInfo`. Read on BOTH projections
 			// (live decoder + replay reducer); the cross-producer pin below fails
 			// on a one-sided omission.
-			toolName: 'reports_render'
+			toolName: 'render'
 		});
 	});
 
@@ -115,7 +117,7 @@ describe('reduceHistoryTurns — MCP App replay (D-348)', () => {
 					resource_uri: 'ui://reports/x.html',
 					display_mode: 'fullscreen',
 					raw_html_trusted: true,
-					tool_name: 'reports_render'
+					tool_name: 'render'
 				})
 			]),
 			'r1'
@@ -126,7 +128,7 @@ describe('reduceHistoryTurns — MCP App replay (D-348)', () => {
 			displayMode: 'fullscreen',
 			rawHtmlTrusted: true,
 			toolCallId: 'tc_1',
-			toolName: 'reports_render'
+			toolName: 'render'
 		});
 	});
 

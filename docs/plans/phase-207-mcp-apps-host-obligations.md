@@ -34,7 +34,7 @@ None.
 
 ## Non-goals
 
-- **A backend `server_id` on `mcp.apps.call_tool`.** D-227 item 3 weighed and declined it; "Risks / open questions" below records why that placement is re-affirmed rather than reversed. Reversing it is an RFC PR, not an implementation detail.
+- **A backend `server_id` on `mcp.apps.call_tool`.** D-227 item 3 weighed and declined it; "Risks / open questions" below records why the placement is re-affirmed FOR NOW and why the strongest argument for reversing it (an exact `desc.Tool.Source` comparison the Console structurally cannot perform) is recorded as a D-351 follow-up rather than built here. Reversing it is a Protocol change, not an implementation detail.
 - **Real resource-template support.** Harbor's Protocol exposes no resource-template method. The host answers the advertised capability honestly with an empty list; a future `mcp.servers.resource_templates` routes into the same adapter method with no other change.
 - **HA-39 (heavy `artifact_ref` to `structuredContent`).** A separate ask with its own resolution; untouched here.
 - **`_meta.ui.visibility` enforcement** (HA-41 residual item 3). Additive, independent, and explicitly deferred rather than left looking supported.
@@ -43,10 +43,15 @@ None.
 ## Acceptance criteria
 
 - [ ] An app-initiated `tools/call` dispatches `<serverID>_<name>`, where `serverID` is host-derived from the `mcp.app_available` discovery and can never be supplied or influenced by the sandboxed App.
-- [ ] The qualifier is UNCONDITIONAL: a cross-server or already-qualified name (`otherserver_drop_table`) is still prefixed and therefore cannot resolve outside the app's own namespace.
+- [ ] The qualifier is UNCONDITIONAL: a cross-server or self-prefixed name (`otherserver_drop_table`, `srv_echo`) is still prefixed and therefore cannot resolve outside the app's own namespace.
+- [ ] **Registration-time separator-safety**: an MCP server id that would make `<sourceID>_<tool>` ambiguous against an already-registered id is refused fail-loud with `ErrAmbiguousServerID`, in BOTH orders, on BOTH the boot-declared and runtime-attach paths. Without it the prefix does not confine (`github` + `github_enterprise`); with it the key space is injective and the prefix means what it claims.
+- [ ] Ids that merely share a prefix without a separator boundary (`github` / `githubby`) still register, and same-id re-registration (hot reload / re-attach) still works.
 - [ ] Identity, the tool's approval/OAuth wrappers, and the paused-server / disabled-tool exposure gate all still fire on the app-call path (the proxy remains a re-entry, not a parallel path).
 - [ ] A name that does not resolve within the app's own server returns `CodeNotFound` at the Protocol edge and reaches the App as a typed `MCPAppToolNotFoundError` naming the BARE name it asked for and the server it is confined to; a transport failure keeps `CodeRuntimeError`.
-- [ ] `ui/notifications/size-changed` is consumed and drives the inline iframe height, coalesced through `requestAnimationFrame`, clamped between `--size-app-inline-min` and a new host-owned `--size-app-inline-max`.
+- [ ] Not-found classification is SENTINEL-based (`errors.Is`), never a substring match over the error chain — a southbound server's error text cannot launder a transport failure into a typed not-found.
+- [ ] Bridge callbacks (`onInitialized` / `onSizeChanged` / `onRequestTeardown`) are guarded on bridge-instance identity, so a stale bridge cannot set the sticky `closed` state over a live successor or drive its frame height.
+- [ ] `ui/notifications/size-changed` is consumed and drives the INLINE iframe height, coalesced through `requestAnimationFrame`, clamped between `--size-app-inline-min` and a new host-owned `--size-app-inline-max`.
+- [ ] The envelope and the reported-height style are gated on `isInline`: the page-level fullscreen / pip panel reuses `.mcp-app__frame` and sizes it itself, so neither the clamp nor the app-driven height may reach it.
 - [ ] An App that never reports a size keeps exactly the previous fixed-height behaviour (no inline height is set).
 - [ ] `ui/resource-teardown` is sent before the transport closes on unmount, and NEVER for a bridge the App has not finished `ui/initialize` on.
 - [ ] An App-initiated `ui/notifications/request-teardown` is granted: graceful teardown, close, and the frame is replaced by an honest "this app closed itself" placeholder that a transcript re-render does not resurrect.
@@ -69,10 +74,22 @@ docs/
 scripts/smoke/
   phase-109k.sh                                     (SKIP-tolerant greps to hard assertions)
   phase-207.sh                                      (added)
+.gitattributes                                      (added - force textual diffs for source types)
 internal/protocol/
-  mcp.go                                            (isMCPNotFound: the tool-not-found marker)
-  apps_test.go                                      (not-found vs runtime-error classification)
+  mcp.go                                            (not-found classification is sentinel-only)
+  apps.go                                           (ErrAccessorNotFound)
+  apps_test.go / mcp_test.go                        (sentinel classification + the laundering guard)
   types/mcp_apps_test.go                            (added - the no-server-scope wire guard)
+internal/mcpconsole/
+  mcpconsole.go                                     (markNotFound - driver->Protocol sentinel,
+                                                     applied on every accessor not-found path)
+  toolcontext.go                                    (tool-context miss wraps the sentinel)
+  apps.go                                           (resolve miss + read_resource wrap the sentinel)
+  notfound_translation_test.go                      (added - enumerates every translating path)
+internal/tools/drivers/mcp/
+  registry.go                                       (ErrAmbiguousServerID, CheckServerIDUnambiguous)
+  attach.go                                         (early pre-check, both attach paths)
+  server_id_ambiguity_test.go                       (added - the escape + the guard)
 web/console/src/lib/
   tokens.css                                        (--size-app-inline-max)
   chat/tokens.contract.json                         (the new token)
@@ -110,8 +127,10 @@ listResourceTemplates(serverID: string): Promise<MCPAppResourceTemplateListing[]
 
 ## Test plan
 
-- **Unit:** (Go) `TestAppsSurface_CallTool_UnresolvableToolMapsToNotFound` and `TestAppsSurface_CallTool_TransportFailureStaysRuntimeError` pin the two-way classification; `TestMCPAppCallToolRequest_CarriesNoServerScope` is a reflection guard that the wire request never grows an app-suppliable server scope. (vitest) bare-name qualification, cross-server confinement, unconditional-qualifier property, typed not-found round-trip (raise then re-raise with the bare name), non-not-found propagation, `resources/templates/list` empty + mapped, `containerDimensionsFromBox` mapping.
-- **Integration:** the renderer-level `mcp-app-host-obligations.spec.ts` mounts the REAL `McpAppRenderer` against a mocked bridge and drives each obligation end-to-end through the real lifecycle effects: size-changed to frame height, coalescing, nonsense rejection, teardown-before-close ordering, teardown NOT sent pre-`initialized`, teardown failure still closes, app-requested teardown to placeholder, host-context `toolInfo`/`containerDimensions` at construction, templates handler wired. The Playwright `mcp-app-host-handshake.spec.ts` drives the REAL vendored `App` client through a REAL `ui/initialize` in a real sandboxed iframe and asserts the App received `toolInfo`/`containerDimensions`, that its `sendSizeChanged` reaches the host, and that both host- and app-initiated teardown fire the App's `onteardown` (§17.8 — the fixture is the official package's own client, not our reading of the dialect).
+- **Unit:** (Go) `TestCatalogKeyJoin_IsNotInjective_WithoutTheRegistrationGuard` demonstrates the confinement escape against the REAL `tools.Catalog`, so the guard's value is a shown property rather than an assertion about a string; `TestRegistry_Register_RefusesSeparatorAmbiguousServerID` (both orders), `TestRegistry_Register_AllowsPrefixWithoutSeparatorBoundary`, `TestRegistry_Register_SameIDReplacementStillAllowed`, and `TestRegistry_CheckServerIDUnambiguous_AgreesWithRegister` pin the guard and its boundaries. `TestAppsSurface_CallTool_UnresolvableToolMapsToNotFound` / `..._TransportFailureStaysRuntimeError` pin the two-way classification, and `..._RemoteErrorTextCannotLaunderIntoNotFound` proves a southbound server's wording cannot forge a typed not-found. `TestMCPAppCallToolRequest_CarriesNoServerScope` is a reflection guard that the wire request never grows an app-suppliable server scope. (vitest) bare-name qualification, cross-server confinement, the self-prefixed `srv_echo` case (the escape-hatch shape), the unconditional-qualifier property, typed not-found round-trip, non-not-found propagation, `resources/templates/list` empty + mapped, `containerDimensionsFromBox` mapping.
+
+- **Integration:** the renderer-level `mcp-app-host-obligations.spec.ts` mounts the REAL `McpAppRenderer` against a mocked bridge and drives each obligation end-to-end through the real lifecycle effects: size-changed to frame height, coalescing, per-value nonsense rejection, the fullscreen/pip surface carrying NEITHER the envelope nor the app-driven height (with the inline control case beside it), teardown-before-close ordering, teardown NOT sent pre-`initialized`, teardown failure still closing, app-requested teardown to placeholder, host-context `toolInfo`/`containerDimensions` at construction, templates handler wired, and a stale-bridge isolation case that churns the `app` prop within ONE component so a superseded bridge's late callbacks are proven inert against the live successor. The Playwright `mcp-app-host-handshake.spec.ts` drives the REAL vendored `App` client through a REAL `ui/initialize` in a real sandboxed iframe and asserts the App received `toolInfo`/`containerDimensions`, that its `sendSizeChanged` reaches the host, and that both host- and app-initiated teardown fire the App's `onteardown` (§17.8 — the fixture is the official package's own client, not our reading of the dialect).
+
 - **Conformance:** N/A — no new driver seam; the external-protocol conformance surface is the vendored ext-apps types (compile-time) plus the real-App Playwright round-trip above.
 - **Concurrency / leak:** N/A for a Go reusable artifact — no Go artifact is added (the Protocol edge change is a pure classification function). The Console-side analogue is the D-342 lifecycle proof: exactly one bridge per mount under prop churn, theme churn, and a resize storm, with `close` never called.
 
@@ -143,7 +162,9 @@ Built against `docs/design/console/CONVENTIONS.md` (CLAUDE.md §4.5 item 12, D-1
 
 ## Risks / open questions
 
-- **The confinement placement (D-227 item 3) is re-affirmed, not reversed.** HA-41 asked whether the revert proves the property belongs on the backend instead. It does not, and the reasoning is worth recording because it will be asked again: the trust boundary the confinement defends is **App to Console host**, not Console to Runtime. The App is sandboxed code the Console mediates for; the Console is a Protocol client acting under the user's own identity, and that same user can already call any catalog tool directly through `tools.call`. A `server_id` on the wire would be supplied by the very component the control is not defending against — the Console — so it adds tamper-evidence in Go tests but no new adversary boundary, while adding a Protocol field an App could eventually be allowed to influence. The revert-fragility that motivated the question is a PROCESS failure (a gate that reported SKIP instead of FAIL), and it is fixed as a process: a hard smoke assertion on both the qualifier's existence and its use, a vitest confinement case, and a Go reflection guard that the wire request never grows a server scope.
+- **The prefix alone does not confine — that is why the registration guard exists.** `<sourceID>_<tool>` is a single-underscore join and neither side is charset-constrained, so `github` + `github_enterprise` makes it non-injective and an App on the shorter id reaches the longer id's tools with every downstream gate approving. The plan's own claim was originally stronger than the code delivered. `mcp.Registry.CheckServerIDUnambiguous` refuses the ambiguous pairing at registration (both directions, both attach paths, enforced under `Register`'s write lock), which restores injectivity and makes the control sound. The claim is now stated with its precondition attached, in D-351 and the glossary.
+- **A stronger backend argument exists and is deferred deliberately, not dismissed.** The Runtime can compare `desc.Tool.Source` EXACTLY — a check the Console structurally cannot perform, since it can only manipulate strings, which is precisely why it needs a naming convention plus a registration guard. That argument needs a Console-supplied wire `server_id` and is an architecture change; it is recorded in D-351's Follow-ups for a future wave.
+- **The confinement placement (D-227 item 3) is re-affirmed FOR NOW, not reversed.** HA-41 asked whether the revert proves the property belongs on the backend instead. The revert-fragility argument does not carry it: the trust boundary the confinement defends is **App to Console host**, not Console to Runtime. The App is sandboxed code the Console mediates for; the Console is a Protocol client acting under the user's own identity, and that same user can already call any catalog tool directly through `tools.call`. A `server_id` on the wire would be supplied by the very component the control is not defending against — the Console — so it adds tamper-evidence in Go tests but no new adversary boundary, while adding a Protocol field an App could eventually be allowed to influence. The revert-fragility that motivated the question is a PROCESS failure (a gate that reported SKIP instead of FAIL), and it is fixed as a process: a hard smoke assertion on both the qualifier's existence and its use, a vitest confinement case, and a Go reflection guard that the wire request never grows a server scope.
 - **The frame clamp is CSS, not JavaScript.** A JS clamp would be one edit from unbounded and would need the token values in pixels. `min-height` / `max-height` on the frame means any reported height — 5 px or 500 000 px — lands inside the host's envelope by construction, and the bound stays a design token.
 - **The teardown request is a round-trip into a sandboxed iframe.** A wedged App must never pin a Svelte effect cleanup open, so the request carries a short timeout and a failure logs and proceeds to close. Closing the transport is the guarantee; the graceful notice is the courtesy.
 - **`--size-app-inline-max: 40rem` is a judgement call.** It is the first host-owned bound; if real Apps routinely need more, raising the token is a one-line change with no code impact.

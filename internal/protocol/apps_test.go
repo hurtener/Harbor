@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/protocol"
@@ -273,7 +274,11 @@ func TestAppsSurface_ToolContext_RequiresServerAndCallID(t *testing.T) {
 }
 
 func TestAppsSurface_ToolContext_UnknownIDMapsToNotFound(t *testing.T) {
-	tc := &stubToolContextReader{err: errors.New("mcpconsole: tool context not found (server \"srv-a\", call \"nope\"): state: record not found")}
+	// The accessor states the verdict via the sentinel; the edge no longer
+	// classifies on the message text (mcpconsole.ToolContext applies this
+	// wrap in production).
+	tc := &stubToolContextReader{err: fmt.Errorf("%w: mcpconsole: tool context not found (server %q, call %q): state: record not found",
+		protocol.ErrAccessorNotFound, "srv-a", "nope")}
 	s := newAppsSurfaceTC(t, &stubResourceReader{}, &stubInvoker{}, tc)
 	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
 		Identity: validScope(), ServerID: "srv-a", ToolCallID: "nope",
@@ -287,7 +292,8 @@ func TestAppsSurface_ToolContext_UnknownIDMapsToNotFound(t *testing.T) {
 // it cannot tell apart from a broken southbound transport. The catalog's
 // `tools: tool not found` wrap is the marker the Protocol edge classifies on.
 func TestAppsSurface_CallTool_UnresolvableToolMapsToNotFound(t *testing.T) {
-	inv := &stubInvoker{err: errors.New(`mcpconsole: tools: tool not found: "srv-a_nope"`)}
+	inv := &stubInvoker{err: fmt.Errorf("%w: tools: tool not found: %q",
+		protocol.ErrAccessorNotFound, "srv-a_nope")}
 	s := newAppsSurface(t, &stubResourceReader{}, inv)
 	_, err := s.Dispatch(context.Background(), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
 		Identity: validScope(), Tool: "srv-a_nope",
@@ -295,9 +301,6 @@ func TestAppsSurface_CallTool_UnresolvableToolMapsToNotFound(t *testing.T) {
 	assertCode(t, err, protoerrors.CodeNotFound)
 }
 
-// A transport-shaped failure keeps the generic runtime code, so the two remain
-// distinguishable at the wire: the not-found classification must not widen into
-// "every app tool-call failure is a not-found".
 func TestAppsSurface_CallTool_TransportFailureStaysRuntimeError(t *testing.T) {
 	inv := &stubInvoker{err: errors.New("mcpconsole: stdio transport reset by peer")}
 	s := newAppsSurface(t, &stubResourceReader{}, inv)
@@ -305,4 +308,25 @@ func TestAppsSurface_CallTool_TransportFailureStaysRuntimeError(t *testing.T) {
 		Identity: validScope(), Tool: "srv-a_echo",
 	})
 	assertCode(t, err, protoerrors.CodeRuntimeError)
+}
+
+// THE LAUNDERING GUARD. A southbound MCP server's error text is wrapped
+// verbatim into the chain, so a REMOTE party gets to phrase part of what the
+// Protocol edge reads. Classification must not be reachable from that text: a
+// transport failure whose message happens to contain the words a not-found
+// would use stays CodeRuntimeError. A rendered App treats not-found as a
+// PERMANENT verdict ("this action does not exist here"), so laundering a
+// transient failure into one is a wrong answer the App cannot recover from.
+func TestAppsSurface_CallTool_RemoteErrorTextCannotLaunderIntoNotFound(t *testing.T) {
+	for _, msg := range []string{
+		`mcp: call "srv-a_echo": upstream said: tool not found in cache, retrying`,
+		`mcp: transport failed: server not found upstream (503)`,
+	} {
+		inv := &stubInvoker{err: errors.New(msg)}
+		s := newAppsSurface(t, &stubResourceReader{}, inv)
+		_, err := s.Dispatch(context.Background(), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+			Identity: validScope(), Tool: "srv-a_echo",
+		})
+		assertCode(t, err, protoerrors.CodeRuntimeError)
+	}
 }

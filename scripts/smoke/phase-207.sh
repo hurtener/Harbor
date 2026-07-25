@@ -51,9 +51,12 @@ assert_grep_present 'return .\$\{serverID\}_\$\{name\}' "${BRIDGE}" \
     'phase 207: the server-namespace qualifier is unconditional'
 # The qualifier body must be a single unconditional return. An
 # "is it already qualified?" shortcut is the one refactor that would reopen the
-# cross-server hole while every other assertion here still passed, so pin the
-# absence of ANY `startsWith` in this module rather than one spelling of it.
-assert_grep_absent 'startsWith' "${BRIDGE}" \
+# cross-server hole while every other assertion here still passed. Pin the
+# SHAPE of that shortcut (a startsWith test against the server id) rather than
+# the bare identifier: a module-wide `startsWith` ban would fail preflight for
+# an unrelated future use, which is how a guard earns a reputation for crying
+# wolf and gets deleted.
+assert_grep_absent 'startsWith(.${serverID}' "${BRIDGE}" \
     'phase 207: no already-qualified escape hatch in the qualifier'
 # The wire request carries no app-supplied server scope — the namespace is
 # host-derived, never something the sandboxed App can aim. The precise guard is
@@ -68,8 +71,17 @@ assert_grep_present 'func TestMCPAppCallToolRequest_CarriesNoServerScope' \
 # 2. A name that does not resolve inside the app's own server is a TYPED,
 #    distinguishable rejection — not the generic "MCP read failed".
 # ----------------------------------------------------------------------------
-assert_grep_present 'containsMarker\(msg, "tool not found"\)' "${EDGE}" \
-    'phase 207: an unresolvable tool maps to CodeNotFound at the Protocol edge'
+# Classification is SENTINEL-based, never a substring match over the error
+# chain: a southbound server's error text rides that chain verbatim, so text
+# matching let a remote party forge a typed not-found. Pin both halves — the
+# sentinel check at the edge, and the absence of the marker helper in the
+# not-found classifier it replaced.
+assert_grep_present 'stderrors\.Is\(err, ErrAccessorNotFound\)' "${EDGE}" \
+    'phase 207: an unresolvable tool maps to CodeNotFound via the sentinel'
+assert_grep_present 'ErrAccessorNotFound = stderrors\.New' internal/protocol/apps.go \
+    'phase 207: the Protocol declares the accessor not-found sentinel'
+assert_grep_present 'func markNotFound\(err error\) error' internal/mcpconsole/mcpconsole.go \
+    'phase 207: the accessor boundary translates the driver not-found sentinel'
 assert_grep_present 'class MCPAppToolNotFoundError' "${BRIDGE}" \
     'phase 207: the host declares a typed app-tool not-found'
 assert_grep_present 'new MCPAppToolNotFoundError' "${ADAPTER}" \
@@ -84,8 +96,19 @@ assert_grep_present '--size-app-inline-min:' "${TOKENS}" \
     'phase 207: the inline-app minimum height token exists'
 assert_grep_present '--size-app-inline-max:' "${TOKENS}" \
     'phase 207: the host-owned inline-app maximum height token exists'
-assert_grep_present '^ +max-height: var\(--size-app-inline-max\);' "${RENDERER}" \
-    'phase 207: the app frame is clamped to the host-owned maximum'
+# The envelope must live on the `--inline` MODIFIER, never on the base
+# `.mcp-app__frame` class: the page-level fullscreen / pip panel reuses the base
+# class and sizes it to fill the panel, so a bound on the base class caps that
+# panel to the inline maximum. Pin the selector line EXACTLY (a mutation that
+# widens it to `.mcp-app__frame, .mcp-app__frame--inline` stops matching) and
+# pin that the bound appears exactly once (so it cannot be duplicated onto the
+# base rule alongside).
+assert_grep_present '^  \.mcp-app__frame--inline \{$' "${RENDERER}" \
+    'phase 207: the inline size envelope is scoped to the --inline modifier'
+assert_grep_count 'max-height: var\(--size-app-inline-max\);' "${RENDERER}" 1 \
+    'phase 207: the host-owned maximum is declared exactly once (inline only)'
+assert_grep_present 'class:mcp-app__frame--inline=\{isInline\}' "${RENDERER}" \
+    'phase 207: the inline envelope is applied only when inline'
 
 # ----------------------------------------------------------------------------
 # 4. D-342 handshake safety on the new teardown path: the graceful

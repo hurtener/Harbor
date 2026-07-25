@@ -205,7 +205,11 @@ func (s *ToolContextStore) Load(ctx context.Context, serverID, toolCallID string
 	rec, err := s.state.Load(ctx, q, toolContextKind(serverID, toolCallID))
 	if err != nil {
 		if errors.Is(err, state.ErrNotFound) {
-			return protocol.AppToolContextRow{}, fmt.Errorf("mcpconsole: tool context not found (server %q, call %q): %w", serverID, toolCallID, err)
+			// Wrap the Protocol's not-found sentinel so the wire edge classifies
+			// on THIS accessor's verdict rather than on the rendered text (see
+			// mcpconsole.markNotFound for why text classification was unsafe).
+			return protocol.AppToolContextRow{}, fmt.Errorf("%w: mcpconsole: tool context not found (server %q, call %q): %w",
+				protocol.ErrAccessorNotFound, serverID, toolCallID, err)
 		}
 		return protocol.AppToolContextRow{}, fmt.Errorf("mcpconsole: load tool context: %w", err)
 	}

@@ -99,6 +99,7 @@ vi.mock('@modelcontextprotocol/ext-apps/app-bridge', () => {
 });
 
 const McpAppRenderer = (await import('./mcp-app.svelte')).default;
+const { mountRendererReactive } = await import('./mcp-app-harness.svelte.js');
 
 function installMatchMedia(): void {
   (window as unknown as { matchMedia: (q: string) => MediaQueryList }).matchMedia = () =>
@@ -149,7 +150,12 @@ const APP = {
   displayMode: 'inline' as const,
   rawHtmlTrusted: false,
   toolCallId: 'tc_1',
-  toolName: 'srv_report',
+  // The BARE server-side tool name, which is what the runtime puts on
+  // `mcp.app_available` (the driver publishes the name it called the MCP server
+  // with, not Harbor's `<source>_<tool>` catalog key). Using a qualified name
+  // here would encode the wrong model in the very file documenting the
+  // namespace confinement.
+  toolName: 'report',
 };
 
 /** Mount and drain the preload + lifecycle effects so the bridge connects. */
@@ -290,6 +296,52 @@ describe('MCP Apps host obligations — size-changed (HA-38)', () => {
     unmount(component);
     document.body.removeChild(target);
   });
+  it('does NOT clamp or size-drive the frame in fullscreen / pip', async () => {
+    // The page-level AppPanel reuses `.mcp-app__frame` and sizes it to fill the
+    // panel. An inline growth envelope applied there CAPS the panel — a 900px
+    // fullscreen frame clamped to the inline maximum. So both the envelope
+    // modifier and the reported-height inline style are gated on `isInline`:
+    // the surface that owns the layout owns the bound.
+    installMatchMedia();
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+
+    const component = await mountAndConnect(target, { ...APP, displayMode: 'fullscreen' });
+    const bridge = captured.instances[0];
+    bridge.fireInitialized();
+    flushSync();
+
+    const frame = frameOf(target);
+    expect(frame?.classList.contains('mcp-app__frame--inline')).toBe(false);
+
+    // An app in fullscreen still reports its size; the host must not act on it.
+    bridge.onsizechange?.({ height: 900 });
+    await settleFrame();
+    expect(frame?.style.height, 'no inline height is imposed on a page-level panel').toBe('');
+    expect(frame?.getAttribute('data-app-height')).toBeNull();
+
+    unmount(component);
+    document.body.removeChild(target);
+  });
+
+  it('DOES carry the inline envelope when inline (the control case)', async () => {
+    installMatchMedia();
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = await mountAndConnect(target);
+    const bridge = captured.instances[0];
+    bridge.fireInitialized();
+    flushSync();
+
+    const frame = frameOf(target);
+    expect(frame?.classList.contains('mcp-app__frame--inline')).toBe(true);
+    bridge.onsizechange?.({ height: 420 });
+    await settleFrame(() => frameOf(target)?.style.height === '420px');
+    expect(frame?.style.height).toBe('420px');
+
+    unmount(component);
+    document.body.removeChild(target);
+  });
 });
 
 describe('MCP Apps host obligations — graceful teardown', () => {
@@ -410,7 +462,7 @@ describe('MCP Apps host obligations — ui/initialize host-context', () => {
     const ctx = captured.instances[0].hostContext;
     expect(ctx?.toolInfo).toEqual({
       id: 'tc_1',
-      tool: { name: 'srv_report', inputSchema: { type: 'object' } },
+      tool: { name: 'report', inputSchema: { type: 'object' } },
     });
     // The container snapshot is present as the spec's `{ width, maxHeight? }`
     // shape whenever the frame measured a positive width (jsdom reports 0, so
@@ -479,6 +531,91 @@ describe('MCP Apps host obligations — ui/initialize host-context', () => {
     await expect(captured.instances[0].onlistresourcetemplates?.()).resolves.toEqual({
       resourceTemplates: [],
     });
+
+    unmount(component);
+    document.body.removeChild(target);
+  });
+});
+
+describe('MCP Apps host obligations — stale-bridge callback isolation', () => {
+  afterEach(() => {
+    captured.instances.length = 0;
+  });
+
+  it('a STALE bridge cannot close the SAME component’s newer app, nor drive its frame', async () => {
+    // The window is real and it is INSIDE one component: `close()` awaits a
+    // teardown the APP acks, so a never-acking app stalls it for the full
+    // timeout. Meanwhile the `app` prop churns (the replay scenario), the
+    // lifecycle effect tears down and rebuilds, and a NEW bridge owns the same
+    // component state — and only THEN does the stale bridge's callback fire.
+    //
+    // `loadState = 'closed'` is deliberately STICKY, so a stale teardown
+    // callback would kill the live successor permanently. The preload
+    // generation token guards PRELOAD writes only — it is keyed to the preload,
+    // not the bridge — so it does not cover this. The guard is bridge-instance
+    // identity, captured per callback.
+    installMatchMedia();
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+
+    const { component, props } = mountRendererReactive(target, {
+      mime: 'application/vnd.harbor.mcp-app',
+      src: '',
+      app: { ...APP },
+      serverID: 'srv',
+      appHostClient: fakeClient()
+    } as never);
+    for (let i = 0; i < 12 && captured.instances.length === 0; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+    const stale = captured.instances[0];
+    stale.fireInitialized();
+    flushSync();
+
+    // Churn to a genuinely DIFFERENT app so the preload re-runs, `loadState`
+    // leaves 'ready', the lifecycle effect tears the first bridge down, and a
+    // second bridge is built for the same component.
+    (props as unknown as { app: Record<string, unknown> }).app = {
+      resourceUri: 'ui://srv/other.html',
+      displayMode: 'inline',
+      rawHtmlTrusted: false,
+      toolCallId: 'tc_2',
+      toolName: 'other'
+    };
+    for (let i = 0; i < 30 && captured.instances.length < 2; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+    expect(captured.instances.length, 'a second bridge owns the component').toBe(2);
+    const current = captured.instances[1];
+    expect(current).not.toBe(stale);
+    current.fireInitialized();
+    flushSync();
+
+    // The stale bridge now fires late. Every callback must be ignored.
+    stale.onsizechange?.({ height: 77 });
+    stale.onrequestteardown?.({});
+    stale.oninitialized?.({});
+    await settleFrame();
+    await settleFrame();
+
+    // The successor survived: no sticky `closed` state, iframe still mounted,
+    // and its height was never driven from the dead app's report.
+    expect(
+      target.querySelector('[data-testid="mcp-app-closed"]'),
+      'a stale teardown must not close the live app'
+    ).toBeNull();
+    expect(frameOf(target), 'the successor iframe is still mounted').not.toBeNull();
+    expect(frameOf(target)?.style.height).not.toBe('77px');
+
+    // …and the CURRENT bridge's own callbacks still work, so the guard is a
+    // filter on staleness, not a blanket mute.
+    current.onsizechange?.({ height: 333 });
+    await settleFrame(() => frameOf(target)?.style.height === '333px');
+    expect(frameOf(target)?.style.height).toBe('333px');
 
     unmount(component);
     document.body.removeChild(target);

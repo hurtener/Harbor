@@ -1112,18 +1112,18 @@ func isMCPNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	// The MCP registry surfaces "server not found"; the tool-context store
-	// surfaces "tool context not found" for an unknown or cross-identity
-	// (serverID, toolCallID); the tool catalog surfaces "tool not found" when
-	// an app-initiated call names a tool that does not exist inside the
-	// calling app's own server namespace. All map to CodeNotFound — existence
-	// is never revealed across identities, and an unresolvable name is a
-	// not-found the caller can act on rather than an opaque runtime error it
-	// cannot distinguish from a broken southbound transport.
-	return containsMarker(msg, "server not found") ||
-		containsMarker(msg, "tool context not found") ||
-		containsMarker(msg, "tool not found")
+	// SENTINEL ONLY. An accessor states the not-found verdict by wrapping
+	// ErrAccessorNotFound; nothing here reads the rendered message.
+	//
+	// This used to substring-match the chain for "server not found" /
+	// "tool context not found". A southbound MCP server's error text is wrapped
+	// verbatim into that chain, so the match let a REMOTE party's wording decide
+	// a Harbor classification: a transport failure phrased the wrong way became
+	// a typed CodeNotFound, which a rendered MCP App reads as a PERMANENT "this
+	// action does not exist here". The sentinel cannot be forged by text — see
+	// ErrAccessorNotFound and mcpconsole.markNotFound (the only layer allowed to
+	// know both the driver's sentinel and the Protocol's).
+	return stderrors.Is(err, ErrAccessorNotFound)
 }
 
 func isMCPIdentityMissing(err error) bool {

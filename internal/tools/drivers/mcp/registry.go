@@ -222,6 +222,11 @@ var (
 	// ErrRegistryIdentityMissing — the read ctx had no identity triple.
 	// Identity is mandatory (AGENTS.md §6 rule 9); the read fails closed.
 	ErrRegistryIdentityMissing = fmt.Errorf("mcp: identity missing from ctx")
+	// ErrAmbiguousServerID — the server id being registered would make the
+	// `<sourceID>_<tool>` catalog key space ambiguous against an
+	// already-registered id. See CheckServerIDUnambiguous for why that
+	// matters and what the rule is.
+	ErrAmbiguousServerID = fmt.Errorf("mcp: ambiguous server id (separator collision with a registered server)")
 )
 
 // maxListPageSize / defaultListPageSize bound the ListServers page.
@@ -352,6 +357,77 @@ type ServerRegistration struct {
 	Owner auth.Owner
 }
 
+// CheckServerIDUnambiguous reports whether registering `name` would leave the
+// `<sourceID>_<tool>` catalog key space ambiguous against an already-registered
+// server id, returning a wrapped ErrAmbiguousServerID when it would.
+//
+// # Why the key space has to be unambiguous
+//
+// A tool discovered from server S is registered in the catalog as
+// `S_<toolName>` (a single underscore join), and NEITHER side of that join is
+// charset-constrained: an operator may name a server `github_enterprise`, and
+// server-side tool names routinely contain underscores. The join is therefore
+// not injective across arbitrary id pairs. With `github` and `github_enterprise`
+// both registered, the key `github_enterprise_delete_repo` is produced by
+// exactly one of them but PARSES as either — and a consumer that builds a key
+// by prefixing a server id cannot tell which server it just addressed.
+//
+// That is a confinement property, not a cosmetic one. The Console's MCP-Apps
+// host confines a sandboxed App to its own server by prefixing every
+// app-supplied tool name with the App's host-derived server id. The prefix is
+// unconditional and the App cannot choose the id — but if two ids are
+// separator-ambiguous, an App on `github` can name `enterprise_delete_repo`,
+// the host dispatches `github_enterprise_delete_repo`, and the call lands on
+// `github_enterprise`'s tool with every downstream gate evaluating THAT
+// server's posture. The App reached a neighbour it was supposed to be confined
+// away from, and nothing on the path is in a position to notice.
+//
+// Refusing the ambiguous pair at registration restores injectivity: with this
+// check in force, `<sourceID>_<tool>` identifies exactly one server, so the
+// prefix means what it claims. This is the registration-time precondition the
+// confinement control depends on — the control is sound GIVEN it, and unsound
+// without it.
+//
+// # The rule
+//
+// Registering `N` is refused when a registered id `E` (E != N) satisfies either
+// direction: `N` is under `E`'s namespace (`N == E + "_" + …`), or `E` is under
+// `N`'s (`E == N + "_" + …`). Both directions are checked so ORDER does not
+// matter — whichever of an ambiguous pair lands second is refused, and the
+// runtime never ends up in a state the boot order alone decided.
+//
+// Re-registering the SAME id is always allowed: it is the hot-reload and
+// runtime re-attach path, and replacing an entry cannot create an ambiguity
+// that the id did not already have.
+func (r *Registry) CheckServerIDUnambiguous(name string) error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return ambiguousAgainst(r.servers, name)
+}
+
+// ambiguousAgainst is the lock-free core of CheckServerIDUnambiguous. The
+// caller holds the appropriate lock.
+func ambiguousAgainst(servers map[string]*serverEntry, name string) error {
+	for existing := range servers {
+		if existing == name {
+			// A same-id replacement (hot reload / re-attach) is not an
+			// ambiguity — the id's relationship to every OTHER id is unchanged.
+			continue
+		}
+		if strings.HasPrefix(name, existing+"_") {
+			return fmt.Errorf("%w: %q sits inside the tool-name namespace of registered server %q "+
+				"(a catalog key %q could address either); rename one of them",
+				ErrAmbiguousServerID, name, existing, name+"_<tool>")
+		}
+		if strings.HasPrefix(existing, name+"_") {
+			return fmt.Errorf("%w: registered server %q sits inside the tool-name namespace of %q "+
+				"(a catalog key %q could address either); rename one of them",
+				ErrAmbiguousServerID, existing, name, existing+"_<tool>")
+		}
+	}
+	return nil
+}
+
 // Register adds a server to the Registry. Re-registering the same name
 // replaces the prior entry (the dev hot-reload path and the runtime
 // re-attach path both re-register). A same-name replacement CLOSES the
@@ -382,6 +458,13 @@ func (r *Registry) Register(ctx context.Context, reg ServerRegistration) error {
 		st = ServerStateOffline
 	}
 	r.mu.Lock()
+	// Separator safety, checked under the SAME write lock that installs the
+	// entry, so two concurrent registrations of an ambiguous pair cannot both
+	// observe an empty map and both succeed.
+	if err := ambiguousAgainst(r.servers, name); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	prior := r.servers[name]
 	r.servers[name] = &serverEntry{
 		provider:     reg.Provider,

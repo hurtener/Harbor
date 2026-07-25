@@ -174,6 +174,25 @@ type AppsDeps struct {
 // mandatory dependency. Fails closed (CLAUDE.md §5).
 var ErrAppsMisconfigured = stderrors.New("protocol: AppsSurface missing a mandatory dependency")
 
+// ErrAccessorNotFound — the sentinel a runtime-side accessor wraps to state,
+// in its own voice, that the request's target does not exist. mapMCPError
+// classifies it as CodeNotFound via errors.Is.
+//
+// # Why a sentinel rather than an error-text marker
+//
+// The MCP surface historically classified not-found by substring-matching the
+// error chain's rendered text. That works only while every error on the chain
+// is Harbor's own. It is not: a southbound MCP server's error text is wrapped
+// verbatim into the chain, so a REMOTE party's wording decides a Harbor
+// classification. A server whose transport failure happens to read "tool not
+// found" would be laundered into a typed not-found, which a rendered MCP App
+// reads as "this action does not exist here" — a permanent, wrong conclusion
+// drawn from a transient failure.
+//
+// Wrapping this sentinel is an assertion by the accessor that IT resolved the
+// target and IT found nothing. No upstream text can forge that.
+var ErrAccessorNotFound = stderrors.New("protocol: accessor target not found")
+
 // NewAppsSurface builds the Protocol MCP Apps surface. Both the resource
 // reader and the tool-call invoker are mandatory; a nil fails loud with a
 // wrapped ErrAppsMisconfigured.
