@@ -44,11 +44,13 @@ None.
 
 - [ ] An app-initiated `tools/call` dispatches `<serverID>_<name>`, where `serverID` is host-derived from the `mcp.app_available` discovery and can never be supplied or influenced by the sandboxed App.
 - [ ] The qualifier is UNCONDITIONAL: a cross-server or self-prefixed name (`otherserver_drop_table`, `srv_echo`) is still prefixed and therefore cannot resolve outside the app's own namespace.
-- [ ] **Registration-time separator-safety**: an MCP server id that would make `<sourceID>_<tool>` ambiguous against an already-registered id is refused fail-loud with `ErrAmbiguousServerID`, in BOTH orders, on BOTH the boot-declared and runtime-attach paths. Without it the prefix does not confine (`github` + `github_enterprise`); with it the key space is injective and the prefix means what it claims.
+- [ ] **Registration-time separator-safety**: an MCP server id that would make `<sourceID>_<tool>` ambiguous against an already-registered id is refused fail-loud with `ErrAmbiguousServerID`, in BOTH orders, on BOTH the boot-declared and runtime-attach paths. Without it the prefix does not scope; with it the key space is unambiguous AMONG MCP SERVER IDS.
+- [ ] `harbor validate` reports the same condition, so an operator meets it before an upgrade rather than at a refused boot; the error names only the caller-supplied id (§6 — the colliding id is another owner's and is not echoed).
+- [ ] The guarantee's BOUND is stated wherever the claim is: in-proc/HTTP tools register bare names into the same catalog and are outside the guard's reach; closing that needs the dispatch-side `desc.Tool.Source` comparison recorded as a D-351 follow-up.
 - [ ] Ids that merely share a prefix without a separator boundary (`github` / `githubby`) still register, and same-id re-registration (hot reload / re-attach) still works.
 - [ ] Identity, the tool's approval/OAuth wrappers, and the paused-server / disabled-tool exposure gate all still fire on the app-call path (the proxy remains a re-entry, not a parallel path).
 - [ ] A name that does not resolve within the app's own server returns `CodeNotFound` at the Protocol edge and reaches the App as a typed `MCPAppToolNotFoundError` naming the BARE name it asked for and the server it is confined to; a transport failure keeps `CodeRuntimeError`.
-- [ ] Not-found classification is SENTINEL-based (`errors.Is`), never a substring match over the error chain — a southbound server's error text cannot launder a transport failure into a typed not-found.
+- [ ] Not-found AND exposure-refusal classification are SENTINEL-based (`errors.Is`), never a substring match over the error chain — a southbound server's error text cannot launder a transport failure into either verdict. Every accessor path that can surface one is enumerated by a test; the one path that structurally cannot (`ListServers`) is recorded as such.
 - [ ] Bridge callbacks (`onInitialized` / `onSizeChanged` / `onRequestTeardown`) are guarded on bridge-instance identity, so a stale bridge cannot set the sticky `closed` state over a live successor or drive its frame height.
 - [ ] `ui/notifications/size-changed` is consumed and drives the INLINE iframe height, coalesced through `requestAnimationFrame`, clamped between `--size-app-inline-min` and a new host-owned `--size-app-inline-max`.
 - [ ] The envelope and the reported-height style are gated on `isInline`: the page-level fullscreen / pip panel reuses `.mcp-app__frame` and sizes it itself, so neither the clamp nor the app-driven height may reach it.
@@ -75,9 +77,13 @@ scripts/smoke/
   phase-109k.sh                                     (SKIP-tolerant greps to hard assertions)
   phase-207.sh                                      (added)
 .gitattributes                                      (added - force textual diffs for source types)
+scripts/smoke/common.sh                             (grep helpers: -E + -r; exit-2 fails loud)
+CHANGELOG.md                                        (the two ACTION REQUIRED breaks)
+internal/config/
+  validate.go / validate_test.go                    (separator-safety at validate-time)
 internal/protocol/
-  mcp.go                                            (not-found classification is sentinel-only)
-  apps.go                                           (ErrAccessorNotFound)
+  mcp.go                                            (not-found + exposure classification: sentinel-only)
+  apps.go                                           (ErrAccessorNotFound, ErrAccessorScopeDenied)
   apps_test.go / mcp_test.go                        (sentinel classification + the laundering guard)
   types/mcp_apps_test.go                            (added - the no-server-scope wire guard)
 internal/mcpconsole/
@@ -85,7 +91,9 @@ internal/mcpconsole/
                                                      applied on every accessor not-found path)
   toolcontext.go                                    (tool-context miss wraps the sentinel)
   apps.go                                           (resolve miss + read_resource wrap the sentinel)
-  notfound_translation_test.go                      (added - enumerates every translating path)
+  notfound_translation_test.go                      (added - RegistryAccessor paths + markNotFound)
+  notfound_enumeration_test.go                      (added - the three Apps seams, real drivers)
+  toolcontext_test.go                               (text assertions -> sentinel assertions)
 internal/tools/drivers/mcp/
   registry.go                                       (ErrAmbiguousServerID, CheckServerIDUnambiguous)
   attach.go                                         (early pre-check, both attach paths)
@@ -137,6 +145,7 @@ listResourceTemplates(serverID: string): Promise<MCPAppResourceTemplateListing[]
 ## Smoke script additions
 
 - `scripts/smoke/phase-109k.sh` is rewritten: every one of its acceptance criteria becomes a hard `assert_grep_present` / `assert_grep_absent`. The `mimeTypes` capability, the `runtime.info` display modes, the namespace qualifier (both its existence AND its use in `oncalltool`), the size-changed consumer, the graceful teardown + `request-teardown` handler, the live-theme relay, host-context `toolInfo` + `containerDimensions`, and `onlistresourcetemplates` — 14 assertions, zero SKIPs.
+- **`scripts/smoke/common.sh` grep helpers repaired (§17.6).** `assert_grep_absent` ran on BASIC grep while its siblings ran on EXTENDED, so callers' ERE patterns were reinterpreted: `|` became a literal and `\(` opened an unbalanced group whose exit-2 was swallowed as "absent". All three helpers now force `-E`, add `-r` for a directory target, and FAIL on grep exit 2 instead of reading it as absence. That surfaced 19 inert guards across the tree — two dead on the dialect (the TUI Protocol-client boundary, a migration-runner check), seventeen on the swallowed exit-2 (hand-rolled-`fetch` bans on seven Console pages, a Protocol single-source check, a spawn-depth check, golden-file template markers), plus one whose target file no longer existed. All repaired, each spot-verified against a deliberately-violating file.
 - `scripts/smoke/phase-207.sh` (new) guards what this phase adds on top: the qualifier is unconditional and has no already-qualified escape hatch; the no-server-scope wire guard test exists; the tool-not-found marker at the Protocol edge and the typed error in the host + adapter; both size tokens exist and the frame is clamped by the maximum; the teardown send is gated on `wasInitialized`; and the record correction (D-351 in the decisions log and the master plan, HA-38 flipped in the downstream-asks register).
 
 ## Coverage target

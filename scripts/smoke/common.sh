@@ -44,26 +44,62 @@ assert_dir_nonempty() {
 }
 
 # -----------------------------------------------------------------------------
-# Why every grep helper below passes `-a` (treat the file as text).
+# Invocation rules every grep helper below shares. Both exist because a guard
+# that reports the WRONG answer is worse than no guard — it is the same failure
+# class as a SKIP where an OK belongs (AGENTS.md §4.2 item 5).
 #
-# A source file may legitimately contain a NUL byte — e.g. the Console MCP-Apps
-# renderer uses one as an in-string separator for its dedup key. grep classifies
-# such a file as BINARY, and BSD grep's handling of a binary file differs from
-# GNU's and is sensitive to how it is invoked, so a guard over that file can
-# silently stop matching content that is plainly there. A gate that reports the
-# wrong answer is worse than no gate (it is the same failure class as a SKIP
-# where an OK belongs, AGENTS.md §4.2 item 5), so the helpers force text mode.
+# `-a` (treat the file as text). A source file may legitimately contain a NUL
+# byte in a string literal. grep classifies such a file as BINARY, and BSD
+# grep's handling of a binary file differs from GNU's and is sensitive to how it
+# is invoked, so a guard over that file can silently stop matching content that
+# is plainly there.
+#
+# `-E` (extended regex), on EVERY helper. These helpers are documented as taking
+# an extended-regex pattern, and callers write ERE. A helper on BASIC grep
+# silently reinterprets that pattern: `|` becomes a literal, so an alternation
+# matches nothing and the guard is permanently green; `\(` opens a group, so an
+# escaped-paren pattern is UNBALANCED and grep exits 2, which `2>/dev/null`
+# swallows into the "not found" branch — an absence check that can never fail.
+# Both shapes were live in the tree (the TUI Protocol-client boundary check and
+# a migration-runner absence check), reporting OK for years while blind. One
+# regex dialect across all helpers is the fix.
+#
+# `-r` when the target is a DIRECTORY. Plain grep on a directory does not
+# recurse and returns "no match", which for an absence check reads as a pass.
+# The helpers detect a directory and add `-r` so a caller cannot get that wrong.
 # -----------------------------------------------------------------------------
 
-# assert_grep_absent <pattern> <path> <description>
-# Asserts pattern is NOT found in path. Used for forbidden-words scans.
-assert_grep_absent() {
-    local pattern="$1" target="$2" desc="$3"
-    if grep -a -q -i -- "$pattern" "$target" 2>/dev/null; then
-        fail "${desc}: forbidden pattern '${pattern}' found in ${target}"
-    else
-        ok "${desc} (no '${pattern}' in ${target})"
+# _grep_recursive_flag <target>
+# Echoes `-r` when target is a directory, empty otherwise. A directory target
+# without -r silently matches nothing (see the header note).
+#
+# ALWAYS returns 0. These scripts run under `set -e`, and the callers assign
+# this through a command substitution — a non-zero status would abort the whole
+# smoke script on the (normal) non-directory case.
+_grep_recursive_flag() {
+    if [ -d "$1" ]; then
+        printf -- '-r'
     fi
+    return 0
+}
+
+# assert_grep_absent <pattern> <path-or-dir> <description>
+# Asserts an EXTENDED-regex pattern is NOT found in path. Used for
+# forbidden-words scans and architectural-boundary checks. Recurses when the
+# target is a directory.
+assert_grep_absent() {
+    local pattern="$1" target="$2" desc="$3" rflag
+    rflag="$(_grep_recursive_flag "$target")"
+    # NOTE: grep exit code 2 (a malformed pattern / unreadable target) must NOT
+    # read as "absent". Capture the status explicitly and fail loud on it.
+    # `|| rc=$?` keeps the non-zero statuses from tripping `set -e`.
+    local rc=0
+    grep -a ${rflag} -qEi -- "$pattern" "$target" 2>/dev/null || rc=$?
+    case "${rc}" in
+        0) fail "${desc}: forbidden pattern '${pattern}' found in ${target}" ;;
+        1) ok "${desc} (no '${pattern}' in ${target})" ;;
+        *) fail "${desc}: grep failed (exit ${rc}) on pattern '${pattern}' in ${target} — the guard did not run" ;;
+    esac
 }
 
 # assert_grep_present <pattern> <path> <description>
@@ -71,7 +107,9 @@ assert_grep_absent() {
 # static-guard smokes to pin a load-bearing declaration in a source file.
 assert_grep_present() {
     local pattern="$1" target="$2" desc="$3"
-    if grep -a -qE -- "$pattern" "$target" 2>/dev/null; then
+    local rflag
+    rflag="$(_grep_recursive_flag "$target")"
+    if grep -a ${rflag} -qE -- "$pattern" "$target" 2>/dev/null; then
         ok "${desc}"
     else
         fail "${desc} — pattern '${pattern}' absent from ${target}"
@@ -84,7 +122,9 @@ assert_grep_present() {
 # canonical Protocol-error-code set).
 assert_grep_count() {
     local pattern="$1" target="$2" expected="$3" desc="$4" actual
-    actual=$(grep -a -cE -- "$pattern" "$target" 2>/dev/null) || actual=0
+    local rflag
+    rflag="$(_grep_recursive_flag "$target")"
+    actual=$(grep -a ${rflag} -cE -- "$pattern" "$target" 2>/dev/null) || actual=0
     if [ "${actual}" -eq "${expected}" ]; then
         ok "${desc} (count=${actual})"
     else

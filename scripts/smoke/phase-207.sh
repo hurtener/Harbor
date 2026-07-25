@@ -56,7 +56,7 @@ assert_grep_present 'return .\$\{serverID\}_\$\{name\}' "${BRIDGE}" \
 # the bare identifier: a module-wide `startsWith` ban would fail preflight for
 # an unrelated future use, which is how a guard earns a reputation for crying
 # wolf and gets deleted.
-assert_grep_absent 'startsWith(.${serverID}' "${BRIDGE}" \
+assert_grep_absent 'startsWith\(.\$\{serverID\}' "${BRIDGE}" \
     'phase 207: no already-qualified escape hatch in the qualifier'
 # The wire request carries no app-supplied server scope — the namespace is
 # host-derived, never something the sandboxed App can aim. The precise guard is

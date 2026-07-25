@@ -124,9 +124,9 @@ if grep -qE '^[[:space:]]+Save view[[:space:]]*$' "${PAGE}"; then
 else
   fail "phase 108o: the page must render a 'Save view' button on its own line (phase-83s N7)"
 fi
-assert_grep_absent 'fetch(' "${PAGE}" \
+assert_grep_absent 'fetch\(' "${PAGE}" \
   "phase 108o: the page route has no hand-rolled fetch (HarborClient only)"
-assert_grep_absent 'fetch(' "${STATE}" \
+assert_grep_absent 'fetch\(' "${STATE}" \
   "phase 108o: the controller has no hand-rolled fetch (HarborClient only)"
 
 smoke_summary

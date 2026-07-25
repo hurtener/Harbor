@@ -1104,10 +1104,16 @@ func mapMCPError(method string, err error) error {
 	}
 }
 
-// isMCPNotFound / isMCPIdentityMissing classify accessor errors by their
-// error-message marker. The `protocol` package does not import the `mcp`
-// driver (no import cycle), so the classification is string-based — the
-// accessor wraps the driver sentinel and the marker is stable.
+// isMCPNotFound classifies an accessor's not-found verdict by SENTINEL.
+//
+// The `protocol` package does not import the `mcp` driver or the `mcpconsole`
+// accessor (no import cycle), which is why this classification was originally
+// string-based. It is not any more: the accessor layer — the only one allowed
+// to know both taxonomies — translates its driver's sentinel into the
+// Protocol's `ErrAccessorNotFound`, and this reads that. See
+// ErrAccessorNotFound for why the text-matching form was unsafe.
+//
+// `isMCPIdentityMissing` below is still marker-based; see its own note.
 func isMCPNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -1131,14 +1137,17 @@ func isMCPIdentityMissing(err error) bool {
 }
 
 // isAppToolExposureDenied classifies the app→host current-state exposure
-// rejection (a paused server / disabled tool in the agent's active config).
-// It maps to CodeScopeMismatch — an authorization rejection, not a
+// rejection (a paused server / disabled tool in the agent's active config) by
+// SENTINEL. It maps to CodeScopeMismatch — an authorization rejection, not a
 // not-found — driving the operator-legible "paused by an administrator"
-// overlay. String-based, like the markers above: the `protocol` package
-// does not import the `mcpconsole` accessor (no import cycle), and the
-// accessor's sentinel message carries this stable marker.
+// overlay.
+//
+// Sentinel rather than marker for the same reason as isMCPNotFound: the
+// accessor wraps ErrAccessorScopeDenied to state its own verdict, so a
+// southbound server whose error text happens to read like an exposure refusal
+// cannot mint one.
 func isAppToolExposureDenied(err error) bool {
-	return err != nil && containsMarker(err.Error(), "paused or disabled by agent configuration")
+	return stderrors.Is(err, ErrAccessorScopeDenied)
 }
 
 // mcpCountToWire converts a runtime int count (tool / resource /

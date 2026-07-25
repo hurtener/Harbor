@@ -359,34 +359,42 @@ type ServerRegistration struct {
 
 // CheckServerIDUnambiguous reports whether registering `name` would leave the
 // `<sourceID>_<tool>` catalog key space ambiguous against an already-registered
-// server id, returning a wrapped ErrAmbiguousServerID when it would.
+// MCP server id, returning a wrapped ErrAmbiguousServerID when it would.
 //
 // # Why the key space has to be unambiguous
 //
 // A tool discovered from server S is registered in the catalog as
-// `S_<toolName>` (a single underscore join), and NEITHER side of that join is
-// charset-constrained: an operator may name a server `github_enterprise`, and
-// server-side tool names routinely contain underscores. The join is therefore
-// not injective across arbitrary id pairs. With `github` and `github_enterprise`
-// both registered, the key `github_enterprise_delete_repo` is produced by
-// exactly one of them but PARSES as either — and a consumer that builds a key
-// by prefixing a server id cannot tell which server it just addressed.
+// `S_<toolName>` — a single underscore join in which NEITHER side is
+// charset-constrained: a server id may contain underscores, and server-side
+// tool names routinely do. The join is therefore not injective across arbitrary
+// id pairs. When two ids are separator-ambiguous, a single catalog key can be
+// parsed as belonging to either of them, and a consumer that BUILDS a key by
+// prefixing a server id cannot know which server it just addressed.
 //
-// That is a confinement property, not a cosmetic one. The Console's MCP-Apps
-// host confines a sandboxed App to its own server by prefixing every
-// app-supplied tool name with the App's host-derived server id. The prefix is
-// unconditional and the App cannot choose the id — but if two ids are
-// separator-ambiguous, an App on `github` can name `enterprise_delete_repo`,
-// the host dispatches `github_enterprise_delete_repo`, and the call lands on
-// `github_enterprise`'s tool with every downstream gate evaluating THAT
-// server's posture. The App reached a neighbour it was supposed to be confined
-// away from, and nothing on the path is in a position to notice.
+// That matters because a key prefix is used as a confinement boundary: the
+// Console's MCP-Apps host scopes a sandboxed App to its own server by
+// qualifying every app-supplied tool name with the App's host-derived server
+// id. The qualification is unconditional and the App cannot choose the id, so
+// the boundary holds exactly as well as the key space is unambiguous — and no
+// better. Downstream gates evaluate the posture of whichever server the key
+// resolved to, so an ambiguous resolution is not visible to them either.
 //
-// Refusing the ambiguous pair at registration restores injectivity: with this
-// check in force, `<sourceID>_<tool>` identifies exactly one server, so the
-// prefix means what it claims. This is the registration-time precondition the
-// confinement control depends on — the control is sound GIVEN it, and unsound
-// without it.
+// Refusing an ambiguous pairing at registration is what makes the key space
+// unambiguous AMONG MCP SERVER IDS, which is the precondition that boundary
+// depends on.
+//
+// # Scope of the guarantee — MCP ids only
+//
+// This registry sees MCP servers. The tool catalog is SHARED: in-proc and HTTP
+// tools register operator-chosen names into the same namespace with no source
+// prefix at all, and this check never sees them. A bare tool name that happens
+// to look like `<mcpServerID>_<something>` therefore reintroduces the same
+// ambiguity through a door this guard does not cover.
+//
+// So the honest statement is: `<sourceID>_<tool>` identifies exactly one
+// server AMONG MCP SERVER IDS. Closing the non-MCP door needs the resolved
+// descriptor's `Source` compared exactly at dispatch — a runtime-side check, not
+// a naming rule — which is recorded as a follow-up rather than bolted on here.
 //
 // # The rule
 //
@@ -414,15 +422,18 @@ func ambiguousAgainst(servers map[string]*serverEntry, name string) error {
 			// ambiguity — the id's relationship to every OTHER id is unchanged.
 			continue
 		}
-		if strings.HasPrefix(name, existing+"_") {
-			return fmt.Errorf("%w: %q sits inside the tool-name namespace of registered server %q "+
-				"(a catalog key %q could address either); rename one of them",
-				ErrAmbiguousServerID, name, existing, name+"_<tool>")
-		}
-		if strings.HasPrefix(existing, name+"_") {
-			return fmt.Errorf("%w: registered server %q sits inside the tool-name namespace of %q "+
-				"(a catalog key %q could address either); rename one of them",
-				ErrAmbiguousServerID, existing, name, existing+"_<tool>")
+		// The message names ONLY the id the caller supplied. The id it collided
+		// with belongs to a server the caller may have no business knowing
+		// exists — this error is surfaced to the runtime-attach response, so
+		// echoing the other id would leak another owner's server name to
+		// whoever probes for it (AGENTS.md §6: existence is never revealed
+		// across identities). The operator diagnosing it has the boot log and
+		// the full server list; the API caller does not need either.
+		if strings.HasPrefix(name, existing+"_") || strings.HasPrefix(existing, name+"_") {
+			return fmt.Errorf("%w: server id %q is separator-ambiguous with an already-registered "+
+				"server id, so a %q catalog key would not identify one server; choose an id that is "+
+				"not an underscore-extension of, and not extended by, another registered id",
+				ErrAmbiguousServerID, name, "<serverID>_<tool>")
 		}
 	}
 	return nil

@@ -109,13 +109,13 @@ assert_grep_present 'data-testid="detail-run"' "${DETAIL_PAGE}" \
   "phase 108p: the detail page keeps the admin-gated Run this flow action"
 
 # No hand-rolled fetch — HarborClient via the controllers only (§13).
-assert_grep_absent 'fetch(' "${LIST_PAGE}" \
+assert_grep_absent 'fetch\(' "${LIST_PAGE}" \
   "phase 108p: the list route has no hand-rolled fetch (HarborClient only)"
-assert_grep_absent 'fetch(' "${DETAIL_PAGE}" \
+assert_grep_absent 'fetch\(' "${DETAIL_PAGE}" \
   "phase 108p: the detail route has no hand-rolled fetch (HarborClient only)"
-assert_grep_absent 'fetch(' "${LIST_STATE}" \
+assert_grep_absent 'fetch\(' "${LIST_STATE}" \
   "phase 108p: the list controller has no hand-rolled fetch (HarborClient only)"
-assert_grep_absent 'fetch(' "${DETAIL_STATE}" \
+assert_grep_absent 'fetch\(' "${DETAIL_STATE}" \
   "phase 108p: the detail controller has no hand-rolled fetch (HarborClient only)"
 
 # Save-view N7 contract (the button label on its own line — phase-83s).

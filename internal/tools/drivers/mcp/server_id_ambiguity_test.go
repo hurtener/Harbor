@@ -13,26 +13,25 @@ import (
 // server_id_ambiguity_test.go — the registration-time precondition the
 // MCP-Apps app→host tool-namespace confinement depends on.
 //
-// The Console confines a rendered `ui://` App to its own server by prefixing
+// The Console scopes a rendered `ui://` App to its own server by qualifying
 // every app-supplied tool name with the App's HOST-DERIVED server id. The
-// prefix is unconditional and the App cannot choose the id, so the control is
-// airtight against name choice — but it silently is NOT airtight against ID
-// choice, because `<sourceID>_<tool>` is a single-underscore join and neither
-// side is charset-constrained. Two operator-chosen ids that differ by a `_`
-// segment make the join non-injective, and an App on the shorter id can then
-// address the longer id's tools.
+// qualification is unconditional and the App cannot choose the id, so the
+// boundary is as strong as the key space is unambiguous — and no stronger,
+// because `<sourceID>_<tool>` is a single-underscore join and neither side is
+// charset-constrained. Two server ids that are underscore-extensions of one
+// another make the join non-injective; the contract is that ids must be
+// separator-safe, which the registration guard enforces.
 //
-// TestCatalogKeyJoin_IsNotInjective_WithoutTheRegistrationGuard demonstrates
+// TestCatalogKeyJoin_IsNotInjective_DocumentsWhyTheGuardExists demonstrates
 // the escape against the REAL catalog, so the guard's value is a demonstrated
 // property rather than an assertion about a string. The Registry tests then
 // prove the guard makes that pairing unreachable in the first place.
 
-// The escape, shown end-to-end against the real tools.Catalog: nothing in the
-// catalog can distinguish which server produced a key, so an App confined to
-// `github` reaches `github_enterprise`'s tool by name alone. This test does not
-// need the guard disabled — it shows the JOIN is ambiguous, which is exactly
-// why the guard has to prevent the pairing from existing.
-func TestCatalogKeyJoin_IsNotInjective_WithoutTheRegistrationGuard(t *testing.T) {
+// The property, shown against the real tools.Catalog: nothing in the catalog
+// can distinguish which server produced a key, so a key built by prefixing one
+// id can resolve to a tool owned by an underscore-extended id. That is why the
+// guard has to prevent such a pairing from existing at all.
+func TestCatalogKeyJoin_IsNotInjective_DocumentsWhyTheGuardExists(t *testing.T) {
 	cat := tools.NewCatalog()
 
 	// `github_enterprise` registers its own tool exactly as the driver does:
@@ -51,23 +50,20 @@ func TestCatalogKeyJoin_IsNotInjective_WithoutTheRegistrationGuard(t *testing.T)
 		t.Fatalf("register victim tool: %v", err)
 	}
 
-	// An App hosted by server `github` asks for the bare name
-	// `enterprise_delete_repo`. The Console's confinement qualifier prefixes it
-	// with the App's own server id — unconditionally, and the App cannot
-	// influence that id.
+	// A host qualifying a bare name with its own (host-derived) server id.
 	appServerID := "github"
 	appSuppliedName := "enterprise_delete_repo"
 	dispatched := fmt.Sprintf("%s_%s", appServerID, appSuppliedName)
 
-	// The dispatched key is inside the App's own `github_` namespace by every
-	// string test the host can perform...
+	// The qualified key is inside the qualifying id's namespace by every string
+	// test the host can perform...
 	if got := dispatched; got != "github_enterprise_delete_repo" {
 		t.Fatalf("qualified name = %q, want github_enterprise_delete_repo", got)
 	}
 
-	// ...and yet it resolves to a tool owned by a DIFFERENT server. This is the
-	// confinement escape: the downstream exposure gate would evaluate
-	// `github_enterprise`'s posture, so every gate on the path approves.
+	// ...and yet it resolves to a tool owned by a DIFFERENT source. Downstream
+	// gates evaluate the posture of whichever server the key resolved to, so
+	// they cannot detect the mismatch either.
 	desc, ok := cat.Resolve(dispatched)
 	if !ok {
 		t.Fatalf("Resolve(%q) missed — the join is injective after all?", dispatched)
@@ -75,8 +71,8 @@ func TestCatalogKeyJoin_IsNotInjective_WithoutTheRegistrationGuard(t *testing.T)
 	if desc.Tool.Source != tools.ToolSourceID("github_enterprise") {
 		t.Fatalf("resolved Source = %q, want github_enterprise", desc.Tool.Source)
 	}
-	t.Logf("confirmed: an App on %q reaches %q's tool via key %q — hence the registration guard",
-		appServerID, desc.Tool.Source, dispatched)
+	t.Logf("confirmed non-injective: a key qualified with %q resolved to a tool owned by a "+
+		"different source — hence the registration guard", appServerID)
 }
 
 // The guard: an ambiguous pair can never both be registered, so the escape

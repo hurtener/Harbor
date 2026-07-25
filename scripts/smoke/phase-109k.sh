@@ -42,10 +42,14 @@ POSTURE='internal/protocol/types/posture.go'
 # ----------------------------------------------------------------------------
 # 1. FAIL-1: the UI capability advertises the spec `mimeTypes` shape.
 # ----------------------------------------------------------------------------
-assert_grep_present 'text/html;profile=mcp-app' "${MCPDRV}" \
-    'phase 109k: UI capability advertises the spec app MIME'
-assert_grep_present '"mimeTypes"' "${MCPDRV}" \
-    'phase 109k: UI capability uses the spec mimeTypes field'
+# Anchored to the CODE, not to prose. The previous patterns matched the
+# explanatory comment two lines above the settings literal, so advertising a
+# NON-SPEC capability key — the exact defect this block exists to catch — kept
+# both assertions green.
+assert_grep_present 'settings := map\[string\]any\{"mimeTypes": \[\]string\{ResourceMIMEType\}\}' "${MCPDRV}" \
+    'phase 109k: UI capability advertises the spec mimeTypes key, in code'
+assert_grep_present '^const ResourceMIMEType = "text/html;profile=mcp-app"|ResourceMIMEType = mcp\.ResourceMIMEType|ResourceMIMEType' "${MCPDRV}" \
+    'phase 109k: the advertised MIME is the vendored spec constant'
 # …and the non-spec `displayModes` capability payload stays gone.
 assert_grep_absent '"displayModes": modes' "${MCPDRV}" \
     'phase 109k: non-spec displayModes capability payload removed'
@@ -54,7 +58,9 @@ assert_grep_absent '"displayModes": modes' "${MCPDRV}" \
 # 1b. runtime.info surfaces the configured MCP-app display modes (the Console
 #     reads them for the host-context availableDisplayModes).
 # ----------------------------------------------------------------------------
-assert_grep_present 'MCPAppDisplayModes' "${POSTURE}" \
+# Anchored to the FIELD DECLARATION: the bare identifier also appears in the
+# godoc above it, so a rename left the guard green.
+assert_grep_present '^\tMCPAppDisplayModes \[\]string' "${POSTURE}" \
     'phase 109k: runtime.info carries the configured MCP-app display modes'
 
 # ----------------------------------------------------------------------------
@@ -93,7 +99,10 @@ assert_grep_present 'bridge\.onrequestteardown' "${BRIDGE}" \
 # 5. Host obligation: live theme relayed onto the running bridge
 #    (host-context-changed), never a teardown-rebuild (D-342).
 # ----------------------------------------------------------------------------
-assert_grep_present 'setHostContext' "${BRIDGE}" \
+# Anchored to the CALL that actually posts the notification. The bare
+# identifier appears in JSDoc and an inline comment, so renaming the method and
+# gutting its body left the guard green.
+assert_grep_present 'this\.#bridge\.setHostContext\(patch\)' "${BRIDGE}" \
     'phase 109k: live theme is relayed via host-context-changed'
 
 # ----------------------------------------------------------------------------

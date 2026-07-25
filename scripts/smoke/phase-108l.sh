@@ -134,9 +134,9 @@ assert_grep_present 'DISCONNECTED_TOOLTIP' "${LIST}" \
 # ----------------------------------------------------------------------------
 # 9. No hand-rolled fetch — Protocol goes through HarborClient (CONVENTIONS §6).
 # ----------------------------------------------------------------------------
-assert_grep_absent 'fetch(' "${LIST}" \
+assert_grep_absent 'fetch\(' "${LIST}" \
     "phase 108l: list route has no hand-rolled fetch (HarborClient only)"
-assert_grep_absent 'fetch(' "${DETAIL}" \
+assert_grep_absent 'fetch\(' "${DETAIL}" \
     "phase 108l: detail route has no hand-rolled fetch (HarborClient only)"
 
 smoke_summary

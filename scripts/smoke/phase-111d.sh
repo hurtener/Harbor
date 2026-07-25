@@ -43,7 +43,7 @@ assert_grep_present 'generator\.Propose' "internal/tools/builtin/skill_propose.g
     "skill_propose registers through the carrier (Phase-41 generator)"
 assert_grep_absent 'HONESTY NOTE' "internal/drivers/prod/prod.go" \
     "the stale skills honesty notes are replaced with the post-111d truth"
-assert_grep_absent 'Phase 60+ bootstrap will call' "cmd/harbor/main.go" \
+assert_grep_absent 'Phase 60\+ bootstrap will call' "cmd/harbor/main.go" \
     "no stale Phase-60+ registration promise survives in main.go"
 
 # ── 1b. Static: the Directory is the <skills_context> producer ──────

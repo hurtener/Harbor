@@ -116,12 +116,15 @@ var ErrAppsMisconfigured = errors.New("mcpconsole: AppsAccessor missing a mandat
 // whose MCP server is currently paused, or a tool that is currently
 // disabled, in the agent's active config. It is an authorization rejection
 // (mapped to CodeScopeMismatch at the wire edge), the functional basis for
-// the operator-legible "paused by a system administrator" overlay. Its
-// message carries the stable "paused or disabled by agent configuration"
-// marker the Protocol edge classifies on (the `protocol` package does not
-// import this package, mirroring the existing not-found / identity-missing
-// markers).
-var ErrAppToolExposureDenied = errors.New("mcpconsole: tool unavailable — paused or disabled by agent configuration")
+// the operator-legible "paused by a system administrator" overlay.
+//
+// It wraps protocol.ErrAccessorScopeDenied so the wire edge classifies it by
+// errors.Is. The edge previously matched this message's TEXT, which a
+// southbound server's error could contribute to; see the Protocol sentinel's
+// godoc for why a refusal must not be mintable from foreign wording.
+var ErrAppToolExposureDenied = fmt.Errorf(
+	"%w: mcpconsole: tool unavailable — paused or disabled by agent configuration",
+	protocol.ErrAccessorScopeDenied)
 
 // NewAppsAccessor builds the MCP Apps host adapter. Registry, Catalog,
 // Store, and Bus are mandatory; a nil fails loud.

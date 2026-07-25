@@ -51,7 +51,7 @@ assert_grep_present 'runtimeGaugesFrom' "${CONSOLE}/components/live-runtime/heal
 
 # 4. Console discipline: the panel reads through the typed client (the page
 #    loader), never a hand-rolled fetch in the component.
-assert_grep_absent 'fetch(' "${CONSOLE}/components/live-runtime/health-panel.svelte" \
+assert_grep_absent 'fetch\(' "${CONSOLE}/components/live-runtime/health-panel.svelte" \
     "phase 121: no hand-rolled fetch in the health panel"
 
 # NOTE: the live metrics.snapshot route is already exercised by the

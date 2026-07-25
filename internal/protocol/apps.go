@@ -193,6 +193,19 @@ var ErrAppsMisconfigured = stderrors.New("protocol: AppsSurface missing a mandat
 // target and IT found nothing. No upstream text can forge that.
 var ErrAccessorNotFound = stderrors.New("protocol: accessor target not found")
 
+// ErrAccessorScopeDenied — the sentinel a runtime-side accessor wraps to state
+// that the caller's request was refused on an AUTHORIZATION ground rather than
+// because the target is absent. mapMCPError classifies it as CodeScopeMismatch
+// via errors.Is.
+//
+// Same reasoning as ErrAccessorNotFound, and the same hazard: this
+// classification used to substring-match the chain for the exposure gate's
+// message, and that chain carries a southbound server's text verbatim. A
+// refusal and an absence are the two verdicts a rendered MCP App branches on
+// most sharply — "you may not" versus "there is no such thing" — so neither may
+// be reachable from wording Harbor does not author.
+var ErrAccessorScopeDenied = stderrors.New("protocol: accessor refused the request")
+
 // NewAppsSurface builds the Protocol MCP Apps surface. Both the resource
 // reader and the tool-call invoker are mandatory; a nil fails loud with a
 // wrapped ErrAppsMisconfigured.
