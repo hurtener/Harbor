@@ -178,7 +178,7 @@ func TestMCPConnectionDetacher_SetOAuthDiscoveryOrigins_NilRegistry(t *testing.T
 // the attacher's SetOAuthDiscoveryOrigins nil-registry error path —
 // the guard fires loud (no silent degradation).
 func TestMCPConnectionAttacher_SetOAuthDiscoveryOrigins_NilRegistry(t *testing.T) {
-	a := NewMCPConnectionAttacher(nil, nil, nil, nil, identity.Identity{}, nil, nil)
+	a := NewMCPConnectionAttacher(nil, nil, nil, nil, identity.Identity{}, nil, nil, nil)
 	_, err := a.SetOAuthDiscoveryOrigins(context.Background(), "srv-x", []string{"https://origin.example.com"})
 	if err == nil {
 		t.Fatal("SetOAuthDiscoveryOrigins with nil registry must fail loud (no silent degradation)")
@@ -666,7 +666,7 @@ func TestMCPConnectionAttacher_Attach_FailsFastAndDrains(t *testing.T) {
 	cat := tools.NewCatalog()
 	registry := mcpdrv.NewRegistry()
 	a := NewMCPConnectionAttacher(cat, registry, bus, slog.New(slog.NewTextHandler(io.Discard, nil)),
-		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, nil, nil)
+		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, nil, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -703,7 +703,7 @@ func TestMCPConnectionAttacher_MissingOwner_FailsClosed(t *testing.T) {
 	cat := tools.NewCatalog()
 	registry := mcpdrv.NewRegistry()
 	a := NewMCPConnectionAttacher(cat, registry, bus, slog.New(slog.NewTextHandler(io.Discard, nil)),
-		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, nil, nil)
+		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, nil, nil, nil)
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
 
 	cases := []struct {

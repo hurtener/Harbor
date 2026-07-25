@@ -105,7 +105,17 @@ function fakeClient(): MCPAppHostClient {
       return `blob:${id}`;
     },
     async toolContext() {
-      return null;
+      // A RESOLVING context on purpose: the renderer resolves the tool context
+      // BEFORE mounting, so only an app whose context resolves traverses that
+      // await on the way to a live bridge. Returning null here would send every
+      // guard below down the miss path — no bridge, nothing to tear down — and
+      // silently stop covering the lifecycle it exists to protect.
+      return {
+        tool: 'srv_report',
+        input: { content: { region: 'emea' } },
+        result: { content: { revenue: 42 } },
+        isError: false,
+      };
     },
     async fetchArtifactText() {
       return '{}';
@@ -120,14 +130,14 @@ async function mountAndConnect(target: HTMLElement): Promise<ReturnType<typeof m
     props: {
       mime: 'application/vnd.harbor.mcp-app',
       src: '',
-      app: { resourceUri: 'ui://srv/app.html', displayMode: 'inline', rawHtmlTrusted: false },
+      app: { resourceUri: 'ui://srv/app.html', displayMode: 'inline', rawHtmlTrusted: false, toolCallId: 'tc_1' },
       serverID: 'srv',
       appHostClient: fakeClient(),
     },
   });
-  // Drain: preload (async readResource) → loadState='ready' → lifecycle effect
-  // constructs + connects the bridge.
-  for (let i = 0; i < 8 && captured.instances.length === 0; i++) {
+  // Drain: preload (async readResource, then the async tool-context resolve)
+  // → loadState='ready' → lifecycle effect constructs + connects the bridge.
+  for (let i = 0; i < 12 && captured.instances.length === 0; i++) {
     flushSync();
     await Promise.resolve();
   }
@@ -206,14 +216,14 @@ describe('McpAppRenderer — theme lifecycle isolation (reverted-work guard)', (
     const { component, props } = mountRendererReactive(target, {
       mime: 'application/vnd.harbor.mcp-app',
       src: '',
-      app: { resourceUri: 'ui://srv/app.html', displayMode: 'inline', rawHtmlTrusted: false },
+      app: { resourceUri: 'ui://srv/app.html', displayMode: 'inline', rawHtmlTrusted: false, toolCallId: 'tc_1' },
       serverID: 'srv',
       appHostClient: fakeClient(),
       availableDisplayModes: ['inline', 'fullscreen', 'pip'],
       onDisplayModeRequest: () => {},
     });
-    // Drain preload → ready → connectBridge.
-    for (let i = 0; i < 8 && captured.instances.length === 0; i++) {
+    // Drain preload (document + tool context) → ready → connectBridge.
+    for (let i = 0; i < 12 && captured.instances.length === 0; i++) {
       flushSync();
       await Promise.resolve();
     }

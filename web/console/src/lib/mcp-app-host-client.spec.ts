@@ -129,7 +129,11 @@ describe('makeMCPAppHostClient', () => {
     expect(ctx?.result.content).toBeUndefined();
   });
 
-  it('toolContext maps a Runtime not_found to null (no delivery, degraded)', async () => {
+  // `null` is the MISS signal, not a "degraded but carry on" one: the renderer
+  // resolves the context BEFORE mounting the iframe, so a null means the app is
+  // not rendered at all and the turn shows the honest "this view is no longer
+  // available" placeholder instead (D-348).
+  it('toolContext maps a Runtime not_found to null (the miss — the app is not rendered)', async () => {
     const { client, toolContext } = fakeProtocolClient();
     toolContext.mockRejectedValueOnce(new ProtocolError('not_found', 'no context', 404));
     const host = makeMCPAppHostClient(client);

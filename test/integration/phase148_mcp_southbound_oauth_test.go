@@ -367,7 +367,7 @@ func TestE2E_Phase148_DevstackAttacher_BindingOverAddConnection(t *testing.T) {
 	mcpReg := mcpdrv.NewRegistry()
 	sysID := identity.Identity{TenantID: "sys", UserID: "sys", SessionID: "sys"}
 	attacher := serve.NewMCPConnectionAttacher(cat, mcpReg, bus, nil, sysID,
-		map[string]auth.OAuthProvider{p142Provider: prov}, nil)
+		map[string]auth.OAuthProvider{p142Provider: prov}, nil, nil)
 	t.Cleanup(func() { _ = attacher.Close(context.Background()) })
 
 	// Fail-loud leg first: an unknown provider name must abort the attach,

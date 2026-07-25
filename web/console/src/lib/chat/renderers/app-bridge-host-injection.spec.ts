@@ -213,10 +213,6 @@ describe('AppBridgeHost host-context — theme + styles.variables (HA-35)', () =
 });
 
 describe('AppBridgeHost Data Delivery — sendToolInput then sendToolResult (HA / D-226)', () => {
-  function ctxClient(ctx: MCPAppToolContext | null): MCPAppHostClient {
-    return { ...fakeClient(), async toolContext() { return ctx; } };
-  }
-
   it('after oninitialized, delivers input then result from the captured tool context', async () => {
     captured.instances.length = 0;
     const ctx: MCPAppToolContext = {
@@ -225,7 +221,7 @@ describe('AppBridgeHost Data Delivery — sendToolInput then sendToolResult (HA 
       result: { content: { revenue: 42 } },
       isError: false,
     };
-    const host = new AppBridgeHost({ client: ctxClient(ctx), serverID: 'srv', toolCallId: 'tc_1' });
+    const host = new AppBridgeHost({ client: fakeClient(), serverID: 'srv', toolContext: ctx });
     const bridge = captured.instances[0];
 
     // No delivery before the app initializes.
@@ -246,9 +242,14 @@ describe('AppBridgeHost Data Delivery — sendToolInput then sendToolResult (HA 
     expect(bridge.toolInputCalls).toHaveLength(1);
   });
 
-  it('performs no delivery when no toolCallId is set', async () => {
+  it('performs no delivery when no tool context was supplied', async () => {
+    // The renderer resolves the context BEFORE constructing the host, so an
+    // absent `toolContext` means "nothing was ever captured for this app" —
+    // not "the lookup failed". A resolution MISS never reaches a constructed
+    // bridge at all: the renderer shows the placeholder and mounts no iframe
+    // (pinned by the mcp-app renderer spec).
     captured.instances.length = 0;
-    new AppBridgeHost({ client: ctxClient(null), serverID: 'srv' });
+    new AppBridgeHost({ client: fakeClient(), serverID: 'srv' });
     const bridge = captured.instances[0];
     bridge.fireInitialized();
     await flushMicrotasks();
@@ -256,28 +257,27 @@ describe('AppBridgeHost Data Delivery — sendToolInput then sendToolResult (HA 
     expect(bridge.toolResultCalls).toHaveLength(0);
   });
 
-  it('a null tool context (not_found) yields no delivery and no throw', async () => {
+  it('drops a stale delivery when the bridge is closed mid heavy-payload fetch (no "Not connected")', async () => {
+    // A transcript re-render can `close()` the bridge while a heavy
+    // by-reference half of the context is being fetched at the iframe edge
+    // between the two sends. The resumed delivery must NOT push onto the
+    // torn-down transport (that threw "Not connected" and spammed the console
+    // on failing turns). This is the surviving shape of the original
+    // in-flight-close race: the tool-context FETCH now happens before the
+    // bridge exists, so only the artifact fetch can still be in flight.
     captured.instances.length = 0;
-    new AppBridgeHost({ client: ctxClient(null), serverID: 'srv', toolCallId: 'gone' });
-    const bridge = captured.instances[0];
-    bridge.fireInitialized();
-    await flushMicrotasks();
-    expect(bridge.toolInputCalls).toHaveLength(0);
-    expect(bridge.toolResultCalls).toHaveLength(0);
-  });
-
-  it('drops a stale delivery when the bridge is closed mid tool-context fetch (no "Not connected")', async () => {
-    // A transcript re-render can `close()` the bridge while the `toolContext`
-    // request started on `oninitialized` is still in flight. The resumed
-    // delivery must NOT push onto the torn-down transport (that threw
-    // "Not connected" and spammed the console on failing turns).
-    captured.instances.length = 0;
-    let releaseCtx: (v: MCPAppToolContext) => void = () => {};
-    const gate = new Promise<MCPAppToolContext>((resolve) => {
-      releaseCtx = resolve;
+    let releaseBytes: (v: string) => void = () => {};
+    const gate = new Promise<string>((resolve) => {
+      releaseBytes = resolve;
     });
-    const client: MCPAppHostClient = { ...fakeClient(), async toolContext() { return gate; } };
-    const host = new AppBridgeHost({ client, serverID: 'srv', toolCallId: 'tc_1' });
+    const client: MCPAppHostClient = { ...fakeClient(), async fetchArtifactText() { return gate; } };
+    const ctx: MCPAppToolContext = {
+      tool: 'srv_report',
+      input: { artifactRef: { id: 'art_heavy' } },
+      result: { content: {} },
+      isError: false,
+    };
+    const host = new AppBridgeHost({ client, serverID: 'srv', toolContext: ctx });
     const bridge = captured.instances[0];
 
     await host.connect({} as unknown as Window);
@@ -286,11 +286,48 @@ describe('AppBridgeHost Data Delivery — sendToolInput then sendToolResult (HA 
     expect(bridge.toolInputCalls).toHaveLength(0);
 
     await host.close(); // transport torn down while the fetch is still parked
-    releaseCtx({ tool: 't', input: { content: { a: 1 } }, result: { content: {} }, isError: false });
+    releaseBytes('{"region":"emea"}');
     await flushMicrotasks();
 
     // The stale delivery is dropped — never sent onto the closed transport.
     expect(bridge.toolInputCalls).toHaveLength(0);
+    expect(bridge.toolResultCalls).toHaveLength(0);
+  });
+
+  it('drops the RESULT send when the bridge is closed mid heavy-result fetch', async () => {
+    // The mirror of the case above, on the other side of the input send. The
+    // heavy half is far more often the RESULT (the larger payload), and it is
+    // fetched AFTER `sendToolInput` has already gone out — so it exercises the
+    // SECOND liveness re-check, which the input-parked case never reaches.
+    captured.instances.length = 0;
+    let releaseBytes: (v: string) => void = () => {};
+    const gate = new Promise<string>((resolve) => {
+      releaseBytes = resolve;
+    });
+    const client: MCPAppHostClient = { ...fakeClient(), async fetchArtifactText() { return gate; } };
+    const ctx: MCPAppToolContext = {
+      tool: 'srv_report',
+      input: { content: { region: 'emea' } },
+      result: { artifactRef: { id: 'art_heavy_result' } },
+      isError: false,
+    };
+    const host = new AppBridgeHost({ client, serverID: 'srv', toolContext: ctx });
+    const bridge = captured.instances[0];
+
+    await host.connect({} as unknown as Window);
+    bridge.fireInitialized();
+    await flushMicrotasks();
+
+    // The INPUT went out (it was inline); the delivery is now parked on the
+    // heavy result fetch.
+    expect(bridge.toolInputCalls).toEqual([{ arguments: { region: 'emea' } }]);
+    expect(bridge.toolResultCalls).toHaveLength(0);
+
+    await host.close(); // transport torn down mid result-bytes fetch
+    releaseBytes('{"revenue":42}');
+    await flushMicrotasks();
+
+    // The result send is dropped — never posted onto the closed transport.
     expect(bridge.toolResultCalls).toHaveLength(0);
   });
 });

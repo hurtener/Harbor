@@ -111,9 +111,14 @@ type AppRef struct {
 	// tool-call site (a content hash of the run / server / tool / args).
 	// It correlates a discovered app to the captured tool context — the
 	// input + lowered result that produced it — so a Protocol client can
-	// fetch that context via mcp.apps.tool_context. Empty until the
-	// invocation path stamps it; it is NOT parsed from the server's
-	// `_meta` (a result never carries it).
+	// fetch that context via mcp.apps.tool_context. It is NOT parsed from
+	// the server's `_meta` (a result never carries it).
+	//
+	// A non-empty value is a PROMISE that a context record was persisted:
+	// the invocation path stamps it only after the capture succeeded, so it
+	// stays empty when no capturer is wired or the capture failed. A reader
+	// may therefore treat a fetch miss as "the record is gone" rather than
+	// "it may never have existed".
 	ToolCallID string
 }
 

@@ -97,6 +97,7 @@
     type ToolLifecycleEvent,
     type AppAvailableEvent
   } from './wire-events.js';
+  import { appViewFromDiscovery, hydratedAgentMessage } from './turn-projection.js';
   import type { ChatToolCall } from '$lib/chat/types.js';
   import {
     PlaygroundSavedFilters,
@@ -495,20 +496,12 @@
   // (the bubble is created synchronously on send, before tool results) is a
   // no-op rather than a synthetic bubble.
   function applyAppAvailable(ev: AppAvailableEvent): void {
-    const known = (['inline', 'fullscreen', 'pip'] as const).includes(
-      ev.displayMode as McpUiDisplayMode
-    );
-    const appView: MCPAppRefView = {
-      resourceUri: ev.resourceUri,
-      displayMode: known ? (ev.displayMode as McpUiDisplayMode) : '',
-      rawHtmlTrusted: ev.rawHtmlTrusted,
-      // The correlation key for the after-init Data Delivery push.
-      toolCallId: ev.toolCallId
-    };
+    // The projection lives in `turn-projection.ts` beside the replay one, so a
+    // spec can pin the two producers against each other (a one-sided change
+    // here would otherwise pass unnoticed).
+    const { app: appView, serverID } = appViewFromDiscovery(ev);
     messages = messages.map((m) =>
-      m.taskID === ev.taskID && m.role === 'agent'
-        ? { ...m, app: appView, serverID: ev.serverID }
-        : m
+      m.taskID === ev.taskID && m.role === 'agent' ? { ...m, app: appView, serverID } : m
     );
   }
 
@@ -995,29 +988,11 @@
         if (query) {
           hydrated.push({ id: `h-${turn.runID}-u`, role: 'user', text: query, taskID: turn.runID, at });
         }
-        if (turn.answer || turn.terminal) {
-          hydrated.push({
-            id: `h-${turn.runID}-a`,
-            role: 'agent',
-            text: turn.answer || '(no answer recorded)',
-            taskID: turn.runID,
-            at,
-            reasoningText: turn.reasoning || undefined,
-            // The structured, ordered reasoning steps reconstructed from the
-            // durable planner.decision stream — byte-equivalent to the live
-            // path's parseReasoningSteps(enriched tasks.get). MessageBubble
-            // prefers these over reasoningText, so a reopened turn renders the
-            // ordered reasoning↔tool accordion identically to the live view; a
-            // turn with no non-empty steps cleanly falls back to reasoningText.
-            reasoningSteps: turn.reasoningSteps.length > 0 ? turn.reasoningSteps : undefined,
-            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-            meta: {
-              elapsedMs: durationMs > 0 ? durationMs : undefined,
-              tokens: turn.tokens > 0 ? turn.tokens : undefined,
-              costUSD: turn.costUSD > 0 ? turn.costUSD : undefined
-            }
-          });
-        }
+        // The field mapping (and its render gate) lives in `turn-projection.ts`
+        // so a spec can hold it — inline here it was the one part of the replay
+        // no test could reach.
+        const agent = hydratedAgentMessage(turn, { at, durationMs, toolCalls });
+        if (agent !== null) hydrated.push(agent);
       }
       if (hydrated.length === 0) return;
       // Prepend — the reloaded turns predate any live message sent after

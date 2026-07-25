@@ -81,7 +81,7 @@ func newRmHarness(t *testing.T, binPath string) *rmHarness {
 	coord := pauseresume.New(pauseresume.WithBus(bus))
 	// REAL attach + detach concretes (the devstack D-094 mirrors of cmd/harbor).
 	attacher := serve.NewMCPConnectionAttacher(cat, mcpReg, bus, nil,
-		identity.Identity{TenantID: rmTenant, UserID: rmUser, SessionID: rmSession}, nil, nil)
+		identity.Identity{TenantID: rmTenant, UserID: rmUser, SessionID: rmSession}, nil, nil, nil)
 	detacher := serve.NewMCPConnectionDetacher(cat, mcpReg, nil)
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithBus(bus),
