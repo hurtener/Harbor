@@ -295,7 +295,7 @@ func TestAppsSurface_CallTool_UnresolvableToolMapsToNotFound(t *testing.T) {
 	inv := &stubInvoker{err: fmt.Errorf("%w: tools: tool not found: %q",
 		protocol.ErrAccessorNotFound, "srv-a_nope")}
 	s := newAppsSurface(t, &stubResourceReader{}, inv)
-	_, err := s.Dispatch(context.Background(), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
 		Identity: validScope(), Tool: "srv-a_nope",
 	})
 	assertCode(t, err, protoerrors.CodeNotFound)
@@ -304,7 +304,7 @@ func TestAppsSurface_CallTool_UnresolvableToolMapsToNotFound(t *testing.T) {
 func TestAppsSurface_CallTool_TransportFailureStaysRuntimeError(t *testing.T) {
 	inv := &stubInvoker{err: errors.New("mcpconsole: stdio transport reset by peer")}
 	s := newAppsSurface(t, &stubResourceReader{}, inv)
-	_, err := s.Dispatch(context.Background(), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
 		Identity: validScope(), Tool: "srv-a_echo",
 	})
 	assertCode(t, err, protoerrors.CodeRuntimeError)
@@ -324,7 +324,7 @@ func TestAppsSurface_CallTool_RemoteErrorTextCannotLaunderIntoNotFound(t *testin
 	} {
 		inv := &stubInvoker{err: errors.New(msg)}
 		s := newAppsSurface(t, &stubResourceReader{}, inv)
-		_, err := s.Dispatch(context.Background(), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
 			Identity: validScope(), Tool: "srv-a_echo",
 		})
 		assertCode(t, err, protoerrors.CodeRuntimeError)
