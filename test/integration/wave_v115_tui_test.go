@@ -388,8 +388,10 @@ func waveV115StartPTYCommand(t *testing.T, binary string, args []string, workdir
 	}
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = workdir
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "NO_COLOR=")
-	cmd.Env = append(cmd.Env, extraEnv...)
+	// Hermetic HOME (see ptyHermeticEnv): the co-launch modes below have no
+	// --state-file flag, so the TUI would otherwise read and write the real
+	// ~/.harbor/tui-state.json and restore the previous run's composer draft.
+	cmd.Env = ptyHermeticEnv(t, extraEnv)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	if err = cmd.Start(); err != nil {
@@ -414,25 +416,43 @@ func waveV115StartPTYCommand(t *testing.T, binary string, args []string, workdir
 
 // ---- The wave-end gate ----
 
-// waveV115LoadEnvKey reads a key from the .env file in the repo root.
-// This is used to pass the OPENROUTER_API_KEY to PTY-launched binaries
-// that need the bifrost LLM driver (harbor serve rejects mock).
+// waveV115LoadEnvKey resolves a credential for the PTY-launched binaries
+// that need the bifrost LLM driver (harbor serve rejects mock). It reads
+// the process environment first, then falls back to the nearest .env file
+// at or above the test's working directory.
+//
+// The walk runs all the way to the filesystem root on purpose. A bounded
+// walk (it used to stop after 5 parents) reached the repo root from the
+// main checkout but NOT from a git worktree under <repo>/.claude/worktrees,
+// where the root sits one level further up — so the co-launch subtests
+// silently skipped in a worktree while failing in the checkout, and the
+// difference read as "the same commit passes here and fails there".
+// A skip that should be an OK hides exactly this class of bug (§4.2).
 func waveV115LoadEnvKey(t *testing.T, key string) string {
 	t.Helper()
-	// Walk up from the test directory to find .env.
-	dir, _ := os.Getwd()
-	for range 5 {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("working directory: %v", err)
+	}
+	for {
 		path := filepath.Join(dir, ".env")
-		if data, err := os.ReadFile(path); err == nil {
+		if data, readErr := os.ReadFile(path); readErr == nil {
 			for _, line := range strings.Split(string(data), "\n") {
 				if strings.HasPrefix(line, key+"=") {
 					return strings.TrimPrefix(line, key+"=")
 				}
 			}
 		}
-		dir = filepath.Dir(dir)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
 	}
-	t.Skipf(".env key %s not found — skipping co-launch tests that require bifrost", key)
+	t.Skipf("%s not set and not found in any .env at or above %q — skipping co-launch tests that require bifrost", key, filepath.Dir(dir))
 	return ""
 }
 
@@ -551,10 +571,13 @@ func testWaveV115StockCoLaunch(t *testing.T) {
 	// The server uses bifrost (real LLM driver) because `harbor serve`
 	// rejects mock LLM. The OPENROUTER_API_KEY is needed by bifrost.
 	apiKey := waveV115LoadEnvKey(t, "OPENROUTER_API_KEY")
+	// Own the hermetic HOME explicitly so the assertions below can prove the
+	// co-launched TUI wrote its interaction state INSIDE the test tree.
+	tuiHome := t.TempDir()
 	session := waveV115StartPTYCommand(t, binary,
 		[]string{"serve", "--tui", "--config", cfgPath},
 		tempDir, 80, 24,
-		[]string{"HARBOR_TOKEN=" + token, "OPENROUTER_API_KEY=" + apiKey})
+		[]string{"HARBOR_TOKEN=" + token, "OPENROUTER_API_KEY=" + apiKey, "HOME=" + tuiHome})
 
 	// Inline conversation surface: the composer paints in the normal buffer.
 	session.waitContains(t, "Ask Harbor")
@@ -582,6 +605,15 @@ func testWaveV115StockCoLaunch(t *testing.T) {
 
 	// Terminal restoration.
 	session.assertOperationalRestored(t)
+
+	// Isolation lockstep: co-launch persists interaction state under $HOME,
+	// and it MUST be the per-test HOME. If this file is missing, the state
+	// went somewhere else — in practice the operator's real ~/.harbor, which
+	// makes the NEXT run restore this run's draft and fail forever on the
+	// composer-placeholder assertion above.
+	if _, statErr := os.Stat(filepath.Join(tuiHome, ".harbor", "tui-state.json")); statErr != nil {
+		t.Errorf("co-launch interaction state not written under the per-test HOME %q: %v", tuiHome, statErr)
+	}
 
 	// Goroutine baseline.
 	before := runtime.NumGoroutine()

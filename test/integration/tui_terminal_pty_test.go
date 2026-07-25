@@ -644,8 +644,11 @@ func startPTYEnv(t *testing.T, mode string, width, height int, extraEnv []string
 		t.Fatal(err)
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestE2E_TUITerminalHelper$", "-test.v=false")
-	cmd.Env = append(os.Environ(), ptyHelperEnv+"="+mode, "TERM=xterm-256color", "NO_COLOR=")
-	cmd.Env = append(cmd.Env, extraEnv...)
+	// Hermetic HOME for the whole PTY class (see ptyHermeticEnv): today this
+	// helper drives an in-process model that keeps no state, but a mode that
+	// reaches entry.Run would otherwise silently start writing the operator's
+	// real ~/.harbor.
+	cmd.Env = ptyHermeticEnv(t, append([]string{ptyHelperEnv + "=" + mode}, extraEnv...))
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
@@ -692,6 +695,28 @@ func startPTYEnv(t *testing.T, mode string, width, height int, extraEnv []string
 	return s
 }
 
+// ptyHermeticEnv builds the environment for a PTY-launched Harbor binary.
+// It pins HOME to a fresh per-launch directory so everything the TUI keeps
+// under ~/.harbor — the interaction-state file and the transcript export
+// directory — lands inside the test's temp tree instead of the operator's
+// real home (CLAUDE.md §11: tests never write outside the tree).
+//
+// This is load-bearing, not hygiene. Co-launch modes (`harbor serve --tui`
+// and a scaffolded --with-tui binary) expose no --state-file flag: the TUI
+// resolves $HOME/.harbor/tui-state.json. Inheriting the real HOME makes the
+// suite self-poisoning — a run persists the composer draft it typed, and the
+// NEXT run restores that draft into the composer, so the placeholder never
+// renders and every "Ask Harbor" assertion times out from the second run
+// onward, permanently, on any machine that has run the suite once.
+//
+// os/exec keeps the LAST value for a duplicated key, so a caller that needs
+// to observe the state file supplies its own HOME in extraEnv and wins.
+func ptyHermeticEnv(t *testing.T, extraEnv []string) []string {
+	t.Helper()
+	env := append(os.Environ(), "TERM=xterm-256color", "NO_COLOR=", "HOME="+t.TempDir())
+	return append(env, extraEnv...)
+}
+
 func startPTYCommand(t *testing.T, binary string, args []string, workdir string, width, height int) *ptySession {
 	t.Helper()
 	master, slave, err := openPTY(width, height)
@@ -700,7 +725,7 @@ func startPTYCommand(t *testing.T, binary string, args []string, workdir string,
 	}
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = workdir
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "NO_COLOR=")
+	cmd.Env = ptyHermeticEnv(t, nil)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	if err = cmd.Start(); err != nil {
