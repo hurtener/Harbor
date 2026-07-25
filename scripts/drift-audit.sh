@@ -343,6 +343,29 @@ else
     fi
 fi
 
+# -----------------------------------------------------------------------------
+# Smoke regex portability — `\t` and `\d` inside a grep -E pattern are matched
+# by BSD grep (macOS, where contributors run preflight) and NOT by GNU grep
+# (Linux, where CI runs it). A guard written with either one passes locally and
+# is dead in CI, which is the failure mode this whole gate exists to prevent:
+# it does not error, it silently never matches.
+#
+# `\s`, `\w` and `\b` are supported by BOTH and are deliberately NOT flagged.
+#
+# Use a POSIX class instead: `[[:space:]]` for `\t`, `[[:digit:]]` for `\d`.
+# Shell contexts (printf '%s\t', IFS=$'\t') are unaffected — this scans only
+# quoted patterns handed to an assert_grep_* helper or a `grep -E` call.
+# -----------------------------------------------------------------------------
+bad_escapes=$(grep -rnE "(assert_grep[a-z_]*|grep [^|;]*-[a-zA-Z]*E[^|;]*)[[:space:]]+'[^']*\\\\[td]" \
+    scripts/smoke/*.sh scripts/*.sh 2>/dev/null | grep -vE ":[0-9]+:[[:space:]]*#" || true)
+if [ -n "${bad_escapes}" ]; then
+    while IFS= read -r line; do
+        [ -n "${line}" ] && fail "smoke regex portability: non-portable '\\t'/'\\d' in a grep -E pattern (GNU grep will never match it; use [[:space:]] / [[:digit:]]) — ${line%%:*}:$(printf '%s' "${line}" | cut -d: -f2)"
+    done <<< "${bad_escapes}"
+else
+    ok 'smoke regex portability: no non-portable \t/\d escapes in grep -E patterns (BSD matches them, GNU does not)'
+fi
+
 # Summary
 printf '\n=== drift-audit summary ===\n'
 printf 'OK:   %d\n' "${OK}"

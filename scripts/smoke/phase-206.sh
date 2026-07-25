@@ -48,7 +48,13 @@ run_filtered_tests() {
     local desc="$1" runre="$2"
     shift 2
     local out rc
-    out="$(CGO_ENABLED=0 go test -race -count=1 -run "${runre}" "$@" 2>&1)" && rc=0 || rc=$?
+    # NO CGO_ENABLED=0 here: the race detector needs cgo on Linux, where
+    # `CGO_ENABLED=0 go test -race` fails to build with "-race requires cgo"
+    # (exit 2) rather than running anything. macOS builds it either way, so
+    # forcing it green here passed locally and failed in CI. Harbor's CGo ban
+    # (CLAUDE.md §5) governs the shipped BINARY, not the race-instrumented test
+    # binary — every sibling smoke runs `go test -race` with cgo left alone.
+    out="$(go test -race -count=1 -run "${runre}" "$@" 2>&1)" && rc=0 || rc=$?
     if [ "${rc}" -eq 0 ]; then
         if printf '%s\n' "${out}" | grep -qE 'no tests to run|no test files'; then
             skip "${desc}: filter '${runre}' matched no tests (phase not yet landed)"
