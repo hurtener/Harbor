@@ -877,6 +877,13 @@ func (s *MCPSurface) handleRevokeBinding(ctx context.Context, id identity.Identi
 // prior value) so an un-auditable admin write is never left observably
 // applied (CLAUDE.md §5, §7 rule 6). This is the ONE admin-write audit
 // posture the sibling admin verbs reuse via [applyAdminWriteWithAudit].
+//
+// The apply AND its compensating revert both run on idCtx — the identity the
+// gate reconciled against the request body — so the accessor scopes both legs
+// of the unit to the same verified tenant. The revert therefore cannot fail to
+// resolve where the apply succeeded, which is what keeps the compensation
+// symmetric: an asymmetric revert would leave the toggle observably applied
+// but unrecorded, the exact posture this helper exists to prevent.
 func (s *MCPSurface) handleSetRawHTMLTrust(ctx context.Context, id identity.Identity, _ bool, req any) (any, error) {
 	method := methods.MethodMCPServersSetRawHTMLTrust
 	r, ok := req.(*types.MCPServerSetRawHTMLTrustRequest)

@@ -522,7 +522,7 @@ type staleSourceDetacher struct{ detached atomic.Int32 }
 func (d *staleSourceDetacher) AttachedSources(context.Context, toolauth.Owner) []string {
 	return []string{"stale"}
 }
-func (d *staleSourceDetacher) Detach(context.Context, string) error {
+func (d *staleSourceDetacher) Detach(context.Context, string, toolauth.Owner) error {
 	d.detached.Add(1)
 	return nil
 }

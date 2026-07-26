@@ -129,7 +129,7 @@ func TestMCPConnectionDetacher_NilRegistry(t *testing.T) {
 	if got := d.AttachedSources(context.Background(), toolauth.Owner{Tenant: "t1", Agent: "agent-1"}); got != nil {
 		t.Errorf("AttachedSources with nil registry should be nil, got %v", got)
 	}
-	if err := d.Detach(context.Background(), "srv-x"); err != nil {
+	if err := d.Detach(context.Background(), "srv-x", toolauth.Owner{Tenant: "t1", Agent: "agent-1"}); err != nil {
 		t.Errorf("Detach with nil registry should be a no-op, got %v", err)
 	}
 
@@ -755,7 +755,7 @@ func TestMCPConnectionDetacher_RealRegistry(t *testing.T) {
 	if got := d.AttachedSources(context.Background(), toolauth.Owner{Tenant: "t1", Agent: "agent-1"}); len(got) != 0 {
 		t.Errorf("AttachedSources on an empty registry = %v, want empty", got)
 	}
-	if err := d.Detach(context.Background(), "never-attached"); err != nil {
+	if err := d.Detach(context.Background(), "never-attached", toolauth.Owner{Tenant: "t1", Agent: "agent-1"}); err != nil {
 		t.Errorf("Detach of an unknown source must be idempotent, got %v", err)
 	}
 }

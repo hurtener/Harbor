@@ -138,7 +138,14 @@ func (d *MCPConnectionDetacher) SetOAuthDiscoveryOrigins(ctx context.Context, ow
 // supports source deregistration — the optional CatalogSourceDeregisterer
 // companion) and from the MCP registry, closing its transport gracefully. An
 // already-gone source is a no-op (ErrServerNotFound is swallowed — idempotent).
-func (d *MCPConnectionDetacher) Detach(ctx context.Context, source string) error {
+//
+// owner is the reconciling (tenant, agent) owner — the SAME owner whose view
+// produced the source (AttachedSources). It is passed through to the registry's
+// owner-scoped deregister, so the removal lands only on a registration carrying
+// that tag: the reconcile leg cannot remove a boot-declared server or another
+// owner's connection even if a name reaches it, and the guard sits at the
+// registry's own choke point rather than in this caller alone.
+func (d *MCPConnectionDetacher) Detach(ctx context.Context, source string, owner toolauth.Owner) error {
 	if dc, ok := d.catalog.(tools.CatalogSourceDeregisterer); ok {
 		removed := dc.DeregisterSource(tools.ToolSourceID(source))
 		if d.logger != nil {
@@ -149,7 +156,7 @@ func (d *MCPConnectionDetacher) Detach(ctx context.Context, source string) error
 	if d.registry == nil {
 		return nil
 	}
-	if err := d.registry.Deregister(ctx, source); err != nil {
+	if err := d.registry.Deregister(ctx, source, owner); err != nil {
 		if errors.Is(err, mcpdrv.ErrServerNotFound) {
 			return nil // already detached — idempotent.
 		}

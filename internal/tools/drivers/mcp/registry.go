@@ -516,15 +516,40 @@ func (r *Registry) Register(ctx context.Context, reg ServerRegistration) error {
 // deregisters the server so observability surfaces (mcp.servers.list) no
 // longer list it and the subprocess / connection drains.
 //
+// The write is OWNER-SCOPED: owner is the (tenant, agent) tag of the
+// registration the caller is entitled to remove, and the entry is removed only
+// when its own tag equals it. A name nobody registered and a name another
+// owner registered answer identically (ErrServerNotFound), so resolution never
+// reveals which case applied. The ZERO owner matches the boot-declared
+// (untagged) registrations and nothing else — the boot loader's same-name
+// hot-reload replace is the one caller that legitimately holds it, and it is
+// removing its own boot-declared entry. This is strictly narrower than a bare
+// name, which reached every registration regardless of owner.
+//
+// The comparison is spelled out here rather than reusing a resolver like
+// [Registry.ownedEntry] because it must run under the SAME write lock as the
+// delete: a resolve-then-delete leaves a window a concurrent same-name replace
+// by another owner can land in. (It is also not the same comparison —
+// ownedEntry refuses the zero owner outright, which would break the boot
+// loader's own hot-reload replace.) Both production callers already hold the
+// matching owner — the
+// attach replace has just compared it via [Registry.OwnerOf], and the run-start
+// detach leg enumerates through [Registry.RuntimeAddedSources] — so moving the
+// guard to this single choke point closes the mutator shape without changing
+// any live path's outcome.
+//
 // The map entry is deleted under the write lock (so the server vanishes from
 // the Registry atomically), then the provider's Close runs OUTSIDE the lock
 // (a transport close can block on session teardown and must not stall
 // concurrent reads). An unknown name returns ErrServerNotFound. Idempotent
 // in effect: a second Deregister of the same name returns ErrServerNotFound,
 // which the reconcile caller treats as already-detached.
-func (r *Registry) Deregister(ctx context.Context, name string) error {
+func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner) error {
 	r.mu.Lock()
 	e, ok := r.servers[name]
+	if ok && e.owner != owner {
+		ok = false // another owner's registration — answer as if absent.
+	}
 	if ok {
 		delete(r.servers, name)
 	}
@@ -818,6 +843,60 @@ func (r *Registry) ownedEntry(name string, owner auth.Owner) (*serverEntry, erro
 	return e, nil
 }
 
+// tenantEntry returns the named server entry ONLY when the caller's TENANT may
+// write it — the resolution the wire-reachable per-server admin writes use.
+//
+// It resolves when the registration is boot-declared (the zero owner) or when
+// the registration's owner tenant equals tenant. It returns ErrServerNotFound
+// for an empty tenant, for a name nobody registered, and for a registration
+// another TENANT owns — the same answer in every refused case, so resolution
+// never reveals which one applied.
+//
+// # Why the tenant and not the (tenant, agent) owner
+//
+// The wire door for these writes carries the caller's verified identity triple
+// (tenant, user, session) and no agent id, so the (tenant, agent) owner tag
+// [Registry.ownedEntry] compares is not derivable at that edge. The tenant IS,
+// and it is the boundary that matters: co-tenant admins already share the
+// runtime-added connection namespace by construction, while a registration
+// another TENANT owns is outside anything the caller's verified identity
+// reaches. Scoping to the tenant is therefore the strongest comparison the
+// caller's own identity supports, and it is the whole comparison the boundary
+// needs.
+//
+// # Why boot-declared registrations stay writable
+//
+// A boot-declared server is deployment-global infrastructure: it is declared in
+// the deployment's own configuration, it resolves and dispatches by bare name
+// across every session, and every session's read surface already lists it.
+// Its per-server admin preferences have no per-owner home and no other
+// door that can set them, so refusing the write here would not scope the
+// preference — it would delete it. The honest, bounded guarantee is therefore:
+// a write lands on the caller's own tenant's registration, or on the
+// deployment's own boot-declared infrastructure; never on another tenant's
+// runtime-added registration.
+//
+// Caller must NOT hold r.mu.
+func (r *Registry) tenantEntry(name, tenant string) (*serverEntry, error) {
+	if tenant == "" {
+		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	r.mu.RLock()
+	e, ok := r.servers[name]
+	var entryOwner auth.Owner
+	if ok {
+		entryOwner = e.owner
+	}
+	r.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	if !entryOwner.IsZero() && entryOwner.Tenant != tenant {
+		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	return e, nil
+}
+
 // GetServer returns the per-server detail view. Identity is mandatory.
 func (r *Registry) GetServer(ctx context.Context, name string) (*ServerView, error) {
 	if err := requireIdentity(ctx); err != nil {
@@ -977,6 +1056,26 @@ func (r *Registry) ListPrompts(ctx context.Context, name string) ([]PromptView, 
 
 // RefreshDiscovery re-runs the named server's discovery and updates the
 // per-server counts + state. Identity is mandatory.
+//
+// # It is a READ, and its bare-name resolution is deliberate
+//
+// RefreshDiscovery writes registry state, but everything it writes is an
+// OBSERVATION derived from the round-trip it just performed — tool / resource /
+// prompt counts, the discovery timestamp, the measured latency, the reachable
+// state. Nothing it writes is chosen by the caller, and nothing it writes is
+// consulted as policy on any later authorization or rendering decision. The
+// same fields are written unsolicited by the transport's own callbacks
+// ([Registry.RecordDiscovery], [Registry.RecordReconnect], recordError) from
+// any session's ordinary traffic, so owner- or tenant-scoping this call would
+// not change who can affect the state — it would only make a boot-declared
+// server's refresh unreachable.
+//
+// Resolution therefore stays bare-name and process-global, like every other
+// read projection (ListServers, GetServer, ListResources, ListPrompts, Health,
+// OAuthDiscoveryTarget). The connection WRITES — the ones that persist
+// caller-chosen policy or remove the registration itself — are the scoped ones
+// (see [Registry.SetRawHTMLTrust], [Registry.SetOAuthDiscoveryOrigins],
+// [Registry.Deregister]).
 func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*DiscoveryResult, error) {
 	if err := requireIdentity(ctx); err != nil {
 		return nil, err
@@ -1019,6 +1118,17 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 
 // Probe runs a transport round-trip (a Discover acting as a tools/list
 // ping) and returns the latency. Identity is mandatory.
+//
+// # It is a READ, and its bare-name resolution is deliberate
+//
+// Like [Registry.RefreshDiscovery], Probe records only what the round-trip it
+// just performed OBSERVED — the measured latency, and a reachable/unreachable
+// state transition. A failed probe's recordError bump is likewise a truthful
+// observation: it fires only when the server genuinely failed to answer, and
+// ordinary dispatch traffic writes the same fields. No caller-chosen value is
+// persisted and nothing recorded here is consulted as policy later, so
+// resolution stays bare-name and process-global alongside the other read
+// projections. See [Registry.SetRawHTMLTrust] for the contrasting WRITE shape.
 func (r *Registry) Probe(ctx context.Context, name string) (*ProbeResult, error) {
 	if err := requireIdentity(ctx); err != nil {
 		return nil, err
@@ -1085,11 +1195,35 @@ func (r *Registry) Health(ctx context.Context, name string, window time.Duration
 // runtime-side mirror (the legitimate carve-out for a preference
 // with audit consequences). It returns the prior value so a caller can
 // detect a no-op toggle. Identity is mandatory.
+//
+// The write is TENANT-SCOPED. The flag governs the sandbox posture a rendered
+// MCP App is given, so it is caller-chosen policy consulted on a later render
+// — a connection WRITE, not an observation. It therefore resolves through
+// [Registry.tenantEntry] rather than the bare-name [Registry.entry]: it lands
+// on a registration the caller's own tenant owns, or on a boot-declared
+// (deployment-global) one, and answers ErrServerNotFound for a registration
+// another tenant owns — indistinguishably from a name nobody registered.
+//
+// The scoping tenant is read from ctx, NOT taken as a parameter. ctx already
+// carries the verified triple this method requires, and it is the identity the
+// Protocol edge reconciled against the request body before dispatching; taking
+// it as an argument would add a seam a caller could populate with a tenant it
+// does not hold. Deriving it here also makes the write and any COMPENSATING
+// REVERT of that write resolve identically, since both run on the same ctx —
+// an admin write whose audit emit fails must be revertible, and a revert that
+// could fail to resolve where the apply succeeded would leave the toggle
+// observably applied but unrecorded.
+//
+// Registry READS stay bare-name and process-global — boot servers and
+// runtime-added servers alike remain visible to every session, and resolution
+// and dispatch are untouched.
 func (r *Registry) SetRawHTMLTrust(ctx context.Context, name string, trusted bool) (prev bool, err error) {
 	if err := requireIdentity(ctx); err != nil {
 		return false, err
 	}
-	e, eerr := r.entry(name)
+	// requireIdentity already proved the triple is present and complete.
+	id, _ := identity.From(ctx)
+	e, eerr := r.tenantEntry(name, id.TenantID)
 	if eerr != nil {
 		return false, eerr
 	}
