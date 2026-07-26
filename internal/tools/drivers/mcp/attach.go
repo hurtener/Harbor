@@ -269,7 +269,11 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 				)
 			}
 		}
-		if deregErr := deps.Registry.Deregister(ctx, ms.Name); deregErr != nil && !errors.Is(deregErr, ErrServerNotFound) {
+		// deps.Owner is the prior entry's own owner: the OwnerOf comparison
+		// above refused every other case, so the owner-scoped Deregister
+		// resolves exactly the registration this branch is replacing —
+		// including a boot re-attach, where both owners are the zero owner.
+		if deregErr := deps.Registry.Deregister(ctx, ms.Name, deps.Owner); deregErr != nil && !errors.Is(deregErr, ErrServerNotFound) {
 			return fmt.Errorf("mcp attach %q: replace live registration: %w", ms.Name, deregErr)
 		}
 	}
