@@ -432,6 +432,16 @@ When an MCP-backed tool call is refused downstream with a `403` + `WWW-Authentic
 
 Both are **report-only**: the runtime never auto-escalates, re-consents, or widens a binding on a shortfall. The operator acts on it via the boot-declared `oauth_provider` / `tool_oauth_providers` bindings (which bind a distinct provider per MCP-side entry — a tool call by tool name, a resource read / subscribe by resource URI, and a prompt get by prompt name — for a server fronting several downstream audiences).
 
+### 8b. What an MCP connection admin write can reach
+
+The per-server `mcp.servers.*` admin verbs gate on the `admin` scope claim, and the write ones additionally land only where your own identity reaches:
+
+- `mcp.servers.set_raw_html_trust` (the per-server raw-HTML posture a rendered MCP App is given) is **tenant-scoped**. It applies to a connection your own tenant owns, or to a boot-declared (yaml) server, which is deployment-global infrastructure every session already sees. Naming a connection another tenant attached is refused `404 {"code": "not_found"}` — the same answer you get for a name nobody registered, so the refusal tells you nothing about what other tenants have attached. The scope comes from your verified identity, not from anything on the request body.
+- `agent_config.set_mcp_discovery_origins` is **owner-scoped** to your `(tenant, agent_id)` and refuses `403 {"code": "scope_mismatch"}` — see §8's account of that verb. The two differ because that door carries an `agent_id` and this one does not.
+- A write whose audit event cannot be emitted is **reverted**, not left applied: you get `500 {"code": "runtime_error"}` naming the reverted-not-applied case, and the previous value stands.
+
+Reads are unaffected: `mcp.servers.list` / `get` / `resources` / `prompts` / `health`, and the control-plane `refresh_discovery` / `probe`, resolve by bare name across the deployment as they always have — a boot-declared server stays visible to every session.
+
 ## 9. A minimal client (TS, ~30 LoC)
 
 ```typescript

@@ -368,7 +368,7 @@ func TestReAttach_ConcurrentReuse(t *testing.T) {
 		// catalog tools (idempotent — 0 on a first attach) then deregister +
 		// close the old transport (swallow ErrServerNotFound).
 		dereg.DeregisterSource(tools.ToolSourceID(name))
-		if derr := reg.Deregister(ctx, name); derr != nil && !errors.Is(derr, ErrServerNotFound) {
+		if derr := reg.Deregister(ctx, name, auth.Owner{}); derr != nil && !errors.Is(derr, ErrServerNotFound) {
 			return derr
 		}
 		// Register pair: the new source's catalog tool, then the new provider.

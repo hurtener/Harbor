@@ -3,6 +3,8 @@ package mcp
 import (
 	"errors"
 	"testing"
+
+	"github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // deregister_test.go — coverage for the detach primitives the run-start
@@ -27,7 +29,7 @@ func TestRegistry_Deregister_RemovesAndClosesTransport(t *testing.T) {
 		t.Fatalf("pre-deregister SourceIDs = %v, want 1", got)
 	}
 
-	if err := r.Deregister(idCtx(t), "srv"); err != nil {
+	if err := r.Deregister(idCtx(t), "srv", auth.Owner{}); err != nil {
 		t.Fatalf("Deregister: %v", err)
 	}
 	// The server is gone from the registry.
@@ -48,7 +50,7 @@ func TestRegistry_Deregister_RemovesAndClosesTransport(t *testing.T) {
 
 func TestRegistry_Deregister_UnknownName_NotFound(t *testing.T) {
 	r := newTestRegistry(t)
-	if err := r.Deregister(idCtx(t), "ghost"); !errors.Is(err, ErrServerNotFound) {
+	if err := r.Deregister(idCtx(t), "ghost", auth.Owner{}); !errors.Is(err, ErrServerNotFound) {
 		t.Fatalf("Deregister(ghost) = %v, want ErrServerNotFound", err)
 	}
 }
@@ -61,7 +63,7 @@ func TestRegistry_Deregister_PropagatesCloseError(t *testing.T) {
 	}
 	// The entry is still removed (visible immediately) but the close error is
 	// surfaced loud (never swallowed).
-	err := r.Deregister(idCtx(t), "srv")
+	err := r.Deregister(idCtx(t), "srv", auth.Owner{})
 	if err == nil {
 		t.Fatal("want a close error surfaced")
 	}
