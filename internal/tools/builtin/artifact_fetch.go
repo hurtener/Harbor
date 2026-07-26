@@ -7,11 +7,16 @@
 // what it needs.
 //
 // Identity is mandatory (CLAUDE.md §6 rule 9). Cross-tenant
-// rejection is the artifact store's responsibility — the store keys
-// storage on `(tenant,user,session,task)` and an out-of-scope read
-// returns found-false, which we surface as `{error}` (NOT exposed
+// rejection is the artifact store's responsibility — the store resolves
+// on the isolation triple `(tenant, user, session)` and an out-of-scope
+// read returns found-false, which we surface as `{error}` (NOT exposed
 // bytes). The builtin's test pins this with a deliberate
 // cross-identity write + read.
+//
+// A sibling run's artifact IS reachable, and deliberately so: the
+// session is the innermost isolation scope, so an artifact any run in
+// this session produced is in scope for this one. The producing task is
+// a provenance annotation on the ref, not a wall.
 //
 // Concurrent reuse. The builtin is stateless; the only
 // shared resource is the `ArtifactStore`, whose concurrent-reuse contract
@@ -131,11 +136,14 @@ func artifactFetch(ctx context.Context, store artifacts.ArtifactStore, args Arti
 		TenantID:  id.TenantID,
 		UserID:    id.UserID,
 		SessionID: id.SessionID,
-		// TaskID intentionally left empty — the runtime tool-executor
-		// stamps artifacts WITHOUT a TaskID (it derives the scope from
-		// `rc.Quadruple` minus the RunID; see the heavy-result
-		// promotion in `internal/runtime/dispatch`). Reading
-		// back with the same shape avoids a scope mismatch.
+		// TaskID intentionally left empty, and it no longer has to
+		// match anything: the store's read key IS the isolation triple
+		// and `TaskID` is a provenance annotation the drivers ignore
+		// when resolving. This is what makes the session-artifact
+		// manifest's invitation true — the manifest lists on the triple,
+		// so it can enumerate an artifact a heavy tool result stamped
+		// without a task AND one the LLM materialiser stamped with the
+		// producing run, and this fetch resolves both.
 	}
 	ref, found, err := store.GetRef(ctx, scope, args.Ref)
 	if err != nil {

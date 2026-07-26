@@ -185,6 +185,8 @@ tools:
 
 `artifact_fetch` takes `{ref: string, max_bytes?: int}` (default 64 KiB, hard cap 1 MiB) and returns `{ref, mime, size_bytes, content, truncated}`. Cross-tenant reads are rejected by the artifact store — the meta-tool surfaces a soft "not found" error without exposing the bytes (the `internal/tools/builtin/artifact_fetch_test.go::TestArtifactFetch_CrossIdentity_RejectedByStore` test is the regression gate).
 
+**The scope is the session, and that is the whole scope.** The store resolves a read on `(tenant, user, session)` plus the ref id; the producing task is recorded on the artifact as provenance and takes no part in resolution. So a later run in the SAME session can fetch an artifact an earlier run produced — which is what makes the `<session_artifacts>` block honest, since it lists every artifact in the session and tells the model it may fetch any of them. A different session, user or tenant still answers "not found" through the same soft-error path, with no way to tell "not yours" from "does not exist".
+
 If your tool's results are typically small (well under the threshold), no action is needed — the materialiser only fires above the cap, and the planner sees the raw result inline as usual.
 
 ## 5. Errors — fail loudly

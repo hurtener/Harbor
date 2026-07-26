@@ -49,7 +49,13 @@ type Factory func() (artifacts.ArtifactStore, func())
 //   - GetRef_NotFound
 //   - Delete_Idempotent
 //   - List_FiltersByScope
-//   - List_NilFieldsAreWildcards
+//   - List_WildcardsWithinTenant
+//   - List_RequiresTenant
+//   - ReadKey_IgnoresTaskID
+//   - ReadKey_RePutUnderDifferingTask_FirstWriterWins
+//   - ReadKey_CrossSession_NotFound
+//   - Scoped_GetRef_AcceptsSiblingTaskStamp
+//   - Concurrent_ReconciledKey_DifferingTasks
 //   - Put_Identity_Mandatory
 //   - Get_CrossTenant_Isolation
 //   - Delete_CrossTenant_Isolation
@@ -350,7 +356,12 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	t.Run("List_NilFieldsAreWildcards", func(t *testing.T) {
+	// The read key is the isolation triple; the list filter is a
+	// predicate. This row pins the FILTER half — every field below the
+	// tenant is still a wildcard — and List_RequiresTenant pins the
+	// precondition that stops the zero-value scope being an
+	// all-tenants filter at the store boundary.
+	t.Run("List_WildcardsWithinTenant", func(t *testing.T) {
 		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
@@ -379,16 +390,246 @@ func Run(t *testing.T, factory Factory) {
 			t.Errorf("wildcard tenant T list len=%d, want 2", len(listT))
 		}
 
-		// Empty everything → all 3.
-		listAll := mustList(t, s, ctx, artifacts.ArtifactScope{})
-		if len(listAll) != 3 {
-			t.Errorf("full wildcard list len=%d, want 3", len(listAll))
+		// Tenant T2 sees only its own row — there is no filter shape
+		// that spans both tenants.
+		listT2 := mustList(t, s, ctx, artifacts.ArtifactScope{TenantID: "T2"})
+		if len(listT2) != 1 {
+			t.Errorf("wildcard tenant T2 list len=%d, want 1", len(listT2))
 		}
 
 		// Tenant + user — narrows further.
 		listTU := mustList(t, s, ctx, artifacts.ArtifactScope{TenantID: "T", UserID: "U1"})
 		if len(listTU) != 1 {
 			t.Errorf("tenant+user filter len=%d, want 1", len(listTU))
+		}
+	})
+
+	// List is the one method that used to validate nothing, which made
+	// the zero-value scope a legal all-tenants filter at the store
+	// boundary. Every discovery surface is built on List, so the
+	// precondition belongs here rather than in each of them.
+	t.Run("List_RequiresTenant", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		cases := []artifacts.ArtifactScope{
+			{},
+			{UserID: "U"},
+			{SessionID: "S"},
+			{UserID: "U", SessionID: "S", TaskID: "K"},
+		}
+		for i, filter := range cases {
+			got, err := s.List(ctx, filter)
+			if !errors.Is(err, artifacts.ErrIdentityRequired) {
+				t.Errorf("case %d (%+v): err=%v, want ErrIdentityRequired", i, filter, err)
+			}
+			if got != nil {
+				t.Errorf("case %d (%+v): rows returned alongside the refusal: %d",
+					i, filter, len(got))
+			}
+		}
+	})
+
+	// The read key is `(tenant, user, session, id)`. A caller that
+	// stamped a task and a caller that did not must resolve the same
+	// artifact — this is the row the two shapes drifted on before, and
+	// the one the session-artifact manifest depends on: the manifest
+	// lists on the triple, so every ref it shows must be fetchable.
+	t.Run("ReadKey_IgnoresTaskID", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		producer := artifacts.ArtifactScope{
+			TenantID: "T", UserID: "U", SessionID: "S", TaskID: "run-alpha",
+		}
+		payload := []byte("written by run-alpha")
+		ref, err := s.PutBytes(ctx, producer, payload, artifacts.PutOpts{Namespace: "ns"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		readers := []artifacts.ArtifactScope{
+			producer,
+			{TenantID: "T", UserID: "U", SessionID: "S"},
+			{TenantID: "T", UserID: "U", SessionID: "S", TaskID: "run-beta"},
+		}
+		for _, reader := range readers {
+			got, found, gerr := s.Get(ctx, reader, ref.ID)
+			if gerr != nil {
+				t.Fatalf("Get(task=%q): %v", reader.TaskID, gerr)
+			}
+			if !found {
+				t.Fatalf("Get(task=%q) found=false; the read key must ignore TaskID", reader.TaskID)
+			}
+			if string(got) != string(payload) {
+				t.Errorf("Get(task=%q) bytes=%q, want %q", reader.TaskID, got, payload)
+			}
+
+			gotRef, found, rerr := s.GetRef(ctx, reader, ref.ID)
+			if rerr != nil {
+				t.Fatalf("GetRef(task=%q): %v", reader.TaskID, rerr)
+			}
+			if !found {
+				t.Fatalf("GetRef(task=%q) found=false", reader.TaskID)
+			}
+			// The stamp is the PRODUCER's, not the reader's — TaskID is
+			// provenance, so it travels with the artifact.
+			if gotRef.Scope.TaskID != "run-alpha" {
+				t.Errorf("GetRef(task=%q).Scope.TaskID=%q, want the producer's %q",
+					reader.TaskID, gotRef.Scope.TaskID, "run-alpha")
+			}
+
+			exists, eerr := s.Exists(ctx, reader, ref.ID)
+			if eerr != nil {
+				t.Fatalf("Exists(task=%q): %v", reader.TaskID, eerr)
+			}
+			if !exists {
+				t.Errorf("Exists(task=%q)=false", reader.TaskID)
+			}
+		}
+
+		// Delete keys on the triple too: a sibling run's scope deletes.
+		deleted, err := s.Delete(ctx,
+			artifacts.ArtifactScope{TenantID: "T", UserID: "U", SessionID: "S", TaskID: "run-beta"},
+			ref.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !deleted {
+			t.Errorf("Delete under a sibling task returned existed=false")
+		}
+		if _, found, gerr := s.Get(ctx, producer, ref.ID); gerr != nil || found {
+			t.Errorf("after Delete: found=%v err=%v, want found=false", found, gerr)
+		}
+	})
+
+	// The honest cost of narrowing the read key: the WRITE key narrows
+	// with it, so two runs storing identical bytes in one session
+	// collapse to ONE artifact and the stamp is the first writer's.
+	// A TaskID filter therefore under-reports. Pinned rather than left
+	// to be discovered.
+	t.Run("ReadKey_RePutUnderDifferingTask_FirstWriterWins", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		triple := artifacts.ArtifactScope{TenantID: "T", UserID: "U", SessionID: "S"}
+		first := triple
+		first.TaskID = "run-1"
+		second := triple
+		second.TaskID = "run-2"
+		payload := []byte("identical bytes from two runs")
+		opts := artifacts.PutOpts{Namespace: "ns"}
+
+		firstRef, err := s.PutBytes(ctx, first, payload, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondRef, err := s.PutBytes(ctx, second, payload, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if secondRef.ID != firstRef.ID {
+			t.Errorf("re-Put under a differing task produced a second id: %q vs %q",
+				secondRef.ID, firstRef.ID)
+		}
+		if secondRef.Scope.TaskID != "run-1" {
+			t.Errorf("re-Put returned stamp %q, want the first writer's %q",
+				secondRef.Scope.TaskID, "run-1")
+		}
+
+		rows := mustList(t, s, ctx, triple)
+		if len(rows) != 1 {
+			t.Fatalf("session list len=%d, want 1 (the two Puts must collapse)", len(rows))
+		}
+		if rows[0].Scope.TaskID != "run-1" {
+			t.Errorf("listed stamp=%q, want %q", rows[0].Scope.TaskID, "run-1")
+		}
+
+		byFirst := mustList(t, s, ctx, first)
+		if len(byFirst) != 1 {
+			t.Errorf("TaskID=run-1 filter len=%d, want 1", len(byFirst))
+		}
+		// THE LOSSY HALF: run-2 stored these bytes, and the filter does
+		// not return them, because the row carries run-1's stamp.
+		bySecond := mustList(t, s, ctx, second)
+		if len(bySecond) != 0 {
+			t.Errorf("TaskID=run-2 filter len=%d, want 0 — the filter answers "+
+				"\"which artifacts is this run the recorded producer of\", not "+
+				"\"which did it write\"", len(bySecond))
+		}
+	})
+
+	// Narrowing the key to the triple must not widen the boundary. The
+	// session is the innermost isolation scope; a sibling SESSION is a
+	// different principal even under the same tenant and user.
+	t.Run("ReadKey_CrossSession_NotFound", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		owner := artifacts.ArtifactScope{
+			TenantID: "T", UserID: "U", SessionID: "sess-owner", TaskID: "k",
+		}
+		other := artifacts.ArtifactScope{
+			TenantID: "T", UserID: "U", SessionID: "sess-other", TaskID: "k",
+		}
+		ref, err := s.PutBytes(ctx, owner, []byte("owning session only"), artifacts.PutOpts{Namespace: "ns"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, found, gerr := s.Get(ctx, other, ref.ID); gerr != nil || found {
+			t.Errorf("cross-session Get: found=%v err=%v, want (false, nil)", found, gerr)
+		}
+		if _, found, gerr := s.GetRef(ctx, other, ref.ID); gerr != nil || found {
+			t.Errorf("cross-session GetRef: found=%v err=%v, want (false, nil)", found, gerr)
+		}
+		if exists, eerr := s.Exists(ctx, other, ref.ID); eerr != nil || exists {
+			t.Errorf("cross-session Exists: %v err=%v, want false", exists, eerr)
+		}
+		if existed, derr := s.Delete(ctx, other, ref.ID); derr != nil || existed {
+			t.Errorf("cross-session Delete: existed=%v err=%v, want false", existed, derr)
+		}
+		// The owner still has it — the cross-session Delete was a no-op.
+		if _, found, gerr := s.Get(ctx, owner, ref.ID); gerr != nil || !found {
+			t.Errorf("owner Get after cross-session Delete: found=%v err=%v, want true",
+				found, gerr)
+		}
+	})
+
+	// The facade's scope check compares the TRIPLE. A ref stamped by a
+	// sibling run is exactly the case the reconciled key enables, so
+	// comparing the whole scope there would refuse the read the change
+	// exists to allow.
+	t.Run("Scoped_GetRef_AcceptsSiblingTaskStamp", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		producer := artifacts.ArtifactScope{
+			TenantID: "T", UserID: "U", SessionID: "S", TaskID: "producing-run",
+		}
+		ref, err := s.PutBytes(ctx, producer, []byte("stamped elsewhere"), artifacts.PutOpts{Namespace: "ns"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		facade := artifacts.NewScoped(s, artifacts.ArtifactScope{
+			TenantID: "T", UserID: "U", SessionID: "S",
+		})
+		got, found, err := facade.GetRef(ctx, ref.ID)
+		if err != nil {
+			t.Fatalf("facade.GetRef on a sibling-stamped ref: %v", err)
+		}
+		if !found {
+			t.Fatal("facade.GetRef found=false")
+		}
+		if got.Scope.TaskID != "producing-run" {
+			t.Errorf("facade.GetRef stamp=%q, want %q", got.Scope.TaskID, "producing-run")
+		}
+		// And the facade's List answers the same question its reads do.
+		rows, err := facade.List(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 {
+			t.Errorf("facade.List len=%d, want 1 — listing and reading must agree", len(rows))
 		}
 	})
 
@@ -600,6 +841,105 @@ func Run(t *testing.T, factory Factory) {
 		wg.Wait()
 		if n := errs.Load(); n != 0 {
 			t.Fatalf("%d concurrent operations errored", n)
+		}
+
+		deadline := time.Now().Add(2 * time.Second)
+		for runtime.NumGoroutine() > baseline && time.Now().Before(deadline) {
+			runtime.Gosched()
+		}
+		if delta := runtime.NumGoroutine() - baseline; delta > 0 {
+			t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, runtime.NumGoroutine())
+		}
+	})
+
+	// The concurrent-reuse contract over the RECONCILED KEY specifically:
+	// N goroutines race identical bytes into ONE session under N distinct
+	// task stamps. The dedup happens on the triple, so the race is
+	// between writers that a task-keyed store could not have collided.
+	//
+	// WHAT IS ASSERTED, AND WHAT DELIBERATELY IS NOT. The store must
+	// converge on ONE artifact, every racer must observe the same id, and
+	// every racer must be able to read the stored bytes. The row does NOT
+	// assert that all racers see the SAME provenance stamp, because
+	// first-writer-wins is a property of ORDERED writes: under a genuine
+	// tie there is no first writer, so a single stamp is not a property
+	// the contract has. The sequential row
+	// (ReadKey_RePutUnderDifferingTask_FirstWriterWins) is where "first"
+	// is defined and where the exact stamp is pinned. Asserting more here
+	// would be asserting a guarantee the interface does not make — the
+	// same class of overclaim §13 names, arriving through a test.
+	t.Run("Concurrent_ReconciledKey_DifferingTasks", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		baseline := runtime.NumGoroutine()
+		const goroutines = 128
+		triple := artifacts.ArtifactScope{
+			TenantID: "race-t", UserID: "race-u", SessionID: "race-s",
+		}
+		payload := []byte("one artifact, many claimed producers")
+
+		var wg sync.WaitGroup
+		var errs atomic.Int64
+		ids := make([]string, goroutines)
+		stamps := make([]string, goroutines)
+		wg.Add(goroutines)
+		for i := range goroutines {
+			go func() {
+				defer wg.Done()
+				scope := triple
+				scope.TaskID = fmt.Sprintf("run-%03d", i)
+				ref, err := s.PutBytes(context.Background(), scope, payload,
+					artifacts.PutOpts{Namespace: "race"})
+				if err != nil {
+					errs.Add(1)
+					return
+				}
+				ids[i] = ref.ID
+				stamps[i] = ref.Scope.TaskID
+			}()
+		}
+		wg.Wait()
+		if n := errs.Load(); n != 0 {
+			t.Fatalf("%d concurrent Puts errored", n)
+		}
+		claimed := map[string]struct{}{}
+		for i := range goroutines {
+			if ids[i] != ids[0] {
+				t.Fatalf("ids diverged: ids[%d]=%q ids[0]=%q", i, ids[i], ids[0])
+			}
+			claimed[fmt.Sprintf("run-%03d", i)] = struct{}{}
+		}
+		// Whatever stamp a racer got back, it must be SOME racer's — a
+		// driver may not invent or blank the provenance under a race.
+		for i := range goroutines {
+			if _, ok := claimed[stamps[i]]; !ok {
+				t.Fatalf("racer %d returned stamp %q, which no racer supplied", i, stamps[i])
+			}
+		}
+
+		rows := mustList(t, s, context.Background(), triple)
+		if len(rows) != 1 {
+			t.Errorf("session holds %d artifacts after %d racing Puts, want 1 "+
+				"(the racers must converge on one artifact, not one per task)",
+				len(rows), goroutines)
+		}
+		// The store settled on ONE stamp, and it is one a racer supplied.
+		settled, found, err := s.GetRef(context.Background(), triple, ids[0])
+		if err != nil || !found {
+			t.Fatalf("GetRef after the race: found=%v err=%v", found, err)
+		}
+		if _, ok := claimed[settled.Scope.TaskID]; !ok {
+			t.Errorf("settled stamp %q was supplied by no racer", settled.Scope.TaskID)
+		}
+		// Every racer can read what the winner stored, whatever stamp it
+		// carries.
+		for i := range goroutines {
+			reader := triple
+			reader.TaskID = fmt.Sprintf("run-%03d", i)
+			got, found, err := s.Get(context.Background(), reader, ids[0])
+			if err != nil || !found || string(got) != string(payload) {
+				t.Fatalf("racer %d cannot read the winner's bytes: found=%v err=%v", i, found, err)
+			}
 		}
 
 		deadline := time.Now().Add(2 * time.Second)
