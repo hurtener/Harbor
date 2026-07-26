@@ -57,6 +57,99 @@ func TestArtifactScope_Equal(t *testing.T) {
 	}
 }
 
+// TestArtifactScope_Triple_ClearsTheProvenanceAnnotation pins the read
+// key's shape: `Triple` strips `TaskID` and nothing else, so a caller
+// that stamped a task and one that did not address the same artifact.
+func TestArtifactScope_Triple_ClearsTheProvenanceAnnotation(t *testing.T) {
+	stamped := artifacts.ArtifactScope{
+		TenantID: "T", UserID: "U", SessionID: "S", TaskID: "run-1",
+	}
+	key := stamped.Triple()
+	if key.TaskID != "" {
+		t.Errorf("Triple().TaskID=%q, want empty", key.TaskID)
+	}
+	if key.TenantID != "T" || key.UserID != "U" || key.SessionID != "S" {
+		t.Errorf("Triple() disturbed the isolation components: %+v", key)
+	}
+	// The receiver is a value; the caller's own scope must be untouched.
+	if stamped.TaskID != "run-1" {
+		t.Errorf("Triple() mutated the receiver: %+v", stamped)
+	}
+	if key.Triple() != key {
+		t.Errorf("Triple() is not idempotent")
+	}
+}
+
+// TestArtifactScope_EqualTriple_IgnoresTaskID pins the comparison the
+// ScopedArtifacts facade uses. `Equal` and `EqualTriple` must disagree
+// on exactly one input class — scopes differing only in the stamp —
+// because that is the class the reconciled read key exists to admit.
+func TestArtifactScope_EqualTriple_IgnoresTaskID(t *testing.T) {
+	base := artifacts.ArtifactScope{TenantID: "T", UserID: "U", SessionID: "S"}
+	stamped := base
+	stamped.TaskID = "run-1"
+	other := base
+	other.TaskID = "run-2"
+
+	if !stamped.EqualTriple(other) {
+		t.Errorf("EqualTriple false for scopes differing only in TaskID")
+	}
+	if stamped.Equal(other) {
+		t.Errorf("Equal true for scopes differing in TaskID — Equal must stay exact")
+	}
+	if !stamped.EqualTriple(base) || !base.EqualTriple(stamped) {
+		t.Errorf("EqualTriple is not symmetric across a stamped/unstamped pair")
+	}
+
+	for _, differing := range []artifacts.ArtifactScope{
+		{TenantID: "OTHER", UserID: "U", SessionID: "S", TaskID: "run-1"},
+		{TenantID: "T", UserID: "OTHER", SessionID: "S", TaskID: "run-1"},
+		{TenantID: "T", UserID: "U", SessionID: "OTHER", TaskID: "run-1"},
+	} {
+		if stamped.EqualTriple(differing) {
+			t.Errorf("EqualTriple true across an isolation boundary: %+v", differing)
+		}
+	}
+}
+
+// TestValidateFilter_RequiresTenantOnly pins `List`'s precondition: the
+// zero-value scope stops being a legal all-tenants filter, while every
+// component below the tenant stays a wildcard.
+func TestValidateFilter_RequiresTenantOnly(t *testing.T) {
+	rejected := []artifacts.ArtifactScope{
+		{},
+		{UserID: "U"},
+		{SessionID: "S"},
+		{UserID: "U", SessionID: "S", TaskID: "K"},
+	}
+	for _, filter := range rejected {
+		if err := artifacts.ValidateFilter(filter); !errors.Is(err, artifacts.ErrIdentityRequired) {
+			t.Errorf("ValidateFilter(%+v)=%v, want ErrIdentityRequired", filter, err)
+		}
+		if err := filter.ValidateFilter(); !errors.Is(err, artifacts.ErrIdentityRequired) {
+			t.Errorf("method form ValidateFilter(%+v)=%v, want ErrIdentityRequired", filter, err)
+		}
+	}
+	accepted := []artifacts.ArtifactScope{
+		{TenantID: "T"},
+		{TenantID: "T", UserID: "U"},
+		{TenantID: "T", UserID: "U", SessionID: "S"},
+		{TenantID: "T", UserID: "U", SessionID: "S", TaskID: "K"},
+	}
+	for _, filter := range accepted {
+		if err := artifacts.ValidateFilter(filter); err != nil {
+			t.Errorf("ValidateFilter(%+v)=%v, want nil", filter, err)
+		}
+	}
+	// A filter is NOT a key: the identity precondition on a read is
+	// stricter, and must stay so.
+	tenantOnly := artifacts.ArtifactScope{TenantID: "T"}
+	if err := artifacts.Validate(tenantOnly); !errors.Is(err, artifacts.ErrIdentityRequired) {
+		t.Errorf("Validate(tenant-only)=%v, want ErrIdentityRequired — a read still "+
+			"needs the whole triple", err)
+	}
+}
+
 func TestOpen_RoutesByDriverName(t *testing.T) {
 	cfg := config.ArtifactsConfig{Driver: "inmem"}
 	s, err := artifacts.Open(context.Background(), cfg)

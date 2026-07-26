@@ -17,6 +17,54 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Changed — artifact reads now resolve on the session, and two stores migrate
+
+- **An artifact is read by `(tenant, user, session)` plus its id; the producing
+  task is provenance.** `artifacts.get_ref` and `artifacts.delete` — and the
+  `artifact_fetch` built-in the model uses — no longer require the caller to
+  name the same `task` the artifact was stored under. Naming a different one,
+  or omitting it, reaches the same artifact.
+
+  **Why it changes.** The session-artifact block the planner injects lists
+  every artifact in the session and invites the model to fetch any of them,
+  while the three writers that produce them stamped three different task
+  shapes. So the model was shown references a read then answered "not found"
+  for, and it had no way to tell that from a deleted artifact. Nothing crosses
+  a session, a user or a tenant: the session was always the innermost isolation
+  scope, and this makes the key match it.
+
+  **The provenance stamp becomes first-writer-wins.** Identical bytes stored by
+  two tasks in one session were two records, one stamp each; they are now ONE
+  record carrying the first writer's stamp. A `task` filter on `artifacts.list`
+  therefore answers "which artifacts is this task the recorded producer of",
+  not "which did it write". This is inherent to a content-addressed store — the
+  id is derived from the bytes, so the question has no single answer once two
+  tasks produce them.
+
+  **`artifacts.list` now requires a tenant.** A filter with no tenant is
+  refused at the store instead of listing across tenants. Empty `user`,
+  `session` and `task` remain wildcards within the tenant, so no existing
+  request shape changes: the Protocol edge already refused a tenant-less list.
+
+- **ACTION: the SQLite and Postgres artifact stores run a schema migration on
+  first start after upgrade.** `0002_read_key_is_the_triple.sql` re-keys
+  `artifacts_blobs` onto `(tenant, user, session, namespace, id)`. It is
+  forward-only and transactional, and pre-existing duplicate rows (the same
+  bytes stored by two tasks in one session) collapse onto the row with the
+  lowest `task`. On a large artifacts table the rebuild is not instantaneous —
+  size the restart window rather than meeting it. No action is needed for the
+  in-memory or filesystem stores.
+
+- **ACTION: the S3-compatible artifact store writes a new object key layout.**
+  Objects are now stored at `<prefix>/<tenant>/<user>/<session>/<namespace>/<id>`
+  — the task segment is gone, because an object store has no compare-and-set
+  and keying on it let concurrent writers of identical bytes create one object
+  each. Objects written by earlier versions stay readable and deletable: the
+  driver falls back to a session-prefix scan and nothing is rewritten in place,
+  so a bucket migrates by being read. The cost is one extra listing on a read
+  that misses the new key, and one per delete. Buckets whose lifecycle rules or
+  external tooling match on the old key shape need those rules updated.
+
 ### Changed — ACTION REQUIRED for two configurations
 
 - **MCP server ids must be separator-safe; an ambiguous pair now refuses to

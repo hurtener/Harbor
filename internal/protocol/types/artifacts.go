@@ -69,18 +69,29 @@ func IsValidArtifactSource(s ArtifactSource) bool {
 // type, never a re-export.
 //
 // Identity is mandatory: Tenant / User / Session must be non-empty for
-// artifacts.put and artifacts.get_ref. Task is optional for session-
-// scoped artifacts. For artifacts.list, empty fields are wildcards
-// (tenant-wide listing requires the admin scope per the closed admin-scope set).
+// artifacts.put and artifacts.get_ref. Task is optional. For
+// artifacts.list, empty fields below the tenant are wildcards
+// (a tenant other than the caller's requires the admin scope per the
+// closed admin-scope set).
 type ArtifactScope struct {
 	// Tenant / User / Session are the mandatory isolation triple. An
 	// empty component fails put / get_ref closed at the Protocol edge.
 	Tenant  string `json:"tenant"`
 	User    string `json:"user"`
 	Session string `json:"session"`
-	// Task is the per-task scope inside a session. Optional — empty for
-	// session-scoped artifacts; a list filter treats an empty Task as a
-	// wildcard.
+	// Task records WHICH TASK produced an artifact. It is a provenance
+	// annotation, not part of the read key: a read resolves on
+	// (tenant, user, session) plus the artifact id, so naming a Task —
+	// or omitting it — does not change which artifact a get_ref or a
+	// delete reaches. On a list it is a FILTER over the stored stamp,
+	// and an empty Task is a wildcard there.
+	//
+	// The filter is first-writer-lossy: identical bytes stored by two
+	// tasks in one session are ONE artifact carrying the first writer's
+	// stamp, so filtering by the second task does not return them. That
+	// is inherent to a content-addressed store — the id is derived from
+	// the bytes, so "which task produced these bytes" has no single
+	// answer once two tasks produce them.
 	Task string `json:"task,omitempty"`
 }
 

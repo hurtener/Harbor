@@ -7,11 +7,33 @@
 //	<root>/<tenant>/<user>/<session>/<task>/<namespace>/<id>
 //	<root>/<tenant>/<user>/<session>/<task>/<namespace>/<id>.meta.json
 //
-// Empty `TaskID` becomes the literal directory `_` so the scope
-// hierarchy stays five levels deep (the consumer pattern is
-// "session-scoped artifacts have empty task," and we want their
-// directories distinguishable from a task literally named ""). The
-// other identity components are mandatory and validated upstream.
+// Empty `TaskID` becomes the literal directory `_` so the layout stays
+// five levels deep (the consumer pattern is "session-scoped artifacts
+// have empty task," and we want their directories distinguishable from
+// a task literally named ""). The other identity components are
+// mandatory and validated upstream.
+//
+// THE PATH CARRIES THE TASK; THE KEY DOES NOT. Reads resolve on the
+// isolation triple, so the task directory cannot be reconstructed from
+// the caller's scope — it is read off the STORED ref, whose
+// `Scope.TaskID` is the producing task's provenance stamp. Every path
+// this driver builds for an existing artifact therefore derives from
+// `ref.Scope`, never from the caller's; only a first Put derives its
+// directory from the caller, because only then is the caller the
+// producer. That is what lets a triple-keyed read resolve ACROSS task
+// directories without the layout changing, and it keeps artifacts
+// written by any earlier build readable in place.
+//
+// Two properties follow for data already on disk. A restart's index
+// rebuild can find the SAME triple + id under more than one task
+// directory (an earlier build wrote per-task copies). Write order is
+// not recoverable from a filesystem, so the collapse rule is stated
+// rather than guessed: the LEXICOGRAPHICALLY SMALLEST `TaskID` wins,
+// deterministically, regardless of walk order. The bytes are identical
+// by content-addressing, so only the provenance stamp is at stake. And
+// `Delete` sweeps every task directory under the triple, so a delete
+// cannot report success while leaving a copy that a later Get
+// resolves.
 //
 // Atomicity. Each Put writes blob + meta as a pair of `tmp.<id>` /
 // `tmp.<id>.meta.json` files, then `os.Rename`s each in turn. On
@@ -96,14 +118,17 @@ func init() {
 	artifacts.Register("fs", New)
 }
 
-// indexKey is the composite primary key (mirrors the InMem driver's
-// shape; struct-typed so identity components carrying delimiters
-// can't collide).
+// indexKey is the composite primary key: the isolation triple plus the
+// content-addressed id (mirrors the InMem driver's shape; struct-typed
+// so identity components carrying delimiters can't collide).
+//
+// `TaskID` is deliberately ABSENT — it is a provenance annotation. The
+// on-disk path still carries it; the stored ref is what maps a key back
+// to its directory.
 type indexKey struct {
 	Tenant  string
 	User    string
 	Session string
-	Task    string
 	ID      string
 }
 
@@ -112,7 +137,6 @@ func keyFor(scope artifacts.ArtifactScope, id string) indexKey {
 		Tenant:  scope.TenantID,
 		User:    scope.UserID,
 		Session: scope.SessionID,
-		Task:    scope.TaskID,
 		ID:      id,
 	}
 }
@@ -151,7 +175,9 @@ func (d *driver) PutBytes(_ context.Context, scope artifacts.ArtifactScope, data
 	defer d.mu.Unlock()
 
 	if existing, ok := d.index[key]; ok {
-		// Dedup: id already on disk under this scope.
+		// Dedup: id already on disk under this triple — possibly in a
+		// different task directory. First-writer-wins: return the stored
+		// ref (carrying the first producer's stamp) and write nothing.
 		return existing, nil
 	}
 
@@ -222,8 +248,9 @@ func (d *driver) PutText(ctx context.Context, scope artifacts.ArtifactScope, tex
 	return d.PutBytes(ctx, scope, []byte(text), opts)
 }
 
-// Get implements artifacts.ArtifactStore. Found-false is NOT an
-// error.
+// Get implements artifacts.ArtifactStore. Resolves on the isolation
+// triple; `scope.TaskID` is ignored and the blob path is derived from
+// the stored ref's task. Found-false is NOT an error.
 func (d *driver) Get(_ context.Context, scope artifacts.ArtifactScope, id string) ([]byte, bool, error) {
 	if d.closed.Load() {
 		return nil, false, artifacts.ErrStoreClosed
@@ -240,7 +267,10 @@ func (d *driver) Get(_ context.Context, scope artifacts.ArtifactScope, id string
 	if !ok {
 		return nil, false, nil
 	}
-	dir, err := d.dirFor(scope, ref.Namespace)
+	// The directory comes from the STORED ref, not the caller's scope:
+	// the artifact lives under the producing task's directory and the
+	// caller's task (if any) is not part of the read key.
+	dir, err := d.dirFor(ref.Scope, ref.Namespace)
 	if err != nil {
 		return nil, false, err
 	}
@@ -261,7 +291,8 @@ func (d *driver) Get(_ context.Context, scope artifacts.ArtifactScope, id string
 	return data, true, nil
 }
 
-// GetRef implements artifacts.ArtifactStore.
+// GetRef implements artifacts.ArtifactStore. Resolves on the isolation
+// triple; the returned ref carries the stored provenance stamp.
 func (d *driver) GetRef(_ context.Context, scope artifacts.ArtifactScope, id string) (*artifacts.ArtifactRef, bool, error) {
 	if d.closed.Load() {
 		return nil, false, artifacts.ErrStoreClosed
@@ -283,7 +314,8 @@ func (d *driver) GetRef(_ context.Context, scope artifacts.ArtifactScope, id str
 	return &out, true, nil
 }
 
-// Exists implements artifacts.ArtifactStore.
+// Exists implements artifacts.ArtifactStore. Resolves on the isolation
+// triple; `scope.TaskID` is ignored.
 func (d *driver) Exists(_ context.Context, scope artifacts.ArtifactScope, id string) (bool, error) {
 	if d.closed.Load() {
 		return false, artifacts.ErrStoreClosed
@@ -300,7 +332,12 @@ func (d *driver) Exists(_ context.Context, scope artifacts.ArtifactScope, id str
 	return ok, nil
 }
 
-// Delete implements artifacts.ArtifactStore. Idempotent.
+// Delete implements artifacts.ArtifactStore. Resolves on the isolation
+// triple and removes EVERY on-disk copy under it — the indexed one plus
+// any sibling left in another task directory by an earlier build.
+// Removing only the indexed copy would let a later Get resolve a
+// leftover, so the delete would have reported a success it did not
+// perform (CLAUDE.md §13). Idempotent.
 func (d *driver) Delete(_ context.Context, scope artifacts.ArtifactScope, id string) (bool, error) {
 	if d.closed.Load() {
 		return false, artifacts.ErrStoreClosed
@@ -318,35 +355,84 @@ func (d *driver) Delete(_ context.Context, scope artifacts.ArtifactScope, id str
 	if !ok {
 		return false, nil
 	}
-	dir, err := d.dirFor(scope, ref.Namespace)
-	if err != nil {
+	if err := d.removeEveryCopy(ref.Scope, ref.Namespace, id); err != nil {
 		return false, err
-	}
-	blobPath, err := d.safeJoin(dir, id)
-	if err != nil {
-		return false, err
-	}
-	metaPath, err := d.safeJoin(dir, id+metaSuffix)
-	if err != nil {
-		return false, err
-	}
-	// Best-effort remove; index update is the source of truth for
-	// callers (fs is durable, but the index is the in-memory mirror).
-	if err := os.Remove(blobPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return false, fmt.Errorf("artifacts/fs: remove blob: %w", err)
-	}
-	if err := os.Remove(metaPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return false, fmt.Errorf("artifacts/fs: remove meta: %w", err)
 	}
 	delete(d.index, key)
 	return true, nil
 }
 
-// List implements artifacts.ArtifactStore. Empty fields in `filter`
-// are wildcards.
+// removeEveryCopy deletes `<task>/<namespace>/<id>` and its meta sibling
+// under every task directory of the artifact's session, so no copy
+// survives a Delete on the triple. Caller holds the write lock.
+func (d *driver) removeEveryCopy(scope artifacts.ArtifactScope, namespace, id string) error {
+	tasks, err := d.taskDirs(scope)
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		copyScope := scope
+		copyScope.TaskID = task
+		dir, derr := d.dirFor(copyScope, namespace)
+		if derr != nil {
+			return derr
+		}
+		blobPath, jerr := d.safeJoin(dir, id)
+		if jerr != nil {
+			return jerr
+		}
+		metaPath, jerr := d.safeJoin(dir, id+metaSuffix)
+		if jerr != nil {
+			return jerr
+		}
+		if rerr := os.Remove(blobPath); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+			return fmt.Errorf("artifacts/fs: remove blob: %w", rerr)
+		}
+		if rerr := os.Remove(metaPath); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+			return fmt.Errorf("artifacts/fs: remove meta: %w", rerr)
+		}
+	}
+	return nil
+}
+
+// taskDirs returns the `TaskID` values whose directories exist under the
+// scope's session, with the `_` sentinel decoded back to the empty
+// string. A missing session directory yields an empty slice rather than
+// an error — nothing to sweep is not a failure.
+func (d *driver) taskDirs(scope artifacts.ArtifactScope) ([]string, error) {
+	sessionDir, err := d.safeJoin(d.root, scope.TenantID, scope.UserID, scope.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("artifacts/fs: read session dir %q: %w", sessionDir, err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if e.Name() == emptyTaskSentinel {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, e.Name())
+	}
+	return out, nil
+}
+
+// List implements artifacts.ArtifactStore. `filter.TenantID` is
+// required; every other empty field is a wildcard within that tenant.
 func (d *driver) List(_ context.Context, filter artifacts.ArtifactScope) ([]artifacts.ArtifactRef, error) {
 	if d.closed.Load() {
 		return nil, artifacts.ErrStoreClosed
+	}
+	if err := filter.ValidateFilter(); err != nil {
+		return nil, err
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -401,6 +487,14 @@ func (d *driver) safeJoin(base string, parts ...string) (string, error) {
 // (cleaned in cleanupTmp before this runs) are absent. Files that
 // don't parse are logged via the returned error chain — callers
 // surface the failure at New time.
+//
+// Collision rule. The index key is the isolation triple plus the id, so
+// two meta files for the same key can appear when an earlier build
+// wrote the same bytes under two task directories. Write order is not
+// recoverable from a filesystem, so the survivor is chosen by an
+// explicit, deterministic rule — the smallest `TaskID` — rather than by
+// whichever entry the walk happened to reach first. The bytes are
+// identical by content-addressing; only the provenance stamp differs.
 func (d *driver) rebuildIndex() error {
 	return filepath.WalkDir(d.root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -425,7 +519,11 @@ func (d *driver) rebuildIndex() error {
 		if err := json.Unmarshal(raw, &ref); err != nil {
 			return fmt.Errorf("artifacts/fs: parse meta %q: %w", path, err)
 		}
-		d.index[keyFor(ref.Scope, ref.ID)] = ref
+		key := keyFor(ref.Scope, ref.ID)
+		if existing, ok := d.index[key]; ok && existing.Scope.TaskID <= ref.Scope.TaskID {
+			return nil
+		}
+		d.index[key] = ref
 		return nil
 	})
 }

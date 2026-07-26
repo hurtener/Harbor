@@ -155,7 +155,12 @@ func materializeDataURL(
 		TenantID:  id.TenantID,
 		UserID:    id.UserID,
 		SessionID: id.SessionID,
-		TaskID:    id.RunID, // RunID maps to TaskID for foreground (artifacts.ArtifactScope godoc)
+		// The run is recorded as PROVENANCE, not as part of the key: the
+		// store resolves on the triple, so stamping the run here records
+		// who produced the bytes without hiding them from a sibling run
+		// in the same session (which is exactly what `artifact_fetch`
+		// and the session-artifact manifest need).
+		TaskID: id.RunID,
 	}
 	opts := artifacts.PutOpts{
 		MimeType:  effectiveMIME,

@@ -14,7 +14,7 @@ import (
 )
 
 // TestMigrate_CleanDB_StartsClean — fresh tempdir DB, run migrations
-// (transitively via New), verify schema_migrations row at version 1.
+// (transitively via New), verify both forward-only migrations recorded.
 func TestMigrate_CleanDB_StartsClean(t *testing.T) {
 	dir := t.TempDir()
 	dsn := filepath.Join(dir, "clean.sqlite")
@@ -32,8 +32,8 @@ func TestMigrate_CleanDB_StartsClean(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	versions := loadSchemaMigrations(t, db)
-	if len(versions) != 1 || versions[0] != 1 {
-		t.Fatalf("schema_migrations=%v, want [1]", versions)
+	if !equalVersions(versions, []int{1, 2}) {
+		t.Fatalf("schema_migrations=%v, want [1 2]", versions)
 	}
 }
 
@@ -65,8 +65,8 @@ func TestMigrate_Idempotent(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	versions := loadSchemaMigrations(t, db)
-	if len(versions) != 1 || versions[0] != 1 {
-		t.Fatalf("schema_migrations after re-open=%v, want [1]", versions)
+	if !equalVersions(versions, []int{1, 2}) {
+		t.Fatalf("schema_migrations after re-open=%v, want [1 2]", versions)
 	}
 }
 
@@ -169,6 +169,134 @@ func TestMigrate_TablePresent(t *testing.T) {
 			t.Errorf("missing expected table %q (have %v)", name, tables)
 		}
 	}
+}
+
+// TestMigrate_LegacyTaskKeyedRows_CollapseOntoTheTriple builds a
+// database in the PRE-RECONCILIATION shape by hand — the four-field
+// primary key `(tenant, user, session, task, namespace, id)` with two
+// rows that differ only in `task` — and then opens it through the
+// driver, which runs migration 0002.
+//
+// This is the only way to exercise the collapse: after the migration the
+// primary key forbids the duplicate, so no sequence of interface calls
+// can construct the input. A migration whose data path is never executed
+// is a migration nobody has tested.
+func TestMigrate_LegacyTaskKeyedRows_CollapseOntoTheTriple(t *testing.T) {
+	dir := t.TempDir()
+	dsn := filepath.Join(dir, "legacy.sqlite")
+
+	seed, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	// The v1 schema verbatim, plus its schema_migrations row, so the
+	// runner sees a database that has had 0001 and not 0002.
+	const v1Schema = `
+        CREATE TABLE artifacts_blobs (
+            tenant      TEXT      NOT NULL,
+            user        TEXT      NOT NULL,
+            session     TEXT      NOT NULL,
+            task        TEXT      NOT NULL,
+            namespace   TEXT      NOT NULL,
+            id          TEXT      NOT NULL,
+            mime_type   TEXT      NOT NULL,
+            size_bytes  INTEGER   NOT NULL,
+            filename    TEXT      NOT NULL,
+            sha256      TEXT      NOT NULL,
+            source_json BLOB      NOT NULL,
+            bytes       BLOB      NOT NULL,
+            PRIMARY KEY (tenant, user, session, task, namespace, id)
+        );
+        CREATE TABLE schema_migrations (
+            version    INTEGER   PRIMARY KEY,
+            applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO schema_migrations(version) VALUES (1);`
+	if _, err := seed.Exec(v1Schema); err != nil {
+		t.Fatalf("seed v1 schema: %v", err)
+	}
+
+	const payload = "identical bytes, two legacy rows"
+	const id = "ns_0123456789ab"
+	const insert = `
+        INSERT INTO artifacts_blobs
+            (tenant, user, session, task, namespace, id,
+             mime_type, size_bytes, filename, sha256, source_json, bytes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	// Deliberately inserted LATEST-task-first, so a collapse rule that
+	// silently depended on physical row order would pick the wrong row.
+	for _, task := range []string{"run-zulu", "run-alpha"} {
+		if _, err := seed.Exec(insert,
+			"T", "U", "S", task, "ns", id,
+			"application/json", int64(len(payload)), "legacy.json",
+			"deadbeef", []byte("null"), []byte(payload),
+		); err != nil {
+			t.Fatalf("seed row task=%s: %v", task, err)
+		}
+	}
+	// A row in a DIFFERENT session with the same id must survive
+	// untouched — the collapse is scoped to one triple.
+	if _, err := seed.Exec(insert,
+		"T", "U", "other-session", "run-zulu", "ns", id,
+		"application/json", int64(len(payload)), "legacy.json",
+		"deadbeef", []byte("null"), []byte(payload),
+	); err != nil {
+		t.Fatalf("seed sibling-session row: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close seed handle: %v", err)
+	}
+
+	s, err := sqlite.New(config.ArtifactsConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatalf("New over a legacy DB (migration 0002 failed): %v", err)
+	}
+	defer func() { _ = s.Close(context.Background()) }()
+
+	triple := artifacts.ArtifactScope{TenantID: "T", UserID: "U", SessionID: "S"}
+	rows, err := s.List(context.Background(), triple)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("legacy duplicates did not collapse: %d rows, want 1", len(rows))
+	}
+	if rows[0].Scope.TaskID != "run-alpha" {
+		t.Errorf("survivor stamp=%q, want the smallest task %q",
+			rows[0].Scope.TaskID, "run-alpha")
+	}
+
+	// The survivor is readable on the triple with any task stamp.
+	got, found, err := s.Get(context.Background(), triple, id)
+	if err != nil || !found {
+		t.Fatalf("Get on the migrated row: found=%v err=%v", found, err)
+	}
+	if string(got) != payload {
+		t.Errorf("migrated bytes=%q, want %q", got, payload)
+	}
+
+	// The sibling session kept its own copy.
+	otherRows, err := s.List(context.Background(),
+		artifacts.ArtifactScope{TenantID: "T", UserID: "U", SessionID: "other-session"})
+	if err != nil {
+		t.Fatalf("List sibling session: %v", err)
+	}
+	if len(otherRows) != 1 {
+		t.Errorf("sibling session lost its row: %d, want 1", len(otherRows))
+	}
+}
+
+// equalVersions compares two ascending version slices.
+func equalVersions(got, want []int) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // loadSchemaMigrations reads the schema_migrations table into a sorted

@@ -246,6 +246,10 @@ func (s *ArtifactsSurface) handleList(ctx context.Context, req *types.ArtifactsL
 
 	// The artifacts.list scope deliberately permits empty User / Session
 	// (they are list wildcards) — only Tenant is mandatory for a list.
+	// The store enforces the same precondition beneath this one, so a
+	// tenant-less filter cannot reach a driver by any route; this check
+	// stays because it answers with the Protocol's own code rather than
+	// letting a storage sentinel surface as a generic failure.
 	if req.Scope.Tenant == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
 			"method %q: scope tenant is required", m)
