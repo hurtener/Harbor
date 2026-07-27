@@ -161,9 +161,13 @@ type SearchResultRow struct {
 	// threshold). Empty when Ref is populated.
 	Preview string `json:"preview,omitempty"`
 	// Ref is populated when the underlying entity's preview would
-	// exceed the heavy-content threshold. The Console fetches
-	// the bytes via `artifacts.get` / `artifacts.get_ref` when it
-	// wants them.
+	// exceed the heavy-content threshold. A client fetches the bytes
+	// through `artifacts.get`, the driver-independent byte read every
+	// registered artifact driver serves. `artifacts.get_ref` is not an
+	// alternative to it for this purpose but a transport optimisation
+	// available only where the store can presign, so a client that
+	// wants the bytes without a capability precondition uses
+	// `artifacts.get`.
 	Ref *SearchArtifactRef `json:"ref,omitempty"`
 	// Facets carries per-index dimension values relevant to the row
 	// (e.g. `{"status":"running"}` for tasks). The set of populated

@@ -17,6 +17,56 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added — artifact bytes are readable on every store, and the read-back bound is yours
+
+- **`artifacts.get` — a Protocol method that returns an artifact's bytes, served
+  by every artifact driver.** `POST /v1/control/artifacts.get` takes the scope
+  and the artifact id and returns the bytes plus the reference metadata.
+
+  **Why it matters.** The only byte path the Protocol had was
+  `artifacts.get_ref`, which returns a presigned URL — something only an
+  S3-compatible store can mint. On the `inmem` default (and on `fs`, `sqlite`
+  and `postgres`) it answers `presign_unsupported` / 501. So a deployment could
+  offload heavy content correctly and then have no supported way to read it
+  back. `artifacts.get` resolves through the store's mandatory read, so it works
+  everywhere.
+
+  **The two are not alternatives to pick between.** `artifacts.get` is the read
+  every client can rely on. `artifacts.get_ref` is an optimisation for stores
+  that can hand a large download off their own edge, so the bytes need not
+  transit the Runtime. Both resolve the same reference under the same identity;
+  reach for `get_ref` only when you know your deployment runs an S3-compatible
+  driver.
+
+- **Every artifact read now reports its own bound.** `artifacts.get` and the
+  `artifact_fetch` built-in both answer with `total_size_bytes`,
+  `returned_bytes` and `truncated` alongside the window, so a partial read is
+  never mistakable for a complete one.
+
+- **`offset` — page a large artifact instead of only reading its head.** Both
+  the method and the built-in take a byte `offset`; read from 0, then re-read at
+  the previous `offset + returned_bytes` while `truncated` is true. Windows are
+  **byte** ranges, not lines or rows, so a window can begin and end mid-line and
+  the caller splits the text itself.
+
+### Added — two optional `artifacts` config keys
+
+- **`artifacts.fetch_default_max_bytes` (default 65536) and
+  `artifacts.fetch_hard_max_bytes` (default 1048576).** The read-back bound
+  becomes yours to tune, alongside the `heavy_output_threshold_bytes` that
+  governs what goes out. Both keys are optional and both default to the values
+  the previous build hardcoded, so **no existing configuration changes
+  behaviour.**
+
+  A request above the ceiling is **served at the ceiling**, not refused, and the
+  response says so through `truncated` — a caller has no way to discover the
+  ceiling before asking, so a refusal would cost it a round trip and teach it
+  nothing.
+
+  **The ceiling bounds one read, not a sequence.** It is not a budget over
+  repeated calls; aggregate consumption stays the governance layer's concern
+  (cost ceilings and rate limits).
+
 ### Changed — artifact reads now resolve on the session, and two stores migrate
 
 - **An artifact is read by `(tenant, user, session)` plus its id; the producing

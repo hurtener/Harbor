@@ -18,8 +18,8 @@ import (
 )
 
 // ArtifactsSurface is the transport-agnostic
-// Harbor Protocol artifacts handler. It owns the three artifacts methods
-// the Console Artifacts page consumes:
+// Harbor Protocol artifacts handler. It owns the five artifacts methods
+// the Console Artifacts page and the MCP-Apps host consume:
 //
 //   - artifacts.list    — the identity-scope-filtered catalog, with the
 //     filter extensions (mime / source / size / created /
@@ -27,22 +27,42 @@ import (
 //   - artifacts.put     — the Console file-upload pipeline;
 //     routes the payload through audit.Redactor then
 //     ArtifactStore.PutBytes and returns the canonical ArtifactRef.
+//   - artifacts.get     — the driver-independent byte read; resolves
+//     through ArtifactStore.Get, so every registered driver serves it.
 //   - artifacts.get_ref — the read-side presigned-URL resolver per
 //     contract; type-asserts the store to artifacts.Presigner and
-//     fails loud (CodePresignUnsupported) on a non-S3 driver.
+//     fails loud (CodePresignUnsupported) on a driver without it.
+//   - artifacts.delete  — the admin-gated, audited eviction.
 //
 // ArtifactsSurface is a sibling of the ControlSurface and the
 // PostureSurface, not an extension: the artifacts methods are
 // not steering controls, they do not reach the task registry, and they
 // carry their own per-method wire types.
 //
+// # Two reads, one contract and one optimisation
+//
+// artifacts.get and artifacts.get_ref are NOT parallel implementations
+// of one feature. artifacts.get is the CONTRACT — universal and
+// driver-independent, because ArtifactStore.Get is a mandatory interface
+// method. artifacts.get_ref is a TRANSPORT OPTIMISATION for the case
+// where the store can hand bytes off its own edge, so a large media
+// download need not transit the Runtime; it rests on the optional
+// artifacts.Presigner capability, which exactly one shipped driver
+// implements and which the default driver does not.
+//
+// Both resolve the same ref, under the same verified identity, under the
+// same flat body-identity posture. They differ in WHO SERVES THE BYTES,
+// not in who may read them — which is what makes keeping both
+// defensible, and why a client that cannot presign now has a path
+// rather than a refusal.
+//
 // # Concurrent reuse
 //
 // ArtifactsSurface is a compiled artifact: the store, redactor, bus,
-// clock, and maxBodyBytes are all set once at construction and never
-// mutated. Dispatch holds no per-call state on the surface — it reads
-// everything from ctx + the request argument. One ArtifactsSurface
-// serves N concurrent Dispatch goroutines safely;
+// clock, driver name, body bound and fetch ceiling are all set once at
+// construction and never mutated. Dispatch holds no per-call state on
+// the surface — it reads everything from ctx + the request argument.
+// One ArtifactsSurface serves N concurrent Dispatch goroutines safely;
 // artifacts_concurrent_test.go pins N=100 under -race.
 //
 // # Identity at the edge (RFC §5.5, CLAUDE.md §6)
@@ -53,15 +73,26 @@ import (
 // requires the admin (or console:fleet) scope per the closed admin-scope set; without it the
 // response is CodeScopeMismatch. artifacts.put rejects a body whose
 // scope Tenant disagrees with the verified tenant (no silent rewrite —
-// identity is mandatory).
+// identity is mandatory). artifacts.get and artifacts.get_ref refuse a
+// foreign tenant FLAT, with no elevation branch: both serve CONTENT,
+// which is materially broader than the metadata a listing returns.
 //
-// # Heavy content by reference
+// # Where the bytes travel
 //
 // artifacts.list returns metadata-only rows; artifacts.get_ref returns a
 // presigned URL; artifacts.put accepts upload bytes only on the request
-// leg and returns a reference. No raw heavy content crosses the wire on
-// a response, ever — the context-window safety net read into the
-// artifacts surface.
+// leg and returns a reference. artifacts.get is the one method here that
+// returns stored bytes, and it returns them to the caller's own verified
+// identity, bounded by the operator's fetch ceiling and truthful about
+// that bound.
+//
+// That does not relax the context-window safety net. The net governs
+// what reaches a MODEL'S CONTEXT — a heavy tool result is offloaded so
+// the event stream and the prompt do not carry it — and an explicit
+// read-back by the principal that already reaches those bytes is what
+// the offload exists to make possible. The response is placed nowhere
+// the redactor governs: not an event payload, not a trajectory entry,
+// not a log line.
 type ArtifactsSurface struct {
 	store        artifacts.ArtifactStore
 	redactor     audit.Redactor
@@ -69,6 +100,12 @@ type ArtifactsSurface struct {
 	clock        func() time.Time
 	driverName   string
 	maxBodyBytes int
+	// fetchDefaultMaxBytes is the window served when an artifacts.get
+	// names no bound of its own; fetchHardMaxBytes is the ceiling a
+	// caller's own bound is clamped to. Both are operator policy,
+	// resolved at construction, and immutable thereafter.
+	fetchDefaultMaxBytes int64
+	fetchHardMaxBytes    int64
 }
 
 // ArtifactsDeps bundles the runtime-side seams an ArtifactsSurface reads
@@ -95,6 +132,16 @@ type ArtifactsDeps struct {
 	// is rejected with CodeRequestTooLarge. Mandatory and positive — a
 	// zero or negative value fails loud at construction.
 	MaxBodyBytes int
+	// FetchDefaultMaxBytes is the artifacts.get window served when the
+	// caller names no bound. Mandatory and positive; it comes from the
+	// operator's resolved artifacts configuration.
+	FetchDefaultMaxBytes int
+	// FetchHardMaxBytes is the ceiling an artifacts.get caller's own
+	// bound is clamped to. Mandatory, positive, and at least
+	// FetchDefaultMaxBytes — a default above its own ceiling is a
+	// misconfiguration this constructor refuses rather than silently
+	// reorders.
+	FetchHardMaxBytes int
 }
 
 // ErrArtifactsMisconfigured — NewArtifactsSurface was called with a
@@ -127,13 +174,25 @@ func NewArtifactsSurface(deps ArtifactsDeps) (*ArtifactsSurface, error) {
 	if deps.MaxBodyBytes <= 0 {
 		return nil, fmt.Errorf("%w: MaxBodyBytes must be positive", ErrArtifactsMisconfigured)
 	}
+	if deps.FetchDefaultMaxBytes <= 0 {
+		return nil, fmt.Errorf("%w: FetchDefaultMaxBytes must be positive", ErrArtifactsMisconfigured)
+	}
+	if deps.FetchHardMaxBytes <= 0 {
+		return nil, fmt.Errorf("%w: FetchHardMaxBytes must be positive", ErrArtifactsMisconfigured)
+	}
+	if deps.FetchDefaultMaxBytes > deps.FetchHardMaxBytes {
+		return nil, fmt.Errorf("%w: FetchDefaultMaxBytes (%d) must not exceed FetchHardMaxBytes (%d)",
+			ErrArtifactsMisconfigured, deps.FetchDefaultMaxBytes, deps.FetchHardMaxBytes)
+	}
 	return &ArtifactsSurface{
-		store:        deps.Store,
-		redactor:     deps.Redactor,
-		bus:          deps.Bus,
-		clock:        deps.Clock,
-		driverName:   deps.DriverName,
-		maxBodyBytes: deps.MaxBodyBytes,
+		store:                deps.Store,
+		redactor:             deps.Redactor,
+		bus:                  deps.Bus,
+		clock:                deps.Clock,
+		driverName:           deps.DriverName,
+		maxBodyBytes:         deps.MaxBodyBytes,
+		fetchDefaultMaxBytes: int64(deps.FetchDefaultMaxBytes),
+		fetchHardMaxBytes:    int64(deps.FetchHardMaxBytes),
 	}, nil
 }
 
@@ -187,10 +246,11 @@ type ArtifactUploadedPayload struct {
 // artifacts-method call. A REST handler decodes a request,
 // calls Dispatch, and encodes the response — Dispatch IS the surface.
 //
-// method selects the handler; it MUST be one of the three artifacts
+// method selects the handler; it MUST be one of the five artifacts
 // methods (methods.IsArtifactsMethod). req MUST be the wire request
 // type the method expects (*types.ArtifactsListRequest /
-// *types.ArtifactsPutRequest / *types.ArtifactsGetRefRequest).
+// *types.ArtifactsPutRequest / *types.ArtifactsGetRequest /
+// *types.ArtifactsGetRefRequest / *types.ArtifactsDeleteRequest).
 //
 // The return is always a *types.<Method>Response or a *protoerrors.Error
 // so the wire layer never sees an unstructured runtime error.
@@ -216,6 +276,13 @@ func (s *ArtifactsSurface) Dispatch(ctx context.Context, method methods.Method, 
 				"method %q: request is nil or not a *types.ArtifactsPutRequest", string(method))
 		}
 		return s.handlePut(ctx, pr)
+	case methods.MethodArtifactsGet:
+		g, ok := req.(*types.ArtifactsGetRequest)
+		if !ok || g == nil {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"method %q: request is nil or not a *types.ArtifactsGetRequest", string(method))
+		}
+		return s.handleGet(ctx, g)
 	case methods.MethodArtifactsGetRef:
 		gr, ok := req.(*types.ArtifactsGetRefRequest)
 		if !ok || gr == nil {
@@ -470,6 +537,161 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 		Ref:             projectRef(ref),
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
+}
+
+// handleGet serves artifacts.get — the driver-independent byte read.
+// It validates the full identity triple, refuses a scope naming a tenant
+// other than the verified one, resolves the ref's metadata, reads the
+// bytes through ArtifactStore.Get (a MANDATORY interface method, which
+// is what makes this read work on every registered driver), and returns
+// the requested window with a truthful account of its bound.
+//
+// The tenant refusal is FLAT, with no admin elevation, for exactly the
+// reason artifacts.get_ref's is: this method hands over CONTENT, which
+// is materially broader than the metadata artifacts.list returns, and
+// the scope requires the full triple — so the only foreign-tenant shape
+// that can reach here already carries the caller's own user and session,
+// which is not a fleet-observation shape and so has nothing to elevate.
+// The fifth artifacts method does not quietly become a wider door onto
+// what the fourth guards narrowly.
+//
+// # The bound, and what it does not promise
+//
+// Three sources can bound one read — the caller's MaxBytes, the
+// operator's default when the caller named none, and the operator's hard
+// ceiling — and all three answer through ONE response field set
+// (Truncated / TotalSizeBytes / ReturnedBytes) rather than growing a
+// signal each. A request above the effective ceiling is SERVED at the
+// ceiling and reports it, rather than being refused: a caller cannot
+// know a deployment's ceiling before asking, so a refusal would cost a
+// round trip and teach nothing. Truthful truncation is the correct
+// posture; SILENT truncation is what the fail-loud rule names.
+//
+// The ceiling bounds ONE read. It is not a budget over repeated reads,
+// and the governance layer's cost ceilings and rate limits remain the
+// mechanism for aggregate consumption — saying otherwise would claim a
+// property the knob does not have.
+//
+// # Cost
+//
+// A window is a CONTRACT, not a cost claim. ArtifactStore.Get returns
+// whole bytes and every driver materialises the blob, so reading at an
+// offset costs a full materialisation. A range-aware store method is a
+// separate five-driver conformance change; no claim about which drivers
+// serve a window incrementally is made here or in the interface godoc.
+func (s *ArtifactsSurface) handleGet(ctx context.Context, req *types.ArtifactsGetRequest) (any, error) {
+	m := string(methods.MethodArtifactsGet)
+
+	scope := artifacts.ArtifactScope{
+		TenantID:  req.Scope.Tenant,
+		UserID:    req.Scope.User,
+		SessionID: req.Scope.Session,
+		TaskID:    req.Scope.Task,
+	}
+	if err := scope.Validate(); err != nil {
+		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: identity scope incomplete: %v", m, err)
+	}
+	if req.ID == "" {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: artifact id is required", m)
+	}
+	// A negative offset or bound is not an omission — a caller that meant
+	// "from the end" or "no limit" is asking for something this method
+	// does not offer, and reinterpreting it would be a guess.
+	if req.Offset < 0 {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: offset %d must not be negative", m, req.Offset)
+	}
+	if req.MaxBytes < 0 {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: max_bytes %d must not be negative", m, req.MaxBytes)
+	}
+
+	// Tenant reconciliation, BEFORE the store read so a driver is never
+	// consulted for another tenant's scope. No scope claim widens this
+	// method (see the godoc above).
+	if verified, ok := identity.FromVerified(ctx); ok {
+		if req.Scope.Tenant != verified.TenantID {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: scope tenant does not match the verified identity", m)
+		}
+	}
+
+	ref, found, err := s.store.GetRef(ctx, scope, req.ID)
+	if err != nil {
+		return nil, mapArtifactsError(m, err)
+	}
+	if !found || ref == nil {
+		// A ref outside the caller's triple and a ref that never existed
+		// answer identically. The store does not distinguish them, and
+		// neither does this: a distinguishable refusal would confirm the
+		// existence of another identity's artifact to a caller that
+		// cannot read it.
+		return nil, protoerrors.Newf(protoerrors.CodeNotFound,
+			"method %q: artifact %q not found in scope", m, req.ID)
+	}
+
+	blob, found, err := s.store.Get(ctx, scope, req.ID)
+	if err != nil {
+		return nil, mapArtifactsError(m, err)
+	}
+	if !found {
+		// GetRef resolved and Get did not — a concurrent Delete, or a
+		// driver inconsistency. Same shape as the unknown-ref case: the
+		// caller cannot act on the difference.
+		return nil, protoerrors.Newf(protoerrors.CodeNotFound,
+			"method %q: artifact %q not found in scope", m, req.ID)
+	}
+
+	window, truncated := boundedWindow(blob, req.Offset, s.effectiveMaxBytes(req.MaxBytes))
+	return &types.ArtifactsGetResponse{
+		Ref:             projectRef(*ref),
+		Content:         window,
+		Offset:          req.Offset,
+		ReturnedBytes:   int64(len(window)),
+		TotalSizeBytes:  int64(len(blob)),
+		Truncated:       truncated,
+		ProtocolVersion: types.ProtocolVersion,
+	}, nil
+}
+
+// effectiveMaxBytes resolves the window length one read may return:
+// the caller's own bound, the operator's default when the caller named
+// none, and never more than the operator's hard ceiling.
+//
+// The clamp is applied here and REPORTED by the caller through the same
+// Truncated / TotalSizeBytes fields every other bound uses, so no branch
+// of this function can shorten a response silently.
+func (s *ArtifactsSurface) effectiveMaxBytes(requested int64) int64 {
+	if requested <= 0 {
+		requested = s.fetchDefaultMaxBytes
+	}
+	if requested > s.fetchHardMaxBytes {
+		return s.fetchHardMaxBytes
+	}
+	return requested
+}
+
+// boundedWindow returns blob[offset : offset+maxBytes] (clipped to the
+// blob) and whether bytes remain AFTER the returned window.
+//
+// An offset at or beyond the blob is not an error: the window is empty
+// and nothing follows it, so truncated is false. The returned slice is a
+// COPY — the response outlives the driver's buffer, and an in-memory
+// driver hands back a slice a caller must not be able to alias.
+func boundedWindow(blob []byte, offset, maxBytes int64) (window []byte, truncated bool) {
+	total := int64(len(blob))
+	if offset >= total {
+		return nil, false
+	}
+	end := offset + maxBytes
+	if end > total {
+		end = total
+	}
+	out := make([]byte, end-offset)
+	copy(out, blob[offset:end])
+	return out, end < total
 }
 
 // handleGetRef serves artifacts.get_ref. It validates identity, refuses

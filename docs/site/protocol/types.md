@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 337 canonical Harbor Protocol wire types, generated from the single-source
+The 339 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -1355,6 +1355,31 @@ Declared in `internal/protocol/types`.
 | `ref` | `types.ArtifactRef` — see [`ArtifactRef`](./types.md#artifactref) |  |
 | `presigned_url` | `string` |  |
 | `expires_at` | `time.Time` |  |
+| `protocol_version` | `string` |  |
+
+## ArtifactsGetRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `scope` | `types.ArtifactScope` — see [`ArtifactScope`](./types.md#artifactscope) |  |
+| `id` | `string` |  |
+| `offset` | `int64` | optional (`omitempty`) |
+| `max_bytes` | `int64` | optional (`omitempty`) |
+
+## ArtifactsGetResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `ref` | `types.ArtifactRef` — see [`ArtifactRef`](./types.md#artifactref) |  |
+| `content` | `[]uint8` | optional (`omitempty`) |
+| `offset` | `int64` |  |
+| `returned_bytes` | `int64` |  |
+| `total_size_bytes` | `int64` |  |
+| `truncated` | `bool` |  |
 | `protocol_version` | `string` |  |
 
 ## ArtifactsListRequest

@@ -117,12 +117,14 @@ func newArtifactsStack(t *testing.T, artStore artifacts.ArtifactStore) artifacts
 		driverName = "s3-stub"
 	}
 	artifactsSurface, err := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
-		Store:        artStore,
-		Redactor:     red,
-		Bus:          bus,
-		Clock:        time.Now,
-		DriverName:   driverName,
-		MaxBodyBytes: 1 << 20,
+		Store:                artStore,
+		Redactor:             red,
+		Bus:                  bus,
+		Clock:                time.Now,
+		DriverName:           driverName,
+		MaxBodyBytes:         1 << 20,
+		FetchDefaultMaxBytes: config.DefaultArtifactFetchMaxBytes,
+		FetchHardMaxBytes:    config.DefaultArtifactFetchHardMaxBytes,
 	})
 	if err != nil {
 		_ = taskReg.Close(ctx)

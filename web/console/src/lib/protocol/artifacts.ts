@@ -105,6 +105,51 @@ export interface ArtifactsPutResponse {
   protocol_version: string;
 }
 
+/**
+ * The `artifacts.get` request — the driver-independent byte read.
+ *
+ * Mirrors `internal/protocol/types.ArtifactsGetRequest`. This is the
+ * CONTRACT read: it resolves through `ArtifactStore.Get`, so every
+ * registered driver serves it (the `inmem` default included), unlike
+ * `artifacts.get_ref`, which rests on the optional presign capability
+ * exactly one driver implements.
+ *
+ * `offset` is a BYTE index, not a line or row index — a window may begin
+ * and end mid-line and the caller splits the text itself.
+ */
+export interface ArtifactsGetRequest {
+  scope: ArtifactScope;
+  id: string;
+  /** Zero-based byte index the window starts at. Omit to read from 0. */
+  offset?: number;
+  /**
+   * Window length bound. Omit to take the deployment's configured
+   * default; a value above its ceiling is SERVED at the ceiling and
+   * reported through `truncated` — it is not an error.
+   */
+  max_bytes?: number;
+}
+
+/**
+ * The `artifacts.get` response — the requested window plus a truthful
+ * account of the bound that produced it.
+ *
+ * One field set answers every bound (the caller's `max_bytes`, the
+ * deployment's default, the deployment's ceiling), so a bounded read is
+ * never mistakable for a complete one. Read on by re-requesting at
+ * `offset + returned_bytes` while `truncated` is true.
+ */
+export interface ArtifactsGetResponse {
+  ref: ArtifactRef;
+  /** Base64-encoded window bytes (Go `[]byte` JSON encoding). */
+  content?: string;
+  offset: number;
+  returned_bytes: number;
+  total_size_bytes: number;
+  truncated: boolean;
+  protocol_version: string;
+}
+
 /** The `artifacts.get_ref` request — the read-side presigned-URL resolver. */
 export interface ArtifactsGetRefRequest {
   scope: ArtifactScope;

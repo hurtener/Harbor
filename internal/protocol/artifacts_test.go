@@ -76,12 +76,14 @@ func newInMemStore(t *testing.T) artifacts.ArtifactStore {
 func newArtifactsSurface(t *testing.T, store artifacts.ArtifactStore, driverName string) *protocol.ArtifactsSurface {
 	t.Helper()
 	s, err := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
-		Store:        store,
-		Redactor:     patterns.New(),
-		Bus:          newArtifactsBus(t),
-		Clock:        artifactsTestClock,
-		DriverName:   driverName,
-		MaxBodyBytes: 1 << 20,
+		Store:                store,
+		Redactor:             patterns.New(),
+		Bus:                  newArtifactsBus(t),
+		Clock:                artifactsTestClock,
+		DriverName:           driverName,
+		MaxBodyBytes:         1 << 20,
+		FetchDefaultMaxBytes: config.DefaultArtifactFetchMaxBytes,
+		FetchHardMaxBytes:    config.DefaultArtifactFetchHardMaxBytes,
 	})
 	if err != nil {
 		t.Fatalf("NewArtifactsSurface: %v", err)
@@ -331,12 +333,14 @@ func TestArtifactsPutHandler_RejectsOversizeBody(t *testing.T) {
 	t.Parallel()
 	store := newInMemStore(t)
 	s, err := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
-		Store:        store,
-		Redactor:     patterns.New(),
-		Bus:          newArtifactsBus(t),
-		Clock:        artifactsTestClock,
-		DriverName:   "inmem",
-		MaxBodyBytes: 16,
+		Store:                store,
+		Redactor:             patterns.New(),
+		Bus:                  newArtifactsBus(t),
+		Clock:                artifactsTestClock,
+		DriverName:           "inmem",
+		MaxBodyBytes:         16,
+		FetchDefaultMaxBytes: config.DefaultArtifactFetchMaxBytes,
+		FetchHardMaxBytes:    config.DefaultArtifactFetchHardMaxBytes,
 	})
 	if err != nil {
 		t.Fatalf("NewArtifactsSurface: %v", err)
@@ -358,12 +362,14 @@ func TestArtifactsPutHandler_EmitsArtifactUploaded(t *testing.T) {
 	store := newInMemStore(t)
 	bus := newArtifactsBus(t)
 	s, err := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
-		Store:        store,
-		Redactor:     patterns.New(),
-		Bus:          bus,
-		Clock:        artifactsTestClock,
-		DriverName:   "inmem",
-		MaxBodyBytes: 1 << 20,
+		Store:                store,
+		Redactor:             patterns.New(),
+		Bus:                  bus,
+		Clock:                artifactsTestClock,
+		DriverName:           "inmem",
+		MaxBodyBytes:         1 << 20,
+		FetchDefaultMaxBytes: config.DefaultArtifactFetchMaxBytes,
+		FetchHardMaxBytes:    config.DefaultArtifactFetchHardMaxBytes,
 	})
 	if err != nil {
 		t.Fatalf("NewArtifactsSurface: %v", err)

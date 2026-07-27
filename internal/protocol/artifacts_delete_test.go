@@ -7,6 +7,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
@@ -24,12 +25,14 @@ func deleteHarness(t *testing.T) (*protocol.ArtifactsSurface, artifacts.Artifact
 	store := newInMemStore(t)
 	bus := newArtifactsBus(t)
 	s, err := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
-		Store:        store,
-		Redactor:     patterns.New(),
-		Bus:          bus,
-		Clock:        artifactsTestClock,
-		DriverName:   "inmem",
-		MaxBodyBytes: 1 << 20,
+		Store:                store,
+		Redactor:             patterns.New(),
+		Bus:                  bus,
+		Clock:                artifactsTestClock,
+		DriverName:           "inmem",
+		MaxBodyBytes:         1 << 20,
+		FetchDefaultMaxBytes: config.DefaultArtifactFetchMaxBytes,
+		FetchHardMaxBytes:    config.DefaultArtifactFetchHardMaxBytes,
 	})
 	if err != nil {
 		t.Fatalf("NewArtifactsSurface: %v", err)

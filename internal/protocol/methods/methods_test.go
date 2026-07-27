@@ -43,6 +43,7 @@ var wantMethods = []methods.Method{
 	methods.MethodTopologySnapshot,
 	methods.MethodArtifactsList,
 	methods.MethodArtifactsPut,
+	methods.MethodArtifactsGet,
 	methods.MethodArtifactsGetRef,
 	methods.MethodArtifactsDelete,
 	methods.MethodMemoryList,
@@ -176,9 +177,13 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// + agent-config inference-provider install one
 	// (agent_config.set_llm_provider, D-334) = 118,
 	// + durable-per-user skills three (agent_config.user.skills.{list,upsert,
-	// delete}, CLAIM-FREE, D-345) = 121.
-	if len(got) != 121 {
-		t.Fatalf("Methods() returned %d methods, want 121", len(got))
+	// delete}, CLAIM-FREE, D-345) = 121,
+	// + the driver-independent artifact byte read one (artifacts.get,
+	// which every registered driver serves because it resolves through
+	// the mandatory store Get rather than the optional presign
+	// capability) = 122.
+	if len(got) != 122 {
+		t.Fatalf("Methods() returned %d methods, want 122", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -239,6 +244,7 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodTopologySnapshot:    "topology.snapshot",
 		methods.MethodArtifactsList:       "artifacts.list",
 		methods.MethodArtifactsPut:        "artifacts.put",
+		methods.MethodArtifactsGet:        "artifacts.get",
 		methods.MethodArtifactsGetRef:     "artifacts.get_ref",
 		methods.MethodArtifactsDelete:     "artifacts.delete",
 		methods.MethodMemoryList:          "memory.list",
@@ -337,7 +343,8 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	// Phase 73l (D-120): the three artifacts methods route through the
 	// ArtifactsSurface, NOT the steering inbox.
 	for _, m := range []methods.Method{
-		methods.MethodArtifactsList, methods.MethodArtifactsPut, methods.MethodArtifactsGetRef, methods.MethodArtifactsDelete,
+		methods.MethodArtifactsList, methods.MethodArtifactsPut, methods.MethodArtifactsGet,
+		methods.MethodArtifactsGetRef, methods.MethodArtifactsDelete,
 	} {
 		if methods.IsControlMethod(m) {
 			t.Errorf("IsControlMethod(%q) = true, want false — artifacts methods route through the ArtifactsSurface", m)

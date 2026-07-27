@@ -353,6 +353,27 @@ artifacts:
   # mandatorily routed through the ArtifactStore (D-022, RFC §6.10).
   # Default 32 KB. Per-tool overrides land at Phase 26.
   heavy_output_threshold_bytes: 32768
+  # The read-back bound. `heavy_output_threshold_bytes` above governs
+  # what GOES OUT to the store; these two govern what COMES BACK, and
+  # they are meant to be tuned as the pair they are. Both the
+  # `artifacts.get` Protocol method and the `artifact_fetch` builtin the
+  # model calls answer to them.
+  #   fetch_default_max_bytes — the window served when the caller names
+  #                             no bound of its own. Default 64 KiB.
+  #   fetch_hard_max_bytes    — the ceiling a caller's own bound is
+  #                             clamped to. Default 1 MiB.
+  # A request above the ceiling is SERVED AT THE CEILING and reports it
+  # through the response's `truncated` / `total_size_bytes` /
+  # `returned_bytes` fields — deliberately not a refusal, because a
+  # caller cannot know a deployment's ceiling before asking. Truthful
+  # truncation is the posture; silent truncation is what the fail-loud
+  # rule forbids.
+  # The guarantee is bounded and says so: the ceiling bounds ONE read.
+  # It is NOT a budget over repeated reads — the governance layer's cost
+  # ceilings and rate limits remain the mechanism for aggregate
+  # consumption.
+  fetch_default_max_bytes: 65536
+  fetch_hard_max_bytes: 1048576
   # S3-style driver fields (Phase 19). Required when driver=s3:
   #   s3_bucket — the bucket; the driver does NOT create it (operator
   #               provisions out of band). HeadBucket runs at boot to

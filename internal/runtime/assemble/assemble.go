@@ -810,6 +810,11 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 		Bus:           stack.Bus,
 		Redactor:      stack.Redactor,
 		GrantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...),
+		// The artifact read-back bound: the same operator policy the
+		// Protocol's byte read serves under, so the LLM-facing tool and
+		// the wire surface answer to one ceiling rather than two.
+		ArtifactFetchDefaultMaxBytes: cfg.Artifacts.ResolvedFetchDefaultMaxBytes(),
+		ArtifactFetchHardMaxBytes:    cfg.Artifacts.ResolvedFetchHardMaxBytes(),
 	}, cfg.Tools.BuiltIn); err != nil {
 		return fmt.Errorf("tools/builtin: %w", err)
 	}

@@ -543,6 +543,12 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			Clock:        time.Now,
 			DriverName:   artDriverName,
 			MaxBodyBytes: cfg.Protocol.ResolvedMaxRequestBytes(),
+			// The read-back bound is the operator's, resolved here so a
+			// configuration written before the keys existed gets the
+			// documented defaults rather than a zero the surface would
+			// have to reinterpret.
+			FetchDefaultMaxBytes: cfg.Artifacts.ResolvedFetchDefaultMaxBytes(),
+			FetchHardMaxBytes:    cfg.Artifacts.ResolvedFetchHardMaxBytes(),
 		})
 		if asErr != nil {
 			return nil, wrapErr("protocol artifacts surface", asErr)
