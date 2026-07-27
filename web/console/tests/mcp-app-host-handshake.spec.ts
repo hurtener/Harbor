@@ -199,7 +199,14 @@ test.describe('MCP Apps host↔app handshake (D-342 regression gate)', () => {
             result: { content: { revenue: 1234 } },
             isError: false,
           }),
-          fetchArtifactText: async () => '{}',
+          // The HEAVY half's bytes. The `toolContext` option below delivers its
+          // RESULT by reference, so this is the read the host performs at the
+          // iframe edge — and the delivery assertion reads `structuredContent`
+          // off the REAL App, which is exactly the field that branch used to
+          // omit (D-347 consumer 1's second §17.6 rider). A hand fixture could
+          // not tell "delivered the field" from "the App ignored it"; the
+          // vendored client either surfaces it on `ontoolresult` or it does not.
+          fetchArtifactText: async () => '{"revenue":1234}',
         };
         const host = new w.HarborHost.AppBridgeHost({
           client,
@@ -214,7 +221,12 @@ test.describe('MCP Apps host↔app handshake (D-342 regression gate)', () => {
           toolContext: {
             tool: 'srv_report',
             input: { content: { region: 'emea' } },
-            result: { content: { revenue: 1234 } },
+            // BY REFERENCE on purpose — the branch that reaches an App with a
+            // real (heavy) payload, and the one that used to arrive as bare
+            // text with `structuredContent` unset. The host reads the bytes
+            // through the injected `fetchArtifactText` above; the assertion
+            // below reads the field back off the REAL App client.
+            result: { artifactRef: { id: 'art_heavy_result', sizeBytes: 90_000 } },
             isError: false,
           },
           theme: 'dark',

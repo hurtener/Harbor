@@ -182,6 +182,33 @@ export class MCPAppToolNotFoundError extends Error {
   }
 }
 
+/**
+ * The typed failure a by-reference payload half raises when its bytes cannot be
+ * read — the host asked the injected client for the artifact's text and did not
+ * get it (the read failed, or the bytes were not the payload they were promised
+ * to be).
+ *
+ * It exists for the same reason {@link MCPAppToolNotFoundError} does: a caller
+ * must be able to tell WHICH thing went wrong. Before it, the input path
+ * collapsed every failure into an empty argument map, which asserts a different
+ * fact — "the tool ran with no arguments" — and is indistinguishable from the
+ * genuinely-absent case (CLAUDE.md §13, no silent degradation). Each call site
+ * decides what to tell the app; none of them may claim there was nothing there.
+ */
+export class MCPAppArtifactUnavailableError extends Error {
+  /** The artifact id whose bytes could not be delivered. */
+  readonly artifactID: string;
+  /** The stub's reported size, when the payload carried one. */
+  readonly sizeBytes: number | undefined;
+
+  constructor(artifactID: string, sizeBytes: number | undefined, cause: unknown) {
+    super(`artifact ${JSON.stringify(artifactID)} could not be read`, { cause });
+    this.name = 'MCPAppArtifactUnavailableError';
+    this.artifactID = artifactID;
+    this.sizeBytes = sizeBytes;
+  }
+}
+
 /** One advertised tool (mirrors a row of the tool catalog). */
 export interface MCPAppToolListing {
   name: string;
@@ -298,15 +325,22 @@ export interface MCPAppHostClient {
    */
   toolContext(serverID: string, toolCallID: string): Promise<MCPAppToolContext | null>;
   /**
-   * Resolve an artifact id to a presigned URL and fetch its bytes as text —
-   * the heavy-payload path for {@link toolContext}. A captured input / result
-   * at or above the heavy threshold (D-026) rides by reference; the host
-   * fetches the bytes here (implemented in the adapter so this module never
-   * issues a raw `fetch` — the no-direct-transport invariant, D-173). The
-   * fetched text is the tool payload's JSON, parsed/delivered by the host.
-   * Throws when the bytes cannot be resolved or fetched (e.g. presign
-   * unsupported on a non-S3 store) — the host then delivers a faithful
-   * by-reference stub rather than silently empty data (fail-loud).
+   * Read an artifact's bytes and return them as text — the heavy-payload path
+   * for {@link toolContext} and for a heavy app-initiated `tools/call` result.
+   * A payload at or above the heavy threshold (D-026) rides by reference; the
+   * host reads the bytes here (implemented in the adapter so this module never
+   * issues a raw `fetch` — the no-direct-transport invariant, D-173). The text
+   * is the tool payload's JSON, parsed/delivered by the host.
+   *
+   * The implementation MUST reach the bytes on ANY artifact store, not only a
+   * presigning one: the Console adapter routes it through `artifacts.get`, the
+   * driver-independent byte read (D-353). Implementing it over the optional
+   * presign capability instead makes every heavy payload unreadable on four of
+   * five drivers, the default included — the gap this contract exists to state.
+   *
+   * Throws when the bytes cannot be read. Callers surface that as a faithful
+   * notice naming the artifact; NONE of them may report it as absent data
+   * (fail-loud, CLAUDE.md §13).
    */
   fetchArtifactText(artifactID: string): Promise<string>;
 }
@@ -549,20 +583,35 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
         }
         throw err;
       }
-      const blocks: CallToolResult['content'] = [];
       if (result.artifactRef) {
-        // Heavy result rides by reference (D-026) — surface the stub, never
-        // silently inline (fail loudly).
-        blocks.push({
-          type: 'text',
-          text: `[artifact ${result.artifactRef.id}${
-            result.artifactRef.sizeBytes ? ` · ${result.artifactRef.sizeBytes} bytes` : ''
-          }]`,
-        });
-      } else {
-        blocks.push({ type: 'text', text: stringifyContent(result.content) });
+        // A heavy result rides by reference (D-026). READ IT: this used to push
+        // a bare `[artifact <id> · <n> bytes]` block and return, so an app that
+        // called its own tool and got a large answer received prose ABOUT its
+        // data instead of the data, with `structuredContent` unset. The read is
+        // driver-independent (D-353), so it answers on the default store.
+        const ref = result.artifactRef;
+        let text: string;
+        try {
+          text = await fetchArtifactPayload(client, ref);
+        } catch (err) {
+          if (!(err instanceof MCPAppArtifactUnavailableError)) throw err;
+          console.error('MCP App heavy tools/call result could not be read', err);
+          return {
+            content: [{ type: 'text', text: unavailableArtifactNotice(ref) }],
+            isError: result.isError,
+          };
+        }
+        const payload = parsePayloadText(text);
+        return {
+          content: [{ type: 'text', text: stringifyContent(payload) }],
+          structuredContent: asStructured(payload),
+          isError: result.isError,
+        };
       }
-      const out: CallToolResult = { content: blocks, isError: result.isError };
+      const out: CallToolResult = {
+        content: [{ type: 'text', text: stringifyContent(result.content) }],
+        isError: result.isError,
+      };
       if (result.content !== undefined && result.content !== null) {
         out.structuredContent = asStructured(result.content);
       }
@@ -646,6 +695,52 @@ function asStructured(content: unknown): Record<string, unknown> {
     return content as Record<string, unknown>;
   }
   return { value: content };
+}
+
+/**
+ * Read a by-reference payload half's bytes through the INJECTED client, raising
+ * the typed {@link MCPAppArtifactUnavailableError} on any failure.
+ *
+ * Every heavy-payload site funnels through here so the three of them cannot
+ * drift into three different ideas of what an unreadable artifact means, and so
+ * each of them branches on a TYPE rather than on whatever the client threw.
+ */
+async function fetchArtifactPayload(
+  client: MCPAppHostClient,
+  ref: { id: string; sizeBytes?: number },
+): Promise<string> {
+  try {
+    return await client.fetchArtifactText(ref.id);
+  } catch (err) {
+    throw new MCPAppArtifactUnavailableError(ref.id, ref.sizeBytes, err);
+  }
+}
+
+/**
+ * Interpret a heavy payload's bytes the way the inline path's `content` already
+ * arrives: parsed JSON when they are JSON, the raw string when they are not.
+ *
+ * The fallback is not a swallowed failure — a payload that is not JSON IS a
+ * string payload, and `content: "..."` is exactly what the inline branch would
+ * carry for one. It keeps the two branches representing one payload identically
+ * instead of letting SIZE decide the shape an app receives.
+ */
+function parsePayloadText(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * The faithful notice delivered in place of a heavy payload whose bytes could
+ * not be read: it names the artifact and its size rather than rendering as
+ * empty or absent data (fail-loud, CLAUDE.md §13).
+ */
+function unavailableArtifactNotice(ref: { id: string; sizeBytes?: number }): string {
+  const size = ref.sizeBytes ? ` · ${ref.sizeBytes} bytes` : '';
+  return `[artifact ${ref.id}${size} — could not be read]`;
 }
 
 /**
@@ -874,9 +969,27 @@ export class AppBridgeHost {
       // for a bridge that no longer exists, not a real failure. Bail silently
       // instead; the replacement bridge runs its own delivery on its own
       // `oninitialized`.
-      const args = await this.#payloadToArgs(ctx.input);
+      let args: Record<string, unknown> | undefined;
+      try {
+        args = await this.#payloadToArgs(ctx.input);
+      } catch (err) {
+        if (!(err instanceof MCPAppArtifactUnavailableError)) throw err;
+        // The input's bytes could not be read. The `ui/notifications/tool-input`
+        // params make `arguments` OPTIONAL, and sending it empty would state
+        // that the tool ran with none — a claim the host cannot make. So the
+        // notification is WITHHELD and the failure is reported loudly here,
+        // while the result delivery below proceeds: the result is the half an
+        // app most needs, and losing the input must not cost it that too.
+        console.error(
+          'MCP App tool-input artifact could not be read; withholding the tool-input ' +
+            'notification rather than reporting an empty argument map',
+          err,
+        );
+      }
       if (!this.#connected || !this.#initialized) return;
-      await this.#bridge.sendToolInput({ arguments: args });
+      if (args !== undefined) {
+        await this.#bridge.sendToolInput({ arguments: args });
+      }
       const result = await this.#payloadToResult(ctx.result, ctx.isError);
       if (!this.#connected || !this.#initialized) return;
       await this.#bridge.sendToolResult(result);
@@ -890,22 +1003,29 @@ export class AppBridgeHost {
 
   /**
    * Build the `sendToolInput` arguments from a captured input payload. Inline
-   * content is coerced to a record; a heavy by-reference payload is fetched +
-   * JSON-parsed at the iframe edge (the bytes are the input JSON). A fetch /
-   * parse failure degrades to `{}` — tool input is advisory pre-render data,
-   * not the result, so an empty argument map is a faithful "no input" rather
-   * than a thrown error.
+   * content is coerced to a record; a heavy by-reference payload is read +
+   * JSON-parsed at the iframe edge (the bytes are the input JSON).
+   *
+   * An unreadable by-reference input RAISES {@link MCPAppArtifactUnavailableError}
+   * rather than degrading to `{}`. It used to swallow the failure into an empty
+   * map, whose JSDoc called that "a faithful 'no input'" — but "the read failed"
+   * and "the tool ran with no arguments" are different facts, and the empty map
+   * asserts the second one (CLAUDE.md §13). `{}` is now returned by exactly one
+   * branch: the one where the capture genuinely holds no input.
    */
   async #payloadToArgs(p: MCPAppToolContextPayload): Promise<Record<string, unknown>> {
     if (p.content !== undefined) {
       return asStructured(p.content);
     }
     if (p.artifactRef) {
+      const ref = p.artifactRef;
+      const text = await fetchArtifactPayload(this.#client, ref);
       try {
-        const text = await this.#client.fetchArtifactText(p.artifactRef.id);
-        return asStructured(JSON.parse(text));
-      } catch {
-        return {};
+        return asStructured(JSON.parse(text) as unknown);
+      } catch (err) {
+        // The bytes arrived but are not the input JSON they were promised to
+        // be. Same verdict, same type: the app is not told there was no input.
+        throw new MCPAppArtifactUnavailableError(ref.id, ref.sizeBytes, err);
       }
     }
     return {};
@@ -913,11 +1033,19 @@ export class AppBridgeHost {
 
   /**
    * Build the `sendToolResult` `CallToolResult` from a captured result payload.
-   * Inline content becomes a text block plus `structuredContent`; a heavy
-   * by-reference result is resolved + fetched at the iframe edge and delivered
-   * as a text block. When the heavy bytes cannot be fetched (e.g. presign
-   * unsupported on a non-S3 store), the host delivers a FAITHFUL by-reference
-   * stub block — never silently empty (fail-loud).
+   *
+   * BOTH delivering branches carry the same field set — a text block AND
+   * `structuredContent`. The by-reference branch used to omit
+   * `structuredContent`, so one and the same tool result reached an app as
+   * structured data or as bare text depending only on its SIZE, and an app
+   * rendering off `structuredContent` (the normal case for a rich view) got
+   * nothing the moment its data crossed the heavy threshold.
+   *
+   * When the heavy bytes cannot be read, the host delivers a FAITHFUL notice
+   * block naming the artifact — never silently empty (fail-loud), and
+   * deliberately WITHOUT `structuredContent`, so its absence keeps meaning
+   * "there is no data here" rather than becoming a shape an app must
+   * distinguish from real data.
    */
   async #payloadToResult(
     p: MCPAppToolContextPayload,
@@ -931,22 +1059,24 @@ export class AppBridgeHost {
       };
     }
     if (p.artifactRef) {
+      const ref = p.artifactRef;
+      let text: string;
       try {
-        const text = await this.#client.fetchArtifactText(p.artifactRef.id);
-        return { content: [{ type: 'text', text }], isError };
-      } catch {
-        const ref = p.artifactRef;
-        const size = ref.sizeBytes ? ` · ${ref.sizeBytes} bytes` : '';
+        text = await fetchArtifactPayload(this.#client, ref);
+      } catch (err) {
+        if (!(err instanceof MCPAppArtifactUnavailableError)) throw err;
+        console.error('MCP App heavy tool result could not be read', err);
         return {
-          content: [
-            {
-              type: 'text',
-              text: `[artifact ${ref.id}${size} — unavailable on this store]`,
-            },
-          ],
+          content: [{ type: 'text', text: unavailableArtifactNotice(ref) }],
           isError,
         };
       }
+      const payload = parsePayloadText(text);
+      return {
+        content: [{ type: 'text', text: stringifyContent(payload) }],
+        structuredContent: asStructured(payload),
+        isError,
+      };
     }
     return { content: [{ type: 'text', text: '' }], isError };
   }
