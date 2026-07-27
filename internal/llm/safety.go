@@ -305,9 +305,10 @@ func validateContent(c Content) error {
 // size) to publish the event. Returns ok=false when the request is
 // clean.
 //
-// Order: messages → content text → multimodal parts. Text-mode
-// content checks the message-level Text field; multimodal checks
-// per-part Text + each part's DataURL.
+// Order: messages → content text → multimodal parts → tool-call
+// arguments. Text-mode content checks the message-level Text field;
+// multimodal checks per-part Text + each part's DataURL; the tool-call
+// pass checks each entry's raw `Args`.
 //
 // Scope: the byte heavy-content check governs OFFLOADABLE content —
 // content the runtime is expected to have routed to an ArtifactStub
@@ -317,6 +318,15 @@ func validateContent(c Content) error {
 //     observations, which the ObservationRenderer offloads when heavy.
 //   - Binary `DataURL` parts (Image / Audio / File) of ANY role —
 //     auto-materialized to ArtifactRef above the threshold.
+//   - `ToolCalls[].Args` — the tool-call ARGUMENTS the prompt builder
+//     replays turn over turn and the provider drivers map onto the
+//     wire. Machine-authored, tool-shaped, and offloadable through the
+//     same ArtifactStub path a tool RESULT takes, so it sits on the
+//     offloadable side of the line next to `RoleTool` text rather than
+//     on the exempt conversation-text side. A tool call whose arguments
+//     legitimately exceed the threshold is the same bug this check
+//     names everywhere else: a producer that should have passed a
+//     reference.
 //
 // Plain conversation text on `RoleSystem` / `RoleUser` / `RoleAssistant`
 // messages (Content.Text and PartText, including an injected rolling
@@ -363,6 +373,20 @@ func findContextLeak(req CompleteRequest, threshold int) (site string, size int,
 				if p.File != nil && len(p.File.DataURL) >= threshold {
 					return fmt.Sprintf("Messages[%d].Parts[%d].File.DataURL", mi, pi), len(p.File.DataURL), true
 				}
+			}
+		}
+		// Tool-call arguments. This is the one field on the outbound
+		// request that can carry offloadable content to a provider
+		// without passing through Content: the prompt builder copies a
+		// trajectory step's args into it on every replayed turn, and the
+		// driver translators map it straight onto the provider's
+		// tool_calls block. Not walking it would leave the runtime's one
+		// arrival-side guarantee resting on the claim that nothing ever
+		// puts heavy content there — which restates the invariant
+		// instead of checking it.
+		for ci, tc := range m.ToolCalls {
+			if len(tc.Args) >= threshold {
+				return fmt.Sprintf("Messages[%d].ToolCalls[%d].Args", mi, ci), len(tc.Args), true
 			}
 		}
 	}

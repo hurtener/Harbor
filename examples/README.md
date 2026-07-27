@@ -18,7 +18,8 @@ examples/
 ├── agents/
 │   └── echo/              worked harbortest.Agent + test
 └── tools/
-    └── weather/           worked in-process tool registration + test
+    ├── weather/           worked in-process tool registration + test
+    └── artifactstats/     worked pass-by-reference tool parameter + test
 ```
 
 ## Example configs
@@ -59,6 +60,17 @@ Harbor in-process tool via `inproc.RegisterFunc`. The driver derives
 JSON Schemas from the typed input/output structs and wraps the
 function in the `ToolPolicy` reliability shell. The test shows the
 full register → resolve → invoke round-trip.
+
+[`tools/artifactstats/`](tools/artifactstats/) — takes content BY
+REFERENCE. It declares a field of type `sdk/tools.ArtifactRef`, so the
+derived schema shows the model a plain artifact-id string; the runtime
+resolves the id at dispatch, under the run's own
+`(tenant, user, session)`, and hands the function the stored bytes. The
+tool returns only measurements of the content, never the content — the
+bytes enter the process and do not leave it, and the resolved value
+never reaches the trajectory, an event payload or a log. Use this shape
+whenever a tool needs to read something too large to route through a
+model's context.
 
 ## Running the examples
 
