@@ -366,7 +366,7 @@ func (d *driver) PutBytes(ctx context.Context, scope artifacts.ArtifactScope, da
             (tenant, user, session, task, namespace, id,
              mime_type, size_bytes, filename, sha256, source_json, bytes)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(tenant, user, session, task, namespace, id) DO NOTHING`
+        ON CONFLICT(tenant, user, session, namespace, id) DO NOTHING`
 	if _, err := tx.ExecContext(ctx, insert,
 		scope.TenantID,
 		scope.UserID,
@@ -412,7 +412,8 @@ func (d *driver) PutText(ctx context.Context, scope artifacts.ArtifactScope, tex
 	return d.PutBytes(ctx, scope, []byte(text), opts)
 }
 
-// Get implements artifacts.ArtifactStore. Found-false is NOT an error.
+// Get implements artifacts.ArtifactStore. Resolves on the isolation
+// triple; `scope.TaskID` is ignored. Found-false is NOT an error.
 func (d *driver) Get(ctx context.Context, scope artifacts.ArtifactScope, id string) ([]byte, bool, error) {
 	if d.closed.Load() {
 		return nil, false, artifacts.ErrStoreClosed
@@ -426,10 +427,10 @@ func (d *driver) Get(ctx context.Context, scope artifacts.ArtifactScope, id stri
 
 	const sel = `
         SELECT bytes FROM artifacts_blobs
-        WHERE tenant = ? AND user = ? AND session = ? AND task = ? AND id = ?
+        WHERE tenant = ? AND user = ? AND session = ? AND id = ?
         LIMIT 1`
 	row := d.db.QueryRowContext(ctx, sel,
-		scope.TenantID, scope.UserID, scope.SessionID, scope.TaskID, id)
+		scope.TenantID, scope.UserID, scope.SessionID, id)
 
 	var data []byte
 	if err := row.Scan(&data); err != nil {
@@ -441,8 +442,9 @@ func (d *driver) Get(ctx context.Context, scope artifacts.ArtifactScope, id stri
 	return data, true, nil
 }
 
-// GetRef implements artifacts.ArtifactStore. Found-false is NOT an
-// error.
+// GetRef implements artifacts.ArtifactStore. Resolves on the isolation
+// triple; the returned ref carries the stored provenance stamp.
+// Found-false is NOT an error.
 func (d *driver) GetRef(ctx context.Context, scope artifacts.ArtifactScope, id string) (*artifacts.ArtifactRef, bool, error) {
 	if d.closed.Load() {
 		return nil, false, artifacts.ErrStoreClosed
@@ -464,7 +466,8 @@ func (d *driver) GetRef(ctx context.Context, scope artifacts.ArtifactScope, id s
 	return &ref, true, nil
 }
 
-// Exists implements artifacts.ArtifactStore.
+// Exists implements artifacts.ArtifactStore. Resolves on the isolation
+// triple; `scope.TaskID` is ignored.
 func (d *driver) Exists(ctx context.Context, scope artifacts.ArtifactScope, id string) (bool, error) {
 	if d.closed.Load() {
 		return false, artifacts.ErrStoreClosed
@@ -478,10 +481,10 @@ func (d *driver) Exists(ctx context.Context, scope artifacts.ArtifactScope, id s
 
 	const sel = `
         SELECT 1 FROM artifacts_blobs
-        WHERE tenant = ? AND user = ? AND session = ? AND task = ? AND id = ?
+        WHERE tenant = ? AND user = ? AND session = ? AND id = ?
         LIMIT 1`
 	row := d.db.QueryRowContext(ctx, sel,
-		scope.TenantID, scope.UserID, scope.SessionID, scope.TaskID, id)
+		scope.TenantID, scope.UserID, scope.SessionID, id)
 	var one int
 	if err := row.Scan(&one); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -492,8 +495,10 @@ func (d *driver) Exists(ctx context.Context, scope artifacts.ArtifactScope, id s
 	return true, nil
 }
 
-// Delete implements artifacts.ArtifactStore. Idempotent — `DELETE`
-// against a missing row returns `(false, nil)`.
+// Delete implements artifacts.ArtifactStore. Resolves on the isolation
+// triple, so the `DELETE` removes the single row the primary key allows
+// under it. Idempotent — `DELETE` against a missing row returns
+// `(false, nil)`.
 func (d *driver) Delete(ctx context.Context, scope artifacts.ArtifactScope, id string) (bool, error) {
 	if d.closed.Load() {
 		return false, artifacts.ErrStoreClosed
@@ -507,9 +512,9 @@ func (d *driver) Delete(ctx context.Context, scope artifacts.ArtifactScope, id s
 
 	const del = `
         DELETE FROM artifacts_blobs
-        WHERE tenant = ? AND user = ? AND session = ? AND task = ? AND id = ?`
+        WHERE tenant = ? AND user = ? AND session = ? AND id = ?`
 	res, err := d.db.ExecContext(ctx, del,
-		scope.TenantID, scope.UserID, scope.SessionID, scope.TaskID, id)
+		scope.TenantID, scope.UserID, scope.SessionID, id)
 	if err != nil {
 		return false, fmt.Errorf("artifacts/sqlite: delete: %w", err)
 	}
@@ -520,8 +525,8 @@ func (d *driver) Delete(ctx context.Context, scope artifacts.ArtifactScope, id s
 	return n > 0, nil
 }
 
-// List implements artifacts.ArtifactStore. Empty fields in `filter`
-// are wildcards.
+// List implements artifacts.ArtifactStore. `filter.TenantID` is
+// required; every other empty field is a wildcard within that tenant.
 //
 // We construct the WHERE clause from the non-empty filter fields and
 // pass each value as a bound parameter — never concatenate values
@@ -529,6 +534,9 @@ func (d *driver) Delete(ctx context.Context, scope artifacts.ArtifactScope, id s
 func (d *driver) List(ctx context.Context, filter artifacts.ArtifactScope) ([]artifacts.ArtifactRef, error) {
 	if d.closed.Load() {
 		return nil, artifacts.ErrStoreClosed
+	}
+	if err := filter.ValidateFilter(); err != nil {
+		return nil, err
 	}
 
 	var (
@@ -637,16 +645,18 @@ func scanRefRow(s rowScanner) (artifacts.ArtifactRef, error) {
 	}, nil
 }
 
-// selectRef returns the ref at (scope, id) if present.
+// selectRef returns the ref at (triple, id) if present. The primary key
+// admits at most one row per triple + namespace + id, so the `LIMIT 1`
+// is a guard rather than a choice between candidates.
 func selectRef(ctx context.Context, db *sql.DB, scope artifacts.ArtifactScope, id string) (artifacts.ArtifactRef, bool, error) {
 	const sel = `
         SELECT tenant, user, session, task, namespace, id,
                mime_type, size_bytes, filename, sha256, source_json
         FROM artifacts_blobs
-        WHERE tenant = ? AND user = ? AND session = ? AND task = ? AND id = ?
+        WHERE tenant = ? AND user = ? AND session = ? AND id = ?
         LIMIT 1`
 	row := db.QueryRowContext(ctx, sel,
-		scope.TenantID, scope.UserID, scope.SessionID, scope.TaskID, id)
+		scope.TenantID, scope.UserID, scope.SessionID, id)
 	ref, err := scanRefRow(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -671,10 +681,10 @@ func selectRefTx(ctx context.Context, tx *sql.Tx, scope artifacts.ArtifactScope,
         SELECT tenant, user, session, task, namespace, id,
                mime_type, size_bytes, filename, sha256, source_json
         FROM artifacts_blobs
-        WHERE tenant = ? AND user = ? AND session = ? AND task = ? AND id = ?
+        WHERE tenant = ? AND user = ? AND session = ? AND id = ?
         LIMIT 1`
 	row := tx.QueryRowContext(ctx, sel,
-		scope.TenantID, scope.UserID, scope.SessionID, scope.TaskID, id)
+		scope.TenantID, scope.UserID, scope.SessionID, id)
 	ref, err := scanRefRow(row)
 	if err != nil {
 		var unwrap = err

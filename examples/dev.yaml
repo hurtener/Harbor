@@ -182,6 +182,16 @@ pauseresume:
 artifacts:
   driver: inmem
   heavy_output_threshold_bytes: 32768
+  # The read-back bound: the window an artifact read returns when the
+  # caller names none, and the ceiling a caller's own bound is clamped
+  # to. Both `artifacts.get` on the Protocol surface and the
+  # `artifact_fetch` builtin the model calls answer to these. A request
+  # above the ceiling is SERVED at the ceiling and says so through
+  # `truncated` / `total_size_bytes` / `returned_bytes` — never refused,
+  # never silently shortened. The ceiling bounds ONE read; aggregate
+  # consumption stays the governance layer's concern.
+  fetch_default_max_bytes: 65536
+  fetch_hard_max_bytes: 1048576
 
 tasks:
   driver: inprocess

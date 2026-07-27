@@ -1,0 +1,153 @@
+{
+  "__comment": [
+    "CAPTURED TRANSCRIPT — do not hand-edit (CLAUDE.md §17.8).",
+    "Recorded against a live `harbor dev --config examples/dev.yaml`, which boots the",
+    "DEFAULT `inmem` artifact driver: the payload below was POSTed to",
+    "/v1/control/artifacts.put and then paged back out through /v1/control/artifacts.get,",
+    "re-reading at each response's own `offset + returned_bytes` while `truncated` held.",
+    "`get_ref_refusal` is that same store's answer to /v1/control/artifacts.get_ref — the",
+    "asymmetry the byte path exists to close, and what makes the regression guard bite.",
+    "To re-capture: boot the dev server, replay those three calls, and paste the responses",
+    "verbatim. A hand-written substitute would encode our reading of the wire shape rather",
+    "than the Runtime's, which is precisely what this fixture must not do.",
+    "Replayed by src/lib/mcp-app-artifact-byte-path.spec.ts."
+  ],
+  "driver": "inmem",
+  "scope": {
+    "tenant": "dev",
+    "user": "dev",
+    "session": "dev"
+  },
+  "artifact": {
+    "id": "console-fixture_886d6ebe5a88",
+    "total_size_bytes": 863,
+    "text": "{\"region\":\"emea\",\"summary\":\"Ökonomische Übersicht — Q3 数据 ✅\",\"rows\":[{\"id\":\"row-0\",\"label\":\"Zeile 0 — Ünïcøde ✓\",\"value\":0},{\"id\":\"row-1\",\"label\":\"Zeile 1 — Ünïcøde ✓\",\"value\":1000},{\"id\":\"row-2\",\"label\":\"Zeile 2 — Ünïcøde ✓\",\"value\":2000},{\"id\":\"row-3\",\"label\":\"Zeile 3 — Ünïcøde ✓\",\"value\":3000},{\"id\":\"row-4\",\"label\":\"Zeile 4 — Ünïcøde ✓\",\"value\":4000},{\"id\":\"row-5\",\"label\":\"Zeile 5 — Ünïcøde ✓\",\"value\":5000},{\"id\":\"row-6\",\"label\":\"Zeile 6 — Ünïcøde ✓\",\"value\":6000},{\"id\":\"row-7\",\"label\":\"Zeile 7 — Ünïcøde ✓\",\"value\":7000},{\"id\":\"row-8\",\"label\":\"Zeile 8 — Ünïcøde ✓\",\"value\":8000},{\"id\":\"row-9\",\"label\":\"Zeile 9 — Ünïcøde ✓\",\"value\":9000},{\"id\":\"row-10\",\"label\":\"Zeile 10 — Ünïcøde ✓\",\"value\":10000},{\"id\":\"row-11\",\"label\":\"Zeile 11 — Ünïcøde ✓\",\"value\":11000}]}",
+    "window_bytes": 253,
+    "multibyte_split_offset": 253
+  },
+  "get_windows": [
+    {
+      "request": {
+        "id": "console-fixture_886d6ebe5a88",
+        "offset": 0,
+        "max_bytes": 253
+      },
+      "status": 200,
+      "response": {
+        "ref": {
+          "id": "console-fixture_886d6ebe5a88",
+          "mime_type": "application/json",
+          "size_bytes": 863,
+          "filename": "tool-context.json",
+          "sha256": "886d6ebe5a882dca6a2f065bf3b45b441452f90d3cb6343db3d8ce9060a8517a",
+          "namespace": "console-fixture",
+          "scope": {
+            "tenant": "dev",
+            "user": "dev",
+            "session": "dev"
+          }
+        },
+        "content": "eyJyZWdpb24iOiJlbWVhIiwic3VtbWFyeSI6IsOWa29ub21pc2NoZSDDnGJlcnNpY2h0IOKAlCBRMyDmlbDmja4g4pyFIiwicm93cyI6W3siaWQiOiJyb3ctMCIsImxhYmVsIjoiWmVpbGUgMCDigJQgw5xuw69jw7hkZSDinJMiLCJ2YWx1ZSI6MH0seyJpZCI6InJvdy0xIiwibGFiZWwiOiJaZWlsZSAxIOKAlCDDnG7Dr2PDuGRlIOKckyIsInZhbHVlIjoxMDAwfSx7ImlkIjoicm93LTIiLCJsYWJlbCI6IlplaWxlIDIg4oCUIMOcbsOvY8O4ZGUg4g==",
+        "offset": 0,
+        "returned_bytes": 253,
+        "total_size_bytes": 863,
+        "truncated": true,
+        "protocol_version": "0.1.0"
+      }
+    },
+    {
+      "request": {
+        "id": "console-fixture_886d6ebe5a88",
+        "offset": 253,
+        "max_bytes": 253
+      },
+      "status": 200,
+      "response": {
+        "ref": {
+          "id": "console-fixture_886d6ebe5a88",
+          "mime_type": "application/json",
+          "size_bytes": 863,
+          "filename": "tool-context.json",
+          "sha256": "886d6ebe5a882dca6a2f065bf3b45b441452f90d3cb6343db3d8ce9060a8517a",
+          "namespace": "console-fixture",
+          "scope": {
+            "tenant": "dev",
+            "user": "dev",
+            "session": "dev"
+          }
+        },
+        "content": "nJMiLCJ2YWx1ZSI6MjAwMH0seyJpZCI6InJvdy0zIiwibGFiZWwiOiJaZWlsZSAzIOKAlCDDnG7Dr2PDuGRlIOKckyIsInZhbHVlIjozMDAwfSx7ImlkIjoicm93LTQiLCJsYWJlbCI6IlplaWxlIDQg4oCUIMOcbsOvY8O4ZGUg4pyTIiwidmFsdWUiOjQwMDB9LHsiaWQiOiJyb3ctNSIsImxhYmVsIjoiWmVpbGUgNSDigJQgw5xuw69jw7hkZSDinJMiLCJ2YWx1ZSI6NTAwMH0seyJpZCI6InJvdy02IiwibGFiZWwiOiJaZWlsZSA2IOKAlCDDnG7Drw==",
+        "offset": 253,
+        "returned_bytes": 253,
+        "total_size_bytes": 863,
+        "truncated": true,
+        "protocol_version": "0.1.0"
+      }
+    },
+    {
+      "request": {
+        "id": "console-fixture_886d6ebe5a88",
+        "offset": 506,
+        "max_bytes": 253
+      },
+      "status": 200,
+      "response": {
+        "ref": {
+          "id": "console-fixture_886d6ebe5a88",
+          "mime_type": "application/json",
+          "size_bytes": 863,
+          "filename": "tool-context.json",
+          "sha256": "886d6ebe5a882dca6a2f065bf3b45b441452f90d3cb6343db3d8ce9060a8517a",
+          "namespace": "console-fixture",
+          "scope": {
+            "tenant": "dev",
+            "user": "dev",
+            "session": "dev"
+          }
+        },
+        "content": "Y8O4ZGUg4pyTIiwidmFsdWUiOjYwMDB9LHsiaWQiOiJyb3ctNyIsImxhYmVsIjoiWmVpbGUgNyDigJQgw5xuw69jw7hkZSDinJMiLCJ2YWx1ZSI6NzAwMH0seyJpZCI6InJvdy04IiwibGFiZWwiOiJaZWlsZSA4IOKAlCDDnG7Dr2PDuGRlIOKckyIsInZhbHVlIjo4MDAwfSx7ImlkIjoicm93LTkiLCJsYWJlbCI6IlplaWxlIDkg4oCUIMOcbsOvY8O4ZGUg4pyTIiwidmFsdWUiOjkwMDB9LHsiaWQiOiJyb3ctMTAiLCJsYWJlbCI6IlplaWxlIDEwIA==",
+        "offset": 506,
+        "returned_bytes": 253,
+        "total_size_bytes": 863,
+        "truncated": true,
+        "protocol_version": "0.1.0"
+      }
+    },
+    {
+      "request": {
+        "id": "console-fixture_886d6ebe5a88",
+        "offset": 759,
+        "max_bytes": 253
+      },
+      "status": 200,
+      "response": {
+        "ref": {
+          "id": "console-fixture_886d6ebe5a88",
+          "mime_type": "application/json",
+          "size_bytes": 863,
+          "filename": "tool-context.json",
+          "sha256": "886d6ebe5a882dca6a2f065bf3b45b441452f90d3cb6343db3d8ce9060a8517a",
+          "namespace": "console-fixture",
+          "scope": {
+            "tenant": "dev",
+            "user": "dev",
+            "session": "dev"
+          }
+        },
+        "content": "4oCUIMOcbsOvY8O4ZGUg4pyTIiwidmFsdWUiOjEwMDAwfSx7ImlkIjoicm93LTExIiwibGFiZWwiOiJaZWlsZSAxMSDigJQgw5xuw69jw7hkZSDinJMiLCJ2YWx1ZSI6MTEwMDB9XX0=",
+        "offset": 759,
+        "returned_bytes": 104,
+        "total_size_bytes": 863,
+        "truncated": false,
+        "protocol_version": "0.1.0"
+      }
+    }
+  ],
+  "get_ref_refusal": {
+    "status": 501,
+    "response": {
+      "code": "presign_unsupported",
+      "message": "method \"artifacts.get_ref\": the \"inmem\" artifact-store driver does not support presigned URLs"
+    }
+  }
+}

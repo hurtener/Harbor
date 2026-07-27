@@ -124,6 +124,24 @@ func terminalFoundationProjection() projection.Projection {
 }
 
 func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
+	// QUARANTINED — https://github.com/hurtener/Harbor/issues/598
+	//
+	// Times out on Linux CI at the canonical-session-erase wait (:382). The
+	// identical assertion and message failed on `main` on 2026-07-24, two days
+	// before the v1.23 branch existed, so this is pre-existing rather than a
+	// regression. Quarantined per §17.6 (name it, track it, skip it visibly)
+	// so a known flake does not gate a release.
+	//
+	// Set HARBOR_RUN_QUARANTINED=1 to run it — the fix must be verified
+	// against a real execution, not against this skip.
+	//
+	// Required for v1.24. Do NOT close #598 by raising a timeout: this family
+	// already carries three de-flake commits that treated timing, and the most
+	// recent sibling defect turned out to be an assertion that never measured
+	// what it claimed (#596).
+	if os.Getenv("HARBOR_RUN_QUARANTINED") == "" {
+		t.Skip("quarantined: flaky on Linux CI, see https://github.com/hurtener/Harbor/issues/598")
+	}
 	stack := devstack.Assemble(t, runtimePostureConfig(t), devstack.AssembleOpts{})
 	defer stack.Close()
 	var failNextStart atomic.Bool

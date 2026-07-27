@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 121 canonical Harbor Protocol methods, generated from the single-source registry
+The 122 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -91,6 +91,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
 | `artifacts.delete` | `POST /v1/control/artifacts.delete` | artifacts | [`ArtifactsDeleteRequest`](./types.md#artifactsdeleterequest) | [`ArtifactsDeleteResponse`](./types.md#artifactsdeleteresponse) | mutating; requires the verified `admin` scope claim |
+| `artifacts.get` | `POST /v1/control/artifacts.get` | artifacts | [`ArtifactsGetRequest`](./types.md#artifactsgetrequest) | [`ArtifactsGetResponse`](./types.md#artifactsgetresponse) | read-only |
 | `artifacts.get_ref` | `POST /v1/control/artifacts.get_ref` | artifacts | [`ArtifactsGetRefRequest`](./types.md#artifactsgetrefrequest) | [`ArtifactsGetRefResponse`](./types.md#artifactsgetrefresponse) | read-only |
 | `artifacts.list` | `POST /v1/control/artifacts.list` | artifacts | [`ArtifactsListRequest`](./types.md#artifactslistrequest) | [`ArtifactsListResponse`](./types.md#artifactslistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
 | `artifacts.put` | `POST /v1/control/artifacts.put` | artifacts | [`ArtifactsPutRequest`](./types.md#artifactsputrequest) | [`ArtifactsPutResponse`](./types.md#artifactsputresponse) | mutating |

@@ -144,6 +144,8 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"ArtifactScope":                               reflect.TypeOf(types.ArtifactScope{}),
 	"ArtifactsDeleteRequest":                      reflect.TypeOf(types.ArtifactsDeleteRequest{}),
 	"ArtifactsDeleteResponse":                     reflect.TypeOf(types.ArtifactsDeleteResponse{}),
+	"ArtifactsGetRequest":                         reflect.TypeOf(types.ArtifactsGetRequest{}),
+	"ArtifactsGetResponse":                        reflect.TypeOf(types.ArtifactsGetResponse{}),
 	"ArtifactsGetRefRequest":                      reflect.TypeOf(types.ArtifactsGetRefRequest{}),
 	"ArtifactsGetRefResponse":                     reflect.TypeOf(types.ArtifactsGetRefResponse{}),
 	"ArtifactsListRequest":                        reflect.TypeOf(types.ArtifactsListRequest{}),

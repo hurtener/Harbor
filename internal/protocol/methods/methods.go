@@ -621,6 +621,34 @@ const (
 	// Identity-mandatory; a body whose scope tenant disagrees with the
 	// caller's verified tenant is rejected with CodeScopeMismatch.
 	MethodArtifactsPut Method = "artifacts.put"
+
+	// MethodArtifactsGet — The driver-independent byte read.
+	// It resolves through `artifacts.ArtifactStore.Get`, so EVERY
+	// registered driver serves it — the in-memory default included.
+	// That is what distinguishes it from `artifacts.get_ref`, which
+	// type-asserts the optional `artifacts.Presigner` capability and
+	// answers `CodePresignUnsupported` when the assertion misses.
+	//
+	// The two are NOT parallel implementations of one feature.
+	// `artifacts.get` is the CONTRACT — the universal read every client
+	// can rely on. `artifacts.get_ref` is a TRANSPORT OPTIMISATION for
+	// stores that can hand bytes off their own edge, so a large media
+	// download need not transit the Runtime. Both resolve the same ref
+	// under the same verified identity and the same flat,
+	// non-elevatable body-identity posture; they differ in who serves
+	// the bytes, not in who may read them.
+	//
+	// The response is truthful about its own bound: it carries
+	// `total_size_bytes`, `returned_bytes` and `truncated` alongside the
+	// window, so a bounded read is never mistakable for a complete one.
+	// A request above the operator's configured fetch ceiling is SERVED
+	// AT THE CEILING and reports it through those same fields rather
+	// than being refused. Identity-mandatory; a scope naming a tenant
+	// other than the verified one is refused flat with
+	// `CodeScopeMismatch`, exactly as `artifacts.get_ref` is. Routes
+	// through the control surface at `POST /v1/control/artifacts.get`.
+	MethodArtifactsGet Method = "artifacts.get"
+
 	// MethodArtifactsGetRef — The read-side
 	// presigned-URL resolver: invokes `artifacts.Presigner.PresignGet` via
 	// type-assertion on the underlying ArtifactStore. Drivers that do not
@@ -1092,6 +1120,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodTopologySnapshot:                    {},
 	MethodArtifactsList:                       {},
 	MethodArtifactsPut:                        {},
+	MethodArtifactsGet:                        {},
 	MethodArtifactsGetRef:                     {},
 	MethodArtifactsDelete:                     {},
 	MethodMemoryList:                          {},
@@ -1227,25 +1256,26 @@ func IsAgentsControlMethod(m Method) bool {
 }
 
 // canonicalArtifactsMethods is the closed set of the artifacts methods —
-// the read/put trio plus the
-// admin `artifacts.delete` mutation. IsArtifactsMethod is
-// O(1); the control transport branches on it to route the request
-// through the artifacts dispatcher instead of the task-control surface.
+// the catalog listing, the upload, the two reads (the driver-independent
+// byte read and the presigned-URL resolver), and the admin eviction.
+// IsArtifactsMethod is O(1); the control transport branches on it to
+// route the request through the artifacts dispatcher instead of the
+// task-control surface.
 var canonicalArtifactsMethods = map[Method]struct{}{
 	MethodArtifactsList:   {},
 	MethodArtifactsPut:    {},
+	MethodArtifactsGet:    {},
 	MethodArtifactsGetRef: {},
 	MethodArtifactsDelete: {},
 }
 
 // IsArtifactsMethod reports whether m is one of the canonical artifacts
-// methods (— `artifacts.list` / `artifacts.put` /
-// `artifacts.get_ref` — plus the admin
-// `artifacts.delete` mutation). The control transport branches on this to
-// route the request through the artifacts dispatcher instead of the
-// task-control / search / posture surfaces. NOT a control
-// method — a new non-control method extends THIS predicate, never the
-// steering inbox.
+// methods (`artifacts.list` / `artifacts.put` / `artifacts.get` /
+// `artifacts.get_ref`, plus the admin `artifacts.delete` mutation). The
+// control transport branches on this to route the request through the
+// artifacts dispatcher instead of the task-control / search / posture
+// surfaces. NOT a control method — a new non-control method extends
+// THIS predicate, never the steering inbox.
 func IsArtifactsMethod(m Method) bool {
 	_, ok := canonicalArtifactsMethods[m]
 	return ok

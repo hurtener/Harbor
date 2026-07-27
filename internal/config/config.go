@@ -857,6 +857,26 @@ type PauseResumeConfig struct {
 // validated today so an operator's deployment is
 // rejected for an invalid value even before the consumers land.
 //
+// `FetchDefaultMaxBytes` and `FetchHardMaxBytes` are the operator's
+// half of the read-back bound. `HeavyOutputThresholdBytes` governs what
+// GOES OUT to the store; these two govern what COMES BACK from it, and
+// the pair is tunable together rather than one being operator policy and
+// the other a compile-time constant. `FetchDefaultMaxBytes` (default
+// 64 KiB) is the window applied when a caller names no bound;
+// `FetchHardMaxBytes` (default 1 MiB) is the ceiling a caller's own
+// bound is clamped to. Both are optional: zero selects the built-in
+// default, so an existing configuration is unchanged by their arrival.
+// Validation rejects a negative value and rejects a resolved default
+// above the resolved hard ceiling.
+//
+// A request above the effective ceiling is SERVED AT THE CEILING and
+// says so through the response's `truncated` / `total_size_bytes` /
+// `returned_bytes` fields — never refused and never silently shortened.
+//
+// The guarantee is bounded and stated as such: the ceiling bounds ONE
+// read. It is not a budget over repeated reads; aggregate consumption
+// stays the governance layer's concern (cost ceilings and rate limits).
+//
 // S3* fields configure the S3-style driver (AWS S3 / MinIO /
 // Cloudflare R2 / any S3-compat backend). `S3Bucket` is required when
 // `Driver == "s3"`. `S3Region` defaults to "us-east-1" when unset.
@@ -872,6 +892,8 @@ type ArtifactsConfig struct {
 	FSRoot                    string `yaml:"fs_root,omitempty"`
 	DSN                       string `yaml:"dsn,omitempty" secret:"true"`
 	HeavyOutputThresholdBytes int    `yaml:"heavy_output_threshold_bytes,omitempty"`
+	FetchDefaultMaxBytes      int    `yaml:"fetch_default_max_bytes,omitempty"`
+	FetchHardMaxBytes         int    `yaml:"fetch_hard_max_bytes,omitempty"`
 	S3Bucket                  string `yaml:"s3_bucket,omitempty"`
 	S3Endpoint                string `yaml:"s3_endpoint,omitempty"`
 	S3Region                  string `yaml:"s3_region,omitempty"`
@@ -2017,6 +2039,49 @@ const DefaultMaxBatchSpawns = 5
 // constant (the `DefaultSpawnDepthCap` precedent — checkpoint audit
 // follow-up). No other literal copy of the value is allowed.
 const DefaultHeavyOutputThresholdBytes = 32 * 1024
+
+// DefaultArtifactFetchMaxBytes is the ONE source of the artifact
+// read-back default (64 KiB): the window served when a caller names no
+// bound of its own. Large enough for the structured-JSON payload a
+// heavy tool result typically is, small enough that an accidental read
+// of a multi-megabyte artifact does not fill a model's context window.
+// `ArtifactsConfig.FetchDefaultMaxBytes` resolves to it when unset, and
+// both the Protocol byte read and the `artifact_fetch` builtin reference
+// this constant rather than carrying a literal copy.
+const DefaultArtifactFetchMaxBytes = 64 * 1024
+
+// DefaultArtifactFetchHardMaxBytes is the ONE source of the artifact
+// read-back CEILING default (1 MiB): the bound a caller's own request is
+// clamped to. `ArtifactsConfig.FetchHardMaxBytes` resolves to it when
+// unset.
+//
+// The clamp is served, not refused, and the response says it was applied
+// — a caller cannot know a deployment's ceiling before asking. The
+// guarantee is bounded to ONE read; aggregate consumption stays the
+// governance layer's concern.
+const DefaultArtifactFetchHardMaxBytes = 1 * 1024 * 1024
+
+// ResolvedFetchDefaultMaxBytes returns the configured
+// `FetchDefaultMaxBytes`, substituting `DefaultArtifactFetchMaxBytes`
+// when the field is zero or negative. Zero means "the operator named no
+// bound", which is what the `omitempty` tag declares, so a configuration
+// written before the field existed resolves to the documented default.
+func (c ArtifactsConfig) ResolvedFetchDefaultMaxBytes() int {
+	if c.FetchDefaultMaxBytes <= 0 {
+		return DefaultArtifactFetchMaxBytes
+	}
+	return c.FetchDefaultMaxBytes
+}
+
+// ResolvedFetchHardMaxBytes returns the configured `FetchHardMaxBytes`,
+// substituting `DefaultArtifactFetchHardMaxBytes` when the field is zero
+// or negative.
+func (c ArtifactsConfig) ResolvedFetchHardMaxBytes() int {
+	if c.FetchHardMaxBytes <= 0 {
+		return DefaultArtifactFetchHardMaxBytes
+	}
+	return c.FetchHardMaxBytes
+}
 
 // SkillsContextMaxResolved resolves the optional `skills_context_max`
 // knob. A non-positive value (unset or zero)

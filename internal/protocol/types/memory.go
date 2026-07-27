@@ -301,9 +301,10 @@ type MemoryItemDetail struct {
 	// SizeBytes is below the heavy-content threshold.
 	Value []byte `json:"value,omitempty"`
 	// ValueArtifact is populated when SizeBytes meets or exceeds the
-	// heavy-content threshold. The Console fetches the bytes
-	// via `artifacts.get` against this stub. When ValueArtifact is set,
-	// Value is nil — and vice-versa.
+	// heavy-content threshold. A client fetches the bytes through
+	// `artifacts.get` against this stub — the driver-independent byte
+	// read every registered artifact driver serves. When ValueArtifact
+	// is set, Value is nil — and vice-versa.
 	ValueArtifact *MemoryArtifactRef `json:"value_artifact,omitempty"`
 	// Metadata carries the per-record metadata.
 	Metadata MemoryMetadata `json:"metadata"`

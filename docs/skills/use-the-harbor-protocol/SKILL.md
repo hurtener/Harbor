@@ -274,7 +274,7 @@ Content-Type: application/json
 
 To **scroll up** (load one window older), pass the previous response's `next_cursor` back as `before`. When `next_cursor` is `0`, you've reached the retained head — no older events remain. Reduction of events → chat messages stays **on your client** (the same reducer you use for the live stream): the surface returns flat events, not pre-reduced turns.
 
-Heavy payloads (a large tool result offloaded above the heavy-output threshold) ride by a **routable** `StateArtifactRef` on `events[].artifacts[]` — a content-addressed `id` (+ `sha256`), never inline bytes. Resolve it the same way as any artifact: POST the `id` to `artifacts.get_ref` (presigned URL on an S3-compat store; the typed `presign_unsupported`/501 on the default inmem/fs stores).
+Heavy payloads (a large tool result offloaded above the heavy-output threshold) ride by a **routable** `StateArtifactRef` on `events[].artifacts[]` — a content-addressed `id` (+ `sha256`), never inline bytes. Resolve it the same way as any artifact: POST the `id` to `artifacts.get` (§6.1) — the byte read that works on every driver. `artifacts.get_ref` is the presigned-URL alternative, useful when the store can hand a large download off its own edge, but it answers `presign_unsupported`/501 on the default inmem/fs stores, so reach for it only when you know your deployment runs an S3-compatible driver.
 
 Identity rules: identity is mandatory (an incomplete triple is `identity_required`/401); an unknown or cross-identity `session_id` is `not_found`/404 (existence is never revealed across identities — never a 403); a cross-tenant read requires the verified `admin` scope claim.
 
@@ -398,6 +398,47 @@ Response carries the canonical `ref`:
 
 Pass `ref.id` in `start`'s `input_artifact_ids`. The upload bytes ride the request leg only (base64-inline, bounded by the Runtime's max request size — an oversize body is rejected with `request_too_large`); the response is a reference, and bytes never reach the LLM edge inline.
 
+### 6.1 Reading an artifact's bytes back — `artifacts.get`
+
+`artifacts.get` is the read that works everywhere. It resolves through the artifact store's mandatory `Get`, so **every** driver serves it — including the `inmem` default a fresh `harbor dev` boots on. (`artifacts.get_ref` is not an alternative to it so much as an optimisation: it returns a presigned URL, which only an S3-compatible store can mint, and answers `presign_unsupported`/501 everywhere else.)
+
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/artifacts.get" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "scope": {"tenant": "dev", "user": "dev", "session": "dev"},
+    "id": "'"$REF_ID"'",
+    "offset": 0,
+    "max_bytes": 65536
+  }'
+```
+
+```json
+{
+  "ref": { "id": "art_01H...", "mime_type": "text/csv", "size_bytes": 4194304 },
+  "content": "<base64>",
+  "offset": 0,
+  "returned_bytes": 65536,
+  "total_size_bytes": 4194304,
+  "truncated": true,
+  "protocol_version": "0.1.0"
+}
+```
+
+**The response is always truthful about its own bound.** `total_size_bytes` is the artifact's full size, `returned_bytes` is what this call gave you, and `truncated` says whether anything follows the window — so a bounded read is never mistakable for a complete one.
+
+**To page a large artifact**, re-call with `offset` advanced to the previous `offset + returned_bytes`, while `truncated` is `true`. Windows are **byte** ranges, not lines or rows, so a window can begin and end mid-line and splitting is your job.
+
+**Three things can bound one read** and they all report through those same fields: your own `max_bytes`, the deployment's `artifacts.fetch_default_max_bytes` (applied when you name none — 64 KiB by default), and its `artifacts.fetch_hard_max_bytes` ceiling (1 MiB by default). Asking for more than the ceiling is **not an error** — you are served at the ceiling and `truncated` tells you so, because you have no way to discover the ceiling before asking. A NEGATIVE `offset` or `max_bytes` *is* rejected with `invalid_request`; it is not an omission the Runtime can resolve for you.
+
+**The ceiling bounds one read, not a sequence.** It is not a budget over repeated calls — aggregate consumption is the governance layer's concern (cost ceilings and rate limits).
+
+Identity rules match the rest of the artifact surface: the full triple is mandatory, an id your scope does not hold answers `not_found`/404 identically to one that never existed (existence is never revealed across identities), and a `scope` naming a tenant other than your verified one is refused `scope_mismatch`/403 — **no admin claim widens this method**, because it hands over content rather than metadata.
+
+Inside a run, the model reaches the same bytes through the `artifact_fetch` builtin, which takes the same `offset` / `max_bytes` and answers the same `offset` / `returned_bytes` / `total_size_bytes` / `truncated` field set under the same operator-configured ceiling.
+
 ## 7. Topology snapshot — render the runtime's wiring
 
 ```bash
@@ -431,6 +472,16 @@ When an MCP-backed tool call is refused downstream with a `403` + `WWW-Authentic
 - **On the MCP connection view** — `mcp.servers.get` returns `MCPServerView.last_scope_shortfall` (`MCPScopeShortfallView`) recording the last observed shortfall on that connection — visible even to a reader who never made the offending call. It rides the DETAIL read only (like `oauth_requirement`), not the hot list row.
 
 Both are **report-only**: the runtime never auto-escalates, re-consents, or widens a binding on a shortfall. The operator acts on it via the boot-declared `oauth_provider` / `tool_oauth_providers` bindings (which bind a distinct provider per MCP-side entry — a tool call by tool name, a resource read / subscribe by resource URI, and a prompt get by prompt name — for a server fronting several downstream audiences).
+
+### 8b. What an MCP connection admin write can reach
+
+The per-server `mcp.servers.*` admin verbs gate on the `admin` scope claim, and the write ones additionally land only where your own identity reaches:
+
+- `mcp.servers.set_raw_html_trust` (the per-server raw-HTML posture a rendered MCP App is given) is **tenant-scoped**. It applies to a connection your own tenant owns, or to a boot-declared (yaml) server, which is deployment-global infrastructure every session already sees. Naming a connection another tenant attached is refused `404 {"code": "not_found"}` — the same answer you get for a name nobody registered, so the refusal tells you nothing about what other tenants have attached. The scope comes from your verified identity, not from anything on the request body.
+- `agent_config.set_mcp_discovery_origins` is **owner-scoped** to your `(tenant, agent_id)` and refuses `403 {"code": "scope_mismatch"}` — see §8's account of that verb. The two differ because that door carries an `agent_id` and this one does not.
+- A write whose audit event cannot be emitted is **reverted**, not left applied: you get `500 {"code": "runtime_error"}` naming the reverted-not-applied case, and the previous value stands.
+
+Reads are unaffected: `mcp.servers.list` / `get` / `resources` / `prompts` / `health`, and the control-plane `refresh_discovery` / `probe`, resolve by bare name across the deployment as they always have — a boot-declared server stays visible to every session.
 
 ## 9. A minimal client (TS, ~30 LoC)
 

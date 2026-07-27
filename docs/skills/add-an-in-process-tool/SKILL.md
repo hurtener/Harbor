@@ -183,9 +183,52 @@ tools:
     - artifact_fetch   # always-loaded; lets the LLM recover full payloads above the threshold
 ```
 
-`artifact_fetch` takes `{ref: string, max_bytes?: int}` (default 64 KiB, hard cap 1 MiB) and returns `{ref, mime, size_bytes, content, truncated}`. Cross-tenant reads are rejected by the artifact store — the meta-tool surfaces a soft "not found" error without exposing the bytes (the `internal/tools/builtin/artifact_fetch_test.go::TestArtifactFetch_CrossIdentity_RejectedByStore` test is the regression gate).
+`artifact_fetch` takes `{ref: string, max_bytes?: int, offset?: int}` and returns `{ref, mime, size_bytes, content, offset, returned_bytes, total_size_bytes, truncated}`.
+
+**Windowing.** `offset` is a **byte** index, not a line or row index, so the model pages a large file by reading at offset 0 and re-calling with `offset` advanced to the previous `offset + returned_bytes` while `truncated` is `true`. A window can begin and end mid-line; the model splits the text itself. (Row- or schema-addressed windowing is deliberately not offered — a stored MIME is not revisable on a content-addressed store, so keying read behaviour on one would turn a wrong stamp into a permanent refusal.)
+
+**Bounds are operator policy.** `max_bytes` defaults to `artifacts.fetch_default_max_bytes` (64 KiB) and is clamped to `artifacts.fetch_hard_max_bytes` (1 MiB); both are `harbor.yaml` keys you can tune — see [`docs/CONFIG.md`](../../CONFIG.md) → `artifacts`. A `max_bytes` above the ceiling is **served at the ceiling**, not refused, and the response says so through `truncated` / `total_size_bytes` / `returned_bytes`. The same knobs bound the `artifacts.get` Protocol method, so a model and a Console client reading one artifact never disagree about what "truncated" means. The ceiling bounds ONE fetch — it is not a budget over repeated fetches; that stays the governance layer's concern.
+
+Cross-tenant reads are rejected by the artifact store — the meta-tool surfaces a soft "not found" error without exposing the bytes (the `internal/tools/builtin/artifact_fetch_test.go::TestArtifactFetch_CrossIdentity_RejectedByStore` test is the regression gate).
+
+**The scope is the session, and that is the whole scope.** The store resolves a read on `(tenant, user, session)` plus the ref id; the producing task is recorded on the artifact as provenance and takes no part in resolution. So a later run in the SAME session can fetch an artifact an earlier run produced — which is what makes the `<session_artifacts>` block honest, since it lists every artifact in the session and tells the model it may fetch any of them. A different session, user or tenant still answers "not found" through the same soft-error path, with no way to tell "not yours" from "does not exist".
 
 If your tool's results are typically small (well under the threshold), no action is needed — the materialiser only fires above the cap, and the planner sees the raw result inline as usual.
+
+### Heavy INPUTS — take content by reference
+
+The seam above governs what comes OUT of a tool. The mirror-image problem is a tool that needs to READ something large: a stored CSV, an uploaded PDF, a prior tool's materialised result. Routing that content through the model's context to get it into your argument struct is exactly the leak `artifact_fetch` exists to bound — and it is unnecessary, because an in-process tool can take the content by reference.
+
+Declare a field of type `tools.ArtifactRef`:
+
+```go
+import "github.com/hurtener/Harbor/sdk/tools"
+
+type SummarizeArgs struct {
+    Doc      tools.ArtifactRef `json:"doc"`
+    MaxWords int               `json:"max_words"`
+}
+
+func Summarize(ctx context.Context, in SummarizeArgs) (SummarizeResult, error) {
+    body, err := in.Doc.Bytes()   // the stored bytes, never the model's
+    if err != nil {
+        return SummarizeResult{}, fmt.Errorf("summarize: %w", err)
+    }
+    ...
+}
+```
+
+The reflection deriver renders `doc` to the model as a plain **string**, so the model writes `{"doc": "tool_ab12cd34ef56", "max_words": 200}` — an artifact id, exactly the id the runtime already quotes to it in a truncated tool result or the `<session_artifacts>` block. The runtime resolves the id at dispatch, under the run's own `(tenant, user, session)` scope, and hands your function the bytes.
+
+Three properties follow, and they are what makes this worth reaching for:
+
+- **The model never sees the content.** It authored an id and continues to see an id. The resolved value is dispatch-local: it does not enter the argument JSON, the trajectory, the observation the next prompt renders, any event payload, an audit payload, or a log.
+- **There is no identity logic in your tool.** The reference resolves under the dispatching run's identity, so your tool reaches what its run reaches and nothing else. A ref from another tenant, user or session answers "not found" through the same soft path `artifact_fetch` uses.
+- **It fails loudly.** An unresolvable ref is the step's error (the planner re-plans); reading a reference the argument never carried returns `tools.ErrArtifactRefUnresolved` rather than an empty slice you would measure as an empty artifact.
+
+`ArtifactRef` works anywhere the deriver walks — a bare field, a slice, a map value, a nested struct. A worked example ships at `examples/tools/artifactstats/`.
+
+This is the **in-process** arm. A tool on the other side of a process boundary (HTTP, MCP, A2A) cannot be handed a Go value, and handing it something dereferenceable instead is a separate design Harbor has deliberately not built — so an `ArtifactRef` parameter belongs to in-process tools only.
 
 ## 5. Errors — fail loudly
 

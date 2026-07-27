@@ -6,10 +6,12 @@
 //
 // Internal model:
 //
-//   - A single map keyed on a struct key `(scope, id)` holds the ref;
+//   - A single map keyed on a struct key `(triple, id)` holds the ref;
 //     a sibling map keyed by the same struct key holds the bytes. Two
 //     maps (rather than a struct holding both) so the bytes slice can
-//     be copy-on-read without copying ref fields.
+//     be copy-on-read without copying ref fields. The key is the
+//     ISOLATION TRIPLE plus the id — the producing task is carried on
+//     the stored ref as provenance, never in the key.
 //   - A single `sync.RWMutex` guards both maps. The driver does no
 //     I/O so contention is bounded by Go's map throughput; a finer
 //     lock structure would be premature.
@@ -51,14 +53,17 @@ func init() {
 	artifacts.Register("inmem", New)
 }
 
-// indexKey is the composite primary key. Struct-typed (rather than
-// string-concatenated) so tenant IDs containing delimiters can't
-// collide.
+// indexKey is the composite primary key: the isolation triple plus the
+// content-addressed id. Struct-typed (rather than string-concatenated)
+// so tenant IDs containing delimiters can't collide.
+//
+// `TaskID` is deliberately ABSENT. It is a provenance annotation, not
+// an isolation principal, so it keys neither reads nor writes; the
+// stored `ArtifactRef.Scope` carries the producing task's stamp.
 type indexKey struct {
 	Tenant  string
 	User    string
 	Session string
-	Task    string
 	ID      string
 }
 
@@ -67,7 +72,6 @@ func keyFor(scope artifacts.ArtifactScope, id string) indexKey {
 		Tenant:  scope.TenantID,
 		User:    scope.UserID,
 		Session: scope.SessionID,
-		Task:    scope.TaskID,
 		ID:      id,
 	}
 }
@@ -81,7 +85,9 @@ type driver struct {
 
 // PutBytes implements artifacts.ArtifactStore. Content-addressed:
 // `ID = "{namespace}_{sha256[:12]}"`. Re-Put with identical
-// (scope, namespace, bytes) returns the existing ref (no duplicate).
+// (triple, namespace, bytes) returns the existing ref (no duplicate) —
+// including when the caller's `scope.TaskID` differs from the stored
+// one, in which case the FIRST writer's stamp is what comes back.
 func (d *driver) PutBytes(_ context.Context, scope artifacts.ArtifactScope, data []byte, opts artifacts.PutOpts) (artifacts.ArtifactRef, error) {
 	if d.closed.Load() {
 		return artifacts.ArtifactRef{}, artifacts.ErrStoreClosed
@@ -107,9 +113,10 @@ func (d *driver) PutBytes(_ context.Context, scope artifacts.ArtifactScope, data
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if existing, ok := d.refs[key]; ok {
-		// Dedup: same key already stored. Same content (sha matches by
-		// construction since ID embeds the truncated hash). Return the
-		// existing ref unchanged.
+		// Dedup: same triple + id already stored. Same content (sha
+		// matches by construction since ID embeds the truncated hash).
+		// Return the existing ref unchanged — first-writer-wins on the
+		// provenance stamp, which is the documented contract.
 		return existing, nil
 	}
 
@@ -136,8 +143,8 @@ func (d *driver) PutText(ctx context.Context, scope artifacts.ArtifactScope, tex
 	return d.PutBytes(ctx, scope, []byte(text), opts)
 }
 
-// Get implements artifacts.ArtifactStore. Found-false is NOT an
-// error.
+// Get implements artifacts.ArtifactStore. Resolves on the isolation
+// triple; `scope.TaskID` is ignored. Found-false is NOT an error.
 func (d *driver) Get(_ context.Context, scope artifacts.ArtifactScope, id string) ([]byte, bool, error) {
 	if d.closed.Load() {
 		return nil, false, artifacts.ErrStoreClosed
@@ -157,8 +164,9 @@ func (d *driver) Get(_ context.Context, scope artifacts.ArtifactScope, id string
 	return cloneBytes(blob), true, nil
 }
 
-// GetRef implements artifacts.ArtifactStore. Found-false is NOT an
-// error.
+// GetRef implements artifacts.ArtifactStore. Resolves on the isolation
+// triple; `scope.TaskID` is ignored. The returned ref carries the
+// STORED provenance stamp. Found-false is NOT an error.
 func (d *driver) GetRef(_ context.Context, scope artifacts.ArtifactScope, id string) (*artifacts.ArtifactRef, bool, error) {
 	if d.closed.Load() {
 		return nil, false, artifacts.ErrStoreClosed
@@ -180,7 +188,8 @@ func (d *driver) GetRef(_ context.Context, scope artifacts.ArtifactScope, id str
 	return &out, true, nil
 }
 
-// Exists implements artifacts.ArtifactStore.
+// Exists implements artifacts.ArtifactStore. Resolves on the isolation
+// triple; `scope.TaskID` is ignored.
 func (d *driver) Exists(_ context.Context, scope artifacts.ArtifactScope, id string) (bool, error) {
 	if d.closed.Load() {
 		return false, artifacts.ErrStoreClosed
@@ -197,8 +206,9 @@ func (d *driver) Exists(_ context.Context, scope artifacts.ArtifactScope, id str
 	return ok, nil
 }
 
-// Delete implements artifacts.ArtifactStore. Idempotent: returns
-// `(false, nil)` for an absent key.
+// Delete implements artifacts.ArtifactStore. Resolves on the isolation
+// triple; `scope.TaskID` is ignored. Idempotent: returns `(false, nil)`
+// for an absent key.
 func (d *driver) Delete(_ context.Context, scope artifacts.ArtifactScope, id string) (bool, error) {
 	if d.closed.Load() {
 		return false, artifacts.ErrStoreClosed
@@ -221,12 +231,16 @@ func (d *driver) Delete(_ context.Context, scope artifacts.ArtifactScope, id str
 	return true, nil
 }
 
-// List implements artifacts.ArtifactStore. Empty fields in `filter`
-// are wildcards: `ArtifactScope{TenantID: "A"}` lists every artifact
-// under tenant A across users / sessions / tasks.
+// List implements artifacts.ArtifactStore. `filter.TenantID` is
+// required; every other empty field is a wildcard within that tenant.
+// `filter.TaskID` matches the stored provenance stamp and is
+// first-writer-lossy — see the interface godoc.
 func (d *driver) List(_ context.Context, filter artifacts.ArtifactScope) ([]artifacts.ArtifactRef, error) {
 	if d.closed.Load() {
 		return nil, artifacts.ErrStoreClosed
+	}
+	if err := filter.ValidateFilter(); err != nil {
+		return nil, err
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
