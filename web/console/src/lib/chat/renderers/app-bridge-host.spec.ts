@@ -269,16 +269,48 @@ describe('manual handlers dispatch to the injected client', () => {
     ]);
   });
 
-  it('oncalltool surfaces a heavy result by reference, never silently inlined', async () => {
+  it('oncalltool READS a heavy by-reference result and delivers it as structured data', async () => {
+    // The by-reference arm used to push a bare `[artifact <id> · <n> bytes]`
+    // block and return with `structuredContent` unset, so an app that called
+    // its own tool and got a large answer received prose ABOUT its data instead
+    // of the data. Now the bytes are read through the injected client — the
+    // driver-independent byte read (D-353) — and delivered exactly as an
+    // inline-sized result is, so SIZE no longer decides the shape.
+    const reads: string[] = [];
     const { client } = makeFakeClient({
       async callTool(tool) {
         return { tool, isError: false, artifactRef: { id: 'art_abc', sizeBytes: 9_000_000 } };
+      },
+      async fetchArtifactText(id) {
+        reads.push(id);
+        return '{"revenue":42}';
+      },
+    });
+    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    const result = await handlers.oncalltool({ name: 'srv_big' });
+    expect(reads).toEqual(['art_abc']);
+    expect(result.structuredContent).toEqual({ revenue: 42 });
+    expect((result.content[0] as { text: string }).text).toBe('{"revenue":42}');
+  });
+
+  it('oncalltool delivers a FAITHFUL notice when the heavy result cannot be read', async () => {
+    // Fail loud, never silently empty: the app is told which artifact could not
+    // be read, and `structuredContent` stays absent so its absence keeps
+    // meaning "there is no data here".
+    const { client } = makeFakeClient({
+      async callTool(tool) {
+        return { tool, isError: false, artifactRef: { id: 'art_abc', sizeBytes: 9_000_000 } };
+      },
+      async fetchArtifactText() {
+        throw new Error('artifacts.get: runtime_error');
       },
     });
     const handlers = createAppHandlers({ client, serverID: 'srv' });
     const result = await handlers.oncalltool({ name: 'srv_big' });
     const text = result.content[0] as { type: string; text: string };
     expect(text.text).toContain('art_abc');
+    expect(text.text).toContain('9000000 bytes');
+    expect(result.structuredContent).toBeUndefined();
   });
 
   it('onreadresource routes to read_resource and returns inline contents', async () => {
@@ -402,6 +434,33 @@ describe('D-173 — the host opens NO direct MCP transport', () => {
     expect(calls.listResources.length).toBe(1);
 
     // ...and NOTHING opened a direct transport.
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(wsSpy).not.toHaveBeenCalled();
+    expect(esSpy).not.toHaveBeenCalled();
+    expect(xhrSpy).not.toHaveBeenCalled();
+  });
+
+  it('the HEAVY by-reference arm reads through the injected client too — no direct transport', async () => {
+    // The case above only ever drove the INLINE arm, so the by-reference arm —
+    // the one that now performs an artifact READ — was outside the guard. The
+    // read must ride the injected client like everything else: the chat module
+    // never issues a network call itself (D-173), and a raw `fetch` added here
+    // would be invisible to a test that never takes this branch.
+    let read = 0;
+    const { client } = makeFakeClient({
+      async callTool(tool) {
+        return { tool, isError: false, artifactRef: { id: 'art_heavy', sizeBytes: 90_000 } };
+      },
+      async fetchArtifactText() {
+        read += 1;
+        return '{"revenue":42}';
+      },
+    });
+    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    const result = await handlers.oncalltool({ name: 'big', arguments: {} });
+
+    expect(read).toBe(1);
+    expect(result.structuredContent).toEqual({ revenue: 42 });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(wsSpy).not.toHaveBeenCalled();
     expect(esSpy).not.toHaveBeenCalled();

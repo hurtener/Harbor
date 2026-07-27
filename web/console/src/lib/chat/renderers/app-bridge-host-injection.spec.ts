@@ -82,11 +82,14 @@ vi.mock('@modelcontextprotocol/ext-apps/app-bridge', () => {
 // Imported AFTER the mock declaration; vitest hoists vi.mock above this.
 const { AppBridgeHost, DEFAULT_HOST_INFO } = await import('./app-bridge-host.js');
 
-/** Flush the microtask queue so the async delivery chain settles. */
+/**
+ * Flush the microtask queue so the async delivery chain settles. The chain is a
+ * few `await`s deep (resolve the input half, send, resolve the result half,
+ * send), so the count is generous rather than exact — a parked delivery stays
+ * parked no matter how many turns are drained.
+ */
 async function flushMicrotasks(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 12; i += 1) await Promise.resolve();
 }
 
 function fakeClient(): MCPAppHostClient {
@@ -332,5 +335,130 @@ describe('AppBridgeHost Data Delivery — sendToolInput then sendToolResult (HA 
 
     // The result send is dropped — never posted onto the closed transport.
     expect(bridge.toolResultCalls).toHaveLength(0);
+  });
+
+  it('a HEAVY by-reference result carries structuredContent, exactly as the inline one does', async () => {
+    // The gap D-347 named: the by-reference SUCCESS branch returned only a text
+    // block, while the inline branch set `structuredContent`. One and the same
+    // tool result therefore reached an App as structured data or as bare text
+    // depending only on its SIZE, and an App rendering off `structuredContent`
+    // (the normal case for a rich view) got nothing the moment its data crossed
+    // the heavy threshold.
+    captured.instances.length = 0;
+    const client: MCPAppHostClient = {
+      ...fakeClient(),
+      async fetchArtifactText() {
+        return '{"revenue":42,"region":"emea"}';
+      },
+    };
+    const ctx: MCPAppToolContext = {
+      tool: 'srv_report',
+      input: { content: { region: 'emea' } },
+      result: { artifactRef: { id: 'art_heavy', sizeBytes: 90_000 } },
+      isError: false,
+    };
+    const host = new AppBridgeHost({ client, serverID: 'srv', toolContext: ctx });
+    const bridge = captured.instances[0];
+
+    await host.connect({} as unknown as Window);
+    bridge.fireInitialized();
+    await flushMicrotasks();
+
+    expect(bridge.toolResultCalls).toHaveLength(1);
+    const result = bridge.toolResultCalls[0] as {
+      structuredContent?: unknown;
+      content: Array<{ text: string }>;
+    };
+    expect(result.structuredContent).toEqual({ revenue: 42, region: 'emea' });
+    expect(result.content[0].text).toBe('{"revenue":42,"region":"emea"}');
+  });
+
+  it('an UNREADABLE heavy result delivers the faithful notice and NO structuredContent', async () => {
+    // Fail-loud is preserved: the App is told which artifact could not be read,
+    // and the absent `structuredContent` keeps meaning "there is no data here"
+    // rather than becoming a second data shape an App must disambiguate.
+    captured.instances.length = 0;
+    const client: MCPAppHostClient = {
+      ...fakeClient(),
+      async fetchArtifactText() {
+        throw new Error('artifacts.get: runtime_error');
+      },
+    };
+    const ctx: MCPAppToolContext = {
+      tool: 'srv_report',
+      input: { content: { region: 'emea' } },
+      result: { artifactRef: { id: 'art_heavy', sizeBytes: 90_000 } },
+      isError: false,
+    };
+    const host = new AppBridgeHost({ client, serverID: 'srv', toolContext: ctx });
+    const bridge = captured.instances[0];
+
+    await host.connect({} as unknown as Window);
+    bridge.fireInitialized();
+    await flushMicrotasks();
+
+    const result = bridge.toolResultCalls[0] as {
+      structuredContent?: unknown;
+      content: Array<{ text: string }>;
+    };
+    expect(result.content[0].text).toContain('art_heavy');
+    expect(result.content[0].text).toContain('90000 bytes');
+    expect(result.structuredContent).toBeUndefined();
+  });
+
+  it('an UNREADABLE heavy INPUT withholds tool-input rather than claiming an empty argument map', async () => {
+    // The §13 shape D-347 named by hand: `#payloadToArgs` carried a bare
+    // `catch { return {} }`, and `{}` asserts "the tool ran with no arguments"
+    // — a different fact from "the input could not be read". The notification
+    // is now withheld instead, and the RESULT still goes out: losing the input
+    // must not cost the App the half it most needs.
+    captured.instances.length = 0;
+    const client: MCPAppHostClient = {
+      ...fakeClient(),
+      async fetchArtifactText() {
+        throw new Error('artifacts.get: runtime_error');
+      },
+    };
+    const ctx: MCPAppToolContext = {
+      tool: 'srv_report',
+      input: { artifactRef: { id: 'art_input', sizeBytes: 70_000 } },
+      result: { content: { revenue: 42 } },
+      isError: false,
+    };
+    const host = new AppBridgeHost({ client, serverID: 'srv', toolContext: ctx });
+    const bridge = captured.instances[0];
+
+    await host.connect({} as unknown as Window);
+    bridge.fireInitialized();
+    await flushMicrotasks();
+
+    // No fabricated `{}` input …
+    expect(bridge.toolInputCalls).toHaveLength(0);
+    // … and the result delivery is unaffected.
+    expect(bridge.toolResultCalls).toHaveLength(1);
+    expect((bridge.toolResultCalls[0] as { structuredContent?: unknown }).structuredContent).toEqual(
+      { revenue: 42 },
+    );
+  });
+
+  it('a GENUINELY ABSENT input still sends the empty argument map (the fact that IS true)', async () => {
+    // The other side of the same distinction: an empty capture is not a
+    // failure, so `{}` is the honest report and the notification goes out.
+    captured.instances.length = 0;
+    const ctx: MCPAppToolContext = {
+      tool: 'srv_report',
+      input: {},
+      result: { content: { revenue: 42 } },
+      isError: false,
+    };
+    const host = new AppBridgeHost({ client: fakeClient(), serverID: 'srv', toolContext: ctx });
+    const bridge = captured.instances[0];
+
+    await host.connect({} as unknown as Window);
+    bridge.fireInitialized();
+    await flushMicrotasks();
+
+    expect(bridge.toolInputCalls).toEqual([{ arguments: {} }]);
+    expect(bridge.toolResultCalls).toHaveLength(1);
   });
 });
