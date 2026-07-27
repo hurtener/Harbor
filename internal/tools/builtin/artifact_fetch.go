@@ -288,6 +288,15 @@ func artifactFetch(ctx context.Context, store artifacts.ArtifactStore, bounds fe
 // blob, plus whether bytes remain AFTER the window. An offset at or
 // beyond the blob yields an empty window and truncated=false — nothing
 // follows it, which is the honest answer rather than an error.
+//
+// The returned slice is a COPY. The window outlives the store call that
+// produced the blob, and whether a store's returned buffer is the
+// caller's to keep is a per-driver property, not a contract every driver
+// states — so the read side does not depend on the answer. The Protocol
+// byte read holds the same invariant at its own window helper; a
+// window-slicing helper that aliases and one that copies are the same
+// helper disagreeing with itself, and the disagreement is only ever
+// discovered by the driver that stops cloning.
 func artifactWindow(blob []byte, offset, maxBytes int64) (window []byte, truncated bool) {
 	total := int64(len(blob))
 	if offset >= total {
@@ -297,7 +306,9 @@ func artifactWindow(blob []byte, offset, maxBytes int64) (window []byte, truncat
 	if end > total {
 		end = total
 	}
-	return blob[offset:end], end < total
+	out := make([]byte, end-offset)
+	copy(out, blob[offset:end])
+	return out, end < total
 }
 
 // strTrim is a small helper to keep the body compact; the standard

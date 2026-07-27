@@ -78,7 +78,7 @@ refusal looks like:
 
 | Surface | Body components it will cross | Claim | Refused without it |
 |---|---|---|---|
-| `artifacts.list` | `tenant` | `admin` or `console:fleet` | `403 scope_mismatch` |
+| `artifacts.list` | `tenant`, `user` | `admin` or `console:fleet` | `403 scope_mismatch` (tenant) / `403 identity_scope_required` (user) |
 | `artifacts.put` / `artifacts.delete` | `tenant` | `admin` only | `403 scope_mismatch` |
 | `artifacts.get_ref` | — (crosses for nobody) | — | `403 scope_mismatch` |
 | the seven posture reads (`runtime.*`, `metrics.snapshot`, `governance.posture`, `llm.posture`) | `tenant` | `admin` or `console:fleet` | `403 scope_mismatch` |
@@ -100,6 +100,25 @@ Writes take `admin` alone: `artifacts.put`, `artifacts.delete` and
 `artifacts.get_ref` crosses for no claim at all — a presigned reference is a
 time-bounded bearer capability to the CONTENT, materially broader than the
 metadata a listing returns.
+
+### An artifact listing is scoped to your own user
+
+`artifacts.list` treats its scope's `user` and `session` differently, and the
+difference is worth sending deliberately:
+
+- **`user` is an isolation principal.** Omit it and the listing folds to YOUR
+  user — not to every user in the tenant. Name somebody else's and you are
+  refused `403 identity_scope_required` unless you hold `admin` or
+  `console:fleet`; with either claim, naming a user reads that user and
+  omitting it fans across the whole tenant.
+- **`session` is a filter, not a boundary.** Omit it and you get artifacts from
+  every session of your own; name one of your own sessions and it narrows. No
+  claim is involved either way, because the `user` fold above already decides
+  whose artifacts you can see.
+
+So the ordinary "show me my artifacts" call is `{"scope": {"tenant": "..."}}`
+and it needs no claim. The tenant-wide catalog is the same call **with** a
+claim. The `events.list` filter draws the same line on the same two axes.
 
 Every granted crossing publishes `audit.admin_scope_used` naming the verified
 caller.
