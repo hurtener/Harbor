@@ -92,6 +92,15 @@ func decodeArtifactsRequest(method methods.Method, body []byte) (any, *types.Art
 			}
 		}
 		return req, &req.Scope, nil
+	case methods.MethodArtifactsGet:
+		req := &types.ArtifactsGetRequest{}
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, req); err != nil {
+				return nil, nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+					"method %q: request body is not a valid ArtifactsGetRequest", string(method))
+			}
+		}
+		return req, &req.Scope, nil
 	case methods.MethodArtifactsGetRef:
 		req := &types.ArtifactsGetRefRequest{}
 		if len(body) > 0 {
@@ -118,10 +127,12 @@ func decodeArtifactsRequest(method methods.Method, body []byte) (any, *types.Art
 
 // reconcileArtifactsIdentity routes the artifacts request body's
 // ArtifactScope through the shared body-identity gate under the posture
-// the METHOD carries. The artifacts cluster holds four, and the
-// registry states each: a listing crosses tenants under either admin-tier
-// claim, an upload or a delete takes the administrative claim alone, and
-// a presigned reference crosses for nobody.
+// the METHOD carries. The artifacts cluster holds four postures across
+// five methods, and the registry states each: a listing crosses tenants
+// under either admin-tier claim, an upload or a delete takes the
+// administrative claim alone, and the two CONTENT reads — the
+// driver-independent byte read and the presigned reference — cross for
+// nobody, sharing one posture row because they share one reason.
 //
 // Selecting per method matters beyond correctness: it keeps the gate
 // from recording a crossing that the surface one layer down will refuse,
@@ -137,7 +148,7 @@ func (h *Handler) reconcileArtifactsIdentity(r *http.Request, method methods.Met
 		surface = bodyscope.SurfaceArtifactsPut
 	case methods.MethodArtifactsDelete:
 		surface = bodyscope.SurfaceArtifactsDelete
-	case methods.MethodArtifactsGetRef:
+	case methods.MethodArtifactsGet, methods.MethodArtifactsGetRef:
 		surface = bodyscope.SurfaceArtifactsRef
 	}
 	return bodyscope.Reconcile(r.Context(), bodyscope.ForArtifactScope(scope),

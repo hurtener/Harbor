@@ -63,8 +63,13 @@ var requestSurfaces = map[string]Surface{
 	"AgentToolsRequest":       SurfaceAgents,
 
 	// artifacts — the one surface whose list and put reach another
-	// tenant under the admin claim.
+	// tenant under the admin claim. The two CONTENT reads join the SAME
+	// flat row: a driver-independent byte read and a presigned reference
+	// hand over the same thing over different transports, so the posture
+	// that refuses one refuses the other, and it is one row rather than
+	// two copies of one reason.
 	"ArtifactsDeleteRequest": SurfaceArtifactsDelete,
+	"ArtifactsGetRequest":    SurfaceArtifactsRef,
 	"ArtifactsGetRefRequest": SurfaceArtifactsRef,
 	"ArtifactsListRequest":   SurfaceArtifacts,
 	"ArtifactsPutRequest":    SurfaceArtifactsPut,

@@ -121,7 +121,8 @@ var registry = map[string]registrar{
 	// truncated preview. Always-loaded so the LLM has the recovery
 	// path without needing tool_search.
 	"artifact_fetch": func(rc RegistryContext) error {
-		return registerArtifactFetch(rc.Catalog, rc.ArtifactStore)
+		return registerArtifactFetch(rc.Catalog, rc.ArtifactStore,
+			resolveFetchBounds(rc.ArtifactFetchDefaultMaxBytes, rc.ArtifactFetchHardMaxBytes))
 	},
 }
 
@@ -163,6 +164,18 @@ type RegistryContext struct {
 	Bus           events.EventBus
 	Redactor      audit.Redactor
 	GrantedScopes []string
+	// ArtifactFetchDefaultMaxBytes and ArtifactFetchHardMaxBytes are the
+	// operator's artifact read-back bound: the window `artifact_fetch`
+	// serves when the model names none, and the ceiling the model's own
+	// bound is clamped to. Optional — a non-positive value takes the
+	// built-in default, which is what keeps a catalog assembled without
+	// a configuration working.
+	//
+	// They are the SAME operator policy the Protocol's byte read serves
+	// under, so the tool and the wire surface cannot drift into two
+	// different ceilings.
+	ArtifactFetchDefaultMaxBytes int
+	ArtifactFetchHardMaxBytes    int
 }
 
 // Register attaches each named built-in to the catalog. Equivalent to

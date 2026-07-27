@@ -183,7 +183,13 @@ tools:
     - artifact_fetch   # always-loaded; lets the LLM recover full payloads above the threshold
 ```
 
-`artifact_fetch` takes `{ref: string, max_bytes?: int}` (default 64 KiB, hard cap 1 MiB) and returns `{ref, mime, size_bytes, content, truncated}`. Cross-tenant reads are rejected by the artifact store — the meta-tool surfaces a soft "not found" error without exposing the bytes (the `internal/tools/builtin/artifact_fetch_test.go::TestArtifactFetch_CrossIdentity_RejectedByStore` test is the regression gate).
+`artifact_fetch` takes `{ref: string, max_bytes?: int, offset?: int}` and returns `{ref, mime, size_bytes, content, offset, returned_bytes, total_size_bytes, truncated}`.
+
+**Windowing.** `offset` is a **byte** index, not a line or row index, so the model pages a large file by reading at offset 0 and re-calling with `offset` advanced to the previous `offset + returned_bytes` while `truncated` is `true`. A window can begin and end mid-line; the model splits the text itself. (Row- or schema-addressed windowing is deliberately not offered — a stored MIME is not revisable on a content-addressed store, so keying read behaviour on one would turn a wrong stamp into a permanent refusal.)
+
+**Bounds are operator policy.** `max_bytes` defaults to `artifacts.fetch_default_max_bytes` (64 KiB) and is clamped to `artifacts.fetch_hard_max_bytes` (1 MiB); both are `harbor.yaml` keys you can tune — see [`docs/CONFIG.md`](../../CONFIG.md) → `artifacts`. A `max_bytes` above the ceiling is **served at the ceiling**, not refused, and the response says so through `truncated` / `total_size_bytes` / `returned_bytes`. The same knobs bound the `artifacts.get` Protocol method, so a model and a Console client reading one artifact never disagree about what "truncated" means. The ceiling bounds ONE fetch — it is not a budget over repeated fetches; that stays the governance layer's concern.
+
+Cross-tenant reads are rejected by the artifact store — the meta-tool surfaces a soft "not found" error without exposing the bytes (the `internal/tools/builtin/artifact_fetch_test.go::TestArtifactFetch_CrossIdentity_RejectedByStore` test is the regression gate).
 
 **The scope is the session, and that is the whole scope.** The store resolves a read on `(tenant, user, session)` plus the ref id; the producing task is recorded on the artifact as provenance and takes no part in resolution. So a later run in the SAME session can fetch an artifact an earlier run produced — which is what makes the `<session_artifacts>` block honest, since it lists every artifact in the session and tells the model it may fetch any of them. A different session, user or tenant still answers "not found" through the same soft-error path, with no way to tell "not yours" from "does not exist".
 

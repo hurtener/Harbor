@@ -397,8 +397,9 @@ type FlowRunDescription struct {
 	// produced no output or when the output was routed by-reference.
 	OutputPreview string `json:"output_preview,omitempty"`
 	// OutputRef is populated when the run's final output exceeded the
-	// heavy-content threshold. The Console fetches the bytes via
-	// `artifacts.get` when it wants them. When OutputRef is set,
+	// heavy-content threshold. A client fetches the bytes through
+	// `artifacts.get`, the driver-independent byte read every
+	// registered artifact driver serves. When OutputRef is set,
 	// OutputPreview is empty.
 	OutputRef *FlowArtifactRef `json:"output_ref,omitempty"`
 }

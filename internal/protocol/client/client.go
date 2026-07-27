@@ -167,6 +167,7 @@ type Client interface {
 // the native TUI. Narrow projection consumers continue to depend on Client.
 type RuntimeClient interface {
 	Client
+	ArtifactsGet(context.Context, types.ArtifactsGetRequest) (types.ArtifactsGetResponse, error)
 	ArtifactsGetRef(context.Context, types.ArtifactsGetRefRequest) (types.ArtifactsGetRefResponse, error)
 	ArtifactsDelete(context.Context, types.ArtifactsDeleteRequest) (types.ArtifactsDeleteResponse, error)
 	ToolsList(context.Context, types.ToolListRequest) (types.ToolListResponse, error)
@@ -509,6 +510,20 @@ func (c *client) ArtifactsList(ctx context.Context, request types.ArtifactsListR
 	request.Scope.Session = identity.Session
 	var out types.ArtifactsListResponse
 	err := c.callMethod(ctx, methods.MethodArtifactsList, request, &out)
+	return out, err
+}
+
+// ArtifactsGet reads an artifact's bytes through the driver-independent
+// byte read. The caller's own scope is stamped from the client's
+// identity — a client never names another triple — and the response is
+// truthful about the bound that produced it (TotalSizeBytes /
+// ReturnedBytes / Truncated), so a bounded read is never mistakable for
+// a complete one.
+func (c *client) ArtifactsGet(ctx context.Context, request types.ArtifactsGetRequest) (types.ArtifactsGetResponse, error) {
+	identity := c.scope()
+	request.Scope.Tenant, request.Scope.User, request.Scope.Session = identity.Tenant, identity.User, identity.Session
+	var out types.ArtifactsGetResponse
+	err := c.callMethod(ctx, methods.MethodArtifactsGet, request, &out)
 	return out, err
 }
 

@@ -745,6 +745,35 @@ Byte size at which the runtime mandatorily routes a payload through
 the ArtifactStore (D-022 / D-026). Default: `32768` (32 KiB).
 Validation: >= 0.
 
+### artifacts.fetch_default_max_bytes
+
+Window served by an artifact read-back when the caller names no bound
+of its own — `artifacts.get` on the Protocol surface, and the
+`artifact_fetch` builtin the model calls. Default: `65536` (64 KiB).
+Validation: `>= 0` (0 selects the built-in default), and the resolved
+value must not exceed the resolved `artifacts.fetch_hard_max_bytes`.
+
+`heavy_output_threshold_bytes` above governs what GOES OUT to the store;
+this and the ceiling below govern what COMES BACK, and the pair is meant
+to be tuned together. Not hot-reloadable — restart required.
+
+### artifacts.fetch_hard_max_bytes
+
+Ceiling a caller's own read-back bound is clamped to. Default:
+`1048576` (1 MiB). Validation: `>= 0` (0 selects the built-in default).
+
+A request above the ceiling is **served at the ceiling**, not refused,
+and the response says so through its `truncated` / `total_size_bytes` /
+`returned_bytes` fields — a caller cannot know a deployment's ceiling
+before asking, so a refusal would cost a round trip and teach nothing.
+Silent truncation is what the fail-loud rule forbids; truthful
+truncation is the posture.
+
+**The guarantee is bounded and stated as such:** this ceiling bounds ONE
+read. It is not a budget over repeated reads — aggregate consumption
+stays the governance layer's concern (cost ceilings and rate limits).
+Not hot-reloadable — restart required.
+
 ### artifacts.s3_bucket
 
 S3 bucket name (Phase 19). Default: empty. Validation: required

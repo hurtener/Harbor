@@ -825,6 +825,27 @@ func (c *Config) validateArtifacts() error {
 	if c.Artifacts.HeavyOutputThresholdBytes < 0 {
 		return fieldError("artifacts.heavy_output_threshold_bytes", "must be >= 0")
 	}
+	// The read-back bound. Zero on either field means "unset" and
+	// resolves to the documented built-in, which is what keeps a
+	// configuration written before these fields existed valid. A NEGATIVE
+	// value is not an omission — it is an operator asking for something
+	// incoherent, so it is refused by name rather than silently
+	// reinterpreted.
+	if c.Artifacts.FetchDefaultMaxBytes < 0 {
+		return fieldError("artifacts.fetch_default_max_bytes",
+			"must be >= 0 (0 selects the built-in 64 KiB default)")
+	}
+	if c.Artifacts.FetchHardMaxBytes < 0 {
+		return fieldError("artifacts.fetch_hard_max_bytes",
+			"must be >= 0 (0 selects the built-in 1 MiB default)")
+	}
+	// The comparison runs on the RESOLVED values, because a default
+	// above a configured ceiling is the same misconfiguration whether the
+	// operator wrote the default or inherited it.
+	if def, hard := c.Artifacts.ResolvedFetchDefaultMaxBytes(), c.Artifacts.ResolvedFetchHardMaxBytes(); def > hard {
+		return fieldError("artifacts.fetch_default_max_bytes",
+			fmt.Sprintf("resolved default %d must not exceed the resolved artifacts.fetch_hard_max_bytes %d", def, hard))
+	}
 	return nil
 }
 

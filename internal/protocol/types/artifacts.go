@@ -8,7 +8,7 @@ import (
 
 // the artifacts-page Protocol wire types.
 //
-// Harbor ships three Protocol methods over the runtime's content-
+// Harbor ships five Protocol methods over the runtime's content-
 // addressed artifact store:
 //
 //   - artifacts.list    — the identity-scope-filtered catalog, with the
@@ -17,16 +17,41 @@ import (
 //   - artifacts.put     — the Console (and Playground) file-upload
 //     pipeline; routes through audit.Redactor then
 //     ArtifactStore.PutBytes and returns the canonical ArtifactRef.
+//   - artifacts.get     — the driver-independent byte read. It resolves
+//     through ArtifactStore.Get, so every registered driver serves it,
+//     the in-memory default included.
 //   - artifacts.get_ref — the read-side presigned-URL resolver per
 //     contract; type-asserts the store to artifacts.Presigner.
+//   - artifacts.delete  — the admin-gated eviction.
+//
+// artifacts.get and artifacts.get_ref are NOT two implementations of one
+// thing. artifacts.get is the CONTRACT — the universal, driver-
+// independent read every client can rely on. artifacts.get_ref is a
+// driver-specific TRANSPORT OPTIMISATION: where the store can hand bytes
+// off its own edge, a large media download need not transit the Runtime.
+// Both resolve the same ref under the same verified identity and the same
+// flat, non-elevatable scope posture; they differ in WHO SERVES THE
+// BYTES, not in who may read them.
 //
 // Every type here is a flat, Protocol-owned struct — never a re-export
-// of internal/artifacts Go types (RFC §5.1 reject-on-sight smell). In
-// particular, heavy bytes NEVER travel inline through these wire types:
+// of internal/artifacts Go types (RFC §5.1 reject-on-sight smell).
+//
+// # Where the bytes may and may not travel
+//
 // artifacts.list returns metadata-only rows, artifacts.get_ref returns a
 // presigned URL, and artifacts.put accepts the upload bytes only on the
-// request leg (the response is a reference). This is the context-
-// window safety net read into the Protocol surface.
+// request leg (the response is a reference). artifacts.get is the one
+// wire shape here that carries stored bytes, and it carries them on a
+// RESPONSE to the caller's own verified identity, bounded by the
+// operator's fetch ceiling and truthful about that bound.
+//
+// That does not relax the context-window safety net, because the net is
+// about what reaches a MODEL'S CONTEXT, not about what an authenticated
+// caller may read: a heavy tool result is offloaded so the event stream
+// and the prompt do not carry it, and an explicit read-back by the
+// principal that already reaches those bytes is what the offload exists
+// to make possible. A bounded artifacts.get response is not an event
+// payload, is not written to a trajectory, and is not logged.
 
 // ArtifactSource is the closed enum of artifact producers. A free-text
 // field would invite drift; the enum can be extended via a future RFC
@@ -255,6 +280,93 @@ type ArtifactsPutResponse struct {
 	// Ref is the content-addressed reference to the stored artifact.
 	Ref ArtifactRef `json:"ref"`
 	// ProtocolVersion echoes the Protocol version.
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// ArtifactsGetRequest is the wire request for the artifacts.get
+// Protocol method — the driver-independent byte read. It resolves
+// through ArtifactStore.Get, so every registered driver serves it, the
+// in-memory default included.
+//
+// The read is bounded in two ways that share ONE response field set
+// (see ArtifactsGetResponse): Offset selects where the window starts,
+// MaxBytes bounds how long it is, and the operator's configured fetch
+// ceiling bounds MaxBytes itself. A window is a CONTRACT, not a cost
+// claim — the store materialises the whole blob and the window is taken
+// from it, so a bounded read is correct before it is cheap.
+type ArtifactsGetRequest struct {
+	// Scope is the caller's identity scope. Tenant / User / Session are
+	// mandatory; Task is a provenance annotation and takes no part in
+	// resolution.
+	Scope ArtifactScope `json:"scope"`
+	// ID is the content-addressed artifact identifier to read.
+	ID string `json:"id"`
+	// Offset is the zero-based byte index the returned window starts at.
+	// Zero reads from the beginning. An offset at or beyond the
+	// artifact's size is not an error: the response carries no content,
+	// reports ReturnedBytes 0, and reports Truncated false, because
+	// nothing follows the window.
+	//
+	// Negative is rejected with CodeInvalidRequest — a caller that meant
+	// "from the end" is expressing something this method does not offer,
+	// and silently reinterpreting it would be a guess.
+	Offset int64 `json:"offset,omitempty"`
+	// MaxBytes bounds the returned window. Zero (or omitted) applies the
+	// operator's configured default; a value above the operator's
+	// configured hard ceiling is SERVED AT THE CEILING rather than
+	// refused, and the clamp is reported through Truncated /
+	// TotalSizeBytes / ReturnedBytes like every other bound.
+	//
+	// Serving rather than refusing is deliberate: a caller cannot know
+	// the deployment's ceiling before asking, so a refusal would cost it
+	// a round trip and teach it nothing. Truthful truncation is the
+	// correct posture; SILENT truncation is the one the fail-loud rule
+	// names.
+	//
+	// Negative is rejected with CodeInvalidRequest for the same reason
+	// Offset is.
+	MaxBytes int64 `json:"max_bytes,omitempty"`
+}
+
+// ArtifactsGetResponse is the wire response for artifacts.get: the ref's
+// metadata, the bytes actually returned, and a truthful account of the
+// bound that produced them.
+//
+// ONE field set answers every bound — the caller's MaxBytes, the
+// operator's ceiling, and the Offset window — rather than a signal per
+// source. A client that wants the rest re-reads at
+// Offset + ReturnedBytes.
+//
+// The guarantee the ceiling carries is bounded and stated as such: it
+// bounds ONE read. It is not a budget over repeated reads, and aggregate
+// consumption stays the governance layer's concern (cost ceilings and
+// rate limits).
+type ArtifactsGetResponse struct {
+	// Ref is the artifact metadata reference — the same projection
+	// artifacts.get_ref and artifacts.list return.
+	Ref ArtifactRef `json:"ref"`
+	// Content is the returned window. JSON-encoded as a base64 string by
+	// the standard []byte marshaller. Empty when the requested Offset is
+	// at or beyond TotalSizeBytes.
+	Content []byte `json:"content,omitempty"`
+	// Offset echoes the byte index the window starts at, so a response
+	// read out of order is self-describing.
+	Offset int64 `json:"offset"`
+	// ReturnedBytes is len(Content). It is stated rather than left to be
+	// measured so a client that streams the field can reconcile.
+	ReturnedBytes int64 `json:"returned_bytes"`
+	// TotalSizeBytes is the artifact's full stored size — the
+	// denominator a bounded read is bounded against.
+	TotalSizeBytes int64 `json:"total_size_bytes"`
+	// Truncated reports whether bytes remain AFTER the returned window
+	// (Offset + ReturnedBytes < TotalSizeBytes). It is true whether the
+	// bound came from the caller's MaxBytes, the operator's default, or
+	// the operator's hard ceiling — so a bounded read is never
+	// mistakable for a complete one, and a client never has to know
+	// which bound applied to know that it did.
+	Truncated bool `json:"truncated"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under so a client can detect a version skew.
 	ProtocolVersion string `json:"protocol_version"`
 }
 
