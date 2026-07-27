@@ -90,9 +90,18 @@ assert_grep_present 'func ScanSubstitutionSites\(' "${AREF_SCAN}" \
 # what keeps an aliased import from silently evading the scan.
 assert_grep_present 'PkgPath = "github.com/hurtener/Harbor/internal/tools/artifactref"' "${AREF_SCAN}" \
     "phase 210: the scan resolves this package by import path (an alias is followed)"
+# A bound counted in CALL positions is no bound once the function itself
+# can travel; the scan reports the writer named as a value too.
+assert_grep_present 'KindSubstitutionValueRef' "${AREF_SCAN}" \
+    "phase 210: the scan flags the substitution writer taken as a VALUE, not only called"
 
-run_phase210_test 'TestSubstitution_' "./${AREF_DIR}/" \
-    "phase 210: the substitution has one reviewed call site (scan green against the real tree, with its non-vacuity, alias, lookalike, second-site and stale-registration pins)"
+# The WHOLE package, not a name prefix. A `TestSubstitution_` selector
+# ran the scan tests and nothing else — the carrier's own tests
+# (TestSubstitute_*, TestRef_*, TestTypeContainsRef_*, TestWithResolver_*)
+# are what pin the projection that keeps resolved bytes out of every JSON
+# door, and a selector that skips them is a guard that cannot fail.
+run_phase210_test '.' "./${AREF_DIR}/" \
+    "phase 210: the artifactref package is green in full — the one-reviewed-call-site scan (with its non-vacuity, alias, lookalike, second-site and stale-registration pins) AND the carrier's projection, resolver and type-walk tests"
 
 # ----------------------------------------------------------------------------
 # 3. The arrival check — findContextLeak walks ToolCalls[].Args.

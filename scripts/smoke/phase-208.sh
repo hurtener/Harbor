@@ -29,6 +29,32 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
+# assert_in_list_body <pattern> <file> <description>
+# Asserts an extended-regex pattern appears inside the driver's `List`
+# method body specifically. A file-scope grep matches the pattern in ANY
+# method, so a driver that gained the call elsewhere and lost it here
+# would still read green — the guard would be inert exactly when it
+# mattered. Lives here rather than in common.sh because the "extract one
+# Go method body" shape has one consumer; it moves to common.sh on the
+# second (AGENTS.md §4.2 item 3).
+assert_in_list_body() {
+    local pattern="$1" file="$2" desc="$3" body
+    if [ ! -f "${file}" ]; then
+        fail "${desc} — ${file} absent"
+        return
+    fi
+    body="$(awk '/^func [(][^)]*[)] List[(]/{inbody=1} inbody{print} inbody && /^}$/{exit}' "${file}")"
+    if [ -z "${body}" ]; then
+        fail "${desc} — no List method body found in ${file}"
+        return
+    fi
+    if printf '%s\n' "${body}" | grep -qE -- "${pattern}"; then
+        ok "${desc}"
+    else
+        fail "${desc} — pattern '${pattern}' absent from the List body in ${file}"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # 1. Behavioural gate
 # ---------------------------------------------------------------------------
@@ -43,6 +69,19 @@ if go test -race -count=1 -timeout 300s -run 'TestE2E_ArtifactReadKey' ./test/in
     ok 'phase 208: TestE2E_ArtifactReadKey_* passes — the session-artifact manifest lists only refs artifact_fetch resolves'
 else
     fail 'phase 208: TestE2E_ArtifactReadKey_* failed (run `go test -race -run TestE2E_ArtifactReadKey ./test/integration/`)'
+fi
+
+# The listing's identity bound. The store's read key is the triple; the
+# Protocol listing is where an ELIDED user could still have meant "every
+# user in the tenant", so the surface's own fold is gated here too. The
+# whole selection runs: the fold, the named-foreign-user refusal, the
+# claim that reopens both, and the session axis that stays a wildcard.
+if go test -race -count=1 -timeout 300s \
+    -run 'TestArtifactsListHandler_ElidedUser_|TestArtifactsListHandler_NamedForeignUser_|TestArtifactsListHandler_CrossUser_|TestArtifactsListHandler_OwnSessions' \
+    ./internal/protocol/ >/dev/null 2>&1; then
+    ok "phase 208: artifacts.list is scoped to the caller's own user unless an admin-tier claim widens it (fold, refusal, both claims, session wildcard)"
+else
+    fail 'phase 208: the artifacts.list identity bound failed (run `go test -race -run TestArtifactsListHandler_ ./internal/protocol/`)'
 fi
 
 # ---------------------------------------------------------------------------
@@ -113,11 +152,14 @@ assert_grep_present 's.store.List\(ctx, s.scope.Triple\(\)\)' \
     'phase 208: ScopedArtifacts.List filters on the triple, so listing and reading agree'
 
 # Every driver validates List's tenant precondition — it was the one
-# ArtifactStore method no driver validated.
+# ArtifactStore method no driver validated. Anchored INSIDE the List
+# body: a file-scope grep was sound only by accident (exactly one
+# occurrence per driver today), and adding a ValidateFilter call to any
+# other method would have made all five guards inert at once.
 for driver in inmem fs sqlite postgres s3; do
-    assert_grep_present 'filter.ValidateFilter\(\)' \
+    assert_in_list_body 'filter\.ValidateFilter\(\)' \
         "internal/artifacts/drivers/${driver}/${driver}.go" \
-        "phase 208: ${driver}.List validates the filter's tenant"
+        "phase 208: ${driver}.List validates the filter's tenant (inside the List body)"
 done
 
 assert_grep_present 'func \(s ArtifactScope\) ValidateFilter\(\) error' \

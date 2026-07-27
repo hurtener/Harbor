@@ -143,6 +143,93 @@ func TestSubstitution_ASecondCallSiteFailsTheScan(t *testing.T) {
 	}
 }
 
+// TestSubstitution_AValueReferenceDoesNotEvadeTheScan — this is the
+// exact evasion the call-position-only scan admitted: take the writer as
+// a VALUE and call it through the variable, and a scan that keyed on
+// *ast.CallExpr saw a call to `sneak`, not to `artifactref.Substitute`.
+// A second, unregistered substitution site compiled and the gate stayed
+// green — a bound on call sites that a function value walks straight
+// past.
+func TestSubstitution_AValueReferenceDoesNotEvadeTheScan(t *testing.T) {
+	dir := t.TempDir()
+	src := `package worker
+
+import (
+	"context"
+
+	"github.com/hurtener/Harbor/internal/tools/artifactref"
+)
+
+var sneak = artifactref.Substitute
+
+func Bind(ctx context.Context, in any) error {
+	return sneak(ctx, in)
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "sneak.go"), []byte(src), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	violations, _, err := artifactref.ScanSubstitutionSites(dir, nil)
+	if err != nil {
+		t.Fatalf("ScanSubstitutionSites: %v", err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("a value reference produced %d violations, want 1; got %v", len(violations), violations)
+	}
+	if violations[0].Kind != artifactref.KindSubstitutionValueRef {
+		t.Fatalf("kind = %q, want %q", violations[0].Kind, artifactref.KindSubstitutionValueRef)
+	}
+	if violations[0].File != "sneak.go" {
+		t.Fatalf("violation named %q, want sneak.go", violations[0].File)
+	}
+}
+
+// TestSubstitution_AValueReferenceIsNotExcusedByTheAllowList — the
+// reviewed list registers a SITE THAT SUBSTITUTES; it does not hand out
+// the writer. A registered file that takes the writer as a value can
+// pass it anywhere, so the bound the list is meant to hold would leave
+// with it.
+func TestSubstitution_AValueReferenceIsNotExcusedByTheAllowList(t *testing.T) {
+	dir := t.TempDir()
+	src := `package worker
+
+import (
+	"context"
+
+	"github.com/hurtener/Harbor/internal/tools/artifactref"
+)
+
+type args struct {
+	Doc artifactref.Ref ` + "`json:\"doc\"`" + `
+}
+
+// A legitimate registered call ...
+func bind(ctx context.Context, in *args) error {
+	return artifactref.Substitute(ctx, in)
+}
+
+// ... and a hand-off of the writer from the very same file.
+func Escape() func(context.Context, any) error {
+	return artifactref.Substitute
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "registered.go"), []byte(src), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	violations, _, err := artifactref.ScanSubstitutionSites(dir,
+		map[string]string{"registered.go": "the reviewed site"})
+	if err != nil {
+		t.Fatalf("ScanSubstitutionSites: %v", err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("a value hand-off from the registered file produced %d violations, want 1; got %v",
+			len(violations), violations)
+	}
+	if violations[0].Kind != artifactref.KindSubstitutionValueRef {
+		t.Fatalf("kind = %q, want %q", violations[0].Kind, artifactref.KindSubstitutionValueRef)
+	}
+}
+
 // TestSubstitution_AnImportAliasDoesNotEvadeTheScan — renaming an import
 // is an ordinary refactor, so a scan keyed on the conventional package
 // qualifier would quietly stop seeing the file that did it.

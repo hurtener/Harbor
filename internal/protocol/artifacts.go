@@ -306,10 +306,34 @@ func (s *ArtifactsSurface) Dispatch(ctx context.Context, method methods.Method, 
 	}
 }
 
-// handleList serves artifacts.list. It validates identity, gates a
-// cross-tenant request on the admin scope, reads the driver's
-// slice, and applies the filter extensions as a Go-side
-// projection.
+// handleList serves artifacts.list. It validates identity, holds the
+// listing to the caller's own user unless an administrative claim
+// widens it, reads the driver's slice, and applies the filter
+// extensions as a Go-side projection.
+//
+// # The listing's identity bound
+//
+// A listing is scoped to the caller's own user. Widening past that —
+// naming another user, or asking for every user in the tenant — takes
+// the admin or console:fleet claim, exactly as the events listing
+// requires for the same widening. The two axes read differently on
+// purpose:
+//
+//   - USER is an isolation principal, so an elided user folds to the
+//     caller's own rather than fanning across the tenant. A listing row
+//     carries the owning user id, session id, and content digest, and
+//     those are the caller's to see only for the caller's own artifacts.
+//   - SESSION is NOT an isolation boundary within one user, so it stays
+//     the list wildcard it has always been: an elided session means
+//     "every session of mine", and naming one of my own sessions needs
+//     no claim. The events listing draws the same line — its user axis
+//     elevates on a foreign value, its session axis does not — and the
+//     everyday "show me my artifacts" flow depends on the wildcard.
+//
+// A ctx with no verified identity (in-process embedding, a background
+// worker rooted outside any request) has no anchor to reconcile
+// against and is left unrestricted, matching the identity package's
+// documented posture and the cross-tenant gate directly below.
 func (s *ArtifactsSurface) handleList(ctx context.Context, req *types.ArtifactsListRequest) (any, error) {
 	m := string(methods.MethodArtifactsList)
 
@@ -328,21 +352,40 @@ func (s *ArtifactsSurface) handleList(ctx context.Context, req *types.ArtifactsL
 			"method %q: %v", m, err)
 	}
 
-	// Cross-tenant gate against the request's VERIFIED identity — the
-	// anchor a granted crossing never moves; a list whose scope Tenant differs from the
-	// verified tenant requires the admin (or console:fleet) scope.
+	scopeUser := req.Scope.User
+
+	// Identity gates against the request's VERIFIED identity — the anchor
+	// a granted crossing never moves.
 	if verified, ok := identity.FromVerified(ctx); ok {
-		if req.Scope.Tenant != verified.TenantID {
-			if !auth.HasScope(ctx, auth.ScopeAdmin) && !auth.HasScope(ctx, auth.ScopeConsoleFleet) {
-				return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
-					"method %q: cross-tenant artifact list requires the admin scope claim", m)
-			}
+		widened := auth.HasScope(ctx, auth.ScopeAdmin) || auth.HasScope(ctx, auth.ScopeConsoleFleet)
+
+		// Cross-tenant: a list whose scope Tenant differs from the
+		// verified tenant requires the admin (or console:fleet) scope.
+		if req.Scope.Tenant != verified.TenantID && !widened {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: cross-tenant artifact list requires the admin scope claim", m)
+		}
+
+		// Cross-user: a scope User that names somebody other than the
+		// verified caller is refused, and an ELIDED user folds to the
+		// caller's own rather than fanning across the tenant. Both are
+		// the same widening and take the same claim; only the claimed
+		// caller keeps the tenant-wide fan-in an empty user asks for.
+		switch {
+		case widened:
+			// The claim grants the fan-in: a named foreign user and an
+			// elided (all-users) one both pass through untouched.
+		case scopeUser == "":
+			scopeUser = verified.UserID
+		case scopeUser != verified.UserID:
+			return nil, protoerrors.Newf(protoerrors.CodeIdentityScopeRequired,
+				"method %q: cross-user artifact list requires a verified `admin` or `console:fleet` scope", m)
 		}
 	}
 
 	filter := artifacts.ArtifactScope{
 		TenantID:  req.Scope.Tenant,
-		UserID:    req.Scope.User,
+		UserID:    scopeUser,
 		SessionID: req.Scope.Session,
 		TaskID:    req.Scope.Task,
 	}

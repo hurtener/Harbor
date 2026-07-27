@@ -264,6 +264,188 @@ func TestArtifactsListHandler_AllowsCrossTenant_WithAdmin(t *testing.T) {
 	}
 }
 
+// listOwnerIDs seeds two users' artifacts in one tenant and returns the
+// surface plus the set of ids each user owns, so a listing assertion can
+// name WHOSE rows came back rather than only counting them.
+func seedTwoOwners(t *testing.T) (s *protocol.ArtifactsSurface, mine, theirs map[string]bool) {
+	t.Helper()
+	s = newArtifactsSurface(t, newInMemStore(t), "inmem")
+	mine, theirs = map[string]bool{}, map[string]bool{}
+
+	// The caller's own rows, deliberately spread across TWO of the
+	// caller's own sessions — an elided session must still return both.
+	for _, sess := range []string{"s-mine-1", "s-mine-2"} {
+		ref := putFixture(t, s, types.ArtifactScope{Tenant: "t-x", User: "u-mine", Session: sess},
+			[]byte("mine "+sess), types.ArtifactsPutOpts{MimeType: "text/plain"})
+		mine[ref.ID] = true
+	}
+	// A DIFFERENT user's row in the SAME tenant.
+	ref := putFixture(t, s, types.ArtifactScope{Tenant: "t-x", User: "u-theirs", Session: "s-theirs"},
+		[]byte("theirs"), types.ArtifactsPutOpts{MimeType: "text/plain"})
+	theirs[ref.ID] = true
+	return s, mine, theirs
+}
+
+// listAs dispatches artifacts.list under a verified identity plus the
+// given scope claims and returns the response rows.
+func listAs(t *testing.T, s *protocol.ArtifactsSurface, verified identity.Identity,
+	scopes []auth.Scope, reqScope types.ArtifactScope,
+) ([]types.ArtifactRow, error) {
+	t.Helper()
+	ctx, err := identity.WithVerified(context.Background(), verified)
+	if err != nil {
+		t.Fatalf("identity.WithVerified: %v", err)
+	}
+	if len(scopes) > 0 {
+		ctx = auth.WithScopes(ctx, scopes)
+	}
+	resp, err := s.Dispatch(ctx, methods.MethodArtifactsList, &types.ArtifactsListRequest{Scope: reqScope})
+	if err != nil {
+		return nil, err
+	}
+	lr, ok := resp.(*types.ArtifactsListResponse)
+	if !ok {
+		t.Fatalf("artifacts.list: response %T, want *types.ArtifactsListResponse", resp)
+	}
+	return lr.Rows, nil
+}
+
+// TestArtifactsListHandler_ElidedUser_FoldsToCaller pins the listing's
+// identity bound on the axis that carries it: a caller who names only a
+// tenant gets THEIR OWN artifacts, never the tenant's. Counting rows is
+// not enough — the assertion names the owning user on every row, because
+// a listing row carries the owner's user id, session id and content
+// digest, and those are the caller's to see only for the caller's own.
+//
+// Mirrors TestEventsList_CrossUserSameTenantWithoutScope_403 in
+// internal/protocol/transports/stream: same widening, same claim.
+func TestArtifactsListHandler_ElidedUser_FoldsToCaller(t *testing.T) {
+	t.Parallel()
+	s, mine, theirs := seedTwoOwners(t)
+	caller := identity.Identity{TenantID: "t-x", UserID: "u-mine", SessionID: "s-mine-1"}
+
+	rows, err := listAs(t, s, caller, nil, types.ArtifactScope{Tenant: "t-x"})
+	if err != nil {
+		t.Fatalf("tenant-only list: unexpected error %v", err)
+	}
+	if len(rows) != len(mine) {
+		t.Fatalf("tenant-only list returned %d rows, want %d (the caller's own)", len(rows), len(mine))
+	}
+	for _, r := range rows {
+		if theirs[r.Ref.ID] {
+			t.Fatalf("tenant-only list returned another user's row: id=%s scope.user=%s",
+				r.Ref.ID, r.Ref.Scope.User)
+		}
+		if r.Ref.Scope.User != caller.UserID {
+			t.Fatalf("row %s has scope.user %q, want the caller's %q",
+				r.Ref.ID, r.Ref.Scope.User, caller.UserID)
+		}
+		if !mine[r.Ref.ID] {
+			t.Fatalf("row %s is not one of the caller's seeded artifacts", r.Ref.ID)
+		}
+	}
+}
+
+// TestArtifactsListHandler_NamedForeignUser_RequiresClaim pins the other
+// half of the same bound: naming somebody else outright is refused with
+// the events listing's code, not silently narrowed to an empty page.
+func TestArtifactsListHandler_NamedForeignUser_RequiresClaim(t *testing.T) {
+	t.Parallel()
+	s, _, _ := seedTwoOwners(t)
+	caller := identity.Identity{TenantID: "t-x", UserID: "u-mine", SessionID: "s-mine-1"}
+
+	_, err := listAs(t, s, caller, nil, types.ArtifactScope{Tenant: "t-x", User: "u-theirs"})
+	if err == nil {
+		t.Fatal("cross-user list without a claim: want error, got nil")
+	}
+	if code := asProtoError(t, err); code != protoerrors.CodeIdentityScopeRequired {
+		t.Fatalf("cross-user list: code = %q, want identity_scope_required", code)
+	}
+}
+
+// TestArtifactsListHandler_CrossUser_PermittedWithClaim proves the claim
+// is what widens: BOTH admin-tier claims reopen the tenant-wide fan-in
+// (elided user) and the named-foreign-user read. Without this the fold
+// above could be an unconditional narrowing rather than a gate.
+func TestArtifactsListHandler_CrossUser_PermittedWithClaim(t *testing.T) {
+	t.Parallel()
+	for _, claim := range []auth.Scope{auth.ScopeAdmin, auth.ScopeConsoleFleet} {
+		t.Run(string(claim), func(t *testing.T) {
+			t.Parallel()
+			s, mine, theirs := seedTwoOwners(t)
+			caller := identity.Identity{TenantID: "t-x", UserID: "u-mine", SessionID: "s-mine-1"}
+			scopes := []auth.Scope{claim}
+
+			// Elided user under the claim = the tenant-wide fan-in.
+			rows, err := listAs(t, s, caller, scopes, types.ArtifactScope{Tenant: "t-x"})
+			if err != nil {
+				t.Fatalf("tenant-wide list with %s: unexpected error %v", claim, err)
+			}
+			if want := len(mine) + len(theirs); len(rows) != want {
+				t.Fatalf("tenant-wide list with %s returned %d rows, want %d", claim, len(rows), want)
+			}
+
+			// A named foreign user under the claim resolves to that user.
+			rows, err = listAs(t, s, caller, scopes, types.ArtifactScope{Tenant: "t-x", User: "u-theirs"})
+			if err != nil {
+				t.Fatalf("cross-user list with %s: unexpected error %v", claim, err)
+			}
+			if len(rows) != len(theirs) {
+				t.Fatalf("cross-user list with %s returned %d rows, want %d", claim, len(rows), len(theirs))
+			}
+			for _, r := range rows {
+				if !theirs[r.Ref.ID] {
+					t.Fatalf("cross-user list with %s returned an unexpected row %s", claim, r.Ref.ID)
+				}
+			}
+		})
+	}
+}
+
+// TestArtifactsListHandler_OwnSessionsStayWildcard pins the axis the
+// bound deliberately does NOT close: a session is not an isolation
+// boundary within one user, so an elided session still spans every
+// session of the caller's, and naming one of the caller's OWN other
+// sessions needs no claim. The everyday "show me my artifacts" flow —
+// the Console Artifacts page — depends on both.
+func TestArtifactsListHandler_OwnSessionsStayWildcard(t *testing.T) {
+	t.Parallel()
+	s, mine, _ := seedTwoOwners(t)
+	// The caller is seated in s-mine-1 but seeded rows in s-mine-2 too.
+	caller := identity.Identity{TenantID: "t-x", UserID: "u-mine", SessionID: "s-mine-1"}
+
+	// Elided session spans BOTH of the caller's sessions.
+	rows, err := listAs(t, s, caller, nil, types.ArtifactScope{Tenant: "t-x", User: "u-mine"})
+	if err != nil {
+		t.Fatalf("own-user list: unexpected error %v", err)
+	}
+	if len(rows) != len(mine) {
+		t.Fatalf("own-user list returned %d rows, want %d across both own sessions", len(rows), len(mine))
+	}
+
+	// Naming the caller's OWN other session is not a crossing.
+	rows, err = listAs(t, s, caller, nil, types.ArtifactScope{Tenant: "t-x", Session: "s-mine-2"})
+	if err != nil {
+		t.Fatalf("own other-session list: unexpected error %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("own other-session list returned %d rows, want 1", len(rows))
+	}
+	if rows[0].Ref.Scope.Session != "s-mine-2" {
+		t.Fatalf("own other-session list returned session %q, want s-mine-2", rows[0].Ref.Scope.Session)
+	}
+
+	// A FOREIGN session under the folded own-user filter yields nothing
+	// rather than another user's rows — the user fold closes it.
+	rows, err = listAs(t, s, caller, nil, types.ArtifactScope{Tenant: "t-x", Session: "s-theirs"})
+	if err != nil {
+		t.Fatalf("foreign-session list: unexpected error %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("foreign-session list returned %d rows, want 0", len(rows))
+	}
+}
+
 func TestArtifactsPutHandler_RoundTrip_InMem(t *testing.T) {
 	t.Parallel()
 	store := newInMemStore(t)
