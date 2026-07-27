@@ -46,16 +46,16 @@ None. The bare-name process-global registry (brief 03's one-catalog model, settl
 
 ## Acceptance criteria
 
-- [ ] `Registry.SetRawHTMLTrust` resolves through a tenant-scoped resolver: the owning tenant succeeds, a different tenant answers `ErrServerNotFound` with the live flag untouched, and a boot-declared registration stays writable.
-- [ ] The refusal for a registration another tenant owns is identical to the refusal for a name nobody registered.
-- [ ] The scoping tenant is read from the ctx identity the method already requires — never taken as a caller-supplied parameter — so the apply and the compensating revert resolve identically.
-- [ ] An empty tenant resolves to no registration at all; it never falls back to the whole registry.
-- [ ] `Registry.Deregister` takes an `auth.Owner` and removes only a registration carrying that exact tag; the ZERO owner matches boot-declared registrations and nothing else. The comparison runs under the same write lock as the delete.
-- [ ] The attach same-name replace and the run-start reconcile detach leg each thread their own owner through to the registry, and `projection.ConnectionDetacher.Detach` carries the owner its `AttachedSources` view was taken under.
-- [ ] `RefreshDiscovery` and `Probe` are documented as reads with their bare-name resolution stated as deliberate, and both stay bare-name.
-- [ ] Registry reads (`ListServers`, `GetServer`, `ListResources`, `ListPrompts`, `Health`, `OAuthDiscoveryTarget`, `ReadResource`), resolution and dispatch are unchanged.
-- [ ] `ProtocolVersion` is unchanged; no method, wire type, error code, or event moves.
-- [ ] `scripts/smoke/phase-211.sh` shows `OK ≥ 8`, `SKIP = 0`, `FAIL = 0` against a live preflight build, and FAILS (never SKIPs) when any guard is removed.
+- [x] `Registry.SetRawHTMLTrust` resolves through a tenant-scoped resolver: the owning tenant succeeds, a different tenant answers `ErrServerNotFound` with the live flag untouched, and a boot-declared registration stays writable.
+- [x] The refusal for a registration another tenant owns is identical to the refusal for a name nobody registered.
+- [x] The scoping tenant is read from the ctx identity the method already requires — never taken as a caller-supplied parameter — so the apply and the compensating revert resolve identically.
+- [x] An empty tenant resolves to no registration at all; it never falls back to the whole registry.
+- [x] `Registry.Deregister` takes an `auth.Owner` and removes only a registration carrying that exact tag; the ZERO owner matches boot-declared registrations and nothing else. The comparison runs under the same write lock as the delete.
+- [x] The attach same-name replace and the run-start reconcile detach leg each thread their own owner through to the registry, and `projection.ConnectionDetacher.Detach` carries the owner its `AttachedSources` view was taken under.
+- [x] `RefreshDiscovery` and `Probe` are documented as reads with their bare-name resolution stated as deliberate, and both stay bare-name.
+- [x] Registry reads (`ListServers`, `GetServer`, `ListResources`, `ListPrompts`, `Health`, `OAuthDiscoveryTarget`, `ReadResource`), resolution and dispatch are unchanged.
+- [x] `ProtocolVersion` is unchanged; no method, wire type, error code, or event moves.
+- [x] `scripts/smoke/phase-211.sh` shows `OK ≥ 8`, `SKIP = 0`, `FAIL = 0` against a live preflight build, and FAILS (never SKIPs) when any guard is removed.
 
 ## Files added or changed
 

@@ -332,6 +332,37 @@ func TestArtifactFetch_OffsetWindows(t *testing.T) {
 	}
 }
 
+// TestArtifactWindow_ReturnsACopyNotAnAlias pins the invariant the
+// Protocol byte read's window helper already states: the window outlives
+// the store call that produced the blob, so it must not alias the
+// driver's buffer. Whether a driver's returned buffer is the caller's to
+// keep is a per-driver property; the read side does not depend on the
+// answer. A helper that aliases looks identical to one that copies until
+// the day a driver stops cloning — this test is what tells them apart.
+func TestArtifactWindow_ReturnsACopyNotAnAlias(t *testing.T) {
+	t.Parallel()
+	blob := []byte("0123456789")
+	window, truncated := artifactWindow(blob, 2, 4)
+	if string(window) != "2345" || !truncated {
+		t.Fatalf("artifactWindow = (%q, %v), want (\"2345\", true)", window, truncated)
+	}
+
+	// The driver reuses (or a later caller overwrites) its buffer.
+	for i := range blob {
+		blob[i] = 'X'
+	}
+	if string(window) != "2345" {
+		t.Fatalf("the window became %q after the source blob was overwritten — it aliases the driver's buffer", window)
+	}
+
+	// The reverse direction too: writing through the window must not
+	// reach back into the store's bytes.
+	window[0] = 'Z'
+	if blob[2] != 'X' {
+		t.Fatalf("writing through the window reached the source blob (blob[2] = %q)", blob[2])
+	}
+}
+
 // TestArtifactFetch_PagesTheWholeArtifact walks the artifact the way the
 // tool's own description tells a model to: re-call at
 // offset + returned_bytes while truncated is true. A field set that is

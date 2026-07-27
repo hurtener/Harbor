@@ -157,6 +157,28 @@ Two versions move independently in Harbor (RFC §5.3):
   `session` and `task` remain wildcards within the tenant, so no existing
   request shape changes: the Protocol edge already refused a tenant-less list.
 
+- **An artifact listing is scoped to the caller's own user unless an
+  administrative claim widens it.** `artifacts.list` now decides its two
+  identity axes separately:
+
+  - **`user` is an isolation principal.** Omitting it lists YOUR artifacts —
+    it is no longer read as "every user in the tenant". Naming another user is
+    refused `403 identity_scope_required` unless the caller holds `admin` or
+    `console:fleet`; with either claim, naming a user reads that user and
+    omitting it fans across the whole tenant, which is the fleet view.
+  - **`session` is a filter, not a boundary.** Omitting it still spans every
+    session of your own, and naming one of your own sessions still narrows. No
+    claim is involved either way — the `user` decision above already settles
+    whose artifacts are in play.
+
+  This is the same line `events.list` draws on the same two axes. The everyday
+  call — `{"scope": {"tenant": "..."}}` — keeps working and needs no claim, and
+  the Console Artifacts page and Background Jobs artifact card are unaffected
+  because both already send the caller's own user. **ACTION** for anyone whose
+  client relied on a tenant-only listing to enumerate a whole tenant: mint the
+  token with `console:fleet` (read-only) or `admin`. `harbor token --scopes
+  console:fleet` does it.
+
 - **ACTION: the SQLite and Postgres artifact stores run a schema migration on
   first start after upgrade.** `0002_read_key_is_the_triple.sql` re-keys
   `artifacts_blobs` onto `(tenant, user, session, namespace, id)`. It is

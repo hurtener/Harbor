@@ -19,6 +19,15 @@ package artifactref
 // entry matching no call site is itself reported — so the list stays a
 // description of the code rather than a wish about it.
 //
+// It also reports the writer named as a VALUE rather than called —
+// assigned, passed, returned, stored — and reports it even from a file
+// on the reviewed list. A bound counted in call positions is no bound
+// at all once the function itself can travel: `var f =
+// artifactref.Substitute` followed by `f(ctx, in)` is a second
+// substitution site that a call-position scan reads as a call to `f`.
+// The list registers a site that substitutes; it does not hand out the
+// writer.
+//
 // The scan returns every violation it finds in one pass, plus the count
 // of files it read, so a test can prove it reached its tree: a scanner
 // that silently matched nothing is not a gate.
@@ -43,6 +52,16 @@ const PkgPath = "github.com/hurtener/Harbor/internal/tools/artifactref"
 // a site that is not on the reviewed list, or a list entry that names no
 // such call.
 const KindUnregisteredSubstitution = "unregistered_substitution_site"
+
+// KindSubstitutionValueRef — the substitution writer named as a VALUE
+// rather than called: assigned to a variable or field, passed as an
+// argument, returned, or stored in a map. The bound this scan holds is
+// on call sites, and a function value carries the call anywhere the
+// value goes — so a reference outside call position is reported
+// wherever it appears, INCLUDING from a file on the reviewed list. The
+// list registers a site that substitutes; it does not hand out the
+// writer.
+const KindSubstitutionValueRef = "substitution_writer_value_reference"
 
 // Violation is one breach found by the scan: the offending file
 // (relative to the scanned root), the 1-based line, the kind of breach,
@@ -119,12 +138,23 @@ func ScanSubstitutionSites(root string, allow map[string]string) ([]Violation, i
 		if local == "" {
 			return nil
 		}
+		// Collect the selectors that sit in CALL position first, so the
+		// walk below can tell a call from a bare value reference. Keying
+		// only on *ast.CallExpr saw calls and nothing else, which left
+		// `var f = artifactref.Substitute` — a second substitution site
+		// reachable through the value — invisible to a gate whose whole
+		// job is to hold the count at one.
+		calledSel := map[*ast.SelectorExpr]struct{}{}
 		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
+			if call, ok := n.(*ast.CallExpr); ok {
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+					calledSel[sel] = struct{}{}
+				}
 			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
+			return true
+		})
+		ast.Inspect(f, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
 			if !ok {
 				return true
 			}
@@ -135,11 +165,20 @@ func ScanSubstitutionSites(root string, allow map[string]string) ([]Violation, i
 			if _, ok := writers[sel.Sel.Name]; !ok {
 				return true
 			}
+			line := fset.Position(sel.Pos()).Line
+			if _, isCall := calledSel[sel]; !isCall {
+				// A value reference. Not excused by the allow-list: the
+				// list authorises a call site, and a function value can
+				// be called from anywhere it is handed to.
+				out = append(out, Violation{rel, line, KindSubstitutionValueRef, fmt.Sprintf(
+					"artifactref.%s is referenced as a VALUE rather than called; the substitution bound is on call sites, and a function value carries the call past every reviewed site — call it directly at a registered site, or pass the reference id through instead", sel.Sel.Name)})
+				return true
+			}
 			if _, ok := allow[rel]; ok {
 				used[rel] = true
 				return true
 			}
-			out = append(out, Violation{rel, fset.Position(call.Pos()).Line, KindUnregisteredSubstitution, fmt.Sprintf(
+			out = append(out, Violation{rel, line, KindUnregisteredSubstitution, fmt.Sprintf(
 				"artifactref.%s is called from a site that is not on the reviewed substitution list; a resolved artifact value entering a dispatched argument is dispatch-local by contract — register the site with the reason it is one, or pass the reference id through instead", sel.Sel.Name)})
 			return true
 		})

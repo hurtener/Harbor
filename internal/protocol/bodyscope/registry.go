@@ -88,7 +88,7 @@ var policies = map[Surface]Policy{
 	SurfaceArtifacts: {
 		Surface: SurfaceArtifacts, Wire: "artifacts",
 		Tenant: AdminScoped, User: PinnedOrEmpty, Session: PinnedOrEmpty,
-		Reason: "A fleet operator enumerates another tenant's artifacts under either admin-tier claim; an empty user or session is the list filter's wildcard, so it stays empty rather than being backfilled.",
+		Reason: "A fleet operator enumerates another tenant's artifacts under either admin-tier claim; an empty user or session arrives here as the list filter's wildcard, so the gate leaves it empty rather than backfilling it. What an empty component MEANS is the listing's own call, and it is not the same on both axes — the surface folds an elided user to the caller's own unless an admin-tier claim widens it, and keeps an elided session a wildcard within that user. This gate cannot express that split (an empty component short-circuits before any rule runs), which is why the listing's identity bound lives at the surface and this row stops at 'left empty'.",
 	},
 	SurfaceArtifactsDelete: {
 		Surface: SurfaceArtifactsDelete, Wire: "artifacts.removal",
