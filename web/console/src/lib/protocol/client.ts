@@ -379,6 +379,17 @@ export class ArtifactsNamespace {
 	put<R = unknown>(req: Record<string, unknown>): Promise<R> {
 		return this.#t.request<R>('/v1/control/artifacts.put', req);
 	}
+	/**
+	 * `artifacts.get` — the driver-independent byte read. Served by every
+	 * registered driver because it resolves through the mandatory store
+	 * `Get`; `getRef` below is the transport optimisation for stores that
+	 * can hand bytes off their own edge, not a second implementation of
+	 * this. The response is truthful about its own bound
+	 * (`total_size_bytes` / `returned_bytes` / `truncated`).
+	 */
+	get<R = unknown>(req: Record<string, unknown>): Promise<R> {
+		return this.#t.request<R>('/v1/control/artifacts.get', req);
+	}
 	/** `artifacts.get_ref` — the read-side presigned-URL resolver (D-022/D-026). */
 	getRef<R = unknown>(req: Record<string, unknown>): Promise<R> {
 		return this.#t.request<R>('/v1/control/artifacts.get_ref', req);

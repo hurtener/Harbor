@@ -33,11 +33,21 @@ PROTO_PKG="internal/protocol"
 # identity/scope/payload/unknown-method failure modes, the runtime-error
 # -> Protocol-code mapping) + the D-025 concurrent-reuse test (N>=100
 # Dispatch calls against one shared ControlSurface).
-if go test -race -count=1 -timeout 180s ./${PROTO_PKG}/... >/dev/null 2>&1; then
+# The output is CAPTURED and printed on failure rather than discarded.
+# A gate that reports "the tests failed" and nothing else costs the
+# reader a full re-run to learn WHICH test — and a failure that does not
+# reproduce outside preflight (resource pressure late in a 300-script
+# run, a timeout, a leaked port) leaves no evidence at all once the
+# process is gone. Same shape as run_phase210_test.
+PROTO_LOG="$(mktemp -t phase-54-XXXXXX)"
+if go test -race -count=1 -timeout 180s ./${PROTO_PKG}/... >"${PROTO_LOG}" 2>&1; then
     ok 'phase 54: internal/protocol tests pass under -race (10 method names + wire types + error codes + Dispatch routing for each method + identity/scope/payload failure modes + D-025 concurrent-reuse)'
 else
     fail 'phase 54: protocol tests failed (run `go test -race ./internal/protocol/...` for detail)'
+    printf -- '--- go test ./%s/... output ---\n' "${PROTO_PKG}"
+    cat "${PROTO_LOG}"
 fi
+rm -f "${PROTO_LOG}"
 
 # Run the Wave 9 wave-end E2E — the ten-method surface composed against
 # the REAL Wave 9 runtime surface (pauseresume.Coordinator + Agent

@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:824caea1729be0cf3051b0247a15a7599088d0dadc90724d21d6fb0462947fc7";
+export const WIRE_SURFACE_DIGEST = "sha256:bbe322ce1593356936e4f89548a6808aa50348d686c1dcb2198e2370a03b86d7";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -66,6 +66,7 @@ export type HarborMethod =
   | "agents.tools"
   | "approve"
   | "artifacts.delete"
+  | "artifacts.get"
   | "artifacts.get_ref"
   | "artifacts.list"
   | "artifacts.put"
@@ -1134,6 +1135,23 @@ export interface ArtifactsGetRefResponse {
   ref: ArtifactRef;
   presigned_url: string;
   expires_at: string;
+  protocol_version: string;
+}
+
+export interface ArtifactsGetRequest {
+  scope: ArtifactScope;
+  id: string;
+  offset?: number;
+  max_bytes?: number;
+}
+
+export interface ArtifactsGetResponse {
+  ref: ArtifactRef;
+  content?: string;
+  offset: number;
+  returned_bytes: number;
+  total_size_bytes: number;
+  truncated: boolean;
   protocol_version: string;
 }
 

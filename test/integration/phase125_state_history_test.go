@@ -89,12 +89,14 @@ func newStateHistoryStack(t *testing.T) *stateHistoryStack {
 	// artifacts.get_ref lives on the control surface; wire it so the
 	// returned ref id can be routed to the resolver (the routable-ref gate).
 	artSurface, err := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
-		Store:        store,
-		Redactor:     audit.Redactor(red),
-		Bus:          bus,
-		Clock:        time.Now,
-		DriverName:   "inmem",
-		MaxBodyBytes: 1 << 20,
+		Store:                store,
+		Redactor:             audit.Redactor(red),
+		Bus:                  bus,
+		Clock:                time.Now,
+		DriverName:           "inmem",
+		MaxBodyBytes:         1 << 20,
+		FetchDefaultMaxBytes: config.DefaultArtifactFetchMaxBytes,
+		FetchHardMaxBytes:    config.DefaultArtifactFetchHardMaxBytes,
 	})
 	if err != nil {
 		t.Fatalf("NewArtifactsSurface: %v", err)

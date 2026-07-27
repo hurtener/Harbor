@@ -28,6 +28,10 @@ type fakeDetacher struct {
 	mu       sync.Mutex
 	detached map[string]int
 	err      error // returned by every Detach (nil = success)
+	// detachOwners records the owner each Detach carried — the reconcile leg
+	// must pass the SAME owner its AttachedSources view was taken under, so the
+	// registry's owner-scoped removal resolves the entry the view produced.
+	detachOwners []auth.Owner
 }
 
 func newFakeDetacher(attached ...string) *fakeDetacher {
@@ -38,11 +42,19 @@ func (f *fakeDetacher) AttachedSources(_ context.Context, _ auth.Owner) []string
 	return append([]string(nil), f.attached...)
 }
 
-func (f *fakeDetacher) Detach(_ context.Context, source string) error {
+func (f *fakeDetacher) Detach(_ context.Context, source string, owner auth.Owner) error {
 	f.mu.Lock()
 	f.detached[source]++
+	f.detachOwners = append(f.detachOwners, owner)
 	f.mu.Unlock()
 	return f.err
+}
+
+// detachOwnersSeen returns the owners Detach was called with, in call order.
+func (f *fakeDetacher) detachOwnersSeen() []auth.Owner {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]auth.Owner(nil), f.detachOwners...)
 }
 
 func (f *fakeDetacher) detachedNames() []string {
@@ -250,7 +262,7 @@ func (d *ownerScopedDetacher) AttachedSources(_ context.Context, owner auth.Owne
 	return append([]string(nil), d.byOwner[owner]...)
 }
 
-func (d *ownerScopedDetacher) Detach(_ context.Context, source string) error {
+func (d *ownerScopedDetacher) Detach(_ context.Context, source string, _ auth.Owner) error {
 	d.mu.Lock()
 	if d.detached == nil {
 		d.detached = map[string]int{}

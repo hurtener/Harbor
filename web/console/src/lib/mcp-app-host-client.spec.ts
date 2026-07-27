@@ -11,7 +11,7 @@ import { makeMCPAppHostClient } from './mcp-app-host-client.js';
 import type { ProtocolClient } from './protocol/client.js';
 import { ProtocolError } from './protocol/errors.js';
 
-function fakeProtocolClient(): { client: ProtocolClient; readResource: ReturnType<typeof vi.fn>; callTool: ReturnType<typeof vi.fn>; resources: ReturnType<typeof vi.fn>; toolsList: ReturnType<typeof vi.fn>; getRef: ReturnType<typeof vi.fn>; toolContext: ReturnType<typeof vi.fn> } {
+function fakeProtocolClient(): { client: ProtocolClient; readResource: ReturnType<typeof vi.fn>; callTool: ReturnType<typeof vi.fn>; resources: ReturnType<typeof vi.fn>; toolsList: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn>; getRef: ReturnType<typeof vi.fn>; toolContext: ReturnType<typeof vi.fn> } {
   const readResource = vi.fn(async () => ({
     resource_uri: 'ui://srv/app.html',
     mime_type: 'text/html',
@@ -40,6 +40,17 @@ function fakeProtocolClient(): { client: ProtocolClient; readResource: ReturnTyp
     expires_at: '2026-06-13T00:00:00Z',
     protocol_version: '1',
   }));
+  // `artifacts.get` — the driver-independent byte read. `content` is base64
+  // (Go `[]byte` JSON encoding), and the response is truthful about its bound.
+  const get = vi.fn(async () => ({
+    ref: { id: 'art_studio_abc', size_bytes: 14 },
+    content: btoa('{"revenue":42}'),
+    offset: 0,
+    returned_bytes: 14,
+    total_size_bytes: 14,
+    truncated: false,
+    protocol_version: '1',
+  }));
   const toolContext = vi.fn(async () => ({
     tool: 'srv_report',
     input: { content: { region: 'emea' } },
@@ -50,9 +61,9 @@ function fakeProtocolClient(): { client: ProtocolClient; readResource: ReturnTyp
   const client = {
     mcp: { servers: { readResource, resources }, apps: { callTool, toolContext } },
     tools: { list: toolsList },
-    artifacts: { getRef },
+    artifacts: { get, getRef },
   } as unknown as ProtocolClient;
-  return { client, readResource, callTool, resources, toolsList, getRef, toolContext };
+  return { client, readResource, callTool, resources, toolsList, get, getRef, toolContext };
 }
 
 describe('makeMCPAppHostClient', () => {
@@ -179,23 +190,29 @@ describe('makeMCPAppHostClient', () => {
     await expect(host.listResourceTemplates('srv')).resolves.toEqual([]);
   });
 
-  it('fetchArtifactText resolves the presigned URL and returns the bytes as text', async () => {
-    const { client, getRef } = fakeProtocolClient();
-    const fetchSpy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(new Response('{"revenue":42}', { status: 200 }));
+  it('fetchArtifactText reads the bytes through artifacts.get, issuing NO raw network call', async () => {
+    // It used to resolve `artifacts.get_ref` and `fetch` the presigned URL —
+    // a route only the s3 driver serves, and not the `inmem` default. The byte
+    // read resolves through the mandatory store `Get` (D-353), so it answers on
+    // every driver, and the adapter no longer issues a raw `fetch` at all.
+    // (The full transcript-driven guard lives in the byte-path spec.)
+    const { client, get, getRef } = fakeProtocolClient();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
     const host = makeMCPAppHostClient(client);
     const text = await host.fetchArtifactText('art_studio_abc');
-    expect(getRef).toHaveBeenCalledWith({ id: 'art_studio_abc' });
-    expect(fetchSpy).toHaveBeenCalledWith('https://artifacts.example/art_studio_abc');
+    expect(get).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'art_studio_abc', offset: 0 }),
+    );
+    expect(getRef).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
     expect(text).toBe('{"revenue":42}');
   });
 
-  it('fetchArtifactText throws on a non-OK response (fail loud, never silently empty)', async () => {
-    const { client } = fakeProtocolClient();
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('nope', { status: 502 }));
+  it('fetchArtifactText propagates a read failure (fail loud, never silently empty)', async () => {
+    const { client, get } = fakeProtocolClient();
+    get.mockRejectedValueOnce(new ProtocolError('runtime_error', 'artifact store failed', 500));
     const host = makeMCPAppHostClient(client);
-    await expect(host.fetchArtifactText('art_studio_abc')).rejects.toThrow(/HTTP 502/);
+    await expect(host.fetchArtifactText('art_studio_abc')).rejects.toThrow(/artifact store failed/);
   });
 });
 

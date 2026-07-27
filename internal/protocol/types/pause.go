@@ -92,9 +92,12 @@ type PauseSnapshot struct {
 	// carrying a payload; both are empty for a payload-free pause.
 	Payload map[string]any `json:"payload,omitempty"`
 	// PayloadRef is populated when the pause record's Payload exceeded
-	// the heavy-content threshold. The Console fetches the
-	// bytes via `artifacts.get` / `artifacts.get_ref` when it wants
-	// them. When PayloadRef is set, Payload is nil.
+	// the heavy-content threshold. A client fetches the bytes through
+	// `artifacts.get`, the driver-independent byte read every
+	// registered artifact driver serves; `artifacts.get_ref` is a
+	// transport optimisation available only where the store can
+	// presign, not an interchangeable alternative. When PayloadRef is
+	// set, Payload is nil.
 	PayloadRef *PauseArtifactRef `json:"payload_ref,omitempty"`
 }
 

@@ -38,6 +38,8 @@ export type {
   ArtifactsPutOpts,
   ArtifactsPutRequest,
   ArtifactsPutResponse,
+  ArtifactsGetRequest,
+  ArtifactsGetResponse,
   ArtifactsGetRefRequest,
   ArtifactsGetRefResponse
 } from './protocol/artifacts.js';

@@ -798,8 +798,10 @@ func testWaveV115CaptureEquivalence(t *testing.T) {
 		session := waveV115StartPTYCommand(t, binary, args, workdir, 80, 24, extraEnv)
 		session.waitContains(t, "Ask Harbor")
 		session.waitContains(t, "live")
-		// Give the renderer a moment to stabilize.
-		time.Sleep(200 * time.Millisecond)
+		// Wait for the renderer to go QUIESCENT rather than sleeping a fixed
+		// interval (§17.4 forbids a sleep as a synchronisation primitive): the
+		// PTY buffer stops growing once the last frame has been written.
+		waveV115AwaitQuiescent(t, session)
 		frame := ansi.Strip(session.snapshot())
 		session.write(t, "\x03")
 		session.waitExitAny(t)
@@ -833,13 +835,28 @@ func testWaveV115CaptureEquivalence(t *testing.T) {
 		}
 	}
 
-	// The frames should be equivalent — same identity, same connection
-	// state, same route. We compare the key invariant lines rather than
-	// exact byte identity because timestamps and ephemeral ports differ.
-	attachLines := strings.Split(strings.TrimSpace(attachFrame), "\n")
-	stockLines := strings.Split(strings.TrimSpace(stockFrame), "\n")
-	if len(attachLines) != len(stockLines) {
-		t.Errorf("frame line count differs: attach=%d stock=%d", len(attachLines), len(stockLines))
+	// The frames must be equivalent in the CHROME THEY RENDER — same
+	// identity, same connection state, same composer — not in their byte
+	// or line count.
+	//
+	// A line-count comparison was tried here and was wrong by construction:
+	// `snapshot()` returns the CUMULATIVE PTY byte stream, so its line count
+	// is the number of redraws that happened to land in the buffer, not a
+	// property of the UI. It was non-deterministic in both directions
+	// (attach=6/stock=7 and attach=7/stock=6) and failed preflight under
+	// load. Raising the render wait did not cure it, because the count was
+	// never measuring what the assertion claimed.
+	//
+	// Each marker below is chrome the TUI renders in BOTH modes once
+	// connected, so a mode that silently stopped rendering one — the
+	// regression this test exists to catch — fails here.
+	for _, marker := range []string{scope.Session, "live", "Ask Harbor"} {
+		inAttach := strings.Contains(attachFrame, marker)
+		inStock := strings.Contains(stockFrame, marker)
+		if inAttach != inStock {
+			t.Errorf("chrome %q renders in attach=%v but stock=%v — the two modes disagree\n--- attach ---\n%s\n--- stock ---\n%s",
+				marker, inAttach, inStock, attachFrame, stockFrame)
+		}
 	}
 
 	// Goroutine baseline after all modes.
@@ -849,4 +866,35 @@ func testWaveV115CaptureEquivalence(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve did not return after ctx cancel")
 	}
+}
+
+// waveV115AwaitQuiescent blocks until the session's PTY buffer has stopped
+// growing, so a caller reads a frame the renderer has finished writing.
+//
+// It replaces a fixed `time.Sleep`, which §17.4 forbids as a synchronisation
+// primitive: a sleep is simultaneously too long on a fast machine and too
+// short on a loaded one, and the failure it produces looks like a UI bug
+// rather than a timing one.
+//
+// Quiescence, not equality, is the condition — the buffer accumulates, so
+// "unchanged across consecutive samples" is the only stable signal available.
+func waveV115AwaitQuiescent(t *testing.T, session *ptySession) {
+	t.Helper()
+	const (
+		settleFor = 150 * time.Millisecond
+		sampleGap = 15 * time.Millisecond
+	)
+	var (
+		lastLen   = -1
+		stableFor time.Duration
+	)
+	await(t, func() bool {
+		n := len(session.snapshot())
+		if n != lastLen {
+			lastLen, stableFor = n, 0
+			return false
+		}
+		stableFor += sampleGap
+		return stableFor >= settleFor
+	}, "TUI render to go quiescent")
 }

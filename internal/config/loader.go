@@ -389,6 +389,12 @@ func Defaults() *Config {
 			Driver:                    "inmem",
 			FSRoot:                    "",
 			HeavyOutputThresholdBytes: DefaultHeavyOutputThresholdBytes,
+			// The read-back bound: what an operator tunes alongside the
+			// offload threshold above. Seeded here so `harbor validate`
+			// prints the effective values rather than two zeroes an
+			// operator has to know resolve elsewhere.
+			FetchDefaultMaxBytes: DefaultArtifactFetchMaxBytes,
+			FetchHardMaxBytes:    DefaultArtifactFetchHardMaxBytes,
 			// S3-style driver defaults. Region defaults to
 			// us-east-1 (covers MinIO + plain R2); UsePathStyle
 			// defaults to false (AWS native — operators flip on for

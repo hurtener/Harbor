@@ -32,22 +32,28 @@ const (
 	SurfaceArtifacts       Surface = "artifacts"
 	SurfaceArtifactsPut    Surface = "artifacts.upload"
 	SurfaceArtifactsDelete Surface = "artifacts.removal"
-	SurfaceArtifactsRef    Surface = "artifacts.ref"
-	SurfaceAuth            Surface = "auth"
-	SurfaceControlTask     Surface = "task"
-	SurfaceEvents          Surface = "events"
-	SurfaceFlows           Surface = "flows"
-	SurfaceGovernance      Surface = "governance"
-	SurfaceMCP             Surface = "mcp.servers"
-	SurfaceMemory          Surface = "memory"
-	SurfacePause           Surface = "pause_page"
-	SurfacePosture         Surface = "runtime"
-	SurfaceRuns            Surface = "runs"
-	SurfaceSessions        Surface = "sessions"
-	SurfaceStateHistory    Surface = "state_history"
-	SurfaceTasks           Surface = "tasks"
-	SurfaceTools           Surface = "tools"
-	SurfaceTopology        Surface = "topology"
+	// SurfaceArtifactsRef governs BOTH artifact content reads — the
+	// driver-independent byte read and the presigned-URL resolver. One
+	// posture, two methods: a surface key is a posture key, not a method
+	// name, and a per-method key here could not even be spelled (a
+	// Protocol method string outside internal/protocol/methods is a
+	// single-source violation the build scan rejects).
+	SurfaceArtifactsRef Surface = "artifacts.ref"
+	SurfaceAuth         Surface = "auth"
+	SurfaceControlTask  Surface = "task"
+	SurfaceEvents       Surface = "events"
+	SurfaceFlows        Surface = "flows"
+	SurfaceGovernance   Surface = "governance"
+	SurfaceMCP          Surface = "mcp.servers"
+	SurfaceMemory       Surface = "memory"
+	SurfacePause        Surface = "pause_page"
+	SurfacePosture      Surface = "runtime"
+	SurfaceRuns         Surface = "runs"
+	SurfaceSessions     Surface = "sessions"
+	SurfaceStateHistory Surface = "state_history"
+	SurfaceTasks        Surface = "tasks"
+	SurfaceTools        Surface = "tools"
+	SurfaceTopology     Surface = "topology"
 )
 
 // policies is the closed declaration table: one row per Surface, each
@@ -82,7 +88,7 @@ var policies = map[Surface]Policy{
 	SurfaceArtifacts: {
 		Surface: SurfaceArtifacts, Wire: "artifacts",
 		Tenant: AdminScoped, User: PinnedOrEmpty, Session: PinnedOrEmpty,
-		Reason: "A fleet operator enumerates another tenant's artifacts under either admin-tier claim; an empty user or session is the list filter's wildcard, so it stays empty rather than being backfilled.",
+		Reason: "A fleet operator enumerates another tenant's artifacts under either admin-tier claim; an empty user or session arrives here as the list filter's wildcard, so the gate leaves it empty rather than backfilling it. What an empty component MEANS is the listing's own call, and it is not the same on both axes — the surface folds an elided user to the caller's own unless an admin-tier claim widens it, and keeps an elided session a wildcard within that user. This gate cannot express that split (an empty component short-circuits before any rule runs), which is why the listing's identity bound lives at the surface and this row stops at 'left empty'.",
 	},
 	SurfaceArtifactsDelete: {
 		Surface: SurfaceArtifactsDelete, Wire: "artifacts.removal",
@@ -100,7 +106,7 @@ var policies = map[Surface]Policy{
 		Surface: SurfaceArtifactsRef, Wire: "artifacts.ref",
 		Tenant: Pinned, User: PinnedOrEmpty, Session: PinnedOrEmpty,
 		PinnedDeniedCode: protoerrors.CodeScopeMismatch,
-		Reason:           "A presigned reference is a time-bounded bearer capability to the CONTENT, materially broader than the metadata a listing returns, so no claim widens it. The scope also requires the full triple, so the only foreign-tenant shape that reaches it already carries the caller's own user and session — not a fleet-observation shape, and nothing to elevate.",
+		Reason:           "Both artifact CONTENT reads land here — the driver-independent byte read and the presigned reference — because they hand over the same thing over different transports and so hold one posture, not two. Content is materially broader than the metadata a listing returns, so no claim widens either. The scope also requires the full triple, so the only foreign-tenant shape that reaches them already carries the caller's own user and session — not a fleet-observation shape, and nothing to elevate.",
 	},
 	SurfaceAuth: {
 		Surface: SurfaceAuth, Wire: "auth",

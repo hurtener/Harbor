@@ -22,7 +22,7 @@ import type {
   MCPAppToolListing,
   MCPAppToolResult,
 } from '$lib/chat/renderers/app-bridge-host.js';
-import type { ArtifactsGetRefResponse } from '$lib/protocol/artifacts.js';
+import type { ArtifactsGetResponse, ArtifactsGetRefResponse } from '$lib/protocol/artifacts.js';
 import type { ProtocolClient } from '$lib/protocol/client.js';
 import { ProtocolError } from '$lib/protocol/errors.js';
 import type {
@@ -33,6 +33,28 @@ import type {
   ToolContextResponse,
 } from '$lib/protocol/mcp.js';
 import type { ToolListResponse } from '$lib/protocol/tools.js';
+
+/**
+ * The window length `fetchArtifactText` asks each `artifacts.get` for.
+ *
+ * Deliberately at the deployment DEFAULT ceiling rather than below it: a
+ * request above the effective ceiling is SERVED at the ceiling and reports the
+ * clamp through the same `truncated` / `returned_bytes` / `total_size_bytes`
+ * fields every other bound uses (D-353) — it is not an error — so asking big
+ * costs nothing and an operator who lowered the ceiling simply gets more,
+ * smaller windows. The read pages until the response says it is complete, so
+ * this value bounds ROUND TRIPS, never the bytes the host ends up with.
+ */
+export const ARTIFACT_READ_WINDOW_BYTES = 1024 * 1024;
+
+/** Decode one base64 `artifacts.get` window into its raw bytes. */
+function decodeArtifactWindow(content: string | undefined): Uint8Array {
+  if (!content) return new Uint8Array(0);
+  const binary = atob(content);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+  return out;
+}
 
 /**
  * Adapts a `HarborClient` (the `ProtocolClient` interface) onto the chat
@@ -50,7 +72,20 @@ import type { ToolListResponse } from '$lib/protocol/tools.js';
  *   - `listTools`    → `tools.list`, narrowed to the server's `<source>_*` rows
  *   - `resolveArtifact` → `artifacts.get_ref` (the heavy `ui://` document's
  *                         by-reference stub → a presigned URL the renderer
- *                         fetches the bytes from, D-026)
+ *                         hands to the browser as a frame source, D-026)
+ *   - `fetchArtifactText` → `artifacts.get` (the driver-independent byte read
+ *                         every registered store serves, D-353)
+ *
+ * The two artifact methods are NOT two ways to do one thing. `artifacts.get`
+ * is the CONTRACT read: it resolves through the mandatory `ArtifactStore.Get`,
+ * so it answers on every driver including the `inmem` default a fresh
+ * `harbor dev` boots on. `artifacts.get_ref` is a driver-specific TRANSPORT
+ * OPTIMISATION: it type-asserts the optional presign capability that exactly
+ * one of five shipped drivers implements, so it answers `presign_unsupported`
+ * everywhere else. `resolveArtifact` keeps it deliberately — it needs a URL a
+ * browser can load directly into a frame, which a Protocol method cannot mint
+ * — while `fetchArtifactText`, which only ever needed the BYTES, reads them
+ * through the method that works everywhere.
  *
  * Identity rides on the Protocol client's request choke point, so each call is
  * `(tenant, user, session)` scoped — there is no parallel, unscoped path.
@@ -152,9 +187,18 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
     async resolveArtifact(artifactID): Promise<string> {
       // The read-side presigned-URL resolver (D-026). The Runtime backfills the
       // identity scope from the request choke point, so the body carries only
-      // the artifact id; the renderer fetches the document bytes from the
-      // returned time-bounded URL. The wire field is `presigned_url`
+      // the artifact id; the renderer hands the returned time-bounded URL to
+      // the browser as the source it loads the heavy `ui://` document from.
+      // The wire field is `presigned_url`
       // (internal/protocol/types/artifacts.go::ArtifactsGetRefResponse).
+      //
+      // This one stays on `get_ref` ON PURPOSE. Its caller needs a URL a
+      // browser can load, which no Protocol method can mint (D-353 part 1:
+      // Harbor advertises no externally-reachable address), so swapping it for
+      // the byte read would be a regression, not a fix. The heavy-document arm
+      // was already made driver-independent from the other side, by raising the
+      // Runtime's inline cap for `ui://` documents (D-218), so a stock
+      // deployment does not reach this call.
       const res = await client.artifacts.getRef<ArtifactsGetRefResponse>({ id: artifactID });
       return res.presigned_url;
     },
@@ -181,18 +225,56 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
     },
 
     async fetchArtifactText(artifactID): Promise<string> {
-      // The heavy tool-context path: resolve the by-reference stub to a
-      // presigned URL, then fetch the bytes as text. The raw `fetch` lives in
-      // this adapter (the same place the renderer's heavy-doc fetch does) so
-      // the chat module's `app-bridge-host.ts` never issues a direct network
-      // call (D-173). A non-OK response throws — the host then delivers a
-      // faithful by-reference stub rather than silently empty data.
-      const ref = await client.artifacts.getRef<ArtifactsGetRefResponse>({ id: artifactID });
-      const resp = await fetch(ref.presigned_url);
-      if (!resp.ok) {
-        throw new Error(`failed to fetch tool-context artifact ${artifactID}: HTTP ${resp.status}`);
+      // The heavy tool-context path: read the artifact's BYTES through
+      // `artifacts.get` (D-353) and decode them as UTF-8 text.
+      //
+      // This used to resolve a presigned URL and fetch it. That route rests on
+      // the OPTIONAL `artifacts.Presigner` capability, which exactly one of five
+      // shipped drivers implements and which is NOT the `inmem` default — so on
+      // a stock deployment it threw, and every heavy tool payload reached a
+      // rendered App as the host's "unavailable" stub instead of its data
+      // (D-347 consumer 1). `artifacts.get` resolves through the MANDATORY
+      // `ArtifactStore.Get`, so every registered driver serves it.
+      //
+      // The read PAGES, because one response is bounded by the deployment's
+      // fetch ceiling and says so: `truncated` is true while bytes remain, and
+      // the next window starts at `offset + returned_bytes` — the response's own
+      // report, never a locally-guessed cursor. A `truncated` response that
+      // returned nothing would page forever, so it fails loudly instead.
+      //
+      // The windows are concatenated as BYTES and decoded ONCE. Decoding each
+      // window on arrival would mangle any multi-byte rune that straddles a
+      // window boundary, and a byte window may begin and end mid-rune by
+      // design (windows are byte-addressed and MIME-agnostic, D-353 part 3).
+      const windows: Uint8Array[] = [];
+      let byteLength = 0;
+      let offset = 0;
+      for (;;) {
+        const res = await client.artifacts.get<ArtifactsGetResponse>({
+          id: artifactID,
+          offset,
+          max_bytes: ARTIFACT_READ_WINDOW_BYTES,
+        });
+        const window = decodeArtifactWindow(res.content);
+        windows.push(window);
+        byteLength += window.length;
+        if (!res.truncated) break;
+        const next = res.offset + res.returned_bytes;
+        if (next <= offset) {
+          throw new Error(
+            `artifact ${artifactID}: the runtime reported more bytes after offset ` +
+              `${offset} but returned none — refusing to page forever`,
+          );
+        }
+        offset = next;
       }
-      return resp.text();
+      const all = new Uint8Array(byteLength);
+      let at = 0;
+      for (const window of windows) {
+        all.set(window, at);
+        at += window.length;
+      }
+      return new TextDecoder().decode(all);
     },
   };
 }

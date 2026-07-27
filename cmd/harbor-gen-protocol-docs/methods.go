@@ -220,6 +220,10 @@ func methodTable() map[methods.Method]methodEntry {
 			Route: controlRoute(methods.MethodArtifactsPut), Mutates: true,
 			Request: "ArtifactsPutRequest", Response: "ArtifactsPutResponse",
 		},
+		methods.MethodArtifactsGet: {
+			Route: controlRoute(methods.MethodArtifactsGet), Mutates: false,
+			Request: "ArtifactsGetRequest", Response: "ArtifactsGetResponse",
+		},
 		methods.MethodArtifactsGetRef: {
 			Route: controlRoute(methods.MethodArtifactsGetRef), Mutates: false,
 			Request: "ArtifactsGetRefRequest", Response: "ArtifactsGetRefResponse",

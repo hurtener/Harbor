@@ -52,7 +52,22 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/artifactref"
 )
+
+// ErrArtifactRefNotFound is returned to a tool whose artifact-reference
+// argument names an id that does not resolve under the dispatching run's
+// isolation triple. It is deliberately indistinguishable from an id that
+// exists under another triple: the store answers found-false for both,
+// and revealing which case applied would make existence readable across
+// a boundary the read key closes.
+var ErrArtifactRefNotFound = errors.New("dispatch: artifact reference does not resolve under this run's scope")
+
+// ErrArtifactStoreUnavailable is returned to a tool whose
+// artifact-reference argument cannot be resolved because the stack wired
+// no artifact store. The reference fails loud rather than arriving as an
+// empty value the tool would read as an empty artifact.
+var ErrArtifactStoreUnavailable = errors.New("dispatch: artifact reference cannot be resolved (no artifact store wired)")
 
 // ErrTaskNotOwnDescendant is returned when a task observation/cancel
 // meta-tool (_task_status / _cancel_task) names a target the calling run
@@ -276,6 +291,16 @@ func NewToolExecutor(cat tools.ToolCatalog, store artifacts.ArtifactStore, taskR
 // observation/cancel observations are compact (status rows / a cancel
 // bool) and carry no heavy content.
 func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContext, decision planner.Decision) (any, any, error) {
+	// Seat the run-scoped artifact resolver ONCE, at the single dispatch
+	// entry point, so every tool-invoking shape below (and every shape a
+	// later decision adds) inherits it rather than re-deriving it. The
+	// resolver is closed over THIS run's isolation triple, so a tool
+	// reaches the artifacts its own run's identity reaches and no
+	// others; there is no identity logic in any tool driver. Seating it
+	// for the task-control shapes too is inert — they invoke no tool —
+	// and a descendant that inherits the ctx runs under the same triple
+	// by construction, so the reach cannot widen sideways.
+	ctx = e.withArtifactResolver(ctx, rc)
 	switch d := decision.(type) {
 	case planner.CallTool:
 		return e.callTool(ctx, rc, d)
@@ -300,6 +325,48 @@ func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContex
 	default:
 		return nil, nil, fmt.Errorf("%w: %T", steering.ErrDecisionShapeUnsupported, decision)
 	}
+}
+
+// withArtifactResolver seats the resolver an artifact-reference tool
+// parameter is bound through, closed over the dispatching run's
+// isolation triple.
+//
+// The direction of travel is the whole point: bytes flow store →
+// consumer. The model authored an id, the runtime resolves it here, and
+// the resolved value goes only into the tool's own decoded argument
+// value — never back into the argument JSON, the observation, the
+// trajectory, an event payload or a log.
+//
+// A stack with no artifact store seats a resolver that fails loud rather
+// than seating none, so a tool that declares a reference gets a named
+// cause instead of the generic "nothing is seated" one.
+func (e *toolExecutor) withArtifactResolver(ctx context.Context, rc planner.RunContext) context.Context {
+	if e.artifacts == nil {
+		return artifactref.WithResolver(ctx, artifactref.ResolverFunc(
+			func(_ context.Context, id string) ([]byte, error) {
+				return nil, fmt.Errorf("%w: %q", ErrArtifactStoreUnavailable, id)
+			}))
+	}
+	// The read key is the isolation triple; the task is a provenance
+	// annotation on the ref, not part of what a read resolves on, so it
+	// is deliberately absent here.
+	scope := artifacts.ArtifactScope{
+		TenantID:  rc.Quadruple.TenantID,
+		UserID:    rc.Quadruple.UserID,
+		SessionID: rc.Quadruple.SessionID,
+	}
+	store := e.artifacts
+	return artifactref.WithResolver(ctx, artifactref.ResolverFunc(
+		func(ctx context.Context, id string) ([]byte, error) {
+			data, found, err := store.Get(ctx, scope, id)
+			if err != nil {
+				return nil, fmt.Errorf("artifact store read %q: %w", id, err)
+			}
+			if !found {
+				return nil, fmt.Errorf("%w: %q", ErrArtifactRefNotFound, id)
+			}
+			return data, nil
+		}))
 }
 
 // callTool dispatches a single CallTool. Errors:

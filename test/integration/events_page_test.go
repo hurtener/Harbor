@@ -124,12 +124,14 @@ func newEventsPageStack(t *testing.T) *eventsPageStack {
 		t.Fatalf("artifacts inmem: %v", err)
 	}
 	artifactsSurface, err := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
-		Store:        artStore,
-		Redactor:     red,
-		Bus:          bus,
-		Clock:        time.Now,
-		DriverName:   "inmem",
-		MaxBodyBytes: 1 << 20,
+		Store:                artStore,
+		Redactor:             red,
+		Bus:                  bus,
+		Clock:                time.Now,
+		DriverName:           "inmem",
+		MaxBodyBytes:         1 << 20,
+		FetchDefaultMaxBytes: config.DefaultArtifactFetchMaxBytes,
+		FetchHardMaxBytes:    config.DefaultArtifactFetchHardMaxBytes,
 	})
 	if err != nil {
 		_ = artStore.Close(ctx)

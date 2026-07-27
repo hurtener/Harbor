@@ -17,6 +17,216 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.23.0] — 2026-07-27
+
+Minor: artifact bytes become readable on every store driver, the read-back bound
+becomes operator policy, in-process tools can take content by reference without
+that content ever re-entering the model's context, and an artifact listing is
+scoped to the caller's own user. No Protocol wire-version change
+(`ProtocolVersion` stays `0.1.0`).
+
+**Upgrading:** two artifact store drivers migrate their key on first start and
+the S3 object layout changes — see *Action required* at the end of this entry.
+
+### Added — artifact bytes are readable on every store, and the read-back bound is yours
+
+- **`artifacts.get` — a Protocol method that returns an artifact's bytes, served
+  by every artifact driver.** `POST /v1/control/artifacts.get` takes the scope
+  and the artifact id and returns the bytes plus the reference metadata.
+
+  **Why it matters.** The only byte path the Protocol had was
+  `artifacts.get_ref`, which returns a presigned URL — something only an
+  S3-compatible store can mint. On the `inmem` default (and on `fs`, `sqlite`
+  and `postgres`) it answers `presign_unsupported` / 501. So a deployment could
+  offload heavy content correctly and then have no supported way to read it
+  back. `artifacts.get` resolves through the store's mandatory read, so it works
+  everywhere.
+
+  **The two are not alternatives to pick between.** `artifacts.get` is the read
+  every client can rely on. `artifacts.get_ref` is an optimisation for stores
+  that can hand a large download off their own edge, so the bytes need not
+  transit the Runtime. Both resolve the same reference under the same identity;
+  reach for `get_ref` only when you know your deployment runs an S3-compatible
+  driver.
+
+- **Every artifact read now reports its own bound.** `artifacts.get` and the
+  `artifact_fetch` built-in both answer with `total_size_bytes`,
+  `returned_bytes` and `truncated` alongside the window, so a partial read is
+  never mistakable for a complete one.
+
+- **`offset` — page a large artifact instead of only reading its head.** Both
+  the method and the built-in take a byte `offset`; read from 0, then re-read at
+  the previous `offset + returned_bytes` while `truncated` is true. Windows are
+  **byte** ranges, not lines or rows, so a window can begin and end mid-line and
+  the caller splits the text itself.
+
+### Added — two optional `artifacts` config keys
+
+- **`artifacts.fetch_default_max_bytes` (default 65536) and
+  `artifacts.fetch_hard_max_bytes` (default 1048576).** The read-back bound
+  becomes yours to tune, alongside the `heavy_output_threshold_bytes` that
+  governs what goes out. Both keys are optional and both default to the values
+  the previous build hardcoded, so **no existing configuration changes
+  behaviour.**
+
+  A request above the ceiling is **served at the ceiling**, not refused, and the
+  response says so through `truncated` — a caller has no way to discover the
+  ceiling before asking, so a refusal would cost it a round trip and teach it
+  nothing.
+
+  **The ceiling bounds one read, not a sequence.** It is not a budget over
+  repeated calls; aggregate consumption stays the governance layer's concern
+  (cost ceilings and rate limits).
+
+### Added — in-process tools can take content by reference
+
+- **A Go tool can now declare an artifact-reference PARAMETER and read the
+  stored bytes without the content ever passing through the model.** Declare a
+  field of type `sdk/tools.ArtifactRef`; the derived JSON Schema renders it to
+  the model as a plain string, so the model supplies an artifact id — the same
+  id the runtime already quotes to it in a truncated tool result or the session
+  artifact block — and the runtime resolves it at dispatch and hands the tool
+  the bytes via `in.Doc.Bytes()`.
+
+  ```go
+  type SummarizeArgs struct {
+      Doc      tools.ArtifactRef `json:"doc"`
+      MaxWords int               `json:"max_words"`
+  }
+  ```
+
+  **Why it matters.** Harbor's heavy-content safeguard was one-directional: a
+  large tool RESULT routes to the artifact store so it never reaches the
+  context window, but a tool that needed to READ something large could only be
+  given it through its arguments — which meant through the model. This closes
+  that leg. Bytes flow store → tool.
+
+  **What the runtime guarantees.** The resolved value is dispatch-local: it
+  does not appear in the argument JSON, the trajectory, the observation the
+  next prompt renders, any event payload, an audit payload, or a log. The
+  reference resolves under the run's own `(tenant, user, session)`, so a tool
+  reaches exactly what its run reaches — an out-of-scope id answers not-found
+  through the same soft path `artifact_fetch` uses, with no way to tell "not
+  yours" from "does not exist". Every failure is loud: an unresolvable
+  reference is the step's error, and reading a reference the argument never
+  carried returns `tools.ErrArtifactRefUnresolved` rather than an empty slice a
+  tool would measure as an empty artifact.
+
+  **Scope.** In-process tools only. A tool behind a process boundary (HTTP,
+  MCP, A2A) cannot be handed a Go value, and handing it something
+  dereferenceable instead is a separate design that has deliberately not been
+  built — it needs an externally-reachable address Harbor does not have, a
+  grant whose single-use semantics a presigned URL cannot provide, and an
+  answer for a grant URL being a bearer capability to the content.
+
+  Worked example: `examples/tools/artifactstats/`. Guidance: the
+  `add-an-in-process-tool` skill.
+
+### Changed — the LLM-edge heavy-content guard also inspects tool-call arguments
+
+- **A tool call whose arguments exceed the heavy-output threshold now fails
+  loudly instead of reaching the provider.** The guard that already refused
+  oversize tool RESULTS and oversize inline binary content now applies the same
+  byte check to `tool_calls[].arguments` — the field the prompt builder replays
+  turn over turn and the provider drivers map onto the wire. The failure is the
+  existing one (`ErrContextLeak` plus a `llm.context_leak` event naming the
+  offending call by index); nothing else about the guard moves — same
+  threshold, same exemption for ordinary conversation text, same error, same
+  event.
+
+  **Who this affects.** Almost nobody: a tool call is an id and a few
+  parameters. If it fires, it is naming a real bug — a producer putting a
+  payload into an argument that should have been a reference, which is now
+  something Harbor supports directly (see above).
+
+### Changed — artifact reads now resolve on the session, and two stores migrate
+
+- **An artifact is read by `(tenant, user, session)` plus its id; the producing
+  task is provenance.** `artifacts.get_ref` and `artifacts.delete` — and the
+  `artifact_fetch` built-in the model uses — no longer require the caller to
+  name the same `task` the artifact was stored under. Naming a different one,
+  or omitting it, reaches the same artifact.
+
+  **Why it changes.** The session-artifact block the planner injects lists
+  every artifact in the session and invites the model to fetch any of them,
+  while the three writers that produce them stamped three different task
+  shapes. So the model was shown references a read then answered "not found"
+  for, and it had no way to tell that from a deleted artifact. Nothing crosses
+  a session, a user or a tenant: the session was always the innermost isolation
+  scope, and this makes the key match it.
+
+  **The provenance stamp becomes first-writer-wins.** Identical bytes stored by
+  two tasks in one session were two records, one stamp each; they are now ONE
+  record carrying the first writer's stamp. A `task` filter on `artifacts.list`
+  therefore answers "which artifacts is this task the recorded producer of",
+  not "which did it write". This is inherent to a content-addressed store — the
+  id is derived from the bytes, so the question has no single answer once two
+  tasks produce them.
+
+  **`artifacts.list` now requires a tenant.** A filter with no tenant is
+  refused at the store instead of listing across tenants. Empty `user`,
+  `session` and `task` remain wildcards within the tenant, so no existing
+  request shape changes: the Protocol edge already refused a tenant-less list.
+
+- **An artifact listing is scoped to the caller's own user unless an
+  administrative claim widens it.** `artifacts.list` now decides its two
+  identity axes separately:
+
+  - **`user` is an isolation principal.** Omitting it lists YOUR artifacts —
+    it is no longer read as "every user in the tenant". Naming another user is
+    refused `403 identity_scope_required` unless the caller holds `admin` or
+    `console:fleet`; with either claim, naming a user reads that user and
+    omitting it fans across the whole tenant, which is the fleet view.
+  - **`session` is a filter, not a boundary.** Omitting it still spans every
+    session of your own, and naming one of your own sessions still narrows. No
+    claim is involved either way — the `user` decision above already settles
+    whose artifacts are in play.
+
+  This is the same line `events.list` draws on the same two axes. The everyday
+  call — `{"scope": {"tenant": "..."}}` — keeps working and needs no claim, and
+  the Console Artifacts page and Background Jobs artifact card are unaffected
+  because both already send the caller's own user. **ACTION** for anyone whose
+  client relied on a tenant-only listing to enumerate a whole tenant: mint the
+  token with `console:fleet` (read-only) or `admin`. `harbor token --scopes
+  console:fleet` does it.
+
+- **ACTION: the SQLite and Postgres artifact stores run a schema migration on
+  first start after upgrade.** `0002_read_key_is_the_triple.sql` re-keys
+  `artifacts_blobs` onto `(tenant, user, session, namespace, id)`. It is
+  forward-only and transactional, and pre-existing duplicate rows (the same
+  bytes stored by two tasks in one session) collapse onto the row with the
+  lowest `task`. On a large artifacts table the rebuild is not instantaneous —
+  size the restart window rather than meeting it. No action is needed for the
+  in-memory or filesystem stores.
+
+- **ACTION: the S3-compatible artifact store writes a new object key layout.**
+  Objects are now stored at `<prefix>/<tenant>/<user>/<session>/<namespace>/<id>`
+  — the task segment is gone, because an object store has no compare-and-set
+  and keying on it let concurrent writers of identical bytes create one object
+  each. Objects written by earlier versions stay readable and deletable: the
+  driver falls back to a session-prefix scan and nothing is rewritten in place,
+  so a bucket migrates by being read. The cost is one extra listing on a read
+  that misses the new key, and one per delete. Buckets whose lifecycle rules or
+  external tooling match on the old key shape need those rules updated.
+
+### Action required
+
+- **SQLite and Postgres artifact stores run a forward-only `0002` migration on
+  first start,** re-keying the artifacts table onto `(tenant, user, session,
+  namespace, id)`. Rows that differ only by the producing task collapse onto a
+  single row carrying the first writer's stamp. Take the usual backup before
+  upgrading a Postgres deployment.
+- **The S3 artifact object key drops the task segment** — new objects are
+  written under `<tenant>/<user>/<session>/<namespace>/<id>`. Objects written by
+  earlier versions stay readable and deletable via a session-prefix fallback and
+  are never rewritten in place, so a bucket migrates by being read. Buckets whose
+  lifecycle rules or external tooling match on the old key shape need those rules
+  updated.
+- **`artifacts.list` is scoped to the caller's own user** unless the request
+  carries `admin` or `console:fleet`. A caller that omitted the user field and
+  relied on receiving every user's rows in the tenant now receives its own; an
+  operator tool that needs the wider view must present one of those claims.
+
 ## [1.22.0] — 2026-07-25
 
 Minor: one shared body-identity gate across every Protocol surface, owner-scoped

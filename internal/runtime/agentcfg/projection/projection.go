@@ -76,7 +76,12 @@ type ConnectionDetacher interface {
 	// Detach deregisters the named source's tools from the catalog + MCP
 	// registry and closes its transport gracefully. Idempotent — a source
 	// already gone is a no-op the concrete swallows.
-	Detach(ctx context.Context, source string) error
+	//
+	// owner is the reconciling owner AttachedSources was called with, carried
+	// through so the concrete's registry removal is owner-scoped at the
+	// registry's own resolution choke point rather than trusted to this
+	// caller's view alone. It mirrors AttachedSources' own owner parameter.
+	Detach(ctx context.Context, source string, owner auth.Owner) error
 }
 
 // ErrReconcileRead wraps an active-revision read failure inside
@@ -186,7 +191,7 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 		if _, ok := declared[src]; ok {
 			continue // still declared — keep it attached.
 		}
-		if derr := detacher.Detach(ctx, src); derr != nil {
+		if derr := detacher.Detach(ctx, src, owner); derr != nil {
 			errs = append(errs, fmt.Errorf("detach %q: %w", src, derr))
 			continue
 		}
