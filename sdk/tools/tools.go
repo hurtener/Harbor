@@ -9,7 +9,29 @@ package tools
 
 import (
 	internal "github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/artifactref"
 )
+
+// ArtifactRef is an artifact-reference tool PARAMETER: declare a field
+// of this type in a tool's typed input struct and the derived JSON
+// Schema renders it to the model as a plain artifact-id string. The
+// model supplies the id; the runtime resolves it at dispatch and the
+// tool reads the stored bytes through [ArtifactRef.Bytes]. Bytes flow
+// store → tool — the model authors an id and never sees content.
+//
+// The resolved value is dispatch-local. Every serialisation door on the
+// type projects the id instead of the content, so an ArtifactRef that
+// reaches an event payload, a formatted string or a log emits the id.
+//
+// [ArtifactRef.Bytes] fails with [ErrArtifactRefUnresolved] when the
+// reference was never resolved, rather than returning an empty slice a
+// tool would mistake for an empty artifact.
+//
+// The RESOLUTION side is deliberately not re-exported: seating a
+// resolver and binding a value are the runtime's acts at the dispatch
+// boundary, and a tool that could do either would be reaching past the
+// identity scope its run was given.
+type ArtifactRef = artifactref.Ref
 
 // Catalog vocabulary — aliases of the internal types.
 type (
@@ -137,7 +159,17 @@ var (
 	ErrToolPolicyExhausted = internal.ErrToolPolicyExhausted
 	// ErrToolDuplicateName — a tool with this name is already registered.
 	ErrToolDuplicateName = internal.ErrToolDuplicateName
+	// ErrArtifactRefUnresolved — an [ArtifactRef] was read before the
+	// runtime resolved it (the argument omitted the reference, or the
+	// value was built outside a dispatch).
+	ErrArtifactRefUnresolved = artifactref.ErrUnresolved
 )
+
+// NewArtifactRef builds an [ArtifactRef] carrying an artifact id and no
+// resolved value — for callers assembling arguments in Go (tests, typed
+// embedders) rather than decoding them from a model's JSON. It resolves
+// at dispatch exactly as a decoded one does.
+var NewArtifactRef = artifactref.NewRef
 
 // NewCatalog constructs an empty tool catalog.
 var NewCatalog = internal.NewCatalog

@@ -82,6 +82,14 @@ The full runnable version of this recipe is
 - Heavy outputs (≥ the configured `heavy_output_threshold_bytes`)
   route through the ArtifactStore automatically (D-022, D-026); your
   tool returns typed values, not blobs.
+- Heavy **inputs** go the other way, by reference: declare a field of
+  type `sdk/tools.ArtifactRef` and the model supplies an artifact id
+  as a plain string while the runtime resolves it at dispatch and
+  hands your function the bytes (`in.Doc.Bytes()`). The model never
+  sees the content, and the resolved value never reaches the
+  trajectory, an event payload or a log (D-354). In-process tools
+  only. Worked example:
+  [`examples/tools/artifactstats/`](../../examples/tools/artifactstats/).
 - HTTP, MCP, and A2A tools use different transport drivers but the
   same catalog surface; they are wired declaratively from the `tools`
   block in `harbor.yaml` (no Go call site) — see

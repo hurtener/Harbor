@@ -17,6 +17,67 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added — in-process tools can take content by reference
+
+- **A Go tool can now declare an artifact-reference PARAMETER and read the
+  stored bytes without the content ever passing through the model.** Declare a
+  field of type `sdk/tools.ArtifactRef`; the derived JSON Schema renders it to
+  the model as a plain string, so the model supplies an artifact id — the same
+  id the runtime already quotes to it in a truncated tool result or the session
+  artifact block — and the runtime resolves it at dispatch and hands the tool
+  the bytes via `in.Doc.Bytes()`.
+
+  ```go
+  type SummarizeArgs struct {
+      Doc      tools.ArtifactRef `json:"doc"`
+      MaxWords int               `json:"max_words"`
+  }
+  ```
+
+  **Why it matters.** Harbor's heavy-content safeguard was one-directional: a
+  large tool RESULT routes to the artifact store so it never reaches the
+  context window, but a tool that needed to READ something large could only be
+  given it through its arguments — which meant through the model. This closes
+  that leg. Bytes flow store → tool.
+
+  **What the runtime guarantees.** The resolved value is dispatch-local: it
+  does not appear in the argument JSON, the trajectory, the observation the
+  next prompt renders, any event payload, an audit payload, or a log. The
+  reference resolves under the run's own `(tenant, user, session)`, so a tool
+  reaches exactly what its run reaches — an out-of-scope id answers not-found
+  through the same soft path `artifact_fetch` uses, with no way to tell "not
+  yours" from "does not exist". Every failure is loud: an unresolvable
+  reference is the step's error, and reading a reference the argument never
+  carried returns `tools.ErrArtifactRefUnresolved` rather than an empty slice a
+  tool would measure as an empty artifact.
+
+  **Scope.** In-process tools only. A tool behind a process boundary (HTTP,
+  MCP, A2A) cannot be handed a Go value, and handing it something
+  dereferenceable instead is a separate design that has deliberately not been
+  built — it needs an externally-reachable address Harbor does not have, a
+  grant whose single-use semantics a presigned URL cannot provide, and an
+  answer for a grant URL being a bearer capability to the content.
+
+  Worked example: `examples/tools/artifactstats/`. Guidance: the
+  `add-an-in-process-tool` skill.
+
+### Changed — the LLM-edge heavy-content guard also inspects tool-call arguments
+
+- **A tool call whose arguments exceed the heavy-output threshold now fails
+  loudly instead of reaching the provider.** The guard that already refused
+  oversize tool RESULTS and oversize inline binary content now applies the same
+  byte check to `tool_calls[].arguments` — the field the prompt builder replays
+  turn over turn and the provider drivers map onto the wire. The failure is the
+  existing one (`ErrContextLeak` plus a `llm.context_leak` event naming the
+  offending call by index); nothing else about the guard moves — same
+  threshold, same exemption for ordinary conversation text, same error, same
+  event.
+
+  **Who this affects.** Almost nobody: a tool call is an id and a few
+  parameters. If it fires, it is naming a real bug — a producer putting a
+  payload into an argument that should have been a reference, which is now
+  something Harbor supports directly (see above).
+
 ### Changed — artifact reads now resolve on the session, and two stores migrate
 
 - **An artifact is read by `(tenant, user, session)` plus its id; the producing

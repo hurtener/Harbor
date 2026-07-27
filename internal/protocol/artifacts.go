@@ -24,9 +24,11 @@ import (
 //   - artifacts.list    — the identity-scope-filtered catalog, with the
 //     filter extensions (mime / source / size / created /
 //     tags) applied as a Go-side projection over the driver slice.
-//   - artifacts.put     — the Console file-upload pipeline;
-//     routes the payload through audit.Redactor then
-//     ArtifactStore.PutBytes and returns the canonical ArtifactRef.
+//   - artifacts.put     — the Console file-upload pipeline; submits the
+//     payload to audit.Redactor as an ADMISSION GATE (a refusal
+//     refuses the upload; the redactor's rewrite is not stored), then
+//     stores the bytes AS AUTHORED via ArtifactStore.PutBytes and
+//     returns the canonical ArtifactRef.
 //   - artifacts.get_ref — the read-side presigned-URL resolver per
 //     contract; type-asserts the store to artifacts.Presigner and
 //     fails loud (CodePresignUnsupported) on a non-S3 driver.
@@ -362,8 +364,16 @@ func (s *ArtifactsSurface) projectRows(refs []artifacts.ArtifactRef, req *types.
 }
 
 // handlePut serves artifacts.put. It validates identity, gates against a
-// cross-tenant body, bounds the body size, routes the payload through
-// the audit Redactor, stores it, and emits artifacts.uploaded.
+// cross-tenant body, bounds the body size, submits the payload to the
+// audit Redactor as an admission gate, stores the bytes AS AUTHORED, and
+// emits artifacts.uploaded.
+//
+// Stored bytes are not redacted bytes, and that is the contract rather
+// than an omission: an artifact exists precisely to HOLD the content the
+// event stream and the prompt must not carry, and a reference to it
+// passes the redactor unredacted because it is a reference. The redactor
+// is therefore a refusal path here, not a transform — see the Redact
+// call below.
 func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPutRequest) (any, error) {
 	m := string(methods.MethodArtifactsPut)
 
@@ -406,9 +416,14 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 			"method %q: unknown source %q", m, string(source))
 	}
 
-	// CLAUDE.md §7 rule 6 — run the upload payload through the
-	// audit Redactor BEFORE it reaches the store. The redactor may
-	// rewrite or refuse; a refusal fails loud (never store unredacted).
+	// CLAUDE.md §7 rule 6 — submit the upload payload to the audit
+	// Redactor BEFORE it reaches the store.
+	//
+	// The redactor is an ADMISSION GATE here, not a transform: a refusal
+	// fails loud and nothing is stored, and its REWRITE is deliberately
+	// discarded because an artifact holds the bytes its author supplied.
+	// Redaction governs what is EMITTED — the event payload below, the
+	// trajectory, the prompt, the log — not what is stored.
 	redactView := map[string]any{
 		"bytes":     req.Bytes,
 		"filename":  req.Opts.Filename,

@@ -34,7 +34,14 @@ import (
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/hurtener/Harbor/internal/tools/artifactref"
 )
+
+// artifactRefType is the artifact-reference parameter carrier the
+// deriver renders as a plain string. Resolved once rather than per
+// call.
+var artifactRefType = reflect.TypeOf(artifactref.Ref{})
 
 // ErrUnsupportedType is returned when the derivation encounters a Go
 // shape it cannot represent as JSON Schema (non-empty interfaces,
@@ -74,6 +81,12 @@ const maxDeriveDepth = 32
 //     parent level
 //   - time.Time -> {"type": "string", "format": "date-time"}
 //   - json.RawMessage -> {} (any-shaped; no constraint)
+//   - artifactref.Ref -> {"type": "string", ...} — an artifact-reference
+//     PARAMETER. The model authors the artifact id as a plain string;
+//     the runtime resolves it to the stored bytes at dispatch and the
+//     tool reads content the model never saw. Deriving it as a string
+//     rather than as the struct it is keeps the reference a declared
+//     FIELD TYPE instead of a hand-written schema convention.
 //
 // Struct fields use the `json:"name"` tag for property names; an
 // `,omitempty` modifier removes the field from `required`. A `-`
@@ -99,6 +112,20 @@ func deriveWithDepth(t reflect.Type, depth int, visiting map[reflect.Type]bool) 
 	}
 	if t == reflect.TypeOf(json.RawMessage(nil)) {
 		return Map{}, nil
+	}
+	if t == artifactRefType {
+		// An artifact-reference parameter renders to the model as the
+		// artifact id it authors — never as content, and never as the
+		// carrier struct. The description is load-bearing: it is what
+		// tells the model to supply the id verbatim rather than to paste
+		// the artifact's bytes into the argument.
+		return Map{
+			"type": "string",
+			"description": "A Harbor artifact reference id. Supply the id exactly as the runtime " +
+				"surfaced it (for example in a truncated tool result or the session artifact list). " +
+				"The runtime resolves the reference and hands the content to the tool directly — do " +
+				"not paste the artifact's content here.",
+		}, nil
 	}
 
 	switch t.Kind() {
