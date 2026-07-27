@@ -9,11 +9,22 @@
 // package (§13) — this driver is one of its two consumers, alongside
 // the typed embed binding (internal/runtime/assemble.RunTyped).
 //
+// A registered function may take content BY REFERENCE: declare a field
+// of type internal/tools/artifactref.Ref and the derived schema renders
+// it to the model as a plain artifact-id string, while the runtime
+// resolves that id at dispatch and hands the function the stored bytes.
+// The model authors an id and never sees content, and the resolved value
+// is dispatch-local — it does not reach the argument JSON, the
+// trajectory, an event payload or a log. See the artifactref package doc
+// for the invariant and the mechanisms that hold it.
+//
 // Concurrent reuse: the driver itself is stateless — every
 // RegisterFunc call builds a fresh ToolDescriptor and registers it
 // in the catalog. The descriptor's Invoke closure captures the
 // caller's `fn` (which the caller guarantees is safe for concurrent
-// invocation); no mutable state lives in the driver.
+// invocation); no mutable state lives in the driver. Whether the input
+// type declares an artifact reference is derived once at registration
+// and captured immutably.
 package inproc
 
 import (
@@ -26,6 +37,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/artifactref"
 	"github.com/hurtener/Harbor/internal/tools/schema"
 )
 
@@ -97,6 +109,13 @@ func RegisterFunc[I any, O any](
 	// deriver — one implementation, consumed here and by RunTyped).
 	var zeroIn I
 	var zeroOut O
+	// Whether the input type declares an artifact-reference parameter is
+	// a property of the TYPE, so it is answered once at registration
+	// rather than on every invocation. An argument type with no
+	// reference never pays for the reflective bind, and the flag is
+	// immutable after construction like every other field on the
+	// descriptor.
+	hasArtifactRefs := artifactref.TypeContainsRef(reflect.TypeOf(zeroIn))
 	inSchema, err := schema.Derive(reflect.TypeOf(zeroIn))
 	if err != nil {
 		return fmt.Errorf("%w: input type for tool %q: %w", ErrUnsupportedType, name, err)
@@ -156,7 +175,7 @@ func RegisterFunc[I any, O any](
 		// every event is turn-attributable. This driver's Invoke is the
 		// bare reflective call.
 		Invoke: func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-			return invokeReflective[I, O](ctx, args, fn, tool.Policy, func(args json.RawMessage) error {
+			return invokeReflective[I, O](ctx, args, fn, tool.Policy, hasArtifactRefs, func(args json.RawMessage) error {
 				return validateAgainst(compiledIn, args)
 			}, func(result tools.ToolResult) error {
 				return validateAgainstResult(compiledOut, result)
@@ -167,14 +186,23 @@ func RegisterFunc[I any, O any](
 }
 
 // invokeReflective is the inner-most invocation: decode args into I,
-// call fn(ctx, in), marshal the result as a tools.ToolResult, wrap
-// the whole thing in the policy shell so retries / timeouts /
-// validation all fire uniformly.
+// bind any artifact-reference parameter to the bytes the runtime
+// resolves for it, call fn(ctx, in), marshal the result as a
+// tools.ToolResult, wrap the whole thing in the policy shell so retries
+// / timeouts / validation all fire uniformly.
+//
+// The artifact bind happens AFTER decode and INSIDE the policy shell, so
+// a retried attempt re-decodes and re-resolves rather than reusing a
+// value bound for a prior attempt, and the bound bytes never outlive the
+// attempt that read them. `args` is not rewritten: the argument JSON the
+// runtime records, renders and replays keeps carrying the reference id
+// the model authored.
 func invokeReflective[I any, O any](
 	ctx context.Context,
 	args json.RawMessage,
 	fn func(ctx context.Context, in I) (O, error),
 	policy tools.ToolPolicy,
+	hasArtifactRefs bool,
 	validateIn func(args json.RawMessage) error,
 	validateOut func(result tools.ToolResult) error,
 ) (tools.ToolResult, error) {
@@ -188,6 +216,16 @@ func invokeReflective[I any, O any](
 				dec.DisallowUnknownFields()
 				if err := dec.Decode(&in); err != nil {
 					return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
+				}
+			}
+			if hasArtifactRefs {
+				// The one substitution site: a resolved artifact value
+				// enters the dispatched argument here and nowhere else,
+				// and it is unreachable from the argument JSON, the
+				// observation, the trajectory, any event payload or any
+				// log for the whole life of the call.
+				if err := artifactref.Substitute(ctx, &in); err != nil {
+					return tools.ToolResult{}, fmt.Errorf("%w: resolve artifact reference: %w", tools.ErrToolInvalidArgs, err)
 				}
 			}
 			out, err := fn(ctx, in)

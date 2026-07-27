@@ -195,6 +195,41 @@ Cross-tenant reads are rejected by the artifact store — the meta-tool surfaces
 
 If your tool's results are typically small (well under the threshold), no action is needed — the materialiser only fires above the cap, and the planner sees the raw result inline as usual.
 
+### Heavy INPUTS — take content by reference
+
+The seam above governs what comes OUT of a tool. The mirror-image problem is a tool that needs to READ something large: a stored CSV, an uploaded PDF, a prior tool's materialised result. Routing that content through the model's context to get it into your argument struct is exactly the leak `artifact_fetch` exists to bound — and it is unnecessary, because an in-process tool can take the content by reference.
+
+Declare a field of type `tools.ArtifactRef`:
+
+```go
+import "github.com/hurtener/Harbor/sdk/tools"
+
+type SummarizeArgs struct {
+    Doc      tools.ArtifactRef `json:"doc"`
+    MaxWords int               `json:"max_words"`
+}
+
+func Summarize(ctx context.Context, in SummarizeArgs) (SummarizeResult, error) {
+    body, err := in.Doc.Bytes()   // the stored bytes, never the model's
+    if err != nil {
+        return SummarizeResult{}, fmt.Errorf("summarize: %w", err)
+    }
+    ...
+}
+```
+
+The reflection deriver renders `doc` to the model as a plain **string**, so the model writes `{"doc": "tool_ab12cd34ef56", "max_words": 200}` — an artifact id, exactly the id the runtime already quotes to it in a truncated tool result or the `<session_artifacts>` block. The runtime resolves the id at dispatch, under the run's own `(tenant, user, session)` scope, and hands your function the bytes.
+
+Three properties follow, and they are what makes this worth reaching for:
+
+- **The model never sees the content.** It authored an id and continues to see an id. The resolved value is dispatch-local: it does not enter the argument JSON, the trajectory, the observation the next prompt renders, any event payload, an audit payload, or a log.
+- **There is no identity logic in your tool.** The reference resolves under the dispatching run's identity, so your tool reaches what its run reaches and nothing else. A ref from another tenant, user or session answers "not found" through the same soft path `artifact_fetch` uses.
+- **It fails loudly.** An unresolvable ref is the step's error (the planner re-plans); reading a reference the argument never carried returns `tools.ErrArtifactRefUnresolved` rather than an empty slice you would measure as an empty artifact.
+
+`ArtifactRef` works anywhere the deriver walks — a bare field, a slice, a map value, a nested struct. A worked example ships at `examples/tools/artifactstats/`.
+
+This is the **in-process** arm. A tool on the other side of a process boundary (HTTP, MCP, A2A) cannot be handed a Go value, and handing it something dereferenceable instead is a separate design Harbor has deliberately not built — so an `ArtifactRef` parameter belongs to in-process tools only.
+
 ## 5. Errors — fail loudly
 
 Tools wrap downstream errors with context:
