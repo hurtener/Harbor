@@ -92,15 +92,22 @@ func artifactsGetNum(t *testing.T, body map[string]any, key string) int64 {
 	return int64(f)
 }
 
-func artifactsGetBool(t *testing.T, body map[string]any, key string) bool {
+// artifactsGetTruncated reads the response's `truncated` flag, failing when
+// the field is absent or not a bool — an omitted bound signal is a wire
+// regression, not a `false`.
+//
+// It names the field rather than taking it as a parameter: `truncated` is the
+// only bool the response carries, so a `key string` parameter was generality
+// no caller could use, and `unparam` says so once enough call sites exist.
+func artifactsGetTruncated(t *testing.T, body map[string]any) bool {
 	t.Helper()
-	v, ok := body[key]
+	v, ok := body["truncated"]
 	if !ok {
-		t.Fatalf("response is missing %q (body=%v)", key, body)
+		t.Fatalf("response is missing \"truncated\" (body=%v)", body)
 	}
 	b, ok := v.(bool)
 	if !ok {
-		t.Fatalf("%q is %T, want a bool", key, v)
+		t.Fatalf("\"truncated\" is %T, want a bool", v)
 	}
 	return b
 }
@@ -157,7 +164,7 @@ func TestE2E_ArtifactsGet_RoundTripsOnEveryDriverOverTheWire(t *testing.T) {
 			if got := artifactsGetNum(t, getBody, "returned_bytes"); got != int64(len(payload)) {
 				t.Fatalf("returned_bytes = %d, want %d", got, len(payload))
 			}
-			if artifactsGetBool(t, getBody, "truncated") {
+			if artifactsGetTruncated(t, getBody) {
 				t.Fatal("truncated = true on a complete read")
 			}
 
@@ -169,7 +176,7 @@ func TestE2E_ArtifactsGet_RoundTripsOnEveryDriverOverTheWire(t *testing.T) {
 			if bStatus != http.StatusOK {
 				t.Fatalf("bounded artifacts.get status = %d, body=%v", bStatus, bBody)
 			}
-			if !artifactsGetBool(t, bBody, "truncated") {
+			if !artifactsGetTruncated(t, bBody) {
 				t.Fatal("a bounded read reported truncated=false")
 			}
 			if got := artifactsGetB64(t, bBody); string(got) != "0123456789" {
@@ -197,7 +204,7 @@ func TestE2E_ArtifactsGet_RoundTripsOnEveryDriverOverTheWire(t *testing.T) {
 			if lStatus != http.StatusOK {
 				t.Fatalf("last-window artifacts.get status = %d, body=%v", lStatus, lBody)
 			}
-			if artifactsGetBool(t, lBody, "truncated") {
+			if artifactsGetTruncated(t, lBody) {
 				t.Fatal("the last window reported truncated=true")
 			}
 			if got := artifactsGetB64(t, lBody); string(got) != "uvwxyz" {
