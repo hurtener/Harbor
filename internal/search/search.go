@@ -55,19 +55,26 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
-	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// HeavyPreviewThreshold is the bound — a `SearchResultRow`
-// preview whose UTF-8 byte length would exceed this value ships as a
-// `*SearchArtifactRef` instead of inline bytes. Single-sourced on
-// `config.DefaultHeavyOutputThresholdBytes` (the one home of the
-// 32 KiB heavy-output default — the DefaultSpawnDepthCap precedent)
-// so the search bound cannot drift from the runtime LLM-edge safety
-// net; the search package still has no dependency on internal/llm.
-const HeavyPreviewThreshold = config.DefaultHeavyOutputThresholdBytes
+// HeavyPreviewThreshold is the source-record classification bound: a
+// `SearchResultRow` whose REDACTED preview reaches this byte length is
+// too large to be honestly represented by a snippet, so the row ships
+// an empty `Preview` plus a `*SearchArtifactRef` and the caller reads
+// the record itself.
+//
+// It is NOT a context bound and NOT an offload bound, and it does not
+// govern how many bytes ship: `PreviewMaxRunes` caps every emitted
+// preview at 256 runes AFTER this check, so a row is either ~256 runes
+// or a reference, at any threshold. It is Protocol-visible — it selects
+// which arm of `SearchResultRow` is populated — so it carries its own
+// literal at the value it has always had rather than tracking the
+// LLM-context heavy-output threshold it used to alias. That threshold
+// answers a different question (how many bytes may enter a prompt) and
+// has since moved; this bound did not follow it.
+const HeavyPreviewThreshold = 32 * 1024
 
 // PreviewMaxRunes is the soft cap applied at the row-construction site
 // after redaction — a preview that fits under HeavyPreviewThreshold

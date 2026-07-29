@@ -741,9 +741,26 @@ when `driver` is `sqlite` or `postgres`. Secret: redacted.
 
 ### artifacts.heavy_output_threshold_bytes
 
-Byte size at which the runtime mandatorily routes a payload through
-the ArtifactStore (D-022 / D-026). Default: `32768` (32 KiB).
-Validation: >= 0.
+Byte size at which the runtime mandatorily routes a payload **bound for
+a model's context window** through the ArtifactStore (D-022 / D-026 /
+D-358). Default: `131072` (128 KiB). Validation: >= 0.
+
+It governs the LLM-context arm only — the tool dispatcher's
+promote-to-stub boundary, the LLM-edge leak guard and
+auto-materialization, the trajectory-compaction payload budget, and the
+`tools.content_stats.heavy_threshold_bytes` figure that reports it. The
+routing is a runtime-wide invariant; there are no per-tool overrides.
+
+**It does not govern Console-facing Protocol replies.** `pause.list`,
+`memory.get` / `memory.list`, the flow catalog and the
+`mcp.servers.read_resource` / `mcp.apps.call_tool` /
+`mcp.apps.tool_context` reads select inline-versus-reference at a
+**pinned 32 KiB** bound that deliberately does not track this key: those
+payloads are rendered by a browser, never placed in a prompt, and their
+selected reply arm is Protocol-visible. Raising this key widens what a
+planner sees inline; it leaves every browser-facing reply unchanged.
+
+Not hot-reloadable — restart required.
 
 ### artifacts.fetch_default_max_bytes
 

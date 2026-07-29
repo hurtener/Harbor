@@ -146,9 +146,10 @@ type toolExecutor struct {
 
 // defaultHeavyThreshold is the heavy-output safety floor applied when
 // the operator-configured threshold is unset / non-positive. Single-
-// sourced on `config.DefaultHeavyOutputThresholdBytes` (the
-// `artifacts.heavy_output_threshold_bytes` default — the
-// DefaultSpawnDepthCap precedent; no literal copy allowed).
+// sourced on `config.DefaultHeavyOutputThresholdBytes` — the
+// LLM-CONTEXT arm of the heavy-content matrix, which is exactly the
+// question a promote-to-stub decision on a planner observation answers.
+// No literal copy allowed.
 const defaultHeavyThreshold = config.DefaultHeavyOutputThresholdBytes
 
 // spawnAwaitPollInterval is the cadence at which AwaitTask + a retain-turn
@@ -163,10 +164,9 @@ type Option func(*toolExecutor)
 // WithHeavyThreshold sets the heavy-output threshold in bytes:
 // tool results whose JSON encoding meets or exceeds it get promoted to
 // artifact-backed truncation summaries before reaching the planner /
-// LLM edge. Non-positive values fall back to the 32 KiB safety floor
-// (the default) — the same normalization the pre-110a
-// constructor applied, so passing an unset config value through is
-// safe.
+// LLM edge. Non-positive values fall back to the canonical
+// heavy-output safety floor (defaultHeavyThreshold), so passing an
+// unset config value through is safe.
 func WithHeavyThreshold(bytes int) Option {
 	return func(e *toolExecutor) { e.heavyThreshold = bytes }
 }
