@@ -207,6 +207,22 @@ type Task struct {
 	// run-start guard and the idempotency-equality byte compare. omitempty
 	// elides the empty slice so nil round-trips as nil.
 	OutputSchema json.RawMessage `json:",omitempty"`
+	// AgentID is the agent this task's run executes under when the
+	// caller NAMED one on the request that created the task. Empty means
+	// the caller named none and the run binds the runtime's configured
+	// default — the pre-field behaviour and the value on every historical
+	// row, so an empty value reads as "defaulted", never as "unknown".
+	//
+	// Validated at the Protocol edge before the spawn (the two-check
+	// rule); persisted verbatim via the whole-record marshal, so no
+	// migration is required on any driver. The `omitempty` tag keeps a
+	// task that named no agent byte-identical on the wire to one spawned
+	// before the field existed.
+	//
+	// It selects CONFIGURATION only. The run's southbound tool
+	// provenance and its RFC 8693 acting principal stay boot-derived and
+	// are never read from here.
+	AgentID string `json:",omitempty"`
 }
 
 // SpawnRequest is the input shape for `Spawn`. Identity is mandatory.
@@ -255,6 +271,14 @@ type SpawnRequest struct {
 	// identity so a reused idempotency key with a different schema is a
 	// loud conflict. Nil is the common case.
 	OutputSchema json.RawMessage
+	// AgentID is the caller-named agent, already validated at the
+	// Protocol edge (the two-check rule) before the spawn — the registry
+	// does not re-validate it. Empty means the runtime's configured
+	// default, which is the pre-field behaviour on every path.
+	// Persisted onto `Task.AgentID`; folded into the task's content
+	// identity so a reused idempotency key naming a DIFFERENT agent is a
+	// loud conflict rather than a silent adoption of the original agent.
+	AgentID string
 }
 
 // SpawnToolRequest is the input shape for `SpawnTool`. The shape

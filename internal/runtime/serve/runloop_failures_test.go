@@ -547,7 +547,7 @@ func TestRunLoopDriver_Reconcile_DetachesStaleAndLogsErrors(t *testing.T) {
 		agentConfig:        &countingFailRegistry{failAt: 0}, // 0 = never fails
 		agentConfigID:      "reconcile-agent",
 	}
-	d.reconcileConnections(ctx, q)
+	d.reconcileConnections(ctx, d.agentConfigID, q)
 	if det.detached.Load() != 1 {
 		t.Fatalf("stale source detached %d times, want 1", det.detached.Load())
 	}
@@ -559,7 +559,7 @@ func TestRunLoopDriver_Reconcile_DetachesStaleAndLogsErrors(t *testing.T) {
 		agentConfig:        &countingFailRegistry{failAt: 1},
 		agentConfigID:      "fail-agent",
 	}
-	dErr.reconcileConnections(ctx, q)
+	dErr.reconcileConnections(ctx, dErr.agentConfigID, q)
 }
 
 // TestRunOne_InvalidIdentity_BailsBeforeRun — a quadruple whose identity is
@@ -600,7 +600,7 @@ func TestRunLoopDriver_ProjectNaming_ModelFallback(t *testing.T) {
 		}),
 	}
 	model := "override-model"
-	spec, err := d.projectNaming(ctx, q, &planner.LLMOverrides{Model: &model})
+	spec, err := d.projectNaming(ctx, d.agentConfigID, q, &planner.LLMOverrides{Model: &model})
 	if err != nil {
 		t.Fatalf("projectNaming: %v", err)
 	}

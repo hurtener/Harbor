@@ -115,6 +115,7 @@ type ControlSurface struct {
 	adminScope ScopeChecker     // the admin-cross-tenant gate; defaults to auth.HasScope
 	bus        events.EventBus  // optional; the audit.admin_scope_used emit on a cross-tenant topology read
 	sessions   SessionEnsurer   // optional; create-on-first-use on `start`
+	agents     AgentResolver    // optional to CONSTRUCT; a named agent without it is REFUSED
 }
 
 // SessionEnsurer is the create-on-first-use seam the `start` method
@@ -236,6 +237,60 @@ func WithSessionEnsurer(e SessionEnsurer) Option {
 	return func(s *ControlSurface) {
 		if e != nil {
 			s.sessions = e
+		}
+	}
+}
+
+// AgentResolver answers whether a caller-named agent may execute on this
+// Runtime. It is the edge validation behind `StartRequest.agent_id`.
+//
+// The contract is the two-check rule, and both checks are cheap:
+//
+//  1. the id equals the runtime's CONFIGURED DEFAULT agent id — the
+//     boot-configured agent every process serves through but never
+//     registers as a fleet entity, so a registry-membership rule would
+//     refuse the one id that works today; OR
+//  2. an admin-scoped config revision exists for
+//     (the CALLER's tenant, agentID) — byte-identical to the read every
+//     run-start config projection already performs, so the edge asks the
+//     same question the run is about to ask, one call earlier.
+//
+// Neither the agent registry nor a "base revision" is consulted:
+// registry membership is either quadruple-scoped (it would refuse nearly
+// everything) or an admin-gated whole-store scan, and an agent nobody has
+// configured legitimately has no active revision.
+//
+// NON-ORACLE PROPERTY. "Registered to another tenant" and "never existed"
+// MUST answer (false, nil) identically. The config key layout puts the
+// CALLER's tenant in the tenant slot, so this holds structurally — there
+// is no branch to get wrong — and implementations must not add one.
+//
+// A resolution ERROR is an error, never a false: the surface fails the
+// request loud rather than falling through to the default agent
+// (CLAUDE.md §13 — no silent degradation).
+//
+// Defined consumer-side (like SessionEnsurer) so the protocol package
+// does not import the agent-config packages. A surface built WITHOUT a
+// resolver REFUSES any non-empty agent_id — it does not accept it and
+// does not ignore it. An OMITTED agent_id against the same surface is
+// byte-identical to a surface that never had the seam.
+type AgentResolver interface {
+	ResolveAgent(ctx context.Context, ident identity.Identity, agentID string) (bool, error)
+}
+
+// WithAgentResolver wires the caller-named-agent validation seam the
+// `start` method calls when a request carries a non-empty `agent_id`.
+//
+// The option is OPTIONAL so a control-only Runtime (no agent-config
+// registry) still builds — but the ABSENCE is fail-closed, not
+// skip-on-absent: a `start` naming an agent against a surface with no
+// resolver is refused, because accepting it would hand the id to a run
+// loop that ignores it and report success to a caller whose request was
+// not honoured. A nil resolver passed here is treated as "not supplied".
+func WithAgentResolver(r AgentResolver) Option {
+	return func(s *ControlSurface) {
+		if r != nil {
+			s.agents = r
 		}
 	}
 }

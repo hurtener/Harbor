@@ -629,7 +629,7 @@ func (d *RunLoopDriver) handleEvent(ev events.Event) {
 // A nil result means "no overrides — use the agent/config defaults". A
 // tenant-resolver error is returned (the caller fails the run loudly);
 // the session Consume cannot error (in-process map read).
-func (d *RunLoopDriver) resolveLLMOverrides(ctx context.Context, q identity.Quadruple) (*planner.LLMOverrides, error) {
+func (d *RunLoopDriver) resolveLLMOverrides(ctx context.Context, agentID string, q identity.Quadruple) (*planner.LLMOverrides, error) {
 	// Tenant arm.
 	var tenant *planner.LLMOverrides
 	if d.tenantOverrides != nil {
@@ -651,7 +651,7 @@ func (d *RunLoopDriver) resolveLLMOverrides(ctx context.Context, q identity.Quad
 	// versioned), resolved from the active revision via the shared projection
 	// (the devstack twin calls the SAME helper, so the two binaries cannot
 	// drift). It overrides the tenant-wide baseline per field.
-	agentLayer, err := projection.ActiveLLMOverrides(ctx, d.agentConfig, d.agentConfigID, q)
+	agentLayer, err := projection.ActiveLLMOverrides(ctx, d.agentConfig, agentID, q)
 	if err != nil {
 		return nil, err
 	}
@@ -673,16 +673,16 @@ func (d *RunLoopDriver) resolveLLMOverrides(ctx context.Context, q identity.Quad
 // views to that set (the agent-config control plane's run-start
 // projection). The logic is shared verbatim with the devstack twin via the
 // projection package so the two binaries cannot drift (CLAUDE.md §17.6).
-func (d *RunLoopDriver) projectAgentConfigSkills(ctx context.Context, q identity.Quadruple, views []skills.SkillView) ([]skills.SkillView, error) {
-	return projection.ActiveSkillViews(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, views)
+func (d *RunLoopDriver) projectAgentConfigSkills(ctx context.Context, agentID string, q identity.Quadruple, views []skills.SkillView) ([]skills.SkillView, error) {
+	return projection.ActiveSkillViews(ctx, d.agentConfig, d.sessionOverlay, agentID, q, views)
 }
 
 // projectAgentConfigCatalog builds the run's planner catalog view, applying
 // the agent's active-config tool exposure (paused MCP servers + disabled
 // tools excluded) via the SAME shared projection the devstack twin uses
 // (CLAUDE.md §17.6). Next-turn-only; the live transport stays warm.
-func (d *RunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q identity.Quadruple, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
-	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, d.catalog, filter)
+func (d *RunLoopDriver) projectAgentConfigCatalog(ctx context.Context, agentID string, q identity.Quadruple, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
+	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.sessionOverlay, agentID, q, d.catalog, filter)
 }
 
 // projectAgentConfigPromptLayers overlays the agent's durable layered system
@@ -690,8 +690,8 @@ func (d *RunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q identit
 // config onto the run's resolved override bundle at run start, via the SAME
 // shared projection the devstack twin uses (CLAUDE.md §17.6). Next-turn-only;
 // the immutable per-run snapshot is undisturbed for in-flight runs.
-func (d *RunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
-	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, ov)
+func (d *RunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, agentID string, q identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
+	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.sessionOverlay, agentID, q, ov)
 }
 
 // projectRunCompletionHook resolves the effective run-completion hook for
@@ -699,8 +699,8 @@ func (d *RunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, q id
 // uses (CLAUDE.md §17.6): agent-config `hooks` section over the static
 // `runtime.hooks.run_completion` yaml over none. Next-turn-only; an edit is
 // invisible to an in-flight run.
-func (d *RunLoopDriver) projectRunCompletionHook(ctx context.Context, q identity.Quadruple) (*steering.CompletionHookSpec, error) {
-	hook, _, err := projection.ActiveRunCompletionHook(ctx, d.agentConfig, d.agentConfigID, q, d.runCompletionHook)
+func (d *RunLoopDriver) projectRunCompletionHook(ctx context.Context, agentID string, q identity.Quadruple) (*steering.CompletionHookSpec, error) {
+	hook, _, err := projection.ActiveRunCompletionHook(ctx, d.agentConfig, agentID, q, d.runCompletionHook)
 	return hook, err
 }
 
@@ -711,11 +711,11 @@ func (d *RunLoopDriver) projectRunCompletionHook(ctx context.Context, q identity
 // naming dependencies (titler + wrapped LLM client) are not wired — opt-in,
 // default off. The naming model resolves to the policy's model, else the run's
 // effective model override, else "" (the client default). Next-turn-only.
-func (d *RunLoopDriver) projectNaming(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*steering.NamingSpec, error) {
+func (d *RunLoopDriver) projectNaming(ctx context.Context, agentID string, q identity.Quadruple, ov *planner.LLMOverrides) (*steering.NamingSpec, error) {
 	if d.sessionTitler == nil || d.namingLLM == nil {
 		return nil, nil
 	}
-	res, active, err := projection.ActiveNamingPolicy(ctx, d.agentConfig, d.agentConfigID, q, d.namingDefault)
+	res, active, err := projection.ActiveNamingPolicy(ctx, d.agentConfig, agentID, q, d.namingDefault)
 	if err != nil {
 		return nil, err
 	}
@@ -749,7 +749,7 @@ func (d *RunLoopDriver) projectNaming(ctx context.Context, q identity.Quadruple,
 // a run precondition; a run continues even if an old transport refuses to
 // close. Shared verbatim with the devstack twin via the projection package
 // (CLAUDE.md §17.6).
-func (d *RunLoopDriver) reconcileConnections(ctx context.Context, q identity.Quadruple) {
+func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string, q identity.Quadruple) {
 	// The PROVIDER-reconcile leg runs independently of the connection detacher:
 	// make the reconciling owner's installed OAuth providers match the current
 	// active revision (a rollback past an install uninstalls+closes; a rollback
@@ -757,27 +757,27 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, q identity.Qua
 	// closes tenant-B's provider. A reconcile error is logged LOUD but does not
 	// fail the run.
 	if d.oauthProviderReconciler != nil {
-		changed, perr := projection.ReconcileOAuthProviders(ctx, d.agentConfig, d.agentConfigID, q, d.oauthProviderReconciler)
+		changed, perr := projection.ReconcileOAuthProviders(ctx, d.agentConfig, agentID, q, d.oauthProviderReconciler)
 		if perr != nil {
 			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start OAuth-provider reconcile failed",
-				slog.String("agent_id", d.agentConfigID), slog.String("run_id", q.RunID), slog.String("err", perr.Error()))
+				slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", perr.Error()))
 		} else if changed > 0 {
 			d.logger.InfoContext(ctx, "RunLoopDriver: run-start OAuth-provider reconcile applied",
-				slog.String("agent_id", d.agentConfigID), slog.Int("changed", changed))
+				slog.String("agent_id", agentID), slog.Int("changed", changed))
 		}
 	}
 	if d.connectionDetacher == nil {
 		return
 	}
-	detached, err := projection.ReconcileConnections(ctx, d.agentConfig, d.agentConfigID, q, d.connectionDetacher, d.bootDeclaredMCP)
+	detached, err := projection.ReconcileConnections(ctx, d.agentConfig, agentID, q, d.connectionDetacher, d.bootDeclaredMCP)
 	if err != nil {
 		d.logger.ErrorContext(ctx, "RunLoopDriver: run-start MCP reconcile detach failed",
-			slog.String("agent_id", d.agentConfigID), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
+			slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
 		return
 	}
 	if detached > 0 {
 		d.logger.InfoContext(ctx, "RunLoopDriver: run-start MCP reconcile detached servers",
-			slog.String("agent_id", d.agentConfigID), slog.Int("detached", detached))
+			slog.String("agent_id", agentID), slog.Int("detached", detached))
 	}
 	// The ALLOWANCE-reconcile leg: re-derive each still-declared runtime-added
 	// connection's OAuth-discovery allow-list from the current revision and
@@ -786,15 +786,15 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, q identity.Qua
 	// like the detach leg. The detacher concrete satisfies the reconciler seam;
 	// a driver that does not is a no-op.
 	if rec, ok := d.connectionDetacher.(projection.DiscoveryOriginReconciler); ok {
-		applied, aerr := projection.ReconcileDiscoveryOrigins(ctx, d.agentConfig, d.agentConfigID, q, rec)
+		applied, aerr := projection.ReconcileDiscoveryOrigins(ctx, d.agentConfig, agentID, q, rec)
 		if aerr != nil {
 			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start MCP discovery-allowance reconcile failed",
-				slog.String("agent_id", d.agentConfigID), slog.String("run_id", q.RunID), slog.String("err", aerr.Error()))
+				slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", aerr.Error()))
 			return
 		}
 		if applied > 0 {
 			d.logger.InfoContext(ctx, "RunLoopDriver: run-start MCP discovery-allowance reconcile re-applied",
-				slog.String("agent_id", d.agentConfigID), slog.Int("reapplied", applied))
+				slog.String("agent_id", agentID), slog.Int("reapplied", applied))
 		}
 	}
 }
@@ -832,21 +832,21 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		return
 	}
 
-	// Run-start reconciliation (detach leg): before projecting the catalog,
-	// detach any MCP server the agent's active revision no longer declares
-	// (a removed connection / a rollback past an add). Exposure is next-turn;
-	// teardown is process-global (an in-flight run calling a detached server
-	// fails loud — see the reconcileConnections wrapper doc).
-	d.reconcileConnections(taskCtx, q)
-
 	// build the per-run consumer state BEFORE
 	// handing the RunSpec to the RunLoop. The four primitives the
 	// 83-band shipped now have a real production consumer.
 	//
-	// Step 1: fetch the task record to read the user-facing Query.
-	// The Query becomes the run's `Goal` (the planner-visible goal
-	// starts equal to the user's request; runtime REDIRECT can mutate
-	// it later — see RunContext.Goal godoc).
+	// Step 1: fetch the task record. It carries the user-facing Query —
+	// which becomes the run's `Goal` (the planner-visible goal starts
+	// equal to the user's request; runtime REDIRECT can mutate it later,
+	// see RunContext.Goal godoc) — AND the caller-named agent this run
+	// executes under.
+	//
+	// ORDERING: this read runs BEFORE the run-start reconcile below,
+	// because the reconcile legs are owner-scoped by (tenant, agent) and
+	// must reconcile the RUN's effective agent, not the boot default. A
+	// reconcile that ran first would tear down the wrong owner's
+	// connections on every caller-named run.
 	task, gErr := d.tasks.Get(taskCtx, taskID)
 	if gErr != nil {
 		d.logger.Warn("RunLoopDriver: tasks.Get failed; failing run",
@@ -863,6 +863,28 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		return
 	}
+
+	// The run's EFFECTIVE config agent id: the caller-named agent when
+	// the request named one (already validated at the Protocol edge),
+	// else the runtime's boot-configured default. It is a per-run LOCAL
+	// threaded as a parameter — never a field on the driver, which is a
+	// shared compiled artifact serving concurrent runs under different
+	// agents (the concurrent-reuse contract).
+	//
+	// It selects CONFIGURATION only. The southbound provenance / RFC 8693
+	// acting principal stays boot-derived; see the WithInvokingAgent call
+	// site below.
+	effectiveAgentID := d.agentConfigID
+	if task.AgentID != "" {
+		effectiveAgentID = task.AgentID
+	}
+
+	// Run-start reconciliation (detach leg): before projecting the catalog,
+	// detach any MCP server the agent's active revision no longer declares
+	// (a removed connection / a rollback past an add). Exposure is next-turn;
+	// teardown is process-global (an in-flight run calling a detached server
+	// fails loud — see the reconcileConnections wrapper doc).
+	d.reconcileConnections(taskCtx, effectiveAgentID, q)
 
 	// Compile the per-task output schema ONCE at run start (the compile
 	// the run consumes). A compile failure fails the run LOUD with the
@@ -965,7 +987,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		// config edit applies on the NEXT run, never mid-flight). A
 		// registry read error fails the run LOUDLY (the registry IS the
 		// runtime StateStore — an error means the runtime is unhealthy).
-		gated, gErr := d.projectAgentConfigSkills(taskCtx, q, views)
+		gated, gErr := d.projectAgentConfigSkills(taskCtx, effectiveAgentID, q, views)
 		if gErr != nil {
 			d.logger.ErrorContext(taskCtx, "RunLoopDriver: agent-config skills projection failed; failing run",
 				slog.String("task_id", string(taskID)),
@@ -1022,7 +1044,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		// run LOUDLY (the registry IS the runtime StateStore — an error means
 		// the runtime is unhealthy). The shared projection keeps the cmd +
 		// devstack views identical (CLAUDE.md §17.6).
-		view, vErr := d.projectAgentConfigCatalog(taskCtx, q, tools.CatalogFilter{
+		view, vErr := d.projectAgentConfigCatalog(taskCtx, effectiveAgentID, q, tools.CatalogFilter{
 			TenantID:      q.TenantID,
 			UserID:        q.UserID,
 			SessionID:     q.SessionID,
@@ -1149,7 +1171,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// rather than silently dropping the admin's policy (CLAUDE.md §13) —
 	// the override store IS the runtime StateStore, so a read error here
 	// means the runtime is already unhealthy.
-	llmOverrides, ovErr := d.resolveLLMOverrides(taskCtx, q)
+	llmOverrides, ovErr := d.resolveLLMOverrides(taskCtx, effectiveAgentID, q)
 	if ovErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: tenant-override resolution failed; failing run",
 			slog.String("task_id", string(taskID)),
@@ -1172,7 +1194,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// projection is shared verbatim with the devstack twin (CLAUDE.md §17.6);
 	// a read error fails the run loudly rather than silently dropping the
 	// operator's configured prompt.
-	llmOverrides, plErr := d.projectAgentConfigPromptLayers(taskCtx, q, llmOverrides)
+	llmOverrides, plErr := d.projectAgentConfigPromptLayers(taskCtx, effectiveAgentID, q, llmOverrides)
 	if plErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: prompt-layer projection failed; failing run",
 			slog.String("task_id", string(taskID)),
@@ -1193,7 +1215,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Resolve the effective run-completion hook once at run start (agent-config
 	// over yaml over none) via the shared projection. A read error fails the run
 	// loudly rather than silently dropping the operator's configured hook.
-	completionHook, chErr := d.projectRunCompletionHook(taskCtx, q)
+	completionHook, chErr := d.projectRunCompletionHook(taskCtx, effectiveAgentID, q)
 	if chErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: run-completion-hook projection failed; failing run",
 			slog.String("task_id", string(taskID)),
@@ -1214,7 +1236,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Resolve the effective session auto-naming spec once at run start
 	// (agent-config over yaml over off). A read error fails the run loudly
 	// rather than silently dropping the operator's configured policy.
-	namingSpec, nmErr := d.projectNaming(taskCtx, q, llmOverrides)
+	namingSpec, nmErr := d.projectNaming(taskCtx, effectiveAgentID, q, llmOverrides)
 	if nmErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: naming-policy projection failed; failing run",
 			slog.String("task_id", string(taskID)),
@@ -1282,6 +1304,15 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// this run: tool transports (the MCP driver) carry it into `_meta.agent_id`
 	// for a shared server's attribution. Provenance only — never an isolation
 	// principal (§6); an empty agentConfigID (bare-embed run) is a no-op.
+	//
+	// DELIBERATELY the BOOT value, never `effectiveAgentID`. This id also
+	// becomes the RFC 8693 `actor_token` on the token-exchange path, which
+	// the runtime documents as its VERIFIED acting principal and never a
+	// client-supplied field; and the exchanged token is cached WITHOUT the
+	// acting principal in its key, so a caller-influenced value would be
+	// silently nondeterministic across a cached TTL. A caller-named agent
+	// selects CONFIGURATION only — the two agent-id carriers on a run have
+	// different provenance and MUST NOT be unified by a tidying refactor.
 	runCtx := tools.WithInvokingAgent(d.subCtx, d.agentConfigID)
 	fin, err := d.runLoop.Run(runCtx, spec)
 	if err != nil {

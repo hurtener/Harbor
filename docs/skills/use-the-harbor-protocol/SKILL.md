@@ -172,6 +172,19 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
                          "additionalProperties": false}}'
 ```
 
+To run under a **specific agent's configuration**, add the optional `agent_id` field (D-360). Omitting it binds the runtime's configured default exactly as before; naming one selects that agent's prompt layers, tool exposure, skills membership, LLM parameter overrides, completion hook and naming policy for this run.
+
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {}, "query": "Draft the release note.", "agent_id": "reporting-agent"}'
+```
+
+A named agent is accepted when EITHER its id equals the runtime's configured default agent id, OR a config revision exists for your tenant under that id (write one with `agent_config.set_revision` — see §7). Anything else is refused with a `400 {"code": "invalid_request"}` envelope **before any task is created**, never quietly replaced by the default: a caller that named agent A, silently got agent B, and was told it succeeded is exactly the failure this rule prevents. The refusal is deliberately uninformative — an id belonging to another tenant and an id that never existed produce the identical error, so the edge cannot be probed for cross-tenant existence.
+
+**It selects configuration only.** The run's southbound tool provenance (`_meta.agent_id` on outbound MCP calls) and its RFC 8693 acting principal (`actor_token`) stay the runtime's boot-derived value — the acting principal is the runtime's own verified identity and is never client-supplied. `tasks.get` / `tasks.list` reflect the selection on `task.agent_id`; an **absent** value means the caller named none and the run bound the runtime's configured default ("defaulted", not "unknown").
+
 For multimodal input, upload artifacts FIRST (`artifacts.put`, see §6) and pass the returned IDs in `input_artifact_ids` (D-166). The per-MIME dispatch — image inline vs PDF/audio as ArtifactStub — happens inside the planner; your client just passes refs. To override how an attachment is handed to the model, add the optional `input_artifact_dispositions` map (Phase 84b — D-189), keyed by artifact id with values `ref` | `inline` | `provider_native` | `tool:<name>` (e.g. `{"art_x": "tool:pdf.extract"}` forces the named catalog tool). Your hint is the top precedence layer (hint > the agent's `multimodal.disposition` config map > the runtime default: image inline, everything else ref); an omitted map keeps today's behaviour. `tasks.get` reflects the hint on `input_artifacts[].disposition`, and the resolution (including degradations — e.g. an unknown `tool:<name>`) is observable as `task.input_disposition.resolved` events. A `provider_native` hint is honoured end-to-end (Phase 84c — D-190): the LLM driver uploads the attachment to the provider's file surface and the upload is observable as `llm.provider_file.uploaded` events (artifact ref, provider, modality, `file_id`).
 
 ## 4. The events stream — SSE `events.subscribe`

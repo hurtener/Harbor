@@ -6492,6 +6492,11 @@
           "key": "output_schema",
           "type": "any",
           "optional": true
+        },
+        {
+          "key": "agent_id",
+          "type": "string",
+          "optional": true
         }
       ]
     },
@@ -7117,6 +7122,11 @@
         {
           "key": "has_pending_approval",
           "type": "boolean"
+        },
+        {
+          "key": "agent_id",
+          "type": "string",
+          "optional": true
         }
       ]
     },
