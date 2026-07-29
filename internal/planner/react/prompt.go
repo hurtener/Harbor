@@ -443,13 +443,20 @@ Your prose is streamed live to the user as you type it, character by character. 
 	// notes that re-calling the upstream tool produces another
 	// stored copy rather than bypassing the threshold. New
 	// meta-tools that act on stored references extend the bullet
-	// list in this section as they land.
+	// list in this section as they land — and so does a CHANGED
+	// contract on one already listed: the paging parameter and the
+	// text-only admissibility rule are stated here because a model
+	// that reads this block and a model that reads the tool's own
+	// description in `<available_tools>` must not learn two
+	// different things about one tool.
 	sectionHeavyResults = `<heavy_results>
 Some tools return payloads larger than fit cleanly in your context (multimedia metadata, file contents, query dumps). The runtime stores any tool result above its size threshold in an out-of-context artifact store and surfaces you a short preview plus a reference handle. Each reference looks like ref="abc123def456" and is unique per stored payload.
 
 Meta-tools for working with stored references:
 
-- artifact_fetch(ref, max_bytes?): retrieve the full payload of a stored result. Use it when the preview does not carry the field, value, or section you need to answer the user. max_bytes lets you bound the returned slice; the runtime defaults to a safe size when omitted.
+- artifact_fetch(ref, max_bytes?, offset?): read a window of a stored result as TEXT. Use it when the preview does not carry the field, value, or section you need to answer the user. max_bytes bounds the window; the runtime defaults to a safe size when omitted. offset is the byte position the window starts at, and it is how you read something larger than one window: call artifact_fetch(ref="abc123def456") first, then — while the response says truncated is true — call again with offset set to that response's offset + returned_bytes. Windows are byte ranges, so one may begin or end mid-line.
+
+Check the reference's mime field before calling. artifact_fetch returns text: a non-text artifact (a PDF, an image, a zip) is refused with an error naming its MIME and the byte offset that failed, because delivering those bytes as text would corrupt them. To act on a non-text artifact, call a tool that takes an artifact reference as an argument — the runtime hands that tool the bytes directly, without routing them through your context.
 
 The preview is the head of the payload only — fields further into the result live in the stored copy and require artifact_fetch to inspect. Re-calling the upstream tool produces a fresh stored copy of the same kind of payload; it does not bypass the threshold.
 </heavy_results>`

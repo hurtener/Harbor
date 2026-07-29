@@ -953,6 +953,16 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					// on a single tool error — that's the planner's
 					// call (it may repair, try another tool, or finish).
 					errPayload := map[string]any{"error": execErr.Error()}
+					// When the executor named a KIND for the failure,
+					// carry it as its own key so a planner can tell an
+					// unresolvable artifact reference from a tool's own
+					// error without matching a message. Absent when the
+					// failure is the tool's own, which keeps the
+					// unclassified payload byte-identical to what every
+					// prior turn produced.
+					if class := planner.ObservationClassOf(execErr); class != "" {
+						errPayload[planner.ObservationClassKey] = string(class)
+					}
 					observation = errPayload
 					llmObservation = errPayload
 				} else {

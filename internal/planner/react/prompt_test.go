@@ -812,6 +812,82 @@ func TestBuildSystemContent_HeavyResultsTeachesArtifactFetch(t *testing.T) {
 	}
 }
 
+// TestBuildSystemContent_HeavyResultsCarriesThePagingRuleAndTheBinaryCaveat
+// pins the three facts the read path's contract obliges this block to
+// state. The block is one of TWO model-facing descriptions of one tool
+// (the other is the built-in's own WithDescription, rendered into
+// <available_tools>), and the two must not disagree.
+//
+// The `offset` parameter had been shipped and undocumented here; the
+// text-only admissibility rule and the `mime` discriminator land with it
+// because a model that follows an auto-materialised attachment's fetch
+// hint arrives at this tool holding binary.
+func TestBuildSystemContent_HeavyResultsCarriesThePagingRuleAndTheBinaryCaveat(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
+
+	start := strings.Index(body, "<heavy_results>")
+	end := strings.Index(body, "</heavy_results>")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatalf("<heavy_results> section missing or malformed. Body:\n%s", body)
+	}
+	section := body[start:end]
+
+	for _, want := range []struct{ fact, substr string }{
+		{"the offset parameter", "offset"},
+		{"the concrete paging shape", "offset + returned_bytes"},
+		{"the truncated re-call condition", "truncated is true"},
+		{"the mime discriminator to read BEFORE calling", "mime field before calling"},
+		{"that a non-text artifact refuses", "refused with an error naming its MIME"},
+		{"the by-reference destination", "takes an artifact reference as an argument"},
+	} {
+		if !strings.Contains(section, want.substr) {
+			t.Errorf("<heavy_results> does not state %s (missing %q). Section:\n%s",
+				want.fact, want.substr, section)
+		}
+	}
+
+	// The stale phrasing is gone: it promised the whole payload and was
+	// silent about paging, which stopped being true when `offset`
+	// shipped.
+	if strings.Contains(section, "retrieve the full payload") {
+		t.Errorf("<heavy_results> still promises the full payload with no paging rule. Section:\n%s", section)
+	}
+}
+
+// TestRenderObservationForLLM_CarriesTheErrorClass closes the loop the
+// observation class exists for: the planner reads it as TEXT on its next
+// turn. Asserted against the RENDERED string, not the struct, because
+// the rendering is where a class that is merely persisted would be lost.
+func TestRenderObservationForLLM_CarriesTheErrorClass(t *testing.T) {
+	t.Parallel()
+
+	classified := renderObservationForLLM(planner.Step{
+		LLMObservation: map[string]any{
+			"error":                     `tool "artifact_stats" invoke: artifact reference does not resolve under this run's scope: "abc"`,
+			planner.ObservationClassKey: string(planner.ObservationClassArtifactRefNotFound),
+		},
+	})
+	if !strings.Contains(classified, planner.ObservationClassKey) {
+		t.Errorf("the rendered observation drops the class key:\n%s", classified)
+	}
+	if !strings.Contains(classified, string(planner.ObservationClassArtifactRefNotFound)) {
+		t.Errorf("the rendered observation drops the class value:\n%s", classified)
+	}
+
+	// The unclassified leg is unchanged — no stray key on the hottest
+	// path in the runtime.
+	plain := renderObservationForLLM(planner.Step{
+		LLMObservation: map[string]any{"error": "upstream 503"},
+	})
+	if strings.Contains(plain, planner.ObservationClassKey) {
+		t.Errorf("a tool's own error rendered a class key:\n%s", plain)
+	}
+	if want := `Observation: {"error":"upstream 503"}`; plain != want {
+		t.Errorf("plain render = %q, want the pre-phase %q", plain, want)
+	}
+}
+
 // TestBuildSystemContent_RendersAdditionalGuidanceWhenSet asserts the
 // <additional_guidance> section appears, wrapping the operator string
 // verbatim, when extraGuidance is non-empty.
