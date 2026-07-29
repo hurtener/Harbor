@@ -833,13 +833,19 @@ func TestBuildSystemContent_HeavyResultsCarriesThePagingRuleAndTheBinaryCaveat(t
 	}
 	section := body[start:end]
 
+	// The block states exactly the three facts its contract obliges and
+	// no more. It is rendered on EVERY turn of EVERY run, so a fact that
+	// belongs somewhere more just-in-time is paid for here forever: the
+	// by-reference route is deliberately NOT restated here, because the
+	// refusal message itself names it at the moment a model needs it,
+	// and `<available_tools>` carries the tool's full description.
 	for _, want := range []struct{ fact, substr string }{
 		{"the offset parameter", "offset"},
 		{"the concrete paging shape", "offset + returned_bytes"},
 		{"the truncated re-call condition", "truncated is true"},
-		{"the mime discriminator to read BEFORE calling", "mime field before calling"},
+		{"the mime discriminator to read BEFORE calling", "Check the ref's mime first"},
 		{"that a non-text artifact refuses", "refused with an error naming its MIME"},
-		{"the by-reference destination", "takes an artifact reference as an argument"},
+		{"that the refusal is actionable", "how to reach those bytes instead"},
 	} {
 		if !strings.Contains(section, want.substr) {
 			t.Errorf("<heavy_results> does not state %s (missing %q). Section:\n%s",
@@ -852,6 +858,42 @@ func TestBuildSystemContent_HeavyResultsCarriesThePagingRuleAndTheBinaryCaveat(t
 	// shipped.
 	if strings.Contains(section, "retrieve the full payload") {
 		t.Errorf("<heavy_results> still promises the full payload with no paging rule. Section:\n%s", section)
+	}
+}
+
+// alwaysOnPromptBudgetBytes is a byte budget on the system prompt every
+// run pays on every turn. It is not a style rule — it is a measured cost.
+//
+// The default prompt is assembled from scratch per planner step, and the
+// step's allocation profile scales with its size at roughly 2x (the text
+// is built and then copied into the request), so a byte added here is
+// ~2 bytes of allocation on every step of every run, plus a token on
+// every turn for every operator.
+//
+// This budget exists because that cost was learned the expensive way: a
+// 765-byte prose addition to `<heavy_results>` moved
+// BenchmarkReActPlanner_NextStep by +19% sec/op and +19% B/op with
+// allocs/op UNCHANGED at 16 — the same allocations, each bigger — and
+// tripped the CI perf gate. A package-level test is the cheaper place to
+// find that than a benchmark gate on a pull request.
+//
+// Raising this number is allowed; doing it silently is not. If a section
+// genuinely needs more room, raise the budget in the same commit and say
+// what the prompt bought for the bytes.
+const alwaysOnPromptBudgetBytes = 7000
+
+// TestBuildSystemContent_AlwaysOnPromptStaysWithinItsByteBudget pins the
+// cost of the prompt surface every turn carries.
+func TestBuildSystemContent_AlwaysOnPromptStaysWithinItsByteBudget(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{})
+	if got := len(body); got > alwaysOnPromptBudgetBytes {
+		t.Errorf("the always-on system prompt is %d bytes, over its %d-byte budget by %d.\n"+
+			"Every byte here is ~2 bytes of allocation on EVERY planner step and a token on "+
+			"EVERY turn. Either tighten the wording, move the fact to a just-in-time surface "+
+			"(a tool description, or the error message that needs it), or raise "+
+			"alwaysOnPromptBudgetBytes in this commit and justify it.",
+			got, alwaysOnPromptBudgetBytes, got-alwaysOnPromptBudgetBytes)
 	}
 }
 

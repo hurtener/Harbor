@@ -137,7 +137,7 @@ assert_grep_present 'errPayload\[planner\.ObservationClassKey\] = string\(class\
 
 assert_grep_present 'offset \+ returned_bytes' "${PROMPT_SRC}" \
     "phase 212: <heavy_results> states the concrete paging rule (it was silent about offset)"
-assert_grep_present 'mime field before calling' "${PROMPT_SRC}" \
+assert_grep_present "Check the ref's mime first" "${PROMPT_SRC}" \
     "phase 212: <heavy_results> names the mime discriminator to read BEFORE calling"
 # Scoped to the SECTION's own phrasing, not to the words "full payload":
 # the field-aware preview footer legitimately still says "retrieve the
