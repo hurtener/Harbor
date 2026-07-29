@@ -2269,6 +2269,7 @@ export interface StartRequest {
   input_artifact_ids?: string[];
   input_artifact_dispositions?: Record<string, string>;
   output_schema?: unknown;
+  agent_id?: string;
 }
 
 export interface StartResponse {
@@ -2446,6 +2447,7 @@ export interface TaskRow {
   last_activity_at: string;
   is_background: boolean;
   has_pending_approval: boolean;
+  agent_id?: string;
 }
 
 export interface TaskTrajectoryRef {

@@ -161,6 +161,29 @@ type StartRequest struct {
 	// REUSED key with a DIFFERENT schema is caller misuse and is rejected
 	// loud as an idempotency conflict.
 	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
+	// AgentID names which agent's CONFIGURATION the run executes under.
+	//
+	// OPTIONAL: an omitted field binds the runtime's configured default
+	// agent exactly as before — byte-identical wire shape and run
+	// behaviour. A non-empty value is accepted when it equals the
+	// runtime's configured default agent id, OR when a config revision
+	// exists for the caller's tenant under that id. Anything else is
+	// REFUSED with CodeInvalidRequest at the Protocol edge, before a task
+	// exists — never substituted with the default. A caller that named
+	// agent A, silently got agent B, and was told it succeeded is the
+	// defect this field closes, so the refusal is never a fallback.
+	//
+	// The refusal text is INDEPENDENT of why the id failed: an id
+	// registered under another tenant and an id that never existed
+	// produce the identical error, so the edge is not a cross-tenant
+	// existence oracle.
+	//
+	// SCOPE — configuration only. The run's southbound tool provenance
+	// (`_meta.agent_id`) and its RFC 8693 acting principal remain the
+	// runtime's boot-derived value and are never influenced by this
+	// field. The two agent-id carriers on a run are deliberately
+	// distinct and must not be unified.
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 // StartResponse is the wire response for the `start` Protocol method.

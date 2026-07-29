@@ -337,6 +337,12 @@ func projectRow(t *tasks.Task) prototypes.TaskRow {
 		// page renders the count without subscribing to the per-tool
 		// event stream.
 		ToolCount: t.ToolCount,
+		// The caller-named agent this task's run executes under. Empty
+		// (elided by omitempty) means the caller named none and the run
+		// bound the runtime's configured default — "defaulted", not
+		// "unknown", since every row without it bound the default by
+		// construction.
+		AgentID: t.AgentID,
 	}
 	if t.ParentTaskID != nil {
 		row.ParentTaskID = string(*t.ParentTaskID)

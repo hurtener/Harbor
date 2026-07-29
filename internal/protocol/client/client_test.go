@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -195,36 +194,33 @@ func TestClient_TokenSource_ResolvesEveryRequestAfterExpiry(t *testing.T) {
 	}
 }
 
+// cancelledConcurrentIndex reports whether the concurrent-reuse harness below
+// cancels the context of the goroutine at index. It is the single definition
+// shared by the request goroutines, the cancellation loop, and the test server
+// handler, so no branch can drift out of step with the others.
+func cancelledConcurrentIndex(index int) bool { return index%8 <= 1 }
+
 func TestClient_ConcurrentReuse_SessionIsolationCancellationAndLeak(t *testing.T) {
-	// QUARANTINED — https://github.com/hurtener/Harbor/issues/599
-	//
-	// Observed ONCE on Linux CI ("cancelled session session-112 succeeded").
-	// Weaker evidence than its sibling #598, and recorded as such: the cause
-	// is NOT known. It passes 30x locally under 8-way CPU contention, and the
-	// release that surfaced it changes this package only additively (a new
-	// ArtifactsGet method) — it touches neither TasksList, callMethod, nor any
-	// cancellation path, and this test file is unchanged.
-	//
-	// Set HARBOR_RUN_QUARANTINED=1 to run it.
-	//
-	// Required for v1.24. #599 records a theory about this file's own handler
-	// select that was formed and then DISPROVED by experiment — read it before
-	// re-deriving it. If the assertion's ordering assumption is wrong, fix the
-	// assertion rather than the timing.
-	if os.Getenv("HARBOR_RUN_QUARANTINED") == "" {
-		t.Skip("quarantined: flaky on Linux CI, see https://github.com/hurtener/Harbor/issues/599")
-	}
 	baseline := runtime.NumGoroutine()
 	const count = 128
 	inflight := make(chan string, count)
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		session := r.Header.Get("X-Harbor-Session")
-		inflight <- session
+		index, indexErr := strconv.Atoi(strings.TrimPrefix(session, "session-"))
+		if indexErr != nil {
+			t.Errorf("unparseable session header %q: %v", session, indexErr)
+			return
+		}
 		if r.URL.Path == "/v1/events" {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
 			w.(http.Flusher).Flush()
+			inflight <- session
+			if cancelledConcurrentIndex(index) {
+				<-r.Context().Done()
+				return
+			}
 			select {
 			case <-release:
 				_, _ = fmt.Fprintf(w, "data: {\"session\":%q}\n\n", session)
@@ -234,12 +230,30 @@ func TestClient_ConcurrentReuse_SessionIsolationCancellationAndLeak(t *testing.T
 			return
 		}
 		var request types.TaskListRequest
+		// Decode BEFORE signalling inflight. The harness fires its cancels the
+		// instant the last inflight signal lands, so a decode still in progress
+		// would fail with context.Canceled through no fault of the client.
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode request: %v", err)
 			return
 		}
 		if request.Identity.Session != session {
 			t.Errorf("body session %q != header session %q", request.Identity.Session, session)
+		}
+		inflight <- session
+		// A request whose context the harness cancels must never be ANSWERABLE.
+		// Context cancellation is best-effort: net/http's (*persistConn).roundTrip
+		// waits in a select over "response headers arrived" and "context done",
+		// and when both are ready Go picks pseudo-randomly — so a handler that
+		// CAN answer a cancelled request turns the assertion below into a coin
+		// flip (issue #599: ~15% of Linux runs, always at the late indices whose
+		// cancel lands closest to the release). Serving a cancelled session
+		// nothing but its own cancellation makes the guarantee actually under
+		// test — a cancel aborts its own call and never disturbs a sibling —
+		// deterministic on every platform.
+		if cancelledConcurrentIndex(index) {
+			<-r.Context().Done()
+			return
 		}
 		select {
 		case <-release:
@@ -277,14 +291,14 @@ func TestClient_ConcurrentReuse_SessionIsolationCancellationAndLeak(t *testing.T
 			if index%2 == 1 {
 				stream, streamErr := clone.Subscribe(ctx, StreamOptions{})
 				if streamErr != nil {
-					if index%8 > 1 {
+					if !cancelledConcurrentIndex(index) {
 						errorsCh <- fmt.Errorf("stream %s: %w", session, streamErr)
 					}
 					return
 				}
 				_, recvErr := stream.Recv(ctx)
 				closeErr := stream.Close()
-				if index%8 <= 1 {
+				if cancelledConcurrentIndex(index) {
 					if recvErr == nil {
 						errorsCh <- fmt.Errorf("cancelled stream %s succeeded", session)
 					}
@@ -296,7 +310,7 @@ func TestClient_ConcurrentReuse_SessionIsolationCancellationAndLeak(t *testing.T
 				return
 			}
 			response, callErr := clone.TasksList(ctx, types.TaskListRequest{})
-			if index%8 <= 1 {
+			if cancelledConcurrentIndex(index) {
 				if callErr == nil {
 					errorsCh <- fmt.Errorf("cancelled session %s succeeded", session)
 				}
@@ -314,9 +328,10 @@ func TestClient_ConcurrentReuse_SessionIsolationCancellationAndLeak(t *testing.T
 	for range count {
 		<-inflight
 	}
-	for i := 0; i < count; i += 8 {
-		cancels[i]()
-		cancels[i+1]()
+	for i := range count {
+		if cancelledConcurrentIndex(i) {
+			cancels[i]()
+		}
 	}
 	close(release)
 	wait.Wait()

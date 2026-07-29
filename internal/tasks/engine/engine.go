@@ -239,6 +239,9 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		InputArtifactDispositions: inputArtifactDispositions,
 		// per-request output schema (raw JSON-Schema bytes).
 		OutputSchema: outputSchema,
+		// the caller-named agent (edge-validated; "" = the runtime's
+		// configured default).
+		AgentID: req.AgentID,
 	}
 	// Validate the requested group BEFORE persisting anything. A
 	// missing / cross-session / sealed group must fail the spawn
@@ -1140,6 +1143,12 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if !bytes.Equal(existing.OutputSchema, req.OutputSchema) {
 		return false
 	}
+	// the caller-named agent is part of the task's content identity: a
+	// reused idempotency key naming a DIFFERENT agent must surface as a
+	// loud conflict, never silently adopt the original task's agent.
+	if existing.AgentID != req.AgentID {
+		return false
+	}
 	return true
 }
 
@@ -1209,6 +1218,14 @@ func spawnRequestContentHash(req tasks.SpawnRequest) [32]byte {
 	if len(req.OutputSchema) > 0 {
 		h.Write([]byte{0x1F})
 		h.Write(req.OutputSchema)
+	}
+	// fold the caller-named agent in so "same key, different agent"
+	// surfaces as ErrIdempotencyConflict. Gated on non-empty so a spawn
+	// that names no agent hashes byte-identically to one made before the
+	// field existed.
+	if req.AgentID != "" {
+		h.Write([]byte{0x1F})
+		h.Write([]byte(req.AgentID))
 	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))

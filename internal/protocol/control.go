@@ -267,6 +267,49 @@ func (s *ControlSurface) emitAdminScopeUsed(ctx context.Context, caller identity
 // every start. 64 KiB is generous for any realistic answer schema.
 const maxOutputSchemaBytes = 64 * 1024
 
+// agentNotResolvableMsg is the SINGLE refusal text for an unresolvable
+// caller-named agent. It deliberately names neither the rejected id nor
+// the reason: "registered under another tenant" and "never existed" must
+// be indistinguishable, so the edge cannot be used as a cross-tenant
+// existence oracle. One constant means a future edit cannot split the
+// two cases apart by accident.
+const agentNotResolvableMsg = "agent_id is not resolvable for the caller's tenant"
+
+// validateNamedAgent applies the two-check rule to a `start` request's
+// optional agent_id. It returns nil for an OMITTED id (the unchanged
+// path — byte-identical to a Runtime without the field) and a Protocol
+// error for every non-empty id the Runtime cannot honour.
+//
+// The unwired seam FAILS CLOSED. A surface built without an
+// AgentResolver refuses a non-empty id rather than skipping the check:
+// the run-loop driver would silently ignore the value, so accepting it
+// would report success for a request that was not honoured. This is
+// deliberately NOT the optional-and-skip posture of the SessionEnsurer
+// seam, whose absence degrades an auxiliary behaviour rather than the
+// caller's explicit instruction (CLAUDE.md §13).
+//
+// A resolver ERROR fails the request loud with CodeRuntimeError; it
+// never falls through to the default agent.
+func (s *ControlSurface) validateNamedAgent(ctx context.Context, method string, id identity.Identity, agentID string) error {
+	if agentID == "" {
+		return nil
+	}
+	if s.agents == nil {
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: %s", method, agentNotResolvableMsg)
+	}
+	allowed, err := s.agents.ResolveAgent(ctx, id, agentID)
+	if err != nil {
+		return protoerrors.Newf(protoerrors.CodeRuntimeError,
+			"method %q: agent_id resolution failed: %v", method, err)
+	}
+	if !allowed {
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: %s", method, agentNotResolvableMsg)
+	}
+	return nil
+}
+
 // dispatchStart handles the `start` method: it spawns a foreground task
 // via the tasks.TaskRegistry. A `start` request carries the
 // identity triple (RunID is ignored — Spawn assigns the TaskID) and no
@@ -295,6 +338,16 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 	if err := identity.Validate(id); err != nil {
 		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
 			"method %q: identity scope incomplete: %v", string(method), err)
+	}
+
+	// Caller-named-agent edge validation (reject-early, fail-closed).
+	// Runs BEFORE the session ensurer and before Spawn: a request naming
+	// an agent this Runtime cannot honour must not materialise a session
+	// row OR a task. The refusal is never a fallback to the default agent
+	// — a caller that named A and silently got B was told it succeeded,
+	// which is the defect this field closes.
+	if err := s.validateNamedAgent(ctx, string(method), id, sr.AgentID); err != nil {
+		return nil, err
 	}
 
 	// create-on-first-use. The session id is the per-request
@@ -366,6 +419,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		InputArtifactIDs:          sr.InputArtifactIDs,
 		InputArtifactDispositions: sr.InputArtifactDispositions,
 		OutputSchema:              sr.OutputSchema,
+		AgentID:                   sr.AgentID,
 	})
 	if err != nil {
 		return nil, mapTaskError(string(method), err)

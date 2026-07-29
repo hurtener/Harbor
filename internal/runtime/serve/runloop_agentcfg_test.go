@@ -83,7 +83,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigSkills_AtRunStart(t *testing.T)
 
 	// A driver with no registry wired → ungated (every skill passes).
 	bare := &RunLoopDriver{}
-	got, err := bare.projectAgentConfigSkills(ctx, q, acTestViews("a", "b"))
+	got, err := bare.projectAgentConfigSkills(ctx, bare.agentConfigID, q, acTestViews("a", "b"))
 	if err != nil {
 		t.Fatalf("bare driver: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigSkills_AtRunStart(t *testing.T)
 
 	// A driver with the registry wired but no active revision → ungated.
 	d := &RunLoopDriver{agentConfig: reg, agentConfigID: agentID}
-	got, err = d.projectAgentConfigSkills(ctx, q, acTestViews("a", "b"))
+	got, err = d.projectAgentConfigSkills(ctx, d.agentConfigID, q, acTestViews("a", "b"))
 	if err != nil {
 		t.Fatalf("no-revision driver: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigSkills_AtRunStart(t *testing.T)
 	if err != nil {
 		t.Fatalf("set r1: %v", err)
 	}
-	got, err = d.projectAgentConfigSkills(ctx, q, acTestViews("a", "b", "c"))
+	got, err = d.projectAgentConfigSkills(ctx, d.agentConfigID, q, acTestViews("a", "b", "c"))
 	if err != nil {
 		t.Fatalf("projected: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigSkills_AtRunStart(t *testing.T)
 	if _, err := reg.Rollback(ctx, q, agentID, r1.RevisionID, agentcfg.ConfigScopeAgent); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
-	got, err = d.projectAgentConfigSkills(ctx, q, acTestViews("a", "b", "c"))
+	got, err = d.projectAgentConfigSkills(ctx, d.agentConfigID, q, acTestViews("a", "b", "c"))
 	if err != nil {
 		t.Fatalf("post-rollback projected: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigToolExposure_AtRunStart(t *test
 
 	// No registry wired → ungated (all three tools visible).
 	bare := &RunLoopDriver{catalog: cat}
-	v, err := bare.projectAgentConfigCatalog(ctx, q, filter)
+	v, err := bare.projectAgentConfigCatalog(ctx, bare.agentConfigID, q, filter)
 	if err != nil {
 		t.Fatalf("bare: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigToolExposure_AtRunStart(t *test
 	}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
-	v, err = d.projectAgentConfigCatalog(ctx, q, filter)
+	v, err = d.projectAgentConfigCatalog(ctx, d.agentConfigID, q, filter)
 	if err != nil {
 		t.Fatalf("projected: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigPromptLayers_AtRunStart(t *test
 
 	// No registry wired → bundle passes through unchanged.
 	bare := &RunLoopDriver{}
-	ov, err := bare.projectAgentConfigPromptLayers(ctx, q, nil)
+	ov, err := bare.projectAgentConfigPromptLayers(ctx, bare.agentConfigID, q, nil)
 	if err != nil {
 		t.Fatalf("bare driver: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigPromptLayers_AtRunStart(t *test
 
 	// Registry wired but no active revision → unchanged.
 	d := &RunLoopDriver{agentConfig: reg, agentConfigID: agentID}
-	ov, err = d.projectAgentConfigPromptLayers(ctx, q, nil)
+	ov, err = d.projectAgentConfigPromptLayers(ctx, d.agentConfigID, q, nil)
 	if err != nil {
 		t.Fatalf("no-revision driver: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigPromptLayers_AtRunStart(t *test
 	if err != nil {
 		t.Fatalf("set r1: %v", err)
 	}
-	ov, err = d.projectAgentConfigPromptLayers(ctx, q, nil)
+	ov, err = d.projectAgentConfigPromptLayers(ctx, d.agentConfigID, q, nil)
 	if err != nil {
 		t.Fatalf("projected: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigPromptLayers_AtRunStart(t *test
 	}); err != nil {
 		t.Fatalf("set r2: %v", err)
 	}
-	ovR2, err := d.projectAgentConfigPromptLayers(ctx, q, &planner.LLMOverrides{})
+	ovR2, err := d.projectAgentConfigPromptLayers(ctx, d.agentConfigID, q, &planner.LLMOverrides{})
 	if err != nil {
 		t.Fatalf("r2 projected: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigPromptLayers_AtRunStart(t *test
 	if _, err := reg.Rollback(ctx, q, agentID, r1.RevisionID, agentcfg.ConfigScopeAgent); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
-	ov, err = d.projectAgentConfigPromptLayers(ctx, q, nil)
+	ov, err = d.projectAgentConfigPromptLayers(ctx, d.agentConfigID, q, nil)
 	if err != nil {
 		t.Fatalf("post-rollback projected: %v", err)
 	}

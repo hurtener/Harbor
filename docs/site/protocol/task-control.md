@@ -53,9 +53,49 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
   `input_artifacts[].disposition`.
 - `priority` — the initial scheduling priority (changeable later via
   `prioritize`).
+- `agent_id` — name which agent's **configuration** the run executes under
+  (D-360). Omitting it binds the runtime's configured default exactly as
+  before. See "Naming an agent" below.
 
 A `start` on a fresh session id **creates the session**; on a closed session
 it is rejected `invalid_request` ([auth & identity](./auth-and-identity.md)).
+
+## Naming an agent
+
+By default a run executes under the runtime's configured default agent. Pass
+`agent_id` to run under a different agent's configuration — its prompt
+layers, tool exposure, skills membership, LLM parameter overrides, completion
+hook and naming policy:
+
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {}, "query": "Summarise the quarterly report.", "agent_id": "reporting-agent"}'
+```
+
+**The two-check rule.** A named agent is accepted when EITHER its id equals
+the runtime's configured default agent id, OR a config revision exists for
+your tenant under that id (write one with `agent_config.set_revision`).
+Anything else is refused `invalid_request` **before the task is created** —
+never silently replaced with the default. A caller that named agent A,
+silently got agent B, and was told it succeeded is the failure this rule
+exists to prevent, so there is no fallback path.
+
+The refusal is deliberately uninformative: an agent id belonging to a
+different tenant and an id that never existed produce the identical error, so
+the surface cannot be probed for cross-tenant existence.
+
+**It selects configuration only.** The run's southbound tool provenance
+(`_meta.agent_id` on outbound MCP calls) and its RFC 8693 acting principal
+(`actor_token`) remain the runtime's boot-derived value and are never
+influenced by this field — the acting principal is the runtime's verified
+identity, never a client-supplied one.
+
+`tasks.get` / `tasks.list` reflect the value on `task.agent_id`. An **absent**
+`agent_id` on a task row means the caller named none and the run bound the
+runtime's configured default — "defaulted", not "unknown".
 
 ## The nine steering controls
 
