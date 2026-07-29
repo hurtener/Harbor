@@ -124,23 +124,25 @@ func terminalFoundationProjection() projection.Projection {
 }
 
 func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
-	// QUARANTINED — https://github.com/hurtener/Harbor/issues/598
+	// STILL QUARANTINED, but for a DIFFERENT defect than before —
+	// https://github.com/hurtener/Harbor/issues/604.
 	//
-	// Times out on Linux CI at the canonical-session-erase wait (:382). The
-	// identical assertion and message failed on `main` on 2026-07-24, two days
-	// before the v1.23 branch existed, so this is pre-existing rather than a
-	// regression. Quarantined per §17.6 (name it, track it, skip it visibly)
-	// so a known flake does not gate a release.
+	// The failure this test was originally quarantined for (#598, "timeout
+	// waiting for PTY canonical session erase") is FIXED: the shell handed
+	// host-owned commands to its host through a tea.Cmd, so a keystroke
+	// already queued behind a chord was applied before the command committed
+	// and the confirmation dialog opened behind the enter meant for it. That
+	// defect is now covered by a deterministic unit gate in internal/tui/app
+	// (TestRuntimeModel_ChordCommandCommitsBeforeTheNextQueuedKey) which runs
+	// unconditionally and fails without the fix — not an 80-second E2E.
 	//
-	// Set HARBOR_RUN_QUARANTINED=1 to run it — the fix must be verified
-	// against a real execution, not against this skip.
-	//
-	// Required for v1.24. Do NOT close #598 by raising a timeout: this family
-	// already carries three de-flake commits that treated timing, and the most
-	// recent sibling defect turned out to be an assertion that never measured
-	// what it claimed (#596).
+	// What remains is an undiagnosed stall on an F-key route/actions wait, at
+	// ~5% on a 2-CPU Linux runner BOTH before and after that fix (measured:
+	// 3 erase + 1 stall in 20 pre-fix runs, 0 erase + 2 stalls in 36 post-fix
+	// runs). The cause is NOT known; #604 records the evidence and what was
+	// ruled out. Do NOT close #604 by raising ptyWaitTimeout.
 	if os.Getenv("HARBOR_RUN_QUARANTINED") == "" {
-		t.Skip("quarantined: flaky on Linux CI, see https://github.com/hurtener/Harbor/issues/598")
+		t.Skip("quarantined: undiagnosed F-key render stall on Linux CI, see https://github.com/hurtener/Harbor/issues/604")
 	}
 	stack := devstack.Assemble(t, runtimePostureConfig(t), devstack.AssembleOpts{})
 	defer stack.Close()
@@ -395,7 +397,13 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	}, "PTY Markdown export")
 	mark = len(session.snapshot())
 	session.command(t, 'd')
-	session.waitContainsAfter(t, mark, "Delete session")
+	// Wait on the CONFIRMATION, not on the command's title: the which-key
+	// overlay ctrl+x paints lists "ctrl+x d  Delete session" whether or not
+	// the command is reachable (it only appends "· unavailable: <reason>"),
+	// so waiting on "Delete session" passes identically on the failing path
+	// and reports the real problem 20s later at the erase assertion. Only the
+	// confirmation dialog proves the chord's command actually ran.
+	session.waitContainsAfter(t, mark, "Confirm Delete session")
 	session.key(t, '\r', 1)
 	await(t, func() bool {
 		_, inspectErr := secondClient.SessionsInspect(t.Context(), types.SessionsInspectRequest{SessionID: second.Session})
