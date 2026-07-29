@@ -80,9 +80,24 @@ for plan in docs/plans/phase-*.md; do
     fi
 done
 
+# 4b. Phase plans must be TEXT. A single NUL makes grep treat the file as binary,
+# and the two cross-reference checks below then degrade silently: the RFC check
+# emits nothing at all (no OK, no FAIL) while the brief check emits a FALSE OK for
+# a reference that does not resolve. Verified by probe — a plan carrying a NUL and
+# a bogus `RFC §999.999` + `brief 99` passed both. `grep -a` alone does not fix it,
+# so the file is rejected outright: a control byte in a phase plan is a defect in
+# its own right, and this guard cannot itself be voided by the thing it detects.
+for plan in docs/plans/phase-*.md; do
+    if LC_ALL=C tr -d '\0' < "$plan" | cmp -s - "$plan"; then
+        :
+    else
+        fail "${plan}: contains a NUL byte — phase plans must be text (a control byte silently voids the RFC and brief reference checks)"
+    fi
+done
+
 # 5. Cross-reference resolution: every `RFC §N.M` in phase plans must resolve to a real heading.
 for plan in docs/plans/phase-*.md; do
-    refs=$(grep -oE 'RFC §[0-9]+(\.[0-9]+){0,2}' "$plan" | sort -u || true)
+    refs=$(grep -a -oE 'RFC §[0-9]+(\.[0-9]+){0,2}' "$plan" | sort -u || true)
     if [ -z "$refs" ]; then
         continue
     fi
@@ -102,7 +117,8 @@ done
 
 # 6. Cross-reference resolution: every `brief NN` in phase plans must resolve to a real file.
 for plan in docs/plans/phase-*.md; do
-    refs=$(grep -oE '\bbrief [0-9]{2}\b' "$plan" | sort -u || true)
+    # -a: see the note on the RFC check above — same silent-skip hazard.
+    refs=$(grep -a -oE '\bbrief [0-9]{2}\b' "$plan" | sort -u || true)
     if [ -z "$refs" ]; then
         continue
     fi

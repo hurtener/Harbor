@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: live-server
+#
+# Phase 218 — the search cluster's user axis becomes a scoped boundary (D-363).
+#
+# The defect this guards: `internal/search` gated results on the TENANT axis
+# alone and passed `req.Filter.UserIDs` to storage unexamined, so a caller with
+# no admin-tier claim read another user's rows inside their own tenant. Two
+# distinct shapes — an ELIDED user_ids reaching storage as a wildcard (sessions,
+# tasks, artifacts) and a NAMED foreign user_ids honoured verbatim (all four).
+#
+# Asserts:
+#   - static: the user-axis helpers + sentinel exist beside their tenant twins.
+#   - static: all four searchers AND the aggregate dispatcher call them.
+#   - static (the regression trip-wire): no `req.Filter.UserIDs` survives in any
+#     searcher — the raw-filter read IS the bug's fingerprint, so a
+#     re-introduction fails preflight instead of waiting for a reviewer.
+#   - static: tasks' rowScopedCtx re-check covers the USER component, not the
+#     tenant alone.
+#   - static: the artifacts searcher binds the `heavy` bool its siblings bind.
+#   - static: the Protocol edge maps the new sentinel to a wire code.
+#   - live: the five search.* methods still answer for an ordinary caller — the
+#     fix must not turn a working surface into a refusal (the D-352 failure
+#     mode this phase was explicitly warned about).
+#   - live: a search.query naming a FOREIGN user_ids is refused 403 for a token
+#     carrying no admin-tier claim — an exact status compare, never a range.
+#   - unit-tests: the per-searcher fold/refusal arms, the helper contract, the
+#     two-principal N=128 concurrent-reuse arm, and the integration test — all
+#     under -race.
+#
+# Every assertion FAILS (never SKIPs) when its guard is removed: the static
+# guards fail on a missing pattern, the absence guard fails on a re-introduced
+# pattern, the live check compares an exact status, and the `go test` legs fail
+# on a genuine failure. The only SKIP paths are a build with no search surface
+# at all, a missing curl/jq, and a `-run` filter matching no tests on a build
+# where the phase has not landed.
+#
+# Mutation-verified (§4.2 item 5 — a shipped phase's own guard reporting SKIP
+# is how the 109k gap survived four phases). Record each transition in D-363:
+#   - revert a searcher's fold to `req.Filter.UserIDs`  -> OK -> FAIL
+#   - delete the ErrCrossUserRequiresAdmin refusal      -> OK -> FAIL
+#   - revert rowScopedCtx to the tenant-only compare    -> OK -> FAIL
+#
+# Done-definition: OK >= 10, SKIP = 0, FAIL = 0.
+#
+# ---------------------------------------------------------------------------
+# NOT-YET-LANDED POSTURE — read this before editing.
+#
+# The plan lands before the implementation, and preflight runs every smoke on
+# every commit, so hard assertions written today would fail the pre-commit hook
+# for everyone on this branch. The sibling Pending phases (215/216/217) solve
+# that by shipping a blank skeleton with one `skip`, which keeps preflight green
+# but throws the authored guards away — the implementor rewrites them from the
+# plan's prose, and whatever they do not re-derive is silently lost.
+#
+# This script keeps BOTH properties instead. The guards below are the real,
+# final ones; they are gated on a LANDED PROBE — the presence of the phase's
+# sentinel in internal/search/search.go. Before the phase lands the probe is
+# false and the script emits exactly one skip (preflight stays green, and this
+# is the sanctioned "surface not built yet" skip of §4.2 item 4). The moment the
+# implementor declares ErrCrossUserRequiresAdmin the probe flips and EVERY guard
+# below goes live in the same commit — there is no second step to forget, and
+# no window in which the phase is implemented but unguarded.
+#
+# The implementor's job here is therefore to DELETE the probe block once the
+# phase ships, not to write the assertions. Leaving it in place is harmless
+# (it is true forever after) but removing it makes the script honest about
+# being unconditional.
+# ---------------------------------------------------------------------------
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "${ROOT}"
+
+# shellcheck source=scripts/smoke/common.sh
+source "scripts/smoke/common.sh"
+
+SEARCH_GO='internal/search/search.go'
+AGGREGATE_GO='internal/search/aggregate.go'
+ARTIFACTS_GO='internal/search/artifacts/index.go'
+EVENTS_GO='internal/search/events/index.go'
+SESSIONS_GO='internal/search/sessions/index.go'
+TASKS_GO='internal/search/tasks/index.go'
+PROTOCOL_GO='internal/protocol/search.go'
+
+# assert_grep <file> <extended-regexp> <desc>
+#
+# OK when the pattern matches, FAIL when it does not. Deliberately NOT a skip:
+# these guard a shipped surface, and the 404/405/501 -> SKIP convention is for
+# forward-phase scripts running against older builds, not for a phase's own
+# guards. Patterns use POSIX classes ([[:space:]]) — never \t / \d, which BSD
+# grep matches and GNU grep does not, so a guard written that way would silently
+# never fire on Linux CI.
+assert_grep() {
+    local file="$1" pattern="$2" desc="$3"
+    if [ ! -f "${file}" ]; then
+        fail "${desc}: ${file} does not exist"
+        return
+    fi
+    if grep -qE "${pattern}" "${file}"; then
+        ok "${desc}"
+    else
+        fail "${desc}: no match for /${pattern}/ in ${file}"
+    fi
+}
+
+# run_filtered_tests <desc> <run-regexp> <packages...>
+#
+# Runs `go test -race -run <regexp>` over the given packages. OK on a real
+# pass; SKIP only when the filter matched no tests at all (an older build);
+# FAIL on a genuine test failure (never masked).
+run_filtered_tests() {
+    local desc="$1" runre="$2"
+    shift 2
+    local out rc
+    # NO CGO_ENABLED=0 here: the race detector needs cgo on Linux, where
+    # `CGO_ENABLED=0 go test -race` fails to build with "-race requires cgo"
+    # (exit 2) rather than running anything. Harbor's CGo ban (CLAUDE.md §5)
+    # governs the shipped BINARY, not the race-instrumented test binary.
+    out="$(go test -race -count=1 -run "${runre}" "$@" 2>&1)" && rc=0 || rc=$?
+    if [ "${rc}" -eq 0 ]; then
+        if printf '%s\n' "${out}" | grep -qE 'no tests to run|no test files'; then
+            skip "${desc}: filter '${runre}' matched no tests (phase not yet landed)"
+        else
+            ok "${desc}"
+        fi
+        return
+    fi
+    printf '%s\n' "${out}" | tail -25
+    fail "${desc}: go test exited ${rc}"
+}
+
+# ----------------------------------------------------------------------------
+# The landed probe. See the NOT-YET-LANDED POSTURE note in the header.
+# ----------------------------------------------------------------------------
+#
+# Deliberately keyed on the SENTINEL rather than on a helper name: the sentinel
+# is the one symbol the phase cannot ship without (every refusal path names it),
+# so a partial implementation that added the helpers but not the gate would
+# still read as not-landed rather than going live against a half-built surface.
+if ! grep -qE 'ErrCrossUserRequiresAdmin' "${SEARCH_GO}" 2>/dev/null; then
+    skip 'phase 218: user-axis gate not yet landed — guards activate automatically when internal/search declares ErrCrossUserRequiresAdmin'
+    smoke_summary
+    exit 0
+fi
+
+# ----------------------------------------------------------------------------
+# Static guards — the user axis exists, and it is wired at every call site.
+# ----------------------------------------------------------------------------
+
+# The helpers, beside their tenant twins. Two separate greps rather than one
+# alternation: an alternation would pass with either half deleted, and the fold
+# (EffectiveUserSet) and the gate (CrossUserRequested) are independently
+# load-bearing — the fold without the gate honours a named foreign user, and
+# the gate without the fold still wildcards an elided one.
+assert_grep "${SEARCH_GO}" \
+    'func CrossUserRequested\(callerUser string, req types\.SearchRequest\) bool' \
+    'phase 218: the user-axis gate predicate is declared'
+
+assert_grep "${SEARCH_GO}" \
+    'func EffectiveUserSet\(callerUser string, req types\.SearchRequest\) \[\]string' \
+    'phase 218: the user-axis effective-set (the FOLD) is declared'
+
+assert_grep "${SEARCH_GO}" \
+    'ErrCrossUserRequiresAdmin[[:space:]]*=[[:space:]]*errors\.New' \
+    'phase 218: the cross-user refusal sentinel is declared'
+
+# Every enforcement site. Iterating the five files rather than one tree-wide
+# grep is load-bearing: a tree-wide match would still pass with four of the five
+# sites reverted, which is exactly the shape of gap this phase exists to close
+# (72c gated one axis where it was looking and never enumerated the rest).
+for f in "${AGGREGATE_GO}" "${ARTIFACTS_GO}" "${EVENTS_GO}" "${SESSIONS_GO}" "${TASKS_GO}"; do
+    assert_grep "${f}" \
+        'CrossUserRequested\(' \
+        "phase 218: ${f} gates the user axis"
+done
+
+# The fold reaches storage in each of the four searchers. The aggregate
+# dispatcher does not compute a set (it rewrites the sub-request and delegates),
+# so it is deliberately absent from this loop.
+for f in "${ARTIFACTS_GO}" "${EVENTS_GO}" "${SESSIONS_GO}" "${TASKS_GO}"; do
+    assert_grep "${f}" \
+        'EffectiveUserSet\(' \
+        "phase 218: ${f} scopes storage to the effective user set"
+done
+
+# THE REGRESSION TRIP-WIRE. `req.Filter.UserIDs` reaching a searcher's body IS
+# the defect: the effective-set helper must be the only reader. Scoped to the
+# four index.go files rather than the package, because search.go's own helper
+# legitimately reads the field.
+for f in "${ARTIFACTS_GO}" "${EVENTS_GO}" "${SESSIONS_GO}" "${TASKS_GO}"; do
+    assert_grep_absent 'req\.Filter\.UserIDs' "${f}" \
+        "phase 218: ${f} no longer reads the raw user filter"
+done
+
+# The per-row re-scope behind the tasks fan-in covers the USER component. Before
+# this phase it compared `ident.TenantID == verified.TenantID` alone, so a
+# same-tenant foreign-user session took the UNELEVATED identity.With path — the
+# tasks searcher's own half of the leak, one layer below the request gate.
+assert_grep "${TASKS_GO}" \
+    'ident\.UserID (!=|==) verified\.UserID' \
+    'phase 218: the tasks per-row re-scope compares the user, not the tenant alone'
+
+# The §17.6 sibling fix: the artifacts searcher binds the heavy bool its three
+# siblings bind. Guarded as an ABSENCE of the discard rather than a presence of
+# the binding, because `heavy` appears in the fixed file either way and only the
+# discard form is unambiguous.
+if [ -f "${ARTIFACTS_GO}" ] && \
+   grep -qE 'out, _, rerr := search\.RedactAndCapPreview' "${ARTIFACTS_GO}"; then
+    fail 'phase 218: the artifacts searcher still discards the heavy bool (out, _, rerr)'
+else
+    ok 'phase 218: the artifacts searcher binds the heavy bool its siblings bind'
+fi
+
+# The refusal is observable on the wire — an unmapped sentinel would surface as
+# a generic runtime error, which is the silent-degradation shape §13 forbids.
+assert_grep "${PROTOCOL_GO}" \
+    'search\.ErrCrossUserRequiresAdmin' \
+    'phase 218: the Protocol edge maps the cross-user refusal to a wire code'
+
+# ZERO-WIRE: no Protocol version bump rode along with this phase.
+assert_grep 'internal/protocol/types/version.go' \
+    'ProtocolVersion[[:space:]]*=[[:space:]]*"0\.1\.0"' \
+    'phase 218: ProtocolVersion is unchanged (zero-wire)'
+
+# ----------------------------------------------------------------------------
+# Live assertions — the surface still works, and the new refusal fires.
+# ----------------------------------------------------------------------------
+#
+# Deliberately NOT skip_all_if_server_down: that exits the whole script, which
+# would take the `go test` guard legs below with it on a standalone run. Only
+# the live block degrades when no server is up; the guards always run.
+
+TOKEN="${HARBOR_DEV_TOKEN:-}"
+
+HEALTH_CODE=000
+if command -v curl >/dev/null 2>&1; then
+    HEALTH_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$(api_url /healthz)" || true)
+fi
+
+if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    skip 'phase 218: curl/jq unavailable — live assertions skipped'
+elif [ "${HEALTH_CODE:-000}" = "000" ] || [ -z "${HEALTH_CODE}" ]; then
+    skip 'phase 218: dev server unreachable — live assertions skipped (run under make preflight)'
+else
+    # p218_post <url> <body>
+    p218_post() {
+        local url="$1" body="$2"
+        local hdrs=(-H 'Content-Type: application/json')
+        if [ -n "${TOKEN}" ]; then
+            hdrs+=(-H "Authorization: Bearer ${TOKEN}")
+        fi
+        P218_STATUS=$(curl -s --max-time 5 -o /tmp/phase218.body -w '%{http_code}' \
+            "${hdrs[@]}" -X POST -d "${body}" "${url}" 2>/dev/null || true)
+        P218_STATUS="${P218_STATUS:-000}"
+        P218_BODY=$(cat /tmp/phase218.body 2>/dev/null || echo '{}')
+        P218_CODE=$(printf '%s' "${P218_BODY}" | jq -r '.code // .error.code // ""' 2>/dev/null || echo "")
+    }
+
+    ID='{"tenant":"dev","user":"dev","session":"dev"}'
+
+    # (1) THE NON-REGRESSION. The five methods must still answer for an ordinary
+    # own-scope caller. D-352 named this exact failure mode for the sibling fix:
+    # a stricter identity precondition "would silently turn both into refusals",
+    # so a fix that empties a working surface is not a fix. A 200 or an auth
+    # rejection are both acceptable (the dev token may be undiscoverable); a
+    # SCOPE refusal on an OWN-SCOPE read is not, and fails.
+    for m in search.query search.sessions search.tasks search.events search.artifacts; do
+        p218_post "$(api_url "/v1/control/${m}")" \
+            "{\"identity\":${ID},\"query\":\"\",\"page_size\":5}"
+        case "${P218_STATUS}" in
+            404|405|501|000)
+                skip "phase 218: ${m} absent from this build (${P218_STATUS})"
+                ;;
+            403)
+                fail "phase 218: ${m} refuses an OWN-SCOPE read with 403 (code=${P218_CODE}) — the fold over-reached"
+                ;;
+            200|401)
+                ok "phase 218: ${m} still answers an own-scope read (${P218_STATUS})"
+                ;;
+            *)
+                fail "phase 218: ${m} own-scope read returned ${P218_STATUS} (code=${P218_CODE})"
+                ;;
+        esac
+    done
+
+    # (2) THE GATE ITSELF. A filter naming a FOREIGN user, on a token carrying no
+    # admin-tier claim, must be refused — not answered with an empty page. An
+    # empty page would be the D-311 false-absence shape and would be
+    # indistinguishable from "this user has no rows", so the status compare is
+    # exact and a 200 is an explicit failure.
+    p218_post "$(api_url /v1/control/search.query)" \
+        "{\"identity\":${ID},\"query\":\"\",\"page_size\":5,\"filter\":{\"user_ids\":[\"phase218-not-the-caller\"]}}"
+    case "${P218_STATUS}" in
+        404|405|501|000)
+            skip "phase 218: search.query absent from this build (${P218_STATUS})"
+            ;;
+        401)
+            skip 'phase 218: search.query 401 — HARBOR_DEV_TOKEN not discoverable; the refusal is covered by the integration test'
+            ;;
+        403)
+            ok "phase 218: a foreign user_ids is refused 403 without an admin-tier claim (code=${P218_CODE})"
+            ;;
+        200)
+            fail 'phase 218: a foreign user_ids was ANSWERED (200) — the cross-user gate is not enforcing'
+            ;;
+        *)
+            fail "phase 218: foreign user_ids returned ${P218_STATUS} (code=${P218_CODE}), want 403"
+            ;;
+    esac
+fi
+
+# ----------------------------------------------------------------------------
+# Unit + integration legs — the behaviour behind the static guards.
+# ----------------------------------------------------------------------------
+#
+# The static guards prove the helpers are CALLED; only these prove they are
+# called CORRECTLY. A grep cannot tell a fold from a wildcard.
+
+run_filtered_tests \
+    'phase 218: the user-axis helper contract (fold, dedup, fan-in trigger, tenant parity)' \
+    'TestCrossUserRequested|TestEffectiveUserSet' \
+    ./internal/search/
+
+run_filtered_tests \
+    'phase 218: per-searcher elision fold + foreign-user refusal + admin reopen' \
+    'ElidedUserFoldsToCaller|NamedForeignUserRefused|OwnUserNamedNeedsNoClaim|MultiUserFanInRefused|AdminClaimReopensBothWidenings' \
+    ./internal/search/artifacts/ ./internal/search/events/ \
+    ./internal/search/sessions/ ./internal/search/tasks/
+
+run_filtered_tests \
+    'phase 218: the session axis stays open on a single own-other-session read' \
+    'OwnOtherSessionNeedsNoClaim|MultiSessionFanInRefused' \
+    ./internal/search/sessions/
+
+run_filtered_tests \
+    'phase 218: the tasks per-row re-scope elevates on a same-tenant foreign user' \
+    'RowScopedCtx_ForeignUserSameTenantElevates' \
+    ./internal/search/tasks/
+
+run_filtered_tests \
+    'phase 218: the aggregate dispatcher refuses before fan-out' \
+    'TestQuery_CrossUserRefusedAtAggregateEdge' \
+    ./internal/search/
+
+run_filtered_tests \
+    'phase 218: two-principal concurrent reuse, N=128 under -race (no context bleed)' \
+    'ConcurrentReuse.*TwoPrincipal|TwoPrincipal.*ConcurrentReuse' \
+    ./internal/search/
+
+run_filtered_tests \
+    'phase 218: end-to-end cross-user + cross-tenant isolation with real drivers' \
+    'TestE2E_Phase218' \
+    ./test/integration/
+
+smoke_summary
