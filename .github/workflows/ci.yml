@@ -3,8 +3,16 @@ name: ci
 on:
   push:
     branches: [main]
+  # `dev-experimental` is the integration branch a wave's phase PRs merge into
+  # before a release is cut from it onto `main`. It is gated here because it was
+  # NOT gated anywhere: `ci.yml` is the only workflow that runs preflight, and
+  # with `main`-only triggers every phase PR in a wave landed with no CI —
+  # no build, no `-race` test, no lint, no live preflight, on any platform.
+  # That matters most on Linux, where this repo's last several defects lived and
+  # were invisible on a contributor's macOS (a `\t` in a `grep -E` pattern that
+  # BSD matches and GNU does not; `CGO_ENABLED=0` with `-race`).
   pull_request:
-    branches: [main]
+    branches: [main, dev-experimental]
 
 permissions:
   contents: read
