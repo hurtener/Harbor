@@ -451,7 +451,7 @@ func TestRunLoopDriver_ProjectNaming_ActivePolicy(t *testing.T) {
 			return llm.CompleteResponse{}, nil
 		}),
 	}
-	spec, err := d.projectNaming(ctx, q, nil)
+	spec, err := d.projectNaming(ctx, d.agentConfigID, q, nil)
 	if err != nil {
 		t.Fatalf("projectNaming: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestRunLoopDriver_ProjectNaming_ActivePolicy(t *testing.T) {
 		namingDefault: config.RuntimeNamingConfig{Auto: true, AfterTurns: 1},
 		sessionTitler: sessReg,
 	}
-	spec, err = dNoLLM.projectNaming(ctx, q, nil)
+	spec, err = dNoLLM.projectNaming(ctx, dNoLLM.agentConfigID, q, nil)
 	if err != nil || spec != nil {
 		t.Fatalf("projectNaming without an LLM: spec=%v err=%v, want nil/nil", spec, err)
 	}
@@ -490,7 +490,7 @@ func TestRunLoopDriver_ReconcileConnections_BootDeclaredNeverDetached(t *testing
 
 	// Nil detacher: reconcile is a no-op (the guard branch).
 	dNil := &RunLoopDriver{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	dNil.reconcileConnections(ctx, q) // must not panic / error-log fatally
+	dNil.reconcileConnections(ctx, dNil.agentConfigID, q) // must not panic / error-log fatally
 
 	// A wired detacher over a nil registry enumerates no attached sources —
 	// the reconcile runs its full path with nothing to detach (boot-declared
@@ -502,7 +502,7 @@ func TestRunLoopDriver_ReconcileConnections_BootDeclaredNeverDetached(t *testing
 		connectionDetacher: NewMCPConnectionDetacher(nil, nil, nil),
 		bootDeclaredMCP:    BootDeclaredMCPServerSet(cfg),
 	}
-	d.reconcileConnections(ctx, q)
+	d.reconcileConnections(ctx, d.agentConfigID, q)
 }
 
 // TestBoot_DefaultsAndSharedProbeSurfaces covers the option defaults (nil

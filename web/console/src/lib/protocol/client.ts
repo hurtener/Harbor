@@ -718,6 +718,18 @@ export class ControlNamespace {
 			 * default) keeps the wire shape schemaless.
 			 */
 			outputSchema?: unknown;
+			/**
+			 * Name which agent's CONFIGURATION the run executes under.
+			 * Omitted binds the runtime's configured default exactly as
+			 * before. A named agent is accepted when it is the runtime's
+			 * configured default id, or when a config revision exists
+			 * for the caller's tenant under that id; anything else is
+			 * refused at the Protocol edge with `invalid_request` before
+			 * a task exists — never silently substituted with the
+			 * default. Selects configuration only: the run's southbound
+			 * tool provenance stays the runtime's boot-derived value.
+			 */
+			agentId?: string;
 		} = {}
 	): Promise<R> {
 		const body: Record<string, unknown> = { query };
@@ -752,6 +764,12 @@ export class ControlNamespace {
 		// omitempty keeps a schemaless task byte-identical).
 		if (opts.outputSchema !== undefined) {
 			body.output_schema = opts.outputSchema;
+		}
+		// Caller-named agent selection. Elided when unset / empty, so a
+		// run that names no agent is byte-identical on the wire to one
+		// sent before the field existed.
+		if (opts.agentId !== undefined && opts.agentId !== '') {
+			body.agent_id = opts.agentId;
 		}
 		return this.#t.request<R>('/v1/control/start', body);
 	}

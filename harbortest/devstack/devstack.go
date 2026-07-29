@@ -705,6 +705,15 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// existing session materialises its registry row.
 		surfaceOpts = append(surfaceOpts,
 			protocol.WithSessionEnsurer(serve.NewSessionEnsurerAdapter(core.Sessions)))
+		// Caller-named-agent validation — mirrors production
+		// `internal/runtime/serve`. The SAME registry + boot agent id the
+		// kit's run-loop driver projects from, so the twin cannot drift
+		// from the binary on which agents a `start` may name. An assembly
+		// with no StateStore has no registry: the adapter then refuses
+		// every named agent, which is the fail-closed posture, never a
+		// silent accept.
+		surfaceOpts = append(surfaceOpts,
+			protocol.WithAgentResolver(serve.NewAgentResolverAdapter(stack.AgentConfig, stack.AgentConfigID)))
 		surface, surfaceErr := protocol.NewControlSurface(taskReg, core.Steering, surfaceOpts...)
 		if surfaceErr != nil {
 			return stack, fmt.Errorf("protocol.NewControlSurface: %w", surfaceErr)
