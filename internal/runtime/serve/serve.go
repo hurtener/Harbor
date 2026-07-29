@@ -431,8 +431,12 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 
 	// The Protocol ControlSurface. A start on a not-yet-existing session
 	// materialises its registry row via the create-on-first-use ensurer.
+	// A `start` naming an agent is validated against the SAME agent-config
+	// registry + boot agent id the run-loop driver projects from, so the
+	// edge cannot accept an agent the run loop would not honour.
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
 		protocol.WithSessionEnsurer(NewSessionEnsurerAdapter(sessionRegistry)),
+		protocol.WithAgentResolver(NewAgentResolverAdapter(agentConfigRegistry, devAgentConfigID)),
 	)
 	if err != nil {
 		closeAll(ctx)

@@ -1012,7 +1012,7 @@ func ovF64(f float64) *float64 { return &f }
 // returns no overrides (the run uses agent/config defaults).
 func TestResolveLLMOverrides_NilResolver(t *testing.T) {
 	d := &RunLoopDriver{logger: slog.Default()}
-	ov, err := d.resolveLLMOverrides(context.Background(), validQuadForOv())
+	ov, err := d.resolveLLMOverrides(context.Background(), d.agentConfigID, validQuadForOv())
 	if err != nil {
 		t.Fatalf("resolveLLMOverrides: %v", err)
 	}
@@ -1025,7 +1025,7 @@ func TestResolveLLMOverrides_NilResolver(t *testing.T) {
 // nil overrides.
 func TestResolveLLMOverrides_NoRecord(t *testing.T) {
 	d := &RunLoopDriver{logger: slog.Default(), tenantOverrides: fakeTenantOverrides{set: false}}
-	ov, err := d.resolveLLMOverrides(context.Background(), validQuadForOv())
+	ov, err := d.resolveLLMOverrides(context.Background(), d.agentConfigID, validQuadForOv())
 	if err != nil {
 		t.Fatalf("resolveLLMOverrides: %v", err)
 	}
@@ -1048,7 +1048,7 @@ func TestResolveLLMOverrides_ProjectsSpec(t *testing.T) {
 			ReasoningEffort:   ovStr("high"),
 		},
 	}}
-	ov, err := d.resolveLLMOverrides(context.Background(), validQuadForOv())
+	ov, err := d.resolveLLMOverrides(context.Background(), d.agentConfigID, validQuadForOv())
 	if err != nil {
 		t.Fatalf("resolveLLMOverrides: %v", err)
 	}
@@ -1074,7 +1074,7 @@ func TestResolveLLMOverrides_ProjectsSpec(t *testing.T) {
 // dropping the admin's policy).
 func TestResolveLLMOverrides_ErrorPropagates(t *testing.T) {
 	d := &RunLoopDriver{logger: slog.Default(), tenantOverrides: fakeTenantOverrides{err: errors.New("state down")}}
-	if _, err := d.resolveLLMOverrides(context.Background(), validQuadForOv()); err == nil {
+	if _, err := d.resolveLLMOverrides(context.Background(), d.agentConfigID, validQuadForOv()); err == nil {
 		t.Fatal("want resolver error to propagate, got nil")
 	}
 }
@@ -1227,7 +1227,7 @@ func TestResolveLLMOverrides_SessionOverTenant(t *testing.T) {
 		}},
 	}
 
-	ov, err := d.resolveLLMOverrides(context.Background(), q)
+	ov, err := d.resolveLLMOverrides(context.Background(), d.agentConfigID, q)
 	if err != nil {
 		t.Fatalf("resolveLLMOverrides: %v", err)
 	}
@@ -1253,7 +1253,7 @@ func TestResolveLLMOverrides_SessionOverTenant(t *testing.T) {
 
 	// One-shot: a second resolve has consumed the session override → only
 	// the tenant default remains.
-	ov2, err := d.resolveLLMOverrides(context.Background(), q)
+	ov2, err := d.resolveLLMOverrides(context.Background(), d.agentConfigID, q)
 	if err != nil {
 		t.Fatalf("resolveLLMOverrides 2: %v", err)
 	}
@@ -1272,7 +1272,7 @@ func TestResolveLLMOverrides_SessionOnly(t *testing.T) {
 	q := validQuadForOv()
 	store.Set(q.Identity, runsprotocol.PendingOverride{Model: ovStr("session-only-model")})
 	d := &RunLoopDriver{logger: slog.Default(), sessionOverrides: store}
-	ov, err := d.resolveLLMOverrides(context.Background(), q)
+	ov, err := d.resolveLLMOverrides(context.Background(), d.agentConfigID, q)
 	if err != nil {
 		t.Fatalf("resolveLLMOverrides: %v", err)
 	}
