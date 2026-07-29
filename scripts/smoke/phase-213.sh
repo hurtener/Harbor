@@ -101,54 +101,108 @@ assert_grep_present '131072' 'docs/CONFIG.md' \
 skip_all_if_server_down 'phase 213'
 
 DEV_ID='{"identity":{"tenant":"dev","user":"dev","session":"dev"}}'
-AUTH_HEADER=()
-if [[ -n "${HARBOR_DEV_TOKEN:-}" ]]; then
-    AUTH_HEADER=(-H "Authorization: Bearer ${HARBOR_DEV_TOKEN}")
+
+# Every route below is behind the auth middleware, which fails closed with
+# 401 BEFORE the handler runs. An unauthenticated probe therefore says
+# nothing about whether the retargeted wiring mounted its routes — the
+# first cut of this script asserted 200 with no bearer and got 401 from
+# every one. Resolve the dev bootstrap bearer the way the pause.list /
+# memory.list smokes do.
+DEV_BEARER="$(dev_bearer)"
+if [ -z "${DEV_BEARER}" ]; then
+    if [ -n "${HARBOR_DATA_DIR:-}" ]; then
+        # The preflight harness IS present, so the token must be
+        # resolvable; a miss here is a harness regression, not an absent
+        # surface. Fail rather than skip (§4.2 item 5).
+        fail 'phase 213: HARBOR_DATA_DIR is set but no dev bearer could be resolved from server.log'
+    else
+        skip 'phase 213: no dev bearer available (standalone run outside the preflight harness) — live legs skipped'
+    fi
+    smoke_summary
+    exit 0
 fi
 
-# 4a. tools.content_stats is the ONE Protocol surface reporting the
-#     resolved threshold. Follows the tools-page smoke's shape,
-#     including its empty-catalog skip.
+# 4a. The two Console-facing reads whose wiring this phase RETARGETED.
+#     Two assertions per route, and both matter:
+#       * unauthenticated => 401 proves the route is MOUNTED with the auth
+#         gate in front of it (an un-mounted route answers 404).
+#       * authenticated => 200 proves it still SERVES after the retarget.
+#     A non-positive threshold at the mux leaves these routes UN-MOUNTED
+#     (transports.go requires heavyThreshold > 0; the pause-list handler
+#     fails loud on non-positive), so `assert_post_status_auth` treats a
+#     404 here as a FAIL rather than the usual forward-compat SKIP —
+#     these surfaces shipped long before this phase.
+for probe in "pause.list:/v1/pause/list" "memory.list:/v1/memory/list"; do
+    name="${probe%%:*}"
+    path="${probe#*:}"
+    url="$(api_url "${path}")"
+    noauth=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+        -X POST -H 'Content-Type: application/json' -d "${DEV_ID}" "${url}" || true)
+    if [ "${noauth}" = "401" ]; then
+        ok "phase 213: ${name} is mounted with the auth gate in front (401 unauthenticated)"
+    else
+        fail "phase 213: ${name} unauthenticated expected 401, got ${noauth} (POST ${url})"
+    fi
+    assert_post_status_auth 200 "${url}" "${DEV_ID}" "${DEV_BEARER}" \
+        "phase 213: ${name} is still mounted and serving after the pin retarget"
+done
+
+# 4b. tools.content_stats is the ONE Protocol surface reporting the
+#     resolved threshold. The tools.list leg is asserted as a real OK
+#     first: the previous cut inferred "dev catalog is empty" from an
+#     empty `.tools[0].id`, which a 401 produces just as readily as a
+#     genuinely empty catalog — the SKIP was hiding an auth failure.
 if ! command -v jq >/dev/null 2>&1; then
     skip 'phase 213: jq not available — tools.content_stats assertion skipped'
 else
-    list_body=$(curl -s --max-time 5 "${AUTH_HEADER[@]}" \
+    list_tmp="$(mktemp)"
+    list_status=$(curl -s -o "${list_tmp}" -w '%{http_code}' --max-time 10 \
+        -H "Authorization: Bearer ${DEV_BEARER}" \
         -H 'Content-Type: application/json' \
-        -X POST "$(api_url /v1/tools/list)" \
-        -d "${DEV_ID}" 2>/dev/null || echo '{}')
-    first_id=$(printf '%s' "${list_body}" | jq -r '.tools[0].id // empty' 2>/dev/null || echo '')
-    if [[ -z "${first_id}" ]]; then
-        skip 'phase 213: tools.content_stats — dev catalog is empty'
+        -X POST "$(api_url /v1/tools/list)" -d "${DEV_ID}" || true)
+    if [ "${list_status}" != "200" ]; then
+        fail "phase 213: tools.list expected 200, got ${list_status} — the threshold report cannot be reached"
     else
-        stats_body=$(curl -s --max-time 5 "${AUTH_HEADER[@]}" \
-            -H 'Content-Type: application/json' \
-            -X POST "$(api_url /v1/tools/content_stats)" \
-            -d "{\"identity\":{\"tenant\":\"dev\",\"user\":\"dev\",\"session\":\"dev\"},\"id\":\"${first_id}\"}" \
-            2>/dev/null || echo '{}')
-        reported=$(printf '%s' "${stats_body}" | jq -r \
-            '.. | .heavy_threshold_bytes? // empty' 2>/dev/null | head -1 || echo '')
-        if [[ -z "${reported}" ]]; then
-            skip 'phase 213: tools.content_stats does not report heavy_threshold_bytes on this build'
-        elif [[ "${reported}" == "131072" ]]; then
-            ok 'phase 213: tools.content_stats reports heavy_threshold_bytes=131072'
+        ok 'phase 213: tools.list round-trips 200 authenticated (the content_stats entry point)'
+        first_id=$(jq -r '.tools[0].id // empty' "${list_tmp}" 2>/dev/null || echo '')
+        if [ -z "${first_id}" ]; then
+            # Honest skip, now provably about the catalog and not about
+            # auth: examples/dev.yaml ships `built_in` commented out, so a
+            # stock dev boot has a genuinely empty catalog. Self-activates
+            # the day the dev config declares a tool.
+            skip 'phase 213: tools.content_stats — dev catalog is genuinely empty (tools.list 200 with total_rows=0)'
         else
-            fail "phase 213: tools.content_stats reports heavy_threshold_bytes=${reported}, want 131072"
+            stats_tmp="$(mktemp)"
+            stats_status=$(curl -s -o "${stats_tmp}" -w '%{http_code}' --max-time 10 \
+                -H "Authorization: Bearer ${DEV_BEARER}" \
+                -H 'Content-Type: application/json' \
+                -X POST "$(api_url /v1/tools/content_stats)" \
+                -d "{\"identity\":{\"tenant\":\"dev\",\"user\":\"dev\",\"session\":\"dev\"},\"id\":\"${first_id}\"}" \
+                || true)
+            if [ "${stats_status}" != "200" ]; then
+                fail "phase 213: tools.content_stats expected 200, got ${stats_status}"
+            else
+                reported=$(jq -r '.. | .heavy_threshold_bytes? // empty' "${stats_tmp}" 2>/dev/null | head -1 || echo '')
+                if [ "${reported}" = "131072" ]; then
+                    ok 'phase 213: tools.content_stats reports heavy_threshold_bytes=131072'
+                else
+                    fail "phase 213: tools.content_stats reports heavy_threshold_bytes=${reported:-<absent>}, want 131072"
+                fi
+            fi
+            rm -f "${stats_tmp}"
         fi
     fi
+    rm -f "${list_tmp}"
 fi
 
-# 4b. The retargeted wiring must still MOUNT its routes. A nil or zero
-#     threshold at the mux leaves pause.list / memory.* un-mounted, which
-#     would otherwise look like an innocent skip.
-assert_post_status 200 "$(api_url /v1/pause/list)" "${DEV_ID}" \
-    'phase 213: pause.list is still mounted after the pin retarget'
-assert_post_status 200 "$(api_url /v1/memory/list)" "${DEV_ID}" \
-    'phase 213: memory.list is still mounted after the pin retarget'
-
-# 4c. The search preview path is alive after the de-aliasing: ordinary
-#     records still ship an inline preview. The ref-vs-inline flip
-#     itself is unit-tested — a >= 32 KiB synthesised preview is not
-#     drivable through a dev smoke.
+# 4c. The search preview path after the de-aliasing. `search.query` is
+#     NOT mounted on a stock dev boot (it answers 404), so this keeps the
+#     forward-compat SKIP shape via assert_post_status and self-activates
+#     when the route lands. The ref-vs-inline flip itself is unit-tested
+#     in internal/search/preview_bound_test.go — a >= 32 KiB synthesised
+#     preview is not drivable through a dev smoke, and asserting a
+#     mechanism the smoke cannot produce is the defect this plan's first
+#     draft shipped.
 assert_post_status 200 "$(api_url /v1/search/query)" \
     '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"query":"a"}' \
     'phase 213: search.query round-trips after the preview-bound de-aliasing'
