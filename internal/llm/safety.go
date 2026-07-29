@@ -316,17 +316,27 @@ func validateContent(c Content) error {
 //
 //   - `RoleTool` message text (Content.Text + PartText) — tool / MCP
 //     observations, which the ObservationRenderer offloads when heavy.
+//
 //   - Binary `DataURL` parts (Image / Audio / File) of ANY role —
 //     auto-materialized to ArtifactRef above the threshold.
+//
 //   - `ToolCalls[].Args` — the tool-call ARGUMENTS the prompt builder
 //     replays turn over turn and the provider drivers map onto the
-//     wire. Machine-authored, tool-shaped, and offloadable through the
-//     same ArtifactStub path a tool RESULT takes, so it sits on the
+//     wire. Machine-authored and tool-shaped, so it sits on the
 //     offloadable side of the line next to `RoleTool` text rather than
-//     on the exempt conversation-text side. A tool call whose arguments
-//     legitimately exceed the threshold is the same bug this check
-//     names everywhere else: a producer that should have passed a
-//     reference.
+//     on the exempt conversation-text side.
+//
+//     This arm is an UNBACKED DETECTOR, stated plainly because the
+//     distinction matters to anyone reading the guarantee: no producer
+//     in the runtime offloads heavy tool-call arguments today. The
+//     prompt builder copies them through unmodified and the
+//     auto-materialization pass never walks `ToolCalls`, so a trip here
+//     is a loud failure with no path that would have avoided it. The
+//     successor work is an arguments offloader stubbing heavy arguments
+//     through the same `ArtifactStub` path a tool RESULT takes; it is
+//     not built yet because re-hydrating a stubbed argument for a
+//     provider's `tool_calls` block is a translator-layer question
+//     across every driver.
 //
 // Plain conversation text on `RoleSystem` / `RoleUser` / `RoleAssistant`
 // messages (Content.Text and PartText, including an injected rolling

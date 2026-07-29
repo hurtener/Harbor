@@ -349,10 +349,19 @@ artifacts:
   # key-value form. Override via HARBOR_ARTIFACTS_DSN in production;
   # never commit a real password.
   # dsn: /var/lib/harbor/artifacts.sqlite
-  # Heavy-output threshold: payloads at or above this byte size are
-  # mandatorily routed through the ArtifactStore (D-022, RFC §6.10).
-  # Default 32 KB. Per-tool overrides land at Phase 26.
-  heavy_output_threshold_bytes: 32768
+  # Heavy-output threshold: payloads at or above this byte size that
+  # are bound for a MODEL'S CONTEXT WINDOW are mandatorily routed
+  # through the ArtifactStore (D-022, D-358, RFC §6.5 / §6.10).
+  # Default 131072 (128 KiB). Runtime-wide invariant — there are no
+  # per-tool overrides.
+  #
+  # It does NOT govern Console-facing Protocol replies: `pause.list`,
+  # `memory.get` / `memory.list`, the flow catalog and the
+  # `mcp.apps.*` reads select inline-versus-reference at a pinned
+  # 32 KiB bound that does not track this knob (D-358). Raising this
+  # widens what a planner may see inline; it does not widen a
+  # browser-facing reply.
+  heavy_output_threshold_bytes: 131072
   # The read-back bound. `heavy_output_threshold_bytes` above governs
   # what GOES OUT to the store; these two govern what COMES BACK, and
   # they are meant to be tuned as the pair they are. Both the

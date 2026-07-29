@@ -49,8 +49,8 @@ type ToolContextStore struct {
 
 // ToolContextDeps bundles the collaborators the ToolContextStore rides on.
 // State, Store, and Bus are mandatory — a nil fails closed at
-// construction. Threshold ≤ 0 falls back to the shared heavy-output
-// default; Clock defaults to time.Now.
+// construction. Threshold ≤ 0 falls back to the Console inline-payload
+// bound; Clock defaults to time.Now.
 type ToolContextDeps struct {
 	// State is the StateStore the captured context persists through.
 	// Mandatory.
@@ -61,8 +61,11 @@ type ToolContextDeps struct {
 	// Bus carries the `mcp.resource_offloaded` loud bypass event on a heavy
 	// offload. Mandatory.
 	Bus events.EventBus
-	// Threshold is the heavy-content threshold in bytes. ≤ 0 falls back to
-	// the shared default.
+	// Threshold is the inline-payload bound in bytes. ≤ 0 falls back to
+	// the Console inline-payload bound. The wiring passes that pinned
+	// bound rather than the operator's LLM-context heavy-output
+	// threshold: a captured tool context is read back by the Console,
+	// never replayed into a prompt.
 	Threshold int
 	// Clock returns the current wall-clock time. Optional — defaults to
 	// time.Now.
@@ -91,7 +94,7 @@ func NewToolContextStore(deps ToolContextDeps) (*ToolContextStore, error) {
 	}
 	threshold := deps.Threshold
 	if threshold <= 0 {
-		threshold = config.DefaultHeavyOutputThresholdBytes
+		threshold = config.DefaultConsoleInlinePayloadBytes
 	}
 	clock := deps.Clock
 	if clock == nil {
@@ -131,7 +134,7 @@ type toolContextEnvelope struct {
 
 // Capture implements mcp.ToolContextCapturer. It persists the tool context
 // (input + lowered result) keyed by the ctx identity triple + the per-call
-// Kind. Each payload below the heavy threshold rides inline in the
+// Kind. Each payload below the inline-payload bound rides inline in the
 // envelope; at or above it, the payload offloads to the ArtifactStore by
 // reference (the shared loud-bypass path) and the envelope carries the
 // reference. A missing identity fails closed (CLAUDE.md §6).

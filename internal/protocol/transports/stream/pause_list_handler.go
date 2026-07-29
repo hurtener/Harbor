@@ -116,9 +116,11 @@ func WithPauseListBus(b events.EventBus) PauseListOption {
 // pauseresume.Coordinator + an artifacts.ArtifactStore. coord and
 // store are mandatory — a nil fails loud with ErrPauseListMisconfigured
 // rather than building a handler that would nil-panic on the first
-// request (CLAUDE.md §5). threshold is the configured heavy-content
-// byte size (cfg.Artifacts.HeavyOutputThresholdBytes); a non-positive
-// value fails loud (a zero threshold would route every payload).
+// request (CLAUDE.md §5). threshold is the inline-payload bound in
+// bytes — the runtime supplies the pinned Console inline-payload bound
+// rather than the operator's LLM-context heavy-output threshold; a
+// non-positive value fails loud (a zero threshold would route every
+// payload).
 //
 // The returned *PauseListHandler is immutable after construction
 // and safe for concurrent use by N goroutines.

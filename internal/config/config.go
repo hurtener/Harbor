@@ -850,12 +850,21 @@ type PauseResumeConfig struct {
 //     key-value form.
 //
 // `HeavyOutputThresholdBytes` is the byte size at which the runtime
-// mandatorily routes a payload through the ArtifactStore. Default
-// 32 KB (RFC §6.10). Per-tool overrides land at via
-// the tool catalog; the field is the runtime-wide default. Consumed
-// by the tool dispatcher and the LLM-edge catch-all
-// validated today so an operator's deployment is
-// rejected for an invalid value even before the consumers land.
+// mandatorily routes a payload bound for a model's CONTEXT WINDOW
+// through the ArtifactStore. Default 128 KiB (RFC §6.5, §6.10). The
+// routing is a runtime-wide invariant, not a per-tool opt-in; there
+// are no per-tool overrides. Consumed by the tool dispatcher
+// (promote-to-stub), the LLM-edge catch-all (leak detection +
+// auto-materialization), the trajectory-compaction payload budget, and
+// the `tools.content_stats` report that echoes the resolved value.
+//
+// It does NOT govern Console-facing Protocol replies. `pause.list`,
+// `memory.get` / `memory.list`, the flow catalog and the
+// `mcp.servers.read_resource` / `mcp.apps.call_tool` /
+// `mcp.apps.tool_context` reads select inline-versus-reference at the
+// pinned `DefaultConsoleInlinePayloadBytes` (32 KiB) instead, because
+// those payloads never enter a model's context and the selection is
+// Protocol-visible. Raising this field does not widen them.
 //
 // `FetchDefaultMaxBytes` and `FetchHardMaxBytes` are the operator's
 // half of the read-back bound. `HeavyOutputThresholdBytes` governs what
@@ -2029,16 +2038,54 @@ func (p PlannerConfig) BatchSpawnCap() int {
 const DefaultMaxBatchSpawns = 5
 
 // DefaultHeavyOutputThresholdBytes is the ONE source of the
-// heavy-output threshold default (32 KiB; RFC §6.10): the byte
-// size at which the runtime promotes heavy content to artifact-backed
-// stubs. `Defaults()` seeds
-// `ArtifactsConfig.HeavyOutputThresholdBytes` from it; the dispatch
-// executor's safety floor (`internal/runtime/dispatch`), the LLM-edge
-// snapshot default (`llm.DefaultHeavyOutputThreshold`), and the search
-// preview bound (`search.HeavyPreviewThreshold`) all reference this
-// constant (the `DefaultSpawnDepthCap` precedent — checkpoint audit
-// follow-up). No other literal copy of the value is allowed.
-const DefaultHeavyOutputThresholdBytes = 32 * 1024
+// LLM-CONTEXT heavy-output default (128 KiB; RFC §6.5, §6.10): the byte
+// size at or above which content the runtime is about to place into a
+// model's context window is promoted to an artifact-backed stub
+// instead.
+//
+// It answers exactly ONE question — how many bytes may enter a prompt.
+// Every consumer that answers a DIFFERENT question carries its own
+// named constant with its own godoc stating that question; the
+// Console-facing counterpart is `DefaultConsoleInlinePayloadBytes`, the
+// search preview bound is `search.HeavyPreviewThreshold`, and the
+// terminal fold bound lives in `internal/tui/renderers`. The rule is
+// NOT "no second copy of the number": it is that no second constant may
+// answer THIS question, and a different question takes its own constant
+// even when the answer currently coincides. This constant deliberately
+// does not enumerate its consumers — an enumeration rots the moment
+// another one lands and no gate notices.
+//
+// 128 KiB sits at the top of the range the heavy-output research named
+// reasonable (16 KiB – 128 KiB). The cost is ~32k tokens of a 200k
+// window for a result in the 32–128 KiB band; the saving is the extra
+// planner turn a stub-then-fetch cycle costs for exactly that band.
+// `Defaults()` seeds `ArtifactsConfig.HeavyOutputThresholdBytes` from
+// it and an operator's explicit value overrides it.
+const DefaultHeavyOutputThresholdBytes = 128 * 1024
+
+// DefaultConsoleInlinePayloadBytes is the ONE source of the
+// CONSOLE-FACING inline-payload bound (32 KiB): the byte size at or
+// above which a Protocol reply projected for a browser — `pause.list`,
+// `memory.get` / `memory.list`, the flow catalog, and the
+// `mcp.servers.read_resource` / `mcp.apps.call_tool` /
+// `mcp.apps.tool_context` reads — ships an artifact reference instead
+// of inline bytes.
+//
+// It is deliberately NOT `DefaultHeavyOutputThresholdBytes`. That value
+// prices tokens against a context window; this one prices bytes into an
+// HTTP reply a browser renders, where a reference costs the reader one
+// more round trip it was already going to make and an inline payload
+// costs every reader on the page. The selection is Protocol-visible —
+// it decides which arm of a sum-typed reply is populated — so it is
+// pinned rather than tracking the LLM-context threshold it used to
+// alias. The two happen to have had the same answer; they were never
+// the same question.
+//
+// There is deliberately no operator knob for it: an operator who raises
+// `artifacts.heavy_output_threshold_bytes` is answering the prompt-size
+// question, and that answer must not silently reshape wire replies for
+// every Protocol client.
+const DefaultConsoleInlinePayloadBytes = 32 * 1024
 
 // DefaultArtifactFetchMaxBytes is the ONE source of the artifact
 // read-back default (64 KiB): the window served when a caller names no

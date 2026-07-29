@@ -419,8 +419,13 @@ func WithAppsSurface(s control.AppsSurface) Option {
 // NewMux. coord is the unified pause/resume Coordinator the
 // snapshot projects from; store is the ArtifactStore the
 // heavy-content bypass routes oversized pause payloads through;
-// heavyThreshold is the configured heavy-content byte size
-// (cfg.Artifacts.HeavyOutputThresholdBytes).
+// heavyThreshold is the inline-payload bound in bytes. The runtime
+// wiring supplies the PINNED Console inline-payload bound
+// (config.DefaultConsoleInlinePayloadBytes), NOT the operator's
+// `artifacts.heavy_output_threshold_bytes`: `pause.list` is a
+// browser-facing read whose inline-versus-reference selection is
+// Protocol-visible, so raising the prompt-size threshold must not
+// reshape it.
 //
 // All three are required together — supplying the option with a nil
 // coord, a nil store, or a non-positive threshold leaves the
@@ -920,8 +925,9 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 
 	// The three `memory.*` read handlers.
 	// Built only when WithMemory supplied a MemoryStore AND the
-	// ArtifactStore + heavy-content threshold (shared with pause.list)
-	// are set. When any is missing the three routes are left un-mounted
+	// ArtifactStore + inline-payload bound (shared with pause.list —
+	// the pinned Console bound, not the operator's LLM-context
+	// threshold) are set. When any is missing the three routes are left un-mounted
 	// — the smoke `skip_if_404` keeps preflight green on a partial
 	// build. The memory handler reuses the events Aggregator built
 	// above for the 24h identity-rejected / recovery-dropped counters.

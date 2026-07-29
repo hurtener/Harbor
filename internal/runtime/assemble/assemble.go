@@ -994,10 +994,14 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// triad come free; wired into every Provider below so a planner-path
 	// app tool call's context is captured at the invocation site.
 	toolCtxStore, err := mcpconsole.NewToolContextStore(mcpconsole.ToolContextDeps{
-		State:     stack.State,
-		Store:     stack.Artifacts,
-		Bus:       stack.Bus,
-		Threshold: cfg.Artifacts.HeavyOutputThresholdBytes,
+		State: stack.State,
+		Store: stack.Artifacts,
+		Bus:   stack.Bus,
+		// PINNED, not threaded: a captured tool context is read back by
+		// the Console through `mcp.apps.tool_context`, never replayed
+		// into a prompt, so it selects at the Console inline-payload
+		// bound rather than the operator's LLM-context threshold.
+		Threshold: config.DefaultConsoleInlinePayloadBytes,
 	})
 	if err != nil {
 		return fmt.Errorf("mcp tool-context store: %w", err)
