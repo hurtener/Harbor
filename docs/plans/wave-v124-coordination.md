@@ -1,135 +1,133 @@
 # Wave v1.24 — coordination
 
-The v1.24 wave has two delivery tracks and one hygiene track. This file is the §17.7
-staging record: what is in the wave, which phases can be built in parallel, and what
-gates the next stage.
+This file is the §17.7 staging record. The first draft of this wave was rewritten after
+four adversarial reviews found FAIL-level defects in every phase; the verified findings
+live in `wave-v124-gate0-findings.md` and the operator's rulings are recorded below.
+
+## Operator rulings (settled — do not re-litigate)
+
+1. **The heavy-content threshold splits by purpose rather than moving as one number.**
+   The offload path, the LLM-edge leak guard and the trajectory budget rise to 128 KiB;
+   the terminal-UI fold, both MCP-App consumers, the search preview bound and every
+   Protocol-visible consumer stay at 32 KiB with their own named constants. Rationale:
+   the win being bought is the removal of a second tool call for ordinary 32–128 KiB
+   results; nothing else should change behaviour, and four of the seven consumers reach
+   surfaces where a silent ref→inline flip is a wire-behaviour change (§8).
+
+2. **Byte-eligibility for MCP egress is WIRE-CONFIGURABLE, not boot-declared.** A review
+   argued for a fail-closed boot gate on an admin-exfiltration chain. The ruling: D-301
+   already records that "a shared runtime TRUSTS its co-tenant admins", so that chain
+   sits inside an already-accepted trust boundary — and an admin who can ask an agent a
+   question and read the answer on screen can already move that content by hand. A boot
+   gate would break the real use case, which is an MCP server attached over the Protocol
+   being usable without a redeploy. **Phase 214 states the accepted trust boundary
+   explicitly rather than claiming an isolation property it does not have.**
+   **Compensating addition:** the FACT of a substitution — artifact id → server, never
+   the bytes — is recorded in the audit trail and the trajectory, because the one real
+   difference from pasting by hand is that pasting leaves a trace.
+
+3. **A caller-named agent does not change credential identity.** The RFC 8693 acting
+   principal continues to derive from the boot value. A caller-named agent changes
+   prompts, tools, skills and the other config projections only. This is stated in the
+   decision text so nobody later "fixes" it by threading the caller's value through.
+
+4. **Agent validation accepts an id that either equals the runtime's configured default
+   OR has a config revision for `(tenant, agentID)`.** There is no base revision — the
+   registry returns "no active pointer exists" for an unconfigured agent, which is what
+   the boot agent does today — so a config-revision-only check would refuse the one id
+   the Console can currently offer.
+
+5. **User-owned MCP connections are dropped from this wave and re-scoped.** The intended
+   product shape is users selecting from ALREADY-CONFIGURED capabilities and enabling
+   them on their own agent config, at config time — not users declaring arbitrary
+   connections at runtime. That removes the SSRF and credential-plane surface entirely
+   and makes the eventual phase resemble the existing user-scope `ToolExposure`
+   mechanism rather than connection authorship. It also depends on a mechanism that does
+   not exist yet, which phase 216 now builds.
+
+6. **The search user-axis gate gets a phase plan, not an issue.** It is a §6 rule 2
+   violation and phase 213 is already editing the same package.
+
+7. **Scope is not the constraint.** Parallelise to get the wave built, live-verified and
+   merged. **Do not tag a release until the operator aligns.**
 
 ## Scope
 
-**Track A — the artifact byte path.** v1.23 shipped pass-by-reference routing's
-in-process arm and an artifact read side. Two things were then found: the agent-facing
-read path silently corrupts binary content, and the only transport that can receive
-bytes by reference is the one that runs inside the Runtime. A PDF in the artifact store
-cannot reach an agent intact, and cannot reach an MCP server at all.
-
-**Track B — agent selection.** The agent-config registry, the four-tier prompt
-composition, the per-user durable tier and the owner-scoped reconcile legs are all built
-and all agent-parameterised. They are wired to a single constant, so a caller can create
-agent configs that can never run.
-
-**Track C — hygiene.** Carried from the v1.23 checkpoint and the release gate. Tracked
-as issues rather than phase plans; each is a bug fix, not a design.
-
-| Phase | Title | Track | Deps |
+| Phase | Title | Stage | D-NNN |
 |---|---|---|---|
-| 212 | Artifact read-path byte correctness + loud reference-resolution failure | A | 210, 209 |
-| 213 | Heavy-content threshold rebalance + search-preview split | A | 210, 209 |
-| 214 | The MCP arm of pass-by-reference routing | A | 212, 210, 209, 206 |
-| 215 | Caller-named agent selection | B | 206, 211 |
-| 216 | User-scope MCP connections | B | 215, 206, 211 |
-| 217 | `meta_annotations` honour `_meta` path nesting | — | 206, 211 |
+| 212 | Artifact read-path byte correctness | 1 | D-357 |
+| 213 | Heavy-content threshold split by purpose | 1 | D-358 |
+| 215 | Caller-named agent selection | 1 | D-360 |
+| 217 | `meta_annotations` honour `_meta` path nesting | 1 | D-362 |
+| 214 | The MCP arm of pass-by-reference routing | 2 | D-359 |
+| 216 | Run-start connection attach (the leg deferred since D-287) | 2 | D-361 |
+| 218 | Search user-axis isolation gate | 2 | D-363 |
 
-Pre-assigned decision numbers, so parallel agents do not collide in `docs/decisions.md`
-(§17.7 step 3): **212 → D-357, 213 → D-358, 214 → D-359, 215 → D-360, 216 → D-361,
-217 → D-362.**
+Phase 212 shrank once its premise was checked — the recovery half it proposed building
+is already shipped (`steering/runloop.go` converts every executor error into an
+observation and continues), so only a machine-distinguishable classification remains.
+Phase 213 grew: seven direct consumers, not the four its stale source comment claimed.
 
 ## Staging
 
-**Stage 1 — four phases in parallel.** No inter-dependencies; every `Deps` entry names
-an already-shipped phase.
+**Stage 1 — parallel, no inter-dependencies:** 212, 213, 215, 217, plus the two CI
+failures.
 
-- 212 (artifact read path)
-- 213 (thresholds)
-- 215 (agent selection)
-- 217 (annotation nesting)
+**Stage 2 — after Stage 1 merges:** 214 (needs 212's byte correctness — an egress arm
+over a corrupting read path delivers corrupted bytes efficiently), 216, 218 (rebases on
+213's constant split, same package).
 
-**Stage 2 — two phases, after Stage 1 merges.**
+**Generated-file ownership, to avoid an unresolvable conflict.** 214, 215 and 216 all
+touch `web/console/src/lib/protocol/wire-manifest.gen.json` and
+`docs/site/protocol/*.md`, which §13 and D-209/D-223 forbid hand-editing — a conflict
+there cannot be hand-resolved, the loser must re-run the generators. **Phase 215 owns
+both in Stage 1; 214 and 216 rebase on it.**
 
-- 214 (MCP egress) — needs 212. Shipping an egress arm over a read path that corrupts
-  binary would deliver corrupted bytes very efficiently.
-- 216 (user-scope connections) — needs 215. A per-user connection set is only meaningful
-  once a user's runs can resolve against a chosen agent; without it the tier composes
-  into one hardcoded agent and the feature is untestable at its own boundary.
+**Known file overlaps inside Stage 1**, to be sequenced at merge rather than discovered:
+`internal/runtime/dispatch/dispatch_test.go` (212 adds classification tests, 213
+retargets threshold assertions) and `examples/harbor.yaml` (213, 217).
 
-**Stage 2 carries the wave-end E2E** (§17.7 step 5): `test/integration/wave_v124_test.go`,
-bundled with the final phase's PR. Real drivers across the wave's surface — an artifact
-stored, read back intact by an agent, substituted into an MCP call as bytes, under a
-caller-named agent, with a user-scope connection in the catalog. Identity propagation on
-every leg, ≥1 failure mode per leg, N≥10 concurrency stress.
+**Stage 2 carries the wave-end E2E.** `test/integration/wave_v124_test.go` belongs in a
+PHASE PLAN's file list — the first draft named it only here, and a coordination file is
+outside §2's authority chain and unread by `scripts/drift-audit.sh`, which globs
+`docs/plans/phase-*.md` only. It rides the last Stage-2 phase to merge.
 
-**Stage 3 — the §17.5 checkpoint audit.** Read-only fork over every phase in the wave;
-the punch list lands as one `chore(checkpoint): wave-v124 audit fixes` PR. This gates
-v1.25 scoping.
+**Stage 3 — the §17.5 checkpoint audit**, landing as one
+`chore(checkpoint): wave-v124 audit fixes` PR. Gates v1.25 scoping.
 
-## The §13 primitive-with-consumer check
+## Track C — hygiene
 
-Applied per stage, since this is the rule most easily violated by parallel staging:
+Bug fixes rather than designs, riding Stage 1 as separate PRs:
 
-- **212** introduces no primitive; it corrects two existing paths. Its own tests are the
-  consumer.
-- **213** changes a constant. No primitive.
-- **214** introduces the egress encoder AND its consumer (the MCP driver's outbound
-  call path) in the same phase. The HTTP and A2A transports are explicitly named as
-  remaining, so the seam is visibly partial rather than silently so.
-- **215** introduces the wire field AND its consumer (the run loop's projection
-  resolution) in the same phase.
-- **216** introduces the user-scope connection descriptor AND its consumer (the three
-  reconcile legs) in the same phase.
-- **217** introduces no primitive; it reconciles two existing mechanisms.
+1. **The two quarantined Linux CI flakes (#598, #599)**, both gated behind
+   `HARBOR_RUN_QUARANTINED` and both declared mandatory for v1.24. Neither may be closed
+   by raising a timeout or re-running until green. #599 carries a recorded DISPROVED
+   theory so the next author does not re-derive it.
+2. **The Console MCP-App byte path rider** — `ArtifactReferenceCard.svelte` is still
+   presign-only, so chat previews are dead on a stock store.
 
-No phase in this wave ships a primitive without a consumer.
+## The failure mode this wave must not repeat
 
-## Track C — hygiene, tracked as issues not plans
+The first draft of these plans failed for one reason: **facts were sourced from godoc
+comments, decision-log summaries and inference rather than from grep.** Everything that
+was actually grepped held up; nearly everything reasoned from a comment was wrong. The
+cleanest instance is `internal/config/config.go`'s own "ONE source" comment, which
+enumerates three consumers where a grep finds seven — the draft copied the comment.
 
-These are in the wave's scope but are bug fixes rather than designs, so they do not get
-phase plans. They ride Stage 1 as separate PRs.
+**Every dispatch prompt in this wave therefore carries: verify every factual claim by
+grep and cite `file:line` in the plan.** This is the §17.8 principle — a source that
+cannot distinguish right from wrong is not evidence — applied to plan authoring.
 
-1. **The two quarantined Linux CI flakes (#598, #599).** Both were quarantined behind
-   `HARBOR_RUN_QUARANTINED` to unblock the v1.23 release gate and both were declared
-   **mandatory for v1.24**. Neither may be closed by raising a timeout or re-running
-   until green. #599 carries a recorded DISPROVED theory (a test-server
-   `select { case <-release; case <-r.Context().Done() }` race that was forced and did
-   not reproduce) so the next author does not re-derive it.
-2. **`internal/search` has no user-axis gate.** `search.go:268` / `:286` gate tenant
-   only; the four searchers (`artifacts/index.go`, `events/index.go`,
-   `sessions/index.go`, `tasks/index.go`) pass `UserIDs` through unexamined. §6 rule 2
-   makes this a security bug rather than a style nit.
-3. **The Console MCP-App byte path rider.** `ArtifactReferenceCard.svelte:39` is still
-   presign-only, so chat previews are dead on a stock store — the D-347 Consumer 1
-   riders that #594 only partially closed.
+Carried from prior waves, because each has bitten before:
 
-## Recurring failure modes to pre-empt in dispatch prompts
-
-Carried from prior waves (§17.7 step 3), because each has bitten this project before:
-
-- Agents drifting out of their worktree into the main checkout. Every dispatch prompt
-  says `pwd` first and STOP if a path resolves outside the worktree.
+- Agents drifting out of their worktree into the main checkout. `pwd` first; STOP if a
+  path resolves outside it.
 - Latent `docs/decisions.md` markdownlint breakage surfacing one PR late (CI lints
-  repo-wide). Blank lines around `---` and `## D-NNN` headings; run `markdownlint-cli2`
-  repo-wide before committing.
+  repo-wide). Blank lines around `---` and `## D-NNN`; run `markdownlint-cli2` repo-wide.
 - Committed merge-conflict markers from an agent that ran `git merge main` mid-build.
 - **Inert verification instruments.** The v1.23 wave found nine guards that could never
-  fail, plus a `\t`-in-`grep -E` break that could not match on Linux and a smoke SKIP
-  that should have been an OK. Every guard in this wave must be MUTATION-VERIFIED:
-  break the thing, watch the check go from `OK` to `FAIL` — never to `SKIP`. A guard
-  nobody has seen fail is not evidence.
+  fail; the first draft of phase 217 then specified another one. Every guard is
+  MUTATION-VERIFIED: break the thing, watch the check go `OK` → `FAIL`, never
+  `OK` → `SKIP`. A guard nobody has seen fail is not evidence.
 - **Verify what executed, not just the exit code.** A green run that skipped everything
   looks identical to one that passed. Count PASS/SKIP before believing a gate.
-
-## Open questions the wave must answer, not discover
-
-Each is named in its phase plan as an acceptance criterion or explicit open question,
-listed here so the coordinator can check them off:
-
-- **214:** whether the artifact-param mapping should target MCP's native typed content
-  blocks (`blob` / `image` / `audio`) rather than named string parameters.
-- **215:** whether a Protocol method exposes `AgentRegistry.ListTenant` for the Console
-  selector. §13 forbids a Console page shipping without its feeding Protocol surface,
-  so if none exists it lands here or immediately before the Console work — never after.
-- **215:** whether the dev default agent is a registered entity, and therefore whether
-  edge validation must exempt the default path.
-- **216:** the bare-name collision resolution, justified against D-287.
-- **216:** whether the owner axis gains a user component, touching every owner-scoped
-  call site from phases 206 and 211.
-- **217:** the §10 backward-compatibility survey — whether any in-tree caller populates
-  `MetaAnnotations` with a dotted key.
