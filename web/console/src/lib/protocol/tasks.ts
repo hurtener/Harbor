@@ -80,6 +80,14 @@ export interface TaskRow {
    * approval gate. The `Has pending approval` facet filters on it.
    */
   has_pending_approval: boolean;
+  /**
+   * The caller-named agent this task's run executes under. ABSENT when
+   * the `start` request named no agent — the run bound the runtime's
+   * configured default. Absence therefore reads as "defaulted", never
+   * as "unknown": every row without it bound the default by
+   * construction, including every row written before the field existed.
+   */
+  agent_id?: string;
 }
 
 /** The server-enforced facet filter on `tasks.list`. */

@@ -118,7 +118,10 @@ type StartupCompleteMsg struct{}
 // BackdropMsg reports a backdrop release and whether terminal text selection is active.
 type BackdropMsg struct{ TextSelectionActive bool }
 
-// CommandMsg asks the operational host to execute one registry command.
+// CommandMsg asks the operational host to execute one registry command. It is
+// an INBOUND injection seam for callers that need to drive a command without a
+// keystroke; the shell never emits one for its own chords, which it hands over
+// in-band instead (see Model.pendingCommand).
 type CommandMsg struct{ ID CommandID }
 
 // Model is a value-updated Bubble Tea shell. All constructor inputs are cloned.
@@ -149,6 +152,12 @@ type Model struct {
 	// themeLocked marks an explicit operator theme choice, which the terminal's
 	// reported background must not override.
 	themeLocked bool
+	// pendingCommand carries a host-owned command resolved by the shell to its
+	// operational host WITHIN the same Update. It is deliberately not a
+	// tea.Cmd: a command round-tripped through the message queue is executed
+	// AFTER every keystroke already queued behind it, so a key typed straight
+	// after a chord lands on the pre-command surface. See takeCommand.
+	pendingCommand CommandID
 }
 
 // NewModel constructs the detached terminal foundation.
@@ -553,10 +562,27 @@ func (m Model) execute(view CommandView) (tea.Model, tea.Cmd) {
 		m.quit = true
 		return m, tea.Quit
 	default:
-		id := view.Command.ID
-		return m, func() tea.Msg { return CommandMsg{ID: id} }
+		// Host-owned command: hand it over IN-BAND (see Model.pendingCommand),
+		// never as a tea.Cmd. Bubble Tea runs a Cmd on its own goroutine and
+		// re-queues the result behind every KeyPressMsg already read from the
+		// terminal, so an operator who types the confirming key immediately
+		// after the chord has it applied to the surface the command was about
+		// to replace — the confirmation dialog then opens behind the keystroke
+		// meant for it and the action never fires.
+		m.pendingCommand = view.Command.ID
+		return m, nil
 	}
 	return m, nil
+}
+
+// takeCommand yields the host-owned command the shell resolved during this
+// Update, if any, and clears it. The operational host MUST drain it before
+// returning from its own Update so the command's state change is committed
+// ahead of the next queued keystroke.
+func (m *Model) takeCommand() (CommandID, bool) {
+	id := m.pendingCommand
+	m.pendingCommand = ""
+	return id, id != ""
 }
 
 // OpenPalette opens the registry-backed modal.

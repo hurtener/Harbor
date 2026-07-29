@@ -3129,6 +3129,7 @@ Declared in `internal/protocol/types`.
 | `input_artifact_ids` | `[]string` | optional (`omitempty`) |
 | `input_artifact_dispositions` | `map[string]string` | optional (`omitempty`) |
 | `output_schema` | `json.RawMessage` | optional (`omitempty`) |
+| `agent_id` | `string` | optional (`omitempty`) |
 
 ## StartResponse
 
@@ -3390,6 +3391,7 @@ Declared in `internal/protocol/types`.
 | `last_activity_at` | `time.Time` |  |
 | `is_background` | `bool` |  |
 | `has_pending_approval` | `bool` |  |
+| `agent_id` | `string` | optional (`omitempty`) |
 
 ## TaskTrajectoryRef
 
