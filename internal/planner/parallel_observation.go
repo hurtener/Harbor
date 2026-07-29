@@ -54,4 +54,11 @@ type ParallelBranchObservation struct {
 	// Error is the branch's failure message. Non-empty only on failure
 	// (resolve miss, args-validation failure, or tool Invoke error).
 	Error string `json:"error,omitempty"`
+
+	// ErrorClass names the KIND of failure Error describes, so a planner
+	// distinguishes a bad artifact reference from a tool's own failure by
+	// reading a field rather than by matching a message. Empty for a
+	// tool's own error, which keeps an unclassified branch's JSON
+	// byte-identical to what it was before the class existed.
+	ErrorClass ObservationClass `json:"error_class,omitempty"`
 }

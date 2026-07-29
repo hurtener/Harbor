@@ -293,7 +293,15 @@ func TestArtifactFetch_OffsetWindows(t *testing.T) {
 		wantTruncated bool
 	}{
 		{"head", 0, 4, "0123", true},
-		{"middle", 4, 3, "456", true},
+		// max_bytes 3 is below the rune floor and is served AT the floor
+		// (4). The floor is the only bound in the read path that clamps
+		// UP, and it is what makes a paging loop terminate: below 4 a
+		// boundary-aligned window can be shorter than the first rune it
+		// contains, trim to nothing, and yield the same next offset
+		// forever. `returned_bytes` reports the truth, so it is not
+		// silent.
+		{"middle, below the rune floor, served at it", 4, 3, "4567", true},
+		{"middle, at the rune floor", 4, 4, "4567", true},
 		{"last window exactly", 7, 3, "789", false},
 		{"last window over-asked", 7, 100, "789", false},
 		{"offset at end", 10, 4, "", false},
