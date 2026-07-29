@@ -2147,6 +2147,13 @@ func (m RuntimeModel) forward(message tea.Msg) (tea.Model, tea.Cmd) {
 	if oldSidebar != m.shell.state.SidebarOpen || oldTheme != m.shell.theme.Mode() {
 		cmd = tea.Batch(cmd, m.requestPersist())
 	}
+	// Drain a host-owned command the shell resolved during THIS Update before
+	// returning, so its state change (an opened dialog, a switched route) is
+	// committed ahead of the next keystroke already queued behind it.
+	if id, pending := m.shell.takeCommand(); pending {
+		host, dispatched := m.dispatchCommand(id)
+		return host, tea.Batch(cmd, dispatched)
+	}
 	return m, cmd
 }
 func (m *RuntimeModel) requestPersist() tea.Cmd {
