@@ -60,7 +60,7 @@ A tool that tries to read or pass an identity scope directly is working against 
 
 A tool that returns a 4 MB report must not stuff those bytes into the planner's reasoning context. Harbor enforces this: heavy outputs route through the `ArtifactStore`, and the planner sees an `ArtifactRef` (a content-addressed handle), not the bytes.
 
-- The heavy-output threshold defaults to **32 KB**, is runtime-configurable, and is per-tool overridable.
+- The heavy-output threshold defaults to **128 KB** and is runtime-configurable. It is a runtime-wide invariant — there are no per-tool overrides. It bounds what may enter a model's context window; Console-facing Protocol replies keep a separate, pinned **32 KB** inline bound.
 - There is **no opt-in flag and no `NoOp` fallback** — offloading is the behavior, not a setting.
 - A runtime-wide safety net guarantees no raw heavy content ever reaches the LLM: a single enforcement pass at the LLM-client edge fails loudly with `ErrContextLeak` rather than quietly truncating.
 

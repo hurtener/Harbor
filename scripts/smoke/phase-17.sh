@@ -16,7 +16,14 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-if go test -race -count=1 -timeout 90s ./internal/artifacts/... >/dev/null 2>&1; then
+# Timeout budget: 180s, the repo's most common smoke budget. The former
+# 90s was measured-marginal, not generous — `./internal/artifacts/...`
+# builds and runs seven packages in parallel under `-race`, and the
+# SQLite driver's conformance run (which each package's own tests wait
+# behind) lands at 55s alone but 91–93s alongside its siblings. The
+# failure shape was a `panic: test timed out` goroutine dump, never an
+# assertion, and it reproduces identically on an unmodified tree.
+if go test -race -count=1 -timeout 180s ./internal/artifacts/... >/dev/null 2>&1; then
     ok 'phase 17: internal/artifacts tests pass under -race (conformance + facade + InMem + FS drivers)'
 else
     fail 'phase 17: internal/artifacts tests failed (run `go test -race ./internal/artifacts/...` for detail)'

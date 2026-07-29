@@ -63,9 +63,11 @@ func WithCatalogClock(now func() time.Time) CatalogOption {
 
 // NewRegistryCatalog builds the production Catalog over a flow.Registry
 // + an ArtifactStore. Both are mandatory — a nil fails loud with
-// ErrMisconfigured. threshold is the configured heavy-content byte size
-// (cfg.Artifacts.HeavyOutputThresholdBytes); a non-positive value fails
-// loud (a zero threshold would route every output by-reference).
+// ErrMisconfigured. threshold is the inline-payload bound in bytes —
+// the runtime supplies the pinned Console inline-payload bound rather
+// than the operator's LLM-context heavy-output threshold, because the
+// catalog is a browser-facing read; a non-positive value fails loud (a
+// zero threshold would route every output by-reference).
 //
 // The returned *RegistryCatalog is immutable after construction and
 // safe for concurrent use by N goroutines.

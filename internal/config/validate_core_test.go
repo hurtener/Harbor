@@ -55,8 +55,16 @@ func TestDefaults_BaselineGolden(t *testing.T) {
 	if cfg.Sessions.IdleTTL != 24*time.Hour || cfg.Sessions.HardCap != 720*time.Hour || cfg.Sessions.SweepInterval != 15*time.Minute {
 		t.Errorf("Sessions defaults = %+v", cfg.Sessions)
 	}
-	if cfg.Artifacts.Driver != "inmem" || cfg.Artifacts.HeavyOutputThresholdBytes != 32*1024 {
+	// Retargeted onto the named constant (phase 213): the seeded default
+	// IS the LLM-context arm, so a literal here would have to be re-typed
+	// every time that arm moves and would silently pass if someone
+	// re-pointed Defaults() at the pinned Console bound instead.
+	if cfg.Artifacts.Driver != "inmem" || cfg.Artifacts.HeavyOutputThresholdBytes != config.DefaultHeavyOutputThresholdBytes {
 		t.Errorf("Artifacts defaults = %+v", cfg.Artifacts)
+	}
+	if config.DefaultHeavyOutputThresholdBytes != 128*1024 {
+		t.Errorf("DefaultHeavyOutputThresholdBytes = %d, want 131072 (the raised LLM-context arm)",
+			config.DefaultHeavyOutputThresholdBytes)
 	}
 	if cfg.Tasks.Driver != "inprocess" || cfg.Tasks.RetainTurnTimeout != 5*time.Minute || cfg.Tasks.ContinuationHopLimit != 8 {
 		t.Errorf("Tasks defaults = %+v", cfg.Tasks)

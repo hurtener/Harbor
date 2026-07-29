@@ -280,8 +280,12 @@ func TestTrajectorySummariser_Payload_CapsOversizeFragments(t *testing.T) {
 	if !strings.Contains(payload, "…[truncated]") {
 		t.Error("oversize fragment was not truncated")
 	}
-	if len(payload) > 32*1024 {
-		t.Errorf("payload is %d bytes — the per-fragment cap failed to bound it", len(payload))
+	// Bound against the DERIVED budget rather than a re-typed literal:
+	// phase 213 moved the LLM-context heavy-output threshold and a
+	// hardcoded sentinel here stops tracking the thing it guards.
+	if budget := llm.DefaultHeavyOutputThreshold - 4096; len(payload) > budget {
+		t.Errorf("payload is %d bytes — over the derived budget %d; the per-fragment cap failed to bound it",
+			len(payload), budget)
 	}
 }
 
@@ -467,11 +471,16 @@ func TestTrajectorySummariser_Payload_AggregateBudget_ElidesOldSteps(t *testing.
 	}
 	tr := trajFixture()
 	tr.Steps = nil
-	// 40 steps × ~3 KiB observations: every fragment is under the
-	// 4 KiB per-fragment cap, but the naive concatenation (~120 KiB)
-	// would blow far past the 32 KiB default heavy-output threshold.
-	chunk := strings.Repeat("y", 3*1024)
-	for range 40 {
+	// Each step's observation is ~3 KiB — comfortably under the 4 KiB
+	// per-fragment cap — but the step COUNT is derived from the
+	// heavy-output threshold so the naive concatenation always
+	// overshoots the aggregate budget, whatever that threshold is. A
+	// hardcoded step count silently stopped overflowing when phase 213
+	// raised the threshold.
+	const chunkBytes = 3 * 1024
+	steps := (llm.DefaultHeavyOutputThreshold / chunkBytes) + 12
+	chunk := strings.Repeat("y", chunkBytes)
+	for range steps {
 		obs := chunk
 		tr.Steps = append(tr.Steps, planner.Step{
 			Action:         map[string]any{"tool": "chatty_tool"},
@@ -492,7 +501,7 @@ func TestTrajectorySummariser_Payload_AggregateBudget_ElidesOldSteps(t *testing.
 	}
 	// Recency wins: the LAST step is present, the FIRST is elided —
 	// with original step numbering preserved.
-	if !strings.Contains(payload, "Step 40 action:") {
+	if !strings.Contains(payload, fmt.Sprintf("Step %d action:", steps)) {
 		t.Error("most recent step missing from the budgeted payload")
 	}
 	if strings.Contains(payload, "Step 1 action:") {

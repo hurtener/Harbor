@@ -25,11 +25,13 @@ type GetDeps struct {
 	// DriverName is the configured memory-driver name surfaced on the
 	// returned row.
 	DriverName string
-	// HeavyThreshold is the configured heavy-content byte size
-	// (cfg.Artifacts.HeavyOutputThresholdBytes). A value whose byte
-	// length meets or exceeds it routes through the ArtifactStore. A
-	// non-positive threshold fails loud (a zero threshold would route
-	// every value).
+	// HeavyThreshold is the inline-payload bound in bytes — the runtime
+	// supplies the pinned Console inline-payload bound, NOT the
+	// operator's LLM-context `artifacts.heavy_output_threshold_bytes`,
+	// because the selected arm of this reply is Protocol-visible. A
+	// value whose byte length meets or exceeds it routes through the
+	// ArtifactStore. A non-positive threshold fails loud (a zero
+	// threshold would route every value).
 	HeavyThreshold int
 }
 

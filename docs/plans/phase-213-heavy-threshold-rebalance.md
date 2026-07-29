@@ -312,3 +312,49 @@ Existing entries corrected in the same PR: **HeavyOutputThreshold** (`:542` — 
 - [ ] §18: both skills that hardcode the value, `docs/CONFIG.md`, and the three hand-written `docs/site/concepts/` pages updated in this PR
 - [ ] `docs/plans/README.md` phase-213 detail block rewritten (the shipped block states a disproven consumer count and a disproven search rationale) and `Status` flipped
 - [ ] D-358 filed, recording: the per-consumer matrix, the per-leak-class qualification, the `ToolCalls[].Args` residual and its successor, and the restated single-sourcing rule
+
+## Implementation notes — deviations as built (§4.3)
+
+Every RAISE / PIN decision in the matrix landed exactly as specified. Three
+mechanical deviations, all recorded here because they are permanent:
+
+1. **No `D-358` / `brief NN` citations in the Go godoc.** The "Public API
+   surface" block above shows `(D-358)` inside the constants' godoc. CLAUDE.md
+   §13 forbids inline `D-NNN` and `brief NN` in non-test Go source under
+   `internal/`, and `scripts/drift-audit.sh` enforces it mechanically — the
+   sample would fail the gate. The godoc as shipped preserves the intent (it
+   names the QUESTION each constant answers and points at its sibling constant
+   by name) and drops the numbering. The decision record carries the matrix; the
+   godoc carries the semantics.
+
+2. **The flow-catalog decoupling arm is asserted statically, not over HTTP.**
+   `test/integration/heavy_threshold_test.go` proves the decoupling through
+   `pause.list` + `memory.get` + `memory.list` driven over the wire against the
+   REAL `serve.BuildMux` — which is the same `muxConfig.heavyThreshold` the plan
+   names at B5–B7 and therefore the exact line the decoupling arm was written to
+   guard. Seeding a flow RUN with a >32 KiB output to reach the catalog's
+   selection would have added a flow-engine fixture for one more instance of the
+   same wiring assertion. Instead `scripts/smoke/phase-213.sh` pins all three
+   `mux.go` pinned call sites with an exact-count grep, so re-threading the
+   operator field at the flow catalog (or the apps accessor) turns the smoke
+   `OK` into `FAIL`.
+
+3. **The LLM-edge default-threshold arms landed as two NEW test files** —
+   `internal/llm/safety_default_threshold_test.go` (white-box, the three walked
+   leak classes at the resolved default) and
+   `safety_default_threshold_client_test.go` (black-box, the emitted
+   `llm.context_leak` payload plus the 64 KiB materialization pair) — rather
+   than as added arms inside `safety_test.go` / `safety_toolargs_test.go` /
+   `safety_rolescope_test.go`. Those three pass explicit thresholds by design
+   and pinning them to the resolved default in-place would have changed what
+   they test; the new files add the resolved-default axis without disturbing
+   the explicit-threshold axis.
+
+**One fix outside the plan's file list (§17.6).**
+`internal/llm/summarizer/trajectory_test.go`'s
+`TestTrajectorySummariser_Payload_AggregateBudget_ElidesOldSteps` built a fixed
+40-step / ~120 KiB trajectory that stopped overflowing once the budget derived
+from 128 KiB, so it went green while asserting nothing. Its step count is now
+derived from `llm.DefaultHeavyOutputThreshold`, and its "most recent step
+present" assertion is derived from that count, so the fixture tracks the budget
+it guards.

@@ -181,7 +181,10 @@ pauseresume:
 
 artifacts:
   driver: inmem
-  heavy_output_threshold_bytes: 32768
+  # The LLM-context offload boundary (default 131072 / 128 KiB). The
+  # Console-facing inline bound is pinned at 32 KiB and does not track
+  # it (D-358).
+  heavy_output_threshold_bytes: 131072
   # The read-back bound: the window an artifact read returns when the
   # caller names none, and the ceiling a caller's own bound is clamped
   # to. Both `artifacts.get` on the Protocol surface and the
