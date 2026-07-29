@@ -52,6 +52,19 @@ var (
 	// surface: the call aborts rather than proceeding unauthenticated
 	// on a connection the operator declared per-identity-authorized.
 	ErrEmptyBearer = errors.New("mcp: oauth provider returned an empty bearer token")
+	// ErrMetaPathCollision — two declared `_meta` paths on one connection
+	// overlap: they are equal, or one is a prefix of the other, so writing
+	// both would make the same node a scalar leaf and an intermediate map at
+	// once. The declared set is every `meta_annotations` key (a dotted key is
+	// a PATH) plus the credential-injection `meta_key`.
+	//
+	// Every validation door refuses a colliding declaration, so this is the
+	// last-resort merge-time defence — reachable for a connection whose
+	// revision was persisted before the path rules shipped, since nothing
+	// rejected a colliding pair then. It fails the call rather than picking a
+	// silent (and, under Go's randomised map iteration, non-deterministic)
+	// winner. Callers compare with errors.Is.
+	ErrMetaPathCollision = errors.New("mcp: declared _meta paths collide")
 	// ErrAmbiguousOAuthBinding — a per-tool `oauth_provider` binding key
 	// addresses more than ONE MCP surface on this server at once (e.g. both a
 	// tool AND a prompt of the same name, or a resource whose URI equals a tool
@@ -183,14 +196,20 @@ type Config struct {
 	OAuthProvider auth.OAuthProvider
 
 	// MetaAnnotations is a static, non-secret set of operator-declared
-	// key/values merged verbatim into the `_meta` map on every
-	// identity-stamped per-call RPC, so a deployment can carry its own
-	// attribution vocabulary to a shared server. Reserved keys (the triple
-	// keys, `agent_id`, `traceparent`, `tracestate`, and any
-	// `io.modelcontextprotocol/`-prefixed key) are rejected at config /
-	// attach validation and can never shadow the triple or agent provenance
-	// (those are stamped last). Read once at construction; immutable
-	// thereafter.
+	// key/values merged into the `_meta` map on every identity-stamped
+	// per-call RPC, so a deployment can carry its own attribution vocabulary
+	// to a shared server.
+	//
+	// Each KEY is a `_meta` PATH: a key with no `.` sets a top-level key, a
+	// DOTTED key NESTS — the same interpretation, through the same helper
+	// (injectMeta), that the credential-injection MetaKey has always had.
+	// Reserved keys (the triple keys, `agent_id`, `traceparent`, `tracestate`,
+	// and any `io.modelcontextprotocol/`-prefixed key) are rejected at config
+	// / wire / attach validation — at the whole key AND at any dot-segment —
+	// and can never shadow the triple or agent provenance (those are stamped
+	// last). Colliding declared paths are rejected at validation and fail the
+	// call with ErrMetaPathCollision if a legacy pair reaches the merge. Read
+	// once at construction; immutable thereafter.
 	MetaAnnotations map[string]string
 
 	// OnAuthChallenge, when non-nil, is invoked whenever an MCP HTTP call to
@@ -380,6 +399,14 @@ func (c Config) validate() error {
 		case InjectionFormMeta:
 			if len(c.Injection.MetaKey) == 0 {
 				return fmt.Errorf("%w: Injection form=meta requires MetaKey", ErrInvalidConfig)
+			}
+			// The SAME depth cap every declared `_meta` path carries at every
+			// door (config.MaxMCPMetaKeyDepth). Before the constant was
+			// hoisted it existed only at the wire door, so a boot-declared
+			// over-deep path was accepted where the identical wire-declared
+			// one was refused.
+			if len(c.Injection.MetaKey) > config.MaxMCPMetaKeyDepth {
+				return fmt.Errorf("%w: Injection MetaKey has %d path segments, exceeding the cap of %d", ErrInvalidConfig, len(c.Injection.MetaKey), config.MaxMCPMetaKeyDepth)
 			}
 			for _, seg := range c.Injection.MetaKey {
 				if seg == "" {
@@ -1362,14 +1389,27 @@ func (p *Provider) Close(ctx context.Context) error {
 // Provenance enrichment: when the ctx carries an acting-agent
 // registration id (the run loop's provenance seam), it is stamped under
 // `agent_id` — PROVENANCE ONLY, never an isolation principal (a server
-// MUST NOT key isolation on it). Operator-declared `annotations` are
-// merged verbatim for the deployment's own attribution vocabulary.
-// Reserved keys (the triple, `agent_id`, `traceparent`, `tracestate`,
-// and any `io.modelcontextprotocol/`-prefixed key) are rejected at
-// validation; this merge re-enforces the invariant by stamping the
-// triple + agent LAST and skipping any reserved/spec-prefixed annotation
-// key, so an annotation can never shadow identity even if one slipped
-// past validation ("impossible by construction" defence-in-depth).
+// MUST NOT key isolation on it).
+//
+// Operator-declared `annotations` carry the deployment's own attribution
+// vocabulary. Each key is a `_meta` PATH: a key with no `.` sets a top-level
+// key, a dotted key NESTS — the same interpretation, through the same helper
+// (`injectMeta`), that a credential-injection `meta_key` has always had, so one
+// `_meta` namespace has one meaning regardless of which mechanism wrote into
+// it. Reserved keys (the triple, `agent_id`, `traceparent`, `tracestate`, and
+// any `io.modelcontextprotocol/`-prefixed key) are rejected at validation, at
+// the whole key AND at any path segment; this merge re-enforces the invariant
+// by SKIPPING any annotation carrying a reserved token and by stamping the
+// triple + agent LAST, so an annotation can never shadow identity even if one
+// slipped past validation ("impossible by construction" defence-in-depth).
+//
+// Colliding paths are a different case and DO fail loud with
+// `ErrMetaPathCollision`: two annotation paths that are equal or in a
+// proper-prefix relationship would have one silently overwrite the other, and
+// unlike a reserved key a colliding pair CAN sit in a revision persisted before
+// the path rules shipped. Refusing collisions is also what makes this merge
+// order-INDEPENDENT despite Go's randomised map iteration — distinct
+// non-prefixing paths write disjoint leaves.
 //
 // AGENTS.md §6 rule 9 / forbidden practice §13: identity is
 // mandatory. Missing identity returns `ErrIdentityMissing` and the
@@ -1388,11 +1428,20 @@ func buildIdentityMeta(ctx context.Context, annotations map[string]string) (mcps
 	meta := make(mcpsdk.Meta, len(annotations)+4)
 	// Operator annotations first, so the triple + agent stamps below win
 	// unconditionally (a reserved-key annotation can never shadow identity).
-	for k, v := range annotations {
+	mergeable := make([]string, 0, len(annotations))
+	for k := range annotations {
 		if isReservedMetaKey(k) {
 			continue
 		}
-		meta[k] = v
+		mergeable = append(mergeable, k)
+	}
+	if err := config.ValidateMCPMetaPathCollisions(mergeable, ""); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrMetaPathCollision, err.Error())
+	}
+	for _, k := range mergeable {
+		if err := injectMeta(meta, config.SplitMCPMetaPath(k), annotations[k]); err != nil {
+			return nil, fmt.Errorf("%w: annotation %q: %w", ErrMetaPathCollision, k, err)
+		}
 	}
 	meta["tenant"] = id.TenantID
 	meta["user"] = id.UserID
@@ -1403,14 +1452,19 @@ func buildIdentityMeta(ctx context.Context, annotations map[string]string) (mcps
 	return meta, nil
 }
 
-// isReservedMetaKey reports whether k is a Harbor-reserved or spec-reserved
-// `_meta` key that an operator annotation must not carry. It delegates to
-// the single shared authority (config.IsReservedMCPMetaKey — the isolation
-// triple, `agent_id`, the trace-context carrier keys, and the
-// `io.modelcontextprotocol/` spec namespace) so the driver's merge-time
-// re-check can never drift from config / attach validation.
+// isReservedMetaKey reports whether an operator annotation key carries a
+// Harbor-reserved or spec-reserved `_meta` token. It delegates to the single
+// shared authority (`config.ReservedMCPMetaPathToken` — the isolation triple,
+// `agent_id`, the trace-context carrier keys, and the
+// `io.modelcontextprotocol/` spec namespace, checked against the WHOLE key and
+// against every dot-segment of it) so the driver's merge-time re-check can
+// never drift from config / wire / attach validation. The whole-key arm is what
+// sees the spec namespace (`io.modelcontextprotocol/ui` splits into segments
+// that carry no prefix); the per-segment arm is what sees a reserved key used
+// as a path component (`tenant.foo`).
 func isReservedMetaKey(k string) bool {
-	return config.IsReservedMCPMetaKey(k)
+	_, reserved := config.ReservedMCPMetaPathToken(k)
+	return reserved
 }
 
 // resolveBearerProvider selects the OAuth provider that authenticates an RPC
@@ -1507,7 +1561,13 @@ func (p *Provider) resolveInjection(ctx context.Context, meta mcpsdk.Meta) (cont
 		creds := base64.StdEncoding.EncodeToString([]byte(inj.BasicUsername + ":" + tok.AccessToken))
 		return withInjectedHeaders(ctx, map[string]string{"Authorization": "Basic " + creds}), nil
 	case InjectionFormMeta:
-		injectMeta(meta, inj.MetaKey, tok.AccessToken)
+		if err := injectMeta(meta, inj.MetaKey, tok.AccessToken); err != nil {
+			// A collision between the credential path and an annotation path
+			// is refused at every validation door; reaching it means a legacy
+			// declaration slipped through, and picking a silent winner would
+			// either discard the operator's annotation or bury the credential.
+			return nil, fmt.Errorf("%w: injection meta_key: %w", ErrMetaPathCollision, err)
+		}
 		return ctx, nil
 	default:
 		// Unreachable: validate() rejects an unknown form at construction.
@@ -1515,31 +1575,68 @@ func (p *Provider) resolveInjection(ctx context.Context, meta mcpsdk.Meta) (cont
 	}
 }
 
-// injectMeta writes value into meta at the (already-validated, non-reserved) key
-// path, creating intermediate maps as needed. A single-segment path sets a
-// top-level key; a multi-segment path nests. buildIdentityMeta stamps the
-// identity triple + agent provenance BEFORE this runs, so the sole protection
-// against a credential overwriting them is validate(): it guarantees no
-// injection path segment is a reserved key, so injection can never shadow the
-// identity triple or agent provenance.
-func injectMeta(meta mcpsdk.Meta, path []string, value string) {
+// injectMeta writes value into meta at the (already-validated, non-reserved)
+// key path, creating intermediate maps as needed. A single-segment path sets a
+// top-level key; a multi-segment path nests.
+//
+// It has TWO callers and they must stay two callers of ONE helper: the
+// credential-injection `meta_key` write, and the operator `meta_annotations`
+// merge in buildIdentityMeta. A second nesting implementation would let the two
+// mechanisms disagree about what a dotted key means in the one `_meta`
+// namespace they share — which is the defect this helper's second caller was
+// added to close.
+//
+// Intermediate-node type contract: every map this creates is a
+// `map[string]any`, NEVER an `mcpsdk.Meta`. The walk below type-asserts
+// `cur[seg].(map[string]any)`, and `mcpsdk.Meta` is a NAMED type over
+// `map[string]any`, so a Go type assertion against it MISSES. A caller that
+// built `mcpsdk.Meta` intermediates would make the assertion fail, take the
+// create branch, and REPLACE a populated node — wiping every sibling already
+// written into that namespace. The top-level conversion below
+// (`map[string]any(meta)`) is the one place the named type is unwrapped.
+//
+// A non-map intermediate is a path collision (some earlier write left a scalar
+// where this path needs a node) and fails LOUD rather than overwriting it:
+// validation refuses colliding declarations at every door, so reaching this is
+// a last-resort defence, and silently picking a winner is exactly the
+// degradation the path rules exist to prevent.
+//
+// buildIdentityMeta stamps the identity triple + agent provenance AFTER this
+// runs for annotations and BEFORE it for the credential write, so the sole
+// protection against a credential overwriting them is validate(): it guarantees
+// no injection path segment is a reserved key, so injection can never shadow
+// the identity triple or agent provenance.
+func injectMeta(meta mcpsdk.Meta, path []string, value string) error {
 	if len(path) == 0 {
-		return
+		return nil
 	}
 	if len(path) == 1 {
 		meta[path[0]] = value
-		return
+		return nil
 	}
 	cur := map[string]any(meta)
-	for _, seg := range path[:len(path)-1] {
-		next, ok := cur[seg].(map[string]any)
-		if !ok {
-			next = map[string]any{}
+	for i, seg := range path[:len(path)-1] {
+		existing, present := cur[seg]
+		if !present {
+			next := map[string]any{}
 			cur[seg] = next
+			cur = next
+			continue
+		}
+		next, isMap := existing.(map[string]any)
+		if !isMap {
+			return fmt.Errorf("_meta path %q collides with an existing non-map value at segment %q", strings.Join(path, "."), strings.Join(path[:i+1], "."))
 		}
 		cur = next
 	}
-	cur[path[len(path)-1]] = value
+	leaf := path[len(path)-1]
+	if existing, present := cur[leaf]; present {
+		if _, isMap := existing.(map[string]any); isMap {
+			return fmt.Errorf("_meta path %q collides with an existing nested map at that path", strings.Join(path, "."))
+		}
+	}
+	cur[leaf] = value
+	return nil
 }
 
 // chooseString returns first when non-empty, else second.

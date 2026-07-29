@@ -17,6 +17,65 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Changed — a dotted `meta_annotations` key now NESTS in the MCP `_meta` map
+
+- **`tools.mcp_servers[].meta_annotations` keys are annotation PATHS.** A key
+  with no `.` still sets a top-level `_meta` key. A DOTTED key now nests:
+  `vendor.account_id: acct-42` lands at `_meta.vendor.account_id` instead of as
+  the literal flat key `_meta["vendor.account_id"]`.
+
+  **Why.** Two mechanisms write into the same outbound `_meta` map on the same
+  call and they disagreed about what a dot meant. `injection.meta_key` has
+  always been a path (it walks and creates intermediate maps);
+  `meta_annotations` merged flat. So a receiver-style MCP server reading one
+  nested namespace could be handed a per-user credential but had no route at all
+  to its non-secret companion value — it could not ride `injection` (one mapping
+  per connection, and a non-credential leaf is correctly refused by the
+  redaction-coverage predicate) and it could not ride `headers` (a documented
+  secret field, never persisted). One namespace now has one meaning regardless
+  of which mechanism wrote into it, through the same helper.
+
+  **ACTION: read this if you declared a dotted annotation key.** No config
+  rewrite is required — the nested shape is what a dotted key was already asking
+  for — but the connection sends a DIFFERENT `_meta` on its next call after
+  upgrade, with no error and no config edit. If a downstream server matches on
+  the literal flat key, either rename the key to remove the dot or update the
+  server. Flat keys are completely unaffected, and no shipped Harbor example or
+  config declared a dotted key.
+
+- **Three declarations that were accepted before are now refused, loudly, at
+  boot and at every runtime door** (`agent_config.add_mcp_connection`,
+  `agent_config.set_revision`, and attach). Each error names the offending key
+  and the rule:
+
+  - A key whose WHOLE value **or any dot-segment** is reserved. `tenant.foo` is
+    now refused; it previously passed because only the whole key was checked.
+    (The whole-key check is retained, not replaced — it is the only arm that
+    sees the spec-reserved `io.modelcontextprotocol/` namespace, whose segments
+    carry no prefix.)
+  - A path that COLLIDES with another declared path on the same connection —
+    equal to it, or a prefix of it — including the `injection.meta_key` path.
+    `{vendor: x, vendor.id: y}` is refused, and so is a flat `vendor` annotation
+    alongside `injection.meta_key: vendor.api_key`. That second case previously
+    discarded the operator's annotation SILENTLY at merge time. A connection
+    persisted before this rule now fails its calls loudly rather than picking a
+    non-deterministic winner.
+  - A path deeper than 16 segments, or one containing an empty segment (`a..b`).
+
+- **The 16-segment `_meta` path cap now applies at every door.** It previously
+  existed only on the `agent_config.add_mcp_connection` wire path, so a
+  boot-declared `injection.meta_key` deeper than the cap was accepted where the
+  identical wire-declared one was refused. Both now consult one constant. (No
+  migration: no shipped config nests past two segments.)
+
+- **Audit note — over-redaction, not a leak.** The redactor replaces a matched
+  key's WHOLE value without recursing, and its receiver-injection rule matches
+  the last key segment. A flat `token.env` annotation was not redacted (last
+  segment `env`); nested, the node key is `token`, which matches, so the entire
+  `token` subtree collapses to `***` — non-secret siblings included. Redaction
+  coverage is preserved; the cost is audit readability under a
+  credential-named namespace. No audit rule changed.
+
 ### Added — artifact bytes are readable on every store, and the read-back bound is yours
 
 - **`artifacts.get` — a Protocol method that returns an artifact's bytes, served

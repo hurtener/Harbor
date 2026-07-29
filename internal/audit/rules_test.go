@@ -2,6 +2,7 @@ package audit_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -322,4 +323,79 @@ func FuzzRedactor(f *testing.F) {
 			t.Errorf("unexpected err shape: %v", err)
 		}
 	})
+}
+
+// TestInjectionCredentialRule_NestingCausesOverRedactionNotALeak characterises
+// — and pins — the audit consequence of interpreting a `meta_annotations` key
+// as a `_meta` PATH.
+//
+// walkRedactKeys matches on the KEY and replaces the WHOLE value; it does NOT
+// recurse into a matched node. The injection rule's predicate matches on the
+// LAST `-`/`_`/`.`-separated segment. So:
+//
+//   - FLAT (the pre-nesting shape): the literal key `token.env` has last
+//     segment `env`, which is not a credential token, so it is NOT redacted.
+//   - NESTED (after nesting): the node key is `token`, which IS a credential
+//     token, so the ENTIRE subtree collapses to `***` — including non-secret
+//     siblings under the same namespace.
+//
+// Redaction COVERAGE is therefore preserved (nothing that was redacted stops
+// being redacted; a credential leaf under a matching node is still `***`
+// because its whole parent is). The delta is OVER-redaction of non-secret
+// siblings — a loss of audit usefulness, not of audit safety.
+//
+// This is deliberately characterised and pinned rather than "fixed": changing
+// walkRedactKeys' replace-on-match semantics would alter EVERY rule's
+// behaviour, which needs its own decision entry. No audit rule changes here.
+func TestInjectionCredentialRule_NestingCausesOverRedactionNotALeak(t *testing.T) {
+	driver := patterns.New()
+
+	t.Run("flat key is not redacted (the pre-nesting shape)", func(t *testing.T) {
+		out, err := driver.Redact(context.Background(), map[string]any{
+			"_meta": map[string]any{"token.env": "prod"},
+		})
+		if err != nil {
+			t.Fatalf("Redact: %v", err)
+		}
+		meta := out.(map[string]any)["_meta"].(map[string]any)
+		if meta["token.env"] != "prod" {
+			t.Fatalf("_meta[\"token.env\"] = %v, want the unredacted \"prod\" (last segment `env` is not a credential token)", meta["token.env"])
+		}
+	})
+
+	t.Run("nested node collapses its whole subtree", func(t *testing.T) {
+		out, err := driver.Redact(context.Background(), map[string]any{
+			"_meta": map[string]any{
+				"token": map[string]any{
+					"env":     "prod",               // non-secret companion
+					"api_key": "s3cret-DO-NOT-LEAK", // the credential
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Redact: %v", err)
+		}
+		meta := out.(map[string]any)["_meta"].(map[string]any)
+		if meta["token"] != audit.Placeholder {
+			t.Fatalf("_meta.token = %#v, want the whole subtree collapsed to %q", meta["token"], audit.Placeholder)
+		}
+		// Coverage is preserved: no credential byte survives anywhere.
+		if strings.Contains(flatten(t, out), "s3cret-DO-NOT-LEAK") {
+			t.Fatal("the credential leaked through the collapsed node")
+		}
+		// ...and the non-secret sibling is gone too. That is the cost.
+		if strings.Contains(flatten(t, out), "prod") {
+			t.Fatal("test premise broken: the non-secret sibling survived, so this is not over-redaction")
+		}
+	})
+}
+
+// flatten renders a redacted payload for substring assertions.
+func flatten(t *testing.T, v any) string {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(raw)
 }

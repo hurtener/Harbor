@@ -987,13 +987,58 @@ which would auto-select stdio at connect and silently never inject — and a
 static `Authorization` header alongside the binding (one auth mode per
 connection).
 
-`meta_annotations` is a static, NON-SECRET `map[string]string` merged
-verbatim into the MCP `_meta` on every identity-stamped call — the
-deployment's own attribution vocabulary, passed to the server alongside the
-`(tenant, user, session)` triple and the provenance `agent_id`. Reserved
-keys (`tenant` / `user` / `session` / `agent_id` / `traceparent` /
-`tracestate` and any `io.modelcontextprotocol/`-prefixed key) and empty keys
-are rejected at validation. See `examples/dev.yaml` for a worked stanza.
+`meta_annotations` is a static, NON-SECRET `map[string]string` merged into
+the MCP `_meta` on every identity-stamped call — the deployment's own
+attribution vocabulary, passed to the server alongside the
+`(tenant, user, session)` triple and the provenance `agent_id`. See
+`examples/dev.yaml` for a worked stanza.
+
+Each KEY is an **annotation path**: a key with no `.` sets a top-level
+`_meta` key, and a DOTTED key NESTS. `vendor.account_id: acct-42` lands at
+`_meta.vendor.account_id`, not as the literal flat key
+`_meta["vendor.account_id"]`. This is the same interpretation
+`injection.meta_key` has always had, so one `_meta` namespace has one
+meaning regardless of which mechanism wrote into it — which is what lets a
+receiver-style server read ONE nested namespace and find both an injected
+credential and its non-secret companion value.
+
+> **Behaviour change (v1.24).** A dotted annotation key was legal before and
+> landed FLAT; it now nests. No config rewrite is required — the new shape is
+> the shape a dotted key was already asking for — but a connection that
+> declared one sends a different `_meta` on its next call after upgrade. Flat
+> keys are unaffected.
+
+Validation rejects, loudly, at boot and at every runtime door
+(`agent_config.add_mcp_connection`, `agent_config.set_revision`, and attach):
+
+- an empty key or an empty path segment (`a..b`);
+- a key whose WHOLE value **or ANY dot-segment** is reserved — `tenant`,
+  `user`, `session`, `agent_id`, `traceparent`, `tracestate`, and any
+  `io.modelcontextprotocol/`-prefixed key. Both arms are checked: the
+  whole-key arm is the only one that sees the spec-reserved namespace (its
+  segments carry no prefix), and the per-segment arm is the only one that
+  sees a reserved key used as a path component. `tenant.foo` is refused;
+- a path deeper than 16 segments (see `meta_key` below for why);
+- a path that COLLIDES with another declared path on the same connection —
+  equal to it, or a prefix of it — including the `injection.meta_key` path.
+  `{vendor: x, vendor.id: y}` is refused, and so is a flat `vendor`
+  annotation alongside `injection.meta_key: vendor.api_key`. Refusing
+  collisions is also what makes the merge order-independent: distinct
+  non-prefixing paths write disjoint leaves, so map-iteration order cannot
+  change the bytes on the wire. A connection persisted before this rule
+  shipped that carries a colliding pair fails its calls loudly rather than
+  silently picking a winner.
+
+**Audit consequence — over-redaction, not a leak.** The audit redactor
+matches on a key and replaces the WHOLE value without recursing, and its
+receiver-injection rule matches on the LAST `-`/`_`/`.`-separated segment.
+A flat `token.env` key therefore was NOT redacted (last segment `env`);
+nested, the node key is `token`, which matches, so the ENTIRE `token`
+subtree collapses to `***` — non-secret siblings included. Redaction
+COVERAGE is preserved (nothing that was redacted stops being redacted); the
+cost is reduced audit usefulness under a credential-named namespace. If you
+want a namespace's non-secret annotations to stay readable in audit
+payloads, do not name the node with a credential token.
 
 #### tools.mcp_servers[].injection
 
@@ -1016,7 +1061,14 @@ config. Fields:
   base64(username ":" credential)`.
 - `meta_key` — for `form: meta`, the target `_meta` key PATH, dot-separated for
   nesting (e.g. `vendor.api_key`). No path segment may be a reserved `_meta` key
-  and the leaf must be a redaction-covered credential key.
+  and the leaf must be a redaction-covered credential key. The path is capped at
+  16 segments — the SAME cap `meta_annotations` paths carry, applied at every
+  door (before v1.24 it was enforced only on the wire door, so a boot-declared
+  over-deep path was accepted where the identical wire-declared one was
+  refused). The cap exists so a declared path can never push an audit payload
+  past the redactor's deep-walk ceiling and turn every audit emit for the
+  connection into a hard redaction failure. It may not collide with a declared
+  `meta_annotations` path (see above).
 
 Injection is **mutually exclusive** with `oauth_provider` / `tool_oauth_providers`
 / a static `Authorization` header (one auth mode per connection). The connection

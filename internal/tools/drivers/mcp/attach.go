@@ -427,20 +427,39 @@ var ErrOAuthBinding = errors.New("mcp: invalid oauth_provider binding")
 // (mirroring config-time validation for the runtime-add path). Returns the
 // resolved provider (nil when the connection binds none) or a loud error.
 func resolveOAuthBinding(ms config.MCPServerConfig, mode MCPTransportMode, providers OAuthProviderResolver) (auth.OAuthProvider, error) {
-	// Reserved / spec-prefixed annotation keys are re-checked here so a
-	// runtime-added connection cannot smuggle an identity-shadowing key.
+	// `meta_annotations` keys are declared `_meta` PATHS and are re-validated
+	// here — the shared boot + runtime-set attach door — so a runtime-added
+	// connection cannot smuggle an identity-shadowing key at the whole key OR
+	// at any path segment, declare a path deeper than the audit redactor can
+	// walk, or declare a path that collides with another annotation or with
+	// the credential-injection `_meta` write (which would silently discard one
+	// of them at merge time). Every rule comes from the single shared
+	// authority in `internal/config`.
+	annotationKeys := make([]string, 0, len(ms.MetaAnnotations))
 	for k := range ms.MetaAnnotations {
-		if strings.TrimSpace(k) == "" {
-			return nil, fmt.Errorf("%w: meta_annotations key must not be empty", ErrOAuthBinding)
+		if err := config.ValidateMCPMetaAnnotationKey(k); err != nil {
+			return nil, fmt.Errorf("%w: meta_annotations %s", ErrOAuthBinding, err.Error())
 		}
-		if isReservedMetaKey(k) {
-			return nil, fmt.Errorf("%w: meta_annotations key %q is reserved (triple/agent_id/traceparent/tracestate and io.modelcontextprotocol/-prefixed keys are runtime-stamped)", ErrOAuthBinding, k)
-		}
+		annotationKeys = append(annotationKeys, k)
+	}
+	if err := config.ValidateMCPMetaPathCollisions(annotationKeys, serverInjectionMetaPath(ms.Injection)); err != nil {
+		return nil, fmt.Errorf("%w: meta_annotations %s", ErrOAuthBinding, err.Error())
 	}
 	if ms.OAuthProvider == "" {
 		return nil, nil
 	}
 	return resolveProviderBinding(ms, mode, ms.OAuthProvider, providers)
+}
+
+// serverInjectionMetaPath returns the connection's credential-injection `_meta`
+// key path, or "" when it declares no injection or injects somewhere other than
+// `_meta` (a header / `Authorization: Basic` value writes no `_meta` node, so it
+// cannot collide with an annotation path).
+func serverInjectionMetaPath(inj *config.MCPCredentialInjectionConfig) string {
+	if inj == nil || strings.TrimSpace(inj.Form) != config.MCPInjectionFormMeta {
+		return ""
+	}
+	return strings.TrimSpace(inj.MetaKey)
 }
 
 // resolveToolOAuthBindings resolves a connection's per-entry `oauth_provider`

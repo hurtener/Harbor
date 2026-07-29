@@ -351,25 +351,25 @@ Non-Go surfaces carrying the field but populating nothing:
 
 ## Acceptance criteria
 
-- [ ] An annotation key containing `.` produces a nested `_meta` map, byte-identical in
+- [x] An annotation key containing `.` produces a nested `_meta` map, byte-identical in
       shape to what the same path produces through `injection.meta_key`.
-- [ ] The nesting uses the SAME helper the injection path uses (`injectMeta`) — not a
+- [x] The nesting uses the SAME helper the injection path uses (`injectMeta`) — not a
       second implementation (§13) — and every intermediate node it creates is of dynamic
       type `map[string]any`, NOT `mcpsdk.Meta`, asserted directly so the
       `mcp.go:1535` type assertion can never miss and silently replace a sibling-bearing
       map.
-- [ ] The reserved-key guard refuses a key when `config.IsReservedMCPMetaKey` is true for
+- [x] The reserved-key guard refuses a key when `config.IsReservedMCPMetaKey` is true for
       the WHOLE key **OR** for ANY dot-segment. `tenant.foo` becomes refused (newly);
       `io.modelcontextprotocol/ui` stays refused (regression guard). All four shipped
       spec-prefix tests named in "The guard rule" above pass UNCHANGED.
-- [ ] The guard, the depth cap, and the collision rule are applied at all FOUR doors:
+- [x] The guard, the depth cap, and the collision rule are applied at all FOUR doors:
       `config/validate.go:1780-1789`, `addconnection.go:745-755` (serving both
       `add_mcp_connection` and `set_revision`), `attach.go:430-440`, and the merge-time
       re-check at `mcp.go:1392-1394`.
-- [ ] The identity triple and agent provenance are still stamped LAST
+- [x] The identity triple and agent provenance are still stamped LAST
       (`mcp.go:1396-1401`), so no annotation can shadow identity — asserted by a test
       that attempts exactly that, including via a nested path.
-- [ ] `config.MaxMCPMetaKeyDepth` (hoisted from
+- [x] `config.MaxMCPMetaKeyDepth` (hoisted from
       `wireinjectiondescriptor.go:62`) caps annotation key segment count, and
       `wireinjectiondescriptor.go` consumes it rather than defining its own.
       **Corrected rationale:** the cap is NOT because a too-deep key would be emitted
@@ -379,36 +379,36 @@ Non-Go surfaces carrying the field but populating nothing:
       every audit emit for that connection into a hard redaction failure. Same cap, same
       value (16), correct reason. Both the constant's godoc and the error message at
       `wireinjectiondescriptor.go:172` are corrected to say this.
-- [ ] The depth cap additionally applies to `injection.meta_key` at boot config
+- [x] The depth cap additionally applies to `injection.meta_key` at boot config
       validation (`validate.go:1903-1920`) and in the driver's `Config.validate()`
       (`mcp.go:383-392`), closing the wire-only asymmetry.
-- [ ] An annotation key with no `.` behaves exactly as today.
-- [ ] **Path collision fails LOUD.** Within one connection, no two declared `_meta`
+- [x] An annotation key with no `.` behaves exactly as today.
+- [x] **Path collision fails LOUD.** Within one connection, no two declared `_meta`
       paths (annotation keys split on `.`, plus `injection.meta_key` when `form: meta`)
       may be equal or in a proper-prefix relationship. Refused at all four doors with an
       error naming both colliding keys. Pinned specifically:
       `{"vendor": "x", "vendor.id": "y"}` is refused, and a flat `vendor` annotation
       alongside `injection.meta_key: vendor.api_key` is refused — the case that today
       silently discards the operator's annotation at `mcp.go:1535-1538`.
-- [ ] **The merge fails loud on a legacy collision.** A connection whose persisted
+- [x] **The merge fails loud on a legacy collision.** A connection whose persisted
       revision carries a colliding annotation pair (possible: nothing rejects it today)
       makes `buildIdentityMeta` return a new typed `ErrMetaPathCollision`, aborting the
       call. No silent winner, no order-dependent result.
-- [ ] **The merge is deterministic.** Repeated `buildIdentityMeta` calls over a
+- [x] **The merge is deterministic.** Repeated `buildIdentityMeta` calls over a
       non-colliding annotation set containing shared namespace prefixes produce
       byte-identical marshalled `_meta` across N≥1000 iterations, despite Go's randomised
       map iteration at `mcp.go:1391`.
-- [ ] An annotation and an injection mapping writing into the SAME namespace on one call
+- [x] An annotation and an injection mapping writing into the SAME namespace on one call
       compose into one nested map without either clobbering the other's siblings.
-- [ ] **The §10 survey above is reproduced in D-362**, including the
+- [x] **The §10 survey above is reproduced in D-362**, including the
       `setrevision_connections_test.go:274` finding that a dotted key is a supported
       shape, and the migration path.
-- [ ] **The over-redaction consequence is pinned by a direct redactor test**: a nested
+- [x] **The over-redaction consequence is pinned by a direct redactor test**: a nested
       `_meta`-shaped payload with an annotation node key `token` collapses its whole
       subtree to `audit.Placeholder`, while the flat `token.env` key does not — proving
       coverage is preserved and the change is over-redaction. Documented in
       `docs/CONFIG.md` and D-362. No `internal/audit/` rule change.
-- [ ] Mutation-verified: reverting the whole-key arm of the guard (leaving per-segment
+- [x] Mutation-verified: reverting the whole-key arm of the guard (leaving per-segment
       only) turns a smoke `OK` into a `FAIL`, and reverting the collision rule likewise.
 
 ## Files added or changed
@@ -613,23 +613,23 @@ Non-Go surfaces carrying the field but populating nothing:
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes (N concurrent
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes (N concurrent
       distinct identities, each call's `_meta` carrying its OWN triple)
-- [ ] Concurrent-reuse test passes — N≥128 concurrent `buildIdentityMeta` calls against
+- [x] Concurrent-reuse test passes — N≥128 concurrent `buildIdentityMeta` calls against
       one shared `*Provider` under `-race`, asserting determinism, distinct object
       graphs, and no identity bleed. **Not** the draft's inert "source map unmodified"
       assertion.
-- [ ] Integration test wires real drivers and a spec-derived MCP fixture (§17.8),
+- [x] Integration test wires real drivers and a spec-derived MCP fixture (§17.8),
       asserts identity propagation, covers ≥1 failure mode, runs under `-race`
-- [ ] The §10 survey (including `setrevision_connections_test.go:274`) and the migration
+- [x] The §10 survey (including `setrevision_connections_test.go:274`) and the migration
       path are recorded in D-362
-- [ ] The four shipped spec-prefix tests pass with NO edits
-- [ ] `docs/CONFIG.md`, `docs/glossary.md`, `examples/dev.yaml`, and the `surface: tools`
+- [x] The four shipped spec-prefix tests pass with NO edits
+- [x] `docs/CONFIG.md`, `docs/glossary.md`, `examples/dev.yaml`, and the `surface: tools`
       skill are updated in this PR (§18)
-- [ ] `docs/plans/README.md:360` detail block corrected and status flipped (§4.2 item 11)
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] `docs/plans/README.md:360` detail block corrected and status flipped (§4.2 item 11)
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed

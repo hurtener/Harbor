@@ -325,10 +325,13 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 	if name == "" {
 		return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: name is empty", ErrInvalidConnection)
 	}
-	// Reserved / spec-prefixed / empty `_meta` annotation keys are rejected
-	// for every transport (the runtime stamps the triple + agent_id + trace
-	// context; an operator annotation must not shadow them).
-	if err := validateConnectionAnnotations(c.MetaAnnotations); err != nil {
+	// Reserved / spec-prefixed / empty / over-deep / colliding `_meta`
+	// annotation PATHS are rejected for every transport (the runtime stamps
+	// the triple + agent_id + trace context; an operator annotation must not
+	// shadow them, at the whole key OR at any path segment). The injection
+	// mapping's own `_meta` path participates in the collision check, so a
+	// flat annotation can never silently lose to a nested credential write.
+	if err := validateConnectionAnnotations(c.MetaAnnotations, wireInjectionMetaPath(c.Injection)); err != nil {
 		return agentcfg.MCPConnectionDescriptor{}, nil, nil, err
 	}
 	// An inline OAuth binding, a provider-NAME binding, and a credential-injection
@@ -737,21 +740,41 @@ func normalizeDiscoveryOrigins(in []string) ([]string, error) {
 	return out, nil
 }
 
-// validateConnectionAnnotations rejects empty / reserved / spec-prefixed
-// annotation keys — the attach-time mirror of the config-time rule. The
-// reserved set is the single shared authority (config.IsReservedMCPMetaKey)
-// so the runtime-add gate can never drift from config validation or the MCP
-// driver's merge-time re-check.
-func validateConnectionAnnotations(m map[string]string) error {
+// validateConnectionAnnotations rejects a `meta_annotations` declaration that
+// is not a well-formed set of `_meta` PATHS — the wire mirror of the
+// config-time rule, serving both `add_mcp_connection` and the full-payload
+// `agent_config.set_revision` door.
+//
+// A dotted annotation key nests, exactly like `injection.meta_key`, so each key
+// is validated as a path (whole-key AND per-segment reserved guard, no empty
+// segment, depth cap) and the declared set is checked for collisions — against
+// itself and against the injection mapping's own `_meta` path, which is why the
+// injection descriptor's `meta_key` is threaded in. Every rule comes from the
+// single shared authority in `internal/config`, so this door cannot drift from
+// boot validation, the attach door, or the driver's merge-time re-check.
+func validateConnectionAnnotations(m map[string]string, injectionMetaKey string) error {
+	keys := make([]string, 0, len(m))
 	for k := range m {
-		if strings.TrimSpace(k) == "" {
-			return fmt.Errorf("%w: meta_annotations key must not be empty", ErrInvalidConnection)
+		if err := config.ValidateMCPMetaAnnotationKey(k); err != nil {
+			return fmt.Errorf("%w: meta_annotations %s", ErrInvalidConnection, err.Error())
 		}
-		if config.IsReservedMCPMetaKey(k) {
-			return fmt.Errorf("%w: meta_annotations key %q is reserved (triple/agent_id/traceparent/tracestate and io.modelcontextprotocol/-prefixed keys are runtime-stamped)", ErrInvalidConnection, k)
-		}
+		keys = append(keys, k)
+	}
+	if err := config.ValidateMCPMetaPathCollisions(keys, injectionMetaKey); err != nil {
+		return fmt.Errorf("%w: meta_annotations %s", ErrInvalidConnection, err.Error())
 	}
 	return nil
+}
+
+// wireInjectionMetaPath returns the wire descriptor's credential-injection
+// `_meta` key path, or "" when the connection declares no injection or injects
+// somewhere other than `_meta` (a header / `Authorization: Basic` value writes
+// no `_meta` node, so it cannot collide with an annotation path).
+func wireInjectionMetaPath(in *prototypes.AgentConfigMCPCredentialInjectionDescriptor) string {
+	if in == nil || strings.TrimSpace(in.Form) != config.MCPInjectionFormMeta {
+		return ""
+	}
+	return strings.TrimSpace(in.MetaKey)
 }
 
 // cloneAnnotations returns a defensive copy of m (nil for empty).
