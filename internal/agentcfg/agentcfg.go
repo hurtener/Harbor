@@ -236,9 +236,13 @@ type MCPConnectionDescriptor struct {
 	// (attach-time) headers. Set only for the http transport.
 	OAuthProvider string `json:"oauth_provider,omitempty"`
 	// MetaAnnotations is a static, NON-SECRET set of operator-declared
-	// key/values merged verbatim into the MCP `_meta` on every
-	// identity-stamped per-call RPC (the deployment's attribution
-	// vocabulary). Reserved / spec-prefixed keys are rejected at attach.
+	// key/values merged into the MCP `_meta` on every identity-stamped
+	// per-call RPC (the deployment's attribution vocabulary). Each key is a
+	// `_meta` PATH — a dotted key NESTS, exactly like `injection.meta_key`.
+	// Keys are stored as declared; the nesting is a merge-time semantic.
+	// Reserved / spec-prefixed keys (at the whole key OR any dot-segment),
+	// over-deep paths, and paths colliding with another declared path on the
+	// connection are rejected at validation.
 	MetaAnnotations map[string]string `json:"meta_annotations,omitempty"`
 	// OAuthDiscoveryAllowedOrigins is the explicit per-connection cross-origin
 	// allow-list of public https origins the MCP OAuth-requirement discovery

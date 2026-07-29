@@ -114,8 +114,11 @@ type AgentConfigMCPConnectionDescriptor struct {
 	// the http transport; empty leaves the connection on its static headers.
 	OAuthProvider string `json:"oauth_provider,omitempty"`
 	// MetaAnnotations is a static, NON-SECRET set of operator key/values
-	// merged verbatim into the MCP `_meta` on every identity-stamped call.
-	// Reserved / spec-prefixed keys are rejected at attach.
+	// merged into the MCP `_meta` on every identity-stamped call. Each key is
+	// a `_meta` PATH — a dotted key NESTS, exactly like `injection.meta_key`.
+	// Reserved / spec-prefixed keys (at the whole key OR any dot-segment),
+	// over-deep paths, and paths colliding with another declared path on the
+	// connection are rejected at validation.
 	MetaAnnotations map[string]string `json:"meta_annotations,omitempty"`
 	// OAuth is an OPTIONAL inline OAuth-provider binding carried over the wire
 	// for this connection (a coordinator standing up a new OAuth-fronted MCP

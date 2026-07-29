@@ -51,16 +51,6 @@ import (
 // compare with errors.Is.
 var ErrWireInjectionNotAllowed = errors.New("agentcfg/protocol: wire-carried credential-injection mapping is not allowed (the fail-closed tools.allow_wire_injection opt-in is off)")
 
-// maxInjectionMetaKeyDepth caps the dot-segment count of a `meta_key` so the
-// injected credential always nests ABOVE the audit redactor's deep-walk cap
-// (`audit.MaxDepth` = 64). The redactor stops walking at that depth, so a
-// credential nested at or beyond it would sit BELOW the redactor's walk and
-// could ride an audit payload uncredacted. 16 leaves comfortable headroom for
-// the `_meta` base depth plus any wrapper the payload adds around the injected
-// map — far below 64 — while never constraining a real receiver key (which
-// nests one or two segments, e.g. `vendor.api_key`).
-const maxInjectionMetaKeyDepth = 16
-
 // gateAndValidateInjectionDescriptor is the single entry point the add-connection
 // handler uses for a wire injection mapping. It (1) applies the fail-closed
 // opt-in gate — a connection carrying an injection mapping with the opt-in off is
@@ -167,9 +157,16 @@ func validateWireInjectionDescriptor(in *prototypes.AgentConfigMCPCredentialInje
 		if metaKey == "" {
 			return nil, fmt.Errorf("%w: injection.meta_key must name a target _meta key path for form=meta", ErrInvalidConnection)
 		}
-		segs := strings.Split(metaKey, ".")
-		if len(segs) > maxInjectionMetaKeyDepth {
-			return nil, fmt.Errorf("%w: injection.meta_key has %d path segments, exceeding the cap of %d — a credential nested that deep can outrun the audit redactor's deep-walk (audit.MaxDepth) and ride an audit payload uncredacted", ErrInvalidConnection, len(segs), maxInjectionMetaKeyDepth)
+		segs := config.SplitMCPMetaPath(metaKey)
+		// The cap is `config.MaxMCPMetaKeyDepth` — the ONE constant every door
+		// (boot config, this wire door, the attach door) applies to every
+		// declared `_meta` path, annotation and injection alike. The failure
+		// mode it guards is NOT an uncredacted emit: the redactor fails loud
+		// past its deep-walk ceiling. It is that a path declared deeper than
+		// the ceiling turns every audit emit for this connection into a hard
+		// redaction failure.
+		if len(segs) > config.MaxMCPMetaKeyDepth {
+			return nil, fmt.Errorf("%w: injection.meta_key has %d path segments, exceeding the cap of %d — a credential nested that deep can push an audit payload past the redactor's deep-walk ceiling and turn every audit emit for this connection into a hard redaction failure", ErrInvalidConnection, len(segs), config.MaxMCPMetaKeyDepth)
 		}
 		for _, seg := range segs {
 			if strings.TrimSpace(seg) == "" {

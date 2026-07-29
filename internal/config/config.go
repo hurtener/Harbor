@@ -1615,12 +1615,23 @@ type MCPServerConfig struct {
 	// alongside a binding (one auth mode per connection). Restart-required.
 	OAuthProvider string `yaml:"oauth_provider,omitempty"`
 	// MetaAnnotations is a static, NON-SECRET set of operator-declared
-	// key/values merged verbatim into the MCP `_meta` map on every
-	// identity-stamped per-call RPC — the deployment's own attribution
-	// vocabulary, passed to the server as-is. Reserved keys (`tenant`,
-	// `user`, `session`, `agent_id`, `traceparent`, `tracestate`, and any
-	// `io.modelcontextprotocol/`-prefixed key) and empty keys are rejected
-	// at validation. Optional. Restart-required.
+	// key/values merged into the MCP `_meta` map on every identity-stamped
+	// per-call RPC — the deployment's own attribution vocabulary.
+	//
+	// Each KEY is a `_meta` PATH: a key with no `.` sets a top-level key, and
+	// a DOTTED key NESTS (`vendor.account_id` lands at
+	// `_meta.vendor.account_id`, not as a literal flat key) — the same
+	// interpretation, through the same helper, that `injection.meta_key` has
+	// always had, so one `_meta` namespace has one meaning regardless of which
+	// mechanism wrote into it.
+	//
+	// Validation rejects: an empty key or an empty path segment; a key whose
+	// WHOLE value or ANY dot-segment is reserved (`tenant`, `user`, `session`,
+	// `agent_id`, `traceparent`, `tracestate`, and any
+	// `io.modelcontextprotocol/`-prefixed key); a path deeper than
+	// MaxMCPMetaKeyDepth; and a path that collides with another declared path
+	// on the same connection — equal to it, or a prefix of it — including the
+	// `injection.meta_key` path. Optional. Restart-required.
 	MetaAnnotations map[string]string `yaml:"meta_annotations,omitempty"`
 	// OAuthDiscoveryAllowedOrigins is the explicit per-connection allowance
 	// list for OAuth-requirement discovery cross-origin metadata fetches
