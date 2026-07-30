@@ -143,8 +143,8 @@ func (h *ownerHarness) remove(t *testing.T, o ownerCfg, name string) {
 // both run-loop drivers call), returning the number detached.
 func (h *ownerHarness) reconcile(t *testing.T, o ownerCfg) int {
 	t.Helper()
-	n, err := projection.ReconcileConnections(context.Background(), h.registry, o.agent, o.quad(),
-		h.detacher, map[string]struct{}{"boot-srv": {}})
+	n, _, err := projection.ReconcileConnections(context.Background(), h.registry, o.agent, o.quad(),
+		h.detacher, nil, map[string]struct{}{"boot-srv": {}})
 	if err != nil {
 		t.Fatalf("reconcile (owner %s): %v", o.agent, err)
 	}

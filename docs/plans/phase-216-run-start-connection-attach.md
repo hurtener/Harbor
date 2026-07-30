@@ -728,6 +728,62 @@ connection is exactly as (in)eligible after this phase as before it.
 
 Both land in `docs/glossary.md` in the same PR.
 
+## As-built notes (§4.3 deviations, shipped)
+
+Three deviations from the sketch above, none touching RFC territory. All three are
+recorded in D-361 too.
+
+1. **`ConnectionReattacher.Reattach` takes the reconciling run's
+   `identity.Quadruple`** — `Reattach(ctx, owner, id, desc) error`, not the
+   three-argument shape in "Public API surface". The concrete OWNS event emission
+   (it holds the bus, the scrubber, the stable class and the suppression count,
+   and emitting from the projection would drag `internal/events` plus emission
+   policy into a package that deliberately imports neither), and AC 12's
+   machine-readable reconcile-vs-admin-add discriminator is the payload's
+   `RunID` — which the ctx at that call site does not carry
+   (`runloop.go` builds `taskCtx` with `identity.With`, the triple only).
+
+2. **The concrete lives in `internal/runtime/serve/mcp_reattacher.go`**, beside
+   `mcp_detacher.go`, rather than inside `mcp_attacher.go`. The state still hangs
+   off the ONE `*MCPConnectionAttacher` and shares its whole-attach lock and
+   closer chain, so there is no second attach implementation — only a file
+   boundary that makes the leg reviewable. `NewMCPConnectionAttacher` grew a
+   VARIADIC option parameter (`WithReattachGates` / `WithReattachTimeout` /
+   `WithReattachClock`) rather than four more positional arguments: options are
+   applied at construction only (the artifact stays immutable, §5), every option
+   defaults FAIL-CLOSED, and the twenty-one existing call sites are unchanged.
+
+3. **The attach pass marks its per-connection errors through a single-chain
+   wrapper type**, not a multi-`%w` `fmt.Errorf`. A multi-`%w` value also
+   satisfies `interface{ Unwrap() []error }` — the exact shape a caller uses to
+   walk an `errors.Join` tree — so the run loop would have descended INTO the
+   wrap, seen the cause stripped of its marker, and misclassified an unreachable
+   third party as a detach failure, silently skipping the discovery-allowance
+   re-apply on every run with an unreachable declared server. Caught by the
+   run-loop wiring test, not by review.
+
+**A latent production bug the phase's own test surfaced, fixed in the same PR
+(§17.6).** AC 6's bounded per-connection ctx was NOT sufficient on its own.
+`TestMCPConnectionAttacher_Reattach_BoundedContext` hung for the full test
+timeout against a server that accepts and never answers: the caller's bounded ctx
+ends the initialize handshake, but the MCP SDK's session teardown then issues its
+own cleanup request on a context this runtime does not own, and the driver's HTTP
+client had NO bound at all (`buildHTTPClient` could even return
+`http.DefaultClient`). The stall reached the shipped `add_mcp_connection`
+request exactly as much as this new leg. Fixed at the driver's shared choke point
+with `unownedBoundingTransport` (`internal/tools/drivers/mcp/transport_sse.go`):
+a request carrying no deadline of its own, and not a server→client event stream
+(identified by `Accept: text/event-stream`), gains a bounded one; a request the
+runtime already bounded keeps its own budget, so an operator who raised a slow
+tool's `timeout_ms` is never silently pre-empted. `TestBuildHTTPClient_NoHeaders_ReturnsDefault`
+pinned the removed shortcut and is rewritten as `TestBuildHTTPClient_AlwaysBounded`.
+
+**Smoke result.** `scripts/smoke/phase-216.sh` — **OK 27, FAIL 0**, one SKIP (the
+live `mcp.servers.list` probe, which needs a booted dev server's bearer and
+becomes an OK under preflight). Every static guard was individually
+mutation-verified `OK → FAIL`, and six behavioural mutations that COMPILE each
+turn a green test red.
+
 ## Pre-merge checklist
 
 - [ ] `make drift-audit` passes

@@ -84,22 +84,100 @@ type ConnectionDetacher interface {
 	Detach(ctx context.Context, source string, owner auth.Owner) error
 }
 
+// ConnectionReattacher is the driver-agnostic seam the run-start ATTACH pass
+// uses to bring a DECLARED-but-ABSENT runtime-added MCP server back under the
+// reconciling owner. It is the symmetric twin of [ConnectionDetacher] and pairs
+// with it in the same [ReconcileConnections] call; the concrete (wired at the
+// cmd/harbor + devstack boundary) drives the SAME attach lifecycle the admin
+// add verb drives, so every gate the add door applies is re-applied without
+// being re-implemented. Keeping it an injected interface preserves this
+// package's §4.4 boundary: the projection imports no concrete MCP driver.
+type ConnectionReattacher interface {
+	// Reattach attaches desc under owner. It is IDEMPOTENT: a name already
+	// registered under owner is a no-op (the concrete re-checks the live
+	// registry under its own whole-attach lock, closing the stale-view window
+	// between the caller's AttachedSources read and this call). Every gate the
+	// admin add door applies is re-applied here against CURRENT boot policy, so
+	// a policy that has since tightened refuses the re-attach.
+	//
+	// id is the reconciling RUN's quadruple. The triple is the authorization
+	// scope; the RunID is carried onto the concrete's lifecycle events as the
+	// machine-readable discriminator between a reconcile and an admin add
+	// (whose RunID is empty). It is NOT an isolation key.
+	//
+	// The concrete OWNS reporting: a refused or unreachable connection is
+	// emitted on its own canonical event with a stable class, bounded by a
+	// per-(owner, name) backoff, so the sweep never goes silent and never spams.
+	// The returned error is for the caller's loud log + the joined sweep error;
+	// it never means "fail the run".
+	Reattach(ctx context.Context, owner auth.Owner, id identity.Quadruple, desc agentcfg.MCPConnectionDescriptor) error
+}
+
 // ErrReconcileRead wraps an active-revision read failure inside
 // ReconcileConnections so the run-loop caller can distinguish a fail-loud
 // read error (never a silent "detach nothing", CLAUDE.md §13) from a
 // best-effort detach error.
 var ErrReconcileRead = errors.New("agentcfg/projection: run-start reconcile active-revision read failed")
 
-// ReconcileConnections is the DETACH leg of run-start reconciliation. It
-// compares the agent's DECLARED runtime-added connections (the active config
-// revision's connections section) against the reconciling OWNER's ATTACHED set
-// (the owner-scoped reconcile VIEW over the live MCP registry) and detaches
-// every server that owner has attached but no longer declares — a connection
-// removed via `agent_config.remove_mcp_connection`, or a server re-declared
-// away by a rollback past an add. Detaching deregisters the server's tools from
-// the catalog + MCP registry and closes its transport, so the NEXT run's
-// projected catalog excludes them, the registry no longer lists it, and the
-// subprocess drains.
+// ErrReconcileReattach marks every per-connection error the ATTACH pass
+// produces, so the run-loop caller can tell an unreachable or refused third
+// party (loud, non-fatal, already reported on its own canonical event, and NOT a
+// reason to skip the remaining reconcile legs) from a detach failure or a
+// fail-loud read error. Without the marker the caller would have to string-match
+// the joined error, and one unreachable declared server would silently stop the
+// discovery-allowance re-apply for every run.
+var ErrReconcileReattach = errors.New("agentcfg/projection: run-start reconcile re-attach failed")
+
+// reattachFailure marks ONE connection's attach-pass error with
+// [ErrReconcileReattach] while keeping the underlying error a SINGLE unwrap
+// chain.
+//
+// The single chain is load-bearing, not stylistic. A multi-`%w` fmt.Errorf would
+// carry both the marker and the cause, but it also satisfies
+// `interface{ Unwrap() []error }` — the very shape a caller uses to walk an
+// errors.Join tree. Such a caller would descend INTO the wrap, see the cause on
+// its own (stripped of the marker), and misclassify it as a detach failure. This
+// type answers Is(ErrReconcileReattach) directly and unwraps to the cause alone,
+// so both the marker and every sentinel on the cause stay reachable via
+// errors.Is while the value remains a leaf to a join walker.
+type reattachFailure struct {
+	name string
+	err  error
+}
+
+func (e *reattachFailure) Error() string {
+	return fmt.Sprintf("%s: %q: %v", ErrReconcileReattach.Error(), e.name, e.err)
+}
+
+func (e *reattachFailure) Unwrap() error { return e.err }
+
+func (e *reattachFailure) Is(target error) bool { return target == ErrReconcileReattach }
+
+// ReconcileConnections is the run-start connection-reconciliation leg. It is
+// BIDIRECTIONAL — the same shape [ReconcileOAuthProviders] already uses — and
+// runs its two passes in a fixed order:
+//
+//  1. DETACH: compare the agent's DECLARED runtime-added connections (the active
+//     config revision's connections section) against the reconciling OWNER's
+//     ATTACHED set (the owner-scoped reconcile VIEW over the live MCP registry)
+//     and detach every server that owner has attached but no longer declares — a
+//     connection removed via `agent_config.remove_mcp_connection`, or a server
+//     re-declared away by a rollback past an add. Detaching deregisters the
+//     server's tools from the catalog + MCP registry and closes its transport, so
+//     the NEXT run's projected catalog excludes them, the registry no longer
+//     lists it, and the subprocess drains.
+//  2. ATTACH: re-read the owner's attached set (FRESH, after the detach pass) and
+//     re-establish every connection the active revision DECLARES that the live
+//     registry does not carry under that owner. This is what makes a
+//     runtime-added connection survive a process restart and what makes a
+//     rollback that RE-declares a removed connection bring it back — one
+//     mechanism, N triggers, never two code paths.
+//
+// Detach runs FIRST so a name being replaced within one revision transition is
+// torn down before the attach pass considers it.
+//
+// A nil reattacher yields the detach-only behaviour byte-for-byte — the
+// backward-compatible path a driver without an attach concrete gets.
 //
 // # Owner-scoped reconcile view (the fix for the process-global over-detach)
 //
@@ -144,51 +222,75 @@ var ErrReconcileRead = errors.New("agentcfg/projection: run-start reconcile acti
 // internally synchronised. N concurrent reconciles converge to the same
 // state; the concurrent tests pin this.
 //
-// It is DETACH-ONLY by design: attaching a declared-but-absent server (the
-// restart-survival reconcile) is a separate, deferred concern; the live add
-// verb is the attach path, and re-add after remove reuses the persisted
-// agent-bound token through that verb (no second consent). One window is
-// accepted: a reconcile racing a concurrent re-add of the same name by the
-// SAME owner can detach the freshly re-added server (a stale declared-set read
-// — heals at the next add or restart). The earlier process-global
-// over-detach — where one owner's reconcile enumerated the whole registry and
-// could detach boot servers or another owner's runtime-adds — is CLOSED by the
-// owner-scoped reconcile view above: AttachedSources returns only the
-// reconciling owner's runtime-added entries.
+// # What the attach pass does NOT do
 //
-// A nil registry, an empty agentID, or a nil detacher returns (0, nil) — the
+// It never initiates, completes, or re-drives an interactive consent flow, and
+// it never mints, holds, refreshes, or exchanges a credential — because the
+// attach path it calls has no token step at all: an `oauth_provider` binding is
+// a NAME resolved against the boot-declared provider set, and the bearer is
+// minted per outbound CALL, one layer later. A connection whose consent is
+// genuinely gone therefore still re-attaches, and the shortfall surfaces on the
+// first tool call as the shipped typed auth-required error routed onto the
+// unified pause/resume primitive. Nothing here duplicates that path.
+//
+// It also never touches a boot-declared (yaml) server: boot servers carry the
+// zero owner, are excluded from the owner view by construction, and are attached
+// by the boot loader. The explicit bootDeclared skip documents the invariant on
+// both passes.
+//
+// # Windows
+//
+// The earlier process-global over-detach — where one owner's reconcile
+// enumerated the whole registry and could detach boot servers or another owner's
+// runtime-adds — is CLOSED by the owner-scoped reconcile view above:
+// AttachedSources returns only the reconciling owner's runtime-added entries.
+// The reconcile-racing-a-concurrent-re-add window (a stale declared-set read
+// detaching a freshly re-added server) is likewise closed on both sides now: it
+// heals at the NEXT RUN START through the attach pass, and the attach pass's own
+// same-shaped window is closed inside the reattacher concrete, which re-reads the
+// live registry under its own whole-attach lock.
+//
+// A nil registry, an empty agentID, or a nil detacher returns (0, 0, nil) — the
 // backward-compatible "no reconcile" path. A registry read error is returned
-// wrapped in ErrReconcileRead (fail loud, never swallowed). Detach errors are
-// joined and returned (the caller logs them loud) but do not abort the diff:
-// one server that refuses to close must not strand the others. The identity
-// triple + agentID form the owner-scoped reconcile view; the tenant + agent are
-// the owner tag (agent_id is registration metadata here, not an isolation key —
-// isolation stays the triple). Returns the number of servers detached.
-func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, detacher ConnectionDetacher, bootDeclared map[string]struct{}) (int, error) {
+// wrapped in ErrReconcileRead (fail loud, never swallowed). Detach AND attach
+// errors are joined and returned (the caller logs them loud) but do not abort
+// the sweep: one server that refuses to close, or one unreachable third party,
+// must not strand the others — and must not fail the run. ctx cancellation
+// between attaches ends the pass with the ctx error joined, so an overall sweep
+// budget bounds the pass without a per-connection escape.
+//
+// The identity triple + agentID form the owner-scoped reconcile view; the tenant
+// + agent are the owner tag (agent_id is registration metadata here, not an
+// isolation key — isolation stays the triple). Returns the number of servers
+// detached and the number re-attached.
+func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, detacher ConnectionDetacher, reattacher ConnectionReattacher, bootDeclared map[string]struct{}) (detached, attached int, err error) {
 	if reg == nil || agentID == "" || detacher == nil {
-		return 0, nil
+		return 0, 0, nil
 	}
-	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
-	if err != nil {
-		return 0, fmt.Errorf("%w: agent %q: %w", ErrReconcileRead, agentID, err)
+	rev, ok, rerr := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	if rerr != nil {
+		return 0, 0, fmt.Errorf("%w: agent %q: %w", ErrReconcileRead, agentID, rerr)
 	}
-	declared := make(map[string]struct{})
+	// The declared set carries the full DESCRIPTOR, not just the name: the detach
+	// pass needs the name, the attach pass needs everything the attach lifecycle
+	// re-validates (transport, url/command, the provider NAME binding, the
+	// injection mapping, the annotation set, the discovery allowance).
+	declared := make(map[string]agentcfg.MCPConnectionDescriptor)
 	if ok {
 		for _, d := range rev.Payload.ConnectionDescriptors() {
-			declared[d.Name] = struct{}{}
+			declared[d.Name] = d
 		}
 	}
 	// The owner-scoped reconcile view: the (tenant, agent) owner whose
 	// runtime-added entries this run reconciles. AttachedSources returns ONLY
 	// this owner's runtime-adds — never boot servers, never another owner's.
 	owner := auth.Owner{Tenant: id.TenantID, Agent: agentID}
-	var detached int
 	var errs []error
 	for _, src := range detacher.AttachedSources(ctx, owner) {
 		if _, boot := bootDeclared[src]; boot {
 			continue // defense-in-depth: the owner view already excludes boot servers.
 		}
-		if _, ok := declared[src]; ok {
+		if _, stillDeclared := declared[src]; stillDeclared {
 			continue // still declared — keep it attached.
 		}
 		if derr := detacher.Detach(ctx, src, owner); derr != nil {
@@ -197,7 +299,51 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 		}
 		detached++
 	}
-	return detached, errors.Join(errs...)
+	if reattacher == nil {
+		// Detach-only: byte-for-byte the behaviour a driver with no attach
+		// concrete gets.
+		return detached, 0, errors.Join(errs...)
+	}
+	// The ATTACH pass. The attached set is re-read AFTER the detach pass so a
+	// name torn down above is a candidate here (the within-one-transition
+	// replace), and so the live view is as fresh as this sweep can make it. The
+	// reattacher re-checks under its own lock regardless — this read is the cheap
+	// filter, not the guard.
+	live := make(map[string]struct{})
+	for _, src := range detacher.AttachedSources(ctx, owner) {
+		live[src] = struct{}{}
+	}
+	// Deterministic order so a partially-cancelled sweep is reproducible and the
+	// tests can pin which connections were reached.
+	names := make([]string, 0, len(declared))
+	for name := range declared {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		// Honour cancellation between connections: the overall sweep budget must
+		// be able to end the pass, and each attach is separately bounded inside
+		// the concrete.
+		if cerr := ctx.Err(); cerr != nil {
+			errs = append(errs, &reattachFailure{name: name, err: fmt.Errorf("sweep ended early: %w", cerr)})
+			break
+		}
+		if _, boot := bootDeclared[name]; boot {
+			// A revision must never declare a boot-declared name (both write doors
+			// refuse it), but the skip is belt-and-suspenders: the leg never spawns
+			// or replaces a boot server.
+			continue
+		}
+		if _, isLive := live[name]; isLive {
+			continue // already carried under this owner — nothing to re-establish.
+		}
+		if aerr := reattacher.Reattach(ctx, owner, id, declared[name]); aerr != nil {
+			errs = append(errs, &reattachFailure{name: name, err: aerr})
+			continue
+		}
+		attached++
+	}
+	return detached, attached, errors.Join(errs...)
 }
 
 // DiscoveryOriginReconciler is the driver-agnostic seam the run-start

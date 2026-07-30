@@ -789,6 +789,14 @@ func cloneAnnotations(m map[string]string) map[string]string {
 	return out
 }
 
+// SafeReason is the exported door onto [safeReason] for the OTHER attach caller
+// in the runtime: the run-start re-attach leg, which reports a refused or
+// unreachable declared connection on its own canonical event and must scrub that
+// reason through the SAME implementation this package's add path uses. One
+// scrubber, two call sites — a second copy would drift on the next pattern added
+// (CLAUDE.md §13).
+func SafeReason(err error) string { return safeReason(err) }
+
 // safeReason returns a bounded, SECRET-SCRUBBED, operator-facing failure
 // reason from an attach error. The attach error is the driver's own wrapped
 // step error (provider.Connect / provider.Discover / ...). The driver does
