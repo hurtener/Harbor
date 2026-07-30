@@ -450,7 +450,11 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/control/artifacts.get" \
 
 Identity rules match the rest of the artifact surface: the full triple is mandatory, an id your scope does not hold answers `not_found`/404 identically to one that never existed (existence is never revealed across identities), and a `scope` naming a tenant other than your verified one is refused `scope_mismatch`/403 — **no admin claim widens this method**, because it hands over content rather than metadata.
 
-Inside a run, the model reaches the same bytes through the `artifact_fetch` builtin, which takes the same `offset` / `max_bytes` and answers the same `offset` / `returned_bytes` / `total_size_bytes` / `truncated` field set under the same operator-configured ceiling.
+Inside a run, the model reaches an artifact through the `artifact_fetch` builtin, which takes the same `offset` / `max_bytes` and answers the same `offset` / `returned_bytes` / `total_size_bytes` / `truncated` field set under the same operator-configured ceiling.
+
+**They are not the same read, and the difference is the point.** `artifacts.get` returns `content` as `[]byte` (base64 on the wire), so it is **byte-exact for every MIME at every offset** — a PDF, an image, a zip. `artifact_fetch` returns `content` as a JSON **string**, so it is a TEXT read: it tests the window for UTF-8 admissibility and **refuses one it cannot return intact** rather than letting JSON encoding rewrite invalid bytes to `U+FFFD` and hand the model corruption at a length the response contradicts. A refusal still carries `ref` / `mime` / `size_bytes` / `total_size_bytes`, leaves `content` empty, and zeroes the windowing fields. The gate is content-driven, not MIME-driven — a text artifact carrying one invalid byte mid-window refuses too, rather than dropping it silently. `artifact_fetch` also trims partial runes at both window edges and reports the `offset` where content actually begins, and floors its effective `max_bytes` at 4; `artifacts.get` does neither, because it has no reason to.
+
+So: reach for `artifacts.get` when you want the bytes. `artifact_fetch` is the model's text-recovery path; binary content reaches a tool through an artifact-reference parameter, not through the model.
 
 ## 7. Topology snapshot — render the runtime's wiring
 

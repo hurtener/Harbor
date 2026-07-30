@@ -779,10 +779,23 @@ tool's `timeout_ms` is never silently pre-empted. `TestBuildHTTPClient_NoHeaders
 pinned the removed shortcut and is rewritten as `TestBuildHTTPClient_AlwaysBounded`.
 
 **Smoke result.** `scripts/smoke/phase-216.sh` — **OK 27, FAIL 0**, one SKIP (the
-live `mcp.servers.list` probe, which needs a booted dev server's bearer and
-becomes an OK under preflight). Every static guard was individually
+live `mcp.servers.list` probe). Every static guard was individually
 mutation-verified `OK → FAIL`, and six behavioural mutations that COMPILE each
 turn a green test red.
+
+**CORRECTION (wave-v1.24 §17.5 checkpoint audit).** The parenthetical above
+originally read "which needs a booted dev server's bearer and becomes an OK under
+preflight". **That was false, and this file's header claim that weakening any
+guard turns an OK into a FAIL "never into a SKIP" was false for this one guard.**
+The probe could only ever SKIP, two independent ways: it posted to
+`/v1/mcp/servers/list`, a route that does not exist (`mcp.servers.list` dispatches
+through `POST /v1/control/{method}`), and it sent the body triple
+`harbor-dev/harbor-dev/harbor-dev` while the dev bearer is minted for `dev/dev/dev`
+— `harbor-dev` is the token's `kid`, not its identity — so body-identity
+reconciliation would have refused it even at the right URL, and the catch-all
+`*)` arm laundered that refusal into a SKIP as well. The route, the triple, and
+the `*)` arm (now a FAIL, matching phase 214's route-probe convention) are
+repaired in the audit PR; only a genuinely unreachable server skips.
 
 ## Pre-merge checklist
 

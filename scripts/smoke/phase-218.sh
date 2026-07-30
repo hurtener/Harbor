@@ -183,8 +183,14 @@ assert_grep "${TASKS_GO}" \
 # siblings bind. Guarded as an ABSENCE of the discard rather than a presence of
 # the binding, because `heavy` appears in the fixed file either way and only the
 # discard form is unambiguous.
-if [ -f "${ARTIFACTS_GO}" ] && \
-   grep -qE 'out, _, rerr := search\.RedactAndCapPreview' "${ARTIFACTS_GO}"; then
+#
+# The file-existence arm used to fall through to the `else`, so DELETING or
+# RENAMING the artifacts searcher reported OK — the guard's pass value and its
+# "I could not look" value were the same. Existence is now its own assertion
+# (wave-v1.24 checkpoint audit).
+if [ ! -f "${ARTIFACTS_GO}" ]; then
+    fail "phase 218: ${ARTIFACTS_GO} does not exist — the heavy-bool guard cannot run, and an absent artifacts searcher is not a pass"
+elif grep -qE 'out, _, rerr := search\.RedactAndCapPreview' "${ARTIFACTS_GO}"; then
     fail 'phase 218: the artifacts searcher still discards the heavy bool (out, _, rerr)'
 else
     ok 'phase 218: the artifacts searcher binds the heavy bool its siblings bind'
@@ -209,7 +215,11 @@ assert_grep 'internal/protocol/types/version.go' \
 # would take the `go test` guard legs below with it on a standalone run. Only
 # the live block degrades when no server is up; the guards always run.
 
-TOKEN="${HARBOR_DEV_TOKEN:-}"
+# `dev_bearer` prefers the exported HARBOR_DEV_TOKEN and falls back to grepping
+# the preflight harness's server.log — the plain env read this used to do saw
+# nothing on a standalone run, every request went out unauthenticated, and the
+# resulting 401s were counted as passes below.
+TOKEN="$(dev_bearer)"
 
 HEALTH_CODE=000
 if command -v curl >/dev/null 2>&1; then
@@ -240,9 +250,22 @@ else
     # (1) THE NON-REGRESSION. The five methods must still answer for an ordinary
     # own-scope caller. D-352 named this exact failure mode for the sibling fix:
     # a stricter identity precondition "would silently turn both into refusals",
-    # so a fix that empties a working surface is not a fix. A 200 or an auth
-    # rejection are both acceptable (the dev token may be undiscoverable); a
-    # SCOPE refusal on an OWN-SCOPE read is not, and fails.
+    # so a fix that empties a working surface is not a fix. A SCOPE refusal on
+    # an OWN-SCOPE read fails.
+    #
+    # 401 USED TO SIT IN THE OK ARM ALONGSIDE 200. That made the guard's pass
+    # value indistinguishable from a total auth regression: had auth started
+    # refusing everything, all five methods would have printed OK. The wave-v1.24
+    # checkpoint audit split the two — with a bearer in hand, a 401 is a failure;
+    # without one the block below never runs, so there is no "the token may be
+    # undiscoverable" case left to tolerate here.
+    if [ -z "${TOKEN}" ]; then
+        if [ -n "${HARBOR_DATA_DIR:-}" ]; then
+            fail 'phase 218: HARBOR_DATA_DIR is set but no dev bearer could be resolved — the live legs would run unauthenticated and prove nothing'
+        else
+            skip 'phase 218: no dev bearer available (standalone run outside the preflight harness) — live legs skipped rather than run unauthenticated'
+        fi
+    else
     for m in search.query search.sessions search.tasks search.events search.artifacts; do
         p218_post "$(api_url "/v1/control/${m}")" \
             "{\"identity\":${ID},\"query\":\"\",\"page_size\":5}"
@@ -250,11 +273,14 @@ else
             404|405|501|000)
                 skip "phase 218: ${m} absent from this build (${P218_STATUS})"
                 ;;
+            401)
+                fail "phase 218: ${m} answered 401 to a request carrying the dev bearer — an auth regression, not an own-scope answer"
+                ;;
             403)
                 fail "phase 218: ${m} refuses an OWN-SCOPE read with 403 (code=${P218_CODE}) — the fold over-reached"
                 ;;
-            200|401)
-                ok "phase 218: ${m} still answers an own-scope read (${P218_STATUS})"
+            200)
+                ok "phase 218: ${m} still answers an own-scope read (200)"
                 ;;
             *)
                 fail "phase 218: ${m} own-scope read returned ${P218_STATUS} (code=${P218_CODE})"
@@ -287,7 +313,7 @@ else
             skip "phase 218: search.query absent from this build (${P218_STATUS})"
             ;;
         401)
-            skip 'phase 218: search.query 401 — HARBOR_DEV_TOKEN not discoverable; the widened path is covered by the integration test'
+            fail 'phase 218: search.query answered 401 to a request carrying the dev bearer — an auth regression; this arm used to SKIP on "HARBOR_DEV_TOKEN not discoverable", which the token guard above now handles'
             ;;
         200)
             ok 'phase 218: a foreign user_ids is GRANTED under the dev bearer admin-tier claims (the widened read still answers)'
@@ -299,6 +325,7 @@ else
             fail "phase 218: foreign user_ids returned ${P218_STATUS} (code=${P218_CODE}), want 200 under the dev bearer's claims"
             ;;
     esac
+    fi
 
     # (3) The surface is not answering the widening to an UNAUTHENTICATED
     # caller. Identity is mandatory, so a bearer-less foreign-user request must

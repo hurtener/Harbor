@@ -28,16 +28,22 @@ source "scripts/smoke/common.sh"
 
 # The wire field is single-sourced and the generated artifacts are in
 # lockstep (§13, D-209/D-223 — this phase owns both for the wave).
+#
+# Both guards below used to say `skip "... (pre-215 build)"` on the absent
+# branch. This phase is SHIPPED, so there is no pre-215 build to be forward
+# compatible with: deleting `StartRequest.AgentID` — the exact regression the
+# guard exists to catch — produced a SKIP, and preflight stayed green. That is
+# §4.2 item 5 inverted, and the wave-v1.24 checkpoint audit inverted it back.
 if grep -q 'AgentID string `json:"agent_id,omitempty"`' internal/protocol/types/control.go 2>/dev/null; then
     ok "phase 215 static: StartRequest carries the agent_id wire field"
 else
-    skip "phase 215 static: StartRequest has no agent_id field (pre-215 build)"
+    fail "phase 215 static: StartRequest has no agent_id wire field in internal/protocol/types/control.go — this phase shipped it, so its absence is a regression"
 fi
 if grep -A 70 '"StartRequest"' web/console/src/lib/protocol/wire-manifest.gen.json 2>/dev/null \
         | grep -q '"key": "agent_id"'; then
     ok "phase 215 static: agent_id is in the REGENERATED wire manifest for StartRequest"
 else
-    skip "phase 215 static: agent_id absent from wire-manifest.gen.json (pre-215 build)"
+    fail "phase 215 static: agent_id absent from StartRequest in wire-manifest.gen.json — regenerate with 'make protocol-ts-gen' (D-223 lockstep)"
 fi
 
 # --- RULING A TRIP-WIRE (the one this smoke exists to protect long-term).
@@ -187,23 +193,54 @@ isolated_post() {
     curl -sS -X POST "$1" -H "Authorization: Bearer ${TOKEN}" \
         "${ISOLATED_HEADERS[@]}" -H 'Content-Type: application/json' -d "$2" 2>/dev/null || true
 }
+#         COUNTING HONESTLY. This counter used to end `... || echo 0` over a
+#         `jq '... add // 0'`, so a 401, a 404 and a malformed body ALL
+#         yielded "0" — indistinguishable from a genuine empty session. The
+#         load-bearing half of this check therefore passed with `tasks.list`
+#         entirely dead. The wave-v1.24 checkpoint audit split the two: the
+#         probe now asserts `tasks.list` answered 200 with an `aggregates`
+#         object BEFORE any count is compared, and a count that cannot be
+#         read is an empty string that fails the comparison loudly.
+#         The function echoes `<status> <count>` on ONE line rather than
+#         setting a global: it is called through `$( )`, which runs it in a
+#         subshell, so a global assigned inside it never reaches the caller.
 count_isolated_tasks() {
-    isolated_post "${TASK_LIST_URL}" '{}' \
-        | jq -r '[.aggregates // {} | to_entries[] | .value] | add // 0' 2>/dev/null || echo 0
+    local out status count
+    out="$(mktemp)"
+    status=$(curl -sS -o "${out}" -w '%{http_code}' --max-time 10 \
+        -X POST "${TASK_LIST_URL}" -H "Authorization: Bearer ${TOKEN}" \
+        "${ISOLATED_HEADERS[@]}" -H 'Content-Type: application/json' -d '{}' \
+        2>/dev/null || true)
+    status="${status:-000}"
+    count=''
+    # An `aggregates` OBJECT is the proof the body is a real TaskListResponse;
+    # `// 0` on a missing key is exactly the laundering this replaces.
+    if [ "${status}" = "200" ] && jq -e 'has("aggregates") and (.aggregates | type == "object")' "${out}" >/dev/null 2>&1; then
+        count="$(jq -r '[.aggregates | to_entries[] | .value] | add // 0' "${out}" 2>/dev/null || printf '')"
+    fi
+    rm -f "${out}"
+    printf '%s %s' "${status}" "${count}"
 }
-BEFORE_COUNT="$(count_isolated_tasks)"
+read -r BEFORE_STATUS BEFORE_COUNT <<< "$(count_isolated_tasks)"
+if [ "${BEFORE_STATUS}" = "200" ] && [ -n "${BEFORE_COUNT}" ]; then
+    ok "phase 215: tasks.list answers 200 with an aggregates object in the isolated session (the count below is a real reading)"
+else
+    fail "phase 215: tasks.list returned ${BEFORE_STATUS} / unreadable aggregates in the isolated session — the no-task-on-refusal check below cannot run against a dead read"
+fi
 UNKNOWN_BODY="$(isolated_post "${START_URL}" '{"query":"phase-215 smoke: unknown agent","agent_id":"phase215-no-such-agent"}')"
 UNKNOWN_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${START_URL}" \
     -H "Authorization: Bearer ${TOKEN}" "${ISOLATED_HEADERS[@]}" \
     -H 'Content-Type: application/json' \
     -d '{"query":"phase-215 smoke: unknown agent 2","agent_id":"phase215-no-such-agent"}' 2>/dev/null || true)"
-AFTER_COUNT="$(count_isolated_tasks)"
+read -r AFTER_STATUS AFTER_COUNT <<< "$(count_isolated_tasks)"
 if [ "${UNKNOWN_CODE}" = "400" ]; then
     ok "phase 215: an unknown agent_id is refused with 400 invalid_request"
 else
     fail "phase 215: an unknown agent_id returned ${UNKNOWN_CODE}, want 400"
 fi
-if [ "${BEFORE_COUNT}" = "${AFTER_COUNT}" ] && [ "${AFTER_COUNT}" = "0" ]; then
+if [ "${BEFORE_STATUS}" != "200" ] || [ "${AFTER_STATUS}" != "200" ] || [ -z "${BEFORE_COUNT}" ] || [ -z "${AFTER_COUNT}" ]; then
+    fail "phase 215: task count unreadable (tasks.list ${BEFORE_STATUS} → ${AFTER_STATUS}) — a refused start MUST NOT create a task, and this guard cannot say whether it did"
+elif [ "${BEFORE_COUNT}" = "${AFTER_COUNT}" ] && [ "${AFTER_COUNT}" = "0" ]; then
     ok "phase 215: two refused starts created NO task in a fresh session (count stayed 0) — refused before the task exists"
 else
     fail "phase 215: isolated-session task count ${BEFORE_COUNT} → ${AFTER_COUNT}, want 0 → 0: a refused start MUST NOT create a task"

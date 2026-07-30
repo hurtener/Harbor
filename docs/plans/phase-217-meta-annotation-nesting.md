@@ -562,8 +562,17 @@ Non-Go surfaces carrying the field but populating nothing:
 ## Coverage target
 
 - `internal/tools/drivers/mcp`: 85% (no regression)
-- `internal/config`: 90% (no regression)
-- `internal/runtime/agentcfg/protocol`: 85% (no regression)
+- `internal/config`: **84.0% as built, no regression.** *(Corrected by the
+  wave-v1.24 §17.5 checkpoint audit. This row read "90% (no regression)", a
+  number the package has never carried and which contradicted its two sibling
+  plans — `phase-213-heavy-threshold-rebalance.md:257` and
+  `phase-214-mcp-pass-by-reference-egress.md:703` both measure the same package
+  at 82.9%. "No regression" is the real bar this phase set; the 90% was a
+  target nobody measured, so it read as a coverage gate that had silently
+  failed. Measured with `go test -count=1 -cover ./internal/config/...` on the
+  merged wave: 84.0% — above both siblings' 82.9% baseline, because this phase
+  added the `_meta` path validators with their tests.)*
+- `internal/runtime/agentcfg/protocol`: 85% (as built: 85.5%)
 - `internal/audit`: no regression (test-only additions)
 
 ## Dependencies
