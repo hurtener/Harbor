@@ -24,11 +24,32 @@
 // # Identity is mandatory (CLAUDE.md §6, RFC §5.5)
 //
 // Every search call rejects requests with an incomplete identity
-// triple via `ErrIdentityRequired`. Cross-tenant search requires the
-// `auth.ScopeAdmin` claim per the closed admin-scope set; an unauth'd cross-tenant request
-// is rejected with `ErrCrossTenantRequiresAdmin`. The rejection is
-// loud — there is no silent degradation to an empty result set
-// (CLAUDE.md §13).
+// triple via `ErrIdentityRequired`.
+//
+// The identity axes of `SearchFilter` are SCOPED BOUNDARIES, not free
+// predicates, and each axis is decided separately:
+//
+//   - TENANT — an elided `TenantIDs` FOLDS to the caller's own tenant;
+//     naming another tenant, or naming more than one, requires an
+//     admin-tier claim (`ErrCrossTenantRequiresAdmin`).
+//   - USER — an elided `UserIDs` FOLDS to the caller's own user. It is
+//     NOT a wildcard: an omitted axis is the caller's own value, never
+//     "every user in the tenant". Naming another user, or naming more
+//     than one, requires the same admin-tier claim
+//     (`ErrCrossUserRequiresAdmin`).
+//   - SESSION — a single session id is used AS-IS with no claim, because
+//     a caller legitimately reads one of their OWN other sessions and
+//     the user fold above already decides whose rows are in play. A
+//     MULTI-value session set is a fan-in and takes the claim
+//     (`ErrCrossSessionRequiresAdmin`).
+//
+// Under an admin-tier claim both widenings pass through untouched: a
+// named foreign user reads that user, and an elided user fans across the
+// effective tenant set rather than folding.
+//
+// Every rejection is loud — there is no silent degradation to an empty
+// result set, which would be indistinguishable from "that principal has
+// no rows" (CLAUDE.md §13).
 //
 // # Heavy-payload bypass
 //
@@ -93,6 +114,19 @@ var (
 	// query OUTSIDE the caller's authenticated tenant AND the caller
 	// does not hold the `auth.ScopeAdmin` claim.
 	ErrCrossTenantRequiresAdmin = errors.New("search: cross-tenant search requires the auth.ScopeAdmin claim")
+	// ErrCrossUserRequiresAdmin — the request's filter expands the query
+	// OUTSIDE the caller's own user, either by naming another user or by
+	// naming more than one. Distinct from the cross-tenant sentinel so a
+	// refused caller learns WHICH axis refused them; it maps to the same
+	// wire code, so no client gains a code to branch on.
+	ErrCrossUserRequiresAdmin = errors.New(
+		"search: cross-user search requires the auth.ScopeAdmin or auth.ScopeConsoleFleet claim")
+	// ErrCrossSessionRequiresAdmin — the request's filter names MORE THAN
+	// ONE session. A single session id is never refused (a caller reads
+	// their own other sessions freely); a multi-value set is the same
+	// fan-in that elevates on the tenant and user axes.
+	ErrCrossSessionRequiresAdmin = errors.New(
+		"search: a multi-session search requires the auth.ScopeAdmin or auth.ScopeConsoleFleet claim")
 	// ErrInvalidRequest — the request fails structural validation
 	// (PageSize > MaxSearchPageSize, an unknown SearchIndex in
 	// `Indexes`, etc.). Surfaces at the handler boundary as
@@ -116,8 +150,13 @@ var (
 // Implementations MUST:
 //
 //   - Reject incomplete identity (`ErrIdentityRequired`).
-//   - Gate cross-tenant requests on `auth.ScopeAdmin` via the
+//   - Gate cross-tenant requests on the admin-tier claim via the
 //     `ScopeChecker` passed at construction (`ErrCrossTenantRequiresAdmin`).
+//   - Gate cross-user requests and multi-session fan-ins on the SAME
+//     predicate (`ErrCrossUserRequiresAdmin`,
+//     `ErrCrossSessionRequiresAdmin`), and scope storage to
+//     `EffectiveUserSet` / `WidenedUserSet` rather than to the raw
+//     filter — the raw filter's elided user axis is a store wildcard.
 //   - Redact every emitted `Preview` via the supplied `audit.Redactor`
 //     before returning (`ErrRedactionFailed` on failure).
 //   - Ship a `*SearchArtifactRef` instead of inline bytes when a
@@ -295,22 +334,104 @@ func EffectiveTenantSet(callerTenant string, req types.SearchRequest) []string {
 		return []string{callerTenant}
 	}
 	// Deduplicate + sort for determinism.
-	seen := make(map[string]struct{}, len(req.Filter.TenantIDs))
-	out := make([]string, 0, len(req.Filter.TenantIDs))
-	for _, t := range req.Filter.TenantIDs {
-		if t == "" {
-			continue
-		}
-		if _, ok := seen[t]; ok {
-			continue
-		}
-		seen[t] = struct{}{}
-		out = append(out, t)
-	}
-	sort.Strings(out)
+	out := dedupeSorted(req.Filter.TenantIDs)
 	if len(out) == 0 {
 		return []string{callerTenant}
 	}
+	return out
+}
+
+// CrossUserRequested reports whether the request's filter targets users
+// OTHER than the caller's authenticated user. The caller gates this on
+// the admin-scope predicate; CrossUserRequested itself is a pure read.
+//
+// The rule is the USER twin of CrossTenantRequested, and it reproduces
+// the three-branch semantics the event subsystem's wire-filter
+// conversion already holds so the two agree by construction:
+//
+//   - Empty Filter.UserIDs → caller's own user only (no cross-user).
+//   - Filter.UserIDs contains exactly the caller's user → no cross-user.
+//   - Any other name → cross-user requested.
+//   - len(Filter.UserIDs) > 1 → cross-user requested, EVEN when every
+//     entry is the caller repeated: asking for many principals' rows in
+//     one read is the fan-in trigger every axis shares.
+func CrossUserRequested(callerUser string, req types.SearchRequest) bool {
+	if len(req.Filter.UserIDs) == 0 {
+		return false
+	}
+	if len(req.Filter.UserIDs) > 1 {
+		return true
+	}
+	return req.Filter.UserIDs[0] != callerUser
+}
+
+// CrossSessionFanInRequested reports whether the request's filter names
+// MORE THAN ONE session. The session axis is deliberately NOT gated on a
+// single foreign value — a caller reads their own other sessions
+// freely, and the user fold above the session axis already decides whose
+// rows are in play — so only the multi-value fan-in elevates.
+func CrossSessionFanInRequested(req types.SearchRequest) bool {
+	return len(req.Filter.SessionIDs) > 1
+}
+
+// EffectiveUserSet returns the set of users the request should be scoped
+// to AFTER admin-gating, for a caller whose request was NOT widened.
+// When the caller's filter is empty, the effective set is
+// `{callerUser}` — the FOLD. An elided user axis is the caller's own
+// value, never a wildcard: treating it as a wildcard is what let the
+// default request with no caller input at all enumerate every user in
+// the tenant. When the filter names users, the effective set is those
+// users deduplicated and sorted.
+//
+// Mirrors EffectiveTenantSet field for field, including its
+// empty-string skip and its fall-back to the caller when every entry was
+// empty. A widened (admin-tier) read reads WidenedUserSet instead, so
+// that its elided axis is not folded.
+func EffectiveUserSet(callerUser string, req types.SearchRequest) []string {
+	if len(req.Filter.UserIDs) == 0 {
+		return []string{callerUser}
+	}
+	out := dedupeSorted(req.Filter.UserIDs)
+	if len(out) == 0 {
+		return []string{callerUser}
+	}
+	return out
+}
+
+// WidenedUserSet returns the user axis for a request whose widening an
+// admin-tier claim already authorised. It does NOT fold: an elided axis
+// returns nil, which every caller reads as "every user inside the
+// effective tenant set" and passes to storage as the wildcard the store
+// documents. A widened read fans in rather than folding its elided axes;
+// folding here would silently turn a fleet view into a self view.
+//
+// A named axis returns the same deduplicated, sorted set
+// EffectiveUserSet returns, so the two differ on exactly one input.
+func WidenedUserSet(req types.SearchRequest) []string {
+	if len(req.Filter.UserIDs) == 0 {
+		return nil
+	}
+	return dedupeSorted(req.Filter.UserIDs)
+}
+
+// dedupeSorted returns in's non-empty entries, deduplicated and sorted
+// lexicographically. Shared by the tenant and user effective-set
+// helpers so the two cannot drift in their handling of duplicates,
+// empty strings, or ordering.
+func dedupeSorted(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	sort.Strings(out)
 	return out
 }
 

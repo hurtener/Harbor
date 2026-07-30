@@ -35,7 +35,7 @@ Some tools return payloads larger than fit cleanly in your context (multimedia m
 
 Meta-tools for working with stored references:
 
-- artifact_fetch(ref, max_bytes?): retrieve the full payload of a stored result. Use it when the preview does not carry the field, value, or section you need to answer the user. max_bytes lets you bound the returned slice; the runtime defaults to a safe size when omitted.
+- artifact_fetch(ref, max_bytes?, offset?): read a window of a stored result as TEXT. Use it when the preview does not carry the field, value, or section you need. max_bytes bounds the window; offset is where it starts. To page: re-call with offset set to the previous offset + returned_bytes while truncated is true. Check the ref's mime first — a non-text artifact (PDF, image, zip) is refused with an error naming its MIME and how to reach those bytes instead.
 
 The preview is the head of the payload only — fields further into the result live in the stored copy and require artifact_fetch to inspect. Re-calling the upstream tool produces a fresh stored copy of the same kind of payload; it does not bypass the threshold.
 </heavy_results>

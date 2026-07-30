@@ -84,6 +84,7 @@ refusal looks like:
 | the seven posture reads (`runtime.*`, `metrics.snapshot`, `governance.posture`, `llm.posture`) | `tenant` | `admin` or `console:fleet` | `403 scope_mismatch` |
 | `topology.snapshot` | `tenant` | `admin` only | `403 scope_mismatch` |
 | `state.history` | `tenant`, `user` **and** `session` — a whole cross-identity read | `admin` only | `404 not_found` |
+| the five `search.*` methods | `filter.tenant_ids`, `filter.user_ids` (and a MULTI-value `filter.session_ids`) | `admin` or `console:fleet` | `403 scope_mismatch` |
 
 Two of those rows are easy to get wrong, so branch on them deliberately.
 `state.history` is the only surface where a body naming another `user` and
@@ -122,6 +123,31 @@ claim. The `events.list` filter draws the same line on the same two axes.
 
 Every granted crossing publishes `audit.admin_scope_used` naming the verified
 caller.
+
+### A search is scoped to your own user too
+
+The five `search.*` methods draw the same line on their `filter`, and it is
+worth sending deliberately because the everyday call omits the axis entirely:
+
+- **`tenant_ids` and `user_ids` are isolation principals.** Omit either and the
+  search folds to YOUR tenant / YOUR user — **not** to every user in the
+  tenant. Name somebody else's, or name more than one, and you are refused
+  `403 scope_mismatch` unless you hold `admin` or `console:fleet`; with either
+  claim, naming a user reads that user and omitting it fans across the tenant.
+- **`session_ids` is a filter, not a boundary.** A single value — including one
+  of your OWN other sessions — needs no claim, because the user fold above it
+  already decides whose rows are in play. More than one value is a fan-in and
+  takes the same claim as the other axes.
+
+So the ordinary "search my stuff" call is `{"query": "..."}` with no `filter`
+at all, and it needs no claim. `artifacts.list` and the `events.list` filter
+draw the same line on the same axes.
+
+The refusal **code** differs from those two surfaces — `search.*` answers
+`403 scope_mismatch` where they answer `403 identity_scope_required`. Both are
+403 and the class of refusal is identical; the divergence is `search.*` keeping
+the code its tenant axis has published since the surface shipped. Branch on the
+status, or on either code, but do not assume one code covers all three surfaces.
 
 The body's `run` and `scope` fields are independent of the token and survive the
 backfill (they parameterise steering — see [task control](./task-control.md)).

@@ -85,7 +85,7 @@ This is the load-bearing design decision of the phase and it is stated before th
 - [ ] **Strict-progress invariant:** for every admissible response with `Truncated == true`, `Offset + ReturnedBytes` is **strictly greater than the caller's requested offset**. This is the property that kills the livelock; it is stated as an invariant rather than as a patch so a later refactor cannot reintroduce the shape by a different route.
 - [ ] `fetchBounds.effectiveMax` (`artifact_fetch.go:86-94`) floors its result at `utf8.UTFMax` (4). It currently floors only at `<= 0`, so `max_bytes: 1` against a multi-byte rune tail-trims to empty while `Truncated` stays true and the documented paging rule (`offset + returned_bytes`, `artifact_fetch.go:116-119`) yields the same offset forever. A boundary-aligned 4-byte window always contains at least one complete rune, which is what makes the strict-progress invariant provable rather than empirical.
 - [ ] The floor applies to the OPERATOR-RESOLVED bound too, not only to a caller's `max_bytes`. A configured `fetch_default_max_bytes` of 1–3 is raised to 4 by the same path.
-- [ ] A paging loop that starts at 0 and follows the documented rule reassembles the artifact byte-for-byte and **terminates within `⌈total/4⌉ + 1` iterations** for every `max_bytes` in `1..total+1`, asserted with a hard iteration cap that fails the test rather than hanging it.
+- [x] A paging loop that starts at 0 and follows the documented rule reassembles the artifact byte-for-byte and **terminates within `⌈total / max(1, max_bytes-3)⌉ + 1` iterations** for every `max_bytes` in `1..total+1`, asserted with a hard iteration cap that fails the test rather than hanging it. **AS-BUILT DEPARTURE (§4.3, D-357).** The plan as authored said `⌈total/4⌉ + 1`; that bound is arithmetically unreachable, because the floor guarantees a four-byte WINDOW, not four bytes of PROGRESS — the tail trim removes up to `utf8.UTFMax-1`, so an artifact alternating a 1-byte rune with a 4-byte one advances one byte on every other call. Measured against the real build: 100 such bytes at `max_bytes=4` take 40 iterations where `⌈total/4⌉ + 1` allows 26. The shipped cap is the provable one and `TestArtifactFetch_PagingBound_IsTheProvableOne` carries the adversarial fixture so the old constant cannot be quietly restored. The PROPERTY this criterion exists for — termination plus byte-exact reassembly, for every legal `max_bytes` — is unchanged and asserted.
 
 ### Classification
 
@@ -111,6 +111,7 @@ This is the load-bearing design decision of the phase and it is stated before th
 
 ### Hygiene
 
+- [x] **AS-BUILT ADDITION (§17.6):** a THIRD stale `eof` reference was found and fixed in the same pass — the *ranged read* entry (`docs/glossary.md`, the "Ranged read (artifacts)" term) names the same nonexistent field in its conformance-contract sentence. Fixing all three also lets the smoke guard be a whole-file absence check on `` `eof` `` rather than a line-scoped one that would rot the first time an entry moves.
 - [ ] `docs/glossary.md:108` and `:110` stop naming an `eof` field on the artifact read response. It does not exist: D-353 (phase 209's recorded departure) ships `truncated` and explicitly refuses `eof` as "two signals for one fact", and `ArtifactFetchOut` (`artifact_fetch.go:166-191`) and `ArtifactsGetResponse` (`types/artifacts.go`) both carry `truncated` only.
 - [ ] `docs/glossary.md:126`'s `artifact_fetch` entry, which still describes the signature as `{ref, mime, size_bytes, content, truncated}`, is reconciled with what ships (`offset`, `returned_bytes`, `total_size_bytes`) plus this phase's admissibility rule.
 - [ ] `docs/plans/README.md:355`'s Phase 212 detail block is rewritten to match this plan and its `Status` flips to `Shipped` in the same PR (§4.2 item 11). The shipped block currently asserts the retracted "terminates the dispatch step" premise verbatim; leaving it is exactly the stale-master-plan drift signal §4.2 names.
@@ -118,14 +119,23 @@ This is the load-bearing design decision of the phase and it is stated before th
 
 ## Files added or changed
 
+**AS-BUILT deviations from this list are marked inline.** Each is a §4.3 deviation recorded in D-357.
+
 ```text
 internal/tools/builtin/
 ├── artifact_fetch.go        # the admissibility gate; rune trimming at both ends;
 │                            #   the truthful Offset; the utf8.UTFMax floor in
 │                            #   effectiveMax; the refusal shape; the rewritten
 │                            #   artifactWindow godoc; the WithDescription edit
-└── artifact_fetch_test.go   # the fixture matrix, the two invariants as
-                             #   property tests, the terminating paging loop
+├── artifact_fetch_readpath_test.go  # AS-BUILT: a SIBLING file rather than an
+│                            #   append to artifact_fetch_test.go. Same package,
+│                            #   same helpers; a separate file keeps this phase's
+│                            #   additions off a file a sibling in-flight phase
+│                            #   also edits. Carries the fixture matrix, the two
+│                            #   invariants as property tests, the terminating
+│                            #   paging loop and the N=128 concurrent-reuse run.
+└── artifact_fetch_test.go   # one pre-existing offset-window case updated:
+                             #   max_bytes 3 is now served at the rune floor
 
 internal/planner/
 ├── observation_class.go     # NEW — the closed class vocabulary + the
@@ -145,8 +155,12 @@ internal/runtime/dispatch/
 ├── dispatch.go              # classify at the two error sites: callTool's
 │                            #   invoke-error wrap (:393) and branchObservations'
 │                            #   branch-error entry (:454-463)
-└── dispatch_test.go         # the classification, both paths, and the
-                             #   unclassified-error no-change pin
+└── observation_class_test.go # AS-BUILT: a NEW file rather than additions to
+                             #   dispatch_test.go, which the risks section names
+                             #   as this phase's one file overlap with 213. A
+                             #   separate file removes the overlap entirely.
+                             #   Carries the classification on both paths and the
+                             #   unclassified-error no-change pin.
 
 internal/runtime/steering/
 ├── runloop.go               # the errPayload at :955 gains the class key when
@@ -162,7 +176,11 @@ internal/planner/react/
 internal/protocol/
 ├── artifacts.go             # boundedWindow godoc ONLY — the mirror sentence
 │                            #   naming the deliberate divergence. No behaviour.
-└── artifacts_get_test.go    # the binary-bytes-exact pin on the twin
+└── artifacts_get_binary_test.go  # AS-BUILT: a NEW sibling rather than additions
+                             #   to artifacts_get_test.go. The binary-bytes-exact
+                             #   pin on the twin, at every offset and bound, plus
+                             #   a one-byte-bound paging reassembly proving the
+                             #   byte read acquired no rune floor.
 
 test/integration/artifact_readpath_test.go   # NEW
 scripts/smoke/phase-212.sh                   # replaces the skeleton
