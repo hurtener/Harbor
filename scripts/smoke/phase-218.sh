@@ -44,28 +44,12 @@
 # Done-definition: OK >= 10, SKIP = 0, FAIL = 0.
 #
 # ---------------------------------------------------------------------------
-# NOT-YET-LANDED POSTURE — read this before editing.
-#
-# The plan lands before the implementation, and preflight runs every smoke on
-# every commit, so hard assertions written today would fail the pre-commit hook
-# for everyone on this branch. The sibling Pending phases (215/216/217) solve
-# that by shipping a blank skeleton with one `skip`, which keeps preflight green
-# but throws the authored guards away — the implementor rewrites them from the
-# plan's prose, and whatever they do not re-derive is silently lost.
-#
-# This script keeps BOTH properties instead. The guards below are the real,
-# final ones; they are gated on a LANDED PROBE — the presence of the phase's
-# sentinel in internal/search/search.go. Before the phase lands the probe is
-# false and the script emits exactly one skip (preflight stays green, and this
-# is the sanctioned "surface not built yet" skip of §4.2 item 4). The moment the
-# implementor declares ErrCrossUserRequiresAdmin the probe flips and EVERY guard
-# below goes live in the same commit — there is no second step to forget, and
-# no window in which the phase is implemented but unguarded.
-#
-# The implementor's job here is therefore to DELETE the probe block once the
-# phase ships, not to write the assertions. Leaving it in place is harmless
-# (it is true forever after) but removing it makes the script honest about
-# being unconditional.
+# The guards below are UNCONDITIONAL. They were authored ahead of the
+# implementation behind a self-activating landed-probe (the presence of the
+# phase's sentinel in internal/search/search.go), so that preflight stayed green
+# on the branch while the plan waited for its code and no guard had to be
+# re-derived from prose afterwards. The phase has landed, so the probe is gone
+# and every assertion runs on every invocation.
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
@@ -130,20 +114,6 @@ run_filtered_tests() {
     printf '%s\n' "${out}" | tail -25
     fail "${desc}: go test exited ${rc}"
 }
-
-# ----------------------------------------------------------------------------
-# The landed probe. See the NOT-YET-LANDED POSTURE note in the header.
-# ----------------------------------------------------------------------------
-#
-# Deliberately keyed on the SENTINEL rather than on a helper name: the sentinel
-# is the one symbol the phase cannot ship without (every refusal path names it),
-# so a partial implementation that added the helpers but not the gate would
-# still read as not-landed rather than going live against a half-built surface.
-if ! grep -qE 'ErrCrossUserRequiresAdmin' "${SEARCH_GO}" 2>/dev/null; then
-    skip 'phase 218: user-axis gate not yet landed — guards activate automatically when internal/search declares ErrCrossUserRequiresAdmin'
-    smoke_summary
-    exit 0
-fi
 
 # ----------------------------------------------------------------------------
 # Static guards — the user axis exists, and it is wired at every call site.

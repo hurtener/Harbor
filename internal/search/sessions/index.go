@@ -1,7 +1,7 @@
 // Package sessions implements the `search.sessions`
 // runtime-side index — a server-enforced search over session lifecycle
-// records, scoped to the caller's identity triple unless the
-// `auth.ScopeAdmin` claim is present.
+// records, scoped to the caller's own tenant AND own user unless an
+// admin-tier claim widens it.
 //
 // The Searcher consumes the narrow `sessions.SessionLister` interface
 // (implemented by `*sessions.Registry`) — it does NOT re-implement
@@ -49,8 +49,11 @@ func (s *Searcher) Index() types.SearchIndex { return types.SearchIndexSessions 
 // label for closed sessions). Facets honoured: `status` (open /
 // closed). Time-window applies to the session's LastSeen.
 //
-// Identity rejection is loud (`search.ErrIdentityRequired`). Cross-
-// tenant gating runs at construction-time-supplied AdminScope.
+// Identity rejection is loud (`search.ErrIdentityRequired`). The tenant,
+// user and session axes are all gated on the construction-time-supplied
+// AdminScope predicate: an elided tenant or user folds to the caller's
+// own rather than fanning across the deployment, and a widening takes
+// the admin-tier claim.
 func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.SearchResponse, error) {
 	callerID, ok := identity.From(ctx)
 	if !ok {
@@ -59,11 +62,29 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 	if err := search.ValidateRequest(callerID, req); err != nil {
 		return types.SearchResponse{}, err
 	}
-	if search.CrossTenantRequested(callerID.TenantID, req) && !s.deps.AdminScope(ctx) {
-		return types.SearchResponse{}, search.ErrCrossTenantRequiresAdmin
+	// The identity-axis gate, read once for all three axes.
+	elevated := s.deps.AdminScope(ctx)
+	if !elevated {
+		if search.CrossTenantRequested(callerID.TenantID, req) {
+			return types.SearchResponse{}, search.ErrCrossTenantRequiresAdmin
+		}
+		if search.CrossUserRequested(callerID.UserID, req) {
+			return types.SearchResponse{}, search.ErrCrossUserRequiresAdmin
+		}
+		if search.CrossSessionFanInRequested(req) {
+			return types.SearchResponse{}, search.ErrCrossSessionRequiresAdmin
+		}
 	}
 
 	tenants := search.EffectiveTenantSet(callerID.TenantID, req)
+	// The user axis FOLDS for an unwidened caller and fans for a widened
+	// one. An empty set reaches the lister as its documented
+	// every-user wildcard, which is the right answer only under the
+	// admin-tier claim WidenedUserSet is gated behind.
+	users := search.EffectiveUserSet(callerID.UserID, req)
+	if elevated {
+		users = search.WidenedUserSet(req)
+	}
 
 	// Build the lister filter. The lister is identity-blind beyond the
 	// tenant/user/session inclusion filter; we apply the time window
@@ -76,7 +97,7 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 	}
 	snapshots, err := s.lister.ListSnapshots(ctx, sessionsubsys.SessionListFilter{
 		TenantIDs:     tenants,
-		UserIDs:       req.Filter.UserIDs,
+		UserIDs:       users,
 		SessionIDs:    req.Filter.SessionIDs,
 		SinceLastSeen: req.Filter.Since,
 		UntilLastSeen: req.Filter.Until,
