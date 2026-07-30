@@ -163,6 +163,38 @@ type AgentConfigMCPConnectionDescriptor struct {
 	// network hole (a granted origin is still refused at dial if it resolves
 	// private / loopback). Set only for the http transport.
 	OAuthDiscoveryAllowedOrigins []string `json:"oauth_discovery_allowed_origins,omitempty"`
+	// ArtifactByteEligible declares that this connection MAY receive
+	// artifact BYTES through egress substitution — the runtime resolving
+	// an artifact id the model authored and placing the resolved bytes
+	// into the outbound tool-call body, so a large document reaches the
+	// remote tool without transiting the model's context. NON-SECRET (a
+	// boolean declaration).
+	//
+	// It is the containment boundary for the feature: with it unset, an
+	// `artifact_params` mapping is REFUSED at this door and nothing is
+	// persisted. It widens the RECIPIENT, never the reachable artifact
+	// SET — resolution runs through the same run-scoped resolver, so a
+	// call reaches the dispatching run's own (tenant, user, session) and
+	// nothing wider.
+	//
+	// It carries NO fail-closed boot opt-in, unlike the inline `oauth`
+	// and `injection` descriptors above, because those govern where a
+	// CREDENTIAL is sent (a boot-declared-only plane) and this governs
+	// where a user's own CONTENT is sent — inside the co-tenant-admin
+	// trust boundary a shared runtime already accepts, whose stated
+	// remedy is one runtime per tenant. Every substitution is recorded
+	// fail-closed as `mcp.artifact_egressed` (ids, sizes, a digest; never
+	// the bytes) before the wire request is issued. Set only for the http
+	// transport.
+	ArtifactByteEligible bool `json:"artifact_byte_eligible,omitempty"`
+	// ArtifactParams maps this server's TOOL names to the parameter names
+	// on those tools which carry artifact bytes. NON-SECRET (names only).
+	// Requires ArtifactByteEligible on the same connection. Each mapped
+	// parameter is validated at attach against the server's OWN discovered
+	// inputSchema — declared, and declared string-typed — so Harbor never
+	// asserts an argument shape the server did not publish. Refused on the
+	// stdio transport. Set only for the http transport.
+	ArtifactParams map[string][]string `json:"artifact_params,omitempty"`
 }
 
 // AgentConfigMCPCredentialInjectionDescriptor is the wire projection of one

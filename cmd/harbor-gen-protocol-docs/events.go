@@ -244,6 +244,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	mcptool.EventTypeMCPResourceUpdated:               {Payloads: []reflect.Type{reflect.TypeOf(mcptool.ResourceUpdatedPayload{})}},
 	mcptool.EventTypeMCPResourceOffloaded:             {Payloads: []reflect.Type{reflect.TypeOf(mcptool.ResourceOffloadedPayload{})}},
 	mcptool.EventTypeMCPAppAvailable:                  {Payloads: []reflect.Type{reflect.TypeOf(mcptool.AppAvailablePayload{})}},
+	mcptool.EventTypeMCPArtifactEgressed:              {Payloads: []reflect.Type{reflect.TypeOf(mcptool.ArtifactEgressedPayload{})}},
 }
 
 // safePayloadIface / eventPayloadIface back the mechanical Safe-vs-

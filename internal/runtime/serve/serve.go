@@ -505,6 +505,10 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		attacher := NewMCPConnectionAttacher(toolCat, mcpRegistry, bus, opts.Logger,
 			resolveMCPAttachIdentity(opts.MCPDefaultIdentity), oauthProviders, stack.OAuthProviderSet,
 			mcpToolCtxCapturer,
+			// The runtime-add path carries the SAME egress ceiling the boot
+			// attach path does, so a server attached over the control plane is
+			// bounded identically to one declared in YAML.
+			WithArtifactEgressMaxBytes(cfg.Tools.ResolvedMCPArtifactEgressMaxBytes()),
 			WithReattachGates(MCPAddStdioAllowlist(cfg),
 				cfg.Tools.AllowWireInjection || toolauth.AllowWireInjectionCaptured()))
 		closers = append(closers, attacher.Close)

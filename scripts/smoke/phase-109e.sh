@@ -34,7 +34,15 @@ LIVE_TEST="internal/tools/drivers/mcp/mcp_live_test.go"
 # ----------------------------------------------------------------------------
 assert_grep_present 'toolApp := parseAppRef\(t\.Meta\)' "${MCP_DRIVER}" \
     "phase-109e: buildToolDescriptor captures the tool-definition _meta.ui binding"
-assert_grep_present 'args json\.RawMessage, toolApp \*AppRef\)' "${MCP_DRIVER}" \
+# Anchored to callTool's OWN declaration and to the binding parameter, but
+# NOT to the parameter list's closing paren: pinning the full signature made
+# this guard fail the moment a later phase added an unrelated parameter
+# (the egress-substitution plan), which is a false alarm about a binding that
+# never moved. The intent — callTool RECEIVES the tool-definition binding —
+# is what must stay pinned, so the pattern still FAILS if `toolApp *AppRef`
+# is dropped or renamed, and it is deliberately narrower than a bare
+# `toolApp` match that a local variable elsewhere in the file could satisfy.
+assert_grep_present 'func \(p \*Provider\) callTool\(.*toolApp \*AppRef' "${MCP_DRIVER}" \
     "phase-109e: callTool takes the tool-definition binding"
 assert_grep_present 'value\.AppRef = reconcileAppRef\(toolApp, value\.AppRef, uiDisplayModeHint\(res\.Meta\)\)' "${MCP_DRIVER}" \
     "phase-109e: callTool reconciles the binding with the per-result hint before emit"

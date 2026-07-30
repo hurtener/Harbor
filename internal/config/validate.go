@@ -1420,6 +1420,41 @@ func (c *Config) validateTools() error {
 				return err
 			}
 		}
+		// Egress substitution: the byte-eligibility declaration and the
+		// per-tool artifact-parameter mapping. The rules are the SAME ones
+		// the runtime-add door enforces, checked one stage earlier so an
+		// operator learns at `harbor validate` rather than at boot.
+		//
+		// An `auto` transport carrying only a command auto-selects stdio at
+		// connect, so it is treated as stdio here — otherwise an operator
+		// would believe egress was on while the connection silently never
+		// carried it, which is the degradation shape this refuses.
+		stdioOrNoURL := mode == "stdio" || s.URL == ""
+		if err := ValidateMCPArtifactParams(s.ArtifactParams); err != nil {
+			return fieldError(prefix+".artifact_params", err.Error())
+		}
+		if len(s.ArtifactParams) > 0 && !s.ArtifactByteEligible {
+			return fieldError(prefix+".artifact_params",
+				"artifact_params requires artifact_byte_eligible: true on the same connection — a mapping on a connection an operator has not declared byte-eligible is refused rather than silently ignored, because the eligibility flag IS the containment boundary for egress substitution")
+		}
+		if stdioOrNoURL && s.ArtifactByteEligible {
+			return fieldError(prefix+".artifact_byte_eligible",
+				"must not be set on a connection without an http(s) url (stdio — explicit, or auto-selected from a command-only config): base64-encoded artifact bytes belong in an HTTP body, not a stdio frame, and declaring eligibility a connection can never exercise advertises a capability nothing services")
+		}
+		if stdioOrNoURL && len(s.ArtifactParams) > 0 {
+			return fieldError(prefix+".artifact_params",
+				"must not be set on a connection without an http(s) url (stdio — explicit, or auto-selected from a command-only config)")
+		}
+	}
+	// The egress ceiling. Positive-or-unset: zero resolves to the
+	// documented default through ResolvedMCPArtifactEgressMaxBytes, and a
+	// NEGATIVE value is an operator mistake rather than a synonym for
+	// "unbounded" — refused loud so a deployment never silently runs with
+	// no ceiling on outbound content.
+	if c.Tools.MCPArtifactEgressMaxBytes < 0 {
+		return fieldError("tools.mcp_artifact_egress_max_bytes",
+			fmt.Sprintf("must be > 0 when set (got %d); omit the key to take the %d-byte default",
+				c.Tools.MCPArtifactEgressMaxBytes, DefaultMCPArtifactEgressMaxBytes))
 	}
 	// MCP App host capability. Optional; nil resolves to the inline-only
 	// baseline. When set, each declared display mode must be in the closed
@@ -2603,6 +2638,49 @@ func ReservedMCPMetaPathToken(k string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// ValidateMCPArtifactParams validates the SHAPE of an egress-substitution
+// artifact-parameter mapping: every tool name non-empty, every tool
+// mapping at least one parameter, every parameter name non-empty, and no
+// parameter named twice for one tool.
+//
+// It returns a bare, field-agnostic error every door wraps with its own
+// sentinel + field prefix, exactly as [ValidateMCPMetaAnnotationKey]
+// does — so the RULE has one implementation and the boot validator, the
+// two Protocol persistence doors and the driver's attach differ only in
+// how they report it.
+//
+// It validates SHAPE only. Two further rules are the caller's, because
+// each needs state this function does not have: the eligibility and
+// transport rules (the caller knows the connection), and the check that
+// each mapped parameter is declared string-typed in the server's own
+// DISCOVERED input schema (only the driver has seen the schema).
+//
+// A nil / empty mapping is valid — it is the carry-forward case, and a
+// connection with no mapping takes an outbound path byte-identical to a
+// build without the feature.
+func ValidateMCPArtifactParams(params MCPArtifactParams) error {
+	for tool, names := range params {
+		if strings.TrimSpace(tool) == "" {
+			return errors.New("tool name must not be empty")
+		}
+		if len(names) == 0 {
+			return fmt.Errorf("tool %q maps no parameter names (remove the entry rather than declaring an empty one)", tool)
+		}
+		seen := make(map[string]struct{}, len(names))
+		for _, name := range names {
+			trimmed := strings.TrimSpace(name)
+			if trimmed == "" {
+				return fmt.Errorf("tool %q maps an empty parameter name", tool)
+			}
+			if _, dup := seen[trimmed]; dup {
+				return fmt.Errorf("tool %q maps parameter %q twice (must be unique)", tool, trimmed)
+			}
+			seen[trimmed] = struct{}{}
+		}
+	}
+	return nil
 }
 
 // ValidateMCPMetaAnnotationKey validates ONE `meta_annotations` key as a

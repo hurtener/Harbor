@@ -10393,6 +10393,125 @@ No wire type, no Protocol method, no Console file changes — `MetaAnnotations` 
 
 ---
 
+## D-359 — Egress substitution: the MCP arm of pass-by-reference routing resolves the artifact ITSELF and places the bytes in the outbound body, on a wire-configurable eligibility flag paid for by a fail-closed substitution record
+
+**Date:** 2026-07-29
+
+**Status:** Accepted (v1.24). Ships the MCP half of the arm D-347 part 5 deferred, and ANSWERS D-347 part 6 consequence 3 for this shape only. Extends D-354 (the in-process arm whose seated resolver, substitution invariant and scan shape this reuses), D-352 (the reconciled read key resolution uses), D-357 (the classified reference-resolution observation this failure path inherits). Operates inside — and does not move — the trust boundary D-301 accepted. Deliberately does NOT take the D-338 / D-340 / D-346 fail-closed boot-gate shape, and part 4 below is why.
+
+**Context.** D-347 part 5 deferred "an HTTP / MCP / A2A tool that must be handed something it can DEREFERENCE" on three named blockers: the address, the grant's semantics, and the credential obligation. This phase delivers a different shape, and the difference is what makes the blockers not apply: **the runtime resolves the reference itself and places the BYTES into the outbound MCP tool call.** No address is published, no grant is minted, no reusable handle exists.
+
+- **Address** — nothing dials in. The runtime dials out, as it already does for every MCP call, on a connection the operator configured. `internal/config` still has no `public_url` / `external_url`, and this phase adds none.
+- **Grant semantics** — there is no grant. One tool call carries one bounded byte slice in its body; there is no reusable artefact whose retry, redirect, HEAD-then-GET or partial-transfer behaviour needs defining.
+- **Credential obligation** — no bearer capability is minted. The obligation becomes "the outbound body must not be persisted unredacted", which §7 rule 7 and §13 already impose and which this phase discharges by NEVER rewriting the raw argument JSON.
+
+**D-347's deferral stands unchanged for the URL-minting design it actually describes.** Answering part 6 consequence 3 for THIS shape does not answer it for that one.
+
+---
+
+**Decision.** Six parts.
+
+**1. The wire encoding is NORMATIVE, and it was measured rather than preferred.**
+
+> The substituted value is a Go `[]byte`, carried by `artifactegress.Payload`, written into the DECODED `map[string]any` at the mapped key and emitted on the wire as RFC 4648 §4 standard base64 with padding. It is never a Go `string`, and never an MCP typed content block.
+
+Three grepped facts settle it, not taste:
+
+- **There is no argument-side content block; the alternative does not exist.** `CallToolParams.Arguments` is `any` (go-sdk v1.6.1 `mcp/protocol.go:48`) — an arbitrary JSON value validated against the server's own `inputSchema`. The `Content` union (`text` / `image` / `audio` / `resource`) appears on exactly three types, all of them results or sampling messages: `CallToolResult` (`protocol.go:82`), `SamplingMessageV2` (`:492`) and `CreateMessageWithToolsResult` (`:579`). MCP has no typed blob block for tool ARGUMENTS.
+- **A Go `string` in the decoded map corrupts binary — measured.** `encoding/json` rewrites every invalid-UTF-8 byte in a Go string to `U+FFFD`. Against a ten-byte fixture `25 50 44 46 FF FE 00 80 C3 28`: `string(raw)` round-trips as 18 bytes with three `ef bf bd` triples (NOT equal), while `[]byte(raw)` round-trips as `"JVBERv/+AIDDKA=="` → 10 bytes, exact. A first draft's `map[string][]string` mapping onto Go strings would have made its own byte-exactness criterion unsatisfiable under its own spec — the same defect D-357 exists to fix, reintroduced one layer out.
+- **The carrier's `MarshalJSON` is reachable on the real wire path**, so the value keeps a carrier all the way to the socket instead of decaying into a naked `[]byte`.
+
+**§17.8 pinning, and why SDK types CANNOT pin it.** An SDK-derived fixture is SELF-CONSISTENT AT EITHER PLACEMENT, which is the D-216 failure shape exactly. `jsonschema-go`'s `forType` has no `[]byte` special case (`jsonschema/infer.go:219-240` — `reflect.Slice` falls through to `{"type":["null","array"], "items": {integer}}`), while `encoding/json` marshals the same field as a base64 STRING. A fixture server declaring `Data []byte` therefore ADVERTISES an array-typed parameter and ACCEPTS a base64 string, and its own tests pass either way. The gate is therefore three-part: a committed byte-level transcript of the arguments object a real `mcpsdk` server received; an env-gated `HARBOR_LIVE_MCP` probe against a real stdio MCP server binary; and a schema-derived attach check (part 3).
+
+**2. The substitution mutates ONLY the decoded argument map. There are SEVEN sinks, not five.**
+
+The raw `args json.RawMessage` is never rewritten. The in-process arm established the rule for five sinks; the MCP arm adds two the in-process arm never touched:
+
+| # | Sink |
+|---|---|
+| 1 | raw observation (`trajectory.Step.Observation`) |
+| 2 | LLM observation (`trajectory.Step.LLMObservation`) |
+| 3 | serialised trajectory |
+| 4 | canonical event payloads AND envelopes |
+| 5 | audit payloads and log records |
+| 6 | the per-invocation content hash — `ToolCallID(runID, source, name, args)` |
+| 7 | the DURABLE MCP-App tool context — `captureToolContext` → `Input: args` → a `state.StateRecord`, offloading to the ArtifactStore above the inline bound, replayed into a browser by `mcp.apps.tool_context` |
+
+**Sink 7 is the worst of the seven and a first draft missed it entirely:** it is durable, Protocol-readable, session-scoped rather than run-scoped, and it can mint a SECOND artifact containing the substituted bytes. Mutation-verified: rewriting the raw args makes the integration suite report both the tool-context record AND a newly-minted `mcp-apps_*` artifact carrying the planted marker.
+
+**3. The mapping is OPERATOR-declared and VALIDATED against the server's own `inputSchema`.**
+
+A server-declared "this parameter is an artifact reference" annotation was considered and **REJECTED**, recorded here so a future author does not re-derive it: a remote server must not drive host-side privileged behaviour, and deciding when the runtime reads its own store is exactly that.
+
+Conversely, Harbor declaring "this parameter takes artifact bytes" against a server whose `inputSchema` never declared such a parameter is the same shape as advertising an unserviced capability — a soft protocol violation read onto ARGUMENTS rather than capabilities. So each mapped parameter must be DECLARED by the server and declared STRING-typed; absent or non-string fails the ATTACH loudly, not the next call silently.
+
+**The bound is stated so it is not rediscovered as a defect:** this is a POINT-IN-TIME contract checked at attach. A server that mutates its schema without a `tools/list_changed` notification (Harbor wires no `ToolListChangedHandler` today) can drift out from under a validated mapping; the drift then surfaces as a server-side argument-validation error on the wire — a loud failure, never a silent wrong-shape send. Closing it properly is the tool-list-changed work's job.
+
+**4. Byte-eligibility is WIRE-CONFIGURABLE. The boot-gate pattern is deliberately NOT taken, and the trust boundary is stated rather than claimed away.**
+
+Its sibling wire-writable relaxations (`tools.allow_wire_oauth_descriptor`, `tools.allow_wire_injection`) each sit behind a fail-closed, boot-only, default-off opt-in. This one does not, because those gates exist for D-300's invariant — *"NO ADMIN-WRITABLE FIELD MAY DETERMINE WHERE A CREDENTIAL IS SENT"* — and this field determines where a USER'S OWN CONTENT is sent. Different plane. A boot gate would also break the use case the feature exists for: an MCP server attached over the Protocol must be usable without a redeploy.
+
+**What is claimed, scoped:**
+
+- The reachable artifact SET is unchanged — the dispatching run's own `(tenant, user, session)`, enforced by the SAME seated resolver the in-process arm uses, which answers not-found for anything else. Only the RECIPIENT widens.
+
+**What is NOT claimed, stated plainly:**
+
+- Every non-safe-subset `agent_config.*` route gates on an admin scope, so a tenant admin can attach a server they control, map a parameter, declare the connection byte-eligible, and receive a user's artifact bytes on the next run that names an id. **A first draft claimed this "grants no reach the connection did not already have"; that measured reach at the RUN, and it is false measured at the ADMIN who writes the field.**
+- **D-301 already accepted this boundary**: *"a shared runtime therefore TRUSTS its co-tenant admins,"* with the stated remedy that a deployment needing hard isolation runs ONE RUNTIME PER TENANT. This entry does not move that boundary and does not invent a new one.
+- **A byte-eligible connection can move a secret.** D-347 part 6 settles that artifact bytes are stored AS AUTHORED — unredacted — so an artifact may itself contain a credential. Stated rather than softened to "the field carries no secret", which is true of the FIELD and irrelevant to the FLOW.
+
+**5. The compensating control is mandatory, and it is what makes part 4 acceptable.**
+
+Every substitution emits a canonical `mcp.artifact_egressed` event carrying the identity quadruple, the server id, the tool name, and one content-free record per substituted parameter (artifact id, parameter name, byte count, `sha256:` digest) — **never the bytes**. It rides the driver's existing bus, so it flows through the audit redactor by the same path every other tool event does, and it is stamped on `MCPToolValue` as an EXPORTED field so it also reaches the trajectory and the LLM observation. (Contrast `AppRef json:"-"`, deliberately EXCLUDED from the observation. This one is deliberately INCLUDED: the model authored the id, and telling it "the id you named was delivered, N bytes" is honest, content-free and replayable.)
+
+**It is FAIL-CLOSED, not best-effort** — unlike the `publishAppAvailable` emit beside it. A publish failure, a missing bus or a missing identity ABORTS the call before any wire request is issued: the emit-then-act ordering D-300 item 4 established. **A substitution that could not be recorded does not happen.** The reason is the whole justification: the single real difference between egress substitution and an admin instructing a model to paste content into a tool argument is that pasting leaves a trajectory trail, and MiB-scale dispatch-local substitution would leave none.
+
+**6. The §13 parallel-implementation clause is discharged, not stepped around.**
+
+D-347's grant-semantics blocker carries a sentence a first draft skipped: *"shipping one feature whose two mechanisms carry different security properties is the §13 parallel-implementation shape."* The answer is that the two arms carry the SAME properties on every axis the clause is about:
+
+| Property | In-process arm (D-354) | MCP arm (this entry) |
+|---|---|---|
+| Reachable artifact set | the dispatching run's triple | the SAME seated resolver, the same triple |
+| Value lifetime | one invocation attempt | one request body |
+| Dereferenceable later? | no — a Go value | no — inline bytes, no address, no handle |
+| Reaches trajectory / observation / events / audit / logs? | no | no |
+| Failure posture | loud, typed | loud, typed |
+
+That is ONE mechanism with two transports — and it is exactly why D-347 named the URL-MINTING shape as the risk: a grant's lifetime, dereferenceability and credential properties genuinely differ from an in-process bind. The one axis that differs here is the ceiling (a MiB-scale network budget), and it differs because the bounded resource differs. **A memory budget is not a security property.**
+
+Two further obligations are discharged rather than assumed:
+
+- **No second definition of reach.** The MCP-App callback path (`internal/mcpconsole/apps.go` — `desc.Invoke(ctx, args)`) invokes the SAME catalog descriptor from a browser-driven `mcp.apps.call_tool` request. There is no run, so `dispatch.ExecuteDecision` never ran and no resolver is seated; a mapped tool invoked there hits `artifactref.ErrNoResolver` and **fails LOUD**. Both alternatives are rejected on the record: *seating a second resolver* would have to close over the browser request's triple rather than a run's quadruple, producing a SECOND definition of what this feature can reach for ONE feature; *degrading* — sending the raw id string through — would hand the server `"art-abc123"` where it expects a document, which either fails in the server's own vocabulary or succeeds on garbage. The consequence is stated as a known partial in the glossary and the operator skills: an MCP App's tool callback cannot use a byte-mapped parameter.
+- **No second substitution primitive.** `artifactref.Substitute` walks a Go TYPE tree and structurally has nothing to bind to here — a remote tool's `inputSchema` is authored by the server and its arguments arrive as an untyped map. Two functions for two structurally different inputs is not two implementations of one thing.
+
+---
+
+**The fence — what it bounds, honestly.** The shipped `ScanSubstitutionSites` bounds where a function is CALLED, not where its output TRAVELS, and it resolves the package by IMPORT PATH, returning early for a file that does not import it — so a file INSIDE the scanned package is invisible to its own scan. Extending its allow-list would also have covered nothing, since the MCP arm cannot call `Substitute`. The invariant is therefore held by the same three mechanisms re-derived for a value that is not a `Ref`:
+
+1. **A production bound.** The encoder lives in its OWN package `internal/tools/artifactegress`, and `artifactref` gains `ScanEgressSites` keyed on that package's import-path STRING (no import, so no cycle and no same-package blind spot). The residual blind spot — a second call from inside `artifactegress` itself — is bounded by a test asserting the package's non-test file set, so "the package is short enough to read" is CHECKED rather than asserted.
+2. **A projection bound on the carrier.** `Payload` keeps the bytes unexported: `MarshalJSON` emits the base64 (the one door that must carry content), while `String` and `LogValue` emit `artifact <id> (<n> bytes)`. A `Payload` reaching `fmt` or `slog` emits a reference BY CONSTRUCTION.
+3. **An arrival check.** The integration suite walks all seven sinks with per-arm vacuity guards.
+
+**Resolve-once, and the retry amplification it avoids.** `callTool` runs inside `tools.RunWithPolicy`, whose shell runs `MaxRetries + 1` attempts (four at the package default). Resolution and the record happen in the Invoke closure BEFORE the shell, so the transient footprint is `ceiling x in-flight` rather than `ceiling x attempts x in-flight` — at 8 MiB x 4 x 128 the difference is 4 GiB versus 1 GiB. It is also correct on the merits: an unresolvable id is a model mistake, not a transient fault, so retrying it burns the budget without changing the answer.
+
+**The ceiling is operator config and NOT derived from the heavy-output threshold.** `tools.mcp_artifact_egress_max_bytes` (default 8 MiB) is validated in `Validate`; a negative value is refused rather than read as "unbounded". Substituted bytes never enter a model's context, so the budget is a NETWORK and MEMORY budget, not a token budget — the independent-ceiling precedent the artifact fetch bounds already set. An oversize value FAILS LOUD naming the artifact, its size and the ceiling; it is deliberately NOT truncated, because a partial document delivered to a remote ingester is a corruption rather than a bounded read, so D-347 part 4's truthful-truncation posture does not apply here.
+
+**Findings I'm departing from.** D-347 part 5's deferral, for this shape only (parts 1 and 6 above); D-347 part 6 consequence 3's declining to answer the third-party question, answered here for this shape only (part 4); and the D-338 / D-340 / D-346 boot-gate pattern, not taken (part 4).
+
+**Protocol additions.** One canonical event (`mcp.artifact_egressed`) and two additive optional fields on `AgentConfigMCPConnectionDescriptor` (`artifact_byte_eligible`, `artifact_params`). No method, no error code. `ProtocolVersion` does not move. `make protocol-ts-gen` and `make protocol-docs-gen` regenerated; the Console typed client mirrors the two fields by hand.
+
+**Consequence.** `internal/tools/artifactegress` is new (`Payload`, `Mapping`, `CompileMapping`, `Encode`, `Record`, and the typed refusals). `internal/tools/artifactref/scan.go` gains `ScanEgressSites` + `EgressPkgPath`, with one shared walker serving both scans. `internal/tools/drivers/mcp` gains `egress.go` (the one call site, the fail-closed record), the event type + payload, the `MCPToolValue.ArtifactEgress` field, the attach-time eligibility/transport rules and the `Discover`-time schema check. `internal/config` gains `MCPArtifactParams`, the two `MCPServerConfig` fields, `ValidateMCPArtifactParams` (the ONE shape authority every door calls), the ceiling and its `Validate` arm. `internal/agentcfg`, `internal/protocol/types`, both agent-config persistence doors and `internal/runtime/serve` carry the declaration end to end.
+
+**A latent wiring gap was found and fixed in the same change (§17.6):** `agentcfg.normalizeConnections` — the revision canonicaliser — hand-lists the descriptor fields it copies, so the new declaration was silently DROPPED between the door that accepted it and the spine that stored it. It read back non-eligible. Caught by the round-trip test, not by inspection.
+
+**Mutation-verified**, each against the real tree: adding a SECOND `Encode` call site in `internal/runtime/dispatch` fails `ScanEgressSites` naming the file and line; removing the ONE real call site fails it as a stale registration (so the live allow-list is non-vacuous in both directions); rewriting the raw args in `callTool` fails the integration suite's sink-6 hash arm, and rewriting only the tool-context input fails sink 7 on BOTH the durable record and a newly-minted offload artifact; renaming `Payload.LogValue` turns the smoke's projection guard from `OK` into `FAIL` (never a SKIP); and corrupting the committed transcript fails both the smoke's byte guard and the golden test.
+
+**Cross-references.** D-347 (the design gate whose part-5 deferral this departs from and whose part-6 consequence 3 it answers for one shape), D-354 (the in-process arm), D-352 (the reconciled read key), D-357 (the classified resolution observation), D-301 (the accepted co-tenant-admin trust boundary), D-300 (the credential-plane invariant this does NOT relax, and the emit-then-act ordering it establishes), D-338 / D-340 / D-346 (the boot-gate shape deliberately not taken), D-216 (the placement bug whose failure shape the §17.8 pin defends against), D-025 (concurrent reuse), D-209 / D-223 (the regenerated docs and manifest). CLAUDE.md §4.4, §5, §6, §7, §9, §11, §13, §14, §16, §17.1, §17.3, §17.8, §18. RFC §6.4, §6.5, §6.10, §7. Briefs 03, 05, 14. Plan: `docs/plans/phase-214-mcp-pass-by-reference-egress.md`.
+
+---
+
 ## D-361 — Run-start connection re-establishment: the attach leg D-287 deferred now ships as the symmetric twin of the detach, re-applying every gate against CURRENT boot policy, with the credential plane untouched by construction
 
 **Date:** 2026-07-29

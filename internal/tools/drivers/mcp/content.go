@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/hurtener/Harbor/internal/tools/artifactegress"
 )
 
 // MCP content types (mcpsdk.Content) lower into one of these Harbor-
@@ -79,6 +81,21 @@ type MCPToolValue struct {
 	// it is a host-side projection consumed by the app-tool-call proxy and
 	// the discovery event, not planner context.
 	AppRef *AppRef `json:"-"`
+	// ArtifactEgress records the artifact values the runtime resolved
+	// into THIS call's outbound arguments — one content-free entry per
+	// substituted parameter (artifact id, parameter name, byte count,
+	// `sha256:` digest). Nil for a tool that maps no artifact parameters.
+	//
+	// Unlike AppRef above, it is deliberately INCLUDED in the JSON wire
+	// form and therefore reaches the observation and the trajectory. The
+	// contrast is the design: AppRef is a host-side projection the model
+	// has no business reading, whereas the model AUTHORED the artifact
+	// id, and telling it "the id you named was delivered, N bytes" is
+	// honest, content-free and replayable. Without it a model could not
+	// distinguish a delivered document from an ignored parameter.
+	//
+	// It carries no bytes, so it is safe everywhere the observation goes.
+	ArtifactEgress []artifactegress.Record `json:"artifact_egress,omitempty"`
 }
 
 // AppRef is the host-side reference to an MCP App — the interactive
@@ -239,7 +256,31 @@ func reconcileAppRef(toolBinding, resultHint *AppRef, resultMode string) *AppRef
 // projection). When Parts are non-empty, the wrapper carries the
 // non-text shape verbatim — there is no clean unwrap for mixed-
 // content responses, so the default struct render applies.
+// When this call carried an egress substitution, the collapsed body is
+// WRAPPED alongside the content-free substitution record, so the model
+// that authored the artifact id is told the id was delivered and how
+// many bytes it was. Without the wrapper the collapse below would drop
+// the record for the commonest (text-only) result shape, and the model
+// could not distinguish a delivered document from an ignored parameter.
+// A call with NO substitution is unaffected — its rendering is
+// byte-identical to what it was before egress existed.
 func (v MCPToolValue) MarshalJSON() ([]byte, error) {
+	if len(v.ArtifactEgress) > 0 {
+		body, err := v.marshalResultBody()
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(struct {
+			Result         json.RawMessage         `json:"result"`
+			ArtifactEgress []artifactegress.Record `json:"artifact_egress"`
+		}{Result: body, ArtifactEgress: v.ArtifactEgress})
+	}
+	return v.marshalResultBody()
+}
+
+// marshalResultBody renders the tool RESULT itself, with the
+// LLM-edge-friendly collapses described on [MCPToolValue.MarshalJSON].
+func (v MCPToolValue) marshalResultBody() ([]byte, error) {
 	hasParts := len(v.Parts) > 0
 	hasStructured := v.StructuredContent != nil
 

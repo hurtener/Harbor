@@ -150,6 +150,13 @@ type MCPConnectionAttacher struct {
 	// driver then stamps no tool-call id at all rather than promising a
 	// context that does not exist. Set once at construction.
 	toolContext mcpdrv.ToolContextCapturer
+	// artifactEgressMaxBytes bounds ONE substituted artifact value on one
+	// outbound call for connections this attacher wires — the deployment's
+	// `tools.mcp_artifact_egress_max_bytes`. Zero leaves the driver on
+	// config.DefaultMCPArtifactEgressMaxBytes, so an embedder that does
+	// not set it still gets a real ceiling rather than an unbounded one.
+	// Set once at construction.
+	artifactEgressMaxBytes int
 	// stdioAllowlist is the CURRENT boot stdio-command allowlist the run-start
 	// re-attach re-applies (the same fail-closed RCE gate the admin add door
 	// applies before it dials). Nil / empty refuses every stdio re-attach. Set
@@ -218,6 +225,23 @@ type reattachState struct {
 	suppressed int
 }
 
+// WithArtifactEgressMaxBytes sets the egress-substitution ceiling the
+// attacher carries into every connection it wires — the operator's
+// `tools.mcp_artifact_egress_max_bytes`, resolved through
+// config.ToolsConfig.ResolvedMCPArtifactEgressMaxBytes so the
+// documented default applies when the key is unset.
+//
+// A non-positive value is ignored rather than stored, so an
+// unconfigured or mis-wired caller lands on the driver's own default
+// ceiling instead of an unbounded one.
+func WithArtifactEgressMaxBytes(n int) MCPAttacherOption {
+	return func(a *MCPConnectionAttacher) {
+		if n > 0 {
+			a.artifactEgressMaxBytes = n
+		}
+	}
+}
+
 // Compile-time assertions that the production concrete satisfies BOTH seams the
 // agent-config service binds it to. The mux binds the applier through an
 // UNCHECKED type assertion (`in.MCPAttacher.(agentcfgprotocol.DiscoveryOriginApplier)`),
@@ -239,8 +263,9 @@ var (
 // server behaves like a boot-config one; nil is legitimate only where no store
 // exists (the driver then stamps no tool-call id).
 // opts thread the run-start re-attach leg's CURRENT boot policy (the stdio
-// allowlist, the credential-injection opt-in) and its test seams. Every option
-// defaults fail-closed, so an omitted option never widens a gate.
+// allowlist, the credential-injection opt-in), the egress-substitution ceiling,
+// and the test seams. Every option defaults fail-closed, so an omitted option
+// never widens a gate.
 func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider, oauthProviderSet toolauth.ProviderSet, toolContext mcpdrv.ToolContextCapturer, opts ...MCPAttacherOption) *MCPConnectionAttacher {
 	a := &MCPConnectionAttacher{
 		catalog:          catalog,
@@ -303,6 +328,16 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 		// credential per outbound call. NON-SECRET (a broker name + a target
 		// key/form); the pulled value is resolved per-call from the ctx identity.
 		Injection: injectionToConfig(req.Injection),
+		// Carry the egress-substitution declaration into the config the
+		// driver builds, so the boot path and the runtime-add path share ONE
+		// egress engine rather than growing a second. A field on the
+		// descriptor that nothing carries forward is inert — the wiring-gap
+		// shape the discovery allow-list already hit on this exact path.
+		// NON-SECRET (a boolean plus parameter names); mcpdrv.Attach
+		// re-enforces the eligibility and transport rules, and Discover
+		// checks each mapped parameter against the server's own schema.
+		ArtifactByteEligible: req.ArtifactByteEligible,
+		ArtifactParams:       config.MCPArtifactParams(cloneArtifactParams(req.ArtifactParams)),
 	}
 
 	// Serialise adds: the per-add closer slice is merged into the master
@@ -328,6 +363,10 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 		// empty shell.
 		ToolContext: a.toolContext,
 		Owner:       owner,
+		// The deployment's egress ceiling. Zero leaves mcpdrv.Attach on
+		// config.DefaultMCPArtifactEgressMaxBytes — a real ceiling, never an
+		// unbounded one.
+		ArtifactEgressMaxBytes: a.artifactEgressMaxBytes,
 	})
 	// Merge whatever closers Attach appended (a successful Connect appends the
 	// provider's Close even if a later step failed — drain it on teardown).
@@ -448,6 +487,21 @@ func injectionToConfig(d *agentcfg.MCPCredentialInjectionDescriptor) *config.MCP
 		BasicUsername: d.BasicUsername,
 		MetaKey:       d.MetaKey,
 	}
+}
+
+// cloneArtifactParams returns a defensive deep copy of an
+// egress-substitution artifact-parameter mapping (nil for nil / empty),
+// so the attach request and the config the driver reads never share a
+// backing map or slice.
+func cloneArtifactParams(in map[string][]string) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for tool, params := range in {
+		out[tool] = append([]string(nil), params...)
+	}
+	return out
 }
 
 // transportModeForAdd maps the control-plane transport onto the MCP driver's

@@ -213,6 +213,7 @@ export type HarborEventType =
   | "llm.provider_file.uploaded"
   | "llm.retry_with_feedback"
   | "mcp.app_available"
+  | "mcp.artifact_egressed"
   | "mcp.connection.added"
   | "mcp.connection.auth_required"
   | "mcp.connection.discovery_origins_set"
@@ -472,6 +473,8 @@ export interface AgentConfigMCPConnectionDescriptor {
   oauth?: AgentConfigOAuthProviderDescriptor;
   injection?: AgentConfigMCPCredentialInjectionDescriptor;
   oauth_discovery_allowed_origins?: string[];
+  artifact_byte_eligible?: boolean;
+  artifact_params?: Record<string, string[]>;
 }
 
 export interface AgentConfigMCPCredentialInjectionDescriptor {

@@ -896,6 +896,46 @@ tools:
   #     #   # basic_username: svc
   #     #   # form=meta → the pulled value → this dot-path _meta leaf
   #     #   # meta_key: vendor.api_key
+  #     # artifact_byte_eligible / artifact_params — EGRESS SUBSTITUTION: the
+  #     # runtime resolves an artifact id the model authored and places the
+  #     # resolved BYTES into the outbound tool-call body, so a large document
+  #     # reaches this server WITHOUT transiting the model's context. The
+  #     # substituted value is RFC 4648 §4 standard base64 (never a raw Go
+  #     # string — encoding/json would rewrite every invalid-UTF-8 byte to
+  #     # U+FFFD and corrupt any binary document).
+  #     #
+  #     # artifact_byte_eligible is the CONTAINMENT BOUNDARY: without it an
+  #     # artifact_params mapping is refused at the door and no call ever
+  #     # carries content. Both are http-only (refused on stdio, explicit or
+  #     # auto-selected from a command-only config).
+  #     #
+  #     # Each mapped parameter is validated at attach against THIS SERVER'S
+  #     # OWN discovered inputSchema — it must be declared, and declared
+  #     # string-typed — so Harbor never asserts an argument shape the server
+  #     # did not publish.
+  #     #
+  #     # What widens is the RECIPIENT, not the reachable artifact SET: a call
+  #     # reaches the dispatching run's own (tenant, user, session) and nothing
+  #     # wider. Stated plainly: both fields are admin-writable over the
+  #     # control plane, and artifact bytes are stored AS AUTHORED
+  #     # (unredacted), so a byte-eligible connection CAN move a secret. That
+  #     # sits inside the trust boundary a shared runtime already accepts — it
+  #     # trusts its co-tenant admins for runtime-added connections — and a
+  #     # deployment needing hard isolation runs ONE RUNTIME PER TENANT.
+  #     #
+  #     # The compensating control is mandatory: every substitution emits
+  #     # `mcp.artifact_egressed` FAIL-CLOSED before the wire request (ids,
+  #     # sizes, a sha256: digest — never the bytes). A substitution that
+  #     # could not be recorded does not happen. Ceiling:
+  #     # tools.mcp_artifact_egress_max_bytes below.
+  #     #
+  #     # Known limit: a byte-mapped parameter is NOT reachable from an MCP
+  #     # App's tool callback (a browser-driven invocation has no run, so no
+  #     # resolver is seated and the call fails loud).
+  #     # artifact_byte_eligible: true
+  #     # artifact_params:
+  #     #   ingest_document: [content]   # tool name -> parameter names
+  #     #   summarize: [document]
   #
   #   - name: filesystem
   #     transport_mode: stdio
@@ -920,6 +960,26 @@ tools:
   #
   # mcp_app_host:
   #   display_modes: [inline, fullscreen, pip]
+
+  # mcp_artifact_egress_max_bytes — the ceiling for ONE substituted artifact
+  # value on one outbound MCP tool call (see mcp_servers[].artifact_params
+  # above). A value above it is REFUSED LOUD, never truncated: a partial
+  # document delivered to a remote ingester is a corruption, not a bounded
+  # read, and a tool argument has nowhere to carry a truncation signal.
+  #
+  # Deliberately INDEPENDENT of the heavy-output threshold. Substituted bytes
+  # never enter a model's context, so this is a network and memory budget,
+  # not a token budget.
+  #
+  # Sizing: the transient footprint is `ceiling x in-flight mapped calls`. It
+  # is NOT multiplied by the retry budget — resolution happens once per
+  # dispatched call, not once per attempt. Base64 inflates the wire form by
+  # about a third (8 MiB of content is ~11 MB on the wire).
+  #
+  # Omit for the 8 MiB default; a negative value is refused at config load
+  # rather than read as "unbounded". Restart-required.
+  #
+  # mcp_artifact_egress_max_bytes: 4194304   # 4 MiB
 
 distributed:
   # MessageBus driver — Harbor's at-least-once cross-worker fan-out
