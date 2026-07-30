@@ -681,6 +681,11 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		stack.closeFns = append(stack.closeFns, spp.Close)
 	}
 
+	// The MCP-attach concrete is built inside the steering block below (the
+	// run-loop driver consumes it as its run-start ConnectionReattacher) but is
+	// also consumed by the mux builder further down, so it is declared here.
+	var attacher agentcfgprotocol.ConnectionAttacher
+
 	// Steering surface + run-loop driver. Skip-aware: the Mux phase
 	// below depends on the surface, so SkipSteering implies
 	// SkipTransports even if the caller did not set both flags.
@@ -705,11 +710,56 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// existing session materialises its registry row.
 		surfaceOpts = append(surfaceOpts,
 			protocol.WithSessionEnsurer(serve.NewSessionEnsurerAdapter(core.Sessions)))
+		// Caller-named-agent validation — mirrors production
+		// `internal/runtime/serve`. The SAME registry + boot agent id the
+		// kit's run-loop driver projects from, so the twin cannot drift
+		// from the binary on which agents a `start` may name. An assembly
+		// with no StateStore has no registry: the adapter then refuses
+		// every named agent, which is the fail-closed posture, never a
+		// silent accept.
+		surfaceOpts = append(surfaceOpts,
+			protocol.WithAgentResolver(serve.NewAgentResolverAdapter(stack.AgentConfig, stack.AgentConfigID)))
 		surface, surfaceErr := protocol.NewControlSurface(taskReg, core.Steering, surfaceOpts...)
 		if surfaceErr != nil {
 			return stack, fmt.Errorf("protocol.NewControlSurface: %w", surfaceErr)
 		}
 		stack.Surface = surface
+
+		// The MCP-attach concrete backing agent_config.add_mcp_connection AND the
+		// run-start ATTACH pass — the promoted concrete (the kit's mirror is
+		// deleted). Its Close joins the closer chain so a runtime-added subprocess
+		// drains on teardown.
+		//
+		// It is constructed HERE, before the run-loop driver below, because the
+		// driver takes it as its ConnectionReattacher: one attach implementation
+		// serves both the admin add verb and the run-start re-establishment, so a
+		// kit-side integration test exercises the same real leg production runs
+		// (CLAUDE.md §17.6 — a kit that wired only the detacher would let the
+		// restart-survival test pass against a stack that cannot re-attach). The
+		// two variables are declared in the outer scope because the mux builder
+		// below also consumes the attacher.
+		var devReattacher projection.ConnectionReattacher
+		if stack.Catalog != nil && stack.MCPRegistry != nil {
+			// Thread the tool-context store so a RUNTIME-ADDED server captures
+			// an app-declaring tool call's context exactly as a boot-config one
+			// does — the kit must mirror production here, or an integration test
+			// would pass against a stack that silently cannot capture. The
+			// explicit nil check avoids handing a typed-nil pointer to the
+			// interface (which would read as "a capturer is wired").
+			var mcpToolCtx mcpdrv.ToolContextCapturer
+			if stack.MCPToolContext != nil {
+				mcpToolCtx = stack.MCPToolContext
+			}
+			att := serve.NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, bus, opts.Logger,
+				resolveDevIdentity(opts), stack.OAuthProviders, stack.OAuthProviderSet, mcpToolCtx,
+				// The same CURRENT-boot-policy gates production threads: the
+				// fail-closed stdio allowlist and the credential-injection opt-in,
+				// re-applied at every run-start re-attach.
+				serve.WithReattachGates(append([]string(nil), opts.MCPStdioAllowlist...), cfg.Tools.AllowWireInjection))
+			stack.closeFns = append(stack.closeFns, att.Close)
+			attacher = att
+			devReattacher = att
+		}
 
 		// D-097 — the per-task run-loop driver mirror (the production
 		// driver is cmd-private; the kit carries its own per D-094 —
@@ -781,6 +831,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				SessionOverlay:          stack.SessionOverlay,
 				RunCompletionHook:       projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 				ConnectionDetacher:      devDetacher,
+				ConnectionReattacher:    devReattacher,
 				BootDeclaredMCP:         serve.BootDeclaredMCPServerSet(cfg),
 				OAuthProviderReconciler: devProviderReconciler,
 				NamingDefault:           cfg.Runtime.Naming,
@@ -885,26 +936,6 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			lg = slog.Default()
 		}
 
-		// The MCP-attach concrete backing agent_config.add_mcp_connection —
-		// the promoted concrete (the kit's mirror is deleted). Its Close joins
-		// the closer chain so a runtime-added subprocess drains on teardown.
-		var attacher agentcfgprotocol.ConnectionAttacher
-		if stack.Catalog != nil && stack.MCPRegistry != nil {
-			// Thread the tool-context store so a RUNTIME-ADDED server captures
-			// an app-declaring tool call's context exactly as a boot-config one
-			// does — the kit must mirror production here, or an integration test
-			// would pass against a stack that silently cannot capture. The
-			// explicit nil check avoids handing a typed-nil pointer to the
-			// interface (which would read as "a capturer is wired").
-			var mcpToolCtx mcpdrv.ToolContextCapturer
-			if stack.MCPToolContext != nil {
-				mcpToolCtx = stack.MCPToolContext
-			}
-			att := serve.NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, bus, opts.Logger,
-				resolveDevIdentity(opts), stack.OAuthProviders, stack.OAuthProviderSet, mcpToolCtx)
-			stack.closeFns = append(stack.closeFns, att.Close)
-			attacher = att
-		}
 		// The Protocol-installed OAuth provider installer (set_oauth_provider /
 		// remove_oauth_provider + the run-start provider reconcile).
 		var oauthProviderInstaller agentcfgprotocol.ProviderInstaller

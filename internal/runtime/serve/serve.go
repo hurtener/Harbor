@@ -431,8 +431,12 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 
 	// The Protocol ControlSurface. A start on a not-yet-existing session
 	// materialises its registry row via the create-on-first-use ensurer.
+	// A `start` naming an agent is validated against the SAME agent-config
+	// registry + boot agent id the run-loop driver projects from, so the
+	// edge cannot accept an agent the run loop would not honour.
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
 		protocol.WithSessionEnsurer(NewSessionEnsurerAdapter(sessionRegistry)),
+		protocol.WithAgentResolver(NewAgentResolverAdapter(agentConfigRegistry, devAgentConfigID)),
 	)
 	if err != nil {
 		closeAll(ctx)
@@ -473,9 +477,11 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	closers = append(closers, setPosturePolicy.Close)
 
 	// The MCP attach/detach concretes — the attacher backs the runtime
-	// add-connection verb; the detacher drives the run-start reconcile.
+	// add-connection verb AND the run-start ATTACH pass (one attach
+	// implementation, never two); the detacher drives the run-start detach pass.
 	var mcpAttacher agentcfgprotocol.ConnectionAttacher
 	var mcpDetacher projection.ConnectionDetacher
+	var mcpReattacher projection.ConnectionReattacher
 	if toolCat != nil && mcpRegistry != nil {
 		// Thread the runtime's MCP Apps tool-context store into the attacher so
 		// a RUNTIME-ADDED connection captures an app-declaring tool call's
@@ -488,11 +494,26 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		if mcpToolContext != nil {
 			mcpToolCtxCapturer = mcpToolContext
 		}
+		// Thread the CURRENT boot policy the run-start ATTACH pass re-applies: the
+		// fail-closed stdio command allowlist and the effective per-user
+		// credential-injection opt-in (the config flag OR the boot env captured
+		// once at process start). Both are re-evaluated at every re-attach against
+		// the policy in force NOW, never the policy in force when the revision was
+		// written — the reconcile kill-switch shape the provider installer already
+		// ships, so a descriptor persisted while an opt-in was on is not rebuilt
+		// after a restart with it off.
 		attacher := NewMCPConnectionAttacher(toolCat, mcpRegistry, bus, opts.Logger,
 			resolveMCPAttachIdentity(opts.MCPDefaultIdentity), oauthProviders, stack.OAuthProviderSet,
-			mcpToolCtxCapturer)
+			mcpToolCtxCapturer,
+			// The runtime-add path carries the SAME egress ceiling the boot
+			// attach path does, so a server attached over the control plane is
+			// bounded identically to one declared in YAML.
+			WithArtifactEgressMaxBytes(cfg.Tools.ResolvedMCPArtifactEgressMaxBytes()),
+			WithReattachGates(MCPAddStdioAllowlist(cfg),
+				cfg.Tools.AllowWireInjection || toolauth.AllowWireInjectionCaptured()))
 		closers = append(closers, attacher.Close)
 		mcpAttacher = attacher
+		mcpReattacher = attacher
 		mcpDetacher = NewMCPConnectionDetacher(toolCat, mcpRegistry, opts.Logger)
 	}
 
@@ -572,6 +593,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		SessionOverlay:          sessionOverlayStore,
 		RunCompletionHook:       projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 		ConnectionDetacher:      mcpDetacher,
+		ConnectionReattacher:    mcpReattacher,
 		BootDeclaredMCP:         BootDeclaredMCPServerSet(cfg),
 		OAuthProviderReconciler: oauthProviderReconciler,
 		NamingDefault:           cfg.Runtime.Naming,

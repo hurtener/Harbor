@@ -812,6 +812,124 @@ func TestBuildSystemContent_HeavyResultsTeachesArtifactFetch(t *testing.T) {
 	}
 }
 
+// TestBuildSystemContent_HeavyResultsCarriesThePagingRuleAndTheBinaryCaveat
+// pins the three facts the read path's contract obliges this block to
+// state. The block is one of TWO model-facing descriptions of one tool
+// (the other is the built-in's own WithDescription, rendered into
+// <available_tools>), and the two must not disagree.
+//
+// The `offset` parameter had been shipped and undocumented here; the
+// text-only admissibility rule and the `mime` discriminator land with it
+// because a model that follows an auto-materialised attachment's fetch
+// hint arrives at this tool holding binary.
+func TestBuildSystemContent_HeavyResultsCarriesThePagingRuleAndTheBinaryCaveat(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
+
+	start := strings.Index(body, "<heavy_results>")
+	end := strings.Index(body, "</heavy_results>")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatalf("<heavy_results> section missing or malformed. Body:\n%s", body)
+	}
+	section := body[start:end]
+
+	// The block states exactly the three facts its contract obliges and
+	// no more. It is rendered on EVERY turn of EVERY run, so a fact that
+	// belongs somewhere more just-in-time is paid for here forever: the
+	// by-reference route is deliberately NOT restated here, because the
+	// refusal message itself names it at the moment a model needs it,
+	// and `<available_tools>` carries the tool's full description.
+	for _, want := range []struct{ fact, substr string }{
+		{"the offset parameter", "offset"},
+		{"the concrete paging shape", "offset + returned_bytes"},
+		{"the truncated re-call condition", "truncated is true"},
+		{"the mime discriminator to read BEFORE calling", "Check the ref's mime first"},
+		{"that a non-text artifact refuses", "refused with an error naming its MIME"},
+		{"that the refusal is actionable", "how to reach those bytes instead"},
+	} {
+		if !strings.Contains(section, want.substr) {
+			t.Errorf("<heavy_results> does not state %s (missing %q). Section:\n%s",
+				want.fact, want.substr, section)
+		}
+	}
+
+	// The stale phrasing is gone: it promised the whole payload and was
+	// silent about paging, which stopped being true when `offset`
+	// shipped.
+	if strings.Contains(section, "retrieve the full payload") {
+		t.Errorf("<heavy_results> still promises the full payload with no paging rule. Section:\n%s", section)
+	}
+}
+
+// alwaysOnPromptBudgetBytes is a byte budget on the system prompt every
+// run pays on every turn. It is not a style rule — it is a measured cost.
+//
+// The default prompt is assembled from scratch per planner step, and the
+// step's allocation profile scales with its size at roughly 2x (the text
+// is built and then copied into the request), so a byte added here is
+// ~2 bytes of allocation on every step of every run, plus a token on
+// every turn for every operator.
+//
+// This budget exists because that cost was learned the expensive way: a
+// 765-byte prose addition to `<heavy_results>` moved
+// BenchmarkReActPlanner_NextStep by +19% sec/op and +19% B/op with
+// allocs/op UNCHANGED at 16 — the same allocations, each bigger — and
+// tripped the CI perf gate. A package-level test is the cheaper place to
+// find that than a benchmark gate on a pull request.
+//
+// Raising this number is allowed; doing it silently is not. If a section
+// genuinely needs more room, raise the budget in the same commit and say
+// what the prompt bought for the bytes.
+const alwaysOnPromptBudgetBytes = 7000
+
+// TestBuildSystemContent_AlwaysOnPromptStaysWithinItsByteBudget pins the
+// cost of the prompt surface every turn carries.
+func TestBuildSystemContent_AlwaysOnPromptStaysWithinItsByteBudget(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{})
+	if got := len(body); got > alwaysOnPromptBudgetBytes {
+		t.Errorf("the always-on system prompt is %d bytes, over its %d-byte budget by %d.\n"+
+			"Every byte here is ~2 bytes of allocation on EVERY planner step and a token on "+
+			"EVERY turn. Either tighten the wording, move the fact to a just-in-time surface "+
+			"(a tool description, or the error message that needs it), or raise "+
+			"alwaysOnPromptBudgetBytes in this commit and justify it.",
+			got, alwaysOnPromptBudgetBytes, got-alwaysOnPromptBudgetBytes)
+	}
+}
+
+// TestRenderObservationForLLM_CarriesTheErrorClass closes the loop the
+// observation class exists for: the planner reads it as TEXT on its next
+// turn. Asserted against the RENDERED string, not the struct, because
+// the rendering is where a class that is merely persisted would be lost.
+func TestRenderObservationForLLM_CarriesTheErrorClass(t *testing.T) {
+	t.Parallel()
+
+	classified := renderObservationForLLM(planner.Step{
+		LLMObservation: map[string]any{
+			"error":                     `tool "artifact_stats" invoke: artifact reference does not resolve under this run's scope: "abc"`,
+			planner.ObservationClassKey: string(planner.ObservationClassArtifactRefNotFound),
+		},
+	})
+	if !strings.Contains(classified, planner.ObservationClassKey) {
+		t.Errorf("the rendered observation drops the class key:\n%s", classified)
+	}
+	if !strings.Contains(classified, string(planner.ObservationClassArtifactRefNotFound)) {
+		t.Errorf("the rendered observation drops the class value:\n%s", classified)
+	}
+
+	// The unclassified leg is unchanged — no stray key on the hottest
+	// path in the runtime.
+	plain := renderObservationForLLM(planner.Step{
+		LLMObservation: map[string]any{"error": "upstream 503"},
+	})
+	if strings.Contains(plain, planner.ObservationClassKey) {
+		t.Errorf("a tool's own error rendered a class key:\n%s", plain)
+	}
+	if want := `Observation: {"error":"upstream 503"}`; plain != want {
+		t.Errorf("plain render = %q, want the pre-phase %q", plain, want)
+	}
+}
+
 // TestBuildSystemContent_RendersAdditionalGuidanceWhenSet asserts the
 // <additional_guidance> section appears, wrapping the operator string
 // verbatim, when extraGuidance is non-empty.

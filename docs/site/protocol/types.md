@@ -266,6 +266,8 @@ Declared in `internal/protocol/types`.
 | `oauth` | `*types.AgentConfigOAuthProviderDescriptor` — see [`AgentConfigOAuthProviderDescriptor`](./types.md#agentconfigoauthproviderdescriptor) | optional (`omitempty`) |
 | `injection` | `*types.AgentConfigMCPCredentialInjectionDescriptor` — see [`AgentConfigMCPCredentialInjectionDescriptor`](./types.md#agentconfigmcpcredentialinjectiondescriptor) | optional (`omitempty`) |
 | `oauth_discovery_allowed_origins` | `[]string` | optional (`omitempty`) |
+| `artifact_byte_eligible` | `bool` | optional (`omitempty`) |
+| `artifact_params` | `map[string][]string` | optional (`omitempty`) |
 
 ## AgentConfigMCPCredentialInjectionDescriptor
 
@@ -3129,6 +3131,7 @@ Declared in `internal/protocol/types`.
 | `input_artifact_ids` | `[]string` | optional (`omitempty`) |
 | `input_artifact_dispositions` | `map[string]string` | optional (`omitempty`) |
 | `output_schema` | `json.RawMessage` | optional (`omitempty`) |
+| `agent_id` | `string` | optional (`omitempty`) |
 
 ## StartResponse
 
@@ -3390,6 +3393,7 @@ Declared in `internal/protocol/types`.
 | `last_activity_at` | `time.Time` |  |
 | `is_background` | `bool` |  |
 | `has_pending_approval` | `bool` |  |
+| `agent_id` | `string` | optional (`omitempty`) |
 
 ## TaskTrajectoryRef
 

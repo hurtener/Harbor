@@ -80,9 +80,24 @@ for plan in docs/plans/phase-*.md; do
     fi
 done
 
+# 4b. Phase plans must be TEXT. A single NUL makes grep treat the file as binary,
+# and the two cross-reference checks below then degrade silently: the RFC check
+# emits nothing at all (no OK, no FAIL) while the brief check emits a FALSE OK for
+# a reference that does not resolve. Verified by probe — a plan carrying a NUL and
+# a bogus `RFC §999.999` + `brief 99` passed both. `grep -a` alone does not fix it,
+# so the file is rejected outright: a control byte in a phase plan is a defect in
+# its own right, and this guard cannot itself be voided by the thing it detects.
+for plan in docs/plans/phase-*.md; do
+    if LC_ALL=C tr -d '\0' < "$plan" | cmp -s - "$plan"; then
+        :
+    else
+        fail "${plan}: contains a NUL byte — phase plans must be text (a control byte silently voids the RFC and brief reference checks)"
+    fi
+done
+
 # 5. Cross-reference resolution: every `RFC §N.M` in phase plans must resolve to a real heading.
 for plan in docs/plans/phase-*.md; do
-    refs=$(grep -oE 'RFC §[0-9]+(\.[0-9]+){0,2}' "$plan" | sort -u || true)
+    refs=$(grep -a -oE 'RFC §[0-9]+(\.[0-9]+){0,2}' "$plan" | sort -u || true)
     if [ -z "$refs" ]; then
         continue
     fi
@@ -102,7 +117,8 @@ done
 
 # 6. Cross-reference resolution: every `brief NN` in phase plans must resolve to a real file.
 for plan in docs/plans/phase-*.md; do
-    refs=$(grep -oE '\bbrief [0-9]{2}\b' "$plan" | sort -u || true)
+    # -a: see the note on the RFC check above — same silent-skip hazard.
+    refs=$(grep -a -oE '\bbrief [0-9]{2}\b' "$plan" | sort -u || true)
     if [ -z "$refs" ]; then
         continue
     fi
@@ -299,47 +315,108 @@ fi
 # actually published, or every source-built scaffold emits a go.mod no proxy
 # can resolve.
 #
+# The pin is not only what a scaffolded `go.mod` requires: `cmd/harbor/root.go`
+# reports `FallbackModuleVersion + "-dev"` as `harbor --version` on the same
+# un-stamped builds, so a stale pin also misreports the running binary.
+#
 # Nothing prompts the bump on its own: godoc prose is not a gate and the golden
 # fixtures only fire AFTER someone edits the constant. This check is the prompt.
 #
-# The rule (CHANGELOG is the release ledger; git tags are unavailable in CI's
-# shallow checkout, so we do not consult them):
-#   - FAIL when the pin names no released CHANGELOG section at all (a phantom
-#     version — the catastrophic case: generated projects do not build).
-#   - The pin may TRAIL the newest section by exactly one release. That window
-#     is deliberate and correct: a release's CHANGELOG section lands on `main`
-#     BEFORE its tag is cut, and pinning the untagged version would break every
-#     source-built scaffold in the merge -> tag window. The pin therefore tracks
-#     the last PUBLISHED release, and is bumped once that tag exists.
-#   - FAIL when it trails by TWO OR MORE releases — by then the intervening
-#     version is long tagged and the bump was simply forgotten.
+# WHERE THE RELEASE LIST COMES FROM, and why it is not this branch's CHANGELOG.
+# This check previously compared the pin against `./CHANGELOG.md` — the SAME
+# branch's file — and declined to consult tags on the theory that CI's shallow
+# checkout has none. That made the guard self-referential: a release-heal merge
+# (`-s ours`) that discarded `main`'s release bookkeeping left a branch whose
+# newest section and whose pin were BOTH five releases stale, so the pin sat at
+# index 0 and the guard printed OK. Self-consistently satisfied, globally wrong.
+#
+# The release ledger is therefore the PUBLISHED TAGS, read in this order:
+#   1. `git ls-remote --tags origin` — works in a shallow checkout precisely
+#      because it asks the remote rather than the local object store. This is
+#      the CI path.
+#   2. Local tags — an ordinary contributor clone has them; no network.
+#   3. `origin/main`'s CHANGELOG — a last resort when both are unavailable.
+# Set HARBOR_DRIFT_AUDIT_OFFLINE=1 to skip step 1 (air-gapped, or to keep a
+# tight local preflight loop off the network).
+#
+# If NO source resolves, the check WARNs that it could not run rather than
+# printing an OK it has not earned — an unverifiable guard must not read as a
+# passing one.
+#
+# The rule, once the published list is in hand:
+#   - FAIL when the pin names no published release at all (a phantom version —
+#     the catastrophic case: generated projects do not build).
+#   - The pin may TRAIL the newest published tag by exactly one release. That
+#     window is deliberate: the post-tag bump lands as its own commit, so
+#     between cutting vX and merging that bump the pin legitimately names vX-1.
+#   - FAIL when it trails by TWO OR MORE releases — the bump was forgotten.
+#   - FAIL when the newest published release has no `## [X.Y.Z]` section in this
+#     branch's CHANGELOG. That is the release-heal divergence itself, caught
+#     directly instead of via its effect on the pin.
 # -----------------------------------------------------------------------------
 pin_line=$(grep -E '^const FallbackModuleVersion = ' cmd/harbor/scaffold/version.go 2>/dev/null || true)
 if [ -z "${pin_line}" ]; then
     fail 'scaffold module pin: cmd/harbor/scaffold/version.go declares no FallbackModuleVersion const'
 else
     pin_version=$(printf '%s' "${pin_line}" | sed -E 's/.*"v?([^"]+)".*/\1/')
-    # Released sections only, newest first; the [Unreleased] heading is skipped.
-    # bash 3.2 (macOS default) has no `mapfile`; read the list portably.
-    changelog_versions=()
-    while IFS= read -r v; do
-        [ -n "${v}" ] && changelog_versions+=("${v}")
-    done < <(grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | sed -E 's/^## \[(.*)\]/\1/')
-    pin_index=-1
-    for i in "${!changelog_versions[@]}"; do
-        if [ "${changelog_versions[$i]}" = "${pin_version}" ]; then
-            pin_index=$i
-            break
-        fi
-    done
-    if [ "${#changelog_versions[@]}" -eq 0 ]; then
-        fail 'scaffold module pin: CHANGELOG.md carries no released "## [X.Y.Z]" section to check the pin against'
-    elif [ "${pin_index}" -lt 0 ]; then
-        fail "scaffold module pin: FallbackModuleVersion=v${pin_version} names no released CHANGELOG section — a scaffolded go.mod would require a version the module proxy cannot resolve"
-    elif [ "${pin_index}" -ge 2 ]; then
-        fail "scaffold module pin: FallbackModuleVersion=v${pin_version} trails the newest release (v${changelog_versions[0]}) by ${pin_index} releases — bump it in cmd/harbor/scaffold/version.go to the newest PUBLISHED tag and regenerate the goldens (go test ./cmd/harbor -run TestScaffold_Golden -update)"
+
+    # bash 3.2 (macOS default) has no `mapfile`; read every list portably.
+    # `--sort=-v:refname` gives newest-first without relying on `sort -V`,
+    # which BSD sort does not provide.
+    released_versions=()
+    release_source=''
+
+    if [ "${HARBOR_DRIFT_AUDIT_OFFLINE:-0}" != "1" ]; then
+        while IFS= read -r v; do
+            [ -n "${v}" ] && released_versions+=("${v}")
+        done < <(GIT_TERMINAL_PROMPT=0 git ls-remote --tags --refs --sort=-v:refname origin 2>/dev/null \
+            | sed -nE 's#.*refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p')
+        [ "${#released_versions[@]}" -gt 0 ] && release_source='published tags (origin)'
+    fi
+
+    if [ "${#released_versions[@]}" -eq 0 ]; then
+        while IFS= read -r v; do
+            [ -n "${v}" ] && released_versions+=("${v}")
+        done < <(git tag --list --sort=-v:refname 'v[0-9]*' 2>/dev/null \
+            | sed -nE 's#^v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p')
+        [ "${#released_versions[@]}" -gt 0 ] && release_source='local tags'
+    fi
+
+    if [ "${#released_versions[@]}" -eq 0 ]; then
+        while IFS= read -r v; do
+            [ -n "${v}" ] && released_versions+=("${v}")
+        done < <(git show origin/main:CHANGELOG.md 2>/dev/null \
+            | grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' | sed -E 's/^## \[(.*)\]/\1/')
+        [ "${#released_versions[@]}" -gt 0 ] && release_source="origin/main's CHANGELOG"
+    fi
+
+    if [ "${#released_versions[@]}" -eq 0 ]; then
+        warn 'scaffold module pin: NOT CHECKED — no published-release source reachable (no remote tags, no local tags, no origin/main). This guard is inert here; it runs in CI.'
     else
-        ok "scaffold module pin: FallbackModuleVersion=v${pin_version} is a published release (newest: v${changelog_versions[0]}; a one-release trail is the merge->tag window)"
+        pin_index=-1
+        for i in "${!released_versions[@]}"; do
+            if [ "${released_versions[$i]}" = "${pin_version}" ]; then
+                pin_index=$i
+                break
+            fi
+        done
+        newest="${released_versions[0]}"
+        if [ "${pin_index}" -lt 0 ]; then
+            fail "scaffold module pin: FallbackModuleVersion=v${pin_version} names no published release (checked against ${release_source}; newest is v${newest}) — a scaffolded go.mod would require a version the module proxy cannot resolve, and 'harbor --version' would report it"
+        elif [ "${pin_index}" -ge 2 ]; then
+            fail "scaffold module pin: FallbackModuleVersion=v${pin_version} trails the newest published release (v${newest}, per ${release_source}) by ${pin_index} releases — bump it in cmd/harbor/scaffold/version.go and regenerate the goldens (go test ./cmd/harbor -run TestScaffold_Golden -update)"
+        else
+            ok "scaffold module pin: FallbackModuleVersion=v${pin_version} is a published release (newest: v${newest}, per ${release_source}; a one-release trail is the tag->bump window)"
+        fi
+
+        # The pin can only be right if this branch's CHANGELOG knows the release
+        # exists. A `-s ours` release-heal merge silently drops main's sections;
+        # this is that divergence, named directly.
+        if grep -qE "^## \[${newest}\]" CHANGELOG.md; then
+            ok "release ledger: CHANGELOG.md carries a section for the newest published release (v${newest})"
+        else
+            fail "release ledger: v${newest} is published (per ${release_source}) but CHANGELOG.md on this branch has no '## [${newest}]' section — this branch's release bookkeeping has diverged from main (a '-s ours' heal merge does this); reconcile the released sections against origin/main before cutting a release"
+        fi
     fi
 fi
 

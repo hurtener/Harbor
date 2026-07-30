@@ -37,11 +37,12 @@ type ListDeps struct {
 	// row (`inmem` / `sqlite` / `postgres`). The MemoryStore interface
 	// does not expose it; the caller supplies it from config.
 	DriverName string
-	// HeavyThreshold is the configured heavy-content byte size
-	// (cfg.Artifacts.HeavyOutputThresholdBytes). It is the single
-	// classification point for the per-row HeavyContent flag;
-	// `memory.list` and `memory.get` MUST agree, so both read the same
-	// threshold. A zero / non-positive value disables the flag (no row
+	// HeavyThreshold is the inline-payload bound in bytes — the runtime
+	// supplies the pinned Console inline-payload bound, NOT the
+	// operator's LLM-context `artifacts.heavy_output_threshold_bytes`.
+	// It is the single classification point for the per-row
+	// HeavyContent flag; `memory.list` and `memory.get` MUST agree, so
+	// both read the same threshold. A zero / non-positive value disables the flag (no row
 	// is reported heavy) — the list still renders.
 	HeavyThreshold int
 }

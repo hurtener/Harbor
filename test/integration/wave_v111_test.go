@@ -887,8 +887,8 @@ func TestE2E_WaveV111_ConcurrencyStress(t *testing.T) {
 						boot[name] = struct{}{}
 					}
 				}
-				detached, cerr := projection.ReconcileConnections(ctx, stack.AgentConfig, agentFor(i),
-					identity.Quadruple{Identity: id}, detacher, boot)
+				detached, _, cerr := projection.ReconcileConnections(ctx, stack.AgentConfig, agentFor(i),
+					identity.Quadruple{Identity: id}, detacher, nil, boot)
 				if cerr != nil {
 					errsCh <- fmt.Errorf("goroutine %d reconcile: %w", i, cerr)
 					return

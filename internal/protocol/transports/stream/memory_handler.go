@@ -143,9 +143,12 @@ func WithMemoryDriverName(name string) MemoryOption {
 // + an artifacts.ArtifactStore. store and artStore are mandatory — a
 // nil fails loud with ErrMemoryHandlerMisconfigured rather than
 // building a handler that would nil-panic on the first request
-// (CLAUDE.md §5). threshold is the configured heavy-content byte size
-// (cfg.Artifacts.HeavyOutputThresholdBytes); a non-positive value fails
-// loud (a zero threshold would route every value).
+// (CLAUDE.md §5). threshold is the inline-payload bound in bytes — the
+// runtime supplies the pinned Console inline-payload bound rather than
+// the operator's LLM-context heavy-output threshold, so `memory.get` /
+// `memory.list` keep their wire shape when that threshold moves; a
+// non-positive value fails loud (a zero threshold would route every
+// value).
 //
 // The returned *MemoryHandler is immutable after construction
 // and safe for concurrent use by N goroutines.

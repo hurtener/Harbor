@@ -443,13 +443,18 @@ Your prose is streamed live to the user as you type it, character by character. 
 	// notes that re-calling the upstream tool produces another
 	// stored copy rather than bypassing the threshold. New
 	// meta-tools that act on stored references extend the bullet
-	// list in this section as they land.
+	// list in this section as they land — and so does a CHANGED
+	// contract on one already listed: the paging parameter and the
+	// text-only admissibility rule are stated here because a model
+	// that reads this block and a model that reads the tool's own
+	// description in `<available_tools>` must not learn two
+	// different things about one tool.
 	sectionHeavyResults = `<heavy_results>
 Some tools return payloads larger than fit cleanly in your context (multimedia metadata, file contents, query dumps). The runtime stores any tool result above its size threshold in an out-of-context artifact store and surfaces you a short preview plus a reference handle. Each reference looks like ref="abc123def456" and is unique per stored payload.
 
 Meta-tools for working with stored references:
 
-- artifact_fetch(ref, max_bytes?): retrieve the full payload of a stored result. Use it when the preview does not carry the field, value, or section you need to answer the user. max_bytes lets you bound the returned slice; the runtime defaults to a safe size when omitted.
+- artifact_fetch(ref, max_bytes?, offset?): read a window of a stored result as TEXT. Use it when the preview does not carry the field, value, or section you need. max_bytes bounds the window; offset is where it starts. To page: re-call with offset set to the previous offset + returned_bytes while truncated is true. Check the ref's mime first — a non-text artifact (PDF, image, zip) is refused with an error naming its MIME and how to reach those bytes instead.
 
 The preview is the head of the payload only — fields further into the result live in the stored copy and require artifact_fetch to inspect. Re-calling the upstream tool produces a fresh stored copy of the same kind of payload; it does not bypass the threshold.
 </heavy_results>`

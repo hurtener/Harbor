@@ -542,3 +542,138 @@ func assertGoroutineBaseline(t *testing.T, baseline int) {
 	}
 	t.Errorf("goroutine leak: NumGoroutine=%d, baseline=%d", runtime.NumGoroutine(), baseline)
 }
+
+// ---------------------------------------------------------------------
+// Phase 213 (D-358) — the raised LLM-context heavy-output threshold.
+//
+// Appended, not interleaved: this file is touched concurrently by a
+// sibling phase and every addition below is additive.
+// ---------------------------------------------------------------------
+
+// TestExecutor_DefaultThreshold_InlinedBand_NoArtifactWritten is the
+// phase's CENTRAL behavioural change, asserted at projectForLLM rather
+// than at the config layer: on the DEFAULT threshold a tool result in
+// the 32–128 KiB band reaches the planner observation as the RAW value
+// with ZERO writes to the artifact store. Before the raise every one of
+// these sizes was promoted and cost the planner a stub-then-fetch turn.
+//
+// Mutation witness: reverting config.DefaultHeavyOutputThresholdBytes to
+// 32 KiB fails the 64 KiB and 127 KiB cases here.
+func TestExecutor_DefaultThreshold_InlinedBand_NoArtifactWritten(t *testing.T) {
+	t.Parallel()
+	for _, size := range []int{31 * 1024, 64 * 1024, 127 * 1024} {
+		t.Run(strconv.Itoa(size)+"B", func(t *testing.T) {
+			t.Parallel()
+			marker := strings.Repeat("i", size)
+			cat := tools.NewCatalog()
+			if err := cat.Register(tools.ToolDescriptor{
+				Tool: tools.Tool{Name: "banded"},
+				Invoke: func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+					return tools.ToolResult{Value: map[string]any{"blob": marker}}, nil
+				},
+			}); err != nil {
+				t.Fatalf("register banded: %v", err)
+			}
+			store := newTestArtifactStore(t)
+			// No WithHeavyThreshold: the constructor's fallback resolves
+			// the canonical default, which is exactly what an operator
+			// who sets nothing gets.
+			exec := NewToolExecutor(cat, store, nil)
+
+			q := dispatchTestQuad("r-band-" + strconv.Itoa(size))
+			_, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q),
+				planner.RunContext{Quadruple: q},
+				planner.CallTool{Tool: "banded", Args: json.RawMessage(`{}`)})
+			if err != nil {
+				t.Fatalf("ExecuteDecision: %v", err)
+			}
+			lm, ok := llmObs.(map[string]any)
+			if !ok {
+				t.Fatalf("llmObservation type = %T, want the raw echo map", llmObs)
+			}
+			if lm["truncated"] == true {
+				t.Fatalf("a %d-byte result was promoted; the inlined band tops out at %d",
+					size, config.DefaultHeavyOutputThresholdBytes)
+			}
+			if lm["blob"] != marker {
+				t.Error("inlined observation lost the raw value")
+			}
+			refs, lErr := store.List(context.Background(),
+				artifacts.ArtifactScope{TenantID: dispatchTestID.TenantID})
+			if lErr != nil {
+				t.Fatalf("store.List: %v", lErr)
+			}
+			if len(refs) != 0 {
+				t.Errorf("inlined band wrote %d artifacts, want 0 — the round trip this phase removes", len(refs))
+			}
+		})
+	}
+}
+
+// TestExecutor_DefaultThreshold_AboveBand_StillPromoted pins the tail:
+// the raise moved the boundary, it did not remove it.
+func TestExecutor_DefaultThreshold_AboveBand_StillPromoted(t *testing.T) {
+	t.Parallel()
+	for _, size := range []int{config.DefaultHeavyOutputThresholdBytes, 256 * 1024} {
+		t.Run(strconv.Itoa(size)+"B", func(t *testing.T) {
+			t.Parallel()
+			cat := tools.NewCatalog()
+			blob := strings.Repeat("p", size)
+			if err := cat.Register(tools.ToolDescriptor{
+				Tool: tools.Tool{Name: "above"},
+				Invoke: func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+					return tools.ToolResult{Value: map[string]any{"blob": blob}}, nil
+				},
+			}); err != nil {
+				t.Fatalf("register above: %v", err)
+			}
+			store := newTestArtifactStore(t)
+			exec := NewToolExecutor(cat, store, nil)
+
+			q := dispatchTestQuad("r-above-" + strconv.Itoa(size))
+			_, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q),
+				planner.RunContext{Quadruple: q},
+				planner.CallTool{Tool: "above", Args: json.RawMessage(`{}`)})
+			if err != nil {
+				t.Fatalf("ExecuteDecision: %v", err)
+			}
+			lm, ok := llmObs.(map[string]any)
+			if !ok || lm["truncated"] != true {
+				t.Fatalf("llmObservation = %T, want the truncation summary at %d bytes", llmObs, size)
+			}
+			refID, _ := lm["artifact_ref"].(string)
+			if refID == "" {
+				t.Fatalf("promoted summary missing artifact_ref: %#v", lm)
+			}
+			scope := artifacts.ArtifactScope{
+				TenantID:  dispatchTestID.TenantID,
+				UserID:    dispatchTestID.UserID,
+				SessionID: dispatchTestID.SessionID,
+			}
+			if _, found, gErr := store.GetRef(context.Background(), scope, refID); gErr != nil || !found {
+				t.Fatalf("GetRef(%q) = found=%v err=%v, want the stub resolvable", refID, found, gErr)
+			}
+		})
+	}
+}
+
+// TestExecutor_DefaultThreshold_IsTheLLMContextArm proves the fallback
+// resolves the LLM-CONTEXT constant, not the pinned Console bound — the
+// assertion that fails if someone "harmonises" the dispatch floor onto
+// the Console-facing pin.
+func TestExecutor_DefaultThreshold_IsTheLLMContextArm(t *testing.T) {
+	t.Parallel()
+	if defaultHeavyThreshold != config.DefaultHeavyOutputThresholdBytes {
+		t.Fatalf("defaultHeavyThreshold = %d, want the LLM-context arm %d",
+			defaultHeavyThreshold, config.DefaultHeavyOutputThresholdBytes)
+	}
+	if defaultHeavyThreshold == config.DefaultConsoleInlinePayloadBytes {
+		t.Fatal("the dispatch promote-to-stub floor must not be the Console inline-payload bound: " +
+			"a planner observation IS prompt bytes")
+	}
+	exec := NewToolExecutor(tools.NewCatalog(), nil, nil, WithHeavyThreshold(0)).(*toolExecutor)
+	if exec.heavyThreshold != config.DefaultHeavyOutputThresholdBytes {
+		t.Errorf("a non-positive configured threshold resolved to %d, want %d",
+			exec.heavyThreshold, config.DefaultHeavyOutputThresholdBytes)
+	}
+}

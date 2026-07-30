@@ -19,11 +19,13 @@
 package mcp
 
 import (
+	"errors"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/artifactegress"
 )
 
 // EventTypeMCPResourceUpdated is the canonical event type emitted
@@ -62,10 +64,89 @@ const EventTypeMCPResourceOffloaded events.EventType = "mcp.resource_offloaded"
 // caller-controlled argument data.
 const EventTypeMCPAppAvailable events.EventType = "mcp.app_available"
 
+// EventTypeMCPArtifactEgressed is the canonical event the runtime emits
+// when it resolves an artifact reference and places the resolved BYTES
+// into an outbound MCP tool call — egress substitution.
+//
+// It records the FACT of the substitution and nothing else: the
+// artifact id, the server, the tool, the parameter, the byte count and
+// a `sha256:` digest. Never the bytes.
+//
+// It exists because dispatch-local byte movement would otherwise be the
+// one content-movement path in Harbor that leaves no trace. The nearest
+// thing an operator can do without this feature is instruct a model to
+// paste content into a tool argument, which is bounded by the LLM
+// edge's leak check and leaves a trajectory trail; egress substitution
+// is MiB-scale and never enters the model's context, so it would leave
+// none. The record closes that gap, and it is emitted FAIL-CLOSED
+// before the wire request: a substitution that could not be recorded
+// does not happen.
+//
+// The payload is SafePayload by construction — ids, names, a size and a
+// digest identify WHICH bytes moved without carrying them.
+const EventTypeMCPArtifactEgressed events.EventType = "mcp.artifact_egressed"
+
 func init() {
 	events.RegisterEventType(EventTypeMCPResourceUpdated)
 	events.RegisterEventType(EventTypeMCPResourceOffloaded)
 	events.RegisterEventType(EventTypeMCPAppAvailable)
+	events.RegisterEventType(EventTypeMCPArtifactEgressed)
+}
+
+// ErrArtifactEgressUnrecorded — a substitution could not be recorded,
+// so it did not happen. Returned when no bus is wired, when the call
+// context carries no identity, or when the publish itself failed.
+//
+// Callers compare with errors.Is. It is a REFUSAL rather than a
+// degraded path on purpose: the substitution record is the compensating
+// control that makes byte-eligibility acceptable, and a byte movement
+// that outlives its own record is exactly what the control exists to
+// prevent.
+var ErrArtifactEgressUnrecorded = errors.New("mcp: artifact egress substitution could not be recorded; the call is refused rather than moving bytes untraceably")
+
+// ErrArtifactEgressSchema — an artifact-parameter mapping does not
+// match the server's OWN discovered inputSchema: it names a tool the
+// server does not declare, a parameter that tool does not declare, or a
+// parameter the server declares as a non-string type.
+//
+// It fails the ATTACH rather than the first call, so a server that
+// changes its schema out from under a validated mapping is caught at
+// the next attach loudly instead of at the next call silently. Callers
+// compare with errors.Is.
+var ErrArtifactEgressSchema = errors.New("mcp: artifact_params mapping does not match the server's discovered inputSchema")
+
+// ErrArtifactEgressNotEligible — a connection carries an
+// artifact-parameter mapping without the operator's byte-eligibility
+// declaration, or carries either on a transport that cannot deliver
+// them. Callers compare with errors.Is.
+var ErrArtifactEgressNotEligible = errors.New("mcp: invalid artifact egress declaration")
+
+// ArtifactEgressedPayload is the typed payload for
+// EventTypeMCPArtifactEgressed. SafePayload: no artifact content
+// survives on the payload — only the actor identity quadruple, the
+// server source id, the tool name, and one content-free record per
+// substituted parameter.
+type ArtifactEgressedPayload struct {
+	events.SafeSealed
+	// Identity scopes the substitution to the (tenant, user, session)
+	// triple the call ran under; its RunID correlates it to the turn.
+	// The reachable artifact set was this triple's own and nothing wider.
+	Identity identity.Quadruple
+	// ServerID is the MCP server the bytes were sent to — the RECIPIENT,
+	// which is what byte-eligibility governs and what this record makes
+	// auditable.
+	ServerID tools.ToolSourceID
+	// ToolName is the server-side tool name that received the
+	// substitution.
+	ToolName string
+	// Records is one entry per substituted parameter: the artifact id,
+	// the parameter name, the byte count, and the `sha256:` digest that
+	// says WHICH bytes moved without carrying them.
+	Records []artifactegress.Record
+	// OccurredAt is the wall-clock instant the substitution was made —
+	// necessarily BEFORE the wire request, because the record is emitted
+	// fail-closed ahead of it.
+	OccurredAt time.Time
 }
 
 // AppAvailablePayload is the typed payload for EventTypeMCPAppAvailable.

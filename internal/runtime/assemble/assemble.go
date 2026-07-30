@@ -987,6 +987,12 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// initialize handshake (the host's rendering ability does not vary per
 	// server). Defaults to the inline-only baseline.
 	hostDisplayModes := cfg.Tools.MCPAppHostDisplayModes()
+	// The egress-substitution ceiling, resolved once from the operator's
+	// config so the documented default applies when the key is unset.
+	// Deployment-level rather than per-connection: it bounds one
+	// substituted value on one outbound call, and the resource it bounds
+	// (network + memory) is the deployment's, not a connection's.
+	egressMaxBytes := cfg.Tools.ResolvedMCPArtifactEgressMaxBytes()
 	// The MCP Apps tool-context store: MCP providers capture the input +
 	// lowered result behind a declared `ui://` app through it, and the host
 	// reads it back for `mcp.apps.tool_context`. Built over the runtime's
@@ -994,10 +1000,14 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// triad come free; wired into every Provider below so a planner-path
 	// app tool call's context is captured at the invocation site.
 	toolCtxStore, err := mcpconsole.NewToolContextStore(mcpconsole.ToolContextDeps{
-		State:     stack.State,
-		Store:     stack.Artifacts,
-		Bus:       stack.Bus,
-		Threshold: cfg.Artifacts.HeavyOutputThresholdBytes,
+		State: stack.State,
+		Store: stack.Artifacts,
+		Bus:   stack.Bus,
+		// PINNED, not threaded: a captured tool context is read back by
+		// the Console through `mcp.apps.tool_context`, never replayed
+		// into a prompt, so it selects at the Console inline-payload
+		// bound rather than the operator's LLM-context threshold.
+		Threshold: config.DefaultConsoleInlinePayloadBytes,
 	})
 	if err != nil {
 		return fmt.Errorf("mcp tool-context store: %w", err)
@@ -1020,6 +1030,10 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 			// boot providers, so boot bindings still resolve).
 			OAuthProviders:   providers,
 			OAuthProviderSet: providerSet,
+			// Egress substitution: the operator's ceiling for one substituted
+			// artifact value on one outbound call. The per-connection mapping
+			// and eligibility ride ms itself.
+			ArtifactEgressMaxBytes: egressMaxBytes,
 		}); err != nil {
 			return fmt.Errorf("mcp[%s]: %w", ms.Name, err)
 		}

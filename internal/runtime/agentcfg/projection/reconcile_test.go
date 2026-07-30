@@ -89,7 +89,7 @@ func TestReconcileConnections_DetachesUndeclared_KeepsDeclared(t *testing.T) {
 	seedConnections(t, reg, "keep") // "drop" is attached but no longer declared.
 	det := newFakeDetacher("keep", "drop")
 
-	n, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil)
+	n, _, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil, nil)
 	if err != nil {
 		t.Fatalf("ReconcileConnections: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestReconcileConnections_BootDeclaredNeverDetached(t *testing.T) {
 	det := newFakeDetacher("yaml", "runtime-added")
 	boot := map[string]struct{}{"yaml": {}}
 
-	n, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, boot)
+	n, _, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil, boot)
 	if err != nil {
 		t.Fatalf("ReconcileConnections: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestReconcileConnections_Idempotent_NothingUndeclared(t *testing.T) {
 	seedConnections(t, reg, "a", "b")
 	det := newFakeDetacher("a", "b") // every attached source is declared.
 
-	n, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil)
+	n, _, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil, nil)
 	if err != nil {
 		t.Fatalf("ReconcileConnections: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestReconcileConnections_Idempotent_NothingUndeclared(t *testing.T) {
 
 func TestReconcileConnections_NilDetacher_NoOp(t *testing.T) {
 	reg := newRegistry(t)
-	n, err := projection.ReconcileConnections(context.Background(), reg, projAgent, projID(), nil, nil)
+	n, _, err := projection.ReconcileConnections(context.Background(), reg, projAgent, projID(), nil, nil, nil)
 	if err != nil || n != 0 {
 		t.Fatalf("nil detacher: n=%d err=%v, want 0,nil", n, err)
 	}
@@ -145,7 +145,7 @@ func TestReconcileConnections_NilDetacher_NoOp(t *testing.T) {
 
 func TestReconcileConnections_ReadError_FailsLoud(t *testing.T) {
 	det := newFakeDetacher("x")
-	_, err := projection.ReconcileConnections(context.Background(), errReg{}, projAgent, projID(), det, nil)
+	_, _, err := projection.ReconcileConnections(context.Background(), errReg{}, projAgent, projID(), det, nil, nil)
 	if !errors.Is(err, projection.ErrReconcileRead) {
 		t.Fatalf("err = %v, want ErrReconcileRead", err)
 	}
@@ -159,7 +159,7 @@ func TestReconcileConnections_DetachError_Joined_ContinuesOthers(t *testing.T) {
 	reg := newRegistry(t)
 	// Both "x" and "y" are undeclared; the detacher fails every Detach.
 	det := &fakeDetacher{attached: []string{"x", "y"}, detached: map[string]int{}, err: errors.New("boom")}
-	n, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil)
+	n, _, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil, nil)
 	if err == nil {
 		t.Fatal("want a joined detach error")
 	}
@@ -185,7 +185,7 @@ func TestReconcileConnections_ConcurrentRunStarts_AtMostOnceDetach(t *testing.T)
 	for range N {
 		go func() {
 			defer wg.Done()
-			if _, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil); err != nil {
+			if _, _, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil, nil); err != nil {
 				t.Errorf("reconcile: %v", err)
 			}
 		}()
@@ -225,7 +225,7 @@ func TestReconcileConnections_RemoveUnderLoad_Stress(t *testing.T) {
 				seedConnections(t, reg, "keep")
 			case 1, 2:
 				// A run-start reconcile — must never race the edits.
-				if _, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil); err != nil {
+				if _, _, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil, nil); err != nil {
 					t.Errorf("reconcile under load: %v", err)
 				}
 			}
@@ -302,7 +302,7 @@ func TestReconcile_OwnerScoped_NeverDetachesBootOrOtherOwner(t *testing.T) {
 		{}:     {"boot-srv"},      // boot-declared, untagged
 	}}
 
-	n, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil)
+	n, _, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil, nil)
 	if err != nil {
 		t.Fatalf("ReconcileConnections: %v", err)
 	}

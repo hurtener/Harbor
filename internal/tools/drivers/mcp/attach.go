@@ -26,6 +26,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/artifactegress"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 )
 
@@ -95,6 +96,14 @@ type AttachDeps struct {
 	// driver depends only on the narrow resolver interface (bare-name Get +
 	// Names for the fail-loud message) — no concrete import.
 	OAuthProviderSet OAuthProviderResolver
+	// ArtifactEgressMaxBytes bounds ONE substituted artifact value on one
+	// outbound call for connections this attach wires. Sourced by the boot
+	// loader (and the runtime attacher) from the deployment-level
+	// `tools.mcp_artifact_egress_max_bytes`, which carries a documented
+	// default. Zero resolves to config.DefaultMCPArtifactEgressMaxBytes so
+	// an embedder that does not set it still gets a real ceiling rather
+	// than an unbounded one. Optional.
+	ArtifactEgressMaxBytes int
 }
 
 // OAuthProviderResolver is the narrow bare-name resolution seam Attach uses to
@@ -197,6 +206,21 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if injErr != nil {
 		return fmt.Errorf("mcp server %q: %w", ms.Name, injErr)
 	}
+	// Resolve the egress-substitution declaration (byte-eligibility + the
+	// per-tool artifact-parameter mapping), re-enforcing every rule the
+	// boot validator enforces so the runtime-add path — which never
+	// passes through `harbor validate` — is held to the same bar. The
+	// mapped parameters are additionally checked against the server's OWN
+	// discovered inputSchema at Discover, which is the half only the live
+	// session can perform.
+	egressMapping, egressErr := resolveArtifactEgress(ms, mode)
+	if egressErr != nil {
+		return fmt.Errorf("mcp server %q: %w", ms.Name, egressErr)
+	}
+	egressMaxBytes := deps.ArtifactEgressMaxBytes
+	if egressMaxBytes <= 0 {
+		egressMaxBytes = config.DefaultMCPArtifactEgressMaxBytes
+	}
 	provider, err := New(Config{
 		Name:               ms.Name,
 		TransportMode:      mode,
@@ -215,6 +239,11 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 		ToolOAuthProviders: toolProviders,
 		Injection:          injection,
 		MetaAnnotations:    cloneHeaderMap(ms.MetaAnnotations),
+		// Egress substitution: the compiled, immutable per-tool mapping and
+		// the operator's ceiling. Empty leaves every outbound call
+		// byte-identical to a build without the feature.
+		ArtifactEgress:         egressMapping,
+		ArtifactEgressMaxBytes: egressMaxBytes,
 		// Record any `WWW-Authenticate` OAuth step-up challenge on the
 		// registry state so an operator can inspect the advertised requirement
 		// Best-effort observability — never alters the call.
@@ -427,20 +456,39 @@ var ErrOAuthBinding = errors.New("mcp: invalid oauth_provider binding")
 // (mirroring config-time validation for the runtime-add path). Returns the
 // resolved provider (nil when the connection binds none) or a loud error.
 func resolveOAuthBinding(ms config.MCPServerConfig, mode MCPTransportMode, providers OAuthProviderResolver) (auth.OAuthProvider, error) {
-	// Reserved / spec-prefixed annotation keys are re-checked here so a
-	// runtime-added connection cannot smuggle an identity-shadowing key.
+	// `meta_annotations` keys are declared `_meta` PATHS and are re-validated
+	// here — the shared boot + runtime-set attach door — so a runtime-added
+	// connection cannot smuggle an identity-shadowing key at the whole key OR
+	// at any path segment, declare a path deeper than the audit redactor can
+	// walk, or declare a path that collides with another annotation or with
+	// the credential-injection `_meta` write (which would silently discard one
+	// of them at merge time). Every rule comes from the single shared
+	// authority in `internal/config`.
+	annotationKeys := make([]string, 0, len(ms.MetaAnnotations))
 	for k := range ms.MetaAnnotations {
-		if strings.TrimSpace(k) == "" {
-			return nil, fmt.Errorf("%w: meta_annotations key must not be empty", ErrOAuthBinding)
+		if err := config.ValidateMCPMetaAnnotationKey(k); err != nil {
+			return nil, fmt.Errorf("%w: meta_annotations %s", ErrOAuthBinding, err.Error())
 		}
-		if isReservedMetaKey(k) {
-			return nil, fmt.Errorf("%w: meta_annotations key %q is reserved (triple/agent_id/traceparent/tracestate and io.modelcontextprotocol/-prefixed keys are runtime-stamped)", ErrOAuthBinding, k)
-		}
+		annotationKeys = append(annotationKeys, k)
+	}
+	if err := config.ValidateMCPMetaPathCollisions(annotationKeys, serverInjectionMetaPath(ms.Injection)); err != nil {
+		return nil, fmt.Errorf("%w: meta_annotations %s", ErrOAuthBinding, err.Error())
 	}
 	if ms.OAuthProvider == "" {
 		return nil, nil
 	}
 	return resolveProviderBinding(ms, mode, ms.OAuthProvider, providers)
+}
+
+// serverInjectionMetaPath returns the connection's credential-injection `_meta`
+// key path, or "" when it declares no injection or injects somewhere other than
+// `_meta` (a header / `Authorization: Basic` value writes no `_meta` node, so it
+// cannot collide with an annotation path).
+func serverInjectionMetaPath(inj *config.MCPCredentialInjectionConfig) string {
+	if inj == nil || strings.TrimSpace(inj.Form) != config.MCPInjectionFormMeta {
+		return ""
+	}
+	return strings.TrimSpace(inj.MetaKey)
 }
 
 // resolveToolOAuthBindings resolves a connection's per-entry `oauth_provider`
@@ -581,6 +629,51 @@ func resolveProviderBinding(ms config.MCPServerConfig, mode MCPTransportMode, pr
 		return nil, fmt.Errorf("%w: connection host %q is not in provider %q's allowed_downstream_hosts — the credential may only be injected into a boot-declared downstream sink", ErrOAuthBinding, connHost, providerName)
 	}
 	return prov, nil
+}
+
+// resolveArtifactEgress validates a connection's egress-substitution
+// declaration and compiles its per-tool artifact-parameter mapping.
+//
+// It re-enforces at the attach door every rule the boot validator
+// enforces, because the runtime-add path never passes through `harbor
+// validate` and the attach is the one gate both paths share:
+//
+//   - a mapping REQUIRES the operator's byte-eligibility declaration.
+//     The flag IS the containment boundary for the feature, so a mapping
+//     without it is refused rather than silently ignored;
+//   - neither field is accepted on a connection without an http(s) url —
+//     explicit stdio, or an auto transport with only a command, which
+//     auto-selects stdio at connect and would otherwise leave an
+//     operator believing egress was on while it silently never fired.
+//     Base64-encoded artifact bytes belong in an HTTP body, not a stdio
+//     frame;
+//   - the mapping's SHAPE goes through the single shared authority in
+//     internal/config, the same way the `_meta` annotation rules do.
+//
+// The half this cannot do is the schema check — whether each mapped
+// parameter is declared, and declared string-typed, by the server
+// itself. That needs the live discovered tool set and runs at Discover.
+//
+// Returns the empty mapping for a connection that declares none.
+func resolveArtifactEgress(ms config.MCPServerConfig, mode MCPTransportMode) (artifactegress.Mapping, error) {
+	if len(ms.ArtifactParams) == 0 && !ms.ArtifactByteEligible {
+		return artifactegress.Mapping{}, nil
+	}
+	stdioOrNoURL := mode == TransportStdio || ms.URL == ""
+	if stdioOrNoURL {
+		return artifactegress.Mapping{}, fmt.Errorf("%w: artifact egress is declared on a connection without an http(s) url (stdio — explicit, or auto-selected from a command-only config); base64-encoded artifact bytes belong in an HTTP body, not a stdio frame", ErrArtifactEgressNotEligible)
+	}
+	if len(ms.ArtifactParams) > 0 && !ms.ArtifactByteEligible {
+		return artifactegress.Mapping{}, fmt.Errorf("%w: artifact_params is set without artifact_byte_eligible on the same connection — the eligibility declaration IS the containment boundary for egress substitution, so a mapping without it is refused rather than silently ignored", ErrArtifactEgressNotEligible)
+	}
+	if err := config.ValidateMCPArtifactParams(ms.ArtifactParams); err != nil {
+		return artifactegress.Mapping{}, fmt.Errorf("%w: artifact_params %s", ErrArtifactEgressNotEligible, err.Error())
+	}
+	mapping, err := artifactegress.CompileMapping(ms.ArtifactParams)
+	if err != nil {
+		return artifactegress.Mapping{}, fmt.Errorf("%w: %w", ErrArtifactEgressNotEligible, err)
+	}
+	return mapping, nil
 }
 
 // hostAllowed reports whether the normalised connection host is present in

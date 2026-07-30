@@ -181,7 +181,10 @@ pauseresume:
 
 artifacts:
   driver: inmem
-  heavy_output_threshold_bytes: 32768
+  # The LLM-context offload boundary (default 131072 / 128 KiB). The
+  # Console-facing inline bound is pinned at 32 KiB and does not track
+  # it (D-358).
+  heavy_output_threshold_bytes: 131072
   # The read-back bound: the window an artifact read returns when the
   # caller names none, and the ceiling a caller's own bound is clamped
   # to. Both `artifacts.get` on the Protocol surface and the
@@ -277,13 +280,37 @@ tools:
   # inject), and a static `Authorization` header alongside the binding
   # (one auth mode per connection).
   #
-  # `meta_annotations` is a static, NON-SECRET operator map merged verbatim
-  # into the MCP `_meta` on every identity-stamped call — the deployment's
-  # own attribution vocabulary, passed to the server as-is alongside the
-  # `(tenant, user, session)` triple and the provenance `agent_id`. Reserved
-  # keys (`tenant`/`user`/`session`/`agent_id`/`traceparent`/`tracestate`
-  # and any `io.modelcontextprotocol/`-prefixed key) and empty keys are
-  # rejected at validation.
+  # `meta_annotations` is a static, NON-SECRET operator map merged into the
+  # MCP `_meta` on every identity-stamped call — the deployment's own
+  # attribution vocabulary, passed to the server alongside the
+  # `(tenant, user, session)` triple and the provenance `agent_id`.
+  #
+  # Each KEY is an ANNOTATION PATH: a key with no `.` sets a top-level
+  # `_meta` key; a DOTTED key NESTS (`vendor.account_id` lands at
+  # `_meta.vendor.account_id`, NOT as a literal flat key). That is the same
+  # interpretation `injection.meta_key` has always had, so a receiver-style
+  # server reading one nested namespace finds both an injected credential
+  # and its non-secret companion value.
+  #
+  # BEHAVIOUR CHANGE (v1.24): a dotted key was legal before and landed
+  # FLAT; it now nests. No rewrite is required, but a connection that
+  # declared one sends a different `_meta` on its next call after upgrade.
+  #
+  # Validation rejects, loudly, at boot and at every runtime door: an empty
+  # key or empty path segment; a key whose WHOLE value OR ANY dot-segment is
+  # reserved (`tenant`/`user`/`session`/`agent_id`/`traceparent`/
+  # `tracestate` and any `io.modelcontextprotocol/`-prefixed key — so
+  # `tenant.foo` is refused too); a path deeper than 16 segments; and a path
+  # that COLLIDES with another declared path on the connection (equal, or a
+  # prefix of it), including the `injection.meta_key` path. A flat `vendor`
+  # annotation alongside `injection.meta_key: vendor.api_key` is refused
+  # rather than silently discarding the annotation.
+  #
+  # Audit note: the redactor replaces a matched node WHOLE without
+  # recursing, so nesting under a credential-named node (`token`, `secret`,
+  # `api_key`, ...) collapses that whole subtree to `***` in audit payloads
+  # — coverage is preserved, but non-secret siblings become unreadable.
+  # Name namespaces accordingly.
   #
   #   mcp_servers:
   #     - name: enterprise-graph
@@ -293,8 +320,10 @@ tools:
   #         # the provider's allowed_downstream_hosts MUST list this
   #         # connection's host (mcp.example.com) — D-300 fail-closed.
   #       meta_annotations:
-  #         deployment: prod-eu
-  #         fleet: harbor-west
+  #         deployment: prod-eu          # flat -> _meta.deployment
+  #         fleet: harbor-west           # flat -> _meta.fleet
+  #         vendor.account_id: acct-42   # path -> _meta.vendor.account_id
+  #         vendor.region: eu-west       # path -> _meta.vendor.region
 
   # Phase 83n / D-153 + Phase 107c / D-167 — opt in to the small set
   # of built-in tools shipped in the Harbor binary. Empty list (the

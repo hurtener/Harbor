@@ -741,9 +741,26 @@ when `driver` is `sqlite` or `postgres`. Secret: redacted.
 
 ### artifacts.heavy_output_threshold_bytes
 
-Byte size at which the runtime mandatorily routes a payload through
-the ArtifactStore (D-022 / D-026). Default: `32768` (32 KiB).
-Validation: >= 0.
+Byte size at which the runtime mandatorily routes a payload **bound for
+a model's context window** through the ArtifactStore (D-022 / D-026 /
+D-358). Default: `131072` (128 KiB). Validation: >= 0.
+
+It governs the LLM-context arm only — the tool dispatcher's
+promote-to-stub boundary, the LLM-edge leak guard and
+auto-materialization, the trajectory-compaction payload budget, and the
+`tools.content_stats.heavy_threshold_bytes` figure that reports it. The
+routing is a runtime-wide invariant; there are no per-tool overrides.
+
+**It does not govern Console-facing Protocol replies.** `pause.list`,
+`memory.get` / `memory.list`, the flow catalog and the
+`mcp.servers.read_resource` / `mcp.apps.call_tool` /
+`mcp.apps.tool_context` reads select inline-versus-reference at a
+**pinned 32 KiB** bound that deliberately does not track this key: those
+payloads are rendered by a browser, never placed in a prompt, and their
+selected reply arm is Protocol-visible. Raising this key widens what a
+planner sees inline; it leaves every browser-facing reply unchanged.
+
+Not hot-reloadable — restart required.
 
 ### artifacts.fetch_default_max_bytes
 
@@ -970,13 +987,58 @@ which would auto-select stdio at connect and silently never inject — and a
 static `Authorization` header alongside the binding (one auth mode per
 connection).
 
-`meta_annotations` is a static, NON-SECRET `map[string]string` merged
-verbatim into the MCP `_meta` on every identity-stamped call — the
-deployment's own attribution vocabulary, passed to the server alongside the
-`(tenant, user, session)` triple and the provenance `agent_id`. Reserved
-keys (`tenant` / `user` / `session` / `agent_id` / `traceparent` /
-`tracestate` and any `io.modelcontextprotocol/`-prefixed key) and empty keys
-are rejected at validation. See `examples/dev.yaml` for a worked stanza.
+`meta_annotations` is a static, NON-SECRET `map[string]string` merged into
+the MCP `_meta` on every identity-stamped call — the deployment's own
+attribution vocabulary, passed to the server alongside the
+`(tenant, user, session)` triple and the provenance `agent_id`. See
+`examples/dev.yaml` for a worked stanza.
+
+Each KEY is an **annotation path**: a key with no `.` sets a top-level
+`_meta` key, and a DOTTED key NESTS. `vendor.account_id: acct-42` lands at
+`_meta.vendor.account_id`, not as the literal flat key
+`_meta["vendor.account_id"]`. This is the same interpretation
+`injection.meta_key` has always had, so one `_meta` namespace has one
+meaning regardless of which mechanism wrote into it — which is what lets a
+receiver-style server read ONE nested namespace and find both an injected
+credential and its non-secret companion value.
+
+> **Behaviour change (v1.24).** A dotted annotation key was legal before and
+> landed FLAT; it now nests. No config rewrite is required — the new shape is
+> the shape a dotted key was already asking for — but a connection that
+> declared one sends a different `_meta` on its next call after upgrade. Flat
+> keys are unaffected.
+
+Validation rejects, loudly, at boot and at every runtime door
+(`agent_config.add_mcp_connection`, `agent_config.set_revision`, and attach):
+
+- an empty key or an empty path segment (`a..b`);
+- a key whose WHOLE value **or ANY dot-segment** is reserved — `tenant`,
+  `user`, `session`, `agent_id`, `traceparent`, `tracestate`, and any
+  `io.modelcontextprotocol/`-prefixed key. Both arms are checked: the
+  whole-key arm is the only one that sees the spec-reserved namespace (its
+  segments carry no prefix), and the per-segment arm is the only one that
+  sees a reserved key used as a path component. `tenant.foo` is refused;
+- a path deeper than 16 segments (see `meta_key` below for why);
+- a path that COLLIDES with another declared path on the same connection —
+  equal to it, or a prefix of it — including the `injection.meta_key` path.
+  `{vendor: x, vendor.id: y}` is refused, and so is a flat `vendor`
+  annotation alongside `injection.meta_key: vendor.api_key`. Refusing
+  collisions is also what makes the merge order-independent: distinct
+  non-prefixing paths write disjoint leaves, so map-iteration order cannot
+  change the bytes on the wire. A connection persisted before this rule
+  shipped that carries a colliding pair fails its calls loudly rather than
+  silently picking a winner.
+
+**Audit consequence — over-redaction, not a leak.** The audit redactor
+matches on a key and replaces the WHOLE value without recursing, and its
+receiver-injection rule matches on the LAST `-`/`_`/`.`-separated segment.
+A flat `token.env` key therefore was NOT redacted (last segment `env`);
+nested, the node key is `token`, which matches, so the ENTIRE `token`
+subtree collapses to `***` — non-secret siblings included. Redaction
+COVERAGE is preserved (nothing that was redacted stops being redacted); the
+cost is reduced audit usefulness under a credential-named namespace. If you
+want a namespace's non-secret annotations to stay readable in audit
+payloads, do not name the node with a credential token.
 
 #### tools.mcp_servers[].injection
 
@@ -999,7 +1061,14 @@ config. Fields:
   base64(username ":" credential)`.
 - `meta_key` — for `form: meta`, the target `_meta` key PATH, dot-separated for
   nesting (e.g. `vendor.api_key`). No path segment may be a reserved `_meta` key
-  and the leaf must be a redaction-covered credential key.
+  and the leaf must be a redaction-covered credential key. The path is capped at
+  16 segments — the SAME cap `meta_annotations` paths carry, applied at every
+  door (before v1.24 it was enforced only on the wire door, so a boot-declared
+  over-deep path was accepted where the identical wire-declared one was
+  refused). The cap exists so a declared path can never push an audit payload
+  past the redactor's deep-walk ceiling and turn every audit emit for the
+  connection into a hard redaction failure. It may not collide with a declared
+  `meta_annotations` path (see above).
 
 Injection is **mutually exclusive** with `oauth_provider` / `tool_oauth_providers`
 / a static `Authorization` header (one auth mode per connection). The connection
@@ -1379,6 +1448,121 @@ Example:
 tools:
   mcp_app_host:
     display_modes: [inline, fullscreen, pip]
+```
+
+### tools.mcp_artifact_egress_max_bytes
+
+Bounds ONE substituted artifact value on one outbound MCP tool call —
+the ceiling for **egress substitution**, where the runtime resolves an
+artifact id the model authored and places the resolved **bytes** into
+the outbound tool-call body, so a large document reaches a remote tool
+without transiting the model's context.
+
+A value above the ceiling is **REFUSED loud**, never truncated. The
+artifact read path truncates truthfully — a model asking for a window
+gets a window and is told it is one — but a truncated document delivered
+to a remote ingester is a corruption rather than a bounded read, and a
+tool argument has nowhere to carry the truthful-truncation signal.
+
+It is deliberately **independent of the heavy-output threshold**.
+Substituted bytes never enter a model's context, so this is a network
+and memory budget, not a token budget; tying it to a context-window
+constant would make one number answer two unrelated questions.
+
+**Sizing arithmetic.** The transient footprint is
+`ceiling x in-flight mapped calls`. It is **not** multiplied by the
+retry budget: resolution happens once per dispatched call rather than
+once per attempt, so a default policy's four attempts do not quadruple
+it. Base64 inflates the wire form by roughly a third, so 8 MiB of
+content is around 11 MB on the wire — one reason the mapping is refused
+on `stdio`, where a frame that large is least appropriate.
+
+Zero / omitted resolves to the default. A negative value is refused at
+config load rather than read as "unbounded".
+
+Default: `8388608` (8 MiB). Restart-required.
+
+Example:
+
+```yaml
+tools:
+  mcp_artifact_egress_max_bytes: 4194304   # 4 MiB
+```
+
+#### tools.mcp_servers[].artifact_byte_eligible (and .artifact_params)
+
+The per-connection half of egress substitution. Both fields are
+`http`-only and both are refused on `stdio` — explicit, or an `auto`
+transport with only a `command`, which auto-selects stdio at connect and
+would otherwise leave an operator believing egress was on while it
+silently never fired.
+
+`artifact_byte_eligible` declares that this connection **may** receive
+artifact bytes. It is the containment boundary for the feature: with it
+unset (every connection by default) an `artifact_params` mapping is
+refused at the door and no outbound call ever carries resolved content.
+
+`artifact_params` maps this server's **tool** names to the parameter
+names on those tools which carry artifact bytes — keyed per tool name in
+the same shape `tool_policies` and `tool_oauth_providers` use (the
+server-side MCP tool name, not the `<source>_<tool>` Harbor-facing one).
+It requires `artifact_byte_eligible` on the same connection.
+
+Each mapped parameter is validated at attach against the server's **own
+discovered `inputSchema`**: it must be declared there, and declared
+string-typed. Harbor declaring "this parameter takes artifact bytes"
+against a server whose schema never declared such a parameter is the
+same defect shape as advertising a capability nothing services, so the
+mapping is checked rather than trusted. The check is point-in-time: a
+server that mutates its schema without a `tools/list_changed`
+notification can drift out from under a validated mapping, and the drift
+then surfaces as a server-side argument-validation error on the wire — a
+loud failure, never a silent wrong-shape send.
+
+The substituted value is emitted as **RFC 4648 §4 standard base64**.
+Never a raw Go string: `encoding/json` rewrites every invalid-UTF-8 byte
+in a string to U+FFFD, which corrupts any binary document.
+
+**What this widens, and what it does not.** The reachable artifact SET
+is unchanged — the dispatching run's own `(tenant, user, session)`,
+enforced by the same run-scoped resolver the in-process arm uses. Only
+the RECIPIENT widens. Note the boundary this does **not** claim: both
+fields are admin-writable over the control plane, so a tenant admin can
+attach a server they control, map a parameter, declare it eligible, and
+receive a user's artifact bytes on the next run that names an id. That
+sits inside the trust boundary a shared runtime already accepts — a
+shared runtime trusts its co-tenant admins for runtime-added connections
+— and a deployment needing hard isolation runs **one runtime per
+tenant**. Artifact bytes are stored as authored (unredacted), so a
+byte-eligible connection can move a secret.
+
+The compensating control is mandatory and not optional: every
+substitution emits `mcp.artifact_egressed` **fail-closed, before the
+wire request** — artifact id, server, tool, parameter, byte count and a
+`sha256:` digest, **never** the bytes. A substitution that could not be
+recorded does not happen.
+
+**Known limit.** A byte-mapped parameter is not reachable from an MCP
+App's tool callback. That path is a browser-driven invocation with no
+run, so no resolver is seated and the call fails loud rather than being
+given a second, differently-scoped definition of what the feature can
+reach.
+
+Default: unset (no connection is byte-eligible; every outbound call is
+byte-identical to a build without the feature). Restart-required.
+
+Example:
+
+```yaml
+tools:
+  mcp_servers:
+    - name: docstore
+      transport_mode: streamable_http
+      url: https://docs.internal.example.com/mcp
+      artifact_byte_eligible: true
+      artifact_params:
+        ingest_document: [content]
+        summarize: [document]
 ```
 
 ### tools.mcp_add_connection

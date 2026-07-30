@@ -203,7 +203,7 @@ You only need it when something consumes embeddings — the opt-in semantic retr
 - **`harbor dev` exits immediately with `ErrMissingAPIKey: env.OPENROUTER_API_KEY not set`.** Source your `.env` or export the var in the shell that ran `harbor dev`. Verify with `echo $OPENROUTER_API_KEY`.
 - **`harbor dev` exits with `ErrUnknownProvider: "nim"`.** You set `provider: nim` but forgot the matching `custom_providers:` entry. Add it.
 - **Every LLM call times out.** Either your `timeout:` is too low for the model, OR the provider is unreachable from the runtime's network. Check with a `curl https://api.openrouter.ai/v1/models` from the runtime host first.
-- **`llm.context_leak` events fire mid-run.** A tool returned >32KB inline instead of an `ArtifactStub`. See [`add-an-in-process-tool`](../add-an-in-process-tool/SKILL.md) §4.
+- **`llm.context_leak` events fire mid-run.** A tool returned more than `artifacts.heavy_output_threshold_bytes` (128 KiB by default) inline instead of an `ArtifactStub`. See [`add-an-in-process-tool`](../add-an-in-process-tool/SKILL.md) §4.
 - **`harbor dev` fails the first LLM call with `ErrUnsupportedModel: model has no configured ModelProfile`.** Your `llm.model` has no `model_profiles.<model>` entry, so the runtime has no context-window number for it and refuses the call — there is no fallback. Add the `model_profiles.<model>.context_window_tokens` entry.
 
 ## See also

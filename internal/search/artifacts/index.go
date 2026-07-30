@@ -1,7 +1,7 @@
 // Package artifacts implements the `search.artifacts`
 // runtime-side index — a server-enforced search over the artifact
-// store's catalog, scoped to the caller's identity triple unless the
-// `auth.ScopeAdmin` claim is present.
+// store's catalog, scoped to the caller's own tenant AND own user unless
+// an admin-tier claim widens it.
 //
 // Every result row carries a populated `Ref` (artifacts are
 // by-reference by construction); `Preview` is the redacted
@@ -49,11 +49,38 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 	if err := search.ValidateRequest(callerID, req); err != nil {
 		return types.SearchResponse{}, err
 	}
-	if search.CrossTenantRequested(callerID.TenantID, req) && !s.deps.AdminScope(ctx) {
-		return types.SearchResponse{}, search.ErrCrossTenantRequiresAdmin
+	// The identity-axis gate, read once for all three axes.
+	elevated := s.deps.AdminScope(ctx)
+	if !elevated {
+		if search.CrossTenantRequested(callerID.TenantID, req) {
+			return types.SearchResponse{}, search.ErrCrossTenantRequiresAdmin
+		}
+		if search.CrossUserRequested(callerID.UserID, req) {
+			return types.SearchResponse{}, search.ErrCrossUserRequiresAdmin
+		}
+		if search.CrossSessionFanInRequested(req) {
+			return types.SearchResponse{}, search.ErrCrossSessionRequiresAdmin
+		}
 	}
 
 	tenants := search.EffectiveTenantSet(callerID.TenantID, req)
+	// The user axis FOLDS for an unwidened caller. The store's `List`
+	// precondition requires only the tenant and documents an empty
+	// `UserID` as a WILDCARD — correct at the store, since a list filter
+	// is a predicate over a result set rather than an identity. Deciding
+	// what an omitted component MEANS is this calling surface's job, and
+	// the answer here is "the caller's own", never "everyone".
+	users := search.EffectiveUserSet(callerID.UserID, req)
+	if elevated {
+		users = search.WidenedUserSet(req)
+	}
+	// A widened read with an elided user axis is the ONE case where the
+	// store's wildcard is the right answer: one pass with an empty
+	// `UserID` is the tenant-wide catalog a fleet view asks for.
+	userScopes := users
+	if len(userScopes) == 0 {
+		userScopes = []string{""}
+	}
 
 	var mimeFilter, nsFilter string
 	for _, f := range req.Facets {
@@ -67,57 +94,71 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 
 	rows := make([]types.SearchResultRow, 0, 32)
 	for _, tenant := range tenants {
-		if err := ctx.Err(); err != nil {
-			return types.SearchResponse{}, err
-		}
-		scope := artifactsubsys.ArtifactScope{TenantID: tenant}
-		if len(req.Filter.UserIDs) > 0 {
-			scope.UserID = req.Filter.UserIDs[0]
-		}
-		if len(req.Filter.SessionIDs) > 0 {
-			scope.SessionID = req.Filter.SessionIDs[0]
-		}
-		refs, err := s.store.List(ctx, scope)
-		if err != nil {
-			return types.SearchResponse{}, fmt.Errorf("search.artifacts: list tenant=%s: %w", tenant, err)
-		}
-		for _, ref := range refs {
-			if mimeFilter != "" && ref.MimeType != mimeFilter {
-				continue
+		for _, user := range userScopes {
+			if err := ctx.Err(); err != nil {
+				return types.SearchResponse{}, err
 			}
-			if nsFilter != "" && ref.Namespace != nsFilter {
-				continue
+			// One store call per (tenant, user) pair. Reading only the
+			// first named user would silently drop users 2..N of a
+			// widened read; the store call shape is unchanged.
+			scope := artifactsubsys.ArtifactScope{TenantID: tenant, UserID: user}
+			if len(req.Filter.SessionIDs) > 0 {
+				scope.SessionID = req.Filter.SessionIDs[0]
 			}
-			if !search.MatchesAnyField(req.Query,
-				ref.ID, ref.Filename, ref.MimeType, ref.Namespace,
-			) {
-				continue
+			refs, err := s.store.List(ctx, scope)
+			if err != nil {
+				return types.SearchResponse{}, fmt.Errorf("search.artifacts: list tenant=%s user=%s: %w", tenant, user, err)
 			}
-			preview := fmt.Sprintf("artifact %s mime=%s size=%d filename=%s",
-				ref.ID, ref.MimeType, ref.SizeBytes, ref.Filename)
-			out, _, rerr := search.RedactAndCapPreview(ctx, s.deps.Redactor, preview)
-			if rerr != nil {
-				return types.SearchResponse{}, rerr
-			}
-			rows = append(rows, types.SearchResultRow{
-				Index:     types.SearchIndexArtifacts,
-				ID:        ref.ID,
-				TenantID:  ref.Scope.TenantID,
-				UserID:    ref.Scope.UserID,
-				SessionID: ref.Scope.SessionID,
-				Preview:   out,
-				Ref: &types.SearchArtifactRef{
+			for _, ref := range refs {
+				if mimeFilter != "" && ref.MimeType != mimeFilter {
+					continue
+				}
+				if nsFilter != "" && ref.Namespace != nsFilter {
+					continue
+				}
+				if !search.MatchesAnyField(req.Query,
+					ref.ID, ref.Filename, ref.MimeType, ref.Namespace,
+				) {
+					continue
+				}
+				preview := fmt.Sprintf("artifact %s mime=%s size=%d filename=%s",
+					ref.ID, ref.MimeType, ref.SizeBytes, ref.Filename)
+				out, heavy, rerr := search.RedactAndCapPreview(ctx, s.deps.Redactor, preview)
+				if rerr != nil {
+					return types.SearchResponse{}, rerr
+				}
+				row := types.SearchResultRow{
+					Index:     types.SearchIndexArtifacts,
 					ID:        ref.ID,
-					MimeType:  ref.MimeType,
-					SizeBytes: ref.SizeBytes,
-					Filename:  ref.Filename,
-					SHA256:    ref.SHA256,
-				},
-				Facets: map[string]string{
-					"mime":      ref.MimeType,
-					"namespace": ref.Namespace,
-				},
-			})
+					TenantID:  ref.Scope.TenantID,
+					UserID:    ref.Scope.UserID,
+					SessionID: ref.Scope.SessionID,
+					// Every artifact row carries a Ref unconditionally —
+					// artifacts are by-reference by construction — so the
+					// heavy arm below only decides whether a PREVIEW ships
+					// beside it, never whether the row is addressable.
+					Ref: &types.SearchArtifactRef{
+						ID:        ref.ID,
+						MimeType:  ref.MimeType,
+						SizeBytes: ref.SizeBytes,
+						Filename:  ref.Filename,
+						SHA256:    ref.SHA256,
+					},
+					Facets: map[string]string{
+						"mime":      ref.MimeType,
+						"namespace": ref.Namespace,
+					},
+				}
+				if !heavy {
+					// Bound rather than discarded, so this call site can
+					// tell a CAPPED preview from an empty one — its three
+					// siblings all bind it, and a discard made the row
+					// shape correct by coincidence instead of by
+					// construction.
+					row.Preview = out
+				}
+				rows = append(rows, row)
+			}
 		}
 	}
 
