@@ -136,6 +136,26 @@ assert_grep_absent 'reattach|attach_now|force_reconcile' 'internal/protocol/meth
 # registry. The probe classifies on the BODY, never the bare status — a verb
 # that answers a genuine miss with 404 would otherwise convert a real answer
 # into a SKIP.
+#
+# THIS GUARD — the phase's ONLY live assertion — COULD ONLY EVER SKIP, TWO
+# WAYS, until the wave-v1.24 checkpoint audit, which makes the header's
+# "weakening it turns an OK into a FAIL, never into a SKIP" claim false for
+# exactly this one:
+#
+#   1. It posted to `/v1/mcp/servers/list`, a route that does not exist.
+#      `mcp.servers.list` is dispatched through the generic
+#      `POST /v1/control/{method}` pattern (internal/protocol/transports/
+#      control/control.go:69, decode at mcp_handler.go:61). 404 -> SKIP.
+#   2. Its body triple was `harbor-dev/harbor-dev/harbor-dev` while the dev
+#      bearer is minted for `dev/dev/dev` (cmd/harbor/devauth.go DevTenant /
+#      DevUser / DevSession). `harbor-dev` is the token's *kid*, not its
+#      identity. Body-identity reconciliation refuses the mismatch, and the
+#      catch-all `*)` arm laundered that refusal into a SKIP too.
+#
+# The `*)` arm is now a FAIL, matching phase 214's route-probe convention:
+# 214 learned this the hard way, having treated a 500 as "route absent" and
+# run three assertions against a dead route while reporting green. Only a
+# genuinely unreachable server (000) skips.
 # ----------------------------------------------------------------------------
 live_servers_list() {
     if ! command -v curl >/dev/null 2>&1; then
@@ -148,9 +168,9 @@ live_servers_list() {
         skip 'mcp.servers.list probe: no dev bearer resolvable'
         return 0
     fi
-    url="$(api_url /v1/mcp/servers/list)"
+    url="$(api_url /v1/control/mcp.servers.list)"
     out="$(mktemp)"
-    body='{"identity":{"tenant":"harbor-dev","user":"harbor-dev","session":"harbor-dev"}}'
+    body='{"identity":{"tenant":"dev","user":"dev","session":"dev"}}'
     status=$(curl -s -o "${out}" -w '%{http_code}' --max-time 10 \
         -X POST -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' \
         -d "${body}" "${url}" || true)
@@ -162,11 +182,11 @@ live_servers_list() {
                 fail 'mcp.servers.list answered 200 without a .servers body'
             fi
             ;;
-        404|405|501|000|'')
-            skip "mcp.servers.list probe: ${status:-000} (surface not reachable in this build)"
+        000|'')
+            skip 'mcp.servers.list probe: server unreachable (000)'
             ;;
         *)
-            skip "mcp.servers.list probe: unexpected status ${status} (not a phase-216 regression signal)"
+            fail "mcp.servers.list probe: got ${status} (want 200) at POST ${url} — this route is already shipped, so anything but 200 under the dev bearer is a regression, not an absent surface; body: $(head -c 300 "${out}" 2>/dev/null)"
             ;;
     esac
     rm -f "${out}"

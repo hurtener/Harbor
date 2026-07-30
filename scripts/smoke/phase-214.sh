@@ -150,11 +150,18 @@ assert_grep "${SCAN_TEST}" 'egressSiteAllowList' \
 # tool-context record (which can mint a second artifact from it).
 assert_grep "${MCP_EGRESS_SRC}" 'artifactegress\.Encode\(ctx, argMap, mapping, name, maxBytes\)' \
     'phase 214: the substitution writes into the decoded argument map'
-if grep -qE '^[[:space:]]*args[[:space:]]*=[[:space:]]' "${MCP_SRC}"; then
-    fail 'phase 214: mcp.go reassigns the raw args on the call path — that would carry the resolved value into the trajectory, the content hash and the durable tool-context record'
-else
-    ok 'phase 214: mcp.go never reassigns the raw argument JSON'
-fi
+# The original pattern was `^[[:space:]]*args[[:space:]]*=`, which saw only the
+# single-target form. `args, err = ...` — the shape a real rewrite would most
+# plausibly take, since the substitution helper returns an error alongside — slid
+# straight past it, as did `v, args = ...`, `args := ...` and an in-place
+# `args[i] = ...`. Widened by the wave-v1.24 checkpoint audit to any line where
+# `args` is an assignment TARGET, in any position of a multi-value assignment,
+# with or without an index. `assert_grep_absent` is used rather than a bare grep
+# because it fails loudly on an unreadable target instead of reading a deleted
+# file as "the forbidden pattern is absent".
+assert_grep_absent '^[[:space:]]*([[:alnum:]_]+[[:space:]]*,[[:space:]]*)*args(\[[^]]*\])?[[:space:]]*(,[[:space:]]*[[:alnum:]_]+[[:space:]]*)*:?=[^=]' \
+    "${MCP_SRC}" \
+    'phase 214: mcp.go never reassigns the raw argument JSON (a rewrite would carry the resolved value into the trajectory, the content hash and the durable tool-context record)'
 # The content hash is still computed over the model's OWN args (sink 6).
 assert_grep "${MCP_SRC}" 'ToolCallID\(runID, string\(p\.source\), name, args\)' \
     'phase 214: the per-invocation content hash is computed over the raw args'

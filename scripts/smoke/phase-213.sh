@@ -195,16 +195,31 @@ else
     rm -f "${list_tmp}"
 fi
 
-# 4c. The search preview path after the de-aliasing. `search.query` is
-#     NOT mounted on a stock dev boot (it answers 404), so this keeps the
-#     forward-compat SKIP shape via assert_post_status and self-activates
-#     when the route lands. The ref-vs-inline flip itself is unit-tested
-#     in internal/search/preview_bound_test.go — a >= 32 KiB synthesised
-#     preview is not drivable through a dev smoke, and asserting a
-#     mechanism the smoke cannot produce is the defect this plan's first
-#     draft shipped.
-assert_post_status 200 "$(api_url /v1/search/query)" \
-    '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"query":"a"}' \
+# 4c. The search preview path after the de-aliasing.
+#
+#     THIS GUARD WAS INERT UNTIL THE WAVE-v1.24 CHECKPOINT AUDIT. It posted
+#     to `/v1/search/query`, a route that has never existed in this tree —
+#     the five `search.*` methods are dispatched through the generic
+#     `POST /v1/control/{method}` pattern (internal/protocol/transports/
+#     control/control.go:69). `assert_post_status` maps that 404 to SKIP, so
+#     the check had never once reported OK or FAIL and never could; the
+#     comment that rationalised the SKIP as "self-activates when the route
+#     lands" was describing a route that was already there under a different
+#     name. It was also unauthenticated, so even at the right URL the auth
+#     middleware would have answered 401 before the handler ran.
+#
+#     Now: the shipped route, the shipped method name, and a bearer — via
+#     assert_post_status_auth, for which a 404/405/501 is a FAIL because an
+#     already-shipped route going missing is an un-mounted regression
+#     (§4.2 item 5).
+#
+#     The ref-vs-inline flip itself stays unit-tested in
+#     internal/search/preview_bound_test.go — a >= 32 KiB synthesised preview
+#     is not drivable through a dev smoke, and asserting a mechanism the
+#     smoke cannot produce is the defect this plan's first draft shipped.
+assert_post_status_auth 200 "$(api_url /v1/control/search.query)" \
+    '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"query":"","page_size":5}' \
+    "${DEV_BEARER}" \
     'phase 213: search.query round-trips after the preview-bound de-aliasing'
 
 smoke_summary

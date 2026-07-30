@@ -17,6 +17,236 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+Seven phases: artifact read-path byte correctness, a heavy-content threshold
+split by purpose, the MCP arm of pass-by-reference routing, caller-named agent
+selection, run-start connection re-establishment, `_meta` path nesting for MCP
+annotations, and a search user-axis isolation gate. No Protocol wire-version
+change (`ProtocolVersion` stays `0.1.0`) and no migration anywhere in the
+release.
+
+**Upgrading — four behaviour changes an operator can experience without
+touching a config file.** Two of them narrow what a caller sees and can read as
+a regression; both are deliberate. See *Action required* at the end of this
+entry, and read the `heavy_output_threshold_bytes` and search entries below in
+full before upgrading.
+
+### Added — an MCP tool can be handed artifact BYTES without them entering the model's context
+
+- **A mapped parameter on an MCP tool call is resolved from the artifact store
+  and sent as base64, so a large document reaches a remote tool without ever
+  transiting the model's context.** When the model authors an artifact id into a
+  parameter the operator has mapped, the runtime resolves the artifact itself
+  and places the bytes into the outbound tool-call body (RFC 4648 §4 standard
+  base64, padded). No address is published, no grant is minted, and no reusable
+  handle exists. This is the MCP counterpart of the in-process artifact-reference
+  parameter that shipped in 1.23.0.
+
+  The raw argument JSON is never rewritten, so the substituted bytes reach none
+  of the seven places a tool call is otherwise recorded: the observation, the
+  LLM observation, the serialised trajectory, event payloads, audit payloads and
+  logs, the per-invocation content hash, and the durable MCP-App tool-context
+  record.
+
+- **Two additive, optional connection fields configure it** — on
+  `tools.mcp_servers[]` in `harbor.yaml` and on the
+  `agent_config.add_mcp_connection` / `agent_config.set_revision` descriptor:
+
+  - `artifact_byte_eligible` (bool, **default false**) — the containment
+    boundary. With it unset, declaring `artifact_params` is **refused at the
+    door**, not silently ignored.
+  - `artifact_params` (`map[string][]string`) — this server's **bare**
+    server-side tool names mapped to the parameter names that carry artifact
+    bytes, in the same shape `tool_policies` and `tool_oauth_providers` use.
+
+  Both are **http-only and refused on stdio** (explicit, or an `auto` transport
+  carrying only a `command`). Each mapped parameter is validated **at attach
+  against the server's own discovered `inputSchema`** — it must be declared
+  there and declared string-typed. An absent or non-string parameter fails the
+  attach loudly rather than failing the next call silently. The check is
+  point-in-time: a server that mutates its schema without emitting
+  `tools/list_changed` drifts out from under a validated mapping and surfaces as
+  a server-side argument-validation error on the wire.
+
+- **`tools.mcp_artifact_egress_max_bytes` (default 8388608 — 8 MiB)** bounds one
+  substituted parameter. It is deliberately independent of
+  `heavy_output_threshold_bytes`: substituted bytes never enter a model's
+  context, so the budget is network and memory, not tokens. An oversize artifact
+  **fails loudly naming the artifact, its size and the ceiling — it is never
+  truncated**, because a partial document delivered to a remote ingester is a
+  corruption rather than a bounded read. A negative value is refused at config
+  load rather than read as unbounded. Restart-required.
+
+- **`mcp.artifact_egressed` — a new canonical event recording the FACT of a
+  substitution, never the bytes.** It carries the identity quadruple, the server
+  id, the tool name, and one content-free record per substituted parameter
+  (artifact id, parameter name, byte count, `sha256:` digest). It is
+  **fail-closed, not best-effort**: a publish failure, a missing bus or a missing
+  identity aborts the call *before* any wire request is issued. A substitution
+  that could not be recorded does not happen.
+
+  **Read the security posture, not just the feature.** Byte-eligibility is
+  wire-configurable and admin-writable — deliberately *not* the fail-closed boot
+  gate its siblings `tools.allow_wire_oauth_descriptor` and
+  `tools.allow_wire_injection` take, because those gate where a *credential* is
+  sent and this gates where a *user's own content* is sent. Stated plainly: a
+  tenant admin can attach a server they control, map a parameter, declare it
+  byte-eligible, and receive a user's artifact bytes on the next run that names
+  an id. Artifacts are stored as authored, unredacted, so a byte-eligible
+  connection can move a secret. That sits inside the co-tenant-admin trust
+  boundary Harbor already accepts and documents, whose remedy is one runtime per
+  tenant. What does *not* widen is the reachable artifact **set** — resolution
+  runs under the dispatching run's own `(tenant, user, session)`, the same
+  seated resolver the in-process arm uses.
+
+  Known limit: an MCP App's tool callback (`mcp.apps.call_tool`) cannot use a
+  byte-mapped parameter. There is no run, so no resolver is seated, and the call
+  fails loudly rather than degrading.
+
+### Added — a caller can name the agent a run should use
+
+- **The `start` method takes an `agent_id`.** It was an explicit argument on roughly
+  thirty request types — the whole `agent_config.*` family, the user-layer and
+  skills families, `tools.describe` — and absent from exactly one surface: the
+  one that STARTS a run. So a caller could write a config revision under a new
+  agent id, read it back, diff it, roll it back, and no run would ever use it.
+  Orphan configs were the normal outcome of driving the control plane as
+  documented.
+
+  The field is additive and optional (`agent_id`, omitted by default) on
+  `StartRequest` and on the internal spawn path, and the resolved value is
+  persisted on the **task** and surfaced as `agent_id` on the task row.
+
+- **A named agent is accepted on two cheap checks and is NEVER silently
+  substituted.** It is accepted if it equals the runtime's configured default
+  agent id, or if a config revision exists for `(caller's tenant, agent id)`.
+  Anything else is refused at the Protocol edge **before** the session ensurer
+  and before the task is spawned, so no session row and no task materialise. A
+  caller that named A, silently got B, and was told it succeeded is the exact
+  defect this closes.
+
+  An unresolvable id answers `invalid_request`; a resolver *error* answers
+  `runtime_error` — never a fall-through to the default. The refusal text is one
+  constant that names neither the rejected id nor the reason, so the edge is not
+  a cross-tenant existence oracle. On a Runtime built without an agent resolver,
+  a non-empty `agent_id` is refused rather than ignored; an omitted one behaves
+  exactly as before.
+
+- **The credential plane is untouched.** The RFC 8693 acting principal and the
+  MCP `_meta.agent_id` provenance stamp continue to derive from the boot value.
+  A caller-named agent changes prompts, tools, skills and the other
+  configuration projections only. Two carriers, different provenance,
+  deliberately not conflated.
+
+- **An absent `agent_id` on a task row means DEFAULTED, not "unknown".** Every
+  historical row predates the field and every such run bound the runtime's
+  default; render absence as "the runtime default". The session row deliberately
+  carries no agent — a session may run several — so the agent is persisted on
+  the task only.
+
+  **ACTION for anyone using idempotency keys.** The named agent is folded into a
+  task's content identity, so **reusing an idempotency key while naming a
+  different agent is now a loud conflict** rather than a silent adoption of the
+  original task's agent. A spawn that names no agent hashes byte-identically to
+  one made before the field existed.
+
+### Added — a declared MCP connection is re-established at run start
+
+- **Connection reconciliation attaches as well as detaches.** It was
+  detach-only, and nothing on the run path attached, so a connection an active
+  config revision DECLARED but the live registry did not carry never came back —
+  not after a restart, not after a rollback that re-declared one. The only way
+  back was an admin re-running `agent_config.add_mcp_connection` by hand.
+
+  At every run start, for the reconciling `(tenant, agent)` owner, a declared
+  connection the registry is missing is now re-attached through the **same**
+  attach lifecycle the admin verb drives — never a second implementation — so
+  every gate is re-applied against current boot policy, including the
+  fail-closed stdio command allowlist and the fail-closed credential-injection
+  opt-in. Detach still runs first; the attach pass re-reads the owner view
+  afterwards.
+
+- **The claim is bounded, and the bound matters.** It is not "connections
+  survive restarts". It is: *a declared connection whose descriptor is
+  self-sufficient is re-established at run start.* A connection whose live
+  transport depended on operator-supplied static `Headers` is **not**
+  restart-survivable — headers are secret and are never persisted — so the
+  re-dial receives a `401` and is reported as `transport_failed`.
+
+  The credential plane is untouched structurally: the attach path has no token
+  step, so this leg mints, holds, refreshes and exchanges nothing, never
+  initiates a consent flow, and **never parks a run**. An auth shortfall
+  surfaces where it always did — on the first tool call, through the existing
+  typed auth-required pause cycle.
+
+- **Two additive canonical events**, `mcp.connection.reattached` and
+  `mcp.connection.reattach_failed`. The failure event carries a stable class
+  from a closed set of six: `transport_failed` (the only retryable one),
+  `stdio_not_allowed`, `injection_disabled`, `oauth_binding`, `owner_conflict`,
+  `ambiguous_server_id`. A reconcile is distinguishable from an admin add by the
+  author's run id — an admin add carries none.
+
+  Failure is loud, non-fatal and bounded: a refused or unreachable third party
+  never fails the run and never aborts the sweep. Retries back off per
+  `(owner, name)`, the first failure emits, suppressed attempts are counted and
+  the count rides the next event, and an operator edit to the descriptor resets
+  the window. The window is in-memory, so a crash-looping deployment re-dials a
+  dead server once per boot.
+
+### Changed — the heavy-content threshold rises to 128 KiB, and the config key's meaning NARROWS
+
+**Read this one even if you have never set the key.** Two things move
+independently and both are visible.
+
+- **`artifacts.heavy_output_threshold_bytes` now defaults to 131072 (128 KiB),
+  up from 32768 (32 KiB).** An ordinary 40 KiB JSON tool result now reaches the
+  planner inline instead of being routed to the artifact store and read back on a
+  second turn — which was the point. The consequence to size: leaving the key
+  unset now permits roughly 32k tokens of a 200k context window for a single
+  32–128 KiB tool result. On a small-context model that is a real regression
+  risk. Setting the key explicitly to `32768` restores the previous behaviour of
+  this arm.
+
+- **ACTION: the key no longer governs Console-facing Protocol replies.** It now
+  governs **the LLM-context arm only** — the tool dispatcher's promote-to-stub
+  boundary, the LLM-edge leak guard and auto-materialization, the
+  trajectory-compaction payload budget, and the `tools.content_stats`
+  `heavy_threshold_bytes` figure that reports it.
+
+  Six Protocol-visible sites now select inline-versus-reference at a **pinned
+  32 KiB** that deliberately does not track the key: `pause.list`, `memory.get`
+  and `memory.list`, the flow catalog, and the
+  `mcp.servers.read_resource` / `mcp.apps.call_tool` / `mcp.apps.tool_context`
+  reads. Two further arms that were never Protocol replies also pin their own
+  32 KiB and stop tracking the key: the search preview's ref-versus-inline
+  selection and the terminal-UI scrollback fold.
+
+  **Who this bites.** On a default configuration the pins are a byte-for-byte
+  no-op — 32 KiB before, 32 KiB after. The narrowing is only observable to an
+  operator who had set an **explicit non-default** value: their Console-facing
+  bounds now decouple from it and revert to 32 KiB. There is deliberately **no
+  compatibility flag**; the reopening path, if it is ever wanted, is an additive
+  `artifacts.console_inline_payload_bytes` key rather than re-coupling two
+  different questions to one number. The rationale is that those payloads are
+  rendered by a browser and never placed in a prompt, and that the arm a reply
+  selects is Protocol-visible: raising this key should widen what a planner sees
+  inline and leave every browser-facing reply unchanged.
+
+  `docs/CONFIG.md` documents the split in full.
+
+- **`tools.content_stats.heavy_count` is not comparable across this upgrade.**
+  It counts historical offload events against the *current* threshold, so the
+  number drops discontinuously after upgrade without anything having changed.
+
+- **One residual, named rather than buried.** `tool_calls[].arguments` has no
+  offloader anywhere in the tree, so the leak detector guarding that class moved
+  from 32 KiB to 128 KiB — a straight 4× loosening of the only guard on it. The
+  alternative, a detector held below the offload boundary, would kill runs on
+  content the runtime had just declared acceptable and that no producer could
+  have avoided.
+
+- `examples/harbor.yaml`, `examples/dev.yaml` and `examples/serve.yaml` no
+  longer pin `32768`.
+
 ### Changed — a dotted `meta_annotations` key now NESTS in the MCP `_meta` map
 
 - **`tools.mcp_servers[].meta_annotations` keys are annotation PATHS.** A key
@@ -62,6 +292,10 @@ Two versions move independently in Harbor (RFC §5.3):
     non-deterministic winner.
   - A path deeper than 16 segments, or one containing an empty segment (`a..b`).
 
+  **ACTION: a `harbor.yaml` that validated before can now fail to boot.** All
+  three rules apply at boot, not only on the wire. Run `harbor validate` against
+  your config before upgrading.
+
 - **The 16-segment `_meta` path cap now applies at every door.** It previously
   existed only on the `agent_config.add_mcp_connection` wire path, so a
   boot-declared `injection.meta_key` deeper than the cap was accepted where the
@@ -75,6 +309,164 @@ Two versions move independently in Harbor (RFC §5.3):
   `token` subtree collapses to `***` — non-secret siblings included. Redaction
   coverage is preserved; the cost is audit readability under a
   credential-named namespace. No audit rule changed.
+
+### Fixed — search results are scoped to the caller's own user
+
+- **A search that does not name a user now returns YOUR rows, not every user's
+  in the tenant.** `internal/search` gated by tenant and never by user. An empty
+  `user_ids` filter was read as a wildcard, so the DEFAULT request — with no
+  caller input at all — returned rows for every user in the tenant across
+  `search.sessions`, `search.tasks` and `search.artifacts`. A NAMED foreign user
+  was honoured unexamined on all five methods. Both shapes are closed: an
+  omitted `user_ids` folds to the caller's own user, and a named foreign user —
+  or any multi-user set — is **refused** with `scope_mismatch` (403) rather than
+  silently emptied.
+
+  This is a security fix. The `(tenant, user, session)` triple is the isolation
+  boundary and the user axis was not being enforced on this surface.
+
+- **ACTION: the Console's ⌘K palette silently returns fewer rows for an ordinary
+  operator.** The palette sends no user filter, so it lands on the folded path
+  with no Console change: an operator now sees only their own sessions, tasks
+  and artifacts. A deployment that had come to rely on the palette as an
+  unofficial fleet view loses that, and there is deliberately no compatibility
+  flag — an identity-downgrading knob is not something Harbor ships.
+
+  **What restores the wider view:** the `admin` or `console:fleet` claim — the
+  same claim that already widens the tenant axis on this surface and the same
+  one `events.list` and `artifacts.list` take. Under either, naming a user reads
+  that user and omitting one fans across the tenant. `harbor token --scopes
+  console:fleet` mints a read-only one.
+
+  Two known partials, stated rather than implied: a GRANTED cross-user crossing
+  emits no audit event (pre-existing, and symmetric with the tenant axis), and a
+  widened multi-user `search.events` read still returns only the first user's
+  rows.
+
+### Fixed — `artifact_fetch` refuses a window it cannot return intact
+
+- **A binary artifact read through `artifact_fetch` used to arrive corrupted,
+  silently, at a length the same response contradicted.** The window went out
+  through a string-typed `content` field and JSON encoding rewrote every invalid
+  UTF-8 byte to `U+FFFD` — an 8-byte PNG header arrived as 10, while
+  `returned_bytes` still said 8.
+
+  The read is now UTF-8-admissible or it refuses. On a refusal the response
+  still carries `ref`, `mime`, `size_bytes` and `total_size_bytes` so the caller
+  knows what it asked about; `content` is empty and the windowing fields
+  (`offset`, `returned_bytes`, `truncated`) are zero-valued, because a refusal
+  reporting `truncated: true` would invite endless paging into the same wall.
+  The error names the stored MIME and the failing byte offset, and points at the
+  route that does work: pass the artifact id to a tool that declares an
+  artifact-reference parameter, and the runtime hands that tool the bytes
+  directly.
+
+  The gate is **content-driven, not MIME-driven** — it tests the actual window.
+  In practice every binary type refuses (PDF, images, audio, archives), and so
+  does a text artifact carrying one invalid byte mid-window rather than dropping
+  it silently. Windowing artefacts are NOT refused: leading continuation bytes
+  and a truncated trailing rune are trimmed, the window is admitted, and
+  `offset` reports where the returned content actually begins rather than
+  echoing what was requested.
+
+  **ACTION:** a caller that was tolerating corrupted binary from
+  `artifact_fetch` now receives an error object instead of bytes.
+
+- **`artifacts.get` is deliberately unchanged and stays byte-exact.** Its
+  `content` is `[]byte` (base64 on the wire), so it is correct for every MIME at
+  every offset with no rune trimming — it is the byte-exact read, and a new test
+  pins that against a future "restore consistency" refactor.
+
+- **A `max_bytes` of 1–3 no longer pages forever.** The effective maximum floors
+  at 4 bytes, so a window smaller than a single rune is served at 4 rather than
+  trimming to empty while `truncated` stayed true and the documented paging rule
+  returned the same offset indefinitely. The floor also applies to the
+  operator-resolved `artifacts.fetch_default_max_bytes`.
+
+- **A failed artifact-reference resolution is now machine-distinguishable.** Two
+  classes ride the observation under an `error_class` key —
+  `artifact_ref_not_found` (model-recoverable) and
+  `artifact_resolver_unavailable` (operator misconfiguration, explicitly not
+  model-recoverable) — and the same value lands on the parallel-branch
+  observation as `error_class`. An ordinary tool error is byte-identical to
+  before; no class key is written.
+
+### Fixed
+
+- **A hung MCP server no longer blocks a connection attach indefinitely.** The
+  SSE/HTTP transport's session-termination request ran on a context the runtime
+  does not own and the driver's HTTP client had no timeout at all, so a server
+  that accepted the TCP connection and then answered nothing wedged the caller
+  after its own handshake context had already expired. **This affected the
+  already-shipped `agent_config.add_mcp_connection` admin verb, so deployments
+  on 1.23.0 and earlier are exposed.** A request that carries no deadline of its
+  own and is not a server→client event stream now gains a 15-second bound at the
+  driver's shared choke point; a request the runtime already bounded keeps its
+  own budget untouched, so an operator who raised a slow tool's `timeout_ms` is
+  never pre-empted, and a streaming response is not truncated.
+
+### Internal
+
+- **The scaffold module pin and its guard.** `scaffold.FallbackModuleVersion`
+  had drifted five releases behind — it is what `harbor --version` reports on an
+  un-stamped source build and what `harbor new` writes into a scaffolded
+  `go.mod`. The `drift-audit` check meant to catch that compared the pin against
+  the SAME branch's `CHANGELOG.md` and declined to consult tags, so a branch
+  whose release bookkeeping had been discarded by a release-heal merge satisfied
+  it self-consistently. The check now reads the PUBLISHED tags (remote first,
+  local tags, then `origin/main`'s changelog), reports honestly when no source is
+  reachable instead of printing an unearned OK, and separately fails when the
+  newest published release has no section in this branch's changelog.
+
+- **Six inert smoke guards repaired, and the harness-level hole that let them
+  hide.** Preflight failed on one condition only — a smoke exiting non-zero — so
+  a script whose every check was a SKIP read as green. Two of this wave's guards
+  had never once reported OK or FAIL: one posted to a `/v1/search/*` route that
+  has never existed in the tree (the five `search.*` methods dispatch through
+  `POST /v1/control/{method}`), and another posted to a `/v1/mcp/*` route that
+  does not exist WITH an identity triple the dev bearer is not minted for, so it
+  skipped two independent ways. Four more had their pass value and their
+  can't-tell value collapsed together: two absence guards that skipped as
+  "pre-215 build" on a shipped phase, a task-counter that returned `0` for a 401
+  and for a malformed body alike, an `ok` arm accepting `200|401` across five
+  methods, and a file guard that reported OK when the file was missing. All are
+  now live and mutation-verified. Preflight itself now records each smoke's
+  counters and FAILS when a script belonging to a SHIPPED phase produces zero
+  OKs and zero FAILs; a pending phase's skeleton is reported and tolerated,
+  which is the 404→SKIP convention working as designed. Switching that gate on
+  found 24 shipped-phase scripts already asserting nothing — they are recorded
+  in `scripts/smoke/inert-baseline.txt` as known debt, so a NEW inert guard
+  fails immediately while the inherited backlog is visible rather than silent.
+
+### Action required
+
+1. **`artifacts.heavy_output_threshold_bytes` defaults to 128 KiB and no longer
+   governs Console-facing Protocol replies** (`pause.list`, `memory.*`, the flow
+   catalog, the three `mcp.*` reads), which pin at 32 KiB. A default config is
+   unaffected; an explicit non-default value now applies to the LLM arm only.
+   Set it to `32768` to restore the previous LLM-arm behaviour.
+2. **Search is scoped to the caller's own user.** The Console ⌘K palette returns
+   fewer rows for a non-admin operator, and a request naming a foreign user is
+   refused rather than emptied. Mint `admin` or `console:fleet` for a fleet view.
+3. **A dotted `meta_annotations` key now nests**, and three `_meta` declarations
+   that were accepted before are refused at boot as well as on the wire. Run
+   `harbor validate` against your config before upgrading.
+4. **`artifact_fetch` refuses a non-text window** instead of returning corrupted
+   bytes. A caller that consumed binary through it must move to
+   `artifacts.get` or to a tool taking an artifact-reference parameter.
+5. **Reusing an idempotency key while naming a different `agent_id` is a
+   conflict**, not a silent adoption of the original task's agent.
+
+## [1.23.0] — 2026-07-27
+
+Minor: artifact bytes become readable on every store driver, the read-back bound
+becomes operator policy, in-process tools can take content by reference without
+that content ever re-entering the model's context, and an artifact listing is
+scoped to the caller's own user. No Protocol wire-version change
+(`ProtocolVersion` stays `0.1.0`).
+
+**Upgrading:** two artifact store drivers migrate their key on first start and
+the S3 object layout changes — see *Action required* at the end of this entry.
 
 ### Added — artifact bytes are readable on every store, and the read-back bound is yours
 
@@ -257,61 +649,290 @@ Two versions move independently in Harbor (RFC §5.3):
   that misses the new key, and one per delete. Buckets whose lifecycle rules or
   external tooling match on the old key shape need those rules updated.
 
-### Changed — ACTION REQUIRED for two configurations
+### Action required
 
-- **MCP server ids must be separator-safe; an ambiguous pair now refuses to
-  boot.** Two MCP server names where one is an underscore-extension of the
-  other (`github` and `github_enterprise`; also `a` and `a_b`) are no longer
-  allowed to coexist. A server's tools are keyed `<name>_<tool>` in the shared
-  tool catalog, so such a pair makes that key ambiguous — a key built by
-  prefixing the shorter name can resolve to a tool owned by the longer one,
-  which silently weakens any scoping that relies on the prefix (notably the
-  MCP-Apps host's per-App tool scoping).
+- **SQLite and Postgres artifact stores run a forward-only `0002` migration on
+  first start,** re-keying the artifacts table onto `(tenant, user, session,
+  namespace, id)`. Rows that differ only by the producing task collapse onto a
+  single row carrying the first writer's stamp. Take the usual backup before
+  upgrading a Postgres deployment.
+- **The S3 artifact object key drops the task segment** — new objects are
+  written under `<tenant>/<user>/<session>/<namespace>/<id>`. Objects written by
+  earlier versions stay readable and deletable via a session-prefix fallback and
+  are never rewritten in place, so a bucket migrates by being read. Buckets whose
+  lifecycle rules or external tooling match on the old key shape need those rules
+  updated.
+- **`artifacts.list` is scoped to the caller's own user** unless the request
+  carries `admin` or `console:fleet`. A caller that omitted the user field and
+  relied on receiving every user's rows in the tenant now receives its own; an
+  operator tool that needs the wider view must present one of those claims.
 
-  **Impact.** A deployment already running such a pair will FAIL TO START after
-  upgrade: the registry refuses the second registration and assembly aborts
-  with `mcp: ambiguous server id`. The failure is loud, deterministic and names
-  the offending id. `harbor validate` now reports the same condition, so run it
-  against your config BEFORE upgrading.
+## [1.22.0] — 2026-07-25
 
-  **Remediation is a rename, and a rename is not free.** Changing a server's
-  name changes every `<name>_<tool>` catalog key that references it — agent
-  YAML tool allow-lists, `disabled_tools`, `paused_servers`, and any persisted
-  agent-config revision that pinned those keys. Update them in the same change,
-  or the tools will read as missing. Names that merely share a prefix without a
-  `_` boundary (`github` and `githubby`) are unaffected.
+Minor: one shared body-identity gate across every Protocol surface, owner-scoped
+MCP connection writes, MCP App replay on session reopen, and the re-landed
+MCP-Apps host obligations. No Protocol wire change (`ProtocolVersion` stays
+`0.1.0`), no config schema change, no migration.
 
-- **MCP Apps: a rendered app must send the BARE server-side tool name.** The
-  MCP-Apps host now qualifies an app-supplied tool name with the app's own
-  server id before dispatching, instead of passing it through verbatim. An app
-  written against Harbor's `<source>_<tool>` catalog keys now double-qualifies
-  and receives a typed not-found; send `get_forecast`, not
-  `weather_get_forecast`. This is the spec-correct behaviour — a conformant MCP
-  App knows only its own server-side names — and it is what scopes an app to
-  its own server's tools.
+**Upgrading:** one boot-time validation is newly enforced — see
+*Action required* at the end of this entry.
+
+### Added
+
+- **A reopened session replays its rendered MCP Apps.** A `ui://` App that
+  rendered during a turn now survives a session reopen instead of vanishing from
+  the transcript: `HistoryTurn` carries `app` + `serverID` (reusing the live
+  `MCPAppRefView` rather than a second wire shape), and history reduction folds
+  the durable `mcp.app_available` event with the same guards, display-mode
+  normalisation, and last-wins semantics the live decoder applies. Re-mount
+  resolves the persisted tool context by its deterministic `tool_call_id` — no
+  new storage and no new Protocol method. Resolution happens **before** the
+  iframe mounts, so an unresolvable context renders an honest placeholder rather
+  than a half-mounted frame; a resolution *failure* stays a loud error and is
+  never laundered into the eviction copy. A non-empty `ToolCallID` now promises a
+  fetchable record: the MCP driver stamps the id only when a tool-context record
+  actually persisted, and runtime-added connections capture exactly as
+  boot-config ones do. (D-348)
+- **Five MCP-Apps host obligations.** `ui/notifications/size-changed` is
+  consumed, with the inline frame bounded in CSS between the existing minimum
+  and a new `--size-app-inline-max` token so any reported height is bounded by
+  construction (fullscreen and picture-in-picture are unaffected);
+  `ui/resource-teardown` and `request-teardown`; host-context `toolInfo` and
+  `containerDimensions`; and `resources/templates/list`. (D-351)
+
+### Changed
+
+- **Every Protocol surface reconciles its request-body identity scope through
+  one shared gate.** `internal/protocol/bodyscope.Reconcile` replaces thirteen
+  near-duplicate helpers across both transports. The posture is a **registry
+  row, not a policy value** — a call site can name a posture but never invent
+  one — and each row declares its per-component rules (`Pinned` /
+  `PinnedOrEmpty` / `AdminScoped`), the claims that grant a tenant crossing, a
+  deny code, and a prose reason a reviewer can disagree with. A policy that
+  permits a crossing must be handed a non-nil `Auditor`; a nil sink is a runtime
+  error rather than an unrecorded crossing. The MCP Apps and MCP-Connections
+  gates moved inside `Dispatch`, which makes those surfaces' transport-agnostic
+  godoc true. (D-349)
+- **`identity` carries provenance.** A third context key holds the
+  transport-established triple (`WithVerified` / `FromVerified`); plain
+  `identity.With` refuses to move the working identity past it, and
+  `WithElevated(ctx, id, reason)` is the one named crossing, scoped to the
+  audited tenant.
+- **`SessionCounters` gains `Partial`,** distinguishing "we could not look" from
+  "there were none" — including at the filter branches — so a cross-tenant
+  admin listing never presents an unreadable scope as an empty one.
+- **App→tool dispatch is confined to the App's own server.** An app-supplied
+  bare tool name is qualified with the host-derived `serverID` before dispatch.
+  Because the catalog key `<sourceID>_<tool>` is a string join over unconstrained
+  charsets, `Registry.Register` now refuses — under the same write lock that
+  installs the entry — a server id that sits inside another registered id's
+  tool-name namespace, in both directions so registration order does not matter.
+  `harbor validate` applies the identical rule.
+- **MCP accessor errors are classified by sentinel, not by matching error
+  text,** so a remote server's wording cannot decide a Harbor verdict and an App
+  can distinguish "no such tool" from "you may not".
 
 ### Fixed
 
-- **MCP not-found responses are classified by sentinel, not by error text.**
-  `mcp.*` methods previously decided `not_found` by substring-matching the
-  error chain, which carries a southbound MCP server's message verbatim — so a
-  server whose transport failure happened to read like a not-found could turn a
-  transient failure into a typed `not_found` that clients treat as permanent.
-  The same applied to the paused-server / disabled-tool refusal. Both now
-  classify on an explicit sentinel the accessor sets.
+- **A request with no established identity is refused** with
+  `identity_required` instead of falling back to the caller-supplied body scope.
+- **Live MCP connection writes are owner-scoped.**
+  `Registry.SetOAuthDiscoveryOrigins` resolves through a new `ownedEntry(name,
+  owner)`, replacing the live allow-list only on the connection the caller's
+  `(tenant, agent_id)` owns; a name another owner attached, a boot-declared
+  name, and an unregistered name all refuse identically, and a zero or partial
+  owner is refused at the choke point rather than at each call site. The
+  boot-declared guard now applies on every path, before any revision read, so it
+  is a property of the name rather than of the branch. Registry reads are
+  unchanged (D-287/D-301). (D-350)
+- **`agent_config.set_revision` validates connection descriptors before
+  persist,** reusing `add_mcp_connection`'s shape authority — one authority, two
+  doors — including the fail-closed stdio allowlist. Rejection leaves the active
+  revision untouched, and the normalized descriptor is what persists, so both
+  doors write identical bytes for identical input.
+- **`OAuthDiscoveryAllowedOrigins` round-trips through the revision spine.**
+  Both the domain and wire converters carry the field, so `set_revision` → `get`
+  / `list_revisions` / `diff` reflects what the allowance write recorded.
+- **Two cross-tenant admin reads no longer degrade silently.**
+  `sessions.list` / `sessions.inspect` returned fabricated zero counters and
+  `search.tasks` silently dropped foreign rows; both now perform an audited
+  re-scope. `artifacts.delete` moved to its own admin-only registry row so the
+  transport grants exactly what the surface honours.
 
-- **An MCP App that reports its content size now resizes its inline frame.**
-  `ui/notifications/size-changed` was ignored, so content-bearing apps were
-  pinned to a fixed height with their own nested scrollbar. The frame now
-  tracks the reported height, bounded by the host between a minimum and a
-  maximum. Apps that report no size are unchanged. The fullscreen and
-  side-by-side panels are unaffected by that bound.
+### Internal
 
-- **MCP Apps host obligations that were recorded as shipped but were absent.**
-  Graceful `ui/resource-teardown` on unmount, the app-initiated
-  `request-teardown`, host-context `toolInfo` / `containerDimensions`, and
-  `resources/templates/list` are now implemented. They were reverted alongside
-  an unrelated regression and never re-landed.
+- **A three-part lockstep gate keeps the body-identity reconciler the only
+  one,** in the `protocol-ts-gen-check` idiom, each part with a non-vacuity pin:
+  *coverage* (every scope-carrying canonical request type joins to a registered
+  surface, both directions — a new type or a deleted row fails `go test`),
+  *enforcement* (an AST scan refusing any hand-written body-identity comparison
+  outside the reconciler, reading through hoisted locals and aliased imports,
+  with a reasoned allow-list), and *minting* (a reviewed call list for the
+  verified-identity and elevation writers, with stale entries reported).
+- **21 inert smoke guards repaired.** `assert_grep_absent` matched with basic
+  regex while its siblings used extended, and swallowed grep's exit-2, so 21
+  absence assertions across the suite were silently passing without running —
+  among them hand-rolled-`fetch` bans on seven Console pages, a Protocol
+  single-source check, a spawn-depth check, and one asserting absence from a
+  file that no longer exists. All are live and passing; a malformed pattern or
+  unreadable target now fails loudly with "the guard did not run". Smoke
+  assertions in this wave are anchored to **call sites** rather than
+  identifiers — an identifier appears in prose, a call site does not — and are
+  mutation-verified to FAIL rather than SKIP.
+- **Two smoke guards could only ever pass on macOS.** One asserted a
+  tab-indented field with `\t` inside a `grep -E` pattern — BSD grep reads that
+  as a tab, GNU grep as a literal `t`, so on Linux it could never match and
+  reported a present field absent. The other ran `CGO_ENABLED=0 go test -race`,
+  which on Linux fails to build with "-race requires cgo" rather than running
+  anything. Both are fixed, and `drift-audit` now fails on `\t` or `\d` inside
+  a `grep -E` pattern anywhere under `scripts/`, naming file:line; those two are
+  the only escapes that diverge between the greps.
+- **The TUI PTY end-to-end gate is hermetic.** The co-launch tests inherited the
+  operator's real `HOME` and so read back a composer draft that an earlier run
+  had persisted to `~/.harbor/tui-state.json`, making the suite non-idempotent.
+  Each PTY launch now gets its own `HOME`, and the wave's env-key lookup walks to
+  the filesystem root instead of five parents — previously, running from a nested
+  working tree put the repository `.env` out of reach and three subtests skipped
+  silently.
+
+### Action required
+
+A deployment whose configuration declares two MCP server ids where one sits
+inside the other's tool-name namespace — for example `github` and
+`github_enterprise` — is now refused at boot and by `harbor validate`.
+Remediation is a rename, which moves every `<name>_<tool>` catalog key
+referenced by agent YAML, `disabled_tools`, `paused_servers`, and persisted
+revisions.
+
+An MCP App must send the **bare** server-side tool name; an App that previously
+sent an already-qualified Harbor catalog key will report a missing tool.
+
+## [1.21.1] — 2026-07-25
+
+Patch: Protocol body-identity reconciliation and the dev bootstrap endpoint are
+tightened to the same contract the rest of the surface already applies. No
+Protocol wire change, no config schema change, no migration.
+
+### Fixed
+
+- **Body-identity reconciliation validates the full `(tenant, user, session)`
+  triple on the MCP surfaces.** The MCP Apps and MCP-Connections Protocol
+  adapters reconcile a request-body identity scope against the auth-verified
+  identity on all three components; an empty body triple is still backfilled
+  from the verified identity, exactly as before. Neither surface has an
+  admin-elevation path, so a body triple that disagrees with the verified
+  identity fails closed with `identity_required`.
+- **`artifacts.get_ref` reconciles the body scope's tenant before the store
+  read,** so the artifact driver is never consulted for another tenant's scope.
+- **`Boot` fails closed on a nil auth validator.** A validator factory that
+  returns no validator and no error is now rejected with
+  `ErrAuthValidatorRequired`. Identity is mandatory; the serve band never takes
+  the test-kit validator-less path, and that path is unchanged for test kits
+  that call `BuildMux` directly.
+- **The dev bootstrap endpoint serves requests addressed to a local authority**
+  (`localhost` or a loopback IP literal, with an optional port) and emits no
+  CORS allow-headers, so the connection envelope is same-origin local only. The
+  Console's one-click attach fetches it from `window.location.origin`; `curl`
+  against `127.0.0.1`, the CLI, and every smoke script are unaffected. A request
+  addressed to some other authority — including an external name resolved to a
+  loopback address — is refused; address it to `127.0.0.1` or `localhost`.
+
+## [1.21.0] — 2026-07-24
+
+Minor: durable-by-default per-user skills, and wire-carried per-user credential injection for dynamically-added receiver-style MCP servers.
+
+### Added
+
+- **Durable-by-default per-user skills.** A new claim-free
+  `agent_config.user.skills.{list,upsert,delete}` verb family lets an end user
+  author personal skills that persist across all of their sessions, via a new
+  `ScopeUser` rung keyed `(tenant, user)`. Durability follows the store driver —
+  ephemeral on the in-memory driver, durable on SQLite/Postgres. The run-start
+  projection unions durable user skills so they survive an admin membership pin,
+  and a personal skill cannot widen capability (the default-deny capability
+  filter scrubs any tool a skill names outside the run's allowed set), which is
+  why the verbs need no elevated scope claim. (D-345)
+- **Wire-carried per-user credential injection for runtime-added MCP servers.**
+  The `add_mcp_connection` connection descriptor (and `agent_config.set_revision`)
+  may now carry an optional `injection` mapping for receiver-style MCP servers,
+  behind a fail-closed `tools.allow_wire_injection` / `HARBOR_ALLOW_WIRE_INJECTION`
+  boot opt-in — so a coordinator can attach a receiver-style server at runtime and
+  deliver each acting user's own broker-pulled credential without a boot redeploy.
+  The injection provider names a boot-declared broker (no secret rides the wire),
+  the reachable sink is derived from the connection URL, and every target key is
+  redaction-covered. Composes with the wire-carried OAuth descriptor (D-340) and
+  reuses the receiver-injection engine (D-341). (D-346)
+
+## [1.20.0] — 2026-07-24
+
+Minor: MCP Apps in the Console now adapt to the host — live theme + design tokens and real tool data delivered into the rendered app — re-landed handshake-safe.
+
+### Added
+
+- **MCP Apps host theme + design tokens.** When a `ui://` MCP App mounts in the
+  Console, the host now hands it the viewer's light/dark preference (from the OS
+  `prefers-color-scheme`) plus the Console's structural design tokens
+  (`styles.variables`, the ext-apps `McpUiStyleVariableKey` namespace, mapped
+  from `tokens.css`) in the `ui/initialize` host-context, and relays a live OS
+  theme flip mid-session via `host-context-changed` — the app re-themes without
+  a reload. A spec-conformant app themes itself to match the Console instead of
+  booting to a fixed palette.
+- **MCP Apps Data Delivery (Console half).** After the app sends
+  `ui/notifications/initialized`, the host delivers the originating tool call's
+  input then result into it (official AppBridge `sendToolInput` /
+  `sendToolResult`, through the D-173 injected client reading
+  `mcp.apps.tool_context`) — so the app renders its real content rather than an
+  empty shell, and never re-invokes the tool (which would double a side effect).
+
+  This re-lands the two Console halves reverted in #346 (D-226 Data Delivery,
+  D-227 live theme) as one coherent, handshake-safe slice: the bridge is
+  constructed once with the final host-context, the lifecycle effect is isolated
+  from theme reactivity, and every host→app send is gated behind
+  `oninitialized` — never a teardown-rebuild that would break `ui/initialize`.
+  Gated by a real-iframe Playwright handshake test and a binding live-render of
+  a real Dockyard `analytics-widgets` app under a real agent. Console-only; no
+  Runtime/Protocol change. (D-342)
+
+### Fixed
+
+- **MCP-App re-render resource storm.** On a turn that produced no final answer
+  (the task fails and the transcript re-renders), a single widget render could
+  fire hundreds of `mcp.servers.read_resource` calls and log repeated
+  "Not connected" tool-context delivery failures. The app-document fetch now
+  dedups on the resource URI (an app-prop identity change to the same document
+  no longer refetches and tears the bridge down), and tool-context delivery
+  re-checks the transport is still connected after its async fetch — a bridge
+  closed mid-fetch drops its stale delivery instead of throwing. A failed-turn
+  render is now bounded to a handful of requests with zero delivery errors.
+
+## [1.19.1] — 2026-07-24
+
+Patch: config-validation hotfix for the v1.19.0 skills Postgres driver.
+
+### Fixed
+
+- **Skills `postgres` driver rejected by config validation.** The v1.19.0 skills
+  `postgres` driver was rejected by config validation
+  (`config.skills.driver: must be one of localdb`) despite the driver shipping —
+  the static driver allowlist in the config validator was not extended.
+  `skills.driver: postgres` now validates and boots; a config-validation
+  regression test guards it.
+
+## [1.19.0] — 2026-07-24
+
+Minor: a Postgres driver for the skills subsystem — durable, shared skill storage for multi-instance deployments.
+
+### Added
+
+- **Skills Postgres driver.** The skills subsystem gains a `postgres` storage
+  driver alongside the existing `localdb` (SQLite) default, bringing it to the
+  §9 three-driver persistence parity (in-memory / SQLite / Postgres). Skills now
+  persist in shared, durable Postgres for multi-instance / production
+  deployments instead of only a per-instance SQLite file. The driver sits behind
+  the existing `SkillStore` interface (no interface change, no `Supports*`
+  ceremony), is identity-triple-scoped on every query, carries its own
+  forward-only migrations, and passes the existing skills conformance suite
+  unchanged. `localdb` remains the default — fully backward-compatible.
 
 ## [1.18.1] — 2026-07-24
 
