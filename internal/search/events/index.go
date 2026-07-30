@@ -81,13 +81,35 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 	// The user axis FOLDS to the caller's own when the filter elides it —
 	// this index is the one that already defaulted to the caller and so
 	// never leaked on elision, and the fold makes that a decision rather
-	// than a coincidence. The fold is applied on the widened path too:
+	// than a coincidence. The fold is KEPT on an ordinary widened read:
 	// the bus filter is single-valued, and its fan-in flag WRITES an
 	// admin-scope notice into the ring, so an elided axis is not turned
 	// into an unrequested deployment-wide replay here.
+	//
+	// It is released on exactly ONE input: a read the caller ALREADY
+	// widened across tenants. Folding there is not a narrower answer, it
+	// is a WRONG one — the caller's own user id is a principal of the
+	// caller's OWN tenant, so bounding a foreign tenant's rows by it
+	// matches nothing and the granted, explicitly-requested crossing
+	// answers an empty page indistinguishable from "that tenant has no
+	// events". That silent-empty is the failure this surface's identity
+	// bound exists to prevent, so the crossing widens instead. Nothing is
+	// widened that the request did not ask for: the fan-in flag and the
+	// admin-scope notice are already set by the tenant crossing itself,
+	// and the per-row tenant bound below still holds the read to the
+	// tenants the caller named.
 	users := search.EffectiveUserSet(callerID.UserID, req)
+	if elevated && crossTenant {
+		users = search.WidenedUserSet(req)
+	}
 	scopeSession := callerID.SessionID
-	scopeUser := users[0]
+	// A widened read with an elided user axis has no single user to name;
+	// the bus's fan-in flag makes the named user irrelevant on that path,
+	// and the per-row bound below is what actually scopes it.
+	scopeUser := callerID.UserID
+	if len(users) > 0 {
+		scopeUser = users[0]
+	}
 	scopeTenant := callerID.TenantID
 	if len(req.Filter.SessionIDs) > 0 {
 		// V1 admits only a single-session-targeted replay per call;
@@ -116,6 +138,11 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 	// the other. The bounds are the effective sets, so the fan is exactly
 	// as wide as the request asked for and no wider.
 	tenantBound := setOf(search.EffectiveTenantSet(callerID.TenantID, req))
+	// An EMPTY user bound is the wildcard, and it is reachable from exactly
+	// one input: the widened cross-tenant read whose user axis was elided.
+	// Every other path produces a non-empty set (the fold guarantees at
+	// least the caller), so the bound never degrades into "match nothing"
+	// and never silently becomes "match everything".
 	userBound := setOf(users)
 	for _, f := range req.Facets {
 		if f.Key == "events.type" && f.Value != "" {
@@ -156,8 +183,10 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 			if _, ok := tenantBound[ev.Identity.TenantID]; !ok {
 				continue
 			}
-			if _, ok := userBound[ev.Identity.UserID]; !ok {
-				continue
+			if len(userBound) > 0 {
+				if _, ok := userBound[ev.Identity.UserID]; !ok {
+					continue
+				}
 			}
 		}
 		if !search.TimeInWindow(ev.OccurredAt, req) {

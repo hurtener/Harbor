@@ -92,8 +92,14 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 	// for the wrong vocabulary. Surface it loud rather than silently
 	// routing onto the steering inbox.
 	if methods.IsSearchMethod(method) {
+		// The route named here is the one an operator can actually call:
+		// `POST /v1/control/{method}` fronts the SearchSurface for all five
+		// `search.*` methods. There is no `/v1/search` route and never was —
+		// an error that names a non-existent endpoint sends the reader
+		// somewhere that 404s, which is worse than naming no route at all.
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
-			"method %q is a search method; dispatch through the SearchSurface (POST /v1/search) instead", string(method))
+			"method %q is a search method; dispatch through the SearchSurface (POST /v1/control/%s) instead",
+			string(method), string(method))
 	}
 	// the five `runtime.*` / `metrics.*` posture
 	// methods are dispatched by PostureSurface, not ControlSurface — a

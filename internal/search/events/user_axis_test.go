@@ -268,6 +268,102 @@ func TestEventsSearcher_WidenedReadDoesNotAlsoCrossTheOtherAxis(t *testing.T) {
 	}
 }
 
+// TestEventsSearcher_CrossTenantReadWithElidedUserDoesNotFoldToTheCaller —
+// the combination the shipped nine cases never made: an admin claim, a
+// FOREIGN tenant, and an ELIDED user axis.
+//
+// Folding there is not a narrower answer, it is a wrong one. The caller's
+// own user id names a principal of the CALLER's tenant, so bounding a
+// foreign tenant's rows by it matches nothing and a granted, explicitly
+// requested crossing answers an empty page — indistinguishable from "that
+// tenant has no events", which is the silent-empty failure this surface's
+// identity bound exists to prevent.
+//
+// The same-tenant elided arm keeps its fold; that is asserted separately by
+// TestEventsSearcher_AdminClaimReopensBothWidenings, so this arm cannot be
+// satisfied by simply deleting the fold.
+func TestEventsSearcher_CrossTenantReadWithElidedUserDoesNotFoldToTheCaller(t *testing.T) {
+	t.Parallel()
+	const foreignTenant = "t-foreign"
+	for _, scope := range []protocolauth.Scope{protocolauth.ScopeAdmin, protocolauth.ScopeConsoleFleet} {
+		t.Run(string(scope), func(t *testing.T) {
+			t.Parallel()
+			h := newBusHarness(t)
+			defer h.cleanup()
+			seedTwoUsersOneTenant(t, h)
+			// Two DIFFERENT users in the foreign tenant, and NEITHER is the
+			// caller's own user id. A fold to the caller therefore returns
+			// zero foreign rows; a correct widening returns both.
+			for _, u := range []string{"foreign-one", "foreign-two"} {
+				publishRuntimeError(t, h.bus, identity.Quadruple{Identity: identity.Identity{
+					TenantID: foreignTenant, UserID: u, SessionID: u + "-sess",
+				}})
+			}
+
+			ctx := protocolauth.WithScopes(attackerCtx(), []protocolauth.Scope{scope})
+			resp, err := claimedSearcher(t, h).Search(ctx, types.SearchRequest{
+				Filter: types.SearchFilter{TenantIDs: []string{foreignTenant}},
+			})
+			if err != nil {
+				t.Fatalf("cross-tenant read under %s: %v", scope, err)
+			}
+			seeded := seededRows(resp.Rows)
+			if len(seeded) == 0 {
+				t.Fatalf("under %s a granted cross-tenant read with an elided user axis returned "+
+					"NO rows — the user axis folded to the caller's own id, which is a principal "+
+					"of a different tenant, so the granted crossing answers an empty page "+
+					"indistinguishable from an empty tenant", scope)
+			}
+			got := map[string]bool{}
+			for _, r := range seeded {
+				if r.TenantID != foreignTenant {
+					t.Errorf("under %s a tenant-axis widening returned a row from %q, want only %q",
+						scope, r.TenantID, foreignTenant)
+				}
+				got[r.UserID] = true
+			}
+			for _, want := range []string{"foreign-one", "foreign-two"} {
+				if !got[want] {
+					t.Errorf("under %s the widened read is missing %q's rows (saw %v) — the "+
+						"elided axis fanned to fewer users than the tenant holds", scope, want, got)
+				}
+			}
+		})
+	}
+}
+
+// TestEventsSearcher_CrossTenantElidedUserStillHoldsTheTenantBound — the
+// widening above releases the USER bound only. The tenant bound is what
+// still contains the read, and the bus's fan-in flag short-circuits its
+// whole identity comparison, so an unheld tenant bound would return the
+// entire ring.
+func TestEventsSearcher_CrossTenantElidedUserStillHoldsTheTenantBound(t *testing.T) {
+	t.Parallel()
+	const wanted, unwanted = "t-wanted", "t-unwanted"
+	h := newBusHarness(t)
+	defer h.cleanup()
+	seedTwoUsersOneTenant(t, h)
+	publishRuntimeError(t, h.bus, identity.Quadruple{Identity: identity.Identity{
+		TenantID: wanted, UserID: "w-user", SessionID: "w-sess",
+	}})
+	publishRuntimeError(t, h.bus, identity.Quadruple{Identity: identity.Identity{
+		TenantID: unwanted, UserID: "x-user", SessionID: "x-sess",
+	}})
+
+	ctx := protocolauth.WithScopes(attackerCtx(), []protocolauth.Scope{protocolauth.ScopeAdmin})
+	resp, err := claimedSearcher(t, h).Search(ctx, types.SearchRequest{
+		Filter: types.SearchFilter{TenantIDs: []string{wanted}},
+	})
+	if err != nil {
+		t.Fatalf("cross-tenant read: %v", err)
+	}
+	seeded := seededRows(resp.Rows)
+	if len(seeded) != 1 || seeded[0].TenantID != wanted {
+		t.Fatalf("got %d seeded rows %v, want exactly the one row in %q — the released user "+
+			"bound must not release the tenant bound with it", len(seeded), seeded, wanted)
+	}
+}
+
 func TestEventsSearcher_MultiSessionFanInRefused(t *testing.T) {
 	t.Parallel()
 	h := newBusHarness(t)

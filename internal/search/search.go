@@ -47,6 +47,16 @@
 // named foreign user reads that user, and an elided user fans across the
 // effective tenant set rather than folding.
 //
+// The `search.events` index narrows that last clause, and the narrowing
+// is deliberate rather than an oversight: its replay filter is
+// single-valued and its fan-in flag WRITES an admin-scope notice into
+// the ring, so an elided user axis on a SAME-TENANT admin read keeps the
+// caller's own scope instead of becoming an unrequested deployment-wide
+// replay. It DOES fan when the same read already crosses tenants — there
+// the caller's own user id names a principal of a different tenant, so
+// folding would answer an empty page for a crossing the caller
+// explicitly requested and was granted.
+//
 // Every rejection is loud — there is no silent degradation to an empty
 // result set, which would be indistinguishable from "that principal has
 // no rows" (CLAUDE.md §13).

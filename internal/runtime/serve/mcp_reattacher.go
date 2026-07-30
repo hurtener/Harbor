@@ -228,21 +228,7 @@ func (a *MCPConnectionAttacher) reattachLocked(ctx context.Context, owner toolau
 			fmt.Errorf("%w: a connection named %q is already registered to a different owner", mcpdrv.ErrConnectionNameOwnerConflict, desc.Name))
 	}
 
-	ms := config.MCPServerConfig{
-		Name:          desc.Name,
-		TransportMode: transportModeForAdd(desc.Transport),
-		URL:           desc.URL,
-		Command:       append([]string(nil), desc.Command...),
-		// Headers is deliberately ABSENT: operator-supplied static auth headers
-		// are secret and never persisted, so there is nothing to re-supply. A
-		// server that required one answers 401 and the outcome is reported as a
-		// transport failure — never a runtime that believes a header is present
-		// when it is not.
-		OAuthProvider:                desc.OAuthProvider,
-		MetaAnnotations:              cloneAnnotationsForReattach(desc.MetaAnnotations),
-		OAuthDiscoveryAllowedOrigins: append([]string(nil), desc.OAuthDiscoveryAllowedOrigins...),
-		Injection:                    injectionToConfig(desc.Injection),
-	}
+	ms := reattachServerConfig(desc)
 
 	// The BOUNDED per-connection context. Load-bearing: the MCP provider's
 	// Connect carries no internal timeout (it inherits this ctx) and the
@@ -252,18 +238,7 @@ func (a *MCPConnectionAttacher) reattachLocked(ctx context.Context, owner toolau
 	defer cancel()
 
 	var local []func(context.Context) error
-	err := mcpdrv.Attach(actx, ms, mcpdrv.AttachDeps{
-		Catalog:          a.catalog,
-		Registry:         a.registry,
-		Bus:              a.bus,
-		Logger:           a.logger,
-		DefaultIdentity:  a.defaultIdentity,
-		Closers:          &local,
-		OAuthProviders:   a.oauthProviders,
-		OAuthProviderSet: a.oauthProviderSet,
-		ToolContext:      a.toolContext,
-		Owner:            owner,
-	})
+	err := mcpdrv.Attach(actx, ms, a.reattachAttachDeps(owner, &local))
 	// Merge whatever closers Attach appended even on failure (a successful
 	// Connect appends the provider's Close before a later step can fail — drain
 	// it on teardown).
@@ -276,6 +251,87 @@ func (a *MCPConnectionAttacher) reattachLocked(ctx context.Context, owner toolau
 		emit:      true,
 		eventType: agentcfg.EventTypeMCPConnectionReattached,
 		state:     string(agentcfgprotocol.ConnectionStateOnline),
+	}
+}
+
+// reattachAttachDeps assembles the driver dependencies one run-start re-attach
+// runs under. Every field is the SAME construction-time collaborator the admin
+// add door passes, so the two doors drive one attach lifecycle rather than two.
+//
+// It is a named method for the same reason reattachServerConfig is a named
+// function: a dependency that is silently absent here is not visible in any
+// attach outcome — the connection still comes back `online`, just without the
+// bound or the capturer the deployment configured.
+func (a *MCPConnectionAttacher) reattachAttachDeps(owner toolauth.Owner, closers *[]func(context.Context) error) mcpdrv.AttachDeps {
+	return mcpdrv.AttachDeps{
+		Catalog:          a.catalog,
+		Registry:         a.registry,
+		Bus:              a.bus,
+		Logger:           a.logger,
+		DefaultIdentity:  a.defaultIdentity,
+		Closers:          closers,
+		OAuthProviders:   a.oauthProviders,
+		OAuthProviderSet: a.oauthProviderSet,
+		ToolContext:      a.toolContext,
+		Owner:            owner,
+		// The deployment's egress ceiling, threaded exactly as the add path
+		// threads it. Omitting it silently restores the default ceiling across
+		// a restart for a deployment that deliberately lowered the bound. Zero
+		// leaves mcpdrv.Attach on its documented default — a real ceiling,
+		// never an unbounded one.
+		ArtifactEgressMaxBytes: a.artifactEgressMaxBytes,
+	}
+}
+
+// reattachServerConfig rebuilds the driver-level server config from ONE
+// declared descriptor. It is the run-start twin of the value the admin add
+// door builds, and it exists as a named function so the carry can be asserted
+// field-by-field rather than only observed through a live attach.
+//
+// EVERY declared descriptor field is carried, or is deliberately absent with
+// its reason stated here. A field on the descriptor that nothing carries
+// forward is INERT: the connection comes back `online`, emits its lifecycle
+// event, and is silently missing the surface a sibling change added to it. The
+// descriptor's reflected field set is pinned against this list by test, so a
+// NEW field cannot land without being carried here or being named deliberate.
+//
+//	Name                         → carried
+//	Transport                    → carried (as TransportMode)
+//	Command                      → carried (copied)
+//	URL                          → carried
+//	OAuthProvider                → carried (a NAME; the bearer is minted per call)
+//	MetaAnnotations              → carried (cloned)
+//	OAuthDiscoveryAllowedOrigins → carried (copied)
+//	Injection                    → carried (kill-switch-gated by the caller)
+//	ArtifactByteEligible         → carried
+//	ArtifactParams               → carried (deep-copied)
+//
+// `Headers` is NOT a descriptor field at all, and that is the one deliberate
+// absence: operator-supplied static auth headers are secret and never
+// persisted, so there is nothing to re-supply. A server that required one
+// answers 401 and the outcome is reported as a transport failure — never a
+// runtime that believes a header is present when it is not.
+func reattachServerConfig(desc agentcfg.MCPConnectionDescriptor) config.MCPServerConfig {
+	return config.MCPServerConfig{
+		Name:                         desc.Name,
+		TransportMode:                transportModeForAdd(desc.Transport),
+		URL:                          desc.URL,
+		Command:                      append([]string(nil), desc.Command...),
+		OAuthProvider:                desc.OAuthProvider,
+		MetaAnnotations:              cloneAnnotationsForReattach(desc.MetaAnnotations),
+		OAuthDiscoveryAllowedOrigins: append([]string(nil), desc.OAuthDiscoveryAllowedOrigins...),
+		Injection:                    injectionToConfig(desc.Injection),
+		// The egress-substitution declaration. Without it a byte-eligible
+		// connection comes back online and byte-INELIGIBLE, so the artifact id
+		// the model authored is handed to the remote server as a literal
+		// string on every call after a restart — silent degradation of a
+		// declared, versioned surface. NON-SECRET (a boolean plus parameter
+		// names); mcpdrv.Attach re-enforces the eligibility and transport
+		// rules and Discover re-checks each mapped parameter against the
+		// server's own published inputSchema, so the re-attach re-applies
+		// these gates against CURRENT policy exactly like every other one.
+		ArtifactByteEligible: desc.ArtifactByteEligible,
+		ArtifactParams:       config.MCPArtifactParams(cloneArtifactParams(desc.ArtifactParams)),
 	}
 }
 
