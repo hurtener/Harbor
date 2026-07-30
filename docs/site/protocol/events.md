@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 138 canonical event types a Harbor Runtime can publish, read from the live
+The 140 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -700,6 +700,38 @@ Payload `MCPConnectionPausedPayload` — safe payload (delivered typed, verbatim
 | `OccurredAt` | `time.Time` |  |
 
 ## `mcp.connection.pending`
+
+Payload `MCPConnectionLifecyclePayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `ServerID` | `string` |  |
+| `Transport` | `string` |  |
+| `State` | `string` |  |
+| `RevisionID` | `string` |  |
+| `PauseToken` | `string` |  |
+| `Reason` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `mcp.connection.reattach_failed`
+
+Payload `MCPConnectionLifecyclePayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `ServerID` | `string` |  |
+| `Transport` | `string` |  |
+| `State` | `string` |  |
+| `RevisionID` | `string` |  |
+| `PauseToken` | `string` |  |
+| `Reason` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `mcp.connection.reattached`
 
 Payload `MCPConnectionLifecyclePayload` — safe payload (delivered typed, verbatim).
 

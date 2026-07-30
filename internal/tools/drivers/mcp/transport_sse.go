@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
+	"sync"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -29,10 +33,80 @@ func newSSETransport(cfg Config) mcpsdk.Transport {
 	}
 }
 
+// unownedRequestTimeout bounds a request this driver issues whose CONTEXT THE
+// DRIVER DOES NOT OWN — see [unownedBoundingTransport] for exactly which
+// requests those are and why the bound is load-bearing rather than hygiene.
+const unownedRequestTimeout = 15 * time.Second
+
+// unownedBoundingTransport applies [unownedRequestTimeout] to any request that
+// carries NO deadline of its own and is not a server→client event stream. It is
+// the OUTERMOST-but-one wrapper on every MCP HTTP connection.
+//
+// # Why it exists (a real stall, not a hypothetical)
+//
+// Every request the RUNTIME originates is already bounded: a tool call carries
+// the dispatch policy's deadline, an attach carries the caller's. But the MCP SDK
+// also issues requests on a context this driver never sees — notably the
+// session-termination request its session teardown makes after a failed
+// handshake. Against a server that accepts the TCP connection and then answers
+// nothing, that request blocks FOREVER, so the caller's own bounded context ends
+// the handshake but NOT the teardown that follows it, and the caller never
+// returns. That stall reaches the admin add verb's request AND the run-start
+// re-attach leg, which is synchronous at run start.
+//
+// # Why it is shaped this way
+//
+//   - It bounds only requests with NO deadline. A request the runtime bounded
+//     keeps its own budget untouched, so an operator who raises a slow tool's
+//     `timeout_ms` above this value is never silently pre-empted. A blanket
+//     transport-level response-header timeout would have exactly that bug.
+//   - It exempts the server→client event stream, identified by its
+//     `Accept: text/event-stream` (the protocol-level signal, not a URL or method
+//     guess). That stream is deliberately long-lived; bounding it would break
+//     streaming outright.
+type unownedBoundingTransport struct {
+	base http.RoundTripper
+}
+
+func (t *unownedBoundingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if _, bounded := req.Context().Deadline(); bounded {
+		return t.base.RoundTrip(req)
+	}
+	if strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream") {
+		return t.base.RoundTrip(req)
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), unownedRequestTimeout)
+	resp, err := t.base.RoundTrip(req.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	// The response body is still streaming under ctx: cancelling now would
+	// truncate it. Tie the cancel to the body's Close instead, so the bound
+	// covers the whole exchange without cutting a body the caller is reading.
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// cancelOnCloseBody releases a request-scoped cancel when the response body is
+// closed, so the bounded context outlives the headers but not the exchange.
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	cancel    context.CancelFunc
+	closeOnce sync.Once
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.closeOnce.Do(b.cancel)
+	return err
+}
+
 // buildHTTPClient returns an *http.Client whose transport injects the
 // operator's static cfg.Headers and — when the connection binds an OAuth
-// provider — the per-identity bearer carried on each call's ctx. When
-// neither applies the default http.Client is returned (no allocation).
+// provider — the per-identity bearer carried on each call's ctx. Every
+// connection gets its own client, so the unowned-request liveness bound is
+// installed whether or not the connection injects anything.
 //
 // Transport layering (load-bearing): the bearer transport is the INNERMOST
 // wrapper, so it sets Authorization on the request that actually reaches the
@@ -40,8 +114,10 @@ func newSSETransport(cfg Config) mcpsdk.Transport {
 // static `Authorization` header (rejected at validation, but defence in
 // depth) can therefore never shadow the per-identity bearer.
 func buildHTTPClient(cfg Config) *http.Client {
-	base := http.DefaultTransport
-	rt := base
+	// The liveness bound sits at the BOTTOM of the wrapper stack (closest to the
+	// network), so it sees the request as it will actually be sent and every
+	// injecting wrapper above it has already run.
+	rt := http.RoundTripper(&unownedBoundingTransport{base: http.DefaultTransport})
 	if cfg.OAuthProvider != nil {
 		rt = &bearerInjectingTransport{base: rt}
 	}
@@ -71,13 +147,11 @@ func buildHTTPClient(cfg Config) *http.Client {
 			onScopeShortfall: cfg.OnScopeShortfall,
 		}
 	}
-	// An injection connection (any form) always gets a custom client so its
-	// redirect guard is installed even when no header transport is wired (the
-	// `_meta` form), because the pulled credential still leaves to the
-	// connection host in the request body.
-	if rt == base && cfg.Injection == nil {
-		return http.DefaultClient
-	}
+	// Every connection gets its own client. It deliberately does NOT fall back to
+	// http.DefaultClient any more: that client carries an unwrapped
+	// http.DefaultTransport, so an otherwise-plain connection to an unresponsive
+	// server would keep the stall the bound above exists to close. The allocation
+	// is per-connection (attach-time), not per-call.
 	client := &http.Client{Transport: rt}
 	// Redirect hardening for a credential-injecting connection (the
 	// credential-plane invariant). The injecting transports re-inject the

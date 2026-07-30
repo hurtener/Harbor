@@ -8,11 +8,13 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
@@ -36,6 +38,82 @@ import (
 // tag would be an unreconcilable orphan, so the attach is rejected loudly
 // rather than registering an untagged runtime-add.
 var ErrRuntimeAddOwnerMissing = errors.New("serve: runtime-added mcp connection is missing its (tenant, agent) owner")
+
+// ErrReattachStdioNotAllowed — a DECLARED stdio descriptor's argv[0] is absent
+// from the CURRENT boot stdio allowlist, so the run-start re-attach refuses it.
+// The revision was written while the command was allowlisted; boot policy has
+// since tightened (or the allowlist is empty, the fail-closed default, which
+// refuses every stdio re-attach). Fail-closed: the process is never spawned.
+// Callers compare with errors.Is.
+var ErrReattachStdioNotAllowed = errors.New("serve: declared stdio mcp connection command is not in the current boot allowlist — not re-attached (fail-closed; boot policy is re-applied at run start, not the policy in force when the revision was written)")
+
+// ErrReattachInjectionDisabled — a DECLARED descriptor carries a per-user
+// credential-INJECTION mapping but the fail-closed `tools.allow_wire_injection`
+// opt-in is OFF, so the run-start re-attach refuses to rebuild it. The dev opt-in
+// is a KILL-SWITCH, the exact twin of the provider side's
+// ErrWireDescriptorDisabled: a mapping persisted while the opt-in was on is not
+// rebuilt after a restart with it off. Callers compare with errors.Is.
+var ErrReattachInjectionDisabled = errors.New("serve: declared mcp connection carries a credential-injection mapping and tools.allow_wire_injection is off — not re-attached (the dev opt-in is a kill-switch: a mapping persisted while it was on is not rebuilt after a restart with it off)")
+
+// Re-attach retry-window defaults. The delays are per-(owner, name) and
+// process-local; they exist because the reconcile is synchronous at run start,
+// so a dead declared server would otherwise be re-dialled on every single run.
+const (
+	// defaultReattachTimeout bounds ONE re-attach's dial + handshake + discovery.
+	defaultReattachTimeout = 10 * time.Second
+	// reattachBackoffBase is the first retry delay after a retryable failure.
+	reattachBackoffBase = 30 * time.Second
+	// reattachBackoffMax caps the exponential growth, so a long-down third party
+	// is still retried periodically rather than abandoned.
+	reattachBackoffMax = 15 * time.Minute
+)
+
+// MCPAttacherOption configures the attacher at CONSTRUCTION only. There is no
+// setter: the attacher is a compiled artifact shared across concurrent runs, so
+// its policy inputs are immutable after construction (the concurrent-reuse
+// contract). The variadic shape keeps the existing constructor call sites
+// unchanged — a caller that threads no options gets the fail-closed defaults
+// (empty stdio allowlist, injection opt-in off).
+type MCPAttacherOption func(*MCPConnectionAttacher)
+
+// WithReattachGates threads the CURRENT boot policy the run-start re-attach leg
+// re-applies: the stdio command allowlist and the effective per-user
+// credential-injection opt-in. Both default to their fail-closed values, so a
+// caller that does not thread them refuses every stdio re-attach and every
+// injection-carrying descriptor rather than widening either gate silently.
+func WithReattachGates(stdioAllowlist []string, allowWireInjection bool) MCPAttacherOption {
+	return func(a *MCPConnectionAttacher) {
+		set := make(map[string]struct{}, len(stdioAllowlist))
+		for _, c := range stdioAllowlist {
+			if c != "" {
+				set[c] = struct{}{}
+			}
+		}
+		a.stdioAllowlist = set
+		a.allowWireInjection = allowWireInjection
+	}
+}
+
+// WithReattachTimeout overrides the per-connection re-attach bound. Zero or
+// negative leaves the default. Tests use it to prove the bound fires; operators
+// do not configure it (the value is a runtime constant, not a knob).
+func WithReattachTimeout(d time.Duration) MCPAttacherOption {
+	return func(a *MCPConnectionAttacher) {
+		if d > 0 {
+			a.reattachTimeout = d
+		}
+	}
+}
+
+// WithReattachClock overrides the clock the re-attach backoff reads, so the
+// backoff is testable without sleeping (CLAUDE.md §11). Nil leaves time.Now.
+func WithReattachClock(now func() time.Time) MCPAttacherOption {
+	return func(a *MCPConnectionAttacher) {
+		if now != nil {
+			a.now = now
+		}
+	}
+}
 
 // MCPConnectionAttacher implements agentcfgprotocol.ConnectionAttacher by
 // reusing the boot-time mcpdrv.Attach lifecycle (dial → initialize →
@@ -72,9 +150,72 @@ type MCPConnectionAttacher struct {
 	// driver then stamps no tool-call id at all rather than promising a
 	// context that does not exist. Set once at construction.
 	toolContext mcpdrv.ToolContextCapturer
+	// stdioAllowlist is the CURRENT boot stdio-command allowlist the run-start
+	// re-attach re-applies (the same fail-closed RCE gate the admin add door
+	// applies before it dials). Nil / empty refuses every stdio re-attach. Set
+	// once at construction; a nil allowlist is the fail-closed default, so a
+	// caller that forgets to thread it cannot accidentally widen the gate.
+	stdioAllowlist map[string]struct{}
+	// allowWireInjection is the EFFECTIVE per-user credential-injection opt-in
+	// (`tools.allow_wire_injection`, config flag OR the boot env captured at
+	// process start). It is a KILL-SWITCH on the re-attach path: a mapping
+	// persisted while it was on is not rebuilt after a restart with it off. Set
+	// once at construction; false is the fail-closed default.
+	allowWireInjection bool
+	// reattachTimeout bounds ONE re-attach's dial + handshake + discovery. It is
+	// load-bearing, not hygiene: the MCP provider's Connect carries no internal
+	// timeout (it inherits the caller's ctx) and the reconcile is synchronous at
+	// run start, so an unresponsive declared server would otherwise add its full
+	// stall to every run's start. Set once at construction.
+	reattachTimeout time.Duration
+	// now is the clock the re-attach backoff reads. Injectable so the backoff
+	// tests are deterministic rather than sleeping. Set once at construction.
+	now func() time.Time
 
 	mu      sync.Mutex
 	closers []func(context.Context) error
+	// reattachBackoff is the per-(owner, name) retry window the run-start attach
+	// leg holds so a permanently-unreachable or permanently-refused declared
+	// server is not re-dialled — and not re-reported — at every run start.
+	// INTERNALLY SYNCHRONISED: guarded by mu, the same lock that serialises the
+	// whole attach. It is deliberately process-local and NOT persisted: a
+	// crash-looping deployment re-dials once per boot, which is bounded by the
+	// boot rate rather than the run rate, and reconcile-attempt scheduling
+	// metadata does not belong in the state store.
+	reattachBackoff map[reattachKey]*reattachState
+}
+
+// reattachKey identifies one reconciling owner's connection for the backoff
+// table. The (tenant, agent) owner is part of the key so two owners' identically
+// named connections back off independently — a shared runtime must not let one
+// tenant's dead server suppress another's retry.
+type reattachKey struct {
+	tenant string
+	agent  string
+	name   string
+}
+
+// reattachState is one (owner, name)'s retry window.
+type reattachState struct {
+	// fingerprint identifies the descriptor the window was opened for. A changed
+	// descriptor (an operator edit) resets the window immediately, so a fix is
+	// picked up at the very next run start rather than after the backoff.
+	fingerprint string
+	// failures counts consecutive failures, driving the exponential delay.
+	failures int
+	// nextAttempt is the earliest instant a retry may dial. Zero means "retry
+	// now"; terminal (below) overrides it.
+	nextAttempt time.Time
+	// terminal marks a class that cannot heal by re-dialling (a boot-policy
+	// refusal, a cross-owner name collision, an ambiguous id). Such a class is
+	// reported ONCE per attempted descriptor and then suppressed until the
+	// descriptor changes or the process restarts — never re-emitted on every run
+	// start, and never silently dropped (the suppressed count rides the next
+	// emitted event).
+	terminal bool
+	// suppressed counts attempts skipped since the last EMITTED event, so the
+	// suppression is reported rather than invisible.
+	suppressed int
 }
 
 // Compile-time assertions that the production concrete satisfies BOTH seams the
@@ -86,6 +227,7 @@ type MCPConnectionAttacher struct {
 var (
 	_ agentcfgprotocol.ConnectionAttacher     = (*MCPConnectionAttacher)(nil)
 	_ agentcfgprotocol.DiscoveryOriginApplier = (*MCPConnectionAttacher)(nil)
+	_ projection.ConnectionReattacher         = (*MCPConnectionAttacher)(nil)
 )
 
 // NewMCPConnectionAttacher builds the production attacher. catalog,
@@ -96,8 +238,11 @@ var (
 // providers capture through — pass the runtime's store so a runtime-added
 // server behaves like a boot-config one; nil is legitimate only where no store
 // exists (the driver then stamps no tool-call id).
-func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider, oauthProviderSet toolauth.ProviderSet, toolContext mcpdrv.ToolContextCapturer) *MCPConnectionAttacher {
-	return &MCPConnectionAttacher{
+// opts thread the run-start re-attach leg's CURRENT boot policy (the stdio
+// allowlist, the credential-injection opt-in) and its test seams. Every option
+// defaults fail-closed, so an omitted option never widens a gate.
+func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider, oauthProviderSet toolauth.ProviderSet, toolContext mcpdrv.ToolContextCapturer, opts ...MCPAttacherOption) *MCPConnectionAttacher {
+	a := &MCPConnectionAttacher{
 		catalog:          catalog,
 		registry:         registry,
 		bus:              bus,
@@ -106,7 +251,16 @@ func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Regist
 		oauthProviders:   oauthProviders,
 		oauthProviderSet: oauthProviderSet,
 		toolContext:      toolContext,
+		reattachTimeout:  defaultReattachTimeout,
+		now:              time.Now,
+		reattachBackoff:  make(map[reattachKey]*reattachState),
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(a)
+		}
+	}
+	return a
 }
 
 // Attach drives the real MCP attach for one runtime-added connection. The

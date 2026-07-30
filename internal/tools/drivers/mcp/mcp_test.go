@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -874,12 +875,119 @@ func TestHeaderInjectingTransport_AddsHeaders(t *testing.T) {
 	}
 }
 
-func TestBuildHTTPClient_NoHeaders_ReturnsDefault(t *testing.T) {
-	got := buildHTTPClient(Config{})
-	if got != http.DefaultClient {
-		t.Errorf("expected http.DefaultClient when no headers, got custom client")
+// TestBuildHTTPClient_AlwaysBounded pins the liveness invariant that REPLACED
+// the old "no headers → http.DefaultClient" allocation shortcut: EVERY MCP HTTP
+// connection gets its own client whose transport stack bottoms out in the
+// unowned-request bound, including the plainest connection with no headers, no
+// bearer and no injection.
+//
+// The shortcut was a real stall: http.DefaultClient carries an unwrapped
+// http.DefaultTransport, so requests the MCP SDK issues on a context this driver
+// does not own — notably its session teardown after a failed handshake — had no
+// bound at all against a server that accepts and never answers. That blocked the
+// admin add verb and the run-start re-attach leg indefinitely.
+func TestBuildHTTPClient_AlwaysBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{name: "plain connection", cfg: Config{}},
+		{name: "static headers", cfg: Config{Headers: map[string]string{"X-Fixture": "v"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildHTTPClient(tc.cfg)
+			if got == http.DefaultClient {
+				t.Fatal("buildHTTPClient returned http.DefaultClient — its transport carries no liveness bound")
+			}
+			if !hasUnownedBound(got.Transport) {
+				t.Fatalf("client transport stack %T has no unownedBoundingTransport at its base", got.Transport)
+			}
+		})
 	}
 }
+
+// hasUnownedBound walks the driver's own RoundTripper wrappers looking for the
+// liveness bound at the base of the stack.
+func hasUnownedBound(rt http.RoundTripper) bool {
+	for range 8 {
+		switch v := rt.(type) {
+		case *unownedBoundingTransport:
+			return true
+		case *bearerInjectingTransport:
+			rt = v.base
+		case *injectedHeaderTransport:
+			rt = v.base
+		case *headerInjectingTransport:
+			rt = v.base
+		case *challengeCapturingTransport:
+			rt = v.base
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// TestUnownedBoundingTransport_OnlyBoundsUnownedNonStreamRequests pins the two
+// exemptions that keep the bound from becoming a silent call-budget regression:
+// a request the RUNTIME already bounded keeps its own deadline, and the
+// long-lived server→client event stream is never bounded at all.
+func TestUnownedBoundingTransport_OnlyBoundsUnownedNonStreamRequests(t *testing.T) {
+	var seenDeadline []bool
+	rt := &unownedBoundingTransport{base: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		_, has := req.Context().Deadline()
+		seenDeadline = append(seenDeadline, has)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}}, nil
+	})}
+
+	// 1. An unbounded, non-stream request GAINS the driver's bound.
+	req1, _ := http.NewRequestWithContext(context.Background(), "DELETE", "http://example.invalid/mcp", nil)
+	resp1, err := rt.RoundTrip(req1)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	_ = resp1.Body.Close()
+	if !seenDeadline[0] {
+		t.Fatal("an unbounded non-stream request must gain the driver's liveness bound")
+	}
+
+	// 2. An event stream is EXEMPT — bounding it would break streaming.
+	req2, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.invalid/mcp", nil)
+	req2.Header.Set("Accept", "text/event-stream")
+	resp2, err := rt.RoundTrip(req2)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	_ = resp2.Body.Close()
+	if seenDeadline[1] {
+		t.Fatal("the server→client event stream must NOT be bounded")
+	}
+
+	// 3. A request the runtime ALREADY bounded keeps its own budget — an operator
+	//    who raised a slow tool's timeout above the driver bound is not pre-empted.
+	own := 3 * time.Hour
+	ctx, cancel := context.WithTimeout(context.Background(), own)
+	defer cancel()
+	req3, _ := http.NewRequestWithContext(ctx, "POST", "http://example.invalid/mcp", nil)
+	var got time.Duration
+	rt.base = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		dl, _ := req.Context().Deadline()
+		got = time.Until(dl)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}}, nil
+	})
+	resp3, err := rt.RoundTrip(req3)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	_ = resp3.Body.Close()
+	if got < own-time.Minute {
+		t.Fatalf("an already-bounded request's deadline shrank to %v — the driver bound must never pre-empt the caller's", got)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestProvider_ClassifyConnectError(t *testing.T) {
 	if classifyConnectError(nil) {

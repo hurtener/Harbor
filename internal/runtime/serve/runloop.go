@@ -232,9 +232,20 @@ type RunLoopDriverOptions struct {
 	// imports the concrete MCP driver; this driver stays driver-agnostic).
 	ConnectionDetacher projection.ConnectionDetacher
 
+	// ConnectionReattacher drives the ATTACH leg of run-start reconciliation —
+	// the symmetric twin of ConnectionDetacher, in the same reconcile call. At
+	// run start the driver re-establishes every MCP server the agent's active
+	// config revision DECLARES that the live registry does not carry under the
+	// reconciling owner, which is what makes a runtime-added connection survive a
+	// process restart and what makes a rollback that re-declares a removed
+	// connection bring it back. OPTIONAL — nil yields the detach-only behaviour
+	// byte-for-byte. Injected at the cmd/harbor + devstack boundary (it imports
+	// the concrete MCP driver; this driver stays driver-agnostic).
+	ConnectionReattacher projection.ConnectionReattacher
+
 	// bootDeclaredMCP is the set of boot-declared (yaml) MCP server names the
-	// reconcile MUST NEVER detach (they are not revisioned state). Nil/empty
-	// when no yaml server is declared.
+	// reconcile MUST NEVER detach — nor attach (they carry the zero owner and are
+	// attached by the boot loader). Nil/empty when no yaml server is declared.
 	BootDeclaredMCP map[string]struct{}
 
 	// OAuthProviderReconciler drives the run-start provider-reconcile leg: it
@@ -338,10 +349,12 @@ type RunLoopDriver struct {
 	// the effective hook per run via the shared projection.
 	runCompletionHook *steering.CompletionHookSpec
 
-	// connectionDetacher + bootDeclaredMCP drive the run-start reconcile
-	// detach leg (see the opts godoc). connectionDetacher is nil when the MCP
-	// registry / catalog are absent (no reconcile).
+	// connectionDetacher + connectionReattacher + bootDeclaredMCP drive the
+	// run-start reconcile's two connection passes (see the opts godoc). Both
+	// concretes are nil when the MCP registry / catalog are absent (no
+	// reconcile); a nil reattacher alone leaves the leg detach-only.
 	connectionDetacher      projection.ConnectionDetacher
+	connectionReattacher    projection.ConnectionReattacher
 	bootDeclaredMCP         map[string]struct{}
 	oauthProviderReconciler projection.OAuthProviderReconciler
 
@@ -427,6 +440,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		sessionOverlay:          opts.SessionOverlay,
 		runCompletionHook:       opts.RunCompletionHook,
 		connectionDetacher:      opts.ConnectionDetacher,
+		connectionReattacher:    opts.ConnectionReattacher,
 		bootDeclaredMCP:         opts.BootDeclaredMCP,
 		oauthProviderReconciler: opts.OAuthProviderReconciler,
 		namingDefault:           opts.NamingDefault,
@@ -734,21 +748,74 @@ func (d *RunLoopDriver) projectNaming(ctx context.Context, agentID string, q ide
 	}, nil
 }
 
-// reconcileConnections runs the DETACH leg of run-start reconciliation before
-// the catalog is projected: it detaches every MCP server attached but no
-// longer declared by the agent's active config revision (a removed connection
-// or a rollback past an add), so this and every later run's projected catalog
-// excludes it, the registry no longer lists it, and the transport drains.
+// reconcileConnections runs run-start MCP reconciliation before the catalog is
+// projected. Its connection leg is BIDIRECTIONAL: it DETACHES every MCP server
+// attached but no longer declared by the agent's active config revision (a
+// removed connection or a rollback past an add), so this and every later run's
+// projected catalog excludes it, the registry no longer lists it, and the
+// transport drains — and then RE-ATTACHES every server the active revision
+// DECLARES that the live registry does not carry under the reconciling owner,
+// which is how a runtime-added connection survives a process restart and how a
+// rollback that re-declares a removed connection brings it back. Detach runs
+// first. The attach pass is skipped entirely when no attach concrete is wired.
 // Exposure correctness is next-turn and independent of teardown; teardown is
 // process-global — a DIFFERENT session's in-flight run whose next step calls
 // the detached server fails LOUDLY (typed catalog not-found / closed
 // transport), never a hang or a silent success (see the
 // projection.ReconcileConnections godoc for the full honest-semantics
 // contract). A reconcile error is logged LOUD (never silently swallowed,
-// CLAUDE.md §13) but does NOT fail the run — detach is teardown hygiene, not
-// a run precondition; a run continues even if an old transport refuses to
-// close. Shared verbatim with the devstack twin via the projection package
-// (CLAUDE.md §17.6).
+// CLAUDE.md §13) but does NOT fail the run — neither detach nor re-attach is a
+// run precondition; a run continues even if an old transport refuses to close or
+// a declared third party is unreachable. Shared verbatim with the devstack twin
+// via the projection package (CLAUDE.md §17.6).
+// reconcileConnectionsSweepBudget bounds the WHOLE run-start connection
+// reconcile when an attach concrete is wired. Each individual re-attach is
+// separately bounded inside that concrete; this caps the aggregate so a revision
+// declaring several unreachable servers cannot stack their per-connection bounds
+// onto every run's start. It is a runtime constant, not an operator knob.
+const reconcileConnectionsSweepBudget = 45 * time.Second
+
+// splitReconcileErrors partitions a joined run-start reconcile error into the
+// three buckets the caller treats differently: `other` (a detach failure or a
+// fail-loud read — logged Error and aborts the remaining legs, the shipped
+// behaviour), `reattachLoud` (a refused or unreachable declared connection —
+// logged Error, already reported on its own canonical event, does NOT abort), and
+// `suppressed` (a re-attach parked by its bounded retry window — logged Debug).
+// It walks the joined tree rather than string-matching, so a wrapped leaf is
+// classified by its sentinel.
+func splitReconcileErrors(err error) (other, reattachLoud, suppressed error) {
+	if err == nil {
+		return nil, nil, nil
+	}
+	var others, louds, quiets []error
+	for _, leaf := range flattenJoined(err) {
+		switch {
+		case errors.Is(leaf, ErrReattachSuppressed):
+			quiets = append(quiets, leaf)
+		case errors.Is(leaf, projection.ErrReconcileReattach):
+			louds = append(louds, leaf)
+		default:
+			others = append(others, leaf)
+		}
+	}
+	return errors.Join(others...), errors.Join(louds...), errors.Join(quiets...)
+}
+
+// flattenJoined returns the leaves of an errors.Join tree (the error itself when
+// it is not a join). Only the join shape is unwrapped: a leaf's own %w chain is
+// left intact so errors.Is still sees its sentinels.
+func flattenJoined(err error) []error {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return []error{err}
+	}
+	var out []error
+	for _, child := range joined.Unwrap() {
+		out = append(out, flattenJoined(child)...)
+	}
+	return out
+}
+
 func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string, q identity.Quadruple) {
 	// The PROVIDER-reconcile leg runs independently of the connection detacher:
 	// make the reconciling owner's installed OAuth providers match the current
@@ -769,15 +836,51 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string
 	if d.connectionDetacher == nil {
 		return
 	}
-	detached, err := projection.ReconcileConnections(ctx, d.agentConfig, agentID, q, d.connectionDetacher, d.bootDeclaredMCP)
+	// The reconcile's two connection passes (detach, then attach) run under a
+	// BOUNDED total when an attach concrete is wired: each attach is separately
+	// bounded inside that concrete, and this budget caps the whole sweep so a
+	// revision declaring many unreachable servers cannot stack their bounds onto
+	// every run's start. Applied only when a reattacher is present, so the
+	// detach-only path keeps its exact prior ctx.
+	reconcileCtx := ctx
+	if d.connectionReattacher != nil {
+		var cancel context.CancelFunc
+		reconcileCtx, cancel = context.WithTimeout(ctx, reconcileConnectionsSweepBudget)
+		defer cancel()
+	}
+	detached, attached, err := projection.ReconcileConnections(reconcileCtx, d.agentConfig, agentID, q,
+		d.connectionDetacher, d.connectionReattacher, d.bootDeclaredMCP)
 	if err != nil {
-		d.logger.ErrorContext(ctx, "RunLoopDriver: run-start MCP reconcile detach failed",
-			slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
-		return
+		// Partition the joined error. A re-attach parked by its bounded retry
+		// window is NOT a new failure (it was counted, and its count rides the next
+		// emitted lifecycle event), so it logs at Debug — otherwise a permanently
+		// unreachable declared server would write an Error line on every run start.
+		// A loud re-attach failure logs at Error but does NOT skip the remaining
+		// legs: one refused third party must not stop the discovery-allowance
+		// re-apply for every connection. Anything else (a detach failure, a
+		// fail-loud read) keeps its shipped behaviour and returns.
+		other, reattachLoud, suppressed := splitReconcileErrors(err)
+		if suppressed != nil {
+			d.logger.DebugContext(ctx, "RunLoopDriver: run-start MCP re-attach suppressed by its retry window",
+				slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("detail", suppressed.Error()))
+		}
+		if reattachLoud != nil {
+			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start MCP re-attach failed",
+				slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", reattachLoud.Error()))
+		}
+		if other != nil {
+			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start MCP reconcile detach failed",
+				slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", other.Error()))
+			return
+		}
 	}
 	if detached > 0 {
 		d.logger.InfoContext(ctx, "RunLoopDriver: run-start MCP reconcile detached servers",
 			slog.String("agent_id", agentID), slog.Int("detached", detached))
+	}
+	if attached > 0 {
+		d.logger.InfoContext(ctx, "RunLoopDriver: run-start MCP reconcile re-attached declared servers",
+			slog.String("agent_id", agentID), slog.Int("attached", attached))
 	}
 	// The ALLOWANCE-reconcile leg: re-derive each still-declared runtime-added
 	// connection's OAuth-discovery allow-list from the current revision and

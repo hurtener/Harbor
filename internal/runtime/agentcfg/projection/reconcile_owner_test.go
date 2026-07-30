@@ -23,7 +23,7 @@ func TestReconcileConnections_PassesReconcilingOwnerToDetach(t *testing.T) {
 	// No declared connections — "drop" is attached and undeclared, so it detaches.
 	det := newFakeDetacher("drop")
 
-	if _, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil); err != nil {
+	if _, _, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil, nil); err != nil {
 		t.Fatalf("ReconcileConnections: %v", err)
 	}
 	owners := det.detachOwnersSeen()
