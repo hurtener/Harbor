@@ -1016,6 +1016,12 @@ func connectionsToWire(in []agentcfg.MCPConnectionDescriptor) []prototypes.Agent
 			// desired state — surface it on the revision view (diff / rollback /
 			// list parity). NON-SECRET (a mapping, never a value).
 			Injection: injectionDescriptorToWire(d.Injection),
+			// The egress-substitution declaration is likewise versioned
+			// desired state — surface it so get / list / diff / rollback show
+			// the byte-eligibility and the mapping the connection actually
+			// carries. NON-SECRET (a boolean plus parameter names).
+			ArtifactByteEligible: d.ArtifactByteEligible,
+			ArtifactParams:       d.CloneArtifactParams(),
 		})
 	}
 	return out
@@ -1043,7 +1049,27 @@ func connectionsToDomain(in []prototypes.AgentConfigMCPConnectionDescriptor) []a
 			// allowance-reconcile — one descriptor shape across every door.
 			OAuthDiscoveryAllowedOrigins: append([]string(nil), d.OAuthDiscoveryAllowedOrigins...),
 			Injection:                    injectionDescriptorToDomain(d.Injection),
+			// The egress-substitution declaration is part of the persisted
+			// descriptor, so it round-trips through get / list / diff and the
+			// run-start reconcile — one descriptor shape across every door.
+			ArtifactByteEligible: d.ArtifactByteEligible,
+			ArtifactParams:       cloneArtifactParams(d.ArtifactParams),
 		})
+	}
+	return out
+}
+
+// cloneArtifactParams returns a defensive deep copy of an
+// egress-substitution artifact-parameter mapping (nil for nil / empty),
+// so a wire payload and a persisted revision never share a backing map
+// or slice.
+func cloneArtifactParams(in map[string][]string) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for tool, params := range in {
+		out[tool] = append([]string(nil), params...)
 	}
 	return out
 }

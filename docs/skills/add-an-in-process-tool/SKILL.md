@@ -228,7 +228,36 @@ Three properties follow, and they are what makes this worth reaching for:
 
 `ArtifactRef` works anywhere the deriver walks — a bare field, a slice, a map value, a nested struct. A worked example ships at `examples/tools/artifactstats/`.
 
-This is the **in-process** arm. A tool on the other side of a process boundary (HTTP, MCP, A2A) cannot be handed a Go value, and handing it something dereferenceable instead is a separate design Harbor has deliberately not built — so an `ArtifactRef` parameter belongs to in-process tools only.
+This is the **in-process** arm: `ArtifactRef` is a Go type, so it belongs to in-process tools only.
+
+#### The MCP arm — the same idea for a remote tool
+
+A tool on the other side of a process boundary cannot be handed a Go value, but it CAN be handed the bytes. For an **MCP** connection you declare the mapping in config instead of in a Go type:
+
+```yaml
+tools:
+  mcp_servers:
+    - name: docstore
+      transport_mode: streamable_http
+      url: https://docs.internal.example.com/mcp
+      artifact_byte_eligible: true          # the containment boundary
+      artifact_params:
+        ingest_document: [content]          # tool name -> parameter names
+```
+
+The model still writes an artifact id. The runtime resolves it under the run's own `(tenant, user, session)` — the SAME resolver the in-process arm uses, so the reachable artifact set is identical — and writes the resolved bytes into the outbound tool-call body as standard base64. The remote server sees a document; the model never does.
+
+Five things to know before reaching for it:
+
+- **Byte-eligibility is required and is the boundary.** `artifact_params` without `artifact_byte_eligible: true` is refused at the door, not stored inert. Both are `http`-only; a `stdio` connection is refused (base64 bytes belong in an HTTP body, not a stdio frame).
+- **The mapped parameter must exist in the server's own schema.** Harbor checks each one against the server's discovered `inputSchema` at attach — it must be declared, and declared string-typed. An absent or non-string parameter fails the attach loudly rather than the first call silently.
+- **Every substitution is recorded.** `mcp.artifact_egressed` carries the artifact id, server, tool, parameter, byte count and a `sha256:` digest — never the bytes — and it is emitted **fail-closed before the wire request**. If the record cannot be written, the call does not happen.
+- **There is a ceiling and it refuses rather than truncates.** `tools.mcp_artifact_egress_max_bytes` (default 8 MiB) bounds one substituted value; an oversize artifact fails loud naming the artifact, its size and the ceiling. A half-delivered document is a corruption, not a bounded read.
+- **Known limit: an MCP App's tool callback cannot use a byte-mapped parameter.** That path is browser-driven with no run behind it, so no resolver is seated and the call fails loud. Giving it its own resolver would create a second, differently-scoped definition of what the feature can reach.
+
+Be deliberate about eligibility: it decides which *remote servers* may receive a user's artifact content, and artifacts are stored as authored (unredacted), so a byte-eligible connection can move whatever an artifact contains. It does not widen which artifacts a run can reach — only where they can go.
+
+The HTTP and A2A transports remain unbuilt; the seam is visibly partial rather than silently so.
 
 ## 5. Errors — fail loudly
 

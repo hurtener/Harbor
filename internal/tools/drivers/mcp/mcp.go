@@ -18,6 +18,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/artifactegress"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 )
 
@@ -264,6 +265,34 @@ type Config struct {
 	// once at construction; immutable thereafter — the per-user value is pulled
 	// per-call from the ctx and never held here (the concurrent-reuse contract).
 	Injection *CredentialInjection
+
+	// ArtifactEgress, when non-empty, declares which parameters on which
+	// of this server's tools carry artifact BYTES. When a mapped
+	// parameter arrives carrying an artifact id, the driver resolves it
+	// through the run-scoped resolver seated on the dispatch ctx and
+	// writes the resolved bytes into the outbound tool-call body as
+	// standard base64 — the model authored an id and never sees content.
+	//
+	// Set only when the operator declared the connection byte-eligible;
+	// the boot validator, both control-plane persistence doors and
+	// [Attach] each refuse a mapping without that declaration, so the
+	// driver never has to re-derive the eligibility rule. Empty leaves
+	// every outbound call byte-identical to a build without the feature.
+	//
+	// Read once at construction and captured BY VALUE into each tool's
+	// invocation closure at Discover, so a live mapping change takes
+	// effect at the next attach / reconcile and never mid-flight (the
+	// concurrent-reuse contract).
+	ArtifactEgress artifactegress.Mapping
+
+	// ArtifactEgressMaxBytes bounds ONE substituted artifact value on one
+	// outbound call. Resolved from the operator's
+	// `tools.mcp_artifact_egress_max_bytes` (which carries a documented
+	// default) before construction. A value above it is REFUSED loud,
+	// never truncated. Ignored when ArtifactEgress is empty; when it is
+	// not, a non-positive value fails the call rather than being read as
+	// "unbounded".
+	ArtifactEgressMaxBytes int
 }
 
 // InjectionForm selects how a receiver-style MCP server's per-user credential is
@@ -365,6 +394,16 @@ func (c Config) validate() error {
 	// is mandatory because the event bus rejects empty-triple events.
 	if c.DefaultIdentity.TenantID == "" || c.DefaultIdentity.UserID == "" || c.DefaultIdentity.SessionID == "" {
 		return fmt.Errorf("%w: DefaultIdentity must be fully populated (tenant/user/session)", ErrInvalidConfig)
+	}
+	// A connection that maps artifact parameters must carry a positive
+	// egress ceiling. Attach resolves the operator's configured value (or
+	// the documented default) before construction, so this is
+	// defence-in-depth for a programmatic New() caller who armed the
+	// mapping and left the ceiling zero: failing at CONSTRUCTION beats
+	// failing identically on every mapped call, and a zero must never be
+	// read as "unbounded".
+	if !c.ArtifactEgress.IsEmpty() && c.ArtifactEgressMaxBytes <= 0 {
+		return fmt.Errorf("%w: ArtifactEgress declares a mapping but ArtifactEgressMaxBytes is %d — an egress ceiling is mandatory and a non-positive value is never read as unbounded", ErrInvalidConfig, c.ArtifactEgressMaxBytes)
 	}
 	// Per-user credential injection is mutually exclusive with the bearer/oauth
 	// mode and a static Authorization header (one auth mode per connection), and
@@ -658,6 +697,10 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	// checked for a cross-surface collision once discovery is complete.
 	out := make([]tools.ToolDescriptor, 0, len(toolsRes.Tools))
 	toolNames := make(map[string]struct{}, len(toolsRes.Tools))
+	// The discovered input schemas, kept for the egress-mapping check
+	// below: a mapped parameter is validated against the SERVER'S OWN
+	// declaration rather than trusted.
+	inputSchemas := make(map[string]any, len(toolsRes.Tools))
 	resourceURIs := make(map[string]struct{})
 	promptNames := make(map[string]struct{})
 	for _, t := range toolsRes.Tools {
@@ -677,6 +720,7 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 			continue
 		}
 		toolNames[t.Name] = struct{}{}
+		inputSchemas[t.Name] = t.InputSchema
 		out = append(out, desc)
 	}
 
@@ -715,7 +759,106 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 		return nil, err
 	}
 
+	// Every egress-mapped parameter must be DECLARED by the server, and
+	// declared string-typed. Checking here rather than at first call is
+	// what makes a server that changes its schema fail the next attach
+	// LOUDLY instead of the next call silently.
+	if err := p.checkArtifactEgressSchema(inputSchemas); err != nil {
+		return nil, err
+	}
+
 	return out, nil
+}
+
+// checkArtifactEgressSchema validates every egress-mapped parameter
+// against the server's OWN discovered inputSchema: the tool must exist,
+// the parameter must be declared, and it must be declared string-typed.
+//
+// The reason this check exists rather than trusting the operator's
+// mapping is the argument-side reading of a rule Harbor already holds
+// on the capability side: advertising a capability nothing services is
+// a soft protocol violation, and Harbor declaring "this parameter takes
+// artifact bytes" against a server whose schema never declared such a
+// parameter is the same shape one layer down. The check turns the wire
+// encoding from Harbor's assumption into a contract checked against the
+// server's own declaration.
+//
+// The bound is stated so it is not rediscovered as a defect: this is a
+// POINT-IN-TIME contract, checked at attach against the tool set
+// discovered then. A server that mutates its schema without a
+// `tools/list_changed` notification can drift out from under a
+// validated mapping; the drift then surfaces as a server-side
+// argument-validation error on the wire — a loud failure rather than a
+// silent wrong-shape send. Closing that properly belongs to the
+// tool-list-changed work, not here.
+func (p *Provider) checkArtifactEgressSchema(inputSchemas map[string]any) error {
+	if p.cfg.ArtifactEgress.IsEmpty() {
+		return nil
+	}
+	for _, toolName := range p.cfg.ArtifactEgress.Tools() {
+		schema, known := inputSchemas[toolName]
+		if !known {
+			return fmt.Errorf("%w: server %q declares no tool named %q, so its artifact_params mapping addresses nothing",
+				ErrArtifactEgressSchema, p.source, toolName)
+		}
+		props, ok := schemaProperties(schema)
+		if !ok {
+			return fmt.Errorf("%w: server %q tool %q publishes no object input schema, so an artifact_params mapping cannot be checked against it",
+				ErrArtifactEgressSchema, p.source, toolName)
+		}
+		for _, param := range p.cfg.ArtifactEgress.ParamsFor(toolName) {
+			decl, declared := props[param]
+			if !declared {
+				return fmt.Errorf("%w: server %q tool %q does not declare a parameter named %q in its own inputSchema",
+					ErrArtifactEgressSchema, p.source, toolName, param)
+			}
+			if !schemaDeclaresString(decl) {
+				return fmt.Errorf("%w: server %q tool %q declares parameter %q as a non-string type; artifact bytes are delivered as an RFC 4648 §4 base64 STRING, so a non-string slot would be refused by the server's own validation",
+					ErrArtifactEgressSchema, p.source, toolName, param)
+			}
+		}
+	}
+	return nil
+}
+
+// schemaProperties extracts the `properties` object from a discovered
+// JSON Schema. The SDK carries a client-side InputSchema as the decoded
+// JSON value, so this walks maps rather than a typed schema.
+func schemaProperties(schema any) (map[string]any, bool) {
+	obj, ok := schema.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	props, ok := obj["properties"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	return props, true
+}
+
+// schemaDeclaresString reports whether a property schema declares the
+// string type. It accepts both the scalar form (`"type": "string"`) and
+// the union form (`"type": ["null", "string"]`) that a nullable
+// declaration produces, because both are legitimate ways for a server
+// to say the slot takes a string.
+func schemaDeclaresString(decl any) bool {
+	obj, ok := decl.(map[string]any)
+	if !ok {
+		return false
+	}
+	switch t := obj["type"].(type) {
+	case string:
+		return t == "string"
+	case []any:
+		for _, entry := range t {
+			if s, isString := entry.(string); isString && s == "string" {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
 }
 
 // checkOAuthBindingAmbiguity fails loud when a per-entry `tool_oauth_providers`
@@ -813,12 +956,38 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	// concurrent-reuse contract: no shared mutable per-run state on the
 	// Provider.
 	toolApp := parseAppRef(t.Meta)
+	// The artifact-parameter mapping and the ceiling are captured BY
+	// VALUE here, at discovery, for the same reason toolApp above is: the
+	// Provider is a compiled artifact and per-call state belongs on the
+	// ctx, not on a field a live reconfiguration could mutate underneath
+	// an in-flight call. A mapping change therefore takes effect at the
+	// next attach / reconcile — the next-turn projection posture every
+	// other connection field has.
+	egressParams := p.cfg.ArtifactEgress.ParamsFor(mcpName)
+	egressMapping := p.cfg.ArtifactEgress
+	egressMaxBytes := p.cfg.ArtifactEgressMaxBytes
 	invoke := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+		// Egress substitution runs ONCE per dispatched call, AHEAD of the
+		// reliability shell. The shell runs up to MaxRetries+1 attempts
+		// (four at the package default), so resolving inside it would make
+		// the transient footprint `ceiling x attempts x in-flight` instead
+		// of `ceiling x in-flight`, and would re-read the store on every
+		// attempt. It is also correct on the merits: an unresolvable id is
+		// a model mistake, not a transient fault, so retrying it burns the
+		// budget without changing the answer.
+		var plan egressPlan
+		if len(egressParams) > 0 {
+			var err error
+			plan, err = p.prepareEgress(ctx, mcpName, args, egressMapping, egressMaxBytes)
+			if err != nil {
+				return tools.ToolResult{}, err
+			}
+		}
 		return tools.RunWithPolicy(
 			ctx,
 			args,
 			func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-				return p.callTool(ctx, mcpName, args, toolApp)
+				return p.callTool(ctx, mcpName, args, toolApp, plan)
 			},
 			nil, // server-side schema validates on the wire; client-side compiled
 			nil, // output validator is optional.
@@ -869,13 +1038,20 @@ func deriveSideEffect(a *mcpsdk.ToolAnnotations) tools.SideEffect {
 // the tool-DEFINITION MCP App binding captured at discovery (nil for a
 // non-app tool); it is reconciled with any per-result `_meta.ui` hint to
 // produce the effective app reference on the result.
-func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessage, toolApp *AppRef) (tools.ToolResult, error) {
+func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessage, toolApp *AppRef, plan egressPlan) (tools.ToolResult, error) {
 	session, err := p.sessionForRead()
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
 	var argMap map[string]any
-	if len(args) > 0 {
+	switch {
+	case plan.args != nil:
+		// The egress-substituted argument map, decoded and resolved ONCE
+		// per dispatched call before the reliability shell. Reusing it
+		// across attempts is what makes the resolve-once property hold;
+		// re-decoding `args` here would silently drop every substitution.
+		argMap = plan.args
+	case len(args) > 0:
 		if err := json.Unmarshal(args, &argMap); err != nil {
 			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
 		}
@@ -942,6 +1118,14 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name, err)
 	}
 	value, lowerErr := lowerCallToolResult(res)
+	// The substitution RECORD rides the observation — ids, sizes and a
+	// digest, never the bytes. It is deliberately an EXPORTED, marshalled
+	// field (contrast AppRef, which is `json:"-"` and deliberately kept
+	// out of the observation): the model authored the id, and telling it
+	// "the id you named was delivered, N bytes" is honest, content-free
+	// and replayable. Without it the model would have no way to tell a
+	// delivered document from an ignored parameter.
+	value.ArtifactEgress = plan.records
 	// MCP App discovery: the effective app reference is the tool-DEFINITION
 	// binding (the spec-conformant source of the `ui://` resource URI,
 	// captured at discovery), reconciled with any optional per-result

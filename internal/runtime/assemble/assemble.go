@@ -987,6 +987,12 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// initialize handshake (the host's rendering ability does not vary per
 	// server). Defaults to the inline-only baseline.
 	hostDisplayModes := cfg.Tools.MCPAppHostDisplayModes()
+	// The egress-substitution ceiling, resolved once from the operator's
+	// config so the documented default applies when the key is unset.
+	// Deployment-level rather than per-connection: it bounds one
+	// substituted value on one outbound call, and the resource it bounds
+	// (network + memory) is the deployment's, not a connection's.
+	egressMaxBytes := cfg.Tools.ResolvedMCPArtifactEgressMaxBytes()
 	// The MCP Apps tool-context store: MCP providers capture the input +
 	// lowered result behind a declared `ui://` app through it, and the host
 	// reads it back for `mcp.apps.tool_context`. Built over the runtime's
@@ -1024,6 +1030,10 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 			// boot providers, so boot bindings still resolve).
 			OAuthProviders:   providers,
 			OAuthProviderSet: providerSet,
+			// Egress substitution: the operator's ceiling for one substituted
+			// artifact value on one outbound call. The per-connection mapping
+			// and eligibility ride ms itself.
+			ArtifactEgressMaxBytes: egressMaxBytes,
 		}); err != nil {
 			return fmt.Errorf("mcp[%s]: %w", ms.Name, err)
 		}

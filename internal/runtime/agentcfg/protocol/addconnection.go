@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
@@ -111,6 +112,19 @@ type AttachRequest struct {
 	// NON-SECRET (a broker name + a target key/form); the pulled value is resolved
 	// per-call from the ctx identity and never rides this request.
 	Injection *agentcfg.MCPCredentialInjectionDescriptor
+	// ArtifactByteEligible is the operator's declaration that this
+	// connection MAY receive artifact bytes through egress substitution.
+	// NON-SECRET. The attacher carries it into the config.MCPServerConfig
+	// it builds so the driver's shared egress engine is armed for this
+	// connection — a field on the descriptor that nothing carries forward
+	// is inert, which is the wiring-gap shape a discovery allow-list
+	// already hit on this exact path.
+	ArtifactByteEligible bool
+	// ArtifactParams is the non-secret per-tool artifact-parameter
+	// mapping. The attacher carries it into the config.MCPServerConfig so
+	// the boot path and the runtime-add path share ONE egress engine
+	// rather than growing a second. Requires ArtifactByteEligible.
+	ArtifactParams map[string][]string
 }
 
 // ConnectionState is the explicit attach lifecycle state surfaced on the
@@ -239,6 +253,8 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		MetaAnnotations:              cloneAnnotations(desc.MetaAnnotations),
 		OAuthDiscoveryAllowedOrigins: append([]string(nil), desc.OAuthDiscoveryAllowedOrigins...),
 		Injection:                    desc.Injection.Clone(),
+		ArtifactByteEligible:         desc.ArtifactByteEligible,
+		ArtifactParams:               desc.CloneArtifactParams(),
 	})
 
 	switch {
@@ -367,6 +383,19 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 		if len(c.OAuthDiscoveryAllowedOrigins) > 0 {
 			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: stdio transport must not carry oauth_discovery_allowed_origins (no HTTP discovery walk)", ErrInvalidConnection)
 		}
+		// Egress substitution is refused on stdio for the same reason
+		// every other http-only field is: base64-encoded artifact bytes
+		// belong in an HTTP body, not a stdio frame, and a declaration a
+		// connection can never exercise advertises a capability nothing
+		// services. Both fields are refused, not just the mapping —
+		// accepting a bare eligibility flag here would persist a
+		// declaration that means nothing on this transport.
+		if c.ArtifactByteEligible {
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: stdio transport must not declare artifact_byte_eligible (base64-encoded artifact bytes belong in an HTTP body, not a stdio frame)", ErrInvalidConnection)
+		}
+		if len(c.ArtifactParams) > 0 {
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: stdio transport must not carry artifact_params (base64-encoded artifact bytes belong in an HTTP body, not a stdio frame)", ErrInvalidConnection)
+		}
 		return agentcfg.MCPConnectionDescriptor{
 			Name:            name,
 			Transport:       transport,
@@ -384,6 +413,10 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 		if oerr != nil {
 			return agentcfg.MCPConnectionDescriptor{}, nil, nil, oerr
 		}
+		params, perr := normalizeArtifactParams(c.ArtifactByteEligible, c.ArtifactParams)
+		if perr != nil {
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, perr
+		}
 		return agentcfg.MCPConnectionDescriptor{
 			Name:                         name,
 			Transport:                    transport,
@@ -391,6 +424,8 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 			OAuthProvider:                strings.TrimSpace(c.OAuthProvider),
 			MetaAnnotations:              cloneAnnotations(c.MetaAnnotations),
 			OAuthDiscoveryAllowedOrigins: origins,
+			ArtifactByteEligible:         c.ArtifactByteEligible,
+			ArtifactParams:               params,
 		}, c.OAuth, c.Injection, nil
 	default:
 		return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: unknown transport %q (want stdio|http)", ErrInvalidConnection, c.Transport)
@@ -692,6 +727,8 @@ func descriptorToWire(d agentcfg.MCPConnectionDescriptor) prototypes.AgentConfig
 		MetaAnnotations:              cloneAnnotations(d.MetaAnnotations),
 		OAuthDiscoveryAllowedOrigins: append([]string(nil), d.OAuthDiscoveryAllowedOrigins...),
 		Injection:                    injectionDescriptorToWire(d.Injection),
+		ArtifactByteEligible:         d.ArtifactByteEligible,
+		ArtifactParams:               d.CloneArtifactParams(),
 	}
 }
 
@@ -708,6 +745,54 @@ func injectionDescriptorToWire(d *agentcfg.MCPCredentialInjectionDescriptor) *pr
 		BasicUsername: d.BasicUsername,
 		MetaKey:       d.MetaKey,
 	}
+}
+
+// normalizeArtifactParams validates and normalises a connection's
+// egress-substitution artifact-parameter mapping.
+//
+// Two rules are enforced here, both fail-loud with ErrInvalidConnection
+// so the wire handler's 400 fires and NOTHING is persisted:
+//
+//  1. A mapping REQUIRES the byte-eligibility declaration on the same
+//     connection. The flag IS the containment boundary for egress
+//     substitution, so a mapping without it is refused rather than
+//     quietly stored inert — a persisted mapping that does nothing is
+//     exactly the shape an operator would later read as "egress is
+//     configured".
+//  2. The mapping's SHAPE goes through the single shared authority in
+//     internal/config (non-empty tool name, at least one parameter, no
+//     empty or duplicate parameter name), the same way the `_meta`
+//     annotation rules do — so the boot validator, both persistence
+//     doors and the driver's attach enforce ONE rule set.
+//
+// The result is deterministically ordered (parameters sorted per tool)
+// and never nil-vs-empty ambiguous, so the two doors record identical
+// bytes for identical logical input and a re-order cannot perturb the
+// revision's content hash.
+//
+// The half this cannot do is the schema check — whether the server
+// itself declares each mapped parameter, string-typed. That needs the
+// live discovered tool set and runs at attach.
+func normalizeArtifactParams(eligible bool, in map[string][]string) (map[string][]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	if !eligible {
+		return nil, fmt.Errorf("%w: artifact_params requires artifact_byte_eligible on the same connection — the eligibility declaration is the containment boundary for egress substitution, so a mapping without it is refused rather than persisted inert", ErrInvalidConnection)
+	}
+	if err := config.ValidateMCPArtifactParams(in); err != nil {
+		return nil, fmt.Errorf("%w: artifact_params: %s", ErrInvalidConnection, err.Error())
+	}
+	out := make(map[string][]string, len(in))
+	for tool, params := range in {
+		normalised := make([]string, 0, len(params))
+		for _, p := range params {
+			normalised = append(normalised, strings.TrimSpace(p))
+		}
+		sort.Strings(normalised)
+		out[strings.TrimSpace(tool)] = normalised
+	}
+	return out, nil
 }
 
 // normalizeDiscoveryOrigins trims, de-duplicates, and validates a discovery

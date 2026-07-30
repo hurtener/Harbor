@@ -601,6 +601,16 @@
           "key": "oauth_discovery_allowed_origins",
           "type": "array",
           "optional": true
+        },
+        {
+          "key": "artifact_byte_eligible",
+          "type": "boolean",
+          "optional": true
+        },
+        {
+          "key": "artifact_params",
+          "type": "object",
+          "optional": true
         }
       ]
     },
@@ -7974,6 +7984,7 @@
     "llm.provider_file.uploaded",
     "llm.retry_with_feedback",
     "mcp.app_available",
+    "mcp.artifact_egressed",
     "mcp.connection.added",
     "mcp.connection.auth_required",
     "mcp.connection.discovery_origins_set",

@@ -1143,6 +1143,26 @@ type ToolsConfig struct {
 	// secure default); http adds are admin-scoped but not gated here.
 	// Optional. Restart-required.
 	MCPAddConnection *MCPAddConnectionConfig `yaml:"mcp_add_connection,omitempty"`
+
+	// MCPArtifactEgressMaxBytes bounds ONE substituted artifact value on
+	// one outbound MCP tool call — the ceiling for egress substitution,
+	// where the runtime resolves an artifact id the model authored and
+	// places the resolved BYTES into the outbound tool-call body.
+	//
+	// A value above the ceiling is REFUSED loud, never truncated: a
+	// partial document delivered to a remote ingester is a corruption,
+	// not a bounded read, so the artifact read path's truthful-truncation
+	// posture deliberately does not apply here.
+	//
+	// It is deliberately independent of the heavy-output threshold — see
+	// [DefaultMCPArtifactEgressMaxBytes], which also carries the sizing
+	// arithmetic (`ceiling x in-flight mapped calls`, NOT multiplied by
+	// the retry budget) and the base64 inflation figure.
+	//
+	// Zero / unset resolves to [DefaultMCPArtifactEgressMaxBytes] (8
+	// MiB) through [ToolsConfig.ResolvedMCPArtifactEgressMaxBytes].
+	// Optional. Restart-required.
+	MCPArtifactEgressMaxBytes int `yaml:"mcp_artifact_egress_max_bytes,omitempty"`
 }
 
 // MCPAddConnectionConfig declares the operator allowlist for the
@@ -1180,6 +1200,62 @@ func (t ToolsConfig) MCPAppHostDisplayModes() []string {
 		return []string{"inline"}
 	}
 	return append([]string(nil), t.MCPAppHost.DisplayModes...)
+}
+
+// MCPArtifactParams maps an MCP tool NAME to the parameter names on
+// that tool which carry artifact BYTES.
+//
+// It is keyed per tool name in the same shape `ToolPolicies` and
+// `ToolOAuthProviders` already establish — the SERVER-side MCP tool
+// name, not the `<source>_<tool>` Harbor-facing name.
+//
+// It is OPERATOR-declared, and deliberately so: a remote server never
+// decides when the runtime reads its own store. A server-declared "this
+// parameter is an artifact reference" annotation was considered and
+// rejected, because a remote server driving host-side privileged
+// behaviour inverts the host obligation.
+//
+// A mapped parameter is validated against the server's own DISCOVERED
+// input schema at attach: it must be declared there, and it must be
+// declared string-typed. Advertising "this parameter takes artifact
+// bytes" against a server whose schema never declared such a parameter
+// is the same defect shape as advertising an unserviced capability, so
+// the mapping is checked rather than trusted.
+type MCPArtifactParams map[string][]string
+
+// DefaultMCPArtifactEgressMaxBytes bounds ONE substituted artifact value
+// on one outbound MCP tool call.
+//
+// Deliberately NOT derived from the heavy-output threshold. Substituted
+// bytes never enter a model's context — that is the whole point of the
+// feature — so the budget is a NETWORK and MEMORY budget, not a token
+// budget, and tying it to a context-window constant would make one
+// number answer two unrelated questions. The independent-ceiling shape
+// is the one the artifact fetch bounds already set.
+//
+// Sizing arithmetic an operator needs, stated rather than left to be
+// discovered: the transient footprint is `ceiling x in-flight mapped
+// calls`. It is NOT multiplied by the retry budget, because resolution
+// happens once per dispatched call rather than once per attempt —
+// resolving inside the reliability shell's loop would multiply it by
+// four at the default policy.
+//
+// Base64 inflates the wire form by roughly a third, so 8 MiB of content
+// is around 11 MB on the wire. That is acceptable over HTTP and is one
+// reason the mapping is refused on stdio, where a frame that large is
+// least appropriate.
+const DefaultMCPArtifactEgressMaxBytes = 8 * 1024 * 1024
+
+// ResolvedMCPArtifactEgressMaxBytes returns the configured
+// `mcp_artifact_egress_max_bytes`, substituting
+// [DefaultMCPArtifactEgressMaxBytes] when the field is unset, so the
+// operator's value and the default resolve through ONE accessor rather
+// than each call site re-deciding what zero means.
+func (t ToolsConfig) ResolvedMCPArtifactEgressMaxBytes() int {
+	if t.MCPArtifactEgressMaxBytes <= 0 {
+		return DefaultMCPArtifactEgressMaxBytes
+	}
+	return t.MCPArtifactEgressMaxBytes
 }
 
 // CustomToolConfig declares one operator-defined custom tool whose Go
@@ -1687,6 +1763,60 @@ type MCPServerConfig struct {
 	// pulled credential may only reach a boot-declared sink). Optional; empty
 	// preserves today's behaviour. Restart-required.
 	Injection *MCPCredentialInjectionConfig `yaml:"injection,omitempty"`
+
+	// ArtifactByteEligible declares that this connection MAY receive
+	// artifact BYTES through egress substitution. It is the containment
+	// boundary for the feature: with it unset (every connection by
+	// default), an `artifact_params` mapping is REFUSED at the door and
+	// no outbound call ever carries resolved content.
+	//
+	// It is honest about what it governs. The reachable artifact SET is
+	// unchanged by this flag — that stays the dispatching run's own
+	// (tenant, user, session), enforced by the same run-scoped resolver
+	// the in-process arm uses. What the flag governs is the RECIPIENT:
+	// whether a remote server may be handed those bytes.
+	//
+	// It is WIRE-CONFIGURABLE and admin-writable, and that is a
+	// deliberate departure from the fail-closed boot-gate shape its
+	// siblings (`allow_wire_oauth_descriptor`, `allow_wire_injection`)
+	// take. Those gates exist because their fields determine WHERE A
+	// CREDENTIAL IS SENT, which is a boot-declared-only plane. This field
+	// determines where a USER'S OWN CONTENT is sent — a different plane,
+	// and one whose boundary Harbor has already accepted and named: a
+	// shared runtime TRUSTS its co-tenant admins for runtime-added
+	// connections, with one-runtime-per-tenant as the stated remedy for a
+	// deployment needing hard isolation. A boot gate would additionally
+	// break the use case the feature exists for, where a server attached
+	// over the control plane must be usable without a redeploy.
+	//
+	// An artifact is stored as authored — unredacted — so a byte-eligible
+	// connection CAN move a secret. That is stated plainly rather than
+	// softened; the compensating control is the `mcp.artifact_egressed`
+	// record, emitted fail-closed before every wire request.
+	//
+	// Refused on stdio (explicit or auto-selected from a command-only
+	// config), on the same rule the sibling http-only fields use.
+	// Optional. Restart-required.
+	ArtifactByteEligible bool `yaml:"artifact_byte_eligible,omitempty"`
+
+	// ArtifactParams maps this server's tool names to the parameters on
+	// those tools which carry artifact BYTES. When a mapped parameter
+	// arrives carrying an artifact id, the runtime resolves it under the
+	// dispatching run's own identity and writes the resolved bytes into
+	// the outbound tool-call body as standard base64 — the model authored
+	// an id and never sees content.
+	//
+	// Requires ArtifactByteEligible: a mapping on a non-eligible
+	// connection is refused loud rather than silently ignored. Each
+	// mapped parameter must appear in the server's own discovered input
+	// schema AND be declared string-typed; an absent or non-string
+	// parameter fails the attach. Refused on stdio.
+	//
+	// Keyed per tool name in the shape [MCPArtifactParams] documents.
+	// Optional; empty preserves today's behaviour exactly (an outbound
+	// call is byte-identical to a build without the feature).
+	// Restart-required.
+	ArtifactParams MCPArtifactParams `yaml:"artifact_params,omitempty"`
 }
 
 // MCP credential-injection form discriminators (MCPCredentialInjectionConfig.Form).

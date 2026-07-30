@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 138 canonical event types a Harbor Runtime can publish, read from the live
+The 139 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -623,6 +623,18 @@ Payload `AppAvailablePayload` — safe payload (delivered typed, verbatim).
 | `ResourceURI` | `string` |  |
 | `DisplayMode` | `string` |  |
 | `RawHTMLTrusted` | `bool` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `mcp.artifact_egressed`
+
+Payload `ArtifactEgressedPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Identity` | `identity.Quadruple` |  |
+| `ServerID` | `tools.ToolSourceID` |  |
+| `ToolName` | `string` |  |
+| `Records` | `[]artifactegress.Record` |  |
 | `OccurredAt` | `time.Time` |  |
 
 ## `mcp.connection.added`

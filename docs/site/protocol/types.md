@@ -266,6 +266,8 @@ Declared in `internal/protocol/types`.
 | `oauth` | `*types.AgentConfigOAuthProviderDescriptor` — see [`AgentConfigOAuthProviderDescriptor`](./types.md#agentconfigoauthproviderdescriptor) | optional (`omitempty`) |
 | `injection` | `*types.AgentConfigMCPCredentialInjectionDescriptor` — see [`AgentConfigMCPCredentialInjectionDescriptor`](./types.md#agentconfigmcpcredentialinjectiondescriptor) | optional (`omitempty`) |
 | `oauth_discovery_allowed_origins` | `[]string` | optional (`omitempty`) |
+| `artifact_byte_eligible` | `bool` | optional (`omitempty`) |
+| `artifact_params` | `map[string][]string` | optional (`omitempty`) |
 
 ## AgentConfigMCPCredentialInjectionDescriptor
 
