@@ -1,0 +1,52 @@
+# Inert-smoke baseline — KNOWN DEBT, NOT AN EXEMPTION LIST.
+#
+# `scripts/preflight.sh` fails when a smoke script belonging to a SHIPPED phase
+# produces zero OKs and zero FAILs: a shipped phase's surface exists, so its
+# smoke must assert something against it (CLAUDE.md §4.2 item 5).
+#
+# When that gate was first switched on (the wave-v1.24 §17.5 checkpoint audit)
+# 24 scripts already violated it. Failing all 24 on day one would have meant the
+# gate was disabled within a week, so they are listed here instead. The listing
+# buys them nothing except visibility:
+#
+#   - A script NOT in this file that goes all-SKIP is a NEW regression and
+#     FAILS preflight. That is the case this gate exists for, and it is live.
+#   - A script IN this file that starts asserting something is reported as a
+#     STALE ENTRY. Delete the line in the same PR — that is how the debt is
+#     paid down, and it is why the file cannot quietly rot.
+#
+# A stale entry is a WARNING rather than a FAIL on purpose: whether some of
+# these assert anything is environment-dependent (a live MCP server, a
+# benchmark budget, a platform-gated tool), so a stale entry on one machine is
+# not necessarily stale on another. A MISSING entry is always a FAIL.
+#
+# Do NOT add a line here to silence a guard you just wrote. A new phase's smoke
+# that asserts nothing is not debt, it is an unfinished phase.
+#
+# One path per line, relative to the repository root. `#` comments and blank
+# lines are ignored.
+
+scripts/smoke/phase-01.sh
+scripts/smoke/phase-02.sh
+scripts/smoke/phase-03.sh
+scripts/smoke/phase-04.sh
+scripts/smoke/phase-07.sh
+scripts/smoke/phase-23.sh
+scripts/smoke/phase-24.sh
+scripts/smoke/phase-42.sh
+scripts/smoke/phase-79.sh
+scripts/smoke/phase-85a.sh
+scripts/smoke/phase-85b.sh
+scripts/smoke/phase-85c.sh
+scripts/smoke/phase-85d.sh
+scripts/smoke/phase-85e.sh
+scripts/smoke/phase-85f.sh
+scripts/smoke/phase-85g.sh
+scripts/smoke/phase-85h.sh
+scripts/smoke/phase-85i.sh
+scripts/smoke/phase-85j.sh
+scripts/smoke/phase-85m.sh
+scripts/smoke/phase-86a.sh
+scripts/smoke/phase-107b.sh
+scripts/smoke/phase-132.sh
+scripts/smoke/phase-132-stream.sh

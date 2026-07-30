@@ -434,7 +434,7 @@ func TestWireInjection_SetRevision_OptInOn_ValidPersistsAndRoundTrips(t *testing
 
 func TestWireInjection_AddMCPConnection_MetaKeyTooDeep_Rejected(t *testing.T) {
 	svc, attacher := newInjectionHarness(t, true)
-	deep := strings.Repeat("x.", 16) + "token" // 17 segments — exceeds maxInjectionMetaKeyDepth
+	deep := strings.Repeat("x.", config.MaxMCPMetaKeyDepth) + "token" // one segment past config.MaxMCPMetaKeyDepth
 	_, err := svc.AddMCPConnection(context.Background(), prototypes.AgentConfigAddMCPConnectionRequest{
 		Identity: scope(), AgentID: testAgentID,
 		Connection: injConn(&prototypes.AgentConfigMCPCredentialInjectionDescriptor{Provider: "vendor-broker", Form: "meta", MetaKey: deep}),
@@ -444,5 +444,49 @@ func TestWireInjection_AddMCPConnection_MetaKeyTooDeep_Rejected(t *testing.T) {
 	}
 	if len(attacher.calls) != 0 {
 		t.Fatal("no attach should be attempted on a depth-cap reject")
+	}
+}
+
+// --- Annotation paths and the injection `_meta` path share ONE namespace, so
+// the wire door checks them TOGETHER. Without this, a flat `vendor` annotation
+// alongside `injection.meta_key: vendor.api_key` is accepted and then silently
+// resolved at merge time — the operator's annotation discarded, no error, no
+// log. ---
+
+func TestWireInjection_AddMCPConnection_AnnotationCollidesWithMetaKey_Rejected(t *testing.T) {
+	svc, attacher := newInjectionHarness(t, true)
+	conn := injConn(&prototypes.AgentConfigMCPCredentialInjectionDescriptor{
+		Provider: "vendor-broker", Form: "meta", MetaKey: "vendor.api_key",
+	})
+	conn.MetaAnnotations = map[string]string{"vendor": "flat"}
+	_, err := svc.AddMCPConnection(context.Background(), prototypes.AgentConfigAddMCPConnectionRequest{
+		Identity: scope(), AgentID: testAgentID, Connection: conn,
+	})
+	if !errors.Is(err, agentcfgprotocol.ErrInvalidConnection) {
+		t.Fatalf("a flat annotation colliding with the injection _meta path must be rejected, got %v", err)
+	}
+	for _, want := range []string{"collide", "vendor", "vendor.api_key"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err=%q must name %q", err.Error(), want)
+		}
+	}
+	if len(attacher.calls) != 0 {
+		t.Fatal("no attach should be attempted on a collision reject")
+	}
+}
+
+func TestWireInjection_AddMCPConnection_AnnotationSharesMetaKeyNamespace_Accepted(t *testing.T) {
+	svc, _ := newInjectionHarness(t, true)
+	conn := injConn(&prototypes.AgentConfigMCPCredentialInjectionDescriptor{
+		Provider: "vendor-broker", Form: "meta", MetaKey: "vendor.api_key",
+	})
+	// The arrangement this phase exists to enable: the receiver reads ONE
+	// nested namespace and gets both the credential and its non-secret
+	// companion, without the companion having to ride the credential channel.
+	conn.MetaAnnotations = map[string]string{"vendor.account_id": "acct-42"}
+	if _, err := svc.AddMCPConnection(context.Background(), prototypes.AgentConfigAddMCPConnectionRequest{
+		Identity: scope(), AgentID: testAgentID, Connection: conn,
+	}); err != nil {
+		t.Fatalf("a nested annotation sharing the injection namespace was rejected: %v", err)
 	}
 }

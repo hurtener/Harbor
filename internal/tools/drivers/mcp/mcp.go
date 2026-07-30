@@ -18,6 +18,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/artifactegress"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 )
 
@@ -52,6 +53,19 @@ var (
 	// surface: the call aborts rather than proceeding unauthenticated
 	// on a connection the operator declared per-identity-authorized.
 	ErrEmptyBearer = errors.New("mcp: oauth provider returned an empty bearer token")
+	// ErrMetaPathCollision — two declared `_meta` paths on one connection
+	// overlap: they are equal, or one is a prefix of the other, so writing
+	// both would make the same node a scalar leaf and an intermediate map at
+	// once. The declared set is every `meta_annotations` key (a dotted key is
+	// a PATH) plus the credential-injection `meta_key`.
+	//
+	// Every validation door refuses a colliding declaration, so this is the
+	// last-resort merge-time defence — reachable for a connection whose
+	// revision was persisted before the path rules shipped, since nothing
+	// rejected a colliding pair then. It fails the call rather than picking a
+	// silent (and, under Go's randomised map iteration, non-deterministic)
+	// winner. Callers compare with errors.Is.
+	ErrMetaPathCollision = errors.New("mcp: declared _meta paths collide")
 	// ErrAmbiguousOAuthBinding — a per-tool `oauth_provider` binding key
 	// addresses more than ONE MCP surface on this server at once (e.g. both a
 	// tool AND a prompt of the same name, or a resource whose URI equals a tool
@@ -183,14 +197,20 @@ type Config struct {
 	OAuthProvider auth.OAuthProvider
 
 	// MetaAnnotations is a static, non-secret set of operator-declared
-	// key/values merged verbatim into the `_meta` map on every
-	// identity-stamped per-call RPC, so a deployment can carry its own
-	// attribution vocabulary to a shared server. Reserved keys (the triple
-	// keys, `agent_id`, `traceparent`, `tracestate`, and any
-	// `io.modelcontextprotocol/`-prefixed key) are rejected at config /
-	// attach validation and can never shadow the triple or agent provenance
-	// (those are stamped last). Read once at construction; immutable
-	// thereafter.
+	// key/values merged into the `_meta` map on every identity-stamped
+	// per-call RPC, so a deployment can carry its own attribution vocabulary
+	// to a shared server.
+	//
+	// Each KEY is a `_meta` PATH: a key with no `.` sets a top-level key, a
+	// DOTTED key NESTS — the same interpretation, through the same helper
+	// (injectMeta), that the credential-injection MetaKey has always had.
+	// Reserved keys (the triple keys, `agent_id`, `traceparent`, `tracestate`,
+	// and any `io.modelcontextprotocol/`-prefixed key) are rejected at config
+	// / wire / attach validation — at the whole key AND at any dot-segment —
+	// and can never shadow the triple or agent provenance (those are stamped
+	// last). Colliding declared paths are rejected at validation and fail the
+	// call with ErrMetaPathCollision if a legacy pair reaches the merge. Read
+	// once at construction; immutable thereafter.
 	MetaAnnotations map[string]string
 
 	// OnAuthChallenge, when non-nil, is invoked whenever an MCP HTTP call to
@@ -245,6 +265,34 @@ type Config struct {
 	// once at construction; immutable thereafter — the per-user value is pulled
 	// per-call from the ctx and never held here (the concurrent-reuse contract).
 	Injection *CredentialInjection
+
+	// ArtifactEgress, when non-empty, declares which parameters on which
+	// of this server's tools carry artifact BYTES. When a mapped
+	// parameter arrives carrying an artifact id, the driver resolves it
+	// through the run-scoped resolver seated on the dispatch ctx and
+	// writes the resolved bytes into the outbound tool-call body as
+	// standard base64 — the model authored an id and never sees content.
+	//
+	// Set only when the operator declared the connection byte-eligible;
+	// the boot validator, both control-plane persistence doors and
+	// [Attach] each refuse a mapping without that declaration, so the
+	// driver never has to re-derive the eligibility rule. Empty leaves
+	// every outbound call byte-identical to a build without the feature.
+	//
+	// Read once at construction and captured BY VALUE into each tool's
+	// invocation closure at Discover, so a live mapping change takes
+	// effect at the next attach / reconcile and never mid-flight (the
+	// concurrent-reuse contract).
+	ArtifactEgress artifactegress.Mapping
+
+	// ArtifactEgressMaxBytes bounds ONE substituted artifact value on one
+	// outbound call. Resolved from the operator's
+	// `tools.mcp_artifact_egress_max_bytes` (which carries a documented
+	// default) before construction. A value above it is REFUSED loud,
+	// never truncated. Ignored when ArtifactEgress is empty; when it is
+	// not, a non-positive value fails the call rather than being read as
+	// "unbounded".
+	ArtifactEgressMaxBytes int
 }
 
 // InjectionForm selects how a receiver-style MCP server's per-user credential is
@@ -347,6 +395,16 @@ func (c Config) validate() error {
 	if c.DefaultIdentity.TenantID == "" || c.DefaultIdentity.UserID == "" || c.DefaultIdentity.SessionID == "" {
 		return fmt.Errorf("%w: DefaultIdentity must be fully populated (tenant/user/session)", ErrInvalidConfig)
 	}
+	// A connection that maps artifact parameters must carry a positive
+	// egress ceiling. Attach resolves the operator's configured value (or
+	// the documented default) before construction, so this is
+	// defence-in-depth for a programmatic New() caller who armed the
+	// mapping and left the ceiling zero: failing at CONSTRUCTION beats
+	// failing identically on every mapped call, and a zero must never be
+	// read as "unbounded".
+	if !c.ArtifactEgress.IsEmpty() && c.ArtifactEgressMaxBytes <= 0 {
+		return fmt.Errorf("%w: ArtifactEgress declares a mapping but ArtifactEgressMaxBytes is %d — an egress ceiling is mandatory and a non-positive value is never read as unbounded", ErrInvalidConfig, c.ArtifactEgressMaxBytes)
+	}
 	// Per-user credential injection is mutually exclusive with the bearer/oauth
 	// mode and a static Authorization header (one auth mode per connection), and
 	// the resolved binding must be well-formed. Attach re-enforces the same
@@ -380,6 +438,14 @@ func (c Config) validate() error {
 		case InjectionFormMeta:
 			if len(c.Injection.MetaKey) == 0 {
 				return fmt.Errorf("%w: Injection form=meta requires MetaKey", ErrInvalidConfig)
+			}
+			// The SAME depth cap every declared `_meta` path carries at every
+			// door (config.MaxMCPMetaKeyDepth). Before the constant was
+			// hoisted it existed only at the wire door, so a boot-declared
+			// over-deep path was accepted where the identical wire-declared
+			// one was refused.
+			if len(c.Injection.MetaKey) > config.MaxMCPMetaKeyDepth {
+				return fmt.Errorf("%w: Injection MetaKey has %d path segments, exceeding the cap of %d", ErrInvalidConfig, len(c.Injection.MetaKey), config.MaxMCPMetaKeyDepth)
 			}
 			for _, seg := range c.Injection.MetaKey {
 				if seg == "" {
@@ -631,6 +697,10 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	// checked for a cross-surface collision once discovery is complete.
 	out := make([]tools.ToolDescriptor, 0, len(toolsRes.Tools))
 	toolNames := make(map[string]struct{}, len(toolsRes.Tools))
+	// The discovered input schemas, kept for the egress-mapping check
+	// below: a mapped parameter is validated against the SERVER'S OWN
+	// declaration rather than trusted.
+	inputSchemas := make(map[string]any, len(toolsRes.Tools))
 	resourceURIs := make(map[string]struct{})
 	promptNames := make(map[string]struct{})
 	for _, t := range toolsRes.Tools {
@@ -650,6 +720,7 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 			continue
 		}
 		toolNames[t.Name] = struct{}{}
+		inputSchemas[t.Name] = t.InputSchema
 		out = append(out, desc)
 	}
 
@@ -688,7 +759,106 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 		return nil, err
 	}
 
+	// Every egress-mapped parameter must be DECLARED by the server, and
+	// declared string-typed. Checking here rather than at first call is
+	// what makes a server that changes its schema fail the next attach
+	// LOUDLY instead of the next call silently.
+	if err := p.checkArtifactEgressSchema(inputSchemas); err != nil {
+		return nil, err
+	}
+
 	return out, nil
+}
+
+// checkArtifactEgressSchema validates every egress-mapped parameter
+// against the server's OWN discovered inputSchema: the tool must exist,
+// the parameter must be declared, and it must be declared string-typed.
+//
+// The reason this check exists rather than trusting the operator's
+// mapping is the argument-side reading of a rule Harbor already holds
+// on the capability side: advertising a capability nothing services is
+// a soft protocol violation, and Harbor declaring "this parameter takes
+// artifact bytes" against a server whose schema never declared such a
+// parameter is the same shape one layer down. The check turns the wire
+// encoding from Harbor's assumption into a contract checked against the
+// server's own declaration.
+//
+// The bound is stated so it is not rediscovered as a defect: this is a
+// POINT-IN-TIME contract, checked at attach against the tool set
+// discovered then. A server that mutates its schema without a
+// `tools/list_changed` notification can drift out from under a
+// validated mapping; the drift then surfaces as a server-side
+// argument-validation error on the wire — a loud failure rather than a
+// silent wrong-shape send. Closing that properly belongs to the
+// tool-list-changed work, not here.
+func (p *Provider) checkArtifactEgressSchema(inputSchemas map[string]any) error {
+	if p.cfg.ArtifactEgress.IsEmpty() {
+		return nil
+	}
+	for _, toolName := range p.cfg.ArtifactEgress.Tools() {
+		schema, known := inputSchemas[toolName]
+		if !known {
+			return fmt.Errorf("%w: server %q declares no tool named %q, so its artifact_params mapping addresses nothing",
+				ErrArtifactEgressSchema, p.source, toolName)
+		}
+		props, ok := schemaProperties(schema)
+		if !ok {
+			return fmt.Errorf("%w: server %q tool %q publishes no object input schema, so an artifact_params mapping cannot be checked against it",
+				ErrArtifactEgressSchema, p.source, toolName)
+		}
+		for _, param := range p.cfg.ArtifactEgress.ParamsFor(toolName) {
+			decl, declared := props[param]
+			if !declared {
+				return fmt.Errorf("%w: server %q tool %q does not declare a parameter named %q in its own inputSchema",
+					ErrArtifactEgressSchema, p.source, toolName, param)
+			}
+			if !schemaDeclaresString(decl) {
+				return fmt.Errorf("%w: server %q tool %q declares parameter %q as a non-string type; artifact bytes are delivered as an RFC 4648 §4 base64 STRING, so a non-string slot would be refused by the server's own validation",
+					ErrArtifactEgressSchema, p.source, toolName, param)
+			}
+		}
+	}
+	return nil
+}
+
+// schemaProperties extracts the `properties` object from a discovered
+// JSON Schema. The SDK carries a client-side InputSchema as the decoded
+// JSON value, so this walks maps rather than a typed schema.
+func schemaProperties(schema any) (map[string]any, bool) {
+	obj, ok := schema.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	props, ok := obj["properties"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	return props, true
+}
+
+// schemaDeclaresString reports whether a property schema declares the
+// string type. It accepts both the scalar form (`"type": "string"`) and
+// the union form (`"type": ["null", "string"]`) that a nullable
+// declaration produces, because both are legitimate ways for a server
+// to say the slot takes a string.
+func schemaDeclaresString(decl any) bool {
+	obj, ok := decl.(map[string]any)
+	if !ok {
+		return false
+	}
+	switch t := obj["type"].(type) {
+	case string:
+		return t == "string"
+	case []any:
+		for _, entry := range t {
+			if s, isString := entry.(string); isString && s == "string" {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
 }
 
 // checkOAuthBindingAmbiguity fails loud when a per-entry `tool_oauth_providers`
@@ -786,12 +956,38 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	// concurrent-reuse contract: no shared mutable per-run state on the
 	// Provider.
 	toolApp := parseAppRef(t.Meta)
+	// The artifact-parameter mapping and the ceiling are captured BY
+	// VALUE here, at discovery, for the same reason toolApp above is: the
+	// Provider is a compiled artifact and per-call state belongs on the
+	// ctx, not on a field a live reconfiguration could mutate underneath
+	// an in-flight call. A mapping change therefore takes effect at the
+	// next attach / reconcile — the next-turn projection posture every
+	// other connection field has.
+	egressParams := p.cfg.ArtifactEgress.ParamsFor(mcpName)
+	egressMapping := p.cfg.ArtifactEgress
+	egressMaxBytes := p.cfg.ArtifactEgressMaxBytes
 	invoke := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+		// Egress substitution runs ONCE per dispatched call, AHEAD of the
+		// reliability shell. The shell runs up to MaxRetries+1 attempts
+		// (four at the package default), so resolving inside it would make
+		// the transient footprint `ceiling x attempts x in-flight` instead
+		// of `ceiling x in-flight`, and would re-read the store on every
+		// attempt. It is also correct on the merits: an unresolvable id is
+		// a model mistake, not a transient fault, so retrying it burns the
+		// budget without changing the answer.
+		var plan egressPlan
+		if len(egressParams) > 0 {
+			var err error
+			plan, err = p.prepareEgress(ctx, mcpName, args, egressMapping, egressMaxBytes)
+			if err != nil {
+				return tools.ToolResult{}, err
+			}
+		}
 		return tools.RunWithPolicy(
 			ctx,
 			args,
 			func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-				return p.callTool(ctx, mcpName, args, toolApp)
+				return p.callTool(ctx, mcpName, args, toolApp, plan)
 			},
 			nil, // server-side schema validates on the wire; client-side compiled
 			nil, // output validator is optional.
@@ -842,13 +1038,20 @@ func deriveSideEffect(a *mcpsdk.ToolAnnotations) tools.SideEffect {
 // the tool-DEFINITION MCP App binding captured at discovery (nil for a
 // non-app tool); it is reconciled with any per-result `_meta.ui` hint to
 // produce the effective app reference on the result.
-func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessage, toolApp *AppRef) (tools.ToolResult, error) {
+func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessage, toolApp *AppRef, plan egressPlan) (tools.ToolResult, error) {
 	session, err := p.sessionForRead()
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
 	var argMap map[string]any
-	if len(args) > 0 {
+	switch {
+	case plan.args != nil:
+		// The egress-substituted argument map, decoded and resolved ONCE
+		// per dispatched call before the reliability shell. Reusing it
+		// across attempts is what makes the resolve-once property hold;
+		// re-decoding `args` here would silently drop every substitution.
+		argMap = plan.args
+	case len(args) > 0:
 		if err := json.Unmarshal(args, &argMap); err != nil {
 			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
 		}
@@ -915,6 +1118,14 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name, err)
 	}
 	value, lowerErr := lowerCallToolResult(res)
+	// The substitution RECORD rides the observation — ids, sizes and a
+	// digest, never the bytes. It is deliberately an EXPORTED, marshalled
+	// field (contrast AppRef, which is `json:"-"` and deliberately kept
+	// out of the observation): the model authored the id, and telling it
+	// "the id you named was delivered, N bytes" is honest, content-free
+	// and replayable. Without it the model would have no way to tell a
+	// delivered document from an ignored parameter.
+	value.ArtifactEgress = plan.records
 	// MCP App discovery: the effective app reference is the tool-DEFINITION
 	// binding (the spec-conformant source of the `ui://` resource URI,
 	// captured at discovery), reconciled with any optional per-result
@@ -1362,14 +1573,27 @@ func (p *Provider) Close(ctx context.Context) error {
 // Provenance enrichment: when the ctx carries an acting-agent
 // registration id (the run loop's provenance seam), it is stamped under
 // `agent_id` — PROVENANCE ONLY, never an isolation principal (a server
-// MUST NOT key isolation on it). Operator-declared `annotations` are
-// merged verbatim for the deployment's own attribution vocabulary.
-// Reserved keys (the triple, `agent_id`, `traceparent`, `tracestate`,
-// and any `io.modelcontextprotocol/`-prefixed key) are rejected at
-// validation; this merge re-enforces the invariant by stamping the
-// triple + agent LAST and skipping any reserved/spec-prefixed annotation
-// key, so an annotation can never shadow identity even if one slipped
-// past validation ("impossible by construction" defence-in-depth).
+// MUST NOT key isolation on it).
+//
+// Operator-declared `annotations` carry the deployment's own attribution
+// vocabulary. Each key is a `_meta` PATH: a key with no `.` sets a top-level
+// key, a dotted key NESTS — the same interpretation, through the same helper
+// (`injectMeta`), that a credential-injection `meta_key` has always had, so one
+// `_meta` namespace has one meaning regardless of which mechanism wrote into
+// it. Reserved keys (the triple, `agent_id`, `traceparent`, `tracestate`, and
+// any `io.modelcontextprotocol/`-prefixed key) are rejected at validation, at
+// the whole key AND at any path segment; this merge re-enforces the invariant
+// by SKIPPING any annotation carrying a reserved token and by stamping the
+// triple + agent LAST, so an annotation can never shadow identity even if one
+// slipped past validation ("impossible by construction" defence-in-depth).
+//
+// Colliding paths are a different case and DO fail loud with
+// `ErrMetaPathCollision`: two annotation paths that are equal or in a
+// proper-prefix relationship would have one silently overwrite the other, and
+// unlike a reserved key a colliding pair CAN sit in a revision persisted before
+// the path rules shipped. Refusing collisions is also what makes this merge
+// order-INDEPENDENT despite Go's randomised map iteration — distinct
+// non-prefixing paths write disjoint leaves.
 //
 // AGENTS.md §6 rule 9 / forbidden practice §13: identity is
 // mandatory. Missing identity returns `ErrIdentityMissing` and the
@@ -1388,11 +1612,20 @@ func buildIdentityMeta(ctx context.Context, annotations map[string]string) (mcps
 	meta := make(mcpsdk.Meta, len(annotations)+4)
 	// Operator annotations first, so the triple + agent stamps below win
 	// unconditionally (a reserved-key annotation can never shadow identity).
-	for k, v := range annotations {
+	mergeable := make([]string, 0, len(annotations))
+	for k := range annotations {
 		if isReservedMetaKey(k) {
 			continue
 		}
-		meta[k] = v
+		mergeable = append(mergeable, k)
+	}
+	if err := config.ValidateMCPMetaPathCollisions(mergeable, ""); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrMetaPathCollision, err.Error())
+	}
+	for _, k := range mergeable {
+		if err := injectMeta(meta, config.SplitMCPMetaPath(k), annotations[k]); err != nil {
+			return nil, fmt.Errorf("%w: annotation %q: %w", ErrMetaPathCollision, k, err)
+		}
 	}
 	meta["tenant"] = id.TenantID
 	meta["user"] = id.UserID
@@ -1403,14 +1636,19 @@ func buildIdentityMeta(ctx context.Context, annotations map[string]string) (mcps
 	return meta, nil
 }
 
-// isReservedMetaKey reports whether k is a Harbor-reserved or spec-reserved
-// `_meta` key that an operator annotation must not carry. It delegates to
-// the single shared authority (config.IsReservedMCPMetaKey — the isolation
-// triple, `agent_id`, the trace-context carrier keys, and the
-// `io.modelcontextprotocol/` spec namespace) so the driver's merge-time
-// re-check can never drift from config / attach validation.
+// isReservedMetaKey reports whether an operator annotation key carries a
+// Harbor-reserved or spec-reserved `_meta` token. It delegates to the single
+// shared authority (`config.ReservedMCPMetaPathToken` — the isolation triple,
+// `agent_id`, the trace-context carrier keys, and the
+// `io.modelcontextprotocol/` spec namespace, checked against the WHOLE key and
+// against every dot-segment of it) so the driver's merge-time re-check can
+// never drift from config / wire / attach validation. The whole-key arm is what
+// sees the spec namespace (`io.modelcontextprotocol/ui` splits into segments
+// that carry no prefix); the per-segment arm is what sees a reserved key used
+// as a path component (`tenant.foo`).
 func isReservedMetaKey(k string) bool {
-	return config.IsReservedMCPMetaKey(k)
+	_, reserved := config.ReservedMCPMetaPathToken(k)
+	return reserved
 }
 
 // resolveBearerProvider selects the OAuth provider that authenticates an RPC
@@ -1507,7 +1745,13 @@ func (p *Provider) resolveInjection(ctx context.Context, meta mcpsdk.Meta) (cont
 		creds := base64.StdEncoding.EncodeToString([]byte(inj.BasicUsername + ":" + tok.AccessToken))
 		return withInjectedHeaders(ctx, map[string]string{"Authorization": "Basic " + creds}), nil
 	case InjectionFormMeta:
-		injectMeta(meta, inj.MetaKey, tok.AccessToken)
+		if err := injectMeta(meta, inj.MetaKey, tok.AccessToken); err != nil {
+			// A collision between the credential path and an annotation path
+			// is refused at every validation door; reaching it means a legacy
+			// declaration slipped through, and picking a silent winner would
+			// either discard the operator's annotation or bury the credential.
+			return nil, fmt.Errorf("%w: injection meta_key: %w", ErrMetaPathCollision, err)
+		}
 		return ctx, nil
 	default:
 		// Unreachable: validate() rejects an unknown form at construction.
@@ -1515,31 +1759,68 @@ func (p *Provider) resolveInjection(ctx context.Context, meta mcpsdk.Meta) (cont
 	}
 }
 
-// injectMeta writes value into meta at the (already-validated, non-reserved) key
-// path, creating intermediate maps as needed. A single-segment path sets a
-// top-level key; a multi-segment path nests. buildIdentityMeta stamps the
-// identity triple + agent provenance BEFORE this runs, so the sole protection
-// against a credential overwriting them is validate(): it guarantees no
-// injection path segment is a reserved key, so injection can never shadow the
-// identity triple or agent provenance.
-func injectMeta(meta mcpsdk.Meta, path []string, value string) {
+// injectMeta writes value into meta at the (already-validated, non-reserved)
+// key path, creating intermediate maps as needed. A single-segment path sets a
+// top-level key; a multi-segment path nests.
+//
+// It has TWO callers and they must stay two callers of ONE helper: the
+// credential-injection `meta_key` write, and the operator `meta_annotations`
+// merge in buildIdentityMeta. A second nesting implementation would let the two
+// mechanisms disagree about what a dotted key means in the one `_meta`
+// namespace they share — which is the defect this helper's second caller was
+// added to close.
+//
+// Intermediate-node type contract: every map this creates is a
+// `map[string]any`, NEVER an `mcpsdk.Meta`. The walk below type-asserts
+// `cur[seg].(map[string]any)`, and `mcpsdk.Meta` is a NAMED type over
+// `map[string]any`, so a Go type assertion against it MISSES. A caller that
+// built `mcpsdk.Meta` intermediates would make the assertion fail, take the
+// create branch, and REPLACE a populated node — wiping every sibling already
+// written into that namespace. The top-level conversion below
+// (`map[string]any(meta)`) is the one place the named type is unwrapped.
+//
+// A non-map intermediate is a path collision (some earlier write left a scalar
+// where this path needs a node) and fails LOUD rather than overwriting it:
+// validation refuses colliding declarations at every door, so reaching this is
+// a last-resort defence, and silently picking a winner is exactly the
+// degradation the path rules exist to prevent.
+//
+// buildIdentityMeta stamps the identity triple + agent provenance AFTER this
+// runs for annotations and BEFORE it for the credential write, so the sole
+// protection against a credential overwriting them is validate(): it guarantees
+// no injection path segment is a reserved key, so injection can never shadow
+// the identity triple or agent provenance.
+func injectMeta(meta mcpsdk.Meta, path []string, value string) error {
 	if len(path) == 0 {
-		return
+		return nil
 	}
 	if len(path) == 1 {
 		meta[path[0]] = value
-		return
+		return nil
 	}
 	cur := map[string]any(meta)
-	for _, seg := range path[:len(path)-1] {
-		next, ok := cur[seg].(map[string]any)
-		if !ok {
-			next = map[string]any{}
+	for i, seg := range path[:len(path)-1] {
+		existing, present := cur[seg]
+		if !present {
+			next := map[string]any{}
 			cur[seg] = next
+			cur = next
+			continue
+		}
+		next, isMap := existing.(map[string]any)
+		if !isMap {
+			return fmt.Errorf("_meta path %q collides with an existing non-map value at segment %q", strings.Join(path, "."), strings.Join(path[:i+1], "."))
 		}
 		cur = next
 	}
-	cur[path[len(path)-1]] = value
+	leaf := path[len(path)-1]
+	if existing, present := cur[leaf]; present {
+		if _, isMap := existing.(map[string]any); isMap {
+			return fmt.Errorf("_meta path %q collides with an existing nested map at that path", strings.Join(path, "."))
+		}
+	}
+	cur[leaf] = value
+	return nil
 }
 
 // chooseString returns first when non-empty, else second.

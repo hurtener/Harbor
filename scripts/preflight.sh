@@ -144,6 +144,103 @@ echo "preflight: classified ${#STATIC_ONLY[@]} static-only / ${#LIVE_SERVER[@]} 
 # the parallel and the live-server passes.
 # ----------------------------------------------------------------------
 TOTAL_FAIL=0
+
+# ----------------------------------------------------------------------
+# INERT-SMOKE DETECTION (the structural half of the wave-v1.24 audit).
+#
+# Until now this harness failed on one condition only: a smoke script
+# exiting non-zero. A script that asserted NOTHING — every check a SKIP —
+# exited 0 and read as green. That is the structural enabler behind the
+# inert guards this wave repaired: phase 213 posting to a route that never
+# existed, and phase 216's only live assertion SKIPping two different ways.
+# Both had been dead since the day they were written and preflight said
+# PASS every time.
+#
+# `assess_smoke_output` reads a finished smoke's captured output and
+# records the script when its summary shows OK == 0 AND FAIL == 0. Whether
+# that is fatal depends on the phase's master-plan Status:
+#
+#   - Status `Shipped`  -> FAIL. §4.2 item 5: "A SKIP that should be an OK
+#     is a bug." A shipped phase's surface exists, so its smoke must assert
+#     something against it.
+#   - anything else     -> reported, not fatal. A Pending phase's skeleton
+#     legitimately all-SKIPs against a build that has not shipped its
+#     surface yet; that is the §4.2 item 4 convention, not a defect.
+#
+# The Status read is deliberately fail-LOUD in the direction that matters:
+# a row that cannot be parsed is treated as Shipped, so a master-plan
+# reformat cannot silently disable this gate. Set
+# HARBOR_PREFLIGHT_ALLOW_INERT=1 to downgrade every case to a report — for
+# an emergency only, and it must be justified in the PR exactly as
+# HARBOR_PREFLIGHT_SKIP is (§4.1).
+#
+# THE BASELINE. When this gate was first switched on, 24 shipped-phase
+# scripts already violated it — measured, not estimated. Failing all 24 on
+# day one would have got the gate disabled within a week, so they are listed
+# in `scripts/smoke/inert-baseline.txt` as KNOWN DEBT. A script NOT in that
+# file that goes all-SKIP is a NEW regression and fails; a script IN it that
+# starts asserting something is reported as a stale entry to delete. The
+# rationale for each direction is in the file's own header.
+# ----------------------------------------------------------------------
+INERT_BASELINE_FILE='scripts/smoke/inert-baseline.txt'
+INERT_SHIPPED=()          # inert, shipped, NOT baselined -> FAIL
+INERT_BASELINED=()        # inert, shipped, baselined     -> reported as debt
+INERT_PENDING=()          # inert, not shipped            -> expected
+INERT_SEEN_BASELINED=''   # newline-joined; used to find stale baseline entries
+
+# is_baselined <smoke-path>
+is_baselined() {
+    [ -f "${INERT_BASELINE_FILE}" ] || return 1
+    grep -vE '^[[:space:]]*(#|$)' "${INERT_BASELINE_FILE}" 2>/dev/null \
+        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
+        | grep -qxF -- "$1"
+}
+
+# phase_is_shipped <phase-token>   e.g. 213, 83w, 113a
+# Echoes "yes" unless the master-plan row for the phase exists AND its
+# final column says something other than Shipped.
+phase_is_shipped() {
+    local n="$1" row status
+    row="$(grep -m1 -E "^\| *${n} +\|" docs/plans/README.md 2>/dev/null || true)"
+    if [ -z "${row}" ]; then
+        # No row at all: cannot prove it is unshipped, so treat as shipped.
+        printf 'yes'
+        return 0
+    fi
+    # Last non-empty pipe-delimited field.
+    status="$(printf '%s' "${row}" | sed -E 's/[[:space:]]*\|[[:space:]]*$//; s/.*\|[[:space:]]*//')"
+    # Statuses in the master plan are `Shipped`, `Shipped (v1.23)`,
+    # `Pending`, `Pending (V1.5.x)`, `Post-V1`, ... — match on the prefix,
+    # and default anything unrecognised to Shipped so a new status word
+    # cannot quietly disable the gate.
+    case "${status}" in
+        Pending*|pending*|Post-V1*|Post-v1*|Deferred*|deferred*) printf 'no' ;;
+        *)                                                       printf 'yes' ;;
+    esac
+}
+
+# assess_smoke_output <smoke-path> <captured-output-path>
+assess_smoke_output() {
+    local smoke="$1" out_path="$2" ok_n fail_n n
+    [ -f "${out_path}" ] || return 0
+    ok_n="$(grep -m1 -E '^OK:[[:space:]]+[0-9]+' "${out_path}" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+    fail_n="$(grep -m1 -E '^FAIL:[[:space:]]+[0-9]+' "${out_path}" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+    # No summary block at all (the script died before smoke_summary): the
+    # non-zero exit path already accounts for that. Nothing to add.
+    [ -n "${ok_n}" ] && [ -n "${fail_n}" ] || return 0
+    [ "${ok_n}" = "0" ] && [ "${fail_n}" = "0" ] || return 0
+    n="$(basename "${smoke}" | sed 's/^phase-//; s/\.sh$//')"
+    if [ "$(phase_is_shipped "${n}")" != "yes" ]; then
+        INERT_PENDING+=("${smoke}")
+    elif is_baselined "${smoke}"; then
+        INERT_BASELINED+=("${smoke}")
+        INERT_SEEN_BASELINED="${INERT_SEEN_BASELINED}
+${smoke}"
+    else
+        INERT_SHIPPED+=("${smoke}")
+    fi
+}
+
 echo ""
 echo "preflight: running scripts/drift-audit.sh"
 if ! bash scripts/drift-audit.sh; then
@@ -250,6 +347,7 @@ run_parallel_batch() {
             echo "preflight: ${s_name} reported failures (rc=${rc_code})"
             batch_fail=$((batch_fail + 1))
         fi
+        assess_smoke_output "${s_name}" "${out_path}"
     done < <(sort "${rc_file}")
 
     TOTAL_FAIL=$((TOTAL_FAIL + batch_fail))
@@ -402,19 +500,91 @@ fi
 # state (a SSE stream, an in-mem bus, the singleton draft store) so
 # running them in parallel would surface as nondeterministic flakes.
 # ----------------------------------------------------------------------
+LIVE_OUT_DIR="$(mktemp -d -t harbor-preflight-live-XXXXXX)"
 for smoke in ${LIVE_SERVER[@]+"${LIVE_SERVER[@]}"}; do
     echo ""
     echo "preflight: running ${smoke}"
-    if ! bash "${smoke}"; then
+    live_out="${LIVE_OUT_DIR}/$(basename "${smoke}").out"
+    # `tee` so the operator still sees the run live AND the inert-smoke
+    # detector gets the counters.
+    #
+    # PIPESTATUS[0] is the smoke's own status (`tee` always succeeds) and it
+    # MUST be read inside the group, before any other command runs: every
+    # obvious shorthand clobbers it. `if ! pipeline; then :; fi` resets it via
+    # the `:`, and `pipeline || true` resets it via the `true` — both silently
+    # report every failing smoke as rc=0. Verified, not assumed.
+    smoke_rc=0
+    { bash "${smoke}" 2>&1 | tee "${live_out}"; smoke_rc="${PIPESTATUS[0]}"; } || true
+    if [ "${smoke_rc}" -ne 0 ]; then
         echo "preflight: ${smoke} reported failures"
         TOTAL_FAIL=$((TOTAL_FAIL + 1))
     fi
+    assess_smoke_output "${smoke}" "${live_out}"
 done
+rm -rf "${LIVE_OUT_DIR}"
 
 echo ""
 echo "=== preflight summary ==="
+
+if [ "${#INERT_PENDING[@]}" -gt 0 ]; then
+    echo ""
+    echo "preflight: ${#INERT_PENDING[@]} smoke script(s) asserted nothing (OK=0, FAIL=0) for a phase that has"
+    echo "  not shipped yet — expected, per the 404/405/501 -> SKIP convention (§4.2 item 4):"
+    for s in "${INERT_PENDING[@]}"; do echo "    ${s}"; done
+fi
+
+if [ "${#INERT_BASELINED[@]}" -gt 0 ]; then
+    echo ""
+    echo "preflight: ${#INERT_BASELINED[@]} smoke script(s) asserted nothing (OK=0, FAIL=0) for a shipped"
+    echo "  phase and are listed as KNOWN DEBT in ${INERT_BASELINE_FILE}."
+    echo "  Each is a guard that cannot currently fail. Paying one down means making it"
+    echo "  assert something and deleting its line from that file."
+    for s in "${INERT_BASELINED[@]}"; do echo "    ${s}"; done
+fi
+
+# A baseline entry that ran and DID assert something is stale — delete the line.
+# A WARNING, not a FAIL: whether some of these assert anything is
+# environment-dependent, so stale here is not necessarily stale everywhere.
+if [ -f "${INERT_BASELINE_FILE}" ]; then
+    stale_entries=''
+    while IFS= read -r entry; do
+        [ -n "${entry}" ] || continue
+        # Only judge entries whose script actually ran in this invocation.
+        [ -f "${entry}" ] || continue
+        if ! printf '%s\n' "${INERT_SEEN_BASELINED}" | grep -qxF -- "${entry}"; then
+            stale_entries="${stale_entries}    ${entry}
+"
+        fi
+    done < <(grep -vE '^[[:space:]]*(#|$)' "${INERT_BASELINE_FILE}" 2>/dev/null \
+        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+    if [ -n "${stale_entries}" ]; then
+        echo ""
+        echo "preflight: STALE inert-baseline entries — these asserted something in this run,"
+        echo "  so they are no longer debt. Delete their lines from ${INERT_BASELINE_FILE}:"
+        printf '%s' "${stale_entries}"
+    fi
+fi
+
+if [ "${#INERT_SHIPPED[@]}" -gt 0 ]; then
+    echo ""
+    echo "preflight: ${#INERT_SHIPPED[@]} smoke script(s) asserted NOTHING (OK=0, FAIL=0) for a SHIPPED phase"
+    echo "  and are NOT in ${INERT_BASELINE_FILE}."
+    echo "  A shipped phase's surface exists, so its smoke must report at least one OK."
+    echo "  All-SKIP on a shipped phase means the guards are inert — pointing at a route"
+    echo "  that does not exist, sending an identity the server refuses, or gated behind a"
+    echo "  precondition that never holds. See CLAUDE.md §4.2 item 5."
+    echo "  Fix the guard. Do NOT add it to the baseline: that file records debt this gate"
+    echo "  inherited, not a place to park a guard you just wrote."
+    for s in "${INERT_SHIPPED[@]}"; do echo "    ${s}"; done
+    if [ "${HARBOR_PREFLIGHT_ALLOW_INERT:-0}" = "1" ]; then
+        echo "  HARBOR_PREFLIGHT_ALLOW_INERT=1 — downgraded to a report. Justify this in the PR."
+    else
+        TOTAL_FAIL=$((TOTAL_FAIL + ${#INERT_SHIPPED[@]}))
+    fi
+fi
+
 if [ "${TOTAL_FAIL}" -gt 0 ]; then
-    echo "preflight: FAIL (${TOTAL_FAIL} smoke script(s) reported failures)"
+    echo "preflight: FAIL (${TOTAL_FAIL} smoke script(s) reported failures or asserted nothing)"
     exit 1
 fi
 echo "preflight: PASS"

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 )
@@ -1419,6 +1420,41 @@ func (c *Config) validateTools() error {
 				return err
 			}
 		}
+		// Egress substitution: the byte-eligibility declaration and the
+		// per-tool artifact-parameter mapping. The rules are the SAME ones
+		// the runtime-add door enforces, checked one stage earlier so an
+		// operator learns at `harbor validate` rather than at boot.
+		//
+		// An `auto` transport carrying only a command auto-selects stdio at
+		// connect, so it is treated as stdio here — otherwise an operator
+		// would believe egress was on while the connection silently never
+		// carried it, which is the degradation shape this refuses.
+		stdioOrNoURL := mode == "stdio" || s.URL == ""
+		if err := ValidateMCPArtifactParams(s.ArtifactParams); err != nil {
+			return fieldError(prefix+".artifact_params", err.Error())
+		}
+		if len(s.ArtifactParams) > 0 && !s.ArtifactByteEligible {
+			return fieldError(prefix+".artifact_params",
+				"artifact_params requires artifact_byte_eligible: true on the same connection — a mapping on a connection an operator has not declared byte-eligible is refused rather than silently ignored, because the eligibility flag IS the containment boundary for egress substitution")
+		}
+		if stdioOrNoURL && s.ArtifactByteEligible {
+			return fieldError(prefix+".artifact_byte_eligible",
+				"must not be set on a connection without an http(s) url (stdio — explicit, or auto-selected from a command-only config): base64-encoded artifact bytes belong in an HTTP body, not a stdio frame, and declaring eligibility a connection can never exercise advertises a capability nothing services")
+		}
+		if stdioOrNoURL && len(s.ArtifactParams) > 0 {
+			return fieldError(prefix+".artifact_params",
+				"must not be set on a connection without an http(s) url (stdio — explicit, or auto-selected from a command-only config)")
+		}
+	}
+	// The egress ceiling. Positive-or-unset: zero resolves to the
+	// documented default through ResolvedMCPArtifactEgressMaxBytes, and a
+	// NEGATIVE value is an operator mistake rather than a synonym for
+	// "unbounded" — refused loud so a deployment never silently runs with
+	// no ceiling on outbound content.
+	if c.Tools.MCPArtifactEgressMaxBytes < 0 {
+		return fieldError("tools.mcp_artifact_egress_max_bytes",
+			fmt.Sprintf("must be > 0 when set (got %d); omit the key to take the %d-byte default",
+				c.Tools.MCPArtifactEgressMaxBytes, DefaultMCPArtifactEgressMaxBytes))
 	}
 	// MCP App host capability. Optional; nil resolves to the inline-only
 	// baseline. When set, each declared display mode must be in the closed
@@ -1777,15 +1813,20 @@ func (c *Config) validateTools() error {
 					fmt.Sprintf("connection host %q is not in provider %q's allowed_downstream_hosts %v — the bearer may only be injected into a boot-declared downstream sink", connHost, s.OAuthProvider, allowed))
 			}
 		}
+		// `meta_annotations` keys are declared `_meta` PATHS (a dotted key
+		// nests, exactly like `injection.meta_key`), so each key is validated
+		// as a path — whole-key AND per-segment reserved guard, no empty
+		// segment, depth-capped — and the declared set is checked for
+		// collisions against itself and against the injection mapping's own
+		// `_meta` path. One authority, shared by all four doors.
+		annotationField := prefix + ".meta_annotations"
 		for k := range s.MetaAnnotations {
-			field := prefix + ".meta_annotations"
-			if strings.TrimSpace(k) == "" {
-				return fieldError(field, "annotation key must not be empty")
+			if err := ValidateMCPMetaAnnotationKey(k); err != nil {
+				return fieldError(annotationField, err.Error())
 			}
-			if IsReservedMCPMetaKey(k) {
-				return fieldError(field,
-					fmt.Sprintf("key %q is reserved (tenant/user/session/agent_id/traceparent/tracestate and any io.modelcontextprotocol/-prefixed key are stamped by the runtime; choose a non-reserved key)", k))
-			}
+		}
+		if err := ValidateMCPMetaPathCollisions(mapKeys(s.MetaAnnotations), injectionMetaPath(s.Injection)); err != nil {
+			return fieldError(annotationField, err.Error())
 		}
 		// Per-tool oauth_provider overrides (CallTool granularity). Each entry
 		// re-enforces exactly the same binding rules as the connection-level
@@ -1901,7 +1942,16 @@ func (c *Config) validateTools() error {
 				if strings.TrimSpace(inj.MetaKey) == "" {
 					return fieldError(field+".meta_key", "must name a target _meta key path for form=meta")
 				}
-				segs := strings.Split(inj.MetaKey, ".")
+				segs := SplitMCPMetaPath(inj.MetaKey)
+				// The depth cap is the SAME cap the annotation path and the
+				// wire door apply — one constant, every door. Before it was
+				// hoisted it existed only at the wire door, so a boot-declared
+				// over-deep path was accepted where the identical
+				// wire-declared one was refused.
+				if len(segs) > MaxMCPMetaKeyDepth {
+					return fieldError(field+".meta_key",
+						fmt.Sprintf("has %d path segments, exceeding the cap of %d — a credential nested that deep can push an audit payload past the redactor's deep-walk ceiling and turn every audit emit for this connection into a hard redaction failure", len(segs), MaxMCPMetaKeyDepth))
+				}
 				for _, seg := range segs {
 					if strings.TrimSpace(seg) == "" {
 						return fieldError(field+".meta_key", "must not contain an empty path segment")
@@ -2529,6 +2579,221 @@ func IsReservedMCPMetaKey(k string) bool {
 		return true
 	}
 	return strings.HasPrefix(k, mcpSpecMetaAnnotationPrefix)
+}
+
+// MaxMCPMetaKeyDepth caps the dot-segment count of a declared `_meta` key PATH
+// — an operator annotation key AND a credential-injection `meta_key` alike, at
+// every door that validates one.
+//
+// The cap exists so a declared path can never push an audit payload past the
+// audit redactor's deep-walk ceiling (`audit.MaxDepth` = 64). The redactor
+// FAILS LOUD past that ceiling (it returns a redaction-depth error rather than
+// emitting anything), so an over-deep path does not leak — it turns every audit
+// emit for that connection into a hard redaction failure. 16 leaves comfortable
+// headroom for the `_meta` base depth plus any wrapper a payload adds around
+// the injected map, while never constraining a real receiver key (which nests
+// one or two segments, e.g. `vendor.api_key`).
+//
+// It lives here, in the package both the boot validator and the wire validator
+// already depend on, because the reverse direction is an import cycle:
+// `internal/runtime/agentcfg/protocol` imports this package, not the other way
+// round. One constant, one value, every door.
+const MaxMCPMetaKeyDepth = 16
+
+// SplitMCPMetaPath splits a declared `_meta` key into its dot-separated path
+// segments. A key with no `.` yields a single-segment path (a top-level `_meta`
+// key). This is the SINGLE place the dot-as-path-separator convention is
+// applied, so an annotation key and a credential-injection `meta_key` can never
+// disagree about what a dotted key means.
+func SplitMCPMetaPath(k string) []string {
+	return strings.Split(k, ".")
+}
+
+// ReservedMCPMetaPathToken reports the reserved token in a declared `_meta` key
+// PATH, and true when one is present.
+//
+// The check is WHOLE-KEY **and** PER-SEGMENT, in that order — a strict superset
+// of `IsReservedMCPMetaKey` on both of that predicate's arms. Both arms are
+// load-bearing and neither subsumes the other:
+//
+//   - The whole-key arm is the only one that can see the spec-reserved
+//     `io.modelcontextprotocol/` namespace. Splitting
+//     `io.modelcontextprotocol/ui` on `.` yields `["io",
+//     "modelcontextprotocol/ui"]` — NEITHER segment carries the prefix, so a
+//     per-segment-only check would ADMIT a spec-reserved key.
+//   - The per-segment arm is the only one that can see a reserved key used as a
+//     PATH component (`tenant.foo` nests under the runtime-owned `tenant`
+//     node), which the whole-key arm reads as the unreserved literal
+//     `"tenant.foo"`.
+//
+// The returned token is the offending whole key or segment, for an error
+// message that names what was refused.
+func ReservedMCPMetaPathToken(k string) (string, bool) {
+	if IsReservedMCPMetaKey(k) {
+		return k, true
+	}
+	for _, seg := range SplitMCPMetaPath(k) {
+		if IsReservedMCPMetaKey(seg) {
+			return seg, true
+		}
+	}
+	return "", false
+}
+
+// ValidateMCPArtifactParams validates the SHAPE of an egress-substitution
+// artifact-parameter mapping: every tool name non-empty, every tool
+// mapping at least one parameter, every parameter name non-empty, and no
+// parameter named twice for one tool.
+//
+// It returns a bare, field-agnostic error every door wraps with its own
+// sentinel + field prefix, exactly as [ValidateMCPMetaAnnotationKey]
+// does — so the RULE has one implementation and the boot validator, the
+// two Protocol persistence doors and the driver's attach differ only in
+// how they report it.
+//
+// It validates SHAPE only. Two further rules are the caller's, because
+// each needs state this function does not have: the eligibility and
+// transport rules (the caller knows the connection), and the check that
+// each mapped parameter is declared string-typed in the server's own
+// DISCOVERED input schema (only the driver has seen the schema).
+//
+// A nil / empty mapping is valid — it is the carry-forward case, and a
+// connection with no mapping takes an outbound path byte-identical to a
+// build without the feature.
+func ValidateMCPArtifactParams(params MCPArtifactParams) error {
+	for tool, names := range params {
+		if strings.TrimSpace(tool) == "" {
+			return errors.New("tool name must not be empty")
+		}
+		if len(names) == 0 {
+			return fmt.Errorf("tool %q maps no parameter names (remove the entry rather than declaring an empty one)", tool)
+		}
+		seen := make(map[string]struct{}, len(names))
+		for _, name := range names {
+			trimmed := strings.TrimSpace(name)
+			if trimmed == "" {
+				return fmt.Errorf("tool %q maps an empty parameter name", tool)
+			}
+			if _, dup := seen[trimmed]; dup {
+				return fmt.Errorf("tool %q maps parameter %q twice (must be unique)", tool, trimmed)
+			}
+			seen[trimmed] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// ValidateMCPMetaAnnotationKey validates ONE `meta_annotations` key as a
+// declared `_meta` path: non-empty, no empty path segment, no reserved token
+// (whole-key or per-segment, per ReservedMCPMetaPathToken), and no deeper than
+// MaxMCPMetaKeyDepth segments. It returns a bare, field-agnostic error every
+// door wraps with its own sentinel + field prefix, so the RULE has one
+// implementation and the four doors differ only in how they report it.
+func ValidateMCPMetaAnnotationKey(k string) error {
+	if strings.TrimSpace(k) == "" {
+		return errors.New("annotation key must not be empty")
+	}
+	segs := SplitMCPMetaPath(k)
+	if len(segs) > MaxMCPMetaKeyDepth {
+		return fmt.Errorf("annotation key %q has %d path segments, exceeding the cap of %d — a declared _meta path that deep can push an audit payload past the redactor's deep-walk ceiling and turn every audit emit for this connection into a hard redaction failure", k, len(segs), MaxMCPMetaKeyDepth)
+	}
+	for _, seg := range segs {
+		if strings.TrimSpace(seg) == "" {
+			return fmt.Errorf("annotation key %q must not contain an empty path segment", k)
+		}
+	}
+	if tok, reserved := ReservedMCPMetaPathToken(k); reserved {
+		return fmt.Errorf("annotation key %q is reserved: %q is a runtime-stamped or spec-reserved _meta key (tenant/user/session/agent_id/traceparent/tracestate and any io.modelcontextprotocol/-prefixed key; a dotted key is a PATH, so a reserved SEGMENT is refused too) — choose a non-reserved key", k, tok)
+	}
+	return nil
+}
+
+// ValidateMCPMetaPathCollisions rejects a connection whose declared `_meta`
+// paths overlap. The declared set is every `meta_annotations` key plus the
+// credential-injection `meta_key` when the connection injects into `_meta`
+// (pass "" when it does not). No two declared paths may be EQUAL, and no
+// declared path may be a proper PREFIX of another.
+//
+// Two reasons this rule is mandatory rather than a nicety:
+//
+//  1. Without it a colliding pair is resolved SILENTLY at merge time — the
+//     nesting walk overwrites a non-map intermediate with no error and no log,
+//     so a flat `vendor` annotation alongside `injection.meta_key:
+//     vendor.api_key` discards the operator's annotation without telling
+//     anyone.
+//  2. With it, the merge is order-INDEPENDENT by construction. Distinct
+//     non-prefixing paths write disjoint leaves, so the randomised iteration
+//     order of the annotation map cannot change the merged result. Determinism
+//     falls out of the validation rule; it does not need a sort at merge time.
+//
+// Keys are compared in sorted order so the error message is stable.
+func ValidateMCPMetaPathCollisions(annotationKeys []string, injectionMetaKey string) error {
+	declared := make([]string, 0, len(annotationKeys)+1)
+	for _, k := range annotationKeys {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		declared = append(declared, k)
+	}
+	if strings.TrimSpace(injectionMetaKey) != "" {
+		declared = append(declared, injectionMetaKey)
+	}
+	if len(declared) < 2 {
+		return nil
+	}
+	sort.Strings(declared)
+	paths := make([][]string, len(declared))
+	for i, k := range declared {
+		paths[i] = SplitMCPMetaPath(k)
+	}
+	for i := range paths {
+		for j := i + 1; j < len(paths); j++ {
+			if mcpMetaPathsCollide(paths[i], paths[j]) {
+				return fmt.Errorf("declared _meta paths %q and %q collide (equal, or one is a prefix of the other) — a dotted key is a PATH, so these two would write into the same node and one would silently overwrite the other; rename one of them", declared[i], declared[j])
+			}
+		}
+	}
+	return nil
+}
+
+// mapKeys returns m's keys (nil for an empty map). Order is unspecified;
+// ValidateMCPMetaPathCollisions sorts what it is given.
+func mapKeys(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// injectionMetaPath returns the connection's credential-injection `_meta` key
+// path, or "" when the connection declares no injection or injects somewhere
+// other than `_meta` (a header / an `Authorization: Basic` value writes no
+// `_meta` node, so it cannot collide with an annotation path).
+func injectionMetaPath(inj *MCPCredentialInjectionConfig) string {
+	if inj == nil || strings.TrimSpace(inj.Form) != MCPInjectionFormMeta {
+		return ""
+	}
+	return strings.TrimSpace(inj.MetaKey)
+}
+
+// mcpMetaPathsCollide reports whether a and b are equal or one is a proper
+// prefix of the other — i.e. whether writing both would make one a scalar leaf
+// and an intermediate node at once.
+func mcpMetaPathsCollide(a, b []string) bool {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := range n {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // receiverInjectionCredentialSegments is the set of trailing key SEGMENTS that

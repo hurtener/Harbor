@@ -59,7 +59,7 @@ type Deps struct {
 //   - `HeavyOutputThreshold` mirrors
 //     `config.ArtifactsConfig.HeavyOutputThresholdBytes` so the LLM
 //     package does not re-import the artifact-config struct. Default
-//     32 KiB.
+//     128 KiB — the LLM-context arm of the heavy-content matrix.
 //   - `ModelProfiles` is keyed by canonical model name. The safety
 //     net's token-budget guard requires a profile entry for the
 //     model in the `CompleteRequest`; missing → `ErrUnsupportedModel`.
@@ -221,10 +221,11 @@ const DefaultDriver = "bifrost"
 // every test wiring also touching the config layer.
 const (
 	DefaultContextWindowReserve = 0.05 // 5%
-	// DefaultHeavyOutputThreshold (32 KiB; RFC §6.10) is
+	// DefaultHeavyOutputThreshold (128 KiB; RFC §6.5, §6.10) is
 	// single-sourced on `config.DefaultHeavyOutputThresholdBytes` so
 	// the snapshot default cannot drift from the operator-config
-	// default (the DefaultSpawnDepthCap precedent).
+	// default. It is the LLM-CONTEXT arm: Console-facing inline bounds
+	// pin separately at `config.DefaultConsoleInlinePayloadBytes`.
 	DefaultHeavyOutputThreshold = config.DefaultHeavyOutputThresholdBytes
 	// DefaultMaxRetries — the retry-with-feedback bound
 	// when `ModelProfile.MaxRetries` is zero. Conservative: one

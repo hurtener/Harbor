@@ -578,6 +578,32 @@ func TestRuntimeModel_RuntimeRouteKeyboardSelectionPagingFilteringAndExport(t *t
 	}
 }
 
+// TestRuntimeModel_ChordCommandCommitsBeforeTheNextQueuedKey pins the input
+// ordering a real terminal produces. An operator who presses the confirming
+// key straight after a leader chord has BOTH keystrokes sitting in Bubble
+// Tea's queue before the chord resolves, so the chord's command MUST take
+// effect inside its own Update. Handing the command to the host through a
+// tea.Cmd re-queued it BEHIND the pending keystroke: the confirmation dialog
+// opened after the enter meant for it, the enter fell through to the composer,
+// and the delete never fired. Note this drives Update WITHOUT pumping the
+// returned commands between strokes — the `leader` helper pumps them, which is
+// exactly why every chord test passed while the ordering was inverted.
+func TestRuntimeModel_ChordCommandCommitsBeforeTheNextQueuedKey(t *testing.T) {
+	m, controller, _ := operationalModel(t)
+	next, _ := m.Update(keyMsg('x', tea.ModCtrl))
+	m = next.(RuntimeModel)
+	next, _ = m.Update(keyMsg('d', 0))
+	m = next.(RuntimeModel)
+	modal, open := m.shell.focus.Top()
+	if !open || modal.Title != "Confirm Runtime action" {
+		t.Fatalf("chord did not commit its dialog before the next queued key: open=%v title=%q", open, modal.Title)
+	}
+	m = drive(t, m, keyMsg(tea.KeyEnter, 0))
+	if !containsCall(controller.calls, "delete:s") {
+		t.Fatalf("the queued enter never reached the confirmation dialog: %v", controller.calls)
+	}
+}
+
 func TestRuntimeModel_SessionDeleteUsesIntentExecutorAndStaleInspectionClosesModal(t *testing.T) {
 	m, controller, _ := operationalModel(t)
 	next, _ := m.beginSessionDelete()

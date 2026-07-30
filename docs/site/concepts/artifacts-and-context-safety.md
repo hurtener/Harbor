@@ -29,7 +29,8 @@ What counts as "heavy" is a single, explicit number:
 
 | Knob | Value |
 | --- | --- |
-| Default heavy-output threshold | **32 KB** |
+| Default heavy-output threshold (LLM context) | **128 KB** |
+| Console-facing inline-payload bound (pinned) | **32 KB** |
 | Global override | runtime-configurable in `harbor.yaml` |
 | Per-tool override | a tool that always returns large blobs can lower its own bar |
 

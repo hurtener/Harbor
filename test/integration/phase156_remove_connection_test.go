@@ -143,8 +143,8 @@ func (h *rmHarness) addStdio(t *testing.T, binPath string) prototypes.AgentConfi
 // SAME projection helper both drivers call), with the boot-declared set.
 func (h *rmHarness) reconcile(t *testing.T) int {
 	t.Helper()
-	n, err := projection.ReconcileConnections(context.Background(), h.registry, rmAgent, rmQuad(),
-		h.detacher, map[string]struct{}{"yaml-boot-srv": {}})
+	n, _, err := projection.ReconcileConnections(context.Background(), h.registry, rmAgent, rmQuad(),
+		h.detacher, nil, map[string]struct{}{"yaml-boot-srv": {}})
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestE2E_AgentConfig_RemoveConnection_InFlightCallFailsLoud(t *testing.T) {
 		t.Fatalf("remove: %d %s", rec.Code, rec.Body.String())
 	}
 	otherSession := identity.Quadruple{Identity: identity.Identity{TenantID: rmTenant, UserID: rmUser, SessionID: "sess-rm-other"}}
-	if _, rerr := projection.ReconcileConnections(context.Background(), h.registry, rmAgent, otherSession, h.detacher, nil); rerr != nil {
+	if _, _, rerr := projection.ReconcileConnections(context.Background(), h.registry, rmAgent, otherSession, h.detacher, nil, nil); rerr != nil {
 		t.Fatalf("cross-session reconcile: %v", rerr)
 	}
 
@@ -429,8 +429,8 @@ func TestE2E_AgentConfig_RemoveConnection_ConcurrentReconciles(t *testing.T) {
 	for range N {
 		go func() {
 			defer wg.Done()
-			if _, err := projection.ReconcileConnections(context.Background(), h.registry, rmAgent, rmQuad(),
-				h.detacher, nil); err != nil {
+			if _, _, err := projection.ReconcileConnections(context.Background(), h.registry, rmAgent, rmQuad(),
+				h.detacher, nil, nil); err != nil {
 				t.Errorf("concurrent reconcile: %v", err)
 			}
 		}()

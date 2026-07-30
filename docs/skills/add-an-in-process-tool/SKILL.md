@@ -165,7 +165,7 @@ Run with `go test -race`. The race detector + the per-run identity assertion is 
 
 ## 4. Heavy outputs — the artifact-stub seam
 
-A raw heavy payload (>32KB by default — `artifacts.heavy_output_threshold_bytes`) must never reach the LLM context window. Harbor enforces this at the LLM edge: raw heavy content that is not already an `ArtifactStub` fires `ErrContextLeak` and emits a `llm.context_leak` event (RFC §6.5, D-026).
+A raw heavy payload (>=128KB by default — `artifacts.heavy_output_threshold_bytes`) must never reach the LLM context window. Harbor enforces this at the LLM edge: raw heavy content that is not already an `ArtifactStub` fires `ErrContextLeak` and emits a `llm.context_leak` event (RFC §6.5, D-026).
 
 For tool results, you don't wire this by hand — the runtime's executor materialises any above-threshold result to the artifact store automatically and hands the LLM a stub-shaped observation instead. Your tool just returns its typed value; design the `Result` struct so the LLM-relevant part is small (a summary, a count, a key finding) even when the underlying payload is large.
 
@@ -185,7 +185,13 @@ tools:
 
 `artifact_fetch` takes `{ref: string, max_bytes?: int, offset?: int}` and returns `{ref, mime, size_bytes, content, offset, returned_bytes, total_size_bytes, truncated}`.
 
+**`artifact_fetch` is a TEXT read, and it refuses rather than corrupting.** Its `content` is a JSON string, and JSON encoding rewrites every invalid UTF-8 byte to `U+FFFD` — so a binary window used to arrive silently corrupted at a length the same response contradicted (an 8-byte PNG header arriving as 10). The built-in now tests the actual window for UTF-8 admissibility and refuses one it cannot return intact. On a refusal it still returns `ref`, `mime`, `size_bytes` and `total_size_bytes` so the model knows what it asked about, leaves `content` empty, and zeroes `offset` / `returned_bytes` / `truncated` (a refusal claiming `truncated: true` would invite endless paging into the same wall). The error names the stored MIME and the failing byte offset, and points at the route that works.
+
+The gate is **content-driven, not MIME-driven** — it inspects the bytes, not the stamp. In practice every binary type refuses (PDF, images, audio, archives), and so does a text artifact carrying one invalid byte mid-window, rather than dropping it silently. **To act on binary bytes, don't send the model through `artifact_fetch`** — declare a `tools.ArtifactRef` parameter on a tool (next section) and let the runtime hand that tool the bytes directly; or, from a Protocol client rather than from inside a run, call `artifacts.get`, whose `content` is `[]byte` (base64 on the wire) and is byte-exact for every MIME at every offset.
+
 **Windowing.** `offset` is a **byte** index, not a line or row index, so the model pages a large file by reading at offset 0 and re-calling with `offset` advanced to the previous `offset + returned_bytes` while `truncated` is `true`. A window can begin and end mid-line; the model splits the text itself. (Row- or schema-addressed windowing is deliberately not offered — a stored MIME is not revisable on a content-addressed store, so keying read behaviour on one would turn a wrong stamp into a permanent refusal.)
+
+Two windowing details follow from the text rule. The returned `offset` reports where the returned content **actually begins**, not what was requested: a window opening mid-rune has its leading continuation bytes trimmed and a truncated trailing rune dropped, and `offset` moves accordingly — so the paging rule above stays correct. And an effective `max_bytes` floors at 4 bytes (the longest UTF-8 rune), so a `max_bytes` of 1–3 is served at 4 rather than trimming to empty while `truncated` stayed true and the paging rule returned the same offset forever.
 
 **Bounds are operator policy.** `max_bytes` defaults to `artifacts.fetch_default_max_bytes` (64 KiB) and is clamped to `artifacts.fetch_hard_max_bytes` (1 MiB); both are `harbor.yaml` keys you can tune — see [`docs/CONFIG.md`](../../CONFIG.md) → `artifacts`. A `max_bytes` above the ceiling is **served at the ceiling**, not refused, and the response says so through `truncated` / `total_size_bytes` / `returned_bytes`. The same knobs bound the `artifacts.get` Protocol method, so a model and a Console client reading one artifact never disagree about what "truncated" means. The ceiling bounds ONE fetch — it is not a budget over repeated fetches; that stays the governance layer's concern.
 
@@ -228,7 +234,36 @@ Three properties follow, and they are what makes this worth reaching for:
 
 `ArtifactRef` works anywhere the deriver walks — a bare field, a slice, a map value, a nested struct. A worked example ships at `examples/tools/artifactstats/`.
 
-This is the **in-process** arm. A tool on the other side of a process boundary (HTTP, MCP, A2A) cannot be handed a Go value, and handing it something dereferenceable instead is a separate design Harbor has deliberately not built — so an `ArtifactRef` parameter belongs to in-process tools only.
+This is the **in-process** arm: `ArtifactRef` is a Go type, so it belongs to in-process tools only.
+
+#### The MCP arm — the same idea for a remote tool
+
+A tool on the other side of a process boundary cannot be handed a Go value, but it CAN be handed the bytes. For an **MCP** connection you declare the mapping in config instead of in a Go type:
+
+```yaml
+tools:
+  mcp_servers:
+    - name: docstore
+      transport_mode: streamable_http
+      url: https://docs.internal.example.com/mcp
+      artifact_byte_eligible: true          # the containment boundary
+      artifact_params:
+        ingest_document: [content]          # tool name -> parameter names
+```
+
+The model still writes an artifact id. The runtime resolves it under the run's own `(tenant, user, session)` — the SAME resolver the in-process arm uses, so the reachable artifact set is identical — and writes the resolved bytes into the outbound tool-call body as standard base64. The remote server sees a document; the model never does.
+
+Five things to know before reaching for it:
+
+- **Byte-eligibility is required and is the boundary.** `artifact_params` without `artifact_byte_eligible: true` is refused at the door, not stored inert. Both are `http`-only; a `stdio` connection is refused (base64 bytes belong in an HTTP body, not a stdio frame).
+- **The mapped parameter must exist in the server's own schema.** Harbor checks each one against the server's discovered `inputSchema` at attach — it must be declared, and declared string-typed. An absent or non-string parameter fails the attach loudly rather than the first call silently.
+- **Every substitution is recorded.** `mcp.artifact_egressed` carries the artifact id, server, tool, parameter, byte count and a `sha256:` digest — never the bytes — and it is emitted **fail-closed before the wire request**. If the record cannot be written, the call does not happen.
+- **There is a ceiling and it refuses rather than truncates.** `tools.mcp_artifact_egress_max_bytes` (default 8 MiB) bounds one substituted value; an oversize artifact fails loud naming the artifact, its size and the ceiling. A half-delivered document is a corruption, not a bounded read.
+- **Known limit: an MCP App's tool callback cannot use a byte-mapped parameter.** That path is browser-driven with no run behind it, so no resolver is seated and the call fails loud. Giving it its own resolver would create a second, differently-scoped definition of what the feature can reach.
+
+Be deliberate about eligibility: it decides which *remote servers* may receive a user's artifact content, and artifacts are stored as authored (unredacted), so a byte-eligible connection can move whatever an artifact contains. It does not widen which artifacts a run can reach — only where they can go.
+
+The HTTP and A2A transports remain unbuilt; the seam is visibly partial rather than silently so.
 
 ## 5. Errors — fail loudly
 
@@ -282,7 +317,7 @@ Two semantics that trip people up:
 - **`max_attempts` is the TOTAL attempt count, including the first** — not the retry count. `max_attempts: 1` means a single attempt with no retry; the package default is `4` (one call + three retries). It projects internally to `tools.ToolPolicy.MaxRetries = max_attempts - 1`.
 - **Per-FIELD fall-through.** A field you omit inherits the package default for *that field only* — it does not reset the whole policy. A `policy:` block that sets only `timeout_ms: 5000` still keeps the default 4 attempts. This mirrors `tools.ToolPolicy`'s own zero-value resolution, so a partial policy is never surprising. Omit the entire `policy:` / `tool_policies:` blocks to keep today's behaviour (30 s per-attempt deadline, 4 total attempts).
 
-An http(s) MCP server can also bind a declared `tools.oauth_providers[]` entry by name — `oauth_provider: <name>` on the `mcp_servers[]` entry — so every identity-stamped per-call RPC injects a fresh per-identity `Authorization: Bearer` for the calling user (a token-fetch failure fails the call loud, never an unauthenticated fallback). A static `meta_annotations` map rides into the MCP `_meta` alongside the isolation triple for server-side attribution. See `docs/CONFIG.md` › `tools.mcp_servers[].oauth_provider` for the full field surface and validation rules.
+An http(s) MCP server can also bind a declared `tools.oauth_providers[]` entry by name — `oauth_provider: <name>` on the `mcp_servers[]` entry — so every identity-stamped per-call RPC injects a fresh per-identity `Authorization: Bearer` for the calling user (a token-fetch failure fails the call loud, never an unauthenticated fallback). A static `meta_annotations` map rides into the MCP `_meta` alongside the isolation triple for server-side attribution; each key is an annotation PATH, so a dotted key (`vendor.account_id`) nests under `_meta.vendor` rather than landing as a literal flat key. See `docs/CONFIG.md` › `tools.mcp_servers[].oauth_provider` for the full field surface and validation rules (reserved tokens are refused at the whole key AND at every segment, paths are depth-capped, and two declared paths may not collide).
 
 A tool named in `tool_policies` uses its override; tools absent from the map fall back to `policy` (or, if `policy` is omitted too, the package default). `retry_on` values must be one of `transient` / `timeout` / `5xx` / `permanent`; an unknown class fails config validation at boot. Resources and prompts a server exposes always use the per-server `policy` (the per-tool override is for tools). The whole block is restart-required.
 

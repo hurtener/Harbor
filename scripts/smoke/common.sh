@@ -282,6 +282,65 @@ assert_post_status() {
     fi
 }
 
+# dev_bearer
+# Echo the dev bootstrap bearer, or the empty string when unresolvable.
+# Prefers the exported HARBOR_DEV_TOKEN (preflight mirrors it out of the
+# server log); falls back to grepping ${HARBOR_DATA_DIR}/server.log, which
+# is what a standalone run against a hand-booted `harbor dev` has. The
+# `harbor dev` binary prints `HARBOR_DEV_TOKEN=<jwt>` to stderr at boot.
+dev_bearer() {
+    if [ -n "${HARBOR_DEV_TOKEN:-}" ]; then
+        printf '%s' "${HARBOR_DEV_TOKEN}"
+        return 0
+    fi
+    if [ -n "${HARBOR_DATA_DIR:-}" ] && [ -f "${HARBOR_DATA_DIR}/server.log" ]; then
+        grep -m1 '^HARBOR_DEV_TOKEN=' "${HARBOR_DATA_DIR}/server.log" 2>/dev/null \
+            | sed 's/^HARBOR_DEV_TOKEN=//' || true
+        return 0
+    fi
+    printf ''
+}
+
+# assert_post_status_auth <expected> <url> <json_body> <bearer> <description>
+# AUTHENTICATED POST (Authorization: Bearer <bearer>) asserting the status
+# equals <expected>. Only 000 (server unreachable) SKIPs. Unlike
+# assert_post_status, a 404/405/501 is a FAIL — use this for a route that
+# is ALREADY shipped, where an absent route is an un-mounted REGRESSION
+# rather than a future surface (§4.2 item 5: a SKIP that should be an OK
+# is a bug). Reach for assert_post_status instead when the surface may
+# legitimately not exist yet on this build.
+assert_post_status_auth() {
+    local expected="$1" url="$2" body="$3" bearer="$4" desc="$5"
+    if ! command -v curl >/dev/null 2>&1; then
+        skip "${desc}: curl not available"
+        return
+    fi
+    if [ -z "${bearer}" ]; then
+        fail "${desc}: no dev bearer resolved — the request would be unauthenticated (401), which proves nothing"
+        return
+    fi
+    local actual
+    actual=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+        -X POST -H "Authorization: Bearer ${bearer}" \
+        -H 'Content-Type: application/json' -d "$body" "$url" \
+        || true)
+    case "$actual" in
+        000|'')
+            skip "${desc}: server unreachable (000)"
+            return
+            ;;
+        404|405|501)
+            fail "${desc}: got ${actual} — this route is already shipped, so an absent route is an UN-MOUNTED regression, not a future surface (POST ${url})"
+            return
+            ;;
+    esac
+    if [ "$actual" = "$expected" ]; then
+        ok "${desc}: ${expected} (authenticated POST ${url})"
+    else
+        fail "${desc}: expected ${expected}, got ${actual} (authenticated POST ${url})"
+    fi
+}
+
 # assert_json_path_resolves <ref_id> <get_ref_url> <auth_header> <id_header_tenant> <id_header_user> <id_header_session> <description>
 # POSTs <ref_id> to the artifacts.get_ref resolver and asserts the id ROUTES:
 # HTTP 200 (+ presigned_url, an S3-compat Presigner store) OR 501/presign_unsupported

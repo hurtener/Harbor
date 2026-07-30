@@ -8,11 +8,22 @@ import (
 	"sort"
 	"strings"
 	"unicode"
-
-	"github.com/hurtener/Harbor/internal/config"
 )
 
 const defaultSummaryLimit = 240
+
+// heavyFoldThreshold is the terminal-absorption bound: a normalised
+// string or byte-slice field whose length reaches it folds to the
+// heavy-content marker instead of rendering, so a single oversize field
+// cannot flood a terminal's scrollback.
+//
+// It answers how many bytes a human's scrollback may absorb, not how
+// many bytes may enter a model's context window, so it carries its own
+// literal instead of aliasing the config package's heavy-output
+// default as it once did. That constant has since moved to 128 KiB for the
+// prompt-size question; a 128 KiB field pasted into a terminal is still
+// unreadable, so this bound did not follow it.
+const heavyFoldThreshold = 32 * 1024
 
 // Value is a renderer input. Payload must already be a canonical redacted wire
 // projection; the registry additionally bounds and escapes it for terminals.
@@ -135,7 +146,7 @@ func normalize(value reflect.Value, seen map[visit]bool) any {
 	switch value.Kind() {
 	case reflect.String:
 		text := value.String()
-		if len(text) >= config.DefaultHeavyOutputThresholdBytes {
+		if len(text) >= heavyFoldThreshold {
 			return "[HEAVY CONTENT OMITTED: artifact reference required]"
 		}
 		return SafeText(text)
@@ -149,7 +160,7 @@ func normalize(value reflect.Value, seen map[visit]bool) any {
 		return value.Float()
 	case reflect.Slice, reflect.Array:
 		if value.Type().Elem().Kind() == reflect.Uint8 {
-			if value.Len() >= config.DefaultHeavyOutputThresholdBytes {
+			if value.Len() >= heavyFoldThreshold {
 				return "[HEAVY CONTENT OMITTED: artifact reference required]"
 			}
 			return fmt.Sprintf("[binary %d bytes]", value.Len())

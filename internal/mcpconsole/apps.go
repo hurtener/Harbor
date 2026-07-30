@@ -34,7 +34,7 @@ import (
 //
 // A `ui://` MCP App document is the one carve-out: it is a Console-render
 // payload, not LLM context, so it rides inline up to the dedicated, much
-// larger App-document cap instead of the LLM-context heavy threshold —
+// larger App-document cap instead of the ordinary inline-payload bound —
 // see appDocumentInlineCap. Above that cap it still offloads (the same
 // loud bypass), so a pathologically large App is never inlined unbounded.
 //
@@ -61,8 +61,8 @@ type AppsAccessor struct {
 
 // AppsDeps bundles the runtime collaborators the AppsAccessor bridges.
 // Registry, Catalog, Store, and Bus are mandatory — a nil fails closed
-// at construction (CLAUDE.md §5). Threshold ≤ 0 falls back to the shared
-// heavy-output default; Clock defaults to time.Now.
+// at construction (CLAUDE.md §5). Threshold ≤ 0 falls back to the
+// Console inline-payload bound; Clock defaults to time.Now.
 type AppsDeps struct {
 	// Registry resolves `ui://` resource reads against the live MCP
 	// providers. Mandatory.
@@ -100,8 +100,10 @@ type AppsDeps struct {
 	// unions the same overlay. Optional: nil leaves only the admin exposure
 	// gating. Keyed by the ctx (tenant, user, session) triple.
 	SessionOverlay sessionoverlay.Store
-	// Threshold is the heavy-content threshold in bytes. ≤ 0 falls back
-	// to artifacts' shared default.
+	// Threshold is the inline-payload bound in bytes. ≤ 0 falls back to
+	// the Console inline-payload bound. The wiring passes that pinned
+	// bound rather than the operator's LLM-context heavy-output
+	// threshold: these payloads are browser-rendered, never prompt bytes.
 	Threshold int
 	// Clock returns the current wall-clock time. Optional — defaults to
 	// time.Now.
@@ -166,27 +168,31 @@ func NewAppsAccessor(deps AppsDeps) (*AppsAccessor, error) {
 	}, nil
 }
 
-// defaultHeavyThreshold is the heavy-output floor applied when the
-// operator-configured threshold is unset. Single-sourced on the
-// canonical config default so the unconfigured fallback can never drift
-// from the runtime-wide heavy-output boundary.
-const defaultHeavyThreshold = config.DefaultHeavyOutputThresholdBytes
+// defaultHeavyThreshold is the inline-payload bound applied when the
+// caller supplies no threshold. Single-sourced on the CONSOLE-FACING
+// inline bound, not on the LLM-context heavy-output default: every
+// payload this package shapes — an MCP resource, an App tool result, a
+// captured tool context — is read by a browser and never enters a
+// model's context window, so it is priced in HTTP bytes rather than
+// tokens.
+const defaultHeavyThreshold = config.DefaultConsoleInlinePayloadBytes
 
 // appDocumentInlineCap is the inline byte ceiling for a `ui://` MCP App
 // document fetched through ReadResource. It is DELIBERATELY larger than
-// the heavy-output threshold (defaultHeavyThreshold, 32 KiB) because the
+// the Console inline-payload bound (defaultHeavyThreshold) because the
 // two ceilings guard different things:
 //
-//   - The heavy-output threshold (RFC §6.5) keeps bulky bytes OUT of the
-//     LLM context window — a large tool result inlined into the next
-//     prompt balloons the context and risks a context-window overflow.
+//   - The inline-payload bound keeps an ordinary reply small enough that
+//     a browser page carrying many of them stays cheap; the LLM-context
+//     heavy-output threshold (RFC §6.5) separately keeps bulky bytes OUT
+//     of a model's context window.
 //   - An MCP App document NEVER enters the LLM context. The tool result
 //     carries only the tiny `_meta.ui.resourceUri` reference string; the
 //     `ui://` HTML itself is fetched ONLY by the Console (via
 //     mcp.servers.read_resource) and rendered in a sandboxed iframe. It
 //     is a render payload, not a context payload.
 //
-// Gating an App document on the LLM-context threshold offloads ordinary
+// Gating an App document on the ordinary inline bound offloads ordinary
 // real-world apps (a studio App's HTML routinely runs 80–100 KiB) to the
 // ArtifactStore by reference — and a by-reference App can only be fetched
 // via a presigned URL, which every non-S3 artifact driver fails loud on,
@@ -209,8 +215,8 @@ var (
 // then applies the inline-or-offload decision against an effective cap:
 // a `ui://` MCP App document — a Console-render payload that never enters
 // the LLM context — rides inline up to the dedicated App-document cap
-// (appDocumentInlineCap); any other resource keeps the LLM-context heavy
-// threshold. Content at or above the effective cap is offloaded to the
+// (appDocumentInlineCap); any other resource keeps the Console
+// inline-payload bound. Content at or above the effective cap is offloaded to the
 // ArtifactStore by reference (with a loud `mcp.resource_offloaded`
 // event); below it, the content rides inline.
 func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI string) (protocol.MCPResourceContent, error) {
@@ -222,10 +228,10 @@ func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI s
 	}
 	out := protocol.MCPResourceContent{ResourceURI: resourceURI, MIMEType: mime}
 	// A `ui://` App document is fetched only by the Console and rendered in
-	// a sandboxed iframe — it never reaches the LLM, so the LLM-context
-	// heavy threshold does not apply. It rides inline up to the larger
-	// App-document cap so real-world apps render on every artifact driver,
-	// not just S3. An ordinary resource keeps the heavy-output threshold.
+	// a sandboxed iframe, so the ordinary inline-payload bound does not
+	// apply. It rides inline up to the larger App-document cap so
+	// real-world apps render on every artifact driver, not just S3. An
+	// ordinary resource keeps the Console inline-payload bound.
 	inlineCap := a.threshold
 	if mcp.IsUIResourceURI(resourceURI) {
 		inlineCap = appDocumentInlineCap

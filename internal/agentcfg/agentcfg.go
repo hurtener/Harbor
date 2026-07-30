@@ -236,9 +236,13 @@ type MCPConnectionDescriptor struct {
 	// (attach-time) headers. Set only for the http transport.
 	OAuthProvider string `json:"oauth_provider,omitempty"`
 	// MetaAnnotations is a static, NON-SECRET set of operator-declared
-	// key/values merged verbatim into the MCP `_meta` on every
-	// identity-stamped per-call RPC (the deployment's attribution
-	// vocabulary). Reserved / spec-prefixed keys are rejected at attach.
+	// key/values merged into the MCP `_meta` on every identity-stamped
+	// per-call RPC (the deployment's attribution vocabulary). Each key is a
+	// `_meta` PATH — a dotted key NESTS, exactly like `injection.meta_key`.
+	// Keys are stored as declared; the nesting is a merge-time semantic.
+	// Reserved / spec-prefixed keys (at the whole key OR any dot-segment),
+	// over-deep paths, and paths colliding with another declared path on the
+	// connection are rejected at validation.
 	MetaAnnotations map[string]string `json:"meta_annotations,omitempty"`
 	// OAuthDiscoveryAllowedOrigins is the explicit per-connection cross-origin
 	// allow-list of public https origins the MCP OAuth-requirement discovery
@@ -260,6 +264,53 @@ type MCPConnectionDescriptor struct {
 	// binding is part of the agent's versioned desired state (diff / rollback).
 	// Set only for the http transport; mutually exclusive with OAuthProvider.
 	Injection *MCPCredentialInjectionDescriptor `json:"injection,omitempty"`
+	// ArtifactByteEligible declares that this connection MAY receive
+	// artifact BYTES through egress substitution: the runtime resolving an
+	// artifact id the model authored and placing the resolved bytes into
+	// the outbound tool-call body. NON-SECRET (a boolean declaration).
+	//
+	// It is the containment boundary for the feature. The reachable
+	// artifact SET is unchanged by it — that stays the dispatching run's
+	// own (tenant, user, session) — but the RECIPIENT widens: a remote
+	// server may now be handed those bytes.
+	//
+	// Unlike its wire-writable siblings (the inline OAuth binding, the
+	// injection mapping) it sits behind NO fail-closed boot opt-in, and
+	// the asymmetry is deliberate: those gates exist because their fields
+	// determine where a CREDENTIAL is sent, a boot-declared-only plane,
+	// while this one determines where a user's OWN CONTENT is sent —
+	// inside the co-tenant-admin trust boundary a shared runtime has
+	// already accepted, with one-runtime-per-tenant as the stated remedy
+	// for a deployment needing hard isolation. A boot gate would also
+	// break the use case: a server attached over the control plane must be
+	// usable without a redeploy.
+	//
+	// Every substitution is recorded (`mcp.artifact_egressed`,
+	// fail-closed, before the wire request) — ids, sizes and a digest,
+	// never the bytes. Set only for the http transport.
+	ArtifactByteEligible bool `json:"artifact_byte_eligible,omitempty"`
+	// ArtifactParams maps this server's TOOL names to the parameters on
+	// those tools which carry artifact bytes. NON-SECRET (names only).
+	// Requires ArtifactByteEligible. Each mapped parameter is validated
+	// against the server's OWN discovered inputSchema at attach — it must
+	// be declared there, and declared string-typed — so Harbor never
+	// asserts an argument shape the server did not publish. Set only for
+	// the http transport.
+	ArtifactParams map[string][]string `json:"artifact_params,omitempty"`
+}
+
+// CloneArtifactParams returns a defensive deep copy of the descriptor's
+// artifact-parameter mapping (nil for nil / empty), so a persisted
+// revision and a live attach never share a backing map or slice.
+func (d MCPConnectionDescriptor) CloneArtifactParams() map[string][]string {
+	if len(d.ArtifactParams) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(d.ArtifactParams))
+	for tool, params := range d.ArtifactParams {
+		out[tool] = append([]string(nil), params...)
+	}
+	return out
 }
 
 // MCPCredentialInjectionDescriptor is the NON-SECRET per-connection mapping that
@@ -746,6 +797,14 @@ func normalizeConnections(in []MCPConnectionDescriptor) []MCPConnectionDescripto
 			MetaAnnotations:              cloneStringMap(d.MetaAnnotations),
 			OAuthDiscoveryAllowedOrigins: append([]string(nil), d.OAuthDiscoveryAllowedOrigins...),
 			Injection:                    d.Injection.Clone(),
+			// The egress-substitution declaration is part of the versioned
+			// desired state, so the canonicaliser must carry it. A field
+			// omitted here is silently dropped on the way to the revision —
+			// the connection reads back non-eligible and the operator's
+			// declaration evaporates between the door that accepted it and
+			// the spine that stores it.
+			ArtifactByteEligible: d.ArtifactByteEligible,
+			ArtifactParams:       d.CloneArtifactParams(),
 		}
 	}
 	if len(names) == 0 {

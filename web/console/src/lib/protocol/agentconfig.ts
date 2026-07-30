@@ -97,6 +97,23 @@ export interface AgentConfigMCPConnectionDescriptor {
 	 * connection's url and every target key must be redaction-covered (http transport
 	 * only). */
 	injection?: AgentConfigMCPCredentialInjectionDescriptor;
+	/** Declares that this connection MAY receive artifact BYTES through egress
+	 * substitution — the runtime resolving an artifact id the model authored and
+	 * placing the resolved bytes into the outbound tool-call body, so a large
+	 * document reaches the remote tool without transiting the model's context.
+	 * Non-secret (a boolean). It is the containment boundary for the feature: with
+	 * it unset, an `artifact_params` mapping is refused at the door. It widens the
+	 * RECIPIENT, never the reachable artifact SET (that stays the dispatching run's
+	 * own tenant/user/session). Every substitution is recorded fail-closed as
+	 * `mcp.artifact_egressed` — ids, sizes and a digest, never the bytes (http
+	 * transport only). */
+	artifact_byte_eligible?: boolean;
+	/** Maps this server's TOOL names to the parameter names on those tools which
+	 * carry artifact bytes. Non-secret (names only). Requires
+	 * `artifact_byte_eligible`; each mapped parameter is validated at attach against
+	 * the server's own discovered `inputSchema` — declared, and declared
+	 * string-typed (http transport only). */
+	artifact_params?: Record<string, string[]>;
 }
 
 /** One runtime-added connection's per-user credential-INJECTION mapping for a

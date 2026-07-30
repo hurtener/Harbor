@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/config"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 )
@@ -54,6 +55,17 @@ func TestSetRevision_Connections_MalformedRejectedNothingPersisted(t *testing.T)
 		{"reserved meta annotation key", wireConn{Name: "srv", Transport: "http", URL: "https://x.invalid/rpc", MetaAnnotations: map[string]string{"tenant": "t"}}},
 		{"spec-reserved meta annotation prefix", wireConn{Name: "srv", Transport: "http", URL: "https://x.invalid/rpc", MetaAnnotations: map[string]string{"io.modelcontextprotocol/ui": "x"}}},
 		{"empty meta annotation key", wireConn{Name: "srv", Transport: "http", URL: "https://x.invalid/rpc", MetaAnnotations: map[string]string{"": "v"}}},
+		// An annotation key is a `_meta` PATH, so a reserved SEGMENT is
+		// refused too — at every position. This is newly refused; the
+		// spec-prefix cases above are the regression guard proving the
+		// whole-key arm survived the tightening (a per-segment-ONLY rule
+		// would ADMIT `io.modelcontextprotocol/ui`).
+		{"reserved FIRST annotation segment", wireConn{Name: "srv", Transport: "http", URL: "https://x.invalid/rpc", MetaAnnotations: map[string]string{"tenant.foo": "x"}}},
+		{"reserved MIDDLE annotation segment", wireConn{Name: "srv", Transport: "http", URL: "https://x.invalid/rpc", MetaAnnotations: map[string]string{"a.session.b": "x"}}},
+		{"reserved LAST annotation segment", wireConn{Name: "srv", Transport: "http", URL: "https://x.invalid/rpc", MetaAnnotations: map[string]string{"vendor.agent_id": "x"}}},
+		{"empty annotation path segment", wireConn{Name: "srv", Transport: "http", URL: "https://x.invalid/rpc", MetaAnnotations: map[string]string{"a..b": "x"}}},
+		{"over-deep annotation path", wireConn{Name: "srv", Transport: "http", URL: "https://x.invalid/rpc", MetaAnnotations: map[string]string{strings.Repeat("a.", config.MaxMCPMetaKeyDepth) + "leaf": "x"}}},
+		{"colliding annotation paths", wireConn{Name: "srv", Transport: "http", URL: "https://x.invalid/rpc", MetaAnnotations: map[string]string{"vendor": "x", "vendor.id": "y"}}},
 		{"two auth modes", wireConn{Name: "srv", Transport: "http", URL: "https://x.invalid/rpc", OAuthProvider: "gh", OAuth: &prototypes.AgentConfigOAuthProviderDescriptor{Name: "gh"}}},
 	}
 	for _, tc := range cases {

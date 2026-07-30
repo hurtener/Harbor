@@ -213,12 +213,15 @@ export type HarborEventType =
   | "llm.provider_file.uploaded"
   | "llm.retry_with_feedback"
   | "mcp.app_available"
+  | "mcp.artifact_egressed"
   | "mcp.connection.added"
   | "mcp.connection.auth_required"
   | "mcp.connection.discovery_origins_set"
   | "mcp.connection.failed"
   | "mcp.connection.paused"
   | "mcp.connection.pending"
+  | "mcp.connection.reattach_failed"
+  | "mcp.connection.reattached"
   | "mcp.connection.removed"
   | "mcp.connection.resumed"
   | "mcp.raw_html_trust_toggled"
@@ -470,6 +473,8 @@ export interface AgentConfigMCPConnectionDescriptor {
   oauth?: AgentConfigOAuthProviderDescriptor;
   injection?: AgentConfigMCPCredentialInjectionDescriptor;
   oauth_discovery_allowed_origins?: string[];
+  artifact_byte_eligible?: boolean;
+  artifact_params?: Record<string, string[]>;
 }
 
 export interface AgentConfigMCPCredentialInjectionDescriptor {
@@ -2269,6 +2274,7 @@ export interface StartRequest {
   input_artifact_ids?: string[];
   input_artifact_dispositions?: Record<string, string>;
   output_schema?: unknown;
+  agent_id?: string;
 }
 
 export interface StartResponse {
@@ -2446,6 +2452,7 @@ export interface TaskRow {
   last_activity_at: string;
   is_background: boolean;
   has_pending_approval: boolean;
+  agent_id?: string;
 }
 
 export interface TaskTrajectoryRef {

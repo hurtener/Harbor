@@ -16,6 +16,14 @@ import (
 // with no manual edit. BUMP IT WHEN A NEW HARBOR RELEASE IS TAGGED —
 // a stale value only costs the scaffolded project an older Harbor, but
 // a value that was never tagged breaks the generated project's build.
+//
+// The value is not only what a scaffolded `go.mod` requires: the CLI
+// reports it as `harbor --version` on any un-stamped source build, so a
+// stale pin misreports the running binary as well. `scripts/drift-audit.sh`
+// checks it against the PUBLISHED release tags — read from the remote, not
+// from the working branch's own CHANGELOG, which a release-heal merge can
+// leave behind without the pin noticing.
+//
 // The scaffold golden fixtures pin this value (an un-stamped `go test`
 // binary always resolves to it), so a bump regenerates them:
 //

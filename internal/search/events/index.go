@@ -1,7 +1,7 @@
 // Package events implements the `search.events` runtime-side
 // index — a server-enforced search over the event bus's replay ring,
-// scoped to the caller's identity triple unless the `auth.ScopeAdmin`
-// claim is present.
+// scoped to the caller's own tenant AND own user unless an admin-tier
+// claim widens it.
 //
 // The Searcher consumes the `events.Replayer` capability
 // and the `events.Filter` server-enforced shape. Free-text search runs
@@ -58,16 +58,58 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 	if err := search.ValidateRequest(callerID, req); err != nil {
 		return types.SearchResponse{}, err
 	}
+	// The identity-axis gate, read once for all three axes.
+	elevated := s.deps.AdminScope(ctx)
 	crossTenant := search.CrossTenantRequested(callerID.TenantID, req)
-	if crossTenant && !s.deps.AdminScope(ctx) {
-		return types.SearchResponse{}, search.ErrCrossTenantRequiresAdmin
+	crossUser := search.CrossUserRequested(callerID.UserID, req)
+	if !elevated {
+		if crossTenant {
+			return types.SearchResponse{}, search.ErrCrossTenantRequiresAdmin
+		}
+		if crossUser {
+			return types.SearchResponse{}, search.ErrCrossUserRequiresAdmin
+		}
+		if search.CrossSessionFanInRequested(req) {
+			return types.SearchResponse{}, search.ErrCrossSessionRequiresAdmin
+		}
 	}
 
 	// Identity scope for the Replay filter. When the caller scopes
 	// the search to a specific session, we pass that triple; the
 	// default is the caller's own (tenant, user, session).
+	//
+	// The user axis FOLDS to the caller's own when the filter elides it —
+	// this index is the one that already defaulted to the caller and so
+	// never leaked on elision, and the fold makes that a decision rather
+	// than a coincidence. The fold is KEPT on an ordinary widened read:
+	// the bus filter is single-valued, and its fan-in flag WRITES an
+	// admin-scope notice into the ring, so an elided axis is not turned
+	// into an unrequested deployment-wide replay here.
+	//
+	// It is released on exactly ONE input: a read the caller ALREADY
+	// widened across tenants. Folding there is not a narrower answer, it
+	// is a WRONG one — the caller's own user id is a principal of the
+	// caller's OWN tenant, so bounding a foreign tenant's rows by it
+	// matches nothing and the granted, explicitly-requested crossing
+	// answers an empty page indistinguishable from "that tenant has no
+	// events". That silent-empty is the failure this surface's identity
+	// bound exists to prevent, so the crossing widens instead. Nothing is
+	// widened that the request did not ask for: the fan-in flag and the
+	// admin-scope notice are already set by the tenant crossing itself,
+	// and the per-row tenant bound below still holds the read to the
+	// tenants the caller named.
+	users := search.EffectiveUserSet(callerID.UserID, req)
+	if elevated && crossTenant {
+		users = search.WidenedUserSet(req)
+	}
 	scopeSession := callerID.SessionID
+	// A widened read with an elided user axis has no single user to name;
+	// the bus's fan-in flag makes the named user irrelevant on that path,
+	// and the per-row bound below is what actually scopes it.
 	scopeUser := callerID.UserID
+	if len(users) > 0 {
+		scopeUser = users[0]
+	}
 	scopeTenant := callerID.TenantID
 	if len(req.Filter.SessionIDs) > 0 {
 		// V1 admits only a single-session-targeted replay per call;
@@ -75,19 +117,33 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 		// requests. Post-V1 may add a multi-session predicate.
 		scopeSession = req.Filter.SessionIDs[0]
 	}
-	if len(req.Filter.UserIDs) > 0 {
-		scopeUser = req.Filter.UserIDs[0]
-	}
 	if len(req.Filter.TenantIDs) == 1 {
 		scopeTenant = req.Filter.TenantIDs[0]
 	}
 
+	// `Filter.Matches` short-circuits its whole identity comparison when
+	// Admin is set, so the flag MUST be set for a granted cross-user read
+	// — otherwise the bus would match the widened read against the single
+	// scoped user and answer nothing, which looks exactly like a working
+	// gate while the widening is silently inert.
 	filter := eventsubsys.Filter{
 		Tenant:  scopeTenant,
 		User:    scopeUser,
 		Session: scopeSession,
-		Admin:   crossTenant,
+		Admin:   crossTenant || crossUser,
 	}
+	// The same short-circuit is why a widened read re-applies its axis
+	// bounds per row below: an Admin filter fans across EVERY identity in
+	// the ring, so a read widened on ONE axis would otherwise also cross
+	// the other. The bounds are the effective sets, so the fan is exactly
+	// as wide as the request asked for and no wider.
+	tenantBound := setOf(search.EffectiveTenantSet(callerID.TenantID, req))
+	// An EMPTY user bound is the wildcard, and it is reachable from exactly
+	// one input: the widened cross-tenant read whose user axis was elided.
+	// Every other path produces a non-empty set (the fold guarantees at
+	// least the caller), so the bound never degrades into "match nothing"
+	// and never silently becomes "match everything".
+	userBound := setOf(users)
 	for _, f := range req.Facets {
 		if f.Key == "events.type" && f.Value != "" {
 			filter.Types = append(filter.Types, eventsubsys.EventType(f.Value))
@@ -122,6 +178,16 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 	for _, ev := range evs {
 		if err := ctx.Err(); err != nil {
 			return types.SearchResponse{}, err
+		}
+		if filter.Admin {
+			if _, ok := tenantBound[ev.Identity.TenantID]; !ok {
+				continue
+			}
+			if len(userBound) > 0 {
+				if _, ok := userBound[ev.Identity.UserID]; !ok {
+					continue
+				}
+			}
 		}
 		if !search.TimeInWindow(ev.OccurredAt, req) {
 			continue
@@ -173,6 +239,16 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 		HasMore:         hasMore,
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
+}
+
+// setOf builds a membership set over an effective identity-axis set. A
+// per-call value; nothing package-level is mutated.
+func setOf(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		out[v] = struct{}{}
+	}
+	return out
 }
 
 // Compile-time assertion.

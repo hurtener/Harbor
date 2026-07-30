@@ -298,7 +298,12 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			AgentConfig:    in.AgentConfig,
 			AgentID:        in.AgentConfigID,
 			SessionOverlay: in.SessionOverlay,
-			Threshold:      cfg.Artifacts.HeavyOutputThresholdBytes,
+			// PINNED, not threaded: the MCP Apps reads are
+			// browser-rendered Protocol replies, so they select
+			// inline-versus-reference at the Console inline-payload
+			// bound rather than tracking the operator's LLM-context
+			// heavy-output threshold.
+			Threshold: config.DefaultConsoleInlinePayloadBytes,
 		})
 		if aaErr != nil {
 			return nil, wrapErr("mcp apps accessor", aaErr)
@@ -315,8 +320,12 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	}
 
 	if in.Coordinator != nil && in.Artifacts != nil {
+		// PINNED, not threaded: `pause.list` is a Console/TUI read whose
+		// inline-versus-reference selection is Protocol-visible, so it
+		// uses the Console inline-payload bound rather than the
+		// operator's LLM-context heavy-output threshold.
 		muxOpts = append(muxOpts, transports.WithPauseList(
-			in.Coordinator, in.Artifacts, cfg.Artifacts.HeavyOutputThresholdBytes))
+			in.Coordinator, in.Artifacts, config.DefaultConsoleInlinePayloadBytes))
 	}
 	if in.Memory != nil {
 		muxOpts = append(muxOpts, transports.WithMemory(in.Memory, cfg.Memory.Driver))
@@ -348,10 +357,14 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 				return nil, wrapErr("tools/protocol approval-policy store", psErr)
 			}
 			annotator, aErr := annotate.NewAnnotator(annotate.Deps{
-				Catalog:             in.Catalog,
-				Approval:            policyStore,
-				Events:              bus,
-				OAuth:               annotate.NewProviderOAuthReader(in.OAuthProviders),
+				Catalog:  in.Catalog,
+				Approval: policyStore,
+				Events:   bus,
+				OAuth:    annotate.NewProviderOAuthReader(in.OAuthProviders),
+				// Threaded deliberately: `tools.content_stats` REPORTS the
+				// offload threshold and counts offload events against it,
+				// so reporting the pinned Console bound here would make
+				// the field lie.
 				HeavyThresholdBytes: int64(cfg.Artifacts.HeavyOutputThresholdBytes),
 			})
 			if aErr != nil {
@@ -408,7 +421,9 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	var flowRegistry *flow.Registry
 	if in.Artifacts != nil && in.Tasks != nil {
 		flowRegistry = flow.NewRegistry()
-		flowCatalog, fcErr := flowprotocol.NewRegistryCatalog(flowRegistry, in.Artifacts, cfg.Artifacts.HeavyOutputThresholdBytes)
+		// PINNED, not threaded — same Console-read reason as `pause.list`
+		// and the `memory.*` handlers above.
+		flowCatalog, fcErr := flowprotocol.NewRegistryCatalog(flowRegistry, in.Artifacts, config.DefaultConsoleInlinePayloadBytes)
 		if fcErr != nil {
 			return nil, wrapErr("flow protocol catalog", fcErr)
 		}

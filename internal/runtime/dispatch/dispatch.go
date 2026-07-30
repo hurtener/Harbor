@@ -69,6 +69,61 @@ var ErrArtifactRefNotFound = errors.New("dispatch: artifact reference does not r
 // empty value the tool would read as an empty artifact.
 var ErrArtifactStoreUnavailable = errors.New("dispatch: artifact reference cannot be resolved (no artifact store wired)")
 
+// observationClassOf maps an invoke error onto the machine-readable
+// class the step's observation is rendered under, or the empty class
+// when the failure is the tool's own.
+//
+// The classification is computed with errors.Is over the sentinels that
+// ALREADY exist rather than by declaring a new one: a second sentinel
+// for a fact one sentinel already carries is two implementations of one
+// concept, and the message strings stay untouched so no shipped
+// transcript or log grep is invalidated.
+//
+// It reads through the whole wrap chain, which is %w at every hop from
+// the seated resolver, through the reference binder and the in-process
+// driver's argument-resolution wrap, to here.
+func observationClassOf(err error) planner.ObservationClass {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, ErrArtifactRefNotFound):
+		return planner.ObservationClassArtifactRefNotFound
+	case errors.Is(err, ErrArtifactStoreUnavailable), errors.Is(err, artifactref.ErrNoResolver):
+		return planner.ObservationClassArtifactResolverUnavailable
+	default:
+		return ""
+	}
+}
+
+// classifiedError carries an [planner.ObservationClass] alongside an
+// error without changing its message or its wrap chain. The run loop
+// reads it back with planner.ObservationClassOf.
+type classifiedError struct {
+	err   error
+	class planner.ObservationClass
+}
+
+func (e classifiedError) Error() string { return e.err.Error() }
+
+func (e classifiedError) Unwrap() error { return e.err }
+
+// ObservationClass satisfies [planner.ClassifiedError].
+func (e classifiedError) ObservationClass() planner.ObservationClass { return e.class }
+
+// classify wraps err so the run loop can read its class back, and
+// returns err untouched when the failure is the tool's own. Returning
+// the original error on the default leg is what keeps an ordinary tool
+// failure's observation byte-identical to what it was before classes
+// existed — a widened payload on every tool error would be an
+// unannounced prompt change on the runtime's hottest path.
+func classify(err error) error {
+	class := observationClassOf(err)
+	if class == "" {
+		return err
+	}
+	return classifiedError{err: err, class: class}
+}
+
 // ErrTaskNotOwnDescendant is returned when a task observation/cancel
 // meta-tool (_task_status / _cancel_task) names a target the calling run
 // did not spawn — a task whose ParentTaskID chain does not reach the
@@ -146,9 +201,10 @@ type toolExecutor struct {
 
 // defaultHeavyThreshold is the heavy-output safety floor applied when
 // the operator-configured threshold is unset / non-positive. Single-
-// sourced on `config.DefaultHeavyOutputThresholdBytes` (the
-// `artifacts.heavy_output_threshold_bytes` default — the
-// DefaultSpawnDepthCap precedent; no literal copy allowed).
+// sourced on `config.DefaultHeavyOutputThresholdBytes` — the
+// LLM-CONTEXT arm of the heavy-content matrix, which is exactly the
+// question a promote-to-stub decision on a planner observation answers.
+// No literal copy allowed.
 const defaultHeavyThreshold = config.DefaultHeavyOutputThresholdBytes
 
 // spawnAwaitPollInterval is the cadence at which AwaitTask + a retain-turn
@@ -163,10 +219,9 @@ type Option func(*toolExecutor)
 // WithHeavyThreshold sets the heavy-output threshold in bytes:
 // tool results whose JSON encoding meets or exceeds it get promoted to
 // artifact-backed truncation summaries before reaching the planner /
-// LLM edge. Non-positive values fall back to the 32 KiB safety floor
-// (the default) — the same normalization the pre-110a
-// constructor applied, so passing an unset config value through is
-// safe.
+// LLM edge. Non-positive values fall back to the canonical
+// heavy-output safety floor (defaultHeavyThreshold), so passing an
+// unset config value through is safe.
 func WithHeavyThreshold(bytes int) Option {
 	return func(e *toolExecutor) { e.heavyThreshold = bytes }
 }
@@ -390,7 +445,10 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 		e.logger.Warn("dispatch: tool invoke failed",
 			slog.String("tool", d.Tool),
 			slog.String("err", err.Error()))
-		return nil, nil, fmt.Errorf("tool %q invoke: %w", d.Tool, err)
+		// Classified so the run loop's error observation names the KIND
+		// of failure. The message is unchanged either way — classify
+		// returns the error untouched when the failure is the tool's own.
+		return nil, nil, classify(fmt.Errorf("tool %q invoke: %w", d.Tool, err))
 	}
 	raw := result.Value
 	if raw == nil && len(result.Meta) > 0 {
@@ -452,11 +510,15 @@ func (e *toolExecutor) branchObservations(ctx context.Context, rc planner.RunCon
 			callID = branches[r.Index].CallID
 		}
 		if r.Err != nil {
+			// The same classification the single-call path stamps, so a
+			// planner reading a parallel branch and a planner reading a
+			// lone CallTool learn the same fact about the same failure.
 			branchErr := planner.ParallelBranchObservation{
-				CallID: callID,
-				Tool:   r.Tool,
-				Index:  r.Index,
-				Error:  r.Err.Error(),
+				CallID:     callID,
+				Tool:       r.Tool,
+				Index:      r.Index,
+				Error:      r.Err.Error(),
+				ErrorClass: observationClassOf(r.Err),
 			}
 			raw = append(raw, branchErr)
 			llm = append(llm, branchErr)

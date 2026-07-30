@@ -850,12 +850,21 @@ type PauseResumeConfig struct {
 //     key-value form.
 //
 // `HeavyOutputThresholdBytes` is the byte size at which the runtime
-// mandatorily routes a payload through the ArtifactStore. Default
-// 32 KB (RFC §6.10). Per-tool overrides land at via
-// the tool catalog; the field is the runtime-wide default. Consumed
-// by the tool dispatcher and the LLM-edge catch-all
-// validated today so an operator's deployment is
-// rejected for an invalid value even before the consumers land.
+// mandatorily routes a payload bound for a model's CONTEXT WINDOW
+// through the ArtifactStore. Default 128 KiB (RFC §6.5, §6.10). The
+// routing is a runtime-wide invariant, not a per-tool opt-in; there
+// are no per-tool overrides. Consumed by the tool dispatcher
+// (promote-to-stub), the LLM-edge catch-all (leak detection +
+// auto-materialization), the trajectory-compaction payload budget, and
+// the `tools.content_stats` report that echoes the resolved value.
+//
+// It does NOT govern Console-facing Protocol replies. `pause.list`,
+// `memory.get` / `memory.list`, the flow catalog and the
+// `mcp.servers.read_resource` / `mcp.apps.call_tool` /
+// `mcp.apps.tool_context` reads select inline-versus-reference at the
+// pinned `DefaultConsoleInlinePayloadBytes` (32 KiB) instead, because
+// those payloads never enter a model's context and the selection is
+// Protocol-visible. Raising this field does not widen them.
 //
 // `FetchDefaultMaxBytes` and `FetchHardMaxBytes` are the operator's
 // half of the read-back bound. `HeavyOutputThresholdBytes` governs what
@@ -1134,6 +1143,26 @@ type ToolsConfig struct {
 	// secure default); http adds are admin-scoped but not gated here.
 	// Optional. Restart-required.
 	MCPAddConnection *MCPAddConnectionConfig `yaml:"mcp_add_connection,omitempty"`
+
+	// MCPArtifactEgressMaxBytes bounds ONE substituted artifact value on
+	// one outbound MCP tool call — the ceiling for egress substitution,
+	// where the runtime resolves an artifact id the model authored and
+	// places the resolved BYTES into the outbound tool-call body.
+	//
+	// A value above the ceiling is REFUSED loud, never truncated: a
+	// partial document delivered to a remote ingester is a corruption,
+	// not a bounded read, so the artifact read path's truthful-truncation
+	// posture deliberately does not apply here.
+	//
+	// It is deliberately independent of the heavy-output threshold — see
+	// [DefaultMCPArtifactEgressMaxBytes], which also carries the sizing
+	// arithmetic (`ceiling x in-flight mapped calls`, NOT multiplied by
+	// the retry budget) and the base64 inflation figure.
+	//
+	// Zero / unset resolves to [DefaultMCPArtifactEgressMaxBytes] (8
+	// MiB) through [ToolsConfig.ResolvedMCPArtifactEgressMaxBytes].
+	// Optional. Restart-required.
+	MCPArtifactEgressMaxBytes int `yaml:"mcp_artifact_egress_max_bytes,omitempty"`
 }
 
 // MCPAddConnectionConfig declares the operator allowlist for the
@@ -1171,6 +1200,62 @@ func (t ToolsConfig) MCPAppHostDisplayModes() []string {
 		return []string{"inline"}
 	}
 	return append([]string(nil), t.MCPAppHost.DisplayModes...)
+}
+
+// MCPArtifactParams maps an MCP tool NAME to the parameter names on
+// that tool which carry artifact BYTES.
+//
+// It is keyed per tool name in the same shape `ToolPolicies` and
+// `ToolOAuthProviders` already establish — the SERVER-side MCP tool
+// name, not the `<source>_<tool>` Harbor-facing name.
+//
+// It is OPERATOR-declared, and deliberately so: a remote server never
+// decides when the runtime reads its own store. A server-declared "this
+// parameter is an artifact reference" annotation was considered and
+// rejected, because a remote server driving host-side privileged
+// behaviour inverts the host obligation.
+//
+// A mapped parameter is validated against the server's own DISCOVERED
+// input schema at attach: it must be declared there, and it must be
+// declared string-typed. Advertising "this parameter takes artifact
+// bytes" against a server whose schema never declared such a parameter
+// is the same defect shape as advertising an unserviced capability, so
+// the mapping is checked rather than trusted.
+type MCPArtifactParams map[string][]string
+
+// DefaultMCPArtifactEgressMaxBytes bounds ONE substituted artifact value
+// on one outbound MCP tool call.
+//
+// Deliberately NOT derived from the heavy-output threshold. Substituted
+// bytes never enter a model's context — that is the whole point of the
+// feature — so the budget is a NETWORK and MEMORY budget, not a token
+// budget, and tying it to a context-window constant would make one
+// number answer two unrelated questions. The independent-ceiling shape
+// is the one the artifact fetch bounds already set.
+//
+// Sizing arithmetic an operator needs, stated rather than left to be
+// discovered: the transient footprint is `ceiling x in-flight mapped
+// calls`. It is NOT multiplied by the retry budget, because resolution
+// happens once per dispatched call rather than once per attempt —
+// resolving inside the reliability shell's loop would multiply it by
+// four at the default policy.
+//
+// Base64 inflates the wire form by roughly a third, so 8 MiB of content
+// is around 11 MB on the wire. That is acceptable over HTTP and is one
+// reason the mapping is refused on stdio, where a frame that large is
+// least appropriate.
+const DefaultMCPArtifactEgressMaxBytes = 8 * 1024 * 1024
+
+// ResolvedMCPArtifactEgressMaxBytes returns the configured
+// `mcp_artifact_egress_max_bytes`, substituting
+// [DefaultMCPArtifactEgressMaxBytes] when the field is unset, so the
+// operator's value and the default resolve through ONE accessor rather
+// than each call site re-deciding what zero means.
+func (t ToolsConfig) ResolvedMCPArtifactEgressMaxBytes() int {
+	if t.MCPArtifactEgressMaxBytes <= 0 {
+		return DefaultMCPArtifactEgressMaxBytes
+	}
+	return t.MCPArtifactEgressMaxBytes
 }
 
 // CustomToolConfig declares one operator-defined custom tool whose Go
@@ -1615,12 +1700,23 @@ type MCPServerConfig struct {
 	// alongside a binding (one auth mode per connection). Restart-required.
 	OAuthProvider string `yaml:"oauth_provider,omitempty"`
 	// MetaAnnotations is a static, NON-SECRET set of operator-declared
-	// key/values merged verbatim into the MCP `_meta` map on every
-	// identity-stamped per-call RPC — the deployment's own attribution
-	// vocabulary, passed to the server as-is. Reserved keys (`tenant`,
-	// `user`, `session`, `agent_id`, `traceparent`, `tracestate`, and any
-	// `io.modelcontextprotocol/`-prefixed key) and empty keys are rejected
-	// at validation. Optional. Restart-required.
+	// key/values merged into the MCP `_meta` map on every identity-stamped
+	// per-call RPC — the deployment's own attribution vocabulary.
+	//
+	// Each KEY is a `_meta` PATH: a key with no `.` sets a top-level key, and
+	// a DOTTED key NESTS (`vendor.account_id` lands at
+	// `_meta.vendor.account_id`, not as a literal flat key) — the same
+	// interpretation, through the same helper, that `injection.meta_key` has
+	// always had, so one `_meta` namespace has one meaning regardless of which
+	// mechanism wrote into it.
+	//
+	// Validation rejects: an empty key or an empty path segment; a key whose
+	// WHOLE value or ANY dot-segment is reserved (`tenant`, `user`, `session`,
+	// `agent_id`, `traceparent`, `tracestate`, and any
+	// `io.modelcontextprotocol/`-prefixed key); a path deeper than
+	// MaxMCPMetaKeyDepth; and a path that collides with another declared path
+	// on the same connection — equal to it, or a prefix of it — including the
+	// `injection.meta_key` path. Optional. Restart-required.
 	MetaAnnotations map[string]string `yaml:"meta_annotations,omitempty"`
 	// OAuthDiscoveryAllowedOrigins is the explicit per-connection allowance
 	// list for OAuth-requirement discovery cross-origin metadata fetches
@@ -1667,6 +1763,60 @@ type MCPServerConfig struct {
 	// pulled credential may only reach a boot-declared sink). Optional; empty
 	// preserves today's behaviour. Restart-required.
 	Injection *MCPCredentialInjectionConfig `yaml:"injection,omitempty"`
+
+	// ArtifactByteEligible declares that this connection MAY receive
+	// artifact BYTES through egress substitution. It is the containment
+	// boundary for the feature: with it unset (every connection by
+	// default), an `artifact_params` mapping is REFUSED at the door and
+	// no outbound call ever carries resolved content.
+	//
+	// It is honest about what it governs. The reachable artifact SET is
+	// unchanged by this flag — that stays the dispatching run's own
+	// (tenant, user, session), enforced by the same run-scoped resolver
+	// the in-process arm uses. What the flag governs is the RECIPIENT:
+	// whether a remote server may be handed those bytes.
+	//
+	// It is WIRE-CONFIGURABLE and admin-writable, and that is a
+	// deliberate departure from the fail-closed boot-gate shape its
+	// siblings (`allow_wire_oauth_descriptor`, `allow_wire_injection`)
+	// take. Those gates exist because their fields determine WHERE A
+	// CREDENTIAL IS SENT, which is a boot-declared-only plane. This field
+	// determines where a USER'S OWN CONTENT is sent — a different plane,
+	// and one whose boundary Harbor has already accepted and named: a
+	// shared runtime TRUSTS its co-tenant admins for runtime-added
+	// connections, with one-runtime-per-tenant as the stated remedy for a
+	// deployment needing hard isolation. A boot gate would additionally
+	// break the use case the feature exists for, where a server attached
+	// over the control plane must be usable without a redeploy.
+	//
+	// An artifact is stored as authored — unredacted — so a byte-eligible
+	// connection CAN move a secret. That is stated plainly rather than
+	// softened; the compensating control is the `mcp.artifact_egressed`
+	// record, emitted fail-closed before every wire request.
+	//
+	// Refused on stdio (explicit or auto-selected from a command-only
+	// config), on the same rule the sibling http-only fields use.
+	// Optional. Restart-required.
+	ArtifactByteEligible bool `yaml:"artifact_byte_eligible,omitempty"`
+
+	// ArtifactParams maps this server's tool names to the parameters on
+	// those tools which carry artifact BYTES. When a mapped parameter
+	// arrives carrying an artifact id, the runtime resolves it under the
+	// dispatching run's own identity and writes the resolved bytes into
+	// the outbound tool-call body as standard base64 — the model authored
+	// an id and never sees content.
+	//
+	// Requires ArtifactByteEligible: a mapping on a non-eligible
+	// connection is refused loud rather than silently ignored. Each
+	// mapped parameter must appear in the server's own discovered input
+	// schema AND be declared string-typed; an absent or non-string
+	// parameter fails the attach. Refused on stdio.
+	//
+	// Keyed per tool name in the shape [MCPArtifactParams] documents.
+	// Optional; empty preserves today's behaviour exactly (an outbound
+	// call is byte-identical to a build without the feature).
+	// Restart-required.
+	ArtifactParams MCPArtifactParams `yaml:"artifact_params,omitempty"`
 }
 
 // MCP credential-injection form discriminators (MCPCredentialInjectionConfig.Form).
@@ -2029,16 +2179,54 @@ func (p PlannerConfig) BatchSpawnCap() int {
 const DefaultMaxBatchSpawns = 5
 
 // DefaultHeavyOutputThresholdBytes is the ONE source of the
-// heavy-output threshold default (32 KiB; RFC §6.10): the byte
-// size at which the runtime promotes heavy content to artifact-backed
-// stubs. `Defaults()` seeds
-// `ArtifactsConfig.HeavyOutputThresholdBytes` from it; the dispatch
-// executor's safety floor (`internal/runtime/dispatch`), the LLM-edge
-// snapshot default (`llm.DefaultHeavyOutputThreshold`), and the search
-// preview bound (`search.HeavyPreviewThreshold`) all reference this
-// constant (the `DefaultSpawnDepthCap` precedent — checkpoint audit
-// follow-up). No other literal copy of the value is allowed.
-const DefaultHeavyOutputThresholdBytes = 32 * 1024
+// LLM-CONTEXT heavy-output default (128 KiB; RFC §6.5, §6.10): the byte
+// size at or above which content the runtime is about to place into a
+// model's context window is promoted to an artifact-backed stub
+// instead.
+//
+// It answers exactly ONE question — how many bytes may enter a prompt.
+// Every consumer that answers a DIFFERENT question carries its own
+// named constant with its own godoc stating that question; the
+// Console-facing counterpart is `DefaultConsoleInlinePayloadBytes`, the
+// search preview bound is `search.HeavyPreviewThreshold`, and the
+// terminal fold bound lives in `internal/tui/renderers`. The rule is
+// NOT "no second copy of the number": it is that no second constant may
+// answer THIS question, and a different question takes its own constant
+// even when the answer currently coincides. This constant deliberately
+// does not enumerate its consumers — an enumeration rots the moment
+// another one lands and no gate notices.
+//
+// 128 KiB sits at the top of the range the heavy-output research named
+// reasonable (16 KiB – 128 KiB). The cost is ~32k tokens of a 200k
+// window for a result in the 32–128 KiB band; the saving is the extra
+// planner turn a stub-then-fetch cycle costs for exactly that band.
+// `Defaults()` seeds `ArtifactsConfig.HeavyOutputThresholdBytes` from
+// it and an operator's explicit value overrides it.
+const DefaultHeavyOutputThresholdBytes = 128 * 1024
+
+// DefaultConsoleInlinePayloadBytes is the ONE source of the
+// CONSOLE-FACING inline-payload bound (32 KiB): the byte size at or
+// above which a Protocol reply projected for a browser — `pause.list`,
+// `memory.get` / `memory.list`, the flow catalog, and the
+// `mcp.servers.read_resource` / `mcp.apps.call_tool` /
+// `mcp.apps.tool_context` reads — ships an artifact reference instead
+// of inline bytes.
+//
+// It is deliberately NOT `DefaultHeavyOutputThresholdBytes`. That value
+// prices tokens against a context window; this one prices bytes into an
+// HTTP reply a browser renders, where a reference costs the reader one
+// more round trip it was already going to make and an inline payload
+// costs every reader on the page. The selection is Protocol-visible —
+// it decides which arm of a sum-typed reply is populated — so it is
+// pinned rather than tracking the LLM-context threshold it used to
+// alias. The two happen to have had the same answer; they were never
+// the same question.
+//
+// There is deliberately no operator knob for it: an operator who raises
+// `artifacts.heavy_output_threshold_bytes` is answering the prompt-size
+// question, and that answer must not silently reshape wire replies for
+// every Protocol client.
+const DefaultConsoleInlinePayloadBytes = 32 * 1024
 
 // DefaultArtifactFetchMaxBytes is the ONE source of the artifact
 // read-back default (64 KiB): the window served when a caller names no

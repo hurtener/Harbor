@@ -115,6 +115,28 @@ const (
 	// unit with the mutation.
 	EventTypeOAuthProviderRemoved events.EventType = "agent_config.oauth_provider.removed"
 
+	// EventTypeMCPConnectionReattached — emitted when the RUN-START attach leg
+	// re-establishes a runtime-added MCP connection the reconciling owner's
+	// active config revision DECLARES but the live registry did not carry (a
+	// fresh process on the same state store, or a rollback that re-declares a
+	// previously-removed connection). It is deliberately NOT
+	// EventTypeMCPConnectionAdded: that type's godoc binds it to an admin add,
+	// and a reconcile has no admin request. A consumer also distinguishes the
+	// two families structurally — an admin add's Author quadruple carries an
+	// EMPTY RunID, a reconcile's carries the reconciling run's. Payload:
+	// MCPConnectionLifecyclePayload with State "online"; never a secret.
+	EventTypeMCPConnectionReattached events.EventType = "mcp.connection.reattached"
+
+	// EventTypeMCPConnectionReattachFailed — emitted when the run-start attach
+	// leg could NOT re-establish a DECLARED connection. The run is never failed
+	// by it and the sweep is never aborted, but the shortfall is never silent
+	// either: the outcome is REPORTED with a stable class so an operator surface
+	// can tell "unreachable third party" from "refused by current boot policy".
+	// Payload: MCPConnectionLifecyclePayload, where State carries the stable
+	// class (one of the MCPReattachClass* constants) and Reason carries the
+	// scrubbed, length-bounded operator-facing reason. Never a secret.
+	EventTypeMCPConnectionReattachFailed events.EventType = "mcp.connection.reattach_failed"
+
 	// EventTypeLLMProviderInstalled — emitted when an admin installs (upserts)
 	// / rotates a Protocol-installed, ZERO-URL inference provider binding
 	// (agent_config.set_llm_provider): the binding is installed live into the
@@ -138,12 +160,73 @@ func init() {
 		EventTypeMCPConnectionFailed,
 		EventTypeMCPConnectionAuthRequired,
 		EventTypeMCPConnectionRemoved,
+		EventTypeMCPConnectionReattached,
+		EventTypeMCPConnectionReattachFailed,
 		EventTypeMCPDiscoveryOriginsSet,
 		EventTypeOAuthProviderInstalled,
 		EventTypeOAuthProviderRemoved,
 		EventTypeLLMProviderInstalled,
 	} {
 		events.RegisterEventType(t)
+	}
+}
+
+// The CLOSED set of run-start re-attach failure classes carried in
+// MCPConnectionLifecyclePayload.State on EventTypeMCPConnectionReattachFailed.
+// They live here, next to the event type, because they are part of the
+// observable contract an operator surface reads — not an implementation detail
+// of the runtime glue that emits them. Every class is non-secret and stable;
+// adding one is an additive contract change, renaming one is breaking.
+//
+// The split that matters to an operator: MCPReattachClassTransportFailed means
+// "the third party did not answer" (retryable — the leg re-dials on a bounded
+// backoff), every other class means "current boot policy or a live-registry
+// collision refuses this descriptor" (NOT retryable by re-dialling — it is
+// emitted once per attempted descriptor and only an operator action clears it).
+const (
+	// MCPReattachClassTransportFailed — the dial, the initialize handshake, or
+	// discovery failed. This is also the class a connection whose live transport
+	// depended on operator-supplied static auth headers lands in: those headers
+	// are secret and never persisted, so the re-attach dials without them and a
+	// server that required them answers 401. RETRYABLE.
+	MCPReattachClassTransportFailed = "transport_failed"
+	// MCPReattachClassStdioNotAllowed — the declared stdio descriptor's argv[0]
+	// is absent from the CURRENT boot stdio allowlist. The revision was written
+	// while the command was allowlisted; boot policy has since tightened (or the
+	// allowlist is empty, which refuses every stdio re-attach). Never spawned.
+	MCPReattachClassStdioNotAllowed = "stdio_not_allowed"
+	// MCPReattachClassInjectionDisabled — the declared descriptor carries a
+	// per-user credential-injection mapping but the fail-closed
+	// `tools.allow_wire_injection` opt-in is OFF. The dev opt-in is a
+	// kill-switch: a mapping persisted while it was on is not rebuilt after a
+	// restart with it off.
+	MCPReattachClassInjectionDisabled = "injection_disabled"
+	// MCPReattachClassOAuthBinding — the descriptor's `oauth_provider` (or
+	// injection broker) NAME does not resolve, or the connection host is absent
+	// from the provider's boot-declared downstream-sink allow-list. A NAME
+	// resolution and an allow-list check only — no token participates.
+	MCPReattachClassOAuthBinding = "oauth_binding"
+	// MCPReattachClassOwnerConflict — the declared name is already live in the
+	// registry under a DIFFERENT (tenant, agent) owner. The re-attach is refused
+	// rather than evicting another owner's transport and tools. Only that owner's
+	// detach or a rename clears it.
+	MCPReattachClassOwnerConflict = "owner_conflict"
+	// MCPReattachClassAmbiguousServerID — the declared name would make an
+	// already-registered server's `<name>_<tool>` ids ambiguous. A naming
+	// collision an operator must resolve.
+	MCPReattachClassAmbiguousServerID = "ambiguous_server_id"
+)
+
+// MCPReattachFailureClasses is the closed class set as a slice, so a consumer
+// (and the phase's report guard) can enumerate it rather than re-listing it.
+func MCPReattachFailureClasses() []string {
+	return []string{
+		MCPReattachClassTransportFailed,
+		MCPReattachClassStdioNotAllowed,
+		MCPReattachClassInjectionDisabled,
+		MCPReattachClassOAuthBinding,
+		MCPReattachClassOwnerConflict,
+		MCPReattachClassAmbiguousServerID,
 	}
 }
 
@@ -311,12 +394,18 @@ type OAuthProviderSetPayload struct {
 }
 
 // MCPConnectionLifecyclePayload is the typed payload for the runtime
-// MCP-attach lifecycle events (pending / added / failed / auth_required).
-// SafePayload — every field is operator-visible audit metadata; NO secret
-// header / token / credential / auth code is ever carried (CLAUDE.md §7).
+// MCP-attach lifecycle events (pending / added / failed / auth_required) AND
+// for the run-start re-attach leg's two events (reattached / reattach_failed),
+// which reuse this shape verbatim rather than adding a payload type that would
+// differ from it only by a doc comment. SafePayload — every field is
+// operator-visible audit metadata; NO secret header / token / credential / auth
+// code is ever carried (CLAUDE.md §7).
 type MCPConnectionLifecyclePayload struct {
 	events.SafeSealed
-	// Author is the identity that drove the add.
+	// Author is the identity that drove the add. On a run-start re-attach there
+	// is no admin request: Author carries the RECONCILING RUN's quadruple, whose
+	// non-empty RunID is the machine-readable discriminator between the two
+	// families (an admin add's RunID is empty).
 	Author identity.Quadruple
 	// AgentID is the agent the connection was added to (a registration
 	// identity, NOT an isolation principal).
@@ -326,7 +415,11 @@ type MCPConnectionLifecyclePayload struct {
 	// Transport is the connection transport ("stdio" / "http") — non-secret.
 	Transport string
 	// State is the lifecycle state the event marks ("pending" / "online" /
-	// "failed" / "auth_required").
+	// "failed" / "auth_required"). On the run-start re-attach events it is
+	// "online" for a successful re-establishment and the stable failure CLASS
+	// (one of the MCPReattachClass* constants) for a refused / unreachable one —
+	// so a reader distinguishes "the third party is down" from "current boot
+	// policy refuses this descriptor" without parsing Reason.
 	State string
 	// RevisionID is the recording revision id (set for online / auth_required;
 	// empty for pending and for a failed add, which records no revision).
@@ -336,7 +429,9 @@ type MCPConnectionLifecyclePayload struct {
 	// is an opaque runtime handle, NOT a credential.
 	PauseToken string
 	// Reason is a SAFE, operator-facing failure reason (set only for the
-	// failed state); never a secret or raw transport payload.
+	// failed state); never a secret or raw transport payload. On a re-attach
+	// failure it may additionally carry a suppressed-attempt count, so a
+	// backed-off retry window is bounded and reported rather than silent.
 	Reason string
 	// OccurredAt is the lifecycle-transition instant.
 	OccurredAt time.Time

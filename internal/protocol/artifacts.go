@@ -738,6 +738,22 @@ func (s *ArtifactsSurface) effectiveMaxBytes(requested int64) int64 {
 // and nothing follows it, so truncated is false. The returned slice is a
 // COPY — the response outlives the driver's buffer, and an in-memory
 // driver hands back a slice a caller must not be able to alias.
+//
+// # The deliberate divergence from the tool-side twin
+//
+// The artifact-fetch built-in has a byte-identical helper, and the
+// copy-not-alias invariant is shared between them on purpose. What is
+// NOT shared, and must not be "made consistent", is the rune discipline
+// the tool applies one layer above its own copy: that tool returns its
+// window through a STRING field which `encoding/json` sanitises on the
+// way to a model, so it trims the window to whole UTF-8 runes and
+// refuses a window that is not valid text.
+//
+// This response carries `[]byte`, which is base64 over the wire and
+// therefore byte-exact for every MIME. Propagating rune trimming here
+// would SHORT-READ an operator's PDF — silently, and at a length the
+// response misreports. The two callers have two admissibility rules over
+// one window helper, and that is the intended shape.
 func boundedWindow(blob []byte, offset, maxBytes int64) (window []byte, truncated bool) {
 	total := int64(len(blob))
 	if offset >= total {

@@ -183,6 +183,14 @@ type TaskRow struct {
 	// per-job right-rail's Pending-approvals tab is populated when it is
 	// true.
 	HasPendingApproval bool `json:"has_pending_approval"`
+	// AgentID is the agent this task's run executes under when the
+	// `start` request NAMED one. It is absent (`omitempty`) when the
+	// caller named no agent — the run binds the runtime's configured
+	// default. Absence is therefore "DEFAULTED", never "unknown": every
+	// historical row predates the field and every such run bound the
+	// default by construction, so a consumer renders an absent value as
+	// the runtime default rather than as missing data.
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 // TaskFilter is the server-enforced facet filter on `tasks.list`. An
