@@ -1,7 +1,7 @@
 // Package tasks implements the `search.tasks` runtime-side
 // index — a server-enforced search over task lifecycle records, scoped
-// to the caller's identity triple unless the `auth.ScopeAdmin` claim
-// is present.
+// to the caller's own tenant AND own user unless an admin-tier claim
+// widens it.
 //
 // The Searcher consumes the public `tasks.TaskRegistry.List` surface
 // per session, fanning across the sessions visible to the caller (via
@@ -67,14 +67,31 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 	if err := search.ValidateRequest(callerID, req); err != nil {
 		return types.SearchResponse{}, err
 	}
-	if search.CrossTenantRequested(callerID.TenantID, req) && !s.deps.AdminScope(ctx) {
-		return types.SearchResponse{}, search.ErrCrossTenantRequiresAdmin
+	// The identity-axis gate, read once for all three axes.
+	elevated := s.deps.AdminScope(ctx)
+	if !elevated {
+		if search.CrossTenantRequested(callerID.TenantID, req) {
+			return types.SearchResponse{}, search.ErrCrossTenantRequiresAdmin
+		}
+		if search.CrossUserRequested(callerID.UserID, req) {
+			return types.SearchResponse{}, search.ErrCrossUserRequiresAdmin
+		}
+		if search.CrossSessionFanInRequested(req) {
+			return types.SearchResponse{}, search.ErrCrossSessionRequiresAdmin
+		}
 	}
 
 	tenants := search.EffectiveTenantSet(callerID.TenantID, req)
+	// The user axis FOLDS for an unwidened caller. Without the fold the
+	// session fan-in below walks every user's sessions in the tenant and
+	// then reads every one of their tasks.
+	users := search.EffectiveUserSet(callerID.UserID, req)
+	if elevated {
+		users = search.WidenedUserSet(req)
+	}
 	snapshots, err := s.lister.ListSnapshots(ctx, sessionsubsys.SessionListFilter{
 		TenantIDs:     tenants,
-		UserIDs:       req.Filter.UserIDs,
+		UserIDs:       users,
 		SessionIDs:    req.Filter.SessionIDs,
 		IncludeClosed: true,
 	})
@@ -169,14 +186,15 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 }
 
 // tasksGetWithIdentity calls TaskRegistry.Get under a ctx carrying the
-// session's identity so the per-tenant gate inside Get is satisfied.
+// session's identity so the per-principal gate inside Get is satisfied.
 //
-// A session inside the caller's verified tenant is ordinary narrowing. A
-// session from ANOTHER tenant is a crossing whose authorization already
-// happened upstream: the fleet fan-in that produced this snapshot was
-// gated on the caller's verified admin-tier claim, and the walk only
-// ever reaches snapshots that fan-in returned. Seating it as an audited
-// re-scope names the tenant being read and why.
+// A session inside the caller's verified tenant AND verified user is
+// ordinary narrowing. A session belonging to another PRINCIPAL — another
+// tenant or another user — is a crossing whose authorization already
+// happened upstream: the fan-in that produced this snapshot was gated on
+// the caller's verified admin-tier claim, and the walk only ever reaches
+// snapshots that fan-in returned. Seating it as an audited re-scope names
+// the principal being read and why.
 func (s *Searcher) tasksGetWithIdentity(ctx context.Context, ident identity.Identity, id tasksubsys.TaskID) (*tasksubsys.Task, error) {
 	subCtx, err := s.rowScopedCtx(ctx, ident)
 	if err != nil {
@@ -186,11 +204,21 @@ func (s *Searcher) tasksGetWithIdentity(ctx context.Context, ident identity.Iden
 }
 
 // rowScopedCtx seats a matched session's own identity for the per-task
-// read behind it. See tasksGetWithIdentity for why a foreign tenant here
-// is an already-authorized crossing rather than a widening.
+// read behind it. See tasksGetWithIdentity for why a foreign principal
+// here is an already-authorized crossing rather than a widening.
+//
+// The comparison covers BOTH isolation principals on the request axis.
+// Comparing the tenant alone let a same-tenant foreign-USER session take
+// the unelevated seat, so the deepest guard in this searcher was blind to
+// exactly the axis the request gate above it now closes — and a guard
+// that cannot see the crossing it exists to catch is not defence in
+// depth. The session component is deliberately NOT compared: the whole
+// point of this walk is to read a session other than the caller's
+// current one, and the two principal axes decide whose sessions those
+// may be.
 func (s *Searcher) rowScopedCtx(ctx context.Context, ident identity.Identity) (context.Context, error) {
 	verified, anchored := identity.FromVerified(ctx)
-	if !anchored || ident.TenantID == verified.TenantID {
+	if !anchored || (ident.TenantID == verified.TenantID && ident.UserID == verified.UserID) {
 		return identity.With(ctx, ident)
 	}
 	// Defence in depth: re-check the claim the fan-in gated on, here where
@@ -203,10 +231,11 @@ func (s *Searcher) rowScopedCtx(ctx context.Context, ident identity.Identity) (c
 		"tasks search: reading a task under the identity of a session an authorized fleet fan-in returned")
 }
 
-// errRowScopeUnentitled — a session from another tenant reached the
-// per-task read on a request carrying no admin-tier claim. The search
-// refuses the row rather than reading it.
-var errRowScopeUnentitled = errors.New("session belongs to another tenant and the request carries no admin-tier claim")
+// errRowScopeUnentitled — a session belonging to another principal
+// (another tenant, or another user inside the caller's own tenant)
+// reached the per-task read on a request carrying no admin-tier claim.
+// The search refuses the row rather than reading it.
+var errRowScopeUnentitled = errors.New("session belongs to another principal (tenant or user) and the request carries no admin-tier claim")
 
 func parseFacets(facets []types.SearchFacet) (*tasksubsys.TaskStatus, *tasksubsys.TaskKind) {
 	var status *tasksubsys.TaskStatus

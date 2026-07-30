@@ -33,23 +33,39 @@ func IsValidSearchIndex(i SearchIndex) bool {
 }
 
 // SearchFilter narrows results to the caller's identity scope and
-// optional time-window. The TenantIDs / UserIDs / SessionIDs fields
-// default to the caller's authenticated triple; supplying values that
-// reach OUTSIDE the caller's own scope requires the `auth.ScopeAdmin`
-// scope claim (closed two-scope set; reuse for search). A
-// missing-claim cross-tenant request is rejected loudly with
-// `CodeAuthRejected` (HTTP 403) — NEVER silently downgraded to an
-// empty result set.
+// optional time-window.
+//
+// TENANT and USER are both isolation principals and both behave the same
+// way: an omitted axis FOLDS to the caller's authenticated value (it is
+// not a wildcard), and reaching outside it — by naming another principal
+// or by naming more than one — requires the `auth.ScopeAdmin` or
+// `auth.ScopeConsoleFleet` claim. Under either claim both widenings pass
+// through untouched, so a named principal is read and an omitted one
+// fans across the tenant.
+//
+// SESSION is a filter rather than a boundary within one user: a single
+// session id is honoured with no claim, because the user fold above it
+// already decides whose rows are in play. Only a multi-session set
+// elevates, under the same fan-in rule the other axes share.
+//
+// A missing-claim widening is rejected loudly with `CodeScopeMismatch`
+// (HTTP 403) — NEVER silently downgraded to an empty result set, which
+// would be indistinguishable from "that principal has no rows".
 type SearchFilter struct {
-	// TenantIDs narrows the search to these tenants; empty defaults to
-	// the caller's authenticated tenant. A value outside the caller's
-	// own tenant requires the `auth.ScopeAdmin` claim.
+	// TenantIDs narrows the search to these tenants; empty folds to the
+	// caller's authenticated tenant. A value outside the caller's own
+	// tenant, or more than one value, requires an admin-tier claim.
 	TenantIDs []string `json:"tenant_ids,omitempty"`
-	// UserIDs narrows the search to these users; empty defaults to the
-	// caller's authenticated user.
+	// UserIDs narrows the search to these users; empty folds to the
+	// caller's authenticated user and NOT to every user in the tenant. A
+	// value outside the caller's own user, or more than one value,
+	// requires an admin-tier claim.
 	UserIDs []string `json:"user_ids,omitempty"`
-	// SessionIDs narrows the search to these sessions; empty defaults to
-	// the caller's authenticated session.
+	// SessionIDs narrows the search to these sessions; empty means every
+	// session belonging to the users the axes above resolved to. A single
+	// value — including one of the caller's OWN other sessions — needs no
+	// claim; more than one value is a fan-in and requires an admin-tier
+	// claim.
 	SessionIDs []string `json:"session_ids,omitempty"`
 	// Since is the inclusive lower bound of the result time-window; the
 	// zero value imposes no lower bound.

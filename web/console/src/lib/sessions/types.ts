@@ -52,7 +52,12 @@ export interface SessionFilter {
   has_intervention?: boolean;
   has_failed_task?: boolean;
   cost_above_cents?: number;
-  /** Free-text search forwarded to `search.sessions` when non-empty. */
+  /**
+   * Free-text search. It is handled by `sessions.list` ITSELF — it is NOT
+   * forwarded to `search.sessions`, which is a separate surface with its own
+   * filter type and its own identity gate, and which nothing in the Console
+   * calls except the ⌘K palette via `search.query`.
+   */
   query?: string;
 }
 

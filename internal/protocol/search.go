@@ -22,9 +22,10 @@ import (
 //
 // Identity at the edge: every method reads `identity.From(ctx)` and
 // fails closed with CodeIdentityRequired (mapped to 401) on a missing
-// triple. Cross-tenant gating reads `search.ErrCrossTenantRequiresAdmin`
-// from the search subsystem and surfaces it as CodeAuthRejected (403)
-// per the closed admin-scope set.
+// triple. Identity-axis gating reads the search subsystem's widening
+// sentinels — cross-tenant, cross-user, multi-session fan-in — and
+// surfaces every one of them as CodeScopeMismatch (403): one class of
+// refusal, one wire code.
 //
 // Concurrent reuse: the SearchSurface is a compiled artifact —
 // the registry + adminScope predicate are set once at construction;
@@ -141,6 +142,20 @@ func mapSearchError(method string, err error) error {
 		// (CodeAuthRejected stays pinned to 401 per the closed admin-scope set — that code
 		// signals a JWT that failed cryptographic verification, not
 		// a scope shortfall.)
+		return protoerrors.Newf(protoerrors.CodeScopeMismatch,
+			"method %q: %v", method, err)
+	case stderrors.Is(err, search.ErrCrossUserRequiresAdmin),
+		stderrors.Is(err, search.ErrCrossSessionRequiresAdmin):
+		// A widening on the USER axis (a named foreign user, or a
+		// multi-user set) and a multi-SESSION fan-in are the same class of
+		// refusal as the cross-tenant one above, so they answer the SAME
+		// code. Sibling read surfaces publish `identity_scope_required`
+		// for this class; `search.*` cannot follow them without changing
+		// the code its own tenant axis has published since the cluster
+		// shipped, and one surface answering two codes for one class of
+		// refusal is worse than two surfaces answering different codes.
+		// The distinct SENTINELS still tell an operator which axis refused
+		// them without giving a client a new code to branch on.
 		return protoerrors.Newf(protoerrors.CodeScopeMismatch,
 			"method %q: %v", method, err)
 	case stderrors.Is(err, search.ErrUnknownIndex):

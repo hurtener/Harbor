@@ -27,9 +27,14 @@ const PerIndexTimeout = 5 * time.Second
 // Contract:
 //
 //   - Identity is mandatory; missing-triple returns `ErrIdentityRequired`.
-//   - Cross-tenant gating runs at the aggregate edge — a cross-tenant
-//     request without `auth.ScopeAdmin` is rejected with
-//     `ErrCrossTenantRequiresAdmin` (NEVER silently downgraded).
+//   - Identity-axis gating runs at the aggregate edge, in axis order
+//     (tenant, then user, then the session fan-in). A widening without
+//     the admin-tier claim is rejected with `ErrCrossTenantRequiresAdmin`
+//     / `ErrCrossUserRequiresAdmin` / `ErrCrossSessionRequiresAdmin`
+//     (NEVER silently downgraded to an empty page). The gate fires HERE
+//     as well as inside each Searcher because `Query` rewrites the
+//     sub-request before fan-out: one edge check is one place to get
+//     right instead of five places to forget.
 //   - Empty `req.Indexes` means "all four registered indexes."
 //   - Unknown indexes in `req.Indexes` are rejected at validation
 //     (`ErrUnknownIndex`); they NEVER fall through to a silent skip.
@@ -58,8 +63,20 @@ func Query(ctx context.Context, reg *SearcherRegistry, callerID identity.Identit
 		return types.SearchResponse{}, err
 	}
 
-	if CrossTenantRequested(callerID.TenantID, req) && !adminScope(ctx) {
-		return types.SearchResponse{}, ErrCrossTenantRequiresAdmin
+	// The identity-axis gate. One `adminScope` read serves all three axes
+	// so an entitled caller is never charged three predicate evaluations,
+	// and the axes are checked in the same order every Searcher checks
+	// them so a refusal names the same axis wherever it fires.
+	if !adminScope(ctx) {
+		if CrossTenantRequested(callerID.TenantID, req) {
+			return types.SearchResponse{}, ErrCrossTenantRequiresAdmin
+		}
+		if CrossUserRequested(callerID.UserID, req) {
+			return types.SearchResponse{}, ErrCrossUserRequiresAdmin
+		}
+		if CrossSessionFanInRequested(req) {
+			return types.SearchResponse{}, ErrCrossSessionRequiresAdmin
+		}
 	}
 
 	indexes := req.Indexes
@@ -126,7 +143,11 @@ func Query(ctx context.Context, reg *SearcherRegistry, callerID identity.Identit
 			// already passed our own identity + scope checks, so a
 			// per-index identity/scope rejection would indicate a
 			// wiring bug; fail loud.)
-			if errors.Is(r.err, ErrIdentityRequired) || errors.Is(r.err, ErrCrossTenantRequiresAdmin) || errors.Is(r.err, ErrInvalidRequest) {
+			if errors.Is(r.err, ErrIdentityRequired) ||
+				errors.Is(r.err, ErrCrossTenantRequiresAdmin) ||
+				errors.Is(r.err, ErrCrossUserRequiresAdmin) ||
+				errors.Is(r.err, ErrCrossSessionRequiresAdmin) ||
+				errors.Is(r.err, ErrInvalidRequest) {
 				if firstHardErr == nil {
 					firstHardErr = fmt.Errorf("search.query: index %q hard error: %w", r.idx, r.err)
 				}
