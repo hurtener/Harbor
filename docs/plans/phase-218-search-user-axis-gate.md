@@ -55,24 +55,24 @@ No departure from the RFC, and none from D-294 / D-299 / D-308 / D-356 — this 
 
 ## Acceptance criteria
 
-- [ ] `search.CrossUserRequested(callerUser, req)` and `search.EffectiveUserSet(callerUser, req)` exist beside their tenant twins in `internal/search/search.go`, with the same signature shape and the same pure-read contract.
-- [ ] `CrossUserRequested` is true when `Filter.UserIDs` names any user other than the caller AND when `len(Filter.UserIDs) > 1`; it is false for an empty filter and for a filter naming exactly the caller. The `len>1` trigger is the D-299 multi-value fan-in rule, and it fires even when every named user is the caller repeated.
-- [ ] `EffectiveUserSet` returns `{callerUser}` for an empty filter — the FOLD, not a wildcard — and the named set (deduplicated, sorted) otherwise, mirroring `EffectiveTenantSet` (`internal/search/search.go:286-308`) including its empty-string skip and its fall-back to the caller when every entry was empty.
-- [ ] All four searchers and the aggregate dispatcher refuse a cross-user request with `search.ErrCrossUserRequiresAdmin` when `Deps.AdminScope(ctx)` is false, at the same call site and in the same order as the existing cross-tenant refusal.
-- [ ] `internal/search/sessions/index.go` passes `EffectiveUserSet(...)` to `SessionListFilter.UserIDs` instead of `req.Filter.UserIDs`.
-- [ ] `internal/search/tasks/index.go` does the same, and `rowScopedCtx` (`:191-204`) gains the user axis: a session whose `(tenant, user)` differs from the verified caller's on EITHER component takes the admin-tier re-check, where today only a tenant difference does.
-- [ ] `internal/search/artifacts/index.go` iterates the effective USER set as it iterates the effective tenant set, instead of reading `req.Filter.UserIDs[0]` and leaving `ArtifactScope.UserID` empty when the filter is absent. An elided user no longer reaches `ArtifactStore.List` as a wildcard.
-- [ ] `internal/search/events/index.go` derives `scopeUser` from `EffectiveUserSet` rather than from `req.Filter.UserIDs[0]`, and `Filter.Admin` is set when EITHER axis widened — today it is `crossTenant` alone (`:89`), so a granted cross-user read would be handed to the bus with `Admin: false` and silently return nothing.
-- [ ] A caller naming exactly their own user id is indistinguishable from a caller naming nobody: no claim required, same rows.
-- [ ] A caller naming one of their OWN other sessions still needs no claim; only a multi-value session set elevates, via the same fan-in rule.
-- [ ] Under `auth.ScopeAdmin` or `auth.ScopeConsoleFleet`, both widenings pass through untouched: a named foreign user reads that user, and an ELIDED user fans across the tenant rather than folding — the D-308 rule that a widened read does not fold its elided axes.
-- [ ] `mapSearchError` maps `ErrCrossUserRequiresAdmin` to `CodeScopeMismatch`, the code the tenant axis already publishes on this surface.
-- [ ] `types.SearchFilter.UserIDs`' godoc stops claiming "empty defaults to the caller's authenticated user" as a description of current behaviour and states the actual rule; `types.SearchFilter`'s struct godoc names the user axis alongside the tenant axis.
-- [ ] `internal/search/artifacts/index.go:98` binds the `heavy` bool its three siblings bind, and the row shape is made consistent with them.
-- [ ] `test/integration/phase218_search_user_axis_test.go` runs real drivers, asserts isolation across users within one tenant AND across tenants, covers ≥1 failure mode, and runs under `-race`.
-- [ ] A concurrent-reuse test runs N≥128 concurrent searches by two different users against ONE shared Searcher per index under `-race`, asserting every returned row's `UserID` equals the requesting caller's.
-- [ ] `scripts/smoke/phase-218.sh` shows `OK ≥ 10`, `SKIP = 0`, `FAIL = 0` against a live preflight build, and FAILS (never SKIPs) when any guard is removed.
-- [ ] `ProtocolVersion` unchanged; `make protocol-ts-gen-check` and `make protocol-docs-gen-check` regenerate to a clean diff.
+- [x] `search.CrossUserRequested(callerUser, req)` and `search.EffectiveUserSet(callerUser, req)` exist beside their tenant twins in `internal/search/search.go`, with the same signature shape and the same pure-read contract.
+- [x] `CrossUserRequested` is true when `Filter.UserIDs` names any user other than the caller AND when `len(Filter.UserIDs) > 1`; it is false for an empty filter and for a filter naming exactly the caller. The `len>1` trigger is the D-299 multi-value fan-in rule, and it fires even when every named user is the caller repeated.
+- [x] `EffectiveUserSet` returns `{callerUser}` for an empty filter — the FOLD, not a wildcard — and the named set (deduplicated, sorted) otherwise, mirroring `EffectiveTenantSet` (`internal/search/search.go:286-308`) including its empty-string skip and its fall-back to the caller when every entry was empty.
+- [x] All four searchers and the aggregate dispatcher refuse a cross-user request with `search.ErrCrossUserRequiresAdmin` when `Deps.AdminScope(ctx)` is false, at the same call site and in the same order as the existing cross-tenant refusal.
+- [x] `internal/search/sessions/index.go` passes `EffectiveUserSet(...)` to `SessionListFilter.UserIDs` instead of `req.Filter.UserIDs`.
+- [x] `internal/search/tasks/index.go` does the same, and `rowScopedCtx` (`:191-204`) gains the user axis: a session whose `(tenant, user)` differs from the verified caller's on EITHER component takes the admin-tier re-check, where today only a tenant difference does.
+- [x] `internal/search/artifacts/index.go` iterates the effective USER set as it iterates the effective tenant set, instead of reading `req.Filter.UserIDs[0]` and leaving `ArtifactScope.UserID` empty when the filter is absent. An elided user no longer reaches `ArtifactStore.List` as a wildcard.
+- [x] `internal/search/events/index.go` derives `scopeUser` from `EffectiveUserSet` rather than from `req.Filter.UserIDs[0]`, and `Filter.Admin` is set when EITHER axis widened — today it is `crossTenant` alone (`:89`), so a granted cross-user read would be handed to the bus with `Admin: false` and silently return nothing.
+- [x] A caller naming exactly their own user id is indistinguishable from a caller naming nobody: no claim required, same rows.
+- [x] A caller naming one of their OWN other sessions still needs no claim; only a multi-value session set elevates, via the same fan-in rule.
+- [x] Under `auth.ScopeAdmin` or `auth.ScopeConsoleFleet`, both widenings pass through untouched: a named foreign user reads that user, and an ELIDED user fans across the tenant rather than folding — the D-308 rule that a widened read does not fold its elided axes.
+- [x] `mapSearchError` maps `ErrCrossUserRequiresAdmin` to `CodeScopeMismatch`, the code the tenant axis already publishes on this surface.
+- [x] `types.SearchFilter.UserIDs`' godoc stops claiming "empty defaults to the caller's authenticated user" as a description of current behaviour and states the actual rule; `types.SearchFilter`'s struct godoc names the user axis alongside the tenant axis.
+- [x] `internal/search/artifacts/index.go:98` binds the `heavy` bool its three siblings bind, and the row shape is made consistent with them.
+- [x] `test/integration/phase218_search_user_axis_test.go` runs real drivers, asserts isolation across users within one tenant AND across tenants, covers ≥1 failure mode, and runs under `-race`.
+- [x] A concurrent-reuse test runs N≥128 concurrent searches by two different users against ONE shared Searcher per index under `-race`, asserting every returned row's `UserID` equals the requesting caller's.
+- [x] `scripts/smoke/phase-218.sh` shows `OK ≥ 10`, `SKIP = 0`, `FAIL = 0` against a live preflight build, and FAILS (never SKIPs) when any guard is removed.
+- [x] `ProtocolVersion` unchanged; `make protocol-ts-gen-check` and `make protocol-docs-gen-check` regenerate to a clean diff.
 
 ## Files added or changed
 
@@ -254,16 +254,20 @@ The same asymmetry governs `sessions` and `tasks` via `SessionListFilter`, whose
 
 Measured on the current tree with `go test -cover ./internal/search/...`, so the targets are deltas from a real baseline rather than aspirations:
 
-| package | current | target |
-|---|---|---|
-| `internal/search` | 59.3% | **80%** |
-| `internal/search/artifacts` | 69.6% | **85%** |
-| `internal/search/events` | 70.4% | **85%** |
-| `internal/search/sessions` | 67.7% | **85%** |
-| `internal/search/tasks` | 71.4% | **85%** |
-| `internal/protocol` | unchanged | no regression |
+| package | current | target | **as built** |
+|---|---|---|---|
+| `internal/search` | 59.3% | **80%** | **86.8%** |
+| `internal/search/artifacts` | 69.6% | **85%** | **96.7%** |
+| `internal/search/events` | 70.4% | **85%** | **94.4%** |
+| `internal/search/sessions` | 67.7% | **85%** | **94.4%** |
+| `internal/search/tasks` | 71.4% | **85%** | **89.5%** |
+| `internal/protocol` | unchanged | no regression | no regression |
 
-The 80% floor on `internal/search` is deliberately below the 85% siblings: the package holds `Paginate`, `SortRowsByOccurredAtDesc` and `MatchesQuery`, whose branch tails this phase does not touch, and raising the number by testing unrelated helpers would be coverage theatre. **Note a drift signal for the wave**: `docs/plans/phase-213-heavy-threshold-rebalance.md:150` states an `internal/search: 85%` target against a package measuring 59.3%. Phase 213 lands first and touches this package; whichever phase ships second should reconcile the two rows rather than both quietly claiming a number.
+The 80% floor on `internal/search` is deliberately below the 85% siblings: the package holds `Paginate`, `SortRowsByOccurredAtDesc` and `MatchesQuery`, whose branch tails this phase does not touch, and raising the number by testing unrelated helpers would be coverage theatre. In the event the axis tests carried the package past the sibling bar anyway, so no theatre was needed.
+
+**The 213/218 drift signal is RECONCILED here** (this phase shipped second, per the rule below). `docs/plans/phase-213-heavy-threshold-rebalance.md:150` stated an `internal/search: 85%` target against a package then measuring 59.3%; the as-built 86.8% satisfies BOTH rows, so the two plans no longer claim incompatible numbers and neither needs amending. The reconciliation is recorded rather than left implicit, because "both plans happened to be satisfied" is only visible if someone writes it down.
+
+*Original note, kept for provenance:* Phase 213 lands first and touches this package; whichever phase ships second should reconcile the two rows rather than both quietly claiming a number.
 
 ## Dependencies
 
@@ -293,19 +297,19 @@ Both land in `docs/glossary.md` in the same PR.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes — **and the cross-USER test under one tenant, which is this phase's whole point**
-- [ ] Concurrent-reuse test passes — N=128 two-principal invocations against one shared Searcher per index under `-race`, asserting no data races, no context bleed (every row's `UserID` equals its requester's), no cancellation cross-talk, no goroutine leaks. See AGENTS.md §5 + §11 + D-025.
-- [ ] Integration test exists (`test/integration/phase218_search_user_axis_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode (three shipped), runs under `-race`. See AGENTS.md §17.
-- [ ] Every smoke guard mutation-verified `OK → FAIL` (never `→ SKIP`), transitions recorded in D-363
-- [ ] Rebased on phase 213; `internal/search/search.go` merges cleanly and 213's retargeted `search_test.go` assertions re-run green
-- [ ] `ProtocolVersion` unchanged; `make protocol-ts-gen-check` + `make protocol-docs-gen-check` clean
-- [ ] Glossary updated with both new terms
-- [ ] D-363 filed in `docs/decisions.md` (blank lines around `---` and the `## D-363` heading; `markdownlint-cli2` clean repo-wide)
-- [ ] `docs/plans/README.md` row for 218 present and accurate
-- [ ] §18: `docs/site/protocol/auth-and-identity.md` carries the search rows' crossing policy; no `docs/skills/` playbook demonstrates `search.*`, so no skill body changes (verified by grep, not assumed)
-- [ ] Follow-up issue filed for the unaudited crossing (risk 3) and linked from D-363
+- [x] `make drift-audit` passes
+- [x] `make preflight` — run as its constituent parts locally (`make build` + a booted `./bin/harbor dev` + `scripts/smoke/phase-218.sh` at `OK 34 / SKIP 0 / FAIL 0`, plus the 72c / 213 / 108b neighbours clean against the same live build) rather than the whole target; CI runs the full gate on Linux
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes — **and the cross-USER test under one tenant, which is this phase's whole point**
+- [x] Concurrent-reuse test passes — N=128 two-principal invocations against one shared Searcher per index under `-race`, asserting no data races, no context bleed (every row's `UserID` equals its requester's), no cancellation cross-talk, no goroutine leaks. See AGENTS.md §5 + §11 + D-025.
+- [x] Integration test exists (`test/integration/phase218_search_user_axis_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode (three shipped), runs under `-race`. See AGENTS.md §17.
+- [x] Every smoke guard mutation-verified `OK → FAIL` (never `→ SKIP`), transitions recorded in D-363
+- [x] Rebased on phase 213; `internal/search/search.go` merges cleanly and 213's retargeted `search_test.go` assertions re-run green
+- [x] `ProtocolVersion` unchanged; `make protocol-ts-gen-check` + `make protocol-docs-gen-check` clean
+- [x] Glossary updated with both new terms
+- [x] D-363 filed in `docs/decisions.md` (blank lines around `---` and the `## D-363` heading; `markdownlint-cli2` clean repo-wide)
+- [x] `docs/plans/README.md` row for 218 present and accurate
+- [x] §18: `docs/site/protocol/auth-and-identity.md` carries the search rows' crossing policy; no `docs/skills/` playbook demonstrates `search.*`, so no skill body changes (verified by grep, not assumed)
+- [ ] **NOT DONE — follow-up issue for the unaudited crossing (risk 3).** No tracking issue was filed: this ran as an unattended implementation with no mandate to open issues in the repo's tracker. The gap is recorded with file-level precision in D-363's "Follow-up" paragraph and in risk 3 below, and it is pre-existing and axis-symmetric (the tenant axis has the identical gap), so nothing regressed. **Whoever merges this should open the issue and link it from D-363.**
