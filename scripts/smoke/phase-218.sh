@@ -22,8 +22,13 @@
 #   - live: the five search.* methods still answer for an ordinary caller — the
 #     fix must not turn a working surface into a refusal (the D-352 failure
 #     mode this phase was explicitly warned about).
-#   - live: a search.query naming a FOREIGN user_ids is refused 403 for a token
-#     carrying no admin-tier claim — an exact status compare, never a range.
+#   - live: a search.query naming a FOREIGN user_ids is GRANTED (200) under the
+#     dev bearer — which carries BOTH admin-tier claims, decoded rather than
+#     assumed — so the entitled path is not swallowed by the fold; and the same
+#     request UNAUTHENTICATED is refused. The claim-ABSENT refusal is NOT
+#     reachable live (`harbor dev` mints one bearer and it is privileged); it is
+#     pinned by the unit legs and by the integration test, which compare the
+#     wire code exactly. Full reasoning in the live block.
 #   - unit-tests: the per-searcher fold/refusal arms, the helper contract, the
 #     two-principal N=128 concurrent-reuse arm, and the integration test — all
 #     under -race.
@@ -40,6 +45,8 @@
 #   - revert a searcher's fold to `req.Filter.UserIDs`  -> OK -> FAIL
 #   - delete the ErrCrossUserRequiresAdmin refusal      -> OK -> FAIL
 #   - revert rowScopedCtx to the tenant-only compare    -> OK -> FAIL
+#   - revert the events Admin flag to crossTenant alone -> OK -> FAIL
+#   - discard the artifacts `heavy` bool again          -> OK -> FAIL
 #
 # Done-definition: OK >= 10, SKIP = 0, FAIL = 0.
 #
@@ -255,11 +262,24 @@ else
         esac
     done
 
-    # (2) THE GATE ITSELF. A filter naming a FOREIGN user, on a token carrying no
-    # admin-tier claim, must be refused — not answered with an empty page. An
-    # empty page would be the D-311 false-absence shape and would be
-    # indistinguishable from "this user has no rows", so the status compare is
-    # exact and a 200 is an explicit failure.
+    # (2) THE WIDENED PATH. `harbor dev` mints exactly ONE bearer and it carries
+    # BOTH admin-tier claims (`["admin","console:fleet"]` — decoded from the
+    # boot token, not assumed), so no live probe here can reach the
+    # claim-ABSENT branch: every widening this bearer sends is legitimately
+    # GRANTED. The same constraint is recorded on the body-scope reconciler's
+    # smoke for the same reason.
+    #
+    # So this leg asserts the half a live probe CAN reach, and it is the half
+    # a static grep cannot: that the granted widening still ANSWERS. A fold
+    # that also swallowed the entitled path would be the D-352 failure mode in
+    # the other direction — a fix that turns a working fleet read into a
+    # refusal — and it would pass every static guard above.
+    #
+    # The claim-ABSENT refusal is pinned by the unit legs (per searcher, both
+    # widenings, both claims, via the PRODUCTION ScopeChecker) and by
+    # `TestE2E_Phase218_NamedForeignUserIsRefusedNotEmptied`, which drives all
+    # five methods through the Protocol dispatcher and compares the wire code
+    # exactly. Those legs run below and FAIL loud.
     p218_post "$(api_url /v1/control/search.query)" \
         "{\"identity\":${ID},\"query\":\"\",\"page_size\":5,\"filter\":{\"user_ids\":[\"phase218-not-the-caller\"]}}"
     case "${P218_STATUS}" in
@@ -267,18 +287,40 @@ else
             skip "phase 218: search.query absent from this build (${P218_STATUS})"
             ;;
         401)
-            skip 'phase 218: search.query 401 — HARBOR_DEV_TOKEN not discoverable; the refusal is covered by the integration test'
-            ;;
-        403)
-            ok "phase 218: a foreign user_ids is refused 403 without an admin-tier claim (code=${P218_CODE})"
+            skip 'phase 218: search.query 401 — HARBOR_DEV_TOKEN not discoverable; the widened path is covered by the integration test'
             ;;
         200)
-            fail 'phase 218: a foreign user_ids was ANSWERED (200) — the cross-user gate is not enforcing'
+            ok 'phase 218: a foreign user_ids is GRANTED under the dev bearer admin-tier claims (the widened read still answers)'
+            ;;
+        403)
+            fail "phase 218: a foreign user_ids was REFUSED (403, code=${P218_CODE}) on a bearer carrying admin-tier claims — the fold swallowed the entitled path"
             ;;
         *)
-            fail "phase 218: foreign user_ids returned ${P218_STATUS} (code=${P218_CODE}), want 403"
+            fail "phase 218: foreign user_ids returned ${P218_STATUS} (code=${P218_CODE}), want 200 under the dev bearer's claims"
             ;;
     esac
+
+    # (3) The surface is not answering the widening to an UNAUTHENTICATED
+    # caller. Identity is mandatory, so a bearer-less foreign-user request must
+    # never reach the gate at all — a 2xx here would mean the axis is reachable
+    # without any verified principal to reconcile against.
+    if command -v curl >/dev/null 2>&1; then
+        P218_ANON=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+            -H 'Content-Type: application/json' -X POST \
+            -d "{\"identity\":${ID},\"query\":\"\",\"page_size\":5,\"filter\":{\"user_ids\":[\"phase218-not-the-caller\"]}}" \
+            "$(api_url /v1/control/search.query)" 2>/dev/null || true)
+        case "${P218_ANON:-000}" in
+            401|403)
+                ok "phase 218: an unauthenticated foreign user_ids is refused (${P218_ANON})"
+                ;;
+            404|405|501|000)
+                skip "phase 218: search.query absent from this build (${P218_ANON:-000})"
+                ;;
+            *)
+                fail "phase 218: an unauthenticated foreign user_ids returned ${P218_ANON} — identity is mandatory"
+                ;;
+        esac
+    fi
 fi
 
 # ----------------------------------------------------------------------------
