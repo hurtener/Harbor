@@ -201,7 +201,7 @@ assert_grep "${GOLDEN}" 'JVBERv/\+AIDDKA==' \
 # Deliberately NOT skip_all_if_server_down: that exits the whole script,
 # taking the `go test` legs below with it on a standalone run.
 
-ADD_URL="$(api_url /v1/control/agent_config.add_mcp_connection)"
+ADD_URL="$(api_url /v1/agent_config/add_mcp_connection)"
 TOKEN="${HARBOR_DEV_TOKEN:-}"
 
 HEALTH_CODE=000
@@ -229,12 +229,24 @@ else
 
     ID='{"tenant":"dev","user":"dev","session":"dev"}'
 
-    # Route probe with an EMPTY body. Probing with a REAL request would be
-    # a trap: a genuine refusal answers 400, which a bare status check
-    # could read as "the surface works" or "the route is missing"
-    # depending on the case. An empty body separates them: a mounted route
-    # answers 400 `invalid_request`, an unmounted one 404
-    # `unknown_method`.
+    # Route probe with an EMPTY body, asserted POSITIVELY.
+    #
+    # A mounted `agent_config.add_mcp_connection` runs its identity check
+    # before any body validation, so an empty body answers exactly
+    # `401 identity_required`. That is a far better probe than "not a 404":
+    # an earlier draft of this script addressed the WRONG path
+    # (`/v1/control/agent_config.add_mcp_connection`, which does not exist)
+    # and every request answered `500 runtime_error` — a status the
+    # skip-list did not cover, so the block ran on regardless and the three
+    # refusals below failed against a dead route. The confusing part was
+    # that they failed for a reason that had nothing to do with what they
+    # assert.
+    #
+    # So an unexpected status is a FAIL here, not a fall-through and not a
+    # SKIP: only the documented not-present statuses skip, and anything
+    # else means the probe itself is wrong and must say so loudly. 500 is
+    # deliberately NOT on the skip list — a runtime error is a failure to
+    # report, never a surface to excuse.
     p214_post "${ADD_URL}" '{}'
     LIVE=1
     if [ "${P214_CODE}" = "unknown_method" ]; then
@@ -244,6 +256,13 @@ else
         case "${P214_STATUS}" in
             404|405|501|000|'')
                 skip "phase 214: agent_config.add_mcp_connection route not present (${P214_STATUS})"
+                LIVE=0
+                ;;
+            401)
+                ok 'phase 214: the add-connection door is mounted and identity-mandatory'
+                ;;
+            *)
+                fail "phase 214: route probe returned ${P214_STATUS} ${P214_CODE}, want 401 identity_required — the probe is addressing the wrong route, so the refusals below would assert nothing"
                 LIVE=0
                 ;;
         esac

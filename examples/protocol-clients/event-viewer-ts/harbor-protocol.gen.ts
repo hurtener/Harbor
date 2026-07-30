@@ -220,6 +220,8 @@ export type HarborEventType =
   | "mcp.connection.failed"
   | "mcp.connection.paused"
   | "mcp.connection.pending"
+  | "mcp.connection.reattach_failed"
+  | "mcp.connection.reattached"
   | "mcp.connection.removed"
   | "mcp.connection.resumed"
   | "mcp.raw_html_trust_toggled"
