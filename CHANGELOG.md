@@ -189,8 +189,11 @@ position that any `runs.set_overrides` caller can now write.
   because a re-ordering of a SET must not perturb the content hash. For blocks
   a re-ordering DOES change the rendered prompt, so it MUST change the hash,
   mint a real revision, and appear in the diff — which gains a `Reordered` flag
-  its sorted siblings have no analogue for. The carrier is a slice and never a
-  map anywhere on the write → normalize → hash → project → render path.
+  its sorted siblings have no analogue for. **The carrier is a slice, never a
+  map** — map iteration order is not a composition order — and nothing on the
+  write → normalize → hash → project → render path sorts it. (Local `seen` maps
+  do exist on that path, for duplicate-name detection; they are membership sets
+  over an already-ordered slice and determine nothing about order.)
 
 - **Rendered VERBATIM, in declared order, each behind a plain-text `[name]`
   label**, into the same `<additional_guidance>` position — after the binary's

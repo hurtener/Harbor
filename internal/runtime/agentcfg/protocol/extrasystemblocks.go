@@ -92,10 +92,18 @@ func blocksToDomain(in []prototypes.AgentConfigNamedBlock) []agentcfg.NamedBlock
 // of the blocks section. Every sibling section of the active revision is
 // carried forward unchanged.
 //
-// The supplied order is preserved end to end — nothing on the write →
-// normalise → hash → project → render path sorts or maps the list — so a
-// re-ordering is a real new revision with a different content hash and a
-// visible diff.
+// The supplied order is preserved end to end — no map is the CARRIER, and
+// nothing on the write → normalise → hash → project → render path sorts
+// the list — so a re-ordering is a real new revision with a different
+// content hash and a visible diff.
+//
+// Stated that precisely because the broader "no map appears on the path"
+// is FALSE and would mislead a future author: the duplicate-name check
+// above and normalizeNamedBlocks both build a local `seen` map. Neither
+// determines order — they are membership sets over an already-ordered
+// slice — and that distinction is the actual invariant. What must never
+// happen is a map becoming the carrier, because map iteration order is
+// not a composition order.
 func (s *Service) SetExtraSystemBlocks(ctx context.Context, req prototypes.AgentConfigSetExtraSystemBlocksRequest) (prototypes.AgentConfigSetExtraSystemBlocksResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetExtraSystemBlocksResponse{}, err
