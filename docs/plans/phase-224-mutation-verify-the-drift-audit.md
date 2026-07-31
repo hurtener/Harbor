@@ -78,6 +78,8 @@ Decided deliberately against the alternative:
 
 Classified `PREFLIGHT_REQUIRES: static-only`: it touches no dev server, no `HARBOR_BIND`, no `HARBOR_DEV_TOKEN`, no `${HARBOR_DATA_DIR}/server.log`.
 
+**Standalone-runnable is a requirement, not a side effect.** `bash scripts/smoke/phase-224.sh` from the repository root is the whole invocation — no server, no build, no environment, ~12s. That is deliberate: a verification instrument reachable only through the expensive full-preflight path is one nobody runs, which is how it becomes the next instrument nobody has watched fail. Every case in this phase was developed and mutation-verified through the standalone path; `make preflight` was never run locally.
+
 ## The fixture corpus
 
 Mutations operate on a **constructed corpus**, never the repository. `phase-224.sh` builds a minimal tree under `$(mktemp -d "${TMPDIR:-/tmp}/harbor-phase224-XXXXXX")` containing exactly what the audit needs to pass clean: the thirteen required design files, one phase plan carrying all nine required headings plus a resolvable `RFC §3.4` and `brief 06`, one research brief, one smoke with a valid header, one operator skill, three clean Go files across `internal/` `cmd/` `sdk/`, a `cmd/harbor/scaffold/version.go`, a `CHANGELOG.md`, a `Makefile` with `drift-audit:` and a sentinel-switch `markdownlint:` target, a playground page, and a git repository carrying three local release tags (`v2.0.0`, `v1.9.0`, `v1.8.0`).
