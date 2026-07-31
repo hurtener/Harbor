@@ -19,11 +19,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [1.25.0] — 2026-07-31
 
-Five phases, one coherent slice: **the prompt-composition surface** — how a
-Protocol client contributes to what the model sees — plus a tooling-integrity
-phase that repairs the instrument measuring the rest. No Protocol wire-version
-change (`ProtocolVersion` stays `0.1.0`), no migration, and every wire addition
-is an optional field or an additive error code.
+Six phases (219–224), one coherent slice: **the prompt-composition surface** —
+how a Protocol client contributes to what the model sees — plus two
+tooling-integrity phases that repair the instruments measuring the rest. No
+Protocol wire-version change (`ProtocolVersion` stays `0.1.0`) and no
+migration. Every wire *addition* is an optional field or an additive error
+code; **two changes are nonetheless breaking for a deployed client**, and they
+are the first thing to read below.
 
 **The defect this wave closes is not the one that was reported.** The upstream
 ask was "Harbor offers no additive path for contributing prompt content." It
@@ -37,11 +39,38 @@ consumer needing either reached for `system_prompt_override`, which replaces the
 whole base+user spine, silently suppresses the operator's durable user layer,
 and seats caller content in the **trusted** base position.
 
-**Upgrading — two things to read before you deploy**, both under *Action
-required* at the end of this entry. The conditional-write guarantee is exact
-within one Runtime process and **absent across processes**, and
-`extra_instructions` renders **verbatim and unescaped** in an operator-trusted
-position that any `runs.set_overrides` caller can now write.
+### Before you deploy
+
+**Two changes break clients that worked against 1.24.** Both are in *Action
+required* at the end of this entry with the full reasoning; this is the short
+form, and neither is optional reading.
+
+1. **The control transport now decodes strictly, so an unknown request member
+   is a `400` instead of a silent drop** (D-374). If your client folds extra
+   keys into request bodies, it will start failing. **Seven request types
+   across eleven methods declare no `identity` field** — the five
+   `artifacts.*`, `SearchRequest` (shared by the five `search.*`), and
+   `governance.set_posture` — and an `identity` object sent to any of them is
+   now refused. This is not hypothetical: **Harbor's own Console and its own
+   smoke corpus both broke on it**, and both are fixed in this release.
+2. **`GovernancePostureRequest.tenant_id` and `LLMPostureRequest.tenant_id`
+   are removed from the Protocol** (D-374). The Runtime never read either
+   field. A request carrying `tenant_id` to `governance.posture` or
+   `llm.posture` used to return a `200` with the **wrong tenant's** posture;
+   it now returns a `400`. **Drop the field and set `identity.tenant`
+   instead** — the cross-tenant read has always lived there.
+
+**Three further changes need a decision from you, not a code change** — the
+conditional-write guarantee is exact within one Runtime process and **absent
+across processes**; `extra_instructions` renders **verbatim and unescaped** in
+an operator-trusted position that any `runs.set_overrides` caller can now
+write; and **every model-visible tool name longer than 44 bytes is now
+rewritten** (D-377), so anything that string-matches tool names outside a live
+run — stored transcripts, eval fixtures, dashboards — sees new strings.
+
+**Upgrade recommended for all deployments.** This release also strengthens the
+containment of untrusted memory and turn text in the prompt (see *Security*
+below).
 
 ### Added — a caller can hand a run its own recalled memory, in the UNTRUSTED tier
 
@@ -70,8 +99,10 @@ position that any `runs.set_overrides` caller can now write.
   collision.
 
 - **The bound sits at the Protocol edge, before a task exists.** A payload over
-  **32 KiB** is refused `invalid_request` **and no session row and no task are
-  created** — the refusal precedes `Spawn`. The refusal text names
+  **32 KiB** is refused `invalid_request` **and no task is created** — the
+  refusal precedes `Spawn`. (It does not precede session creation: the `start`
+  handler ensures the session row before it validates `caller_memory`. Only
+  the named-agent check is ordered ahead of the ensurer.) The refusal text names
   `caller_memory`, which is load-bearing: the control transport caps the whole
   body at 64 KiB with the same error code, so a field cap that ever rose to
   meet the envelope cap would become unreachable dead code while every
@@ -114,9 +145,10 @@ position that any `runs.set_overrides` caller can now write.
   not declare. In particular the `artifacts.*` methods scope by `scope`, and a
   stray `identity` object beside it is now a 400 rather than a silent drop.
 
-  **Eleven request types declare no `identity` field** — the five `artifacts.*`
-  (which scope by `scope`), the five `search.*` (which share `SearchRequest`
-  and scope by `filter`), and `governance.set_posture`. **Audit all eleven if
+  **Seven request types, reached by eleven methods, declare no `identity`
+  field** — the five `artifacts.*` types (which scope by `scope`), the single
+  `SearchRequest` shared by all five `search.*` methods (which scopes by
+  `filter`), and `GovernanceSetPostureRequest`. **Audit all eleven methods if
   your client folds identity into request bodies**, as Harbor's own Console and
   smoke corpus both did:
 
@@ -142,7 +174,7 @@ position that any `runs.set_overrides` caller can now write.
 
   **The cross-tenant read is not lost — it never lived here.** The selector is
   `identity.tenant`: a body tenant differing from the verified tenant requires
-  the `admin` / `console:fleet` claim and emits `governance.posture.read_admin`.
+  the `admin` / `console:fleet` claim and emits `governance.posture_read_admin`.
   That gate is implemented, audited and tested in both directions. The field was
   a second, never-implemented spelling of it, so it was removed rather than
   implemented — two selectors for one concept would have to answer "what if they
@@ -276,7 +308,9 @@ position that any `runs.set_overrides` caller can now write.
   because uniqueness is what makes remove-by-name well defined.
 
 - **Trust is argued from the WRITE DOOR, not assumed.** The section has exactly
-  one write door and it sits in the admin method set — the same tier that
+  one *dedicated* write verb, and every door that reaches it —
+  `set_extra_system_blocks`, plus `set_revision` and `rollback`, which write or
+  republish the whole payload — sits in the admin method set: the same tier that
   writes `PromptLayers.Base`, which is already verbatim and strictly more
   powerful. Escaping a block while leaving `Base` unescaped would defend
   against a writer who can already replace the entire prompt, and would mangle
@@ -301,7 +335,8 @@ position that any `runs.set_overrides` caller can now write.
   than by inspection. No `harbor.yaml` key, no new error code.
 
 - **No cap on block count or body size, deliberately.** The two real bounds are
-  the wire door's `MaxRequestBytes` and the LLM edge's token-budget guard. The
+  the agent-config wire door's 1 MiB body cap
+  (`maxAgentConfigBodyBytes`) and the LLM edge's token-budget guard. The
   byte-leak check does **not** cover this content — verified rather than
   assumed, because the obvious assumption is wrong: system-role text is exempt
   from the leak detector. A per-section cap would be operator policy with no
@@ -358,11 +393,23 @@ position that any `runs.set_overrides` caller can now write.
   token with no admin scope is refused by the scope gate; neither is reported
   as `revision_conflict`.
 
-- **Two things it does not do, named rather than discovered later.** An
+- **The first write is protectable too — `expected_content_hash: "-"`**
+  (`agentcfg.ExpectNoActiveRevision`, D-370). The composition protocol had no
+  expressible form at its own base case: on an agent with no config the only
+  token a first contributor could send was the empty one, which means
+  unconditional, so two contributors composing a fresh agent silently reverted
+  each other and both were told `200`. The reserved sentinel succeeds **only**
+  while the agent has no active revision and is refused `revision_conflict` the
+  moment one exists, on both the content-write door and the pointer-move door.
+  A real token is 64 lowercase hex characters, so `"-"` can never collide with
+  one — asserted by a conformance row rather than argued. Three conformance
+  rows carry it (one of which reproduces the lost update and then shows it
+  closed), and `scripts/smoke/phase-221.sh`'s exact-count guards moved 4 → 7
+  with them.
+
+- **What the token still does not do, named rather than discovered later.** An
   unconditional writer can still clobber a conditional one — the token
-  constrains the writer that supplies it, not the ones that do not. And two
-  callers creating an agent's very first revision cannot express "I expect
-  none"; that window is deliberately out of scope.
+  constrains the writer that supplies it, not the ones that do not.
 
 ### Fixed — the preflight inert-smoke gate, and the classifier that measured it
 
@@ -404,7 +451,305 @@ position that any `runs.set_overrides` caller can now write.
   read someone else's violations. The verdict was never wrong — it comes from
   the exit code — but the file the failure message *named* was.
 
+- **The drift-audit's own guards are now mutation-verified** (D-376, phase
+  224). `scripts/drift-audit.sh` is the mechanical instrument behind the
+  contributor workflow and half the rejection-on-sight list, and **nothing
+  verified the instrument** — its guards had been mutation-verified by hand,
+  with the results recorded in code comments that no automated check re-ran. A
+  guard that cannot fire is indistinguishable from a corpus with no violations.
+  `scripts/smoke/phase-224.sh` now builds a throwaway corpus per guard, applies
+  the defect that guard names, runs the **real** audit against it, and asserts
+  **that guard's own** FAIL line — never merely the exit code, which would
+  report "caught" when a *different* guard fired. 18 guard units, 18 covered,
+  22 mutations, and a census that fails when a new guard ships with no case.
+
+  It found two live defects on its first run, both fixed here: **`brief NN`
+  reference resolution could not fail** (an unmatched glob under `nullglob`
+  degenerated to a bare `ls`, exit 0 — every brief citation in every phase plan
+  had been unverified), and **a smoke with no `PREFLIGHT_REQUIRES` header
+  aborted the whole audit** under `set -euo pipefail`, silently skipping six
+  later guards.
+
+### Security — untrusted memory and turn text are structurally contained
+
+- **Content inside an untrusted prompt section cannot escape that section.**
+  The JSON-encoded memory tiers (`read_only_external_memory`,
+  `read_only_conversation_memory`), the skills-context block and the
+  session-artifacts manifest are embedded inside tag-framed wrappers the model
+  reads **positionally**. Harbor now guarantees structurally that no byte of
+  the content inside those wrappers can be read as the wrapper's own framing:
+  the JSON tiers encode `<`, `>` and `&` to their `\u003c` / `\u003e` /
+  `\u0026` JSON escapes (loss-free, JSON-native, and deterministic, so the
+  compact-JSON KV-cache discipline is unaffected), and the plain-text sections
+  run through the same
+  neutralisation. Untrusted content therefore stays untrusted and can never
+  open a trusted position — `<additional_guidance>`, the operator base layer,
+  or the admin-written named blocks.
+
+- **This covers content nobody had to mark as untrusted.** It is not only about
+  the new `caller_memory` field: `recent_turns[].user` and
+  `recalled_turns[].user` are **ordinary user turn text** that the runtime
+  itself recalls into these tiers, and an uploaded artifact's filename, MIME
+  type and provenance string land in the session-artifacts manifest. Every one
+  of those is contained by the same mechanism.
+
+- **Trusted positions still render VERBATIM, deliberately.** `PromptLayers.Base`
+  and the admin-written `extra_system_blocks` are authored by principals who can
+  already replace the entire prompt; neutralising them would defend against
+  nobody and would mangle an operator's angle brackets. The asymmetry is the
+  design, and it is tested in both directions.
+
+- **Pinned end-to-end** — over the real wire, through the real
+  `runctx.ComposeCallerMemory` → planner render path — for every wrapper in the
+  prompt, plus the inverse assertion that trusted positions are unaffected.
+  Recorded as D-386, with the property named in the encoder's godoc as
+  load-bearing rather than incidental, so a future author cannot switch it off
+  as a formatting preference.
+
+  **Upgrading is recommended for every deployment.** The containment is
+  structural and needs no configuration.
+
+### Changed — model-visible tool names are bounded, and a dropped declaration is announced
+
+- **A tool's model-visible name is now bounded at 44 bytes and shortened
+  TAIL-FIRST** (D-377). Catalog keys are `<sourceID>_<tool>` and the catalog is
+  flat and process-global, so a source id must be globally unique — operators
+  reach for long, high-entropy ids to get that, and the id is then paid on
+  **every turn, twice per tool** (the `req.Tools[]` declaration and the
+  `<available_tools>` prompt section). Over-budget names now render as
+  `<retained tail>_<8-hex digest of the full sanitized name>`. The catalog key
+  does not move, no isolation property changes, and `resolveDeclaredToolName`
+  still maps whatever the model returns back to the real key by recomputing the
+  forward transform — a **pure** function of its argument, which is why a short
+  per-source alias was rejected (an alias assigned from catalog composition
+  shifts when the catalog grows mid-run, and the catalog grows mid-run by
+  design).
+
+  **Measured effect** on a 30-tool server, declared-name bytes per turn across
+  both surfaces: a 6-byte key is unchanged (in-budget names pass through
+  byte-for-byte), a 36-byte key drops 3124 → 2640 (−15%), a 64-byte key drops
+  3840 → 2640 (−31%). Characters are measured exactly; **the token figure is an
+  estimate and is labelled as one** — no tokenizer is vendored, and dividing the
+  character deltas brackets the long-key saving at roughly 300–480 tokens per
+  turn. Do not quote that range as measured.
+
+  **Operator-visible consequence:** anything that string-matches a model-visible
+  tool name outside a live run — stored transcripts, eval fixtures, dashboards
+  — sees new strings for names that were over 44 bytes. Live runs are
+  unaffected: every surface re-derives the name from the catalog key each turn.
+
+- **`<available_tools>` was showing the model a name it could not call**, and
+  that is fixed in the same change. The prompt section rendered the RAW catalog
+  key while `req.Tools[]` declared the sanitized form (`clock.now` listed,
+  `clock_now` declared). Both surfaces now go through one transform.
+
+- **`planner.tool_declaration_collision` — a new canonical event** (D-378).
+  Two catalog tools that collapse onto one model-visible name are ambiguous to
+  provider-side dispatch, so one declaration is dropped. The drop was correct;
+  its failure mode was not — it was a bare `continue` with no error, no event
+  and no log. Combined with the old head truncation that meant, measured on a
+  64-byte source id with a 30-tool server, **30 catalog tools in, 1 declaration
+  out**, while `<available_tools>` still listed all 30. The drop is kept and
+  made observable: a typed `SafePayload` names the run identity, the colliding
+  model-visible name, the tool that KEPT the declaration and the tool that was
+  DROPPED, because the remedy is operator-side. An **event and not an error**,
+  because failing every run of an agent with two ambiguously-named tools would
+  escalate a config problem into a total outage.
+
+  A benign re-discovery of an already-loaded tool stays quiet — `seen` maps the
+  model-visible name to the real catalog name that claimed it, so the drop can
+  tell "same tool" from "lost surface". Residual collisions remain reachable by
+  construction (`clock.now` and `clock/now` both sanitize to `clock_now` at any
+  length), which is why the diagnostic is load-bearing rather than theatre.
+
+### Fixed — three half-applied writes, each compensated rather than left behind
+
+- **A `409` on `agent_config.add_mcp_connection` left a live, unremovable MCP
+  server** (D-370). This is the ONE spine-writing door whose live side effect
+  must run BEFORE its conditional write — whether the server answers is the
+  input to what gets written — so the write could fail with the server already
+  up, and both failure arms bare-returned. The result: a dialed, handshaken,
+  registered server exposing tools that **no revision named**, so
+  `remove_mcp_connection` answered `ErrConnectionNotFound` and it could not be
+  removed; the Console showed the connection parked on the transient `pending`
+  forever; and an inline wire-OAuth provider installed for the binding stayed
+  installed. The wire godoc asserted the opposite ("nothing is persisted").
+
+  The live half is now undone rather than reordered — reordering would mint an
+  orphan revision in `list_revisions` for every failed dial. `compensateAttach`
+  detaches (idempotently, owner-scoped), uninstalls a **newly**-installed inline
+  provider (one that pre-existed the call outlives it), and emits the terminal
+  `ConnectionStateFailed`. The caller still receives the original error; a
+  compensation is how the runtime keeps its own promise, not a second outcome to
+  branch on. **The other sixteen doors were checked mechanically for the same
+  shape and none has it.**
+
+- **A failed active-pointer write left an orphan revision** (D-373). The
+  agent-config registry driver persists a revision and then moves the active
+  pointer as two ordinary `StateStore.Save` calls; a store error between them
+  left a revision that exists and that nothing references. Bounded but real:
+  the orphan is invisible to `Active` and was never applied to any run, but
+  `ListRevisions` enumerates by record kind, so it appeared in history belonging
+  to no chain — which reads exactly like a lost write. The driver now deletes
+  the revision it just wrote and returns the store's own error.
+
+  **The compensation runs on an un-cancellable context, and that is the subtle
+  part**: the likeliest reason for the pointer write to fail is the caller's
+  context being cancelled, so a compensation issued on that same context would
+  fail on exactly the occasions it exists for. **What is NOT claimed:** this is
+  compensation, not atomicity. A process that dies between the two writes still
+  leaves an orphan, and a store that refuses the delete as well is *reported* —
+  the error wraps both causes and names the record as unreferenced.
+
+- **A failed `parkForAuth` left the connection lifecycle on `pending` forever**
+  (D-370). The revision was recorded and no terminal event followed, so the
+  connection was nameable and removable but the Console reader was stranded. A
+  terminal `failed` is now emitted first.
+
+### Fixed — caller memory is redacted at rest, like its siblings
+
+- **`caller_memory` was persisted verbatim while `description` and `query` were
+  redacted** (D-370). Proven against the real `patterns` redactor: the durable
+  driver's whole-record marshal — the bytes that land in the StateStore on disk
+  — contained the raw secret. The wire godoc documented the prompt-injection
+  residual and said nothing about at-rest persistence, so an operator who saw
+  `query` redacted would reasonably infer the same of `caller_memory`. **The
+  inconsistency is the part that could not survive.**
+
+- **Redaction was chosen on measured evidence, not assumption.** Driving the
+  canonical rule set over representative payloads first: objects, arrays,
+  numbers, booleans, `null` and nesting all survive structurally intact, and
+  only secret-shaped keys and inline `Bearer …` / `Basic …` values are
+  replaced. It is not a text redactor on this path — `redactRawJSON` decodes,
+  walks the value and re-encodes, which is the path the engine already takes
+  for a structured tool result.
+
+- **Two consequences handled rather than absorbed.** The idempotency compare
+  against the stored bytes would now raise a false conflict on an honest retry,
+  so it is removed — the content hash already folds the **pre-redaction** bytes
+  and is strictly stronger. And a malformed document is now refused **loudly**
+  (`tasks.ErrInvalidRequest`, naming the field) before the marshal, rather than
+  being re-quoted into a valid-but-unusable row whose failure surfaces at
+  whatever reads it later.
+
+- **The residual is restated honestly rather than dropped.** The audit redactor
+  is a **pattern** redactor, not a sanitiser: it does not detect PII, does not
+  detect a credential that looks like prose, and cannot make hostile text safe.
+  An operator piping third-party content through `caller_memory` still has a
+  leakage path neither a prompt wrapper nor a pattern redactor closes.
+
+### Fixed — two isolation and availability defects on already-shipped surfaces
+
+- **The spawn idempotency index is keyed by the full identity triple** (D-371).
+  It was keyed on `(SessionID, IdempotencyKey)` — `tenant_id` and `user_id`
+  appeared in none of the six sites, including the hydration rebuild that
+  decides whether the shape survives a restart. **Stated at its true size:** this
+  was not a handle disclosure, because the divergence compare rejects a foreign
+  entry; the reachable damage is a **cross-tenant denial plus an existence
+  oracle**, and session ids are high-entropy so it is not reachable by guessing.
+  It is fixed anyway, because an isolation boundary is held by the *shape* of
+  the key and not by the entropy of one component.
+
+  **No migration.** The index is derived state that is never written to any
+  store — the engine rebuilds it at `Hydrate` from each persisted task's own
+  `Identity` + `IdempotencyKey`, and `Task.Identity` already carries
+  `TenantID`. Existing rows are byte-identical; an upgrade rebuilds the
+  narrower key from what is already on disk. `RunID` deliberately does **not**
+  join the key: a run-scoped key would defeat dedup across exactly the retries
+  it exists to collapse.
+
+- **The pending-override slot map is bounded** (D-372). `runs.set_overrides`
+  records a one-shot next-message override into an in-process map keyed by the
+  identity triple; a session that records one and never sends a message left its
+  slot behind. The package godoc called that "dropped" — nothing dropped it.
+  With no TTL, no eviction and no size cap, any authenticated caller reached
+  unbounded growth by recording an override under a fresh session id in a loop.
+  The map now holds at most 4096 entries and **evicts the oldest-recorded slot**
+  at capacity — evict rather than refuse, because a capacity refusal lets one
+  caller deny the surface to every other tenant, which is strictly worse.
+
+  Eviction is **loud, once per eviction, with no first-in-window suppression**:
+  below the bound an eviction is impossible, so a line is never routine. There
+  is deliberately **no TTL** — the slot already has a lifetime ("until the next
+  message") and a second time-based axis would be a second mechanism answering
+  one question. A non-positive bound is *ignored* rather than honoured, so
+  there is no way to configure the bound away. The same append-only shape in the
+  agent-config session-overlay store is fixed in the same change, refcounted
+  rather than capped, because patching one and leaving its twin is how a defect
+  class survives its own fix.
+
+### Verified — a settled decision gains the instrument it never had
+
+- **HA-47 (keying the live MCP registry by `(owner, name)`) is REFUSED, and
+  D-301 is reaffirmed unchanged** (D-379). The re-key is **inert for its own
+  motivating case**: the token tax is levied on the CATALOG key, not the
+  registry key, and with the registry conflict removed by construction two
+  owners attaching `github` still fail at `catalog.Register("github_add")`. It
+  would also move a clean pre-dial refusal to **after** the transport is live.
+
+  What lands instead is the missing instrument. D-301's namespace half — "a
+  collision fails loud", the bounded guarantee traded for the process-global
+  catalog — was pinned nowhere, so anyone re-attempting this had to rebuild the
+  probe to learn what the decision already knew. It is now pinned as
+  *behaviour*: the refusal is loud, typed, and **pre-dial**; it leaves the first
+  owner's catalog and registration untouched; a distinct-name control arm proves
+  the harness measures the name; and the catalog is pinned as the independent
+  second gate.
+
+- **A latent credential-plane hazard is recorded rather than quietly fixed.**
+  The tool token cache Kind carries no agent component under `ScopeUser`, so two
+  agents in one tenant sharing a user and a connection name would share one
+  bearer cache row. It is unreachable today **only because** the same-name
+  refusal above prevents the precondition. Any future work that relaxes
+  cross-owner connection-name uniqueness must address this first; it is filed as
+  issue #638 rather than fixed in a test-only change.
+
+### Changed — dependencies
+
+- **`github.com/maximhq/bifrost/core` `v1.5.21` → `v1.7.4`**, tracking the
+  upstream `SecretVar` rename. No Harbor-facing API change.
+
 ### Action required
+
+The first two items **break a client that worked against 1.24**. The rest ask
+for a decision, not a code change.
+
+- **BREAKING — strip request members Harbor does not declare.** The control
+  transport now decodes strictly (D-374): a member no wire type declares is
+  refused `400 {"code": "invalid_request"}` with the member **named** in the
+  message. Every other Harbor Protocol handler already decoded this way at this
+  same `ProtocolVersion 0.1.0`; the control transport was the outlier, and the
+  asymmetry was an omission rather than a policy. **No deprecation window
+  applies** — `Deprecation` can only describe a method, error code, wire field
+  or capability being *retired*, and unknown-member tolerance is none of those;
+  a window would also be a grace period on a data-loss bug.
+
+  **What to do today:** audit any place your client adds keys to a request body
+  below its typed surface. The concrete trap is identity folding — **seven
+  request types reached by eleven methods declare no `identity` field** (the
+  five `artifacts.*`, `SearchRequest` shared by the five `search.*`, and
+  `GovernanceSetPostureRequest`). Harbor's own Console folded the triple below
+  its typed client on six call sites, and Harbor's own smoke corpus sent it to
+  four more; both are fixed here and both are now held by a lockstep guard.
+  Clients built on the **Go** Protocol client are unaffected — they marshal
+  typed wire structs with no `identity` field to populate.
+
+- **BREAKING — drop `tenant_id` from `governance.posture` and `llm.posture`,
+  and set `identity.tenant` instead.** `GovernancePostureRequest` and
+  `LLMPostureRequest` are removed (D-374). Nothing ever decoded them: the whole
+  posture family decodes into the shared `RuntimeInfoRequest` envelope, so
+  `tenant_id` was discarded and **an admin naming another tenant silently
+  received its OWN tenant's posture with a 200** — wrong data on an admin audit
+  path, with no signal. The strict decode turned that into a loud 400, which is
+  how it surfaced.
+
+  **The cross-tenant read is not lost — it never lived here.** The selector is
+  `identity.tenant`: a body tenant differing from the verified tenant requires
+  the `admin` / `console:fleet` claim and emits `governance.posture_read_admin`.
+  That gate is implemented, audited and tested in both directions. The removed
+  field was a second, never-implemented spelling of it. A new
+  `TestManifest_NoOrphanWireTypes` gate now fails the build if a wire type is
+  ever again published without a method that decodes it.
 
 - **The conditional-write guarantee is exact within ONE Runtime process and
   ABSENT across processes. Do not read this release as "Harbor now prevents
@@ -459,10 +804,22 @@ position that any `runs.set_overrides` caller can now write.
   `runs.set_overrides` for a session, and treat that as prompt-authorship
   authority.
 
-- **Nothing else in this release requires an action.** Every wire addition is
-  an optional field or an additive error code; an omitted field reproduces the
-  previous behaviour byte-for-byte on every affected path, and each of those
-  claims is pinned by a golden or byte-equality test rather than asserted.
+- **Model-visible tool names longer than 44 bytes are rewritten** (D-377). A
+  live run is unaffected — every surface re-derives the declared name from the
+  catalog key each turn, and the transform is a pure function, so a name cannot
+  shift mid-run. What changes is any string comparison made **outside** a live
+  run: stored transcripts, eval fixtures that assert on a tool name, dashboards
+  that group by it. **What to do today:** if you pin tool names anywhere
+  durable, re-capture them after upgrading. Names already within 44 bytes pass
+  through byte-for-byte and need nothing.
+
+- **Everything else in this release is additive and needs no action.** Every
+  remaining wire change is an optional field or an additive error code; an
+  omitted field reproduces the previous behaviour byte-for-byte on every
+  affected path, and each of those claims is pinned by a golden or
+  byte-equality test rather than asserted. The at-rest redaction of
+  `caller_memory`, the idempotency-key rekey and the override-slot bound all
+  land without a migration and without a config change.
 
 ## [1.24.0] — 2026-07-30
 

@@ -478,3 +478,142 @@ func TestIsLocalHostHeader_Table(t *testing.T) {
 		}
 	}
 }
+
+// TestBootstrap_UnknownMember_RefusedAndNamed is the load-bearing guard
+// for the strict decode. This endpoint MINTS A CREDENTIAL, and a lenient
+// decode turned two ordinary client mistakes into silent privilege /
+// principal substitutions:
+//
+//   - `{"scope":[]}` — a caller asking for a NO-SCOPE token received a
+//     FULL-ADMIN one, because the misspelled member was discarded and the
+//     handler defaults stood.
+//   - `{"tenant_id":…,"user_id":…,"session_id":…}` — a caller spelling the
+//     triple the way the Protocol's RECORD types spell it received a token
+//     for the DEFAULT identity, not the one it named.
+//
+// Both answered 200, so neither caller could learn it had happened. The
+// refusal must NAME the member: a 400 that will not say which member is
+// unusable is indistinguishable from the malformed-body answer, which
+// carries the identical code.
+//
+// Mutation that turns this red: delete `dec.DisallowUnknownFields()` from
+// decodeBootstrapStrict — every arm returns 200 with the default identity
+// and the default admin scope set.
+func TestBootstrap_UnknownMember_RefusedAndNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		body   string
+		member string
+	}{
+		// The expected member is spelled as it appears in the JSON
+		// response envelope, where the decoder's own quotes are escaped.
+		{"misspelled scopes", `{"scope":[]}`, `unknown field \"scope\"`},
+		{"snake-cased triple", `{"tenant_id":"other","user_id":"u","session_id":"s"}`, `unknown field \"tenant_id\"`},
+		{"decorative member", `{"tenant":"acme","user":"alice","session":"s1","note":"hi"}`, `unknown field \"note\"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHandler()
+			rec := postBootstrap(t, h, tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 — an unknown member was silently discarded by a TOKEN-MINTING endpoint: %s",
+					rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.member) {
+				t.Errorf("refusal %q does not name the offending member %s — a caller cannot learn what to fix",
+					rec.Body.String(), tc.member)
+			}
+			if !strings.Contains(rec.Body.String(), "invalid_request") {
+				t.Errorf("refusal %q does not carry the invalid_request code", rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestBootstrap_UnknownMember_MintsNoToken pins the consequence rather
+// than the status code: a refused body must not have produced a
+// credential. Asserted on the SIGNER's call count, so a future refactor
+// that answers 400 after signing is caught.
+func TestBootstrap_UnknownMember_MintsNoToken(t *testing.T) {
+	signer := &staticSigner{prefix: "hdr"}
+	h := NewBootstrapHandler(
+		signer,
+		identity.Identity{TenantID: "dev", UserID: "dev", SessionID: "dev"},
+		[]string{"admin", "console:fleet"},
+		"http://127.0.0.1:18080",
+		testLogger,
+	)
+	if rec := postBootstrap(t, h, `{"scope":[]}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	signer.mu.Lock()
+	calls := signer.calls
+	signer.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("signer was called %d time(s) on a refused body — the endpoint minted a credential for a request it could not understand", calls)
+	}
+}
+
+// TestBootstrap_KnownMembersStillAccepted is the negative half, and it is
+// not ceremony: a strict decode that refused EVERYTHING would satisfy the
+// test above while breaking the one-click Console attach — a regression
+// worse than the bug. Every declared member, together, must still mint.
+func TestBootstrap_KnownMembersStillAccepted(t *testing.T) {
+	h := newTestHandler()
+	rec := postBootstrap(t, h, `{"tenant":"acme","user":"alice","session":"s1","scopes":["admin"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	resp := mustDecodeBootstrap(t, rec.Body.Bytes())
+	if resp.Identity.Tenant != "acme" || resp.Identity.User != "alice" || resp.Identity.Session != "s1" {
+		t.Errorf("identity = %+v, want acme/alice/s1", resp.Identity)
+	}
+	if len(resp.Scopes) != 1 || resp.Scopes[0] != "admin" {
+		t.Errorf("scopes = %v, want [admin]", resp.Scopes)
+	}
+}
+
+// TestBootstrap_TrailingDataRefused pins that the swap from
+// json.Unmarshal to a Decoder did not LOOSEN anything. Unmarshal refuses
+// a second JSON document after the first; a bare Decoder.Decode accepts
+// it and stops reading, so decodeBootstrapStrict checks dec.More().
+//
+// Mutation that turns this red: drop the `dec.More()` check.
+func TestBootstrap_TrailingDataRefused(t *testing.T) {
+	h := newTestHandler()
+	rec := postBootstrap(t, h, `{"tenant":"acme","user":"alice","session":"s1"} {"tenant":"evil"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 — a second JSON document after the request was accepted: %s",
+			rec.Code, rec.Body.String())
+	}
+}
+
+// TestBootstrap_UnknownMemberDetailIsBounded proves the echoed decoder
+// detail cannot be used to reflect an arbitrary-length caller string back
+// out of the endpoint. The member name is caller-controlled and the body
+// may carry the full 4 KiB the read limit allows.
+func TestBootstrap_UnknownMemberDetailIsBounded(t *testing.T) {
+	h := newTestHandler()
+	long := strings.Repeat("z", 2048)
+	rec := postBootstrap(t, h, fmt.Sprintf(`{%q:1}`, long))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("unmarshal refusal envelope: %v", err)
+	}
+	if len(envelope.Message) > maxBootstrapDetailBytes+80 {
+		t.Fatalf("refusal detail is %d bytes — the bound did not apply", len(envelope.Message))
+	}
+}
+
+// TestBootstrap_MalformedBodyStillRefused keeps the pre-existing
+// malformed-JSON path covered after the decoder swap.
+func TestBootstrap_MalformedBodyStillRefused(t *testing.T) {
+	h := newTestHandler()
+	if rec := postBootstrap(t, h, `{"tenant":`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 on a truncated body", rec.Code)
+	}
+}

@@ -38,6 +38,70 @@ for f in RFC-001-Harbor.md AGENTS.md CLAUDE.md README.md LICENSE \
     fi
 done
 
+# 2b. POPULATION CENSUS — every corpus the guards below scan must be
+# NON-EMPTY.
+#
+# Almost every guard in this file is a scan: walk a population, report what is
+# wrong, print OK when nothing is. That shape has one failure mode it cannot
+# distinguish on its own — an EMPTY population and a CLEAN one produce the
+# identical OK. A wrong `cd`, a renamed directory, a glob that stopped matching
+# and a corpus someone deleted all read as "no violations found". This is the
+# same defect the D-374 guards fail loudly on ("parsed ZERO rows … this check
+# has gone inert") and the same one the smoke corpus produced roughly a dozen
+# times across two waves.
+#
+# It is deliberately EARLY: it must fire before the guards that would otherwise
+# print a vacuous OK, so an operator reads the cause rather than a page of
+# meaningless passes.
+#
+# WHAT THIS DOES NOT COVER, stated rather than implied: a population that
+# exists but that a guard STOPPED READING — the godoc scan narrowed from
+# `internal/ cmd/ sdk/` to `internal/`, say. No census of the corpus can see
+# that, because the corpus is fine; it is the guard's argument list that
+# shrank. That class is covered from the other side, by the per-population
+# mutation cases in scripts/smoke/phase-224.sh, which plant a violation in EACH
+# directory a guard claims to scan. The two mechanisms are complementary and
+# neither substitutes for the other.
+#
+# `find` is used rather than a glob so this check does not depend on a shell
+# option some earlier check happened to set (the `nullglob` incident that made
+# the brief-reference guard unable to fail).
+census_failed=0
+census_expect_nonempty() {
+    local label="$1" count="$2"
+    if [ "${count}" -eq 0 ]; then
+        fail "population census: the ${label} population is EMPTY. Every guard that scans it would print OK without having examined anything, so this is reported instead of passed."
+        census_failed=$((census_failed + 1))
+    fi
+}
+count_files() {
+    # <dir> <name-pattern> [maxdepth]
+    local dir="$1" pat="$2" depth="${3:-}"
+    if [ ! -d "${dir}" ]; then
+        printf '0'
+        return
+    fi
+    if [ -n "${depth}" ]; then
+        find "${dir}" -maxdepth "${depth}" -type f -name "${pat}" 2>/dev/null | wc -l | tr -d ' '
+    else
+        find "${dir}" -type f -name "${pat}" 2>/dev/null | wc -l | tr -d ' '
+    fi
+}
+
+census_expect_nonempty 'phase plan (docs/plans/phase-*.md)'          "$(count_files docs/plans 'phase-*.md' 1)"
+census_expect_nonempty 'phase smoke (scripts/smoke/phase-*.sh)'      "$(count_files scripts/smoke 'phase-*.sh' 1)"
+census_expect_nonempty 'research brief (docs/research/*.md)'         "$(count_files docs/research '*.md' 1)"
+census_expect_nonempty 'operator skill (docs/skills/*/SKILL.md)'     "$(count_files docs/skills 'SKILL.md')"
+census_expect_nonempty 'Go source under internal/'                   "$(count_files internal '*.go')"
+census_expect_nonempty 'Go source under cmd/'                        "$(count_files cmd '*.go')"
+census_expect_nonempty 'Go source under sdk/ (the D-282 scan extension)' "$(count_files sdk '*.go')"
+census_expect_nonempty 'shell script under scripts/'                 "$(count_files scripts '*.sh')"
+census_expect_nonempty 'Console playground route'                    "$(count_files 'web/console/src/routes/(console)/playground' '*.svelte')"
+
+if [ "${census_failed}" -eq 0 ]; then
+    ok 'population census: every scanned corpus is non-empty (an empty corpus and a clean one print the same OK, so emptiness is refused here)'
+fi
+
 # 3. Every phase plan has a matching smoke script
 shopt -s nullglob
 for plan in docs/plans/phase-*.md; do
@@ -185,6 +249,12 @@ done
 # Extend the scan to shipped Go source so a stray comment can't sneak
 # the predecessor's name into a release binary. find used over a glob
 # so we pick up new packages automatically.
+#
+# The two `-d` tests below only avoid a `find` error on a missing directory;
+# they are NOT the guard against the directory disappearing. Both populations
+# are asserted non-empty by the population census (check 2b), because an absent
+# internal/ or cmd/ would otherwise narrow this scan silently and it would
+# still print its OK.
 if [ -d internal ]; then
     while IFS= read -r f; do
         files_to_scan+=("$f")
@@ -269,10 +339,21 @@ fi
 # the gate. The helper is extracted to its own script so phase-85k.sh's smoke
 # can re-run the same check on the live build.
 # -----------------------------------------------------------------------------
+#
+# The `else` arm is LOAD-BEARING, not defensive noise. `if [ -x helper ]` with
+# no else is a guard that VANISHES: a lost executable bit (a `cp` that does not
+# preserve mode, a checkout on a filesystem without the bit, a rename) removes
+# the whole check with no failure, no skip and no output — indistinguishable
+# from a clean run. That is the same shape as every inert guard this harness
+# exists to drain, one level up in the delegation. The helper is an
+# unconditional repository fixture, so its absence is a defect in its own
+# right.
 if [ -x scripts/skills/check-frontmatter.sh ]; then
     if ! scripts/skills/check-frontmatter.sh; then
         fail 'one or more docs/skills/<slug>/SKILL.md files have malformed frontmatter — see §18 of CLAUDE.md'
     fi
+else
+    fail 'delegated guard unavailable: scripts/skills/check-frontmatter.sh is missing or not executable, so the operator-skill frontmatter audit did not run. A guard that cannot run must not read as a guard that passed (§4.2 item 5).'
 fi
 
 # -----------------------------------------------------------------------------
@@ -283,12 +364,21 @@ fi
 # scan (`npm run lint`); this is the shell half. The corpus has produced two
 # separate instances of the bug, so it does not stay unguarded.
 # -----------------------------------------------------------------------------
+#
+# Same load-bearing `else` as the frontmatter delegation above, and this is the
+# guard the shape was found on: it shipped with no else, so a lost executable
+# bit made it disappear silently — and because it emits no `ok` of its own, the
+# mutation harness's coverage census could not see it either. A guard that
+# vanishes twice over is worse than one that was never written, because the
+# audit's summary still reads green.
 if [ -x scripts/check-smoke-body-identity.sh ]; then
     if scripts/check-smoke-body-identity.sh; then
         :   # the helper prints its own [OK] line
     else
         fail 'a smoke body sends `identity` to a Protocol method whose request type has no such field — see the guard output above and D-374'
     fi
+else
+    fail 'delegated guard unavailable: scripts/check-smoke-body-identity.sh is missing or not executable, so the D-374 smoke body-identity guard did not run. A guard that cannot run must not read as a guard that passed (§4.2 item 5).'
 fi
 
 # -----------------------------------------------------------------------------

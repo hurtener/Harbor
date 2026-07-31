@@ -4,7 +4,7 @@
 
 `scripts/drift-audit.sh` is the mechanical instrument that enforces Harbor's drift rules — the mirror invariant, the plan↔smoke pairing, the cross-reference resolution, the forbidden-name scan, the godoc-jargon scan, the scaffold pin, and the two macOS/Linux portability guards. Until this phase **nothing verified the instrument**. Its guards were mutation-verified by hand and the results recorded in code comments; no automated check re-ran those mutations, so a regression that re-broke one would have gone completely unnoticed. A guard that cannot fire is indistinguishable from a corpus with no violations.
 
-This phase ships `scripts/smoke/phase-224.sh`: a regression harness that **executes** the mutations rather than trusting the recorded comments. For each of the audit's eighteen guard units it builds a throwaway fixture corpus, applies a mutation of the shape that guard exists to catch, runs the real `drift-audit.sh` against the mutated corpus, and asserts the audit printed **that guard's own** FAIL (or WARN) line.
+This phase ships `scripts/smoke/phase-224.sh`: a regression harness that **executes** the mutations rather than trusting the recorded comments. For each of the audit's twenty guard units (eighteen as first written; see the coverage census and D-384) it builds a throwaway fixture corpus, applies a mutation of the shape that guard exists to catch, runs the real `drift-audit.sh` against the mutated corpus, and asserts the audit printed **that guard's own** FAIL (or WARN) line. Guards whose population is a directory list carry one case per LIMB, so a guard that stops reading one of its roots is caught as well as one whose matching breaks.
 
 **It found two live defects on its first run, and both are fixed here** (AGENTS.md §17.6). Neither was hypothetical and neither was visible to any existing gate:
 
@@ -92,7 +92,14 @@ Three properties of the corpus are load-bearing:
 
 ## Coverage census
 
-**Eighteen guard units, eighteen covered, zero declared uncovered, twenty-two mutations.** Sixteen guards report an `ok` line; the NUL-byte guard is FAIL-only (silent on success) and the operator-skill frontmatter guard's OK is printed by the delegated child script — which is why the census total (16) and the guard total (18) differ, and why the smoke prints both numbers rather than leaving the reader to reconstruct them.
+**Twenty guard units, twenty covered, zero uncovered, thirty-four mutations** (corrected from "eighteen / eighteen / twenty-two" — see D-384). Seventeen guards report an `ok` line; three do not — the NUL-byte guard is FAIL-only (silent on success), and BOTH delegated guards' OK lines are printed by their child scripts. That is why the census total (17) and the guard total (20) differ, and why the smoke prints both numbers rather than leaving the reader to reconstruct them.
+
+**Two corrections are folded in here rather than left in the log alone, because this section is where a reader checks the number.**
+
+1. **The count was wrong, and the mechanism could not have found it.** `drift-audit.sh` gained a nineteenth guard — D-374's smoke body-identity delegation — after this plan was written. It emits no `ok`, so the mechanical census structurally could not see it, and the hand-written exception list still said "two". An `ok`-keyed census cannot see a guard that emits no `ok`: **the hand-maintained half of that list is the load-bearing half** and must be revisited whenever a delegated or FAIL-only guard lands. The twentieth guard is the population census this fix adds to the audit.
+2. **Coverage was per-SHAPE and never per-POPULATION.** Every mutation planted its defect in `internal/fixture/fixture.go`, including for guards that scan a directory LIST. Two real regressions passed clean (`OK: 25 SKIP: 0 FAIL: 0` each): narrowing the godoc roots to `internal/`, and deleting the forbidden-name scan's `cmd/` block. Guards whose population is a directory list now carry one case PER limb — godoc `internal/` + `cmd/` + `sdk/`, forbidden-name across all five assembly blocks, and both portability guards across their `scripts/smoke/` and `scripts/` roots.
+
+**Two guards are covered at the DELEGATION only, declared rather than implied.** The skills-frontmatter and smoke body-identity cases verify that a missing helper, a lost executable bit, or a non-zero exit each produce a loud FAIL — not the helpers' own detection logic. The body-identity helper joins two generated artifacts and then walks the smoke corpus; reproducing that in a fixture would be testing the copy rather than the program, so the fixture ships a labelled stand-in. Each helper carries its own guards.
 
 | # | Guard (`drift-audit.sh`) | Mutation applied | Expected |
 |---|---|---|---|
@@ -238,7 +245,7 @@ Hard preconditions, each a FAIL rather than a SKIP (§4.2 item 5 — "the harnes
 
 ## Coverage target
 
-N/A — no Go packages are touched, so there is no `go test -cover` figure to hold. The phase's equivalent gate is stated numerically and enforced mechanically instead: **18 of 18 guard units covered, 0 declared uncovered**, asserted by the census check rather than by this sentence.
+N/A — no Go packages are touched, so there is no `go test -cover` figure to hold. The phase's equivalent gate is stated numerically and enforced mechanically instead: **20 of 20 guard units covered, 0 uncovered** (corrected from 18 — D-384), asserted by the census check rather than by this sentence. The count printed at run time is derived from the counted `ok` lines rather than hard-coded, so half of it cannot go stale silently.
 
 ## Dependencies
 
