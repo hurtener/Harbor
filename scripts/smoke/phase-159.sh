@@ -24,6 +24,13 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
+# The dev bearer is resolved through common.sh's `dev_bearer`, never by a raw
+# ${HARBOR_DEV_TOKEN} read: the raw read is EMPTY outside preflight, so every
+# live leg below degrades to a SKIP while the script still exits 0 — "a SKIP
+# that should be an OK is a bug" (AGENTS.md §4.2 item 5, issue #624).
+# dev_bearer prefers the exported value and falls back to the dev server log.
+HARBOR_DEV_TOKEN="$(dev_bearer)"
+
 BIN="${ROOT}/bin/harbor"
 
 # 1. /healthz answers 200 on the booted serve band (the config→listener
@@ -35,7 +42,7 @@ assert_status 200 "$(api_url /healthz)" "phase 159: /healthz 200 on the promoted
 #    boot printed and authenticate. A missing token SKIPs this leg cleanly (the
 #    authenticated happy path is also covered by the integration test).
 if [[ -z "${HARBOR_DEV_TOKEN:-}" ]] && [[ -n "${HARBOR_DATA_DIR:-}" ]] && [[ -f "${HARBOR_DATA_DIR}/server.log" ]]; then
-    HARBOR_DEV_TOKEN="$(grep -m1 '^HARBOR_DEV_TOKEN=' "${HARBOR_DATA_DIR}/server.log" 2>/dev/null | sed 's/^HARBOR_DEV_TOKEN=//' || true)"
+    HARBOR_DEV_TOKEN="$(dev_bearer)"
 fi
 info_url="$(api_url '/v1/control/runtime.info')"
 if [[ -n "${HARBOR_DEV_TOKEN:-}" ]] && command -v curl >/dev/null 2>&1; then

@@ -113,7 +113,12 @@ assert_block_grep "${OVERRIDES_GO}" \
 
 # The join helper exists EXACTLY once — one production composition site, no
 # second copy that could drift (CLAUDE.md §17.4).
-JOIN_DEFS=$(grep -rlE '^func joinAdditiveGuidance\(' --include='*.go' internal/ cmd/ 2>/dev/null | wc -l | tr -d ' ')
+# `|| true` on the pipeline: under `set -o pipefail` a no-match grep (exit 1)
+# aborts the whole script AT THE ASSIGNMENT, so the case this guard exists to
+# catch — the helper deleted, ZERO definitions — would exit early and silently
+# instead of reaching the `fail` below. Phase 219's ordering guard already
+# guards the same shape this way.
+JOIN_DEFS=$( (grep -rlE '^func joinAdditiveGuidance\(' --include='*.go' internal/ cmd/ 2>/dev/null || true) | wc -l | tr -d ' ')
 if [ "${JOIN_DEFS}" = "1" ]; then
     ok 'phase 220: joinAdditiveGuidance is defined exactly once (one production composition, no second copy)'
 else

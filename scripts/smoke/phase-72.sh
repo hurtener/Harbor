@@ -36,6 +36,13 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
+# The dev bearer is resolved through common.sh's `dev_bearer`, never by a raw
+# ${HARBOR_DEV_TOKEN} read: the raw read is EMPTY outside preflight, so every
+# live leg below degrades to a SKIP while the script still exits 0 — "a SKIP
+# that should be an OK is a bug" (AGENTS.md §4.2 item 5, issue #624).
+# dev_bearer prefers the exported value and falls back to the dev server log.
+HARBOR_DEV_TOKEN="$(dev_bearer)"
+
 # 1. Surface probe — does the Phase 60 SSE route exist at all?
 # When the route is absent the rest of the script SKIPs gracefully via
 # the per-helper 404/405/501 → SKIP path.
@@ -68,7 +75,7 @@ assert_status 401 "$(api_url /v1/events)" \
 # the integration test (`test/integration/events_subscribe_scope_test.go`)
 # covers end-to-end with the real ES256 testdata keypair.
 if [ -n "${HARBOR_DATA_DIR:-}" ] && [ -f "${HARBOR_DATA_DIR}/server.log" ]; then
-  DEV_TOKEN="$(grep -m1 '^HARBOR_DEV_TOKEN=' "${HARBOR_DATA_DIR}/server.log" 2>/dev/null | sed 's/^HARBOR_DEV_TOKEN=//' || true)"
+  DEV_TOKEN="$(dev_bearer)"
   if [ -n "${DEV_TOKEN}" ]; then
     # SSE streams stay open until the client disconnects. We only want
     # the open-of-stream status, so cap the request short (--max-time 2)

@@ -34,7 +34,11 @@
 #     all-direction preservation matrix, the projection, the verbatim render +
 #     byte-identity + determinism, and the integration seam — all under -race.
 #
-# Every non-probe assertion FAILS (never SKIPs) when its guard is removed.
+# Every non-probe assertion FAILS (never SKIPs) when its guard is removed. The
+# only SKIP arms describe the HARNESS, not the surface: no reachable server, no
+# bearer/jq/curl, no go toolchain. In particular the guard-test legs name each
+# test EXPLICITLY through `assert_go_tests_pass`, so a renamed or deleted test
+# is a FAIL — `go test -run` whose filter matches nothing exits ZERO.
 #
 # The agent id is per-invocation, so the script is idempotent against a
 # long-lived preflight server.
@@ -91,30 +95,6 @@ assert_not_grep() {
     fi
 }
 
-# run_filtered_tests <desc> <run-regexp> <packages...>
-#
-# Runs `go test -race -run <regexp>`. OK on a real pass; SKIP only when the
-# filter matched no tests at all (an older build); FAIL on a genuine failure.
-run_filtered_tests() {
-    local desc="$1" runre="$2"
-    shift 2
-    local out rc
-    # NO CGO_ENABLED=0 here: the race detector needs cgo on Linux, where
-    # `CGO_ENABLED=0 go test -race` fails to build. Harbor's CGo ban governs
-    # the shipped BINARY, not the race-instrumented test binary.
-    out="$(go test -race -count=1 -run "${runre}" "$@" 2>&1)" && rc=0 || rc=$?
-    if [ "${rc}" -eq 0 ]; then
-        if printf '%s\n' "${out}" | grep -qE 'no tests to run|no test files'; then
-            skip "${desc}: filter '${runre}' matched no tests (phase not yet landed)"
-        else
-            ok "${desc}"
-        fi
-        return
-    fi
-    printf '%s\n' "${out}" | tail -25
-    fail "${desc}: go test exited ${rc}"
-}
-
 # ----------------------------------------------------------------------------
 # 1. The phase gate: are the wire types declared?
 # ----------------------------------------------------------------------------
@@ -142,12 +122,17 @@ assert_grep "${DOMAIN_GO}" \
 # No map may appear on the blocks path. A map[string]string keyed by name is
 # the nondeterminism defect phase 217 removed elsewhere; it must not return
 # here under a different name.
+#
+# `.` and not `[^\n]`: in an ERE a bracket expression has no C escapes, so
+# `[^\n]` is the class "neither a backslash nor the letter n" — which would
+# refuse to match `ExtraSystemBlocks map[string]string` (the `n` in `string`).
+# grep is line-oriented, so plain `.` already cannot cross a newline.
 assert_not_grep "${WIRE_GO}" \
-    'ExtraSystemBlocks[^\n]*map\[' \
+    'ExtraSystemBlocks.*map\[' \
     'phase 222: no map carries the blocks on the wire (map iteration order is not a composition order)'
 
 assert_not_grep "${DOMAIN_GO}" \
-    'ExtraSystemBlocks[^\n]*map\[' \
+    'ExtraSystemBlocks.*map\[' \
     'phase 222: no map carries the blocks in the domain type'
 
 # THE MUST-NOT-SORT GUARD. Skills.Names is sortDedup'd and OAuthProviders is
@@ -394,31 +379,89 @@ fi
 
 # ----------------------------------------------------------------------------
 # 7. Guard tests (each FAILS, never SKIPs, when its guard is removed).
+#
+# Through common.sh's `assert_go_tests_pass`, which greps the `-v` output for a
+# `--- PASS:` line per NAMED test. The private `run_filtered_tests` this
+# replaced trusted the exit code and turned a rename into a SKIP — better than
+# a silent OK, but still the §4.2 item 5 shape, and it contradicted this file's
+# own claims at the header and at section 7 that every non-probe assertion
+# FAILs when its guard is removed. It also could not see a HALF-dead filter:
+# each leg's alternation carried a name that matched NOTHING —
+# `TestContentHash_BlockOrderIsSemantic` (really
+# `TestContentHash_ExtraSystemBlocks_OrderIsSemantic`), `TestDiff_ExtraSystemBlocks`
+# (really `TestDiffExtraSystemBlocks`), `TestSectionPreservation_ExtraSystemBlocks`
+# and `TestComposition_ExtraSystemBlocks` (which never existed; the
+# all-direction preservation matrix is `TestRebuildCompleteness_EverySetter_
+# PreservesEverySibling` + `TestVerbs_PreserveAllSiblingSections`) — while a
+# surviving sibling in the same alternation kept the leg green. Every leg's
+# description therefore named coverage the leg did not run. Naming each test
+# explicitly is what makes that state visible.
+#
+# `-race -count=1` rides in the go-test-args parameter. NO CGO_ENABLED=0: the
+# race detector needs cgo on Linux, where `CGO_ENABLED=0 go test -race` fails
+# to build. Harbor's CGo ban governs the shipped BINARY, not the
+# race-instrumented test binary.
 # ----------------------------------------------------------------------------
 
-run_filtered_tests \
-    "phase 222: the order-preserving normalizer, the order-is-semantic hash property and the block diff (agentcfg)" \
-    'TestNormalizePayload_ExtraSystemBlocks|TestContentHash_BlockOrderIsSemantic|TestDiff_ExtraSystemBlocks' \
-    ./internal/agentcfg/
+if ! command -v go >/dev/null 2>&1; then
+    skip 'phase 222: go toolchain unavailable — guard tests skipped'
+else
+    P222_GOLOG="$(mktemp "${TMPDIR:-/tmp}/phase222-gotest.XXXXXX")"
+    trap 'rm -f "${P222_GOLOG}"' EXIT
 
-run_filtered_tests \
-    "phase 222: the write door, the all-direction section-preservation matrix and the concurrent-reuse run (agentcfg/protocol)" \
-    'TestSetExtraSystemBlocks_|TestSectionPreservation_ExtraSystemBlocks|TestSessionUserPrompt_CannotWriteExtraSystemBlocks' \
-    ./internal/runtime/agentcfg/protocol/
+    assert_go_tests_pass "${P222_GOLOG}" '-race -count=1 ./internal/agentcfg/' \
+        "phase 222: the order-preserving normalizer, the order-is-semantic hash property and the block diff (agentcfg)" \
+        TestNormalizePayload_ExtraSystemBlocks_PreservesDeclaredOrder \
+        TestNormalizePayload_ExtraSystemBlocks_DropsPhantomsAndDuplicates \
+        TestNormalizePayload_ExtraSystemBlocks_AllEmptySectionDropsOut \
+        TestContentHash_ExtraSystemBlocks_OrderIsSemantic \
+        TestContentHash_ExtraSystemBlocks_AbsentIsByteIdentical \
+        TestDiffExtraSystemBlocks
 
-run_filtered_tests \
-    "phase 222: run-start projection of the active revision's blocks (agentcfg/projection)" \
-    'TestActiveExtraSystemBlocks_|TestApplyPromptLayers_CarriesExtraSystemBlocks' \
-    ./internal/runtime/agentcfg/projection/
+    assert_go_tests_pass "${P222_GOLOG}" '-race -count=1 ./internal/runtime/agentcfg/protocol/' \
+        "phase 222: the write door, the all-direction section-preservation matrix and the concurrent-reuse run (agentcfg/protocol)" \
+        TestSetExtraSystemBlocks_RecordsRevision_InDeclaredOrder \
+        TestSetExtraSystemBlocks_ReorderIsANewRevision \
+        TestSetExtraSystemBlocks_RefusesMalformedInput \
+        TestSetExtraSystemBlocks_EmptyListClearsTheSection \
+        TestSetExtraSystemBlocks_HonoursTheExpectedRevisionToken \
+        TestSetExtraSystemBlocks_MethodIsAdminTier \
+        TestSetExtraSystemBlocks_ConcurrentReuse_NoCrossTalk \
+        TestSetRevision_RefusesMalformedExtraSystemBlocks \
+        TestSessionUserPrompt_CannotWriteExtraSystemBlocks \
+        TestActiveExtraSystemBlocks_IsIdentityScoped \
+        TestRebuildCompleteness_EverySetter_PreservesEverySibling \
+        TestVerbs_PreserveAllSiblingSections
 
-run_filtered_tests \
-    "phase 222: the verbatim render, the declared order, the byte-identity pin and determinism (planner/react)" \
-    'TestRenderExtraSystemBlocks_|TestComposition_ExtraSystemBlocks' \
-    ./internal/planner/react/
+    assert_go_tests_pass "${P222_GOLOG}" '-race -count=1 ./internal/runtime/agentcfg/projection/' \
+        "phase 222: run-start projection of the active revision's blocks (agentcfg/projection)" \
+        TestActiveExtraSystemBlocks_ResolvesInDeclaredOrder \
+        TestActiveExtraSystemBlocks_NotSetPaths \
+        TestActiveExtraSystemBlocks_IdentityScoped \
+        TestActiveExtraSystemBlocks_ReturnsAFreshCopy \
+        TestApplyPromptLayers_CarriesExtraSystemBlocks
 
-run_filtered_tests \
-    "phase 222: the N-contributor seam with identity propagation and four failure modes (integration)" \
-    'TestE2E_AgentConfigExtraSystemBlocks_' \
-    ./test/integration/
+    assert_go_tests_pass "${P222_GOLOG}" '-race -count=1 ./internal/planner/react/' \
+        "phase 222: the verbatim render, the declared order, the byte-identity pin and determinism (planner/react)" \
+        TestRenderExtraSystemBlocks_DeclaredOrderWithLabels \
+        TestRenderExtraSystemBlocks_NameIsNeverATag \
+        TestRenderExtraSystemBlocks_BodyIsVerbatim \
+        TestRenderExtraSystemBlocks_UserLayerStaysEscaped \
+        TestRenderExtraSystemBlocks_SlotIsBelowBakedGuidanceAboveExtraInstructions \
+        TestRenderExtraSystemBlocks_SurvivesSystemPromptOverride \
+        TestRenderExtraSystemBlocks_AbsentIsByteIdentical \
+        TestRenderExtraSystemBlocks_NoWrapperWhenEverythingElseIsEmpty \
+        TestRenderExtraSystemBlocks_Deterministic
+
+    assert_go_tests_pass "${P222_GOLOG}" '-race -count=1 ./test/integration/' \
+        "phase 222: the N-contributor seam with identity propagation and four failure modes (integration)" \
+        TestE2E_AgentConfigExtraSystemBlocks_NContributorRoundTrip \
+        TestE2E_AgentConfigExtraSystemBlocks_EmitsConfigRevised \
+        TestE2E_AgentConfigExtraSystemBlocks_ReachesTheBuiltPrompt \
+        TestE2E_AgentConfigExtraSystemBlocks_IdentityPropagation \
+        TestE2E_AgentConfigExtraSystemBlocks_FailureModes \
+        TestE2E_AgentConfigExtraSystemBlocks_SessionTierCannotReachTheSection \
+        TestE2E_AgentConfigExtraSystemBlocks_ReorderIsADiffableRevision
+fi
 
 smoke_summary
