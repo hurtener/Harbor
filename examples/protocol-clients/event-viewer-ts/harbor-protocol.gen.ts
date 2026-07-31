@@ -227,6 +227,7 @@ export type HarborEventType =
   | "mcp.raw_html_trust_toggled"
   | "mcp.resource_offloaded"
   | "mcp.resource_updated"
+  | "memory.caller_block_admitted"
   | "memory.health_changed"
   | "memory.identity_rejected"
   | "memory.item_deleted"
@@ -2275,6 +2276,7 @@ export interface StartRequest {
   input_artifact_dispositions?: Record<string, string>;
   output_schema?: unknown;
   agent_id?: string;
+  caller_memory?: unknown;
 }
 
 export interface StartResponse {

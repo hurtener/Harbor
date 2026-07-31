@@ -132,6 +132,8 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	memory.EventTypeMemoryItemPut:          {Payloads: []reflect.Type{reflect.TypeOf(memory.MemoryMutationPayload{})}},
 	memory.EventTypeMemoryItemDeleted:      {Payloads: []reflect.Type{reflect.TypeOf(memory.MemoryMutationPayload{})}},
 
+	memory.EventTypeMemoryCallerBlockAdmitted: {Payloads: []reflect.Type{reflect.TypeOf(memory.CallerBlockAdmittedPayload{})}},
+
 	// --- Planner.
 	planner.EventTypePlannerDecision:                {Payloads: []reflect.Type{reflect.TypeOf(planner.DecisionPayload{})}},
 	planner.EventTypePlannerFinish:                  {Note: "Registered anchor — no canonical emit path in this version (a planner's terminal decision is observable via `planner.decision` with `DecisionKind: Finish` and the `task.*` lifecycle events)."},

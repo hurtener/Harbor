@@ -1184,6 +1184,57 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// writing past teardown.
 	emit := events.IdentityStampingEmitterContext(d.subCtx, d.bus, q, d.logger)
 
+	// Compose the caller-supplied memory block into the run's external
+	// memory tier, if the `start` that created this task carried one.
+	//
+	// This runs AFTER the emitter is built, and the ordering is
+	// load-bearing rather than incidental: the admission event is the
+	// only Protocol-visible signal that caller-asserted content entered
+	// this run, and emitting it through a nil emitter would drop it
+	// silently. The phase smoke pins the line ordering mechanically.
+	//
+	// It runs OUTSIDE the `d.memory != nil` branch above on purpose:
+	// composition must also work when the runtime has no memory subsystem
+	// configured at all (memBlocks stays nil and FetchMemoryBlocks is
+	// never called) and when a configured session simply has no stored
+	// memory yet (ProjectMemoryBlocks returns nil).
+	//
+	// A payload the composer refuses fails the run LOUD. The caller was
+	// told its memory would reach the model; running without it and
+	// reporting success is the silent degradation this field exists to
+	// avoid (CLAUDE.md §13).
+	if len(task.CallerMemory) > 0 {
+		composed, cmErr := runctx.ComposeCallerMemory(memBlocks, task.CallerMemory)
+		if cmErr != nil {
+			d.logger.ErrorContext(taskCtx, "RunLoopDriver: caller-memory composition failed; failing run",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", cmErr.Error()))
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    planner.TaskErrorCodeRunLoopError,
+				Message: "caller-memory composition failed: " + cmErr.Error(),
+			}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed after caller-memory-composition error failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		memBlocks = composed
+		// Size only, never content — the payload is caller-controlled
+		// bytes (CLAUDE.md §7 rules 6-7).
+		emit(events.Event{
+			Type:       memory.EventTypeMemoryCallerBlockAdmitted,
+			Identity:   q,
+			OccurredAt: time.Now(),
+			Payload: memory.CallerBlockAdmittedPayload{
+				Bytes: len(task.CallerMemory),
+				Tier:  runctx.ExternalTierName,
+				Key:   runctx.CallerSuppliedKey,
+			},
+		})
+	}
+
 	// per-run OnToolDispatched hook that advances the
 	// task's `ToolCount` registry-side by `count` after every
 	// successful tool dispatch (count is 1 for a CallTool, len(Branches)

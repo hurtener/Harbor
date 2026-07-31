@@ -220,6 +220,14 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	if len(req.OutputSchema) > 0 {
 		outputSchema = append([]byte(nil), req.OutputSchema...)
 	}
+	// Defensive copy of the caller-supplied memory bytes, same rationale
+	// as the output schema above: the stored task must not alias the
+	// caller's SpawnRequest slice. Nil stays nil so a task that carried no
+	// caller memory round-trips as nil through the `omitempty` marshal.
+	var callerMemory []byte
+	if len(req.CallerMemory) > 0 {
+		callerMemory = append([]byte(nil), req.CallerMemory...)
+	}
 	t := &tasks.Task{
 		ID:                id,
 		Identity:          req.Identity,
@@ -242,6 +250,8 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		// the caller-named agent (edge-validated; "" = the runtime's
 		// configured default).
 		AgentID: req.AgentID,
+		// the caller-supplied memory block (edge-validated; nil = none).
+		CallerMemory: callerMemory,
 	}
 	// Validate the requested group BEFORE persisting anything. A
 	// missing / cross-session / sealed group must fail the spawn
@@ -1149,6 +1159,13 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if existing.AgentID != req.AgentID {
 		return false
 	}
+	// the caller-supplied memory block is part of the task's content
+	// identity: a reused idempotency key carrying DIFFERENT caller memory
+	// must surface as a loud conflict, never silently run with the first
+	// payload while reporting success for the second.
+	if !bytes.Equal(existing.CallerMemory, req.CallerMemory) {
+		return false
+	}
 	return true
 }
 
@@ -1226,6 +1243,15 @@ func spawnRequestContentHash(req tasks.SpawnRequest) [32]byte {
 	if req.AgentID != "" {
 		h.Write([]byte{0x1F})
 		h.Write([]byte(req.AgentID))
+	}
+	// fold the caller-supplied memory block in so "same key, different
+	// caller_memory" surfaces as ErrIdempotencyConflict rather than a
+	// silent adoption of the first payload. Gated on non-empty so a spawn
+	// carrying no caller memory hashes byte-identically to one made before
+	// the field existed.
+	if len(req.CallerMemory) > 0 {
+		h.Write([]byte{0x1F})
+		h.Write(req.CallerMemory)
 	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))

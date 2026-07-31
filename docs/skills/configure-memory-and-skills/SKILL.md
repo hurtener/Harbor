@@ -76,7 +76,21 @@ embeddings:                  # REQUIRED when any retrieval is semantic
 
 The `embeddings:` block is the embedding model/provider pair — configured **separately from the chat `llm` block** (they routinely come from different providers). Enabling a semantic mode without it fails validation loudly, naming the missing keys; there is no silent fallback to non-semantic retrieval and no mock embeddings driver.
 
-When `memory.retrieval: semantic` is set the run loop calls `SearchTurns` on every task, applies the `retrieval_min_score` floor, deduplicates against the recent-turn window, caps each recalled turn at 2 KiB per side, and injects the result into the prompt's `<read_only_external_memory>` tier. A `SearchTurns` error fails the run loudly (`runtime_fetch_error`) — there is no silent fall-back to summary-only.
+When `memory.retrieval: semantic` is set the run loop calls `SearchTurns` on every task, applies the `retrieval_min_score` floor, deduplicates against the recent-turn window, caps each recalled turn at 2 KiB per side, and injects the result into the prompt's `<read_only_external_memory>` tier under the map key `recalled_turns`. A `SearchTurns` error fails the run loudly (`runtime_fetch_error`) — there is no silent fall-back to summary-only.
+
+**Sizing `retrieval_top_k` is on you, and there is no safety net beneath it.** The 2 KiB cap bounds each TURN, not the aggregate: the injected block is at most `top_k × 2 × 2 KiB`. Nothing downstream re-checks the total. The LLM-edge context-leak guard byte-exempts everything that is not tool-role text, and memory tiers render under the system role — so the only backstop is the token-budget check, which fires after the whole prompt is assembled and **fails the run** rather than trimming it. A large `top_k` plus a long trajectory is how a run dies late.
+
+### Caller-supplied memory — the second producer of that tier (D-364)
+
+The `<read_only_external_memory>` tier has **two** producers, and they compose at map-key granularity rather than competing for the slot. Semantic recall writes `recalled_turns`; a Protocol client writes the fixed `caller_supplied` key by sending `caller_memory` on a `start` request (see the [`use-the-harbor-protocol`](../use-the-harbor-protocol/SKILL.md) skill). Neither can displace the other, and a caller names no key at all — it supplies only a value — so no deny-list is needed and no future runtime producer can collide with one.
+
+What this means for you as the operator:
+
+- **You do not enable it.** There is no config key. It is on the Protocol surface for every caller with a valid identity, and it is bounded at 32 KiB per request at the edge, refused before any task is created.
+- **A caller can only reach that ONE prompt position.** It never touches the trusted base prompt (that is `system_prompt_override`, a different and strictly more powerful knob) and it never writes the conversation-memory tier, which is a claim about the session's stored turns only the runtime makes.
+- **You can see it happening.** Every admitting run emits `memory.caller_block_admitted` with `bytes` / `tier` / `key` — a size, never content — so an audit trail shows caller-asserted memory entering a run without becoming a copy of it. In a trace, the tier reads `{"recalled_turns":[…],"caller_supplied":{…}}`: you can always tell which half came from where.
+- **The framing is the mitigation, and it is not redaction.** Harbor does not sanitise a caller's payload. The tier's five-line anti-injection preamble tells the MODEL not to obey it; it does nothing about what the bytes contain. A caller that pipes unredacted third-party content through `caller_memory` has a data-leakage path no prompt wrapper closes.
+- **Nothing meters admission volume.** Token spend is metered at the LLM edge by the governance layer, so the cost is governed — but a caller may send 32 KiB on every `start` and no per-tenant accounting of admission itself exists yet.
 
 ### Identity scoping
 

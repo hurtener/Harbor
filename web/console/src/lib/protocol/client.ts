@@ -730,6 +730,30 @@ export class ControlNamespace {
 			 * tool provenance stays the runtime's boot-derived value.
 			 */
 			agentId?: string;
+			/**
+			 * D-364 — caller-supplied content admitted into the run's
+			 * `<read_only_external_memory>` tier under the fixed
+			 * runtime-owned `caller_supplied` map key. It COMPOSES with
+			 * the runtime's own retrieval rather than replacing it, and
+			 * it can never reach the trusted system-prompt spine or the
+			 * conversation-memory tier.
+			 *
+			 * Prefer this over `system_prompt_override` for any retrieved
+			 * or recalled content: the override REPLACES the whole
+			 * base+user prompt spine and seats its content in the trusted
+			 * position with no untrusted framing.
+			 *
+			 * Any JSON value. An explicit `null` is refused rather than
+			 * treated as absent, and a document over 32 KiB is refused
+			 * with `invalid_request` at the Protocol edge before a task
+			 * exists. Omitted (the default) keeps the wire shape and run
+			 * behaviour byte-identical.
+			 *
+			 * Harbor does not sanitise the payload — the tier's
+			 * anti-prompt-injection framing IS the mitigation, and
+			 * redaction is the caller's job.
+			 */
+			callerMemory?: unknown;
 		} = {}
 	): Promise<R> {
 		const body: Record<string, unknown> = { query };
@@ -770,6 +794,14 @@ export class ControlNamespace {
 		// sent before the field existed.
 		if (opts.agentId !== undefined && opts.agentId !== '') {
 			body.agent_id = opts.agentId;
+		}
+		// D-364 — caller-supplied external-memory block. Elided when
+		// unset, so a run that supplies none is byte-identical on the wire
+		// to one sent before the field existed. `null` is deliberately NOT
+		// elided: the runtime refuses it loudly rather than treating it as
+		// absent, and swallowing it here would hide that from the caller.
+		if (opts.callerMemory !== undefined) {
+			body.caller_memory = opts.callerMemory;
 		}
 		return this.#t.request<R>('/v1/control/start', body);
 	}

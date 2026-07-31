@@ -3132,6 +3132,7 @@ Declared in `internal/protocol/types`.
 | `input_artifact_dispositions` | `map[string]string` | optional (`omitempty`) |
 | `output_schema` | `json.RawMessage` | optional (`omitempty`) |
 | `agent_id` | `string` | optional (`omitempty`) |
+| `caller_memory` | `json.RawMessage` | optional (`omitempty`) |
 
 ## StartResponse
 
