@@ -116,6 +116,30 @@ for plan in docs/plans/phase-*.md; do
 done
 
 # 6. Cross-reference resolution: every `brief NN` in phase plans must resolve to a real file.
+#
+# brief_exists is a LOOP, not `ls docs/research/${num}-*.md`, and the difference
+# is the whole guard. Check 3 above turns on `nullglob` and does not turn it off
+# until check 9, so by the time this check runs an UNMATCHED glob expands to
+# NOTHING — which turned `ls "docs/research/99-"*.md` into a bare `ls` of the
+# current directory. That always succeeds, so EVERY `brief NN` reference
+# resolved and this guard could not fail. Found by phase 224's mutation harness
+# (`scripts/smoke/phase-224.sh`), which planted `brief 99` in a fixture plan and
+# watched the audit report OK; the shell-level probe confirms `shopt -s
+# nullglob` flips the same test from "stale detected" to "resolves".
+#
+# The loop below is correct with nullglob EITHER WAY: on, the body never runs;
+# off, `$f` is the literal unmatched pattern and `[ -f ]` rejects it. That
+# independence is deliberate — a guard must not be a function of a shell option
+# some earlier check happened to set.
+brief_exists() {
+    local num="$1" f
+    for f in docs/research/"${num}"-*.md; do
+        if [ -f "$f" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
 for plan in docs/plans/phase-*.md; do
     # -a: see the note on the RFC check above — same silent-skip hazard.
     refs=$(grep -a -oE '\bbrief [0-9]{2}\b' "$plan" | sort -u || true)
@@ -125,7 +149,7 @@ for plan in docs/plans/phase-*.md; do
     bad=0
     while IFS= read -r ref; do
         num=$(printf '%s' "$ref" | sed 's/^brief //')
-        if ! ls "docs/research/${num}-"*.md >/dev/null 2>&1; then
+        if ! brief_exists "${num}"; then
             fail "${plan}: stale reference '${ref}' (no matching docs/research/${num}-*.md)"
             bad=$((bad + 1))
         fi
@@ -203,10 +227,20 @@ fi
 classify_drift_count=0
 shopt -s nullglob
 for smoke in scripts/smoke/phase-*.sh; do
+    # `|| true` is load-bearing, not defensive noise. This script runs under
+    # `set -euo pipefail`: when a smoke carries NO header, grep exits 1, pipefail
+    # propagates that through the pipeline, and the failing command substitution
+    # made `set -e` KILL THE WHOLE AUDIT right here — exit 1 with no diagnostic
+    # naming the file, and every check below this point (godoc hygiene, the
+    # scaffold pin, the release ledger, both portability guards, markdownlint)
+    # silently never ran. So the single defect this guard exists to report was
+    # instead masking six other guards. Found by phase 224's mutation harness,
+    # which asserts on each guard's OWN message rather than on the exit code —
+    # an exit-code-only check would have read the abort as "caught!".
     header=$(grep -E '^[[:space:]]*#[[:space:]]*PREFLIGHT_REQUIRES:' "$smoke" \
         | head -1 \
         | sed -E 's/^[[:space:]]*#[[:space:]]*PREFLIGHT_REQUIRES:[[:space:]]*//' \
-        | tr -d '[:space:]')
+        | tr -d '[:space:]' || true)
     case "$header" in
         live-server|static-only|unit-tests)
             : # ok
