@@ -89,24 +89,40 @@ type scopeKeys struct {
 // more-privileged agent tier — this keying function is a security boundary, so
 // an out-of-range scope is a loud error, not a silent privilege grant (§13).
 func keysFor(scope agentcfg.ConfigScope, id identity.Quadruple, agentID string) (scopeKeys, error) {
+	var quad identity.Quadruple
+	var revPfx string
 	switch scope {
 	case agentcfg.ConfigScopeAgent:
-		return scopeKeys{
-			quad:       syntheticQuad(id.TenantID, agentID),
-			activeKind: kindActive,
-			revPfx:     kindRevisionPfx,
-		}, nil
+		quad, revPfx = syntheticQuad(id.TenantID, agentID), kindRevisionPfx
 	case agentcfg.ConfigScopeUser:
 		if id.UserID == agentCfgUser {
 			return scopeKeys{}, fmt.Errorf("%w: user_id=%q", agentcfg.ErrReservedUser, id.UserID)
 		}
-		return scopeKeys{
-			quad:       userQuad(id.TenantID, id.UserID, agentID),
-			activeKind: kindUserActive,
-			revPfx:     kindUserRevisionPfx,
-		}, nil
+		quad, revPfx = userQuad(id.TenantID, id.UserID, agentID), kindUserRevisionPfx
 	default:
 		return scopeKeys{}, fmt.Errorf("agentcfg/statestore: unrecognized config scope %d", scope)
+	}
+	activeKind, err := activeKindFor(revPfx)
+	if err != nil {
+		return scopeKeys{}, err
+	}
+	return scopeKeys{quad: quad, activeKind: activeKind, revPfx: revPfx}, nil
+}
+
+// activeKindFor maps a revision-kind prefix to the active-pointer kind that
+// belongs to it. It is the ONE place the two halves of a scope's keying are
+// paired, so no code path can read a pointer that belongs to a different scope
+// than the revision it is reasoning about — the compensating delete asks
+// exactly that question and must not be able to get it wrong. An unpaired
+// prefix is a loud error rather than a defaulted-to-agent-scope answer.
+func activeKindFor(revPfx string) (string, error) {
+	switch revPfx {
+	case kindRevisionPfx:
+		return kindActive, nil
+	case kindUserRevisionPfx:
+		return kindUserActive, nil
+	default:
+		return "", fmt.Errorf("agentcfg/statestore: no active-pointer kind is paired with revision prefix %q", revPfx)
 	}
 }
 
@@ -282,10 +298,28 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	}
 	if err := r.saveActive(ctx, q, keys.activeKind, revID, now); err != nil {
 		// The revision record landed and the pointer that would have named
-		// it did not. Compensate — see [registry.compensateOrphanRevision]
-		// for why a bare return here left a revision in history that no
-		// reader can reach.
-		return agentcfg.Revision{}, r.compensateOrphanRevision(ctx, q, keys.revPfx, revID, err)
+		// it did not — OR the pointer did land and the store reported
+		// otherwise. Compensate — see [registry.compensateOrphanRevision] for
+		// why a bare return here left a revision in history that no reader can
+		// reach, and why the cleanup must not be unconditional.
+		landed, cerr := r.compensateOrphanRevision(ctx, q, keys.revPfx, revID, err)
+		if landed {
+			// The pointer is durably on disk naming this revision: the config
+			// DID change. Suppressing the event because the call is about to
+			// return an error would leave every observer's view stale behind a
+			// change that really happened, which is the silent half of the
+			// same defect the compensation closes.
+			//
+			// The announcement runs on the same un-cancellable, bounded context
+			// the compensation uses, and for the same reason: a caller context
+			// that went away is one of the likeliest ways to reach this branch,
+			// and an announcement issued on it would be dropped on exactly the
+			// occasions it is owed.
+			ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), compensationTimeout)
+			r.emitRevised(ectx, agentID, rec.toRevision())
+			ecancel()
+		}
+		return agentcfg.Revision{}, cerr
 	}
 	rev := rec.toRevision()
 	r.emitRevised(ctx, agentID, rev)
@@ -561,6 +595,36 @@ func (r *registry) loadActiveRevision(ctx context.Context, q identity.Quadruple,
 	return rr.toRevision(), true, nil
 }
 
+// loadActivePointerID reads the active-pointer record and returns ONLY the
+// revision id it names — it deliberately does not resolve that revision.
+//
+// The distinction matters exactly once, in the compensating delete: there the
+// question is "what does the pointer say", and resolving the revision would
+// conflate the answer with the very condition being compensated (a revision
+// that is missing). An absent or empty pointer is a KNOWN answer and returns
+// ("", nil); a store that cannot answer returns an error, and the caller must
+// treat that as "cannot tell" rather than as "absent".
+func (r *registry) loadActivePointerID(ctx context.Context, q identity.Quadruple, activeKind string) (string, error) {
+	rec, err := r.state.Load(ctx, q, activeKind)
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			return "", nil
+		}
+		return "", fmt.Errorf("%w: load active pointer: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	if len(rec.Bytes) == 0 {
+		return "", nil
+	}
+	var ar activeRecord
+	if err := json.Unmarshal(rec.Bytes, &ar); err != nil {
+		return "", fmt.Errorf("%w: unmarshal active pointer: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	if ar.Schema != 0 && ar.Schema != recordSchema {
+		return "", fmt.Errorf("%w: active pointer schema=%d, runtime supports %d", agentcfg.ErrStateUnavailable, ar.Schema, recordSchema)
+	}
+	return ar.RevisionID, nil
+}
+
 func (r *registry) loadRevision(ctx context.Context, q identity.Quadruple, revPfx, revisionID string) (revisionRecord, error) {
 	rec, err := r.state.Load(ctx, q, revPfx+revisionID)
 	if err != nil {
@@ -653,13 +717,44 @@ const compensationTimeout = 5 * time.Second
 // loop; the compensation runs while the caller still holds the per-owner
 // write lock, so nothing can be pointing at the record it removes.
 //
+// # The delete is CONDITIONAL, and that is the load-bearing part
+//
+// "The write failed" is what the store SAID, not necessarily what the disk
+// did. The commonest production shape of a failed write is not a write that
+// did not happen: it is a deadline firing after commit, a dropped ack, a
+// proxy timeout, a connection reset while the response was in flight. In every
+// one of those the pointer is durably on disk naming the revision this
+// function was called to remove — and removing it manufactures a DANGLING
+// pointer, which is not a tidier failure but a strictly worse one. Every door
+// into an agent's config does a read-modify-write through the active pointer,
+// and reading a pointer that names nothing fails loud, so no later write can
+// repair it: the agent becomes unrecoverable in exchange for suppressing an
+// operator-visible history row.
+//
+// So the compensation re-reads the pointer first and deletes the revision ONLY
+// when the pointer does not name it. When it does, the write landed despite the
+// error; the record is left exactly where it is, and the returned error says so
+// rather than implying a rollback that did not occur.
+//
+// # An UNKNOWN answer retains the record
+//
+// A store that refuses the re-read gives no answer at all, and "the pointer is
+// absent" is then indistinguishable from "I cannot tell". Deleting on a
+// cannot-tell puts the unrecoverable outcome back, on precisely the population
+// where it is likeliest — a store sick enough to fail the write is sick enough
+// to fail the read. The two costs are not comparable: retaining risks one
+// unreferenced row in `list_revisions`, deleting risks an agent no write can
+// repair. **The unknown answer therefore retains**, and the residue is reported
+// in the returned error and logged at Error rather than swallowed.
+//
 // # The context is deliberately un-cancellable
 //
 // The most likely reason the pointer write failed is the caller's context
 // being cancelled or timed out — and a compensation issued on that same
 // context would then fail on exactly the occasions it is needed. WithoutCancel
 // keeps the identity and trace values and drops only the cancellation; the
-// bounded timeout keeps a hung store from outliving the call.
+// bounded timeout keeps a hung store from outliving the call. Both the re-read
+// and the delete run on it, for the same reason.
 //
 // # What it does NOT claim
 //
@@ -668,17 +763,55 @@ const compensationTimeout = 5 * time.Second
 // as well as the write — that second case is REPORTED in the returned error
 // and logged at Error rather than swallowed, because an unreferenced record
 // is a fact an operator must be told about.
-func (r *registry) compensateOrphanRevision(ctx context.Context, q identity.Quadruple, revPfx, revisionID string, cause error) error {
+//
+// # Returns
+//
+// The boolean reports whether the pointer was found to NAME this revision —
+// i.e. the write landed despite the error. It is not "did the compensation
+// succeed": an unknown answer reports false, because the caller may only act
+// on a confirmed landing. The error is what the caller receives, and it always
+// wraps cause.
+func (r *registry) compensateOrphanRevision(ctx context.Context, q identity.Quadruple, revPfx, revisionID string, cause error) (bool, error) {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensationTimeout)
 	defer cancel()
+
+	activeKind, err := activeKindFor(revPfx)
+	if err != nil {
+		// Unpairable prefix: no pointer can be read, so nothing may be
+		// deleted. Report rather than guess.
+		r.logger.ErrorContext(ctx, "agentcfg/statestore: the active-pointer write failed and the revision record could not be checked against the pointer, so it was retained",
+			slog.String("revision_id", revisionID),
+			slog.String("error", err.Error()),
+			slog.String("cause", cause.Error()))
+		return false, fmt.Errorf("%w; the revision record %s was retained because its active-pointer kind could not be resolved: %w", cause, revisionID, err)
+	}
+
+	pointed, readErr := r.loadActivePointerID(cctx, q, activeKind)
+	if readErr != nil {
+		r.logger.ErrorContext(ctx, "agentcfg/statestore: the active-pointer write failed AND the pointer could not be re-read, so it is unknown whether the write landed — the revision record was RETAINED rather than deleted, because deleting a revision the pointer may name would leave the agent config unreadable",
+			slog.String("revision_id", revisionID),
+			slog.String("error", readErr.Error()),
+			slog.String("cause", cause.Error()))
+		return false, fmt.Errorf("%w; whether the write landed could not be determined, so the revision record %s was retained and may be unreferenced: %w", cause, revisionID, readErr)
+	}
+	if pointed == revisionID {
+		// The store reported failure but the pointer is durably on disk naming
+		// this revision: the write landed. Deleting here is what breaks the
+		// agent, so the record stays and the caller is told the truth.
+		r.logger.WarnContext(ctx, "agentcfg/statestore: the active-pointer write reported failure but the pointer is durably present and names this revision — the write landed, so no compensation was performed",
+			slog.String("revision_id", revisionID),
+			slog.String("cause", cause.Error()))
+		return true, fmt.Errorf("%w; the active pointer nevertheless names revision %s, so the write landed and the revision was retained — re-read the active revision before retrying", cause, revisionID)
+	}
+
 	if delErr := r.state.Delete(cctx, q, revPfx+revisionID); delErr != nil {
 		r.logger.ErrorContext(ctx, "agentcfg/statestore: the active-pointer write failed AND the compensating delete of its revision record failed — the revision is persisted but unreferenced, and will appear in revision history",
 			slog.String("revision_id", revisionID),
 			slog.String("error", delErr.Error()),
 			slog.String("cause", cause.Error()))
-		return fmt.Errorf("%w; the revision record %s could not be removed and is now unreferenced: %w", cause, revisionID, delErr)
+		return false, fmt.Errorf("%w; the revision record %s could not be removed and is now unreferenced: %w", cause, revisionID, delErr)
 	}
-	return cause
+	return false, cause
 }
 
 // emitRevised publishes agent.config.revised. The revision is already
