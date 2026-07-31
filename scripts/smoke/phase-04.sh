@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: static-only
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 04 smoke — slog Logger + standard attribute set.
 #
-# Phase 04 is a pure Go package (internal/telemetry) with no HTTP /
-# Protocol surface; correctness is verified by
-# `go test -race ./internal/telemetry/...` under `make test`. The
-# preflight surface check has nothing to assert here, so this script
-# SKIPs and lets the test gate carry the load.
+# internal/telemetry ships no HTTP / Protocol surface, but `make preflight`
+# does not run `go test`, so a skip-only script left this shipped phase with
+# zero preflight coverage (AGENTS.md §4.2 item 5). Shape follows
+# scripts/smoke/phase-05.sh: one NAMED test, so a rename fails loud.
+#
+# The named test is a fail-LOUDLY assertion (§5 "Fail loudly"): constructing a
+# tracer with no service name must error rather than silently produce an
+# unattributable span stream.
 
 set -euo pipefail
 
@@ -16,6 +19,15 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-skip "phase 04: telemetry/logger — Go package only; validated by go test ./internal/telemetry/..."
+# Per-phase log path — the unit-tests batch runs concurrently.
+LOG="${TMPDIR:-/tmp}/harbor-smoke-phase-04-go-test.log"
+
+if [ -d "internal/telemetry" ]; then
+    assert_go_tests_pass "${LOG}" './internal/telemetry' \
+        'phase 04: telemetry fails loudly on an empty service name' \
+        TestNewTracer_EmptyServiceName_FailsLoudly
+else
+    skip 'phase 04: internal/telemetry absent (package not yet implemented)'
+fi
 
 smoke_summary
