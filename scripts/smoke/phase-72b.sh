@@ -91,13 +91,21 @@ assert_grep_present 'auth\.HasScope\(r\.Context\(\), auth\.ScopeAdmin\)' "${CONT
 # (Phase 73l / D-120 artifacts surface) plus CodeSessionRunning (Phase
 # 130 / D-262 session-erasure surface) plus CodeSessionErased (the
 # session-reopen surface: a reopen of an erased session is terminal,
-# D-312) = 13. The count is updated per CLAUDE.md §17.6 ("fix what the
-# integration test finds — no matter where the bug lives") as the
-# canonical set grows; the load-bearing 72b assertion is that NO code
-# was minted by 72b, which still holds.
+# D-312) plus CodeRevisionConflict (the agent-config expected-revision
+# token: a conditional spine write whose declared base has moved,
+# Phase 221 / D-366) = 14. The count is updated per CLAUDE.md §17.6
+# ("fix what the integration test finds — no matter where the bug
+# lives") as the canonical set grows; the load-bearing 72b assertion is
+# that NO code was minted by 72b, which still holds.
+#
+# The EXACT count is the point. It must never be relaxed to a `>=`, nor
+# the regex loosened, nor the assertion deleted: any of those converts a
+# working lockstep into one that cannot fail, which is precisely the
+# defect class this guard exists to catch. A phase that mints a code
+# updates the number AND adds its provenance to the list above.
 assert_grep_count 'Code[A-Z][A-Za-z]+[[:space:]]+Code[[:space:]]*=' \
-    internal/protocol/errors/errors.go 13 \
-    "phase 72b: internal/protocol/errors carries the canonical 13-code set (8 Phase 56 + Phase 72 + 2 Phase 73l + Phase 130 + session-reopen) — no new code minted by 72b"
+    internal/protocol/errors/errors.go 14 \
+    "phase 72b: internal/protocol/errors carries the canonical 14-code set (8 Phase 56 + Phase 72 + 2 Phase 73l + Phase 130 + session-reopen + agent-config revision-conflict) — no new code minted by 72b"
 
 # 5. No Console import from the impersonation surface (CLAUDE.md
 # §13 — the Runtime never imports Console code). Defence in depth

@@ -45,7 +45,7 @@ func TestActiveNamingPolicy_Precedence(t *testing.T) {
 		reg := newRegistry(t)
 		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 			Naming: &agentcfg.NamingSection{Auto: true, AfterTurns: 5, Model: "agent-model"},
-		}); err != nil {
+		}, agentcfg.SetOptions{}); err != nil {
 			t.Fatalf("SetRevision: %v", err)
 		}
 		yaml := config.RuntimeNamingConfig{Auto: true, AfterTurns: 2}
@@ -74,7 +74,7 @@ func TestActiveNamingPolicy_Precedence(t *testing.T) {
 		// agent silently kept auto-naming.
 		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 			Naming: &agentcfg.NamingSection{Auto: false},
-		}); err != nil {
+		}, agentcfg.SetOptions{}); err != nil {
 			t.Fatalf("SetRevision: %v", err)
 		}
 		yaml := config.RuntimeNamingConfig{Auto: true, AfterTurns: 1}

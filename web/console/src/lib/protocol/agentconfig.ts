@@ -394,6 +394,17 @@ export interface AgentConfigSetRevisionRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	payload: AgentConfigPayload;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.set_revision` response. */
@@ -434,6 +445,17 @@ export interface AgentConfigRollbackRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	revision_id: string;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.rollback` response. */
@@ -448,6 +470,17 @@ export interface AgentConfigSetToolExposureRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	tool_exposure: AgentConfigToolExposure;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.set_tool_exposure` response — the recorded revision. */
@@ -464,6 +497,17 @@ export interface AgentConfigSetPromptLayersRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	prompt_layers: AgentConfigPromptLayers;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.set_prompt_layers` response — the recorded revision. */
@@ -481,6 +525,17 @@ export interface AgentConfigSetLLMParamsRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	llm_params: AgentConfigLLMParams;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.set_llm_params` response — the recorded revision. */
@@ -499,6 +554,17 @@ export interface AgentConfigAddMCPConnectionRequest {
 	agent_id: string;
 	connection: AgentConfigMCPConnectionDescriptor;
 	headers?: Record<string, string>;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.add_mcp_connection` response — the recorded revision (when
@@ -526,6 +592,17 @@ export interface AgentConfigRemoveMCPConnectionRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	name: string;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.remove_mcp_connection` response — the recorded removing
@@ -548,6 +625,17 @@ export interface AgentConfigSetMCPDiscoveryOriginsRequest {
 	agent_id: string;
 	name: string;
 	allowed_origins: string[];
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.set_mcp_discovery_origins` response — the recorded revision,
@@ -571,6 +659,17 @@ export interface AgentConfigSetOAuthProviderRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	provider: AgentConfigOAuthProviderDescriptor;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.set_oauth_provider` response — the recorded revision and the
@@ -609,6 +708,17 @@ export interface AgentConfigRemoveOAuthProviderRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	name: string;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.remove_oauth_provider` response — the recorded revision, the
@@ -667,6 +777,17 @@ export interface AgentConfigSkillsUpsertRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	skill: AgentConfigSkillInput;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.skills.upsert` response — the recorded revision + skill. */
@@ -681,6 +802,17 @@ export interface AgentConfigSkillsDeleteRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	name: string;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.skills.delete` response — the recorded revision. */
@@ -806,6 +938,17 @@ export interface AgentConfigUserSetRevisionRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	payload: AgentConfigUserPayload;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.user.set_revision` response. */
@@ -846,6 +989,17 @@ export interface AgentConfigUserRollbackRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	revision_id: string;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.user.rollback` response. */
@@ -878,6 +1032,17 @@ export interface AgentConfigUserSkillsUpsertRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	skill: AgentConfigSkillInput;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.user.skills.upsert` response. */
@@ -892,6 +1057,17 @@ export interface AgentConfigUserSkillsDeleteRequest {
 	identity: IdentityScope;
 	agent_id: string;
 	name: string;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * The refusal is exact within one Runtime process; it is not a
+	 * cross-process compare-and-swap.
+	 */
+	expected_content_hash?: string;
 }
 
 /** `agent_config.user.skills.delete` response. */

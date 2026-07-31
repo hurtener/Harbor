@@ -262,7 +262,7 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		// Online — record the non-secret descriptor as a revision (preserving
 		// the other sections; upserting the wire provider when one was installed)
 		// and emit the terminal `added` event.
-		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider)
+		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 		if recErr != nil {
 			return prototypes.AgentConfigAddMCPConnectionResponse{}, recErr
 		}
@@ -282,7 +282,7 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		if s.coordinator == nil {
 			return prototypes.AgentConfigAddMCPConnectionResponse{}, ErrCoordinatorUnavailable
 		}
-		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider)
+		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 		if recErr != nil {
 			return prototypes.AgentConfigAddMCPConnectionResponse{}, recErr
 		}
@@ -512,7 +512,7 @@ func (s *Service) gateStdioConnectionCommands(descs []agentcfg.MCPConnectionDesc
 // prompt-layer + llm-params + hooks sections of the active revision (the
 // bidirectional section-merge invariant). The descriptor is NON-SECRET — no
 // header / token is ever part of the persisted payload.
-func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadruple, agentID string, desc agentcfg.MCPConnectionDescriptor, wireProvider *agentcfg.OAuthProviderDescriptor) (agentcfg.Revision, error) {
+func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadruple, agentID string, desc agentcfg.MCPConnectionDescriptor, wireProvider *agentcfg.OAuthProviderDescriptor, opts agentcfg.SetOptions) (agentcfg.Revision, error) {
 	// Serialise the registry read-modify-write per agent (NOT the preceding
 	// dial/handshake, which must not block a quick concurrent edit).
 	defer s.lockAgent(q.TenantID, agentID)()
@@ -559,7 +559,7 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 	if len(providers) > 0 {
 		payload.OAuthProviders = &agentcfg.OAuthProvidersSection{Providers: providers}
 	}
-	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload)
+	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload, opts)
 }
 
 // prepareWireOAuthBinding resolves a connection's dev-gated wire OAuth binding

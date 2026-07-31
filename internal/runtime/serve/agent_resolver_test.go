@@ -23,13 +23,13 @@ func TestAgentResolverAdapter_TwoCheckRule(t *testing.T) {
 	// A revision under the FOREIGN tenant only.
 	if _, err := reg.SetRevision(ctx, identity.Quadruple{Identity: foreign},
 		"tenant-b-agent", agentcfg.ConfigScopeAgent,
-		agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"x"}}}); err != nil {
+		agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"x"}}}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("SetRevision(foreign): %v", err)
 	}
 	// A revision under the CALLER's tenant.
 	if _, err := reg.SetRevision(ctx, identity.Quadruple{Identity: caller},
 		"tenant-a-agent", agentcfg.ConfigScopeAgent,
-		agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"x"}}}); err != nil {
+		agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"x"}}}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("SetRevision(caller): %v", err)
 	}
 

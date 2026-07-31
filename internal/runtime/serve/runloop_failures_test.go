@@ -67,7 +67,7 @@ func (r *countingFailRegistry) Active(context.Context, identity.Quadruple, strin
 	return agentcfg.Revision{}, false, nil
 }
 
-func (r *countingFailRegistry) SetRevision(context.Context, identity.Quadruple, string, agentcfg.ConfigScope, agentcfg.ConfigPayload) (agentcfg.Revision, error) {
+func (r *countingFailRegistry) SetRevision(context.Context, identity.Quadruple, string, agentcfg.ConfigScope, agentcfg.ConfigPayload, agentcfg.SetOptions) (agentcfg.Revision, error) {
 	return agentcfg.Revision{}, errInjected
 }
 
@@ -79,7 +79,7 @@ func (r *countingFailRegistry) ListRevisions(context.Context, identity.Quadruple
 	return nil, errInjected
 }
 
-func (r *countingFailRegistry) Rollback(context.Context, identity.Quadruple, string, string, agentcfg.ConfigScope) (agentcfg.Revision, error) {
+func (r *countingFailRegistry) Rollback(context.Context, identity.Quadruple, string, string, agentcfg.ConfigScope, agentcfg.SetOptions) (agentcfg.Revision, error) {
 	return agentcfg.Revision{}, errInjected
 }
 

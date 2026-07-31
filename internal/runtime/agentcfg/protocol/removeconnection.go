@@ -127,7 +127,8 @@ func (s *Service) RemoveMCPConnection(ctx context.Context, req prototypes.AgentC
 		payload.Connections = &agentcfg.ConnectionsSection{Servers: remaining}
 	}
 
-	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)
+	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,
+		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigRemoveMCPConnectionResponse{}, err
 	}

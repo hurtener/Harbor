@@ -103,6 +103,16 @@ func HTTPStatus(code protoerrors.Code) int {
 		// reopenable session exists and resumes) and a 400 (a malformed
 		// body).
 		return http.StatusConflict // 409
+	case protoerrors.CodeRevisionConflict:
+		// an agent-config write declared an `expected_content_hash` and the
+		// agent's active revision no longer carries it (or there is none).
+		// The request was well-formed and authorised; the target's current
+		// state forbids the operation, and nothing was persisted. 409
+		// Conflict — the same state-forbids posture as CodeSessionRunning;
+		// distinct from a 400 (the body was valid) and a 500 (the server
+		// did not fault). The client re-reads `agent_config.get` and
+		// retries.
+		return http.StatusConflict // 409
 	default:
 		// An unmapped Code is a Protocol-surface bug, not a client
 		// error. Surface it loud as a 500 rather than masking it

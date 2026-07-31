@@ -86,7 +86,8 @@ func (s *Service) UserSetRevision(ctx context.Context, req prototypes.AgentConfi
 		return prototypes.AgentConfigUserSetRevisionResponse{}, err
 	}
 	defer s.lockOwner(agentcfg.ConfigScopeUser, id.TenantID, id.UserID, req.AgentID)()
-	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeUser, userPayloadToDomain(req.Payload))
+	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeUser, userPayloadToDomain(req.Payload),
+		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigUserSetRevisionResponse{}, err
 	}
@@ -151,7 +152,8 @@ func (s *Service) UserRollback(ctx context.Context, req prototypes.AgentConfigUs
 		return prototypes.AgentConfigUserRollbackResponse{}, err
 	}
 	defer s.lockOwner(agentcfg.ConfigScopeUser, id.TenantID, id.UserID, req.AgentID)()
-	rev, err := s.registry.Rollback(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.RevisionID, agentcfg.ConfigScopeUser)
+	rev, err := s.registry.Rollback(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.RevisionID, agentcfg.ConfigScopeUser,
+		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigUserRollbackResponse{}, err
 	}

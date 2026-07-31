@@ -89,10 +89,11 @@ func TestInternal_ErrorCodeMatrix_AllCanonical(t *testing.T) {
 	// Phase 54 set (7) + Phase 61 CodeAuthRejected + Wave 13 (Phase 72 /
 	// 72a) CodeIdentityScopeRequired + Phase 73l (D-120)
 	// CodePresignUnsupported + CodeRequestTooLarge + the sessions
-	// CodeSessionRunning (D-262) + the sessions CodeSessionErased (D-312) =
-	// 13 canonical codes at Protocol 0.1.0.
-	if len(errorCodeMatrix) != 13 {
-		t.Errorf("errorCodeMatrix size = %d, want 13 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
+	// CodeSessionRunning (D-262) + the sessions CodeSessionErased (D-312) +
+	// the agent-config CodeRevisionConflict (the expected-revision token) =
+	// 14 canonical codes at Protocol 0.1.0.
+	if len(errorCodeMatrix) != 14 {
+		t.Errorf("errorCodeMatrix size = %d, want 14 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
 	}
 }
 

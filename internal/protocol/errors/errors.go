@@ -157,6 +157,27 @@ const (
 	// authorised, but the session's terminal state forbids the operation
 	// (the same posture as CodeSessionRunning).
 	CodeSessionErased Code = "session_erased"
+	// CodeRevisionConflict — agent-config surface: a durable config write
+	// declared an `expected_content_hash` and the agent's active revision no
+	// longer carries it (or there is no active revision at all). The request
+	// was well-formed and authorised; the target's CURRENT STATE forbids the
+	// operation. A dedicated, machine-branchable code — NOT
+	// CodeInvalidRequest (the body was fine) and NOT CodeRuntimeError (the
+	// server did not fault) — so a client can tell "your base moved, re-read
+	// and retry" apart from a malformed request or a server fault without
+	// parsing a message. Nothing is persisted on a refusal: no revision, no
+	// active-pointer move, no emitted event. The client recovers by
+	// re-reading `agent_config.get`, which returns both the current
+	// revision id and the current content hash. Maps to HTTP 409
+	// (Conflict) — the same state-forbids posture as CodeSessionRunning /
+	// CodeSessionErased.
+	//
+	// The refusal is exact within one Runtime process (the agent-config
+	// service holds a per-owner write lock across each door's whole
+	// read-modify-write). It is NOT a cross-process compare-and-swap: two
+	// Runtimes sharing one StateStore can still lose an update, because the
+	// StateStore enforces no CAS.
+	CodeRevisionConflict Code = "revision_conflict"
 )
 
 // canonicalCodes is the registered set — a fixed package-level map. A
@@ -176,6 +197,7 @@ var canonicalCodes = map[Code]struct{}{
 	CodeRequestTooLarge:       {},
 	CodeSessionRunning:        {},
 	CodeSessionErased:         {},
+	CodeRevisionConflict:      {},
 }
 
 // IsValidCode reports whether c is one of the canonical Protocol error

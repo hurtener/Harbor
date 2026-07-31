@@ -68,7 +68,64 @@ var (
 	// to the reserved internal sentinel ("__agentcfg__"); fails closed so the
 	// per-user key space can never alias onto the agent-level chain.
 	ErrReservedUser = errors.New("agentcfg: user id collides with the reserved internal slot")
+	// ErrRevisionConflict — a conditional write declared an expected
+	// content hash (SetOptions.ExpectedContentHash) and the agent's active
+	// revision no longer carries it, or there is no active revision at all.
+	// NOTHING is persisted: no revision record, no active-pointer move, no
+	// emitted event. The caller re-reads the active revision and retries.
+	ErrRevisionConflict = errors.New("agentcfg: revision conflict")
 )
+
+// SetOptions carries the optional preconditions a durable spine write
+// (SetRevision / Rollback) may declare. The ZERO value is the
+// unconditional write — byte-for-byte the behaviour that shipped before
+// this option existed, on every door.
+type SetOptions struct {
+	// ExpectedContentHash, when non-empty, requires the agent's ACTIVE
+	// revision to carry exactly this content hash at write time. A
+	// mismatch — or no active revision at all — fails with
+	// ErrRevisionConflict and persists nothing.
+	//
+	// The expectation is compared against the content hash, not the
+	// revision id, because a rollback repoints the active pointer WITHOUT
+	// changing the content: a revision-id token would raise a false
+	// conflict on the restore path. The guarded quantity is a value, so
+	// the token is a value.
+	//
+	// # The bound on the guarantee — read this before relying on it
+	//
+	// The comparison is atomic against every other spine writer IN THIS
+	// PROCESS, via the agent-config service's per-owner striped write
+	// lock, which is held across each door's whole read-modify-write.
+	//
+	// It is NOT atomic across Runtime processes sharing one StateStore.
+	// The StateStore has no compare-and-swap primitive — its own
+	// interface godoc says it does not enforce CAS — and the active
+	// pointer is written with a fresh event id on every save, so the slot
+	// is overwritten unconditionally. Two Runtime processes sharing one
+	// Postgres or SQLite store CAN STILL LOSE AN UPDATE, and this option
+	// does not claim otherwise. Closing that gap needs a conditional-write
+	// primitive on the StateStore interface across the persistence triad;
+	// it is a separate change and is not pretended here.
+	//
+	// What the bounded guarantee is still worth: the window it closes is
+	// the READ-TO-WRITE window — seconds to minutes for a human editing a
+	// config in the Console, and however long an agent takes to compose
+	// one. The window it cannot close cross-process is the driver's own
+	// read-modify-write, on the order of microseconds. Single-process the
+	// guard is exact; multi-process it is a large reduction in loss
+	// probability and not an elimination.
+	//
+	// # It constrains only the writer that supplies it
+	//
+	// An unconditional writer can still clobber a conditional one, by
+	// design: the token is a precondition on this write, never a lock on
+	// the agent. A caller wanting exclusivity needs every writer of that
+	// agent's config to participate, which is a deployment convention and
+	// not something the runtime enforces — making the token mandatory
+	// would break every caller that does not send one.
+	ExpectedContentHash string
+}
 
 // ConfigScope is the durable-config ownership discriminator. One Registry
 // implementation serves two keyings: the admin/tenant durable config (keyed
@@ -602,7 +659,15 @@ type Registry interface {
 	// advances the active pointer to it. An idempotent re-set of
 	// byte-identical canonical content (relative to the current active
 	// revision) is a no-op that returns the existing active revision.
-	SetRevision(ctx context.Context, id identity.Quadruple, agentID string, scope ConfigScope, payload ConfigPayload) (Revision, error)
+	//
+	// opts carries the optional precondition. Its zero value is the
+	// unconditional write. When opts.ExpectedContentHash is set, the
+	// precondition is evaluated BEFORE the idempotent-re-set
+	// short-circuit, so a stale expectation is never converted into a
+	// misleading success by a payload that happens to equal the current
+	// content; a failed precondition returns ErrRevisionConflict and
+	// persists nothing.
+	SetRevision(ctx context.Context, id identity.Quadruple, agentID string, scope ConfigScope, payload ConfigPayload, opts SetOptions) (Revision, error)
 	// Active returns the agent's current active revision and whether one
 	// exists. No active pointer returns (zero, false, nil).
 	Active(ctx context.Context, id identity.Quadruple, agentID string, scope ConfigScope) (Revision, bool, error)
@@ -616,7 +681,12 @@ type Registry interface {
 	// Rollback writes a new active pointer to an existing revision
 	// WITHOUT mutating or deleting any revision. A missing target fails
 	// loud with ErrRevisionNotFound.
-	Rollback(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope ConfigScope) (Revision, error)
+	//
+	// opts carries the same optional precondition SetRevision takes: when
+	// opts.ExpectedContentHash is set, the CURRENTLY-ACTIVE revision must
+	// carry that content hash or the repoint is refused with
+	// ErrRevisionConflict and the pointer is left where it was.
+	Rollback(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope ConfigScope, opts SetOptions) (Revision, error)
 	// Diff returns the deterministic compare of two existing revisions.
 	Diff(ctx context.Context, id identity.Quadruple, agentID, fromRev, toRev string, scope ConfigScope) (Diff, error)
 	// Close releases resources. Idempotent.

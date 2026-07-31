@@ -149,7 +149,7 @@ func rlRegistryDeclaring(t *testing.T, q identity.Quadruple) agentcfg.Registry {
 			Name:             "declared-provider",
 			CredentialBroker: "some-broker",
 		}}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed revision: %v", err)
 	}
 	return reg

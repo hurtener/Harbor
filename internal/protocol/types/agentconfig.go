@@ -630,6 +630,17 @@ type AgentConfigSetRevisionRequest struct {
 	Identity IdentityScope      `json:"identity"`
 	AgentID  string             `json:"agent_id"`
 	Payload  AgentConfigPayload `json:"payload"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigSetRevisionResponse is the `agent_config.set_revision`
@@ -676,6 +687,17 @@ type AgentConfigRollbackRequest struct {
 	Identity   IdentityScope `json:"identity"`
 	AgentID    string        `json:"agent_id"`
 	RevisionID string        `json:"revision_id"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigRollbackResponse is the `agent_config.rollback` response —
@@ -694,6 +716,17 @@ type AgentConfigSetToolExposureRequest struct {
 	Identity     IdentityScope           `json:"identity"`
 	AgentID      string                  `json:"agent_id"`
 	ToolExposure AgentConfigToolExposure `json:"tool_exposure"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigSetToolExposureResponse is the `agent_config.set_tool_exposure`
@@ -714,6 +747,17 @@ type AgentConfigSetPromptLayersRequest struct {
 	Identity     IdentityScope           `json:"identity"`
 	AgentID      string                  `json:"agent_id"`
 	PromptLayers AgentConfigPromptLayers `json:"prompt_layers"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigSetPromptLayersResponse is the `agent_config.set_prompt_layers`
@@ -736,6 +780,17 @@ type AgentConfigSetLLMParamsRequest struct {
 	Identity  IdentityScope        `json:"identity"`
 	AgentID   string               `json:"agent_id"`
 	LLMParams AgentConfigLLMParams `json:"llm_params"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigSetLLMParamsResponse is the `agent_config.set_llm_params`
@@ -764,6 +819,17 @@ type AgentConfigAddMCPConnectionRequest struct {
 	// as SECRETS: they flow to the transport but are NEVER persisted in the
 	// recorded revision, the diff, or any emitted event (CLAUDE.md §7).
 	Headers map[string]string `json:"headers,omitempty"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigAddMCPConnectionResponse is the `agent_config.add_mcp_connection`
@@ -806,6 +872,17 @@ type AgentConfigRemoveMCPConnectionRequest struct {
 	AgentID  string        `json:"agent_id"`
 	// Name is the runtime-added MCP source id to remove.
 	Name string `json:"name"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigRemoveMCPConnectionResponse is the
@@ -840,6 +917,17 @@ type AgentConfigSetMCPDiscoveryOriginsRequest struct {
 	Name string `json:"name"`
 	// AllowedOrigins is the FULL replacement allow-list (empty clears it).
 	AllowedOrigins []string `json:"allowed_origins"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigSetMCPDiscoveryOriginsResponse is the
@@ -879,6 +967,17 @@ type AgentConfigSetOAuthProviderRequest struct {
 	AgentID  string        `json:"agent_id"`
 	// Provider is the ZERO-URL descriptor to install.
 	Provider AgentConfigOAuthProviderDescriptor `json:"provider"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigSetOAuthProviderResponse is the `agent_config.set_oauth_provider`
@@ -905,6 +1004,17 @@ type AgentConfigRemoveOAuthProviderRequest struct {
 	AgentID  string        `json:"agent_id"`
 	// Name is the installed provider name to uninstall.
 	Name string `json:"name"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigRemoveOAuthProviderResponse is the
@@ -974,6 +1084,17 @@ type AgentConfigSkillsUpsertRequest struct {
 	Identity IdentityScope         `json:"identity"`
 	AgentID  string                `json:"agent_id"`
 	Skill    AgentConfigSkillInput `json:"skill"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigSkillsUpsertResponse is the `agent_config.skills.upsert`
@@ -991,6 +1112,17 @@ type AgentConfigSkillsDeleteRequest struct {
 	Identity IdentityScope `json:"identity"`
 	AgentID  string        `json:"agent_id"`
 	Name     string        `json:"name"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigSkillsDeleteResponse is the `agent_config.skills.delete`
@@ -1146,6 +1278,17 @@ type AgentConfigUserSkillsUpsertRequest struct {
 	Identity IdentityScope         `json:"identity"`
 	AgentID  string                `json:"agent_id"`
 	Skill    AgentConfigSkillInput `json:"skill"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigUserSkillsUpsertResponse is the `agent_config.user.skills.upsert`
@@ -1163,6 +1306,17 @@ type AgentConfigUserSkillsDeleteRequest struct {
 	Identity IdentityScope `json:"identity"`
 	AgentID  string        `json:"agent_id"`
 	Name     string        `json:"name"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigUserSkillsDeleteResponse is the `agent_config.user.skills.delete`
@@ -1240,6 +1394,17 @@ type AgentConfigUserSetRevisionRequest struct {
 	Identity IdentityScope          `json:"identity"`
 	AgentID  string                 `json:"agent_id"`
 	Payload  AgentConfigUserPayload `json:"payload"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigUserSetRevisionResponse is the `agent_config.user.set_revision`
@@ -1288,6 +1453,17 @@ type AgentConfigUserRollbackRequest struct {
 	Identity   IdentityScope `json:"identity"`
 	AgentID    string        `json:"agent_id"`
 	RevisionID string        `json:"revision_id"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write this door has always performed.
+	//
+	// The refusal is exact within one Runtime process; it is not a
+	// cross-process compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigUserRollbackResponse is the `agent_config.user.rollback`

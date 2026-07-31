@@ -237,7 +237,7 @@ func TestUserVerbs_ScopeAwareLock(t *testing.T) {
 	// Seed an agent-level revision directly.
 	adminID := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "admin", SessionID: "s"}}
 	admin := agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"admin"}}}
-	if _, err := reg.SetRevision(ctx, adminID, testAgentID, agentcfg.ConfigScopeAgent, admin); err != nil {
+	if _, err := reg.SetRevision(ctx, adminID, testAgentID, agentcfg.ConfigScopeAgent, admin, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed agent: %v", err)
 	}
 	s, err := agentcfgprotocol.NewService(reg)

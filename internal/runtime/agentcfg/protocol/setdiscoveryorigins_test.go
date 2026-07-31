@@ -72,7 +72,7 @@ func seedDiscoveryRev(t *testing.T, ctx context.Context, reg agentcfg.Registry, 
 		Connections:  &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{desc}},
 		PromptLayers: &agentcfg.PromptLayers{Base: &base},
 	}
-	if _, err := reg.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload); err != nil {
+	if _, err := reg.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed revision: %v", err)
 	}
 }

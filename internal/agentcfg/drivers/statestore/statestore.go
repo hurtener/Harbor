@@ -213,7 +213,7 @@ func (r *registry) validate(id identity.Quadruple, agentID string) error {
 	return nil
 }
 
-func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope, payload agentcfg.ConfigPayload) (agentcfg.Revision, error) {
+func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope, payload agentcfg.ConfigPayload, opts agentcfg.SetOptions) (agentcfg.Revision, error) {
 	if err := r.validate(id, agentID); err != nil {
 		return agentcfg.Revision{}, err
 	}
@@ -231,12 +231,40 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	}
 	q := keys.quad
 
-	// Idempotent re-set: if the current active revision pins byte-identical
-	// canonical content, return it unchanged (no new revision, no event).
+	// ONE read serves both the precondition and the idempotence check, so
+	// the expectation is compared against the LATEST active revision with
+	// no extra store round-trip. The whole read-modify-write below runs
+	// under the agent-config service's per-owner write lock, which is the
+	// ONLY source of atomicity here — the StateStore enforces no CAS, so
+	// the guarantee is exact in-process and absent across processes (see
+	// agentcfg.SetOptions).
 	active, hasActive, err := r.loadActiveRevision(ctx, q, keys.activeKind, keys.revPfx)
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
+
+	// ORDER IS LOAD-BEARING — the precondition is evaluated BEFORE the
+	// idempotent-re-set short-circuit below. Transposing the two blocks
+	// would let a STALE expectation be answered with a success whenever
+	// the caller's payload happens to equal the CURRENT content: the
+	// caller would be told its write landed on the base it read, when its
+	// base had in fact moved. That is silent degradation. A conflict costs
+	// one re-read on a rare path and never lies.
+	if opts.ExpectedContentHash != "" {
+		if !hasActive {
+			return agentcfg.Revision{}, fmt.Errorf(
+				"%w: expected content hash %q but the agent has no active revision",
+				agentcfg.ErrRevisionConflict, opts.ExpectedContentHash)
+		}
+		if active.ContentHash != opts.ExpectedContentHash {
+			return agentcfg.Revision{}, fmt.Errorf(
+				"%w: expected content hash %q, active revision %s carries %q",
+				agentcfg.ErrRevisionConflict, opts.ExpectedContentHash, active.RevisionID, active.ContentHash)
+		}
+	}
+
+	// Idempotent re-set: if the current active revision pins byte-identical
+	// canonical content, return it unchanged (no new revision, no event).
 	parentID := ""
 	if hasActive {
 		parentID = active.RevisionID
@@ -362,7 +390,7 @@ func (r *registry) ListRevisions(ctx context.Context, id identity.Quadruple, age
 	return out, nil
 }
 
-func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope agentcfg.ConfigScope) (agentcfg.Revision, error) {
+func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope agentcfg.ConfigScope, opts agentcfg.SetOptions) (agentcfg.Revision, error) {
 	if err := r.validate(id, agentID); err != nil {
 		return agentcfg.Revision{}, err
 	}
@@ -385,8 +413,33 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 		return agentcfg.Revision{}, err
 	}
 	fromID := ""
-	if active, hasActive, aerr := r.loadActiveRevision(ctx, q, keys.activeKind, keys.revPfx); aerr == nil && hasActive {
+	active, hasActive, aerr := r.loadActiveRevision(ctx, q, keys.activeKind, keys.revPfx)
+	if aerr == nil && hasActive {
 		fromID = active.RevisionID
+	}
+	// The precondition, on the pointer-move door: the CURRENTLY-ACTIVE
+	// revision must still carry the expected content or the repoint is
+	// refused and the pointer is left where it was. Evaluated before the
+	// save, against the same read the from-pointer uses.
+	//
+	// The unconditional path keeps its historical tolerance of a failed
+	// active read (fromID stays empty and the repoint proceeds); a
+	// CONDITIONAL caller cannot be answered from a read that failed, so
+	// the error is surfaced instead of swallowed.
+	if opts.ExpectedContentHash != "" {
+		if aerr != nil {
+			return agentcfg.Revision{}, aerr
+		}
+		if !hasActive {
+			return agentcfg.Revision{}, fmt.Errorf(
+				"%w: expected content hash %q but the agent has no active revision",
+				agentcfg.ErrRevisionConflict, opts.ExpectedContentHash)
+		}
+		if active.ContentHash != opts.ExpectedContentHash {
+			return agentcfg.Revision{}, fmt.Errorf(
+				"%w: expected content hash %q, active revision %s carries %q",
+				agentcfg.ErrRevisionConflict, opts.ExpectedContentHash, active.RevisionID, active.ContentHash)
+		}
 	}
 	now := r.clock().UTC()
 	if err := r.saveActive(ctx, q, keys.activeKind, revisionID, now); err != nil {
