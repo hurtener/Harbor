@@ -1,7 +1,7 @@
 // cmd/harbor/cmd_console.go — the `harbor console` subcommand
 // (RFC §7).
 //
-// pins the Console deployment model: the Harbor Runtime ships
+// Harbor pins the Console deployment model: the Runtime ships
 // headless, and the full SvelteKit Console is served EXCLUSIVELY by the
 // `harbor console` subcommand, which bakes the static build into
 // `cmd/harbor` via `embed.FS` (console_embed.go). The Console build is
@@ -16,15 +16,15 @@
 // result is a single, self-contained Console deployment: an operator
 // runs `harbor console`, opens the printed URL in a browser, and the
 // Console is already attached to a live Runtime on the same process.
-// the "the Console can also run on a different machine, attached to
-// a remote Runtime" remains true — the Console is a Protocol client and
+// The property that the Console can also run on a different machine,
+// attached to a remote Runtime, remains true — it is a Protocol client and
 // the operator can re-point it at any remote Runtime via the Settings
 // page Connected-Runtimes card. The co-resident Runtime is the
 // zero-config default, not a constraint.
 //
-// This does NOT violate the binding rule: the rule forbids
-// embedding the Console into `harbor dev`. `harbor console` IS the
-// subcommand designates to serve the Console.
+// This does NOT violate the binding rule: the rule forbids embedding
+// the Console into `harbor dev`. `harbor console` IS the subcommand
+// designated to serve the Console.
 //
 // # Identity + auth posture
 //

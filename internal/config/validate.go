@@ -2375,37 +2375,61 @@ func IsValidationError(err error) bool {
 	return errors.Is(err, ErrConfigInvalid) && strings.Contains(err.Error(), "config.")
 }
 
-// nativeBifrostProviders mirrors `bfschemas.StandardProviders` (the
-// `github.com/maximhq/bifrost/core/schemas` v1.5.8 native-provider
-// list). The mirror lives here so the config package stays decoupled
-// from the bifrost SDK — when a new native bifrost provider is added
-// in a future bifrost release, this list updates in lockstep via the
-// next phase plan. only widens this surface; future phases
-// may consult bifrost directly if the decoupling proves costly.
+// nativeBifrostProviders mirrors `bfschemas.StandardProviders` — the
+// bifrost SDK's built-in (non-custom) provider list. It is the set
+// `llm.provider` may name without a matching `llm.custom_providers`
+// entry, and the set a custom-provider name may NOT collide with.
+//
+// It is a MIRROR, not a copy of convenience, and the distinction is the
+// whole point: a hand-maintained mirror of an upstream list drifts
+// silently on every dependency bump, so this one is not trusted to stay
+// correct by discipline. `TestNativeBifrostProviders_LockstepWithSDK`
+// enumerates `bfschemas.StandardProviders` and asserts set equality in
+// BOTH directions, so a bump that adds or removes an upstream provider
+// fails the build rather than mis-reporting at an operator's boot.
+//
+// Why the map is not simply DERIVED from `bfschemas` here, which would
+// remove the drift structurally rather than detect it: importing the
+// bifrost schemas package into this one takes the config package's
+// dependency closure from 93 packages to roughly 310, pulling a JIT
+// assembly JSON codec and a JSON-schema reflector into the package every
+// binary and every embedder loads merely to parse `harbor.yaml`. The
+// runtime side already resolves providers against the live list (the
+// bifrost LLM driver enumerates `StandardProviders` directly), so the
+// SDK is consulted where it is already linked; this validator holds a
+// leaf-cheap mirror, and the test — which links the SDK anyway — is
+// what keeps the two honest.
 var nativeBifrostProviders = map[string]struct{}{
-	"openai":      {},
-	"azure":       {},
-	"anthropic":   {},
-	"bedrock":     {},
-	"cohere":      {},
-	"vertex":      {},
-	"mistral":     {},
-	"ollama":      {},
-	"groq":        {},
-	"sgl":         {},
-	"parasail":    {},
-	"perplexity":  {},
-	"cerebras":    {},
-	"gemini":      {},
-	"openrouter":  {},
-	"elevenlabs":  {},
-	"huggingface": {},
-	"nebius":      {},
-	"xai":         {},
-	"replicate":   {},
-	"vllm":        {},
-	"runway":      {},
-	"fireworks":   {},
+	"openai":         {},
+	"azure":          {},
+	"anthropic":      {},
+	"bedrock":        {},
+	"bedrock_mantle": {},
+	"cohere":         {},
+	"vertex":         {},
+	"mistral":        {},
+	"ollama":         {},
+	"opencode-go":    {},
+	"opencode-zen":   {},
+	"groq":           {},
+	"sgl":            {},
+	"parasail":       {},
+	"perplexity":     {},
+	"cerebras":       {},
+	"deepseek":       {},
+	"gemini":         {},
+	"openrouter":     {},
+	"elevenlabs":     {},
+	"huggingface":    {},
+	"nebius":         {},
+	"xai":            {},
+	"replicate":      {},
+	"vllm":           {},
+	"runway":         {},
+	"runware":        {},
+	"fireworks":      {},
+	"sarvam":         {},
+	"wafer":          {},
 }
 
 // allowedCustomBaseProviderTypes is the wire-protocol family allowlist

@@ -187,6 +187,76 @@ func TestComposeCallerMemory_NoAliasing(t *testing.T) {
 	}
 }
 
+// TestComposeCallerMemory_ExternalValuesAreSharedNotDeepCopied pins the
+// SECOND residual — the one the assertion above cannot see and an
+// earlier godoc denied outright by saying a write to either side's
+// External "cannot be observed through the other".
+//
+// The copy at the top of the External branch is `external[k] = v` over
+// the input's entries: it makes a fresh MAP, not a fresh value graph. So
+// a nested map or slice is shared, and mutating THROUGH a copied entry
+// is visible on both sides. This is not a corner case — the runtime's
+// own recall producer writes exactly this shape
+// (`{"recalled_turns": []map[string]any{…}}`), which is why the fixture
+// here is that shape rather than a flat scalar map.
+//
+// It is asserted AS PRESENT rather than fixed, and the reason is stated
+// in the godoc: composition's input has a single holder (the run loop
+// replaces its local with the result and drops the original), so no
+// second observer exists for the nested write to reach. Deep-copying an
+// arbitrary `any` costs a reflective or round-trip copy — the same
+// objection that keeps `Conversation` shared.
+//
+// The failure message tells the next reader what to do in EITHER
+// direction, because both are real changes rather than noise: a deep
+// copy landing means the godoc must widen, and it going red for any
+// other reason means the aliasing shape moved under the doc.
+func TestComposeCallerMemory_ExternalValuesAreSharedNotDeepCopied(t *testing.T) {
+	turns := recalledTurnsFixture()
+	mb := &planner.MemoryBlocks{
+		External:     map[string]any{"recalled_turns": turns},
+		Conversation: map[string]any{"strategy": "recent_turns"},
+	}
+
+	got, err := ComposeCallerMemory(mb, json.RawMessage(`{"note":"alpha"}`))
+	if err != nil {
+		t.Fatalf("ComposeCallerMemory: %v", err)
+	}
+
+	// The copied entry must be the SAME underlying value, not a clone.
+	gotTurns, ok := got.External.(map[string]any)["recalled_turns"].([]map[string]any)
+	if !ok {
+		t.Fatalf("recalled_turns did not survive composition with its type intact: %T",
+			got.External.(map[string]any)["recalled_turns"])
+	}
+	if len(gotTurns) != len(turns) {
+		t.Fatalf("recalled_turns length changed across composition: %d -> %d", len(turns), len(gotTurns))
+	}
+
+	// Mutate THROUGH the result's copied entry and look for it on the
+	// input. A deep copy would hide it; the shallow copy does not.
+	gotTurns[0]["written_after"] = true
+	if _, shared := turns[0]["written_after"]; !shared {
+		t.Fatal("External's nested values are no longer shared with the input — the tier is now DEEP-copied, which is an IMPROVEMENT, but ComposeCallerMemory's godoc explicitly scopes its no-aliasing guarantee to the External MAP and documents the nested sharing as a residual. Widen the godoc and delete this assertion.")
+	}
+
+	// And the converse direction, so the sharing is pinned as genuinely
+	// mutual rather than one-way.
+	turns[0]["written_from_input"] = true
+	if _, shared := gotTurns[0]["written_from_input"]; !shared {
+		t.Fatal("a write through the INPUT's nested value was not visible on the result — the aliasing is now one-way, which the godoc does not describe; re-derive it")
+	}
+
+	// The top-level guarantee the godoc DOES make still holds alongside
+	// the residual: the two maps are distinct objects. Asserting both in
+	// one test is what stops a future reader from concluding that
+	// "shallow" means "no isolation at all".
+	got.External.(map[string]any)["top_level_key"] = true
+	if _, leaked := mb.External.(map[string]any)["top_level_key"]; leaked {
+		t.Fatal("the result aliases the input's External MAP itself — the fresh-map half of the guarantee is gone")
+	}
+}
+
 // TestComposeCallerMemory_ConcurrentReuse_NoCrossTalk is the D-025 gate:
 // N=128 goroutines against ONE shared input under -race, each with a
 // distinct payload, asserting no data race, no content bleed (each

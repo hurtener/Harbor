@@ -113,17 +113,17 @@ A real response from a dev Runtime:
   "build_commit": "dev",
   "build_go_version": "go1.26.3",
   "protocol_version": "0.1.0",
-  "capabilities": ["events_subscribe", "runtime_posture", "task_control"],
+  "capabilities": ["caller_memory", "events_subscribe", "runtime_posture", "task_control"],
   "uptime_seconds": 16,
-  "wire_surface_digest": "sha256:f870c37dce2b26e8b4b35af1fbf51e056c1a5c9a7a1d93bda6682aee8c5ba861"
+  "wire_surface_digest": "sha256:<64 hex — changes whenever the canonical wire surface does>"
 }
 ```
 
 Three things to read and act on:
 
 - `protocol_version` — the wire-contract version (distinct from `build_version`, the Runtime's own release). Same major ⇒ compatible; on a major mismatch, warn loudly or refuse.
-- `capabilities` — the advertised Protocol surfaces. Shape your UI on this list: a runtime that doesn't advertise `topology_snapshot` gets the topology panel disabled, not a crash. A method outside the Runtime's registry returns the canonical `404 {"code": "unknown_method"}` envelope — treat it (and 405 / 501) as "not served here, degrade", the same SKIP posture Harbor's own smoke scripts encode.
-- `wire_surface_digest` — an opaque, stable `sha256:` fingerprint of the Runtime's canonical wire surface (the Protocol version + method / error / capability / wire-type *names*; it deliberately excludes field shapes and event-type names). Stamp the digest your client was built against into the build, then compare it here at attach: equal ⇒ same surface; different ⇒ surface drift, surface it loudly; absent/empty ⇒ the Runtime predates digest support (an informational note, never a drift alarm). It is a coarse name-level early-warning, not a substitute for the field-level checks a client that vendors the wire manifest runs at build time.
+- `capabilities` — the advertised Protocol surfaces (the list above is one dev Runtime's; a differently-wired Runtime advertises a different subset, which is the whole point of reading it). Four are unconditional on any current build — `task_control`, `events_subscribe`, `runtime_posture` and `caller_memory` — and everything else depends on what the operator wired. Shape your UI on this list: a runtime that doesn't advertise `topology_snapshot` gets the topology panel disabled, not a crash. A method outside the Runtime's registry returns the canonical `404 {"code": "unknown_method"}` envelope — treat it (and 405 / 501) as "not served here, degrade", the same SKIP posture Harbor's own smoke scripts encode.
+- `wire_surface_digest` — an opaque, stable `sha256:` fingerprint (elided above on purpose: a doc that pins a live digest is wrong at the next wire change) of the Runtime's canonical wire surface (the Protocol version + method / error / capability / wire-type *names*; it deliberately excludes field shapes and event-type names). Stamp the digest your client was built against into the build, then compare it here at attach: equal ⇒ same surface; different ⇒ surface drift, surface it loudly; absent/empty ⇒ the Runtime predates digest support (an informational note, never a drift alarm). It is a coarse name-level early-warning, not a substitute for the field-level checks a client that vendors the wire manifest runs at build time.
 
 ### 2a. Retention horizons — how far back this Runtime actually holds data
 
@@ -205,7 +205,7 @@ The rules, all enforced at the edge before any task is created:
 - Any JSON value — object, array, string, number.
 - **An explicit `"caller_memory": null` is REFUSED**, not treated as absent. Omit the field if you have nothing to send; a caller that believes its memory reached the model when it did not is the failure this refuses to hide.
 - Over **32 KiB** → `400 {"code": "invalid_request"}`, with a message that names `caller_memory`. No task is created. **That cap is a resource bound and a wire-size guard, not a security boundary** — it stops an oversized document reaching the token-budget guard and failing your whole run late. Do not read it as a limit on how much content you can put in front of the model: `query` is uncapped below the 64 KiB envelope and lands in the *unframed* conversation position, and `agent_config.session.set_user_prompt` needs no scope claim, takes a 1 MiB body, and lands *inside* the system prompt. What contains `caller_memory` is the tier it goes to, never its size.
-- **Negotiate before you rely on it.** Call `runtime.info` and check for `caller_memory` in `capabilities`. A runtime that predates the field would **discard it and answer 200** — your run proceeds without the memory you sent, and nothing tells you. Current runtimes refuse an unknown member by name (see below), but that cannot help you against an older deployment; the capability can, because a build predating the field cannot advertise it.
+- **Negotiate before you rely on it.** Call `runtime.info` and check for `caller_memory` in `capabilities` — it is advertised UNCONDITIONALLY by every Runtime that has the field, so its **absence** is the signal, not its presence. A runtime that predates the field would **discard it and answer 200** — your run proceeds without the memory you sent, and nothing tells you. Current runtimes refuse an unknown member by name (see below), but that cannot help you against an older deployment; the capability can, because a build predating the field cannot advertise it.
 - It can never write the conversation-memory tier — that is a claim about the session's stored turns only the runtime makes.
 - Each admitting run emits `memory.caller_block_admitted` carrying `bytes` / `tier` / `key` and **no fragment of your content**, so an operator can audit that caller-asserted memory entered a run without the audit trail becoming a copy of it.
 
@@ -580,6 +580,8 @@ It succeeds only while the agent has no active revision, and returns `409 {"code
 **Whichever token you send, the compensation is the same.** `add_mcp_connection` is the one door whose live effect (dial → handshake → register) necessarily runs before its write. On a `409` there it does not merely refuse: the server it just attached is **detached**, an inline wire-OAuth provider installed for that binding is **uninstalled**, and a terminal `mcp.connection.failed` event fires. So the "nothing is persisted" promise holds for the world, not only for the revision — a refused add never leaves a live server that no revision names (which `remove_mcp_connection` could never remove) and never leaves the lifecycle stuck on `pending`.
 
 It is available on all **seventeen** spine-writing doors — `set_revision`, `rollback`, `skills.upsert`, `skills.delete`, `set_tool_exposure`, `set_prompt_layers`, `set_extra_system_blocks`, `set_llm_params`, `add_mcp_connection`, `remove_mcp_connection`, `set_mcp_discovery_origins`, `set_oauth_provider`, `remove_oauth_provider`, and the four `user.*` twins (`user.set_revision`, `user.rollback`, `user.skills.upsert`, `user.skills.delete`). It is **not** on `set_llm_provider` (which installs a provider and writes no revision) or on the `agent_config.session.*` verbs (which write the ephemeral session overlay, not the durable spine).
+
+**Read your token from the tier you are about to write.** The examples above use `agent_config.get`, which reads the AGENT tier — correct for the thirteen admin doors. The four `user.*` twins write the USER tier, and its hash comes from **`agent_config.user.get`**. They are separate revision spines: a hash read from `agent_config.get` will never match a `user.*` write, so passing one there is a guaranteed `409` every time.
 
 **Recovering from a conflict.** Re-read `agent_config.get` for the current `revision_id` + `content_hash`, call `agent_config.diff` with `from_revision` = the id you originally read and `to_revision` = the current id to see what moved, re-apply your edit on top, and resubmit with the fresh hash. One extra round trip on a rare path.
 
