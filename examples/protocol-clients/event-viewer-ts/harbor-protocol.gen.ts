@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:506ba58076267de8404f08c6a4d2893aa7fa9f961bd106727a52474783d11f32";
+export const WIRE_SURFACE_DIGEST = "sha256:e03b42e322f11ba56f7b927b186feccd31a820a122a851b56f94979e2f052abf";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -33,6 +33,7 @@ export type HarborMethod =
   | "agent_config.session.skills.delete"
   | "agent_config.session.skills.list"
   | "agent_config.session.skills.upsert"
+  | "agent_config.set_extra_system_blocks"
   | "agent_config.set_llm_params"
   | "agent_config.set_llm_provider"
   | "agent_config.set_mcp_discovery_origins"
@@ -378,6 +379,7 @@ export interface AgentConfigDiff {
   llm_params: AgentConfigLLMParamsDiff;
   hooks: AgentConfigHooksDiff;
   naming: AgentConfigNamingDiff;
+  extra_system_blocks: AgentConfigExtraSystemBlocksDiff;
 }
 
 export interface AgentConfigDiffRequest {
@@ -390,6 +392,17 @@ export interface AgentConfigDiffRequest {
 export interface AgentConfigDiffResponse {
   diff: AgentConfigDiff;
   protocol_version: string;
+}
+
+export interface AgentConfigExtraSystemBlocks {
+  blocks: AgentConfigNamedBlock[];
+}
+
+export interface AgentConfigExtraSystemBlocksDiff {
+  added?: string[];
+  removed?: string[];
+  changed?: string[];
+  reordered: boolean;
 }
 
 export interface AgentConfigGetRequest {
@@ -488,6 +501,11 @@ export interface AgentConfigMCPCredentialInjectionDescriptor {
   meta_key?: string;
 }
 
+export interface AgentConfigNamedBlock {
+  name: string;
+  body: string;
+}
+
 export interface AgentConfigNaming {
   auto?: boolean;
   after_turns?: number;
@@ -546,6 +564,7 @@ export interface AgentConfigPayload {
   llm_params?: AgentConfigLLMParams;
   hooks?: AgentConfigHooks;
   naming?: AgentConfigNaming;
+  extra_system_blocks?: AgentConfigExtraSystemBlocks;
 }
 
 export interface AgentConfigPromptLayers {
@@ -676,6 +695,18 @@ export interface AgentConfigSessionSkillsUpsertRequest {
 export interface AgentConfigSessionSkillsUpsertResponse {
   skill: AgentConfigSkillSummary;
   overlay: AgentConfigSessionOverlay;
+  protocol_version: string;
+}
+
+export interface AgentConfigSetExtraSystemBlocksRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  extra_system_blocks: AgentConfigExtraSystemBlocks;
+  expected_content_hash?: string;
+}
+
+export interface AgentConfigSetExtraSystemBlocksResponse {
+  revision: AgentConfigRevisionView;
   protocol_version: string;
 }
 

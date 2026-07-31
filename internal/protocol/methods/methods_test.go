@@ -117,6 +117,7 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigSkillsDelete,
 	methods.MethodAgentConfigSetToolExposure,
 	methods.MethodAgentConfigSetPromptLayers,
+	methods.MethodAgentConfigSetExtraSystemBlocks,
 	methods.MethodAgentConfigSetLLMParams,
 	methods.MethodAgentConfigAddMCPConnection,
 	methods.MethodAgentConfigRemoveMCPConnection,
@@ -181,9 +182,11 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// + the driver-independent artifact byte read one (artifacts.get,
 	// which every registered driver serves because it resolves through
 	// the mandatory store Get rather than the optional presign
-	// capability) = 122.
-	if len(got) != 122 {
-		t.Fatalf("Methods() returned %d methods, want 122", len(got))
+	// capability) = 122,
+	// + the agent-config additive-prompt-blocks write one
+	// (agent_config.set_extra_system_blocks, D-367) = 123.
+	if len(got) != 123 {
+		t.Fatalf("Methods() returned %d methods, want 123", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -765,6 +768,7 @@ func TestIsAgentConfigSessionMethod_Lockstep(t *testing.T) {
 	// Admin verbs + a non-agent-config method are NOT session methods.
 	for _, m := range []methods.Method{
 		methods.MethodAgentConfigSetPromptLayers,
+		methods.MethodAgentConfigSetExtraSystemBlocks,
 		methods.MethodAgentConfigSetLLMParams,
 		methods.MethodAgentConfigAddMCPConnection,
 		methods.MethodCancel,

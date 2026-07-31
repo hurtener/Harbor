@@ -703,6 +703,14 @@ func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) str
 // present. Returns the empty string when neither contributes — the
 // caller then omits the section entirely.
 //
+// The durable, operator-authored NAMED blocks
+// (`RunContext.LLMOverrides.ExtraSystemBlocks`) render here too, in their
+// DECLARED order, between the operator's baked guidance and the additive
+// extra-instructions. Their fixed slot in this sequence is what gives them
+// their two structural properties for free: they compose rather than
+// replace, and they survive a session `SystemPromptOverride` (this function
+// is reached on BOTH branches of the base request).
+//
 // The run-start-resolved additive extra-instructions
 // (`RunContext.LLMOverrides.ExtraInstructions` — an admin-set tenant
 // default today) render here too, BELOW the operator's baked guidance and
@@ -713,13 +721,56 @@ func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) str
 // Pure read of `extraGuidance` + `rc`: it never mutates the counters.
 func buildAdditionalGuidance(extraGuidance string, rc planner.RunContext) string {
 	op := strings.TrimSpace(extraGuidance)
+	blocks := renderExtraSystemBlocks(rc)
 	extra := overrideExtraInstructions(rc)
 	repair := renderRepairGuidance(rc.RepairCounters)
-	parts := make([]string, 0, 3)
-	for _, p := range []string{op, extra, repair} {
+	parts := make([]string, 0, 4)
+	for _, p := range []string{op, blocks, extra, repair} {
 		if p != "" {
 			parts = append(parts, p)
 		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// renderExtraSystemBlocks renders the durable, operator-authored named
+// blocks resolved from the agent's active config, IN THEIR DECLARED ORDER,
+// each preceded by a plain-text `[name]` label and separated by a blank
+// line. Returns "" for a nil / empty list so the caller contributes nothing
+// (no empty wrapper, and — with every other contributor also empty — the
+// `<additional_guidance>` section is omitted entirely and the composed
+// system content is byte-identical to a run with no blocks at all).
+//
+// Two properties are load-bearing and are each pinned by a test:
+//
+//   - The order is the SLICE order. Nothing here sorts, and nothing on the
+//     path from the write door to this function uses a map — map iteration
+//     order is not a composition order.
+//   - The bodies are VERBATIM. They are deliberately NOT routed through
+//     escapeUntrustedSection: the section is written only by the admin
+//     tier, the same tier that writes the whole prompt spine verbatim, so
+//     escaping here would defend against a writer who can already replace
+//     everything — while mangling an operator's angle brackets. The write
+//     door's authority tier is the boundary; the label is legibility, not
+//     a security frame.
+//
+// Pure read of rc — never mutates it.
+func renderExtraSystemBlocks(rc planner.RunContext) string {
+	if rc.LLMOverrides == nil || len(rc.LLMOverrides.ExtraSystemBlocks) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(rc.LLMOverrides.ExtraSystemBlocks))
+	for _, b := range rc.LLMOverrides.ExtraSystemBlocks {
+		body := strings.TrimSpace(b.Body)
+		if body == "" {
+			continue
+		}
+		name := strings.TrimSpace(b.Name)
+		if name == "" {
+			parts = append(parts, body)
+			continue
+		}
+		parts = append(parts, "["+name+"]\n"+body)
 	}
 	return strings.Join(parts, "\n\n")
 }

@@ -67,6 +67,8 @@ import type {
 	AgentConfigRollbackResponse,
 	AgentConfigSetToolExposureResponse,
 	AgentConfigSetPromptLayersResponse,
+	AgentConfigExtraSystemBlocks,
+	AgentConfigSetExtraSystemBlocksResponse,
 	AgentConfigLLMParams,
 	AgentConfigSetLLMParamsResponse,
 	AgentConfigMCPConnectionDescriptor,
@@ -1250,6 +1252,36 @@ export class AgentConfigNamespace {
 				agent_id: agentId,
 				prompt_layers: promptLayers as unknown as Record<string, unknown>,
 			},
+		);
+	}
+	/** `agent_config.set_extra_system_blocks` — set the ORDERED list of named
+	 * additive prompt blocks as a WHOLE-SECTION desired-state replace; records
+	 * a revision. Every sibling section is preserved; an empty list clears the
+	 * section. The declared array order IS the render order and is part of the
+	 * content hash, so a re-ordering is a real revision the diff reports. The
+	 * bodies render VERBATIM behind a plain-text `[name]` label and survive a
+	 * session `system_prompt_override`. Admin-scoped — that tier IS the trust
+	 * boundary; a block must never carry user-authored text.
+	 *
+	 * Pass `expectedContentHash` (the `content_hash` from the
+	 * `agent_config.get` this edit was composed against) so a concurrent
+	 * contributor's write is refused with `revision_conflict` rather than
+	 * silently reverted. */
+	setExtraSystemBlocks(
+		agentId: string,
+		extraSystemBlocks: AgentConfigExtraSystemBlocks,
+		expectedContentHash?: string,
+	): Promise<AgentConfigSetExtraSystemBlocksResponse> {
+		const body: Record<string, unknown> = {
+			agent_id: agentId,
+			extra_system_blocks: extraSystemBlocks as unknown as Record<string, unknown>,
+		};
+		if (expectedContentHash) {
+			body.expected_content_hash = expectedContentHash;
+		}
+		return this.#t.request<AgentConfigSetExtraSystemBlocksResponse>(
+			'/v1/agent_config/set_extra_system_blocks',
+			body,
 		);
 	}
 	/** `agent_config.set_llm_params` — set the per-agent LLM-parameter section

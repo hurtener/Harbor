@@ -102,6 +102,15 @@ var (
 	// (CLAUDE.md §13). The model is validated via the same validateModel path
 	// as set_llm_params.
 	ErrInvalidNaming = errors.New("agentcfg/protocol: invalid naming section")
+	// ErrInvalidExtraSystemBlocks — a set_extra_system_blocks (or a
+	// set_revision carrying a blocks section) supplied a block with an
+	// empty / out-of-charset name, an empty body, or a DUPLICATE name.
+	// Uniqueness is what makes remove-by-name well defined — it is the
+	// whole composability property the section exists for — so a duplicate
+	// is refused loud BEFORE any registry write rather than silently
+	// de-duplicated (CLAUDE.md §13). The message names the offender and,
+	// for a duplicate, BOTH offending positions.
+	ErrInvalidExtraSystemBlocks = errors.New("agentcfg/protocol: invalid extra system blocks section")
 )
 
 // namingMaxTitleLenBounds is the inclusive [min,max] a set max_title_len must
@@ -798,6 +807,16 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	if err := s.validateNaming(req.Payload.Naming); err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
+	// A full-payload set that pins additive prompt blocks runs the SAME
+	// name-charset + uniqueness + non-empty-body validation the
+	// set_extra_system_blocks door enforces, so a section this second door
+	// persists is one the first door would have accepted (parity at both
+	// doors). Rejected loud before any registry write.
+	if req.Payload.ExtraSystemBlocks != nil {
+		if err := validateExtraSystemBlocks(req.Payload.ExtraSystemBlocks.Blocks); err != nil {
+			return prototypes.AgentConfigSetRevisionResponse{}, err
+		}
+	}
 	// A full-payload set that pins MCP connection descriptors runs every
 	// descriptor through the SAME shape validator the add_mcp_connection door
 	// enforces, so a descriptor this second door persists is a descriptor the
@@ -983,6 +1002,16 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 			}
 		}
 		out.Hooks = wh
+	}
+	if p.ExtraSystemBlocks != nil {
+		// ORDER-PRESERVING: the projection copies the slice positionally.
+		// A map here — or a sort — would silently re-order the operator's
+		// composed prompt on the way to the reader.
+		wb := make([]prototypes.AgentConfigNamedBlock, 0, len(p.ExtraSystemBlocks.Blocks))
+		for _, b := range p.ExtraSystemBlocks.Blocks {
+			wb = append(wb, prototypes.AgentConfigNamedBlock{Name: b.Name, Body: b.Body})
+		}
+		out.ExtraSystemBlocks = &prototypes.AgentConfigExtraSystemBlocks{Blocks: wb}
 	}
 	if p.Naming != nil {
 		out.Naming = &prototypes.AgentConfigNaming{
@@ -1193,6 +1222,12 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 		}
 		out.Hooks = dh
 	}
+	if p.ExtraSystemBlocks != nil {
+		// ORDER-PRESERVING, same reason as the wire projection above.
+		out.ExtraSystemBlocks = &agentcfg.ExtraSystemBlocks{
+			Blocks: blocksToDomain(p.ExtraSystemBlocks.Blocks),
+		}
+	}
 	if p.Naming != nil {
 		out.Naming = &agentcfg.NamingSection{
 			Auto:           p.Naming.Auto,
@@ -1293,6 +1328,14 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			ModelChanged: d.Naming.ModelChanged,
 			ModelFrom:    d.Naming.ModelFrom,
 			ModelTo:      d.Naming.ModelTo,
+		},
+		ExtraSystemBlocks: prototypes.AgentConfigExtraSystemBlocksDiff{
+			Added:   append([]string(nil), d.ExtraSystemBlocks.Added...),
+			Removed: append([]string(nil), d.ExtraSystemBlocks.Removed...),
+			Changed: append([]string(nil), d.ExtraSystemBlocks.Changed...),
+			// Order is render order, so a pure re-ordering is a real change
+			// and the reader must be able to see it.
+			Reordered: d.ExtraSystemBlocks.Reordered,
 		},
 	}
 }

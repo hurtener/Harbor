@@ -322,6 +322,9 @@ func carrySiblingsForward(active agentcfg.Revision, hasActive bool) agentcfg.Con
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
+		// The ordered additive prompt blocks are a sibling section like any
+		// other: this verb replaces only its own, so the blocks survive.
+		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 	}
 	return payload
 }

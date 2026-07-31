@@ -61,6 +61,12 @@ func Run(t *testing.T, mk Factory) {
 			t.Run("GetMissingFailsLoud", func(t *testing.T) { testGetMissing(t, mk, scope) })
 			t.Run("IdentityRequired", func(t *testing.T) { testIdentityRequired(t, mk, scope) })
 			t.Run("LLMParamsRoundTrip", func(t *testing.T) { testLLMParamsRoundTrip(t, mk, scope) })
+			// The additive prompt blocks: ORDER is semantic, so every driver
+			// must return them in the declared order and must report a pure
+			// re-ordering as a real change. A driver that persisted them
+			// through a map (or sorted them) passes a naive round-trip and
+			// fails this.
+			t.Run("ExtraSystemBlocksRoundTripInOrder", func(t *testing.T) { testExtraSystemBlocksRoundTrip(t, mk, scope) })
 			// The expected-revision precondition. These four rows live in the
 			// SHARED suite rather than the statestore driver's own tests
 			// precisely so a second driver cannot ship the Registry interface
@@ -141,6 +147,57 @@ func testLLMParamsRoundTrip(t *testing.T, mk Factory, scope agentcfg.ConfigScope
 	}
 	if !d.LLMParams.ModelChanged || d.LLMParams.ModelFrom != "model-x" || d.LLMParams.ModelTo != "model-y" {
 		t.Fatalf("LLM-params diff = %+v", d.LLMParams)
+	}
+}
+
+// testExtraSystemBlocksRoundTrip proves every driver round-trips the
+// ORDERED additive prompt blocks through Set → Active in their DECLARED
+// order, and that a pure re-ordering of the same blocks is a REAL new
+// revision (a different content hash) whose Diff reports Reordered — the
+// property that distinguishes this section from its sorted siblings.
+func testExtraSystemBlocksRoundTrip(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
+	ctx := context.Background()
+	r := mk(t)
+	id := admin()
+	forward := agentcfg.ConfigPayload{ExtraSystemBlocks: &agentcfg.ExtraSystemBlocks{Blocks: []agentcfg.NamedBlock{
+		{Name: "alpha", Body: "first"},
+		{Name: "beta", Body: "second"},
+	}}}
+	rev1 := mustSet(t, r, id, scope, forward)
+
+	got, ok, err := mustActive(t, r, id, scope)
+	if err != nil || !ok {
+		t.Fatalf("Active: ok=%v err=%v", ok, err)
+	}
+	blocks := got.Payload.ExtraSystemBlockList()
+	if len(blocks) != 2 || blocks[0].Name != "alpha" || blocks[1].Name != "beta" {
+		t.Fatalf("blocks not round-tripped in declared order: %+v", blocks)
+	}
+	if blocks[0].Body != "first" || blocks[1].Body != "second" {
+		t.Fatalf("block bodies not round-tripped: %+v", blocks)
+	}
+
+	// A pure re-ordering must be a NEW revision, not an idempotent no-op.
+	reversed := agentcfg.ConfigPayload{ExtraSystemBlocks: &agentcfg.ExtraSystemBlocks{Blocks: []agentcfg.NamedBlock{
+		{Name: "beta", Body: "second"},
+		{Name: "alpha", Body: "first"},
+	}}}
+	rev2 := mustSet(t, r, id, scope, reversed)
+	if rev2.RevisionID == rev1.RevisionID {
+		t.Fatalf("a re-ordering was treated as an idempotent re-set — block order is the RENDER order and must change the content hash")
+	}
+	if rev2.ContentHash == rev1.ContentHash {
+		t.Fatalf("a re-ordering produced the same content hash %q — the canonical form is sorting the blocks", rev1.ContentHash)
+	}
+	d, err := r.Diff(ctx, id, agentID, rev1.RevisionID, rev2.RevisionID, scope)
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if !d.ExtraSystemBlocks.Reordered {
+		t.Fatalf("Diff did not report the re-ordering: %+v", d.ExtraSystemBlocks)
+	}
+	if len(d.ExtraSystemBlocks.Added) != 0 || len(d.ExtraSystemBlocks.Removed) != 0 || len(d.ExtraSystemBlocks.Changed) != 0 {
+		t.Fatalf("a pure re-ordering reported a membership change: %+v", d.ExtraSystemBlocks)
 	}
 }
 

@@ -51,14 +51,15 @@ func staleTokenFor(t *testing.T, reg agentcfg.Registry, scp agentcfg.ConfigScope
 	return first.ContentHash
 }
 
-// TestConditionalWrite_AllSixteenDoorsAcceptTheToken drives every one of the
-// sixteen spine-writing doors with a STALE token and asserts each is refused
+// TestConditionalWrite_AllSeventeenDoorsAcceptTheToken drives every one of the
+// seventeen spine-writing doors with a STALE token and asserts each is refused
 // with agentcfg.ErrRevisionConflict.
 //
-// The count is asserted, not documented: a seventeenth spine writer added by a
+// The count is asserted, not documented: an eighteenth spine writer added by a
 // later phase without threading the field has no entry here, and the length
-// assertion below fails.
-func TestConditionalWrite_AllSixteenDoorsAcceptTheToken(t *testing.T) {
+// assertion below fails. (The seventeenth — set_extra_system_blocks — is what
+// that guard caught; it is threaded and driven here.)
+func TestConditionalWrite_AllSeventeenDoorsAcceptTheToken(t *testing.T) {
 	ctx := context.Background()
 
 	type door struct {
@@ -68,7 +69,7 @@ func TestConditionalWrite_AllSixteenDoorsAcceptTheToken(t *testing.T) {
 	}
 
 	doors := []door{
-		// ---------------- Agent scope — twelve ----------------
+		// ---------------- Agent scope — thirteen ----------------
 		{"agent_config.set_revision", func(t *testing.T) error {
 			reg := newRegistry(t)
 			s, err := agentcfgprotocol.NewService(reg)
@@ -150,6 +151,22 @@ func TestConditionalWrite_AllSixteenDoorsAcceptTheToken(t *testing.T) {
 			_, err = s.SetPromptLayers(ctx, prototypes.AgentConfigSetPromptLayersRequest{
 				Identity: scope(), AgentID: testAgentID,
 				PromptLayers:        prototypes.AgentConfigPromptLayers{Base: &base},
+				ExpectedContentHash: tok,
+			})
+			return err
+		}},
+		{"agent_config.set_extra_system_blocks", func(t *testing.T) error {
+			reg := newRegistry(t)
+			s, err := agentcfgprotocol.NewService(reg)
+			if err != nil {
+				t.Fatalf("NewService: %v", err)
+			}
+			tok := staleTokenFor(t, reg, agentcfg.ConfigScopeAgent)
+			_, err = s.SetExtraSystemBlocks(ctx, prototypes.AgentConfigSetExtraSystemBlocksRequest{
+				Identity: scope(), AgentID: testAgentID,
+				ExtraSystemBlocks: prototypes.AgentConfigExtraSystemBlocks{
+					Blocks: []prototypes.AgentConfigNamedBlock{{Name: "cond-block", Body: "body"}},
+				},
 				ExpectedContentHash: tok,
 			})
 			return err
@@ -302,8 +319,8 @@ func TestConditionalWrite_AllSixteenDoorsAcceptTheToken(t *testing.T) {
 		}},
 	}
 
-	if len(doors) != 16 {
-		t.Fatalf("the table covers %d doors, want 16 — a spine writer was added or removed "+
+	if len(doors) != 17 {
+		t.Fatalf("the table covers %d doors, want 17 — a spine writer was added or removed "+
 			"without threading the expected-revision token", len(doors))
 	}
 
@@ -318,12 +335,12 @@ func TestConditionalWrite_AllSixteenDoorsAcceptTheToken(t *testing.T) {
 	}
 }
 
-// TestConditionalWrite_SixteenRequestTypesDeclareTheField is the structural
-// twin of the table above: the sixteen wire request types each carry
+// TestConditionalWrite_SeventeenRequestTypesDeclareTheField is the structural
+// twin of the table above: the seventeen wire request types each carry
 // `expected_content_hash` as an optional string. Reflection over the real
 // types, so a rename or a dropped json tag fails here rather than silently
 // making the field unreachable from the wire.
-func TestConditionalWrite_SixteenRequestTypesDeclareTheField(t *testing.T) {
+func TestConditionalWrite_SeventeenRequestTypesDeclareTheField(t *testing.T) {
 	types := []any{
 		prototypes.AgentConfigSetRevisionRequest{},
 		prototypes.AgentConfigRollbackRequest{},
@@ -331,6 +348,7 @@ func TestConditionalWrite_SixteenRequestTypesDeclareTheField(t *testing.T) {
 		prototypes.AgentConfigSkillsDeleteRequest{},
 		prototypes.AgentConfigSetToolExposureRequest{},
 		prototypes.AgentConfigSetPromptLayersRequest{},
+		prototypes.AgentConfigSetExtraSystemBlocksRequest{},
 		prototypes.AgentConfigSetLLMParamsRequest{},
 		prototypes.AgentConfigAddMCPConnectionRequest{},
 		prototypes.AgentConfigRemoveMCPConnectionRequest{},
@@ -342,8 +360,8 @@ func TestConditionalWrite_SixteenRequestTypesDeclareTheField(t *testing.T) {
 		prototypes.AgentConfigUserSkillsUpsertRequest{},
 		prototypes.AgentConfigUserSkillsDeleteRequest{},
 	}
-	if len(types) != 16 {
-		t.Fatalf("the type list covers %d types, want 16", len(types))
+	if len(types) != 17 {
+		t.Fatalf("the type list covers %d types, want 17", len(types))
 	}
 	for _, v := range types {
 		rt := reflect.TypeOf(v)
