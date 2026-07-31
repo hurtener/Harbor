@@ -42,8 +42,10 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
 
 [`StartRequest`](./types.md#startrequest) options worth knowing:
 
-- `idempotency_key` — a second `start` with the same key (per session)
-  returns the existing task with `"reused": true` instead of spawning twice.
+- `idempotency_key` — a second `start` with the same key returns the existing
+  task with `"reused": true` instead of spawning twice. The key is scoped to
+  your full identity triple (tenant, user, session), so it can only ever match
+  a spawn you made yourself.
 - `input_artifact_ids` — attach uploaded artifacts (`artifacts.put` first) as
   multimodal inputs; bytes never travel on this request.
 - `input_artifact_dispositions` — optional per-attachment disposition hints

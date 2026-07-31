@@ -51,6 +51,8 @@ type Factory func() (tasks.TaskRegistry, func())
 //   - Spawn_OutputSchema_SameKeySameSchemaReused
 //   - Spawn_Idempotent_SameKeyReturnsSameHandle
 //   - Spawn_DifferentSessionsCanReuseKey
+//   - Spawn_DifferentTenantsCanReuseKey
+//   - Spawn_DifferentUsersCanReuseKey
 //   - Spawn_EmptyKeyDisablesIdempotency
 //   - Spawn_SameKeyDivergentRequestRejected
 //   - Lifecycle_HappyPath
@@ -272,6 +274,112 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if hA.Reused || hB.Reused {
 			t.Errorf("expected Reused=false for both spawns; A.Reused=%v B.Reused=%v", hA.Reused, hB.Reused)
+		}
+	})
+
+	t.Run("Spawn_DifferentTenantsCanReuseKey", func(t *testing.T) {
+		// The idempotency index key carries the FULL identity triple, not
+		// just the session. Two tenants presenting a COLLIDING
+		// (session, idempotency-key) pair must each get their own task:
+		// the key's shape holds the isolation boundary, so the collision
+		// is closed structurally rather than by the entropy of the
+		// session id (CLAUDE.md §6 rule 2).
+		//
+		// Before the tenant component was in the key, this collision made
+		// tenant B observable to tenant A's dedup state: B's Spawn hit
+		// A's index entry, failed the identity leg of the divergence
+		// compare, and came back ErrIdempotencyConflict — a cross-tenant
+		// denial AND an existence oracle for A's key.
+		r, cleanup := factory()
+		defer cleanup()
+
+		idA := identity.Identity{TenantID: "tenant-A", UserID: "U", SessionID: "collide-S"}
+		idB := identity.Identity{TenantID: "tenant-B", UserID: "U", SessionID: "collide-S"}
+		ctxTA := mustWithIdentity(idA)
+		ctxTB := mustWithIdentity(idB)
+
+		reqA := freshSpawnReq(identity.Quadruple{Identity: idA})
+		reqA.IdempotencyKey = "collide-key"
+		reqB := freshSpawnReq(identity.Quadruple{Identity: idB})
+		reqB.IdempotencyKey = "collide-key"
+
+		hA, err := r.Spawn(ctxTA, reqA)
+		if err != nil {
+			t.Fatalf("Spawn tenant-A: %v", err)
+		}
+		hB, err := r.Spawn(ctxTB, reqB)
+		if err != nil {
+			t.Fatalf("colliding (session, key) under a different tenant must spawn cleanly, got: %v", err)
+		}
+		if hA.ID == hB.ID {
+			t.Fatalf("cross-tenant idempotency collision: both tenants share TaskID %q", hA.ID)
+		}
+		if hA.Reused || hB.Reused {
+			t.Errorf("neither spawn is a retry; got A.Reused=%v B.Reused=%v", hA.Reused, hB.Reused)
+		}
+
+		// Each tenant sees ONLY its own task under the shared key.
+		gotA, err := r.Get(ctxTA, hA.ID)
+		if err != nil {
+			t.Fatalf("tenant-A Get: %v", err)
+		}
+		if gotA.Identity.TenantID != "tenant-A" {
+			t.Errorf("tenant-A read a foreign identity: %+v", gotA.Identity)
+		}
+		gotB, err := r.Get(ctxTB, hB.ID)
+		if err != nil {
+			t.Fatalf("tenant-B Get: %v", err)
+		}
+		if gotB.Identity.TenantID != "tenant-B" {
+			t.Errorf("tenant-B read a foreign identity: %+v", gotB.Identity)
+		}
+		if _, err := r.Get(ctxTB, hA.ID); !errors.Is(err, tasks.ErrNotFound) {
+			t.Errorf("tenant-B reading tenant-A's task: err=%v, want ErrNotFound", err)
+		}
+
+		// Dedup still WORKS inside each tenant — the fix narrows the key,
+		// it does not disable idempotency.
+		reA, err := r.Spawn(ctxTA, reqA)
+		if err != nil {
+			t.Fatalf("tenant-A genuine retry: %v", err)
+		}
+		if reA.ID != hA.ID || !reA.Reused {
+			t.Errorf("tenant-A retry did not dedup: id=%q reused=%v (want %q true)", reA.ID, reA.Reused, hA.ID)
+		}
+	})
+
+	t.Run("Spawn_DifferentUsersCanReuseKey", func(t *testing.T) {
+		// The user component namespaces the key for the same reason the
+		// tenant does: an idempotency key identifies one CALLER's retry,
+		// and the caller is the whole triple. A session belonging to
+		// exactly one user is an invariant maintained elsewhere; this key
+		// does not lean on it.
+		r, cleanup := factory()
+		defer cleanup()
+
+		idA := identity.Identity{TenantID: "T", UserID: "user-A", SessionID: "collide-S"}
+		idB := identity.Identity{TenantID: "T", UserID: "user-B", SessionID: "collide-S"}
+		ctxUA := mustWithIdentity(idA)
+		ctxUB := mustWithIdentity(idB)
+
+		reqA := freshSpawnReq(identity.Quadruple{Identity: idA})
+		reqA.IdempotencyKey = "collide-key"
+		reqB := freshSpawnReq(identity.Quadruple{Identity: idB})
+		reqB.IdempotencyKey = "collide-key"
+
+		hA, err := r.Spawn(ctxUA, reqA)
+		if err != nil {
+			t.Fatalf("Spawn user-A: %v", err)
+		}
+		hB, err := r.Spawn(ctxUB, reqB)
+		if err != nil {
+			t.Fatalf("colliding (session, key) under a different user must spawn cleanly, got: %v", err)
+		}
+		if hA.ID == hB.ID {
+			t.Fatalf("cross-user idempotency collision: both users share TaskID %q", hA.ID)
+		}
+		if hA.Reused || hB.Reused {
+			t.Errorf("neither spawn is a retry; got A.Reused=%v B.Reused=%v", hA.Reused, hB.Reused)
 		}
 	})
 
