@@ -42,6 +42,7 @@ A real response from a dev Runtime:
   "build_go_version": "go1.26.3",
   "protocol_version": "0.1.0",
   "capabilities": [
+    "caller_memory",
     "events_subscribe",
     "runtime_posture",
     "task_control"
@@ -71,7 +72,7 @@ Two things, both read at attach:
    like `task_control`, `events_subscribe`, `runtime_posture`,
    `topology_snapshot` (the response shape is
    [`RuntimeInfo`](./types.md#runtimeinfo)). Read it and
-   shape your client: the dev Runtime above advertises three capabilities and
+   shape your client: the dev Runtime above advertises four capabilities and
    not `topology_snapshot` — a dashboard that wants the topology projection
    degrades that panel instead of crashing. This is how Harbor's own Console
    composes against stripped-down runtimes; third-party clients get the same

@@ -11,6 +11,13 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
+# The dev bearer is resolved through common.sh's `dev_bearer`, never by a raw
+# ${HARBOR_DEV_TOKEN} read: the raw read is EMPTY outside preflight, so every
+# live leg below degrades to a SKIP while the script still exits 0 — "a SKIP
+# that should be an OK is a bug" (AGENTS.md §4.2 item 5, issue #624).
+# dev_bearer prefers the exported value and falls back to the dev server log.
+HARBOR_DEV_TOKEN="$(dev_bearer)"
+
 if go test -race ./internal/tui/renderers ./internal/tui/tasks ./internal/tui/tools ./internal/tui/artifacts ./internal/tui/events ./internal/tui/interventions ./internal/tui/posture ./internal/tui/app -run 'Test(Registry|Inbox|Derive|State|ActionIntent|ActionMatrix|RuntimeModel_Runtime)' -count=1 >/dev/null; then
     ok "phase 183: renderer/control derivations and N>=100 reuse pass under race"
 else

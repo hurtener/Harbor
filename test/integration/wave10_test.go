@@ -371,9 +371,17 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapToolAnnotations) {
 		t.Fatal("handshake.Accepts(CapToolAnnotations) = false; the Phase 177 tool-annotations surface must appear in the canonical capability set")
 	}
+	// The caller-memory capability (D-374) advertises an additive optional
+	// REQUEST FIELD rather than a method cluster — a client reads its
+	// ABSENCE to identify a Runtime that predates `start.caller_memory` and
+	// would discard the member in silence. Additive, no ProtocolVersion
+	// bump. A §17.6 paired update with this pin.
+	if !h.Accepts(types.CapCallerMemory) {
+		t.Fatal("handshake.Accepts(CapCallerMemory) = false; the caller-memory admission must appear in the canonical capability set")
+	}
 	caps := h.Capabilities
-	if len(caps) != 8 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot, state_snapshots, agent_config, session_lifecycle, tool_annotations}", caps)
+	if len(caps) != 9 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot, state_snapshots, agent_config, session_lifecycle, tool_annotations, caller_memory}", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {

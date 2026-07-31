@@ -63,7 +63,6 @@ func newRegistryWithStore(t *testing.T) (agentcfg.Registry, state.StateStore) {
 
 const tenantT = "t"
 
-//nolint:unparam // test helper — agent id is a fixed fixture across the cases, kept as a param for call-site readability.
 func agentQuad(agentID string) identity.Quadruple {
 	return identity.Quadruple{Identity: identity.Identity{TenantID: tenantT, UserID: reservedUser, SessionID: agentID}}
 }
@@ -81,7 +80,7 @@ func TestStateStore_UserScope_KeyingAndKinds(t *testing.T) {
 	r, st := newRegistryWithStore(t)
 	id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "alice", SessionID: "s"}}
 	const agent = "a1"
-	if _, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("u1")); err != nil {
+	if _, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("u1"), agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("user set: %v", err)
 	}
 	// The user active pointer lives under the REAL (tenant, user)+agent slot
@@ -104,7 +103,7 @@ func TestStateStore_AgentScope_Golden_KindsUnchanged(t *testing.T) {
 	r, st := newRegistryWithStore(t)
 	id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "alice", SessionID: "s"}}
 	const agent = "a1"
-	rev, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, skills("g1"))
+	rev, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, skills("g1"), agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("agent set: %v", err)
 	}
@@ -131,14 +130,14 @@ func TestStateStore_CrossUserIsolation(t *testing.T) {
 	const agent = "a1"
 	a := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "alice", SessionID: "sa"}}
 	b := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "bob", SessionID: "sb"}}
-	aRev, err := r.SetRevision(ctx, a, agent, agentcfg.ConfigScopeUser, skills("alice-only"))
+	aRev, err := r.SetRevision(ctx, a, agent, agentcfg.ConfigScopeUser, skills("alice-only"), agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("alice set: %v", err)
 	}
 	if _, set, err := r.Active(ctx, b, agent, agentcfg.ConfigScopeUser); err != nil || set {
 		t.Fatalf("bob sees alice's variant: set=%v err=%v", set, err)
 	}
-	if _, err := r.Rollback(ctx, b, agent, aRev.RevisionID, agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
+	if _, err := r.Rollback(ctx, b, agent, aRev.RevisionID, agentcfg.ConfigScopeUser, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
 		t.Fatalf("bob rolled back alice's revision: %v", err)
 	}
 	if _, err := r.Diff(ctx, b, agent, aRev.RevisionID, aRev.RevisionID, agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
@@ -161,7 +160,7 @@ func TestStateStore_SentinelCollisionRejected(t *testing.T) {
 	const agent = "a1"
 	// Seed an agent-level revision (the chain the sentinel would alias).
 	admin := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "admin", SessionID: "s"}}
-	if _, err := r.SetRevision(ctx, admin, agent, agentcfg.ConfigScopeAgent, skills("operator-secret")); err != nil {
+	if _, err := r.SetRevision(ctx, admin, agent, agentcfg.ConfigScopeAgent, skills("operator-secret"), agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed agent chain: %v", err)
 	}
 	before, err := st.Load(ctx, agentQuad(agent), kindActive)
@@ -174,7 +173,7 @@ func TestStateStore_SentinelCollisionRejected(t *testing.T) {
 	if _, _, err := r.Active(ctx, sentinel, agent, agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrReservedUser) {
 		t.Fatalf("sentinel Active not rejected: %v", err)
 	}
-	if _, err := r.SetRevision(ctx, sentinel, agent, agentcfg.ConfigScopeUser, skills("attacker")); !errors.Is(err, agentcfg.ErrReservedUser) {
+	if _, err := r.SetRevision(ctx, sentinel, agent, agentcfg.ConfigScopeUser, skills("attacker"), agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrReservedUser) {
 		t.Fatalf("sentinel SetRevision not rejected: %v", err)
 	}
 	// The agent-level active pointer's bytes are unchanged (no read, no clobber).
@@ -194,11 +193,11 @@ func TestStateStore_UserScope_IdempotentReset(t *testing.T) {
 	r := newRegistry(t)
 	id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "alice", SessionID: "s"}}
 	const agent = "a1"
-	r1, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("a", "b"))
+	r1, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("a", "b"), agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set1: %v", err)
 	}
-	r2, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("b", "a"))
+	r2, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("b", "a"), agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set2: %v", err)
 	}
@@ -222,10 +221,10 @@ func TestStateStore_UserScope_ListRevisionsFilter(t *testing.T) {
 	a := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "alice", SessionID: "s"}}
 	b := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "bob", SessionID: "s"}}
 	admin := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "admin", SessionID: "s"}}
-	_, _ = r.SetRevision(ctx, admin, agent, agentcfg.ConfigScopeAgent, skills("agent"))
-	_, _ = r.SetRevision(ctx, a, agent, agentcfg.ConfigScopeUser, skills("a1"))
-	_, _ = r.SetRevision(ctx, a, agent, agentcfg.ConfigScopeUser, skills("a1", "a2"))
-	_, _ = r.SetRevision(ctx, b, agent, agentcfg.ConfigScopeUser, skills("b1"))
+	_, _ = r.SetRevision(ctx, admin, agent, agentcfg.ConfigScopeAgent, skills("agent"), agentcfg.SetOptions{})
+	_, _ = r.SetRevision(ctx, a, agent, agentcfg.ConfigScopeUser, skills("a1"), agentcfg.SetOptions{})
+	_, _ = r.SetRevision(ctx, a, agent, agentcfg.ConfigScopeUser, skills("a1", "a2"), agentcfg.SetOptions{})
+	_, _ = r.SetRevision(ctx, b, agent, agentcfg.ConfigScopeUser, skills("b1"), agentcfg.SetOptions{})
 	aList, err := r.ListRevisions(ctx, a, agent, agentcfg.ConfigScopeUser, 0)
 	if err != nil {
 		t.Fatalf("alice list: %v", err)
@@ -249,7 +248,7 @@ func TestStateStore_UserScope_GuardBranches(t *testing.T) {
 	if _, err := r.Get(bg, id, agent, "", agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
 		t.Errorf("empty-id Get should be ErrRevisionNotFound: %v", err)
 	}
-	if _, err := r.Rollback(bg, id, agent, "", agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
+	if _, err := r.Rollback(bg, id, agent, "", agentcfg.ConfigScopeUser, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
 		t.Errorf("empty-id Rollback should be ErrRevisionNotFound: %v", err)
 	}
 	if _, err := r.Diff(bg, id, agent, "", "x", agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
@@ -259,7 +258,7 @@ func TestStateStore_UserScope_GuardBranches(t *testing.T) {
 	// A cancelled context fails fast on every method (after the cheap guards).
 	cctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := r.SetRevision(cctx, id, agent, agentcfg.ConfigScopeUser, skills("x")); err == nil {
+	if _, err := r.SetRevision(cctx, id, agent, agentcfg.ConfigScopeUser, skills("x"), agentcfg.SetOptions{}); err == nil {
 		t.Error("SetRevision ignored a cancelled ctx")
 	}
 	if _, _, err := r.Active(cctx, id, agent, agentcfg.ConfigScopeUser); err == nil {
@@ -271,7 +270,7 @@ func TestStateStore_UserScope_GuardBranches(t *testing.T) {
 	if _, err := r.ListRevisions(cctx, id, agent, agentcfg.ConfigScopeUser, 0); err == nil {
 		t.Error("ListRevisions ignored a cancelled ctx")
 	}
-	if _, err := r.Rollback(cctx, id, agent, "rev", agentcfg.ConfigScopeUser); err == nil {
+	if _, err := r.Rollback(cctx, id, agent, "rev", agentcfg.ConfigScopeUser, agentcfg.SetOptions{}); err == nil {
 		t.Error("Rollback ignored a cancelled ctx")
 	}
 	if _, err := r.Diff(cctx, id, agent, "a", "b", agentcfg.ConfigScopeUser); err == nil {
@@ -311,9 +310,28 @@ func newRegistry(t *testing.T) agentcfg.Registry {
 	return reg
 }
 
-// TestStateStore_Conformance runs the shared driver conformance suite.
+// TestStateStore_Conformance runs the shared driver conformance suite over the
+// in-memory state driver.
 func TestStateStore_Conformance(t *testing.T) {
-	conformance.Run(t, newRegistry)
+	conformance.Run(t, newRegistry, newFaultyRegistry, newCommittedFaultRegistry)
+}
+
+// TestStateStore_Conformance_SQLite runs the SAME suite — including both
+// partial-write fault arms — over the durable SQLite state driver.
+//
+// The atomicity and compensation rows were armed over the in-memory driver
+// alone, which is one driver's answer to a question the §9 triad owes in
+// parity. The in-memory store is also the weakest possible witness for a
+// residue assertion: "the record survived" and "the record was removed" are
+// answered by a map under the same lock as the writes. SQLite answers them
+// from a file, through a WAL and a real transaction, which is where a
+// compensating delete can plausibly behave differently from its in-memory
+// twin. Postgres is deliberately NOT added blind here — an arm that cannot be
+// executed on this branch is exactly the inert guard this wave keeps finding;
+// the state driver's own DSN-gated conformance already pins Save/Load/Delete
+// parity beneath this layer.
+func TestStateStore_Conformance_SQLite(t *testing.T) {
+	conformance.Run(t, newSQLiteRegistry, newSQLiteFaultyRegistry, newSQLiteCommittedFaultRegistry)
 }
 
 // TestStateStore_TenantIsolation asserts agent_id is a key, not an
@@ -325,10 +343,10 @@ func TestStateStore_TenantIsolation_SameAgentID(t *testing.T) {
 	a := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-a", UserID: "u", SessionID: "s"}}
 	b := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-b", UserID: "u", SessionID: "s"}}
 	const agent = "shared-agent-id"
-	if _, err := r.SetRevision(ctx, a, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"alpha"}}}); err != nil {
+	if _, err := r.SetRevision(ctx, a, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"alpha"}}}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set a: %v", err)
 	}
-	if _, err := r.SetRevision(ctx, b, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"beta"}}}); err != nil {
+	if _, err := r.SetRevision(ctx, b, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"beta"}}}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set b: %v", err)
 	}
 	ra, _, _ := r.Active(ctx, a, agent, agentcfg.ConfigScopeAgent)
@@ -366,12 +384,12 @@ func TestStateStore_ConcurrentReuse(t *testing.T) {
 				TenantID: fmt.Sprintf("tenant-%d", i), UserID: "u", SessionID: "s",
 			}}
 			agent := fmt.Sprintf("agent-%d", i)
-			rev1, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{fmt.Sprintf("skill-%d-a", i)}}})
+			rev1, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{fmt.Sprintf("skill-%d-a", i)}}}, agentcfg.SetOptions{})
 			if err != nil {
 				errs <- fmt.Errorf("set1 %d: %w", i, err)
 				return
 			}
-			rev2, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{fmt.Sprintf("skill-%d-a", i), fmt.Sprintf("skill-%d-b", i)}}})
+			rev2, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{fmt.Sprintf("skill-%d-a", i), fmt.Sprintf("skill-%d-b", i)}}}, agentcfg.SetOptions{})
 			if err != nil {
 				errs <- fmt.Errorf("set2 %d: %w", i, err)
 				return
@@ -422,13 +440,13 @@ func TestStateStore_NewRevisionAfterRollbackChainsFromActive(t *testing.T) {
 	r := newRegistry(t)
 	id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
 	const agent = "a"
-	rev1, _ := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"a"}}})
-	_, _ = r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"a", "b"}}})
-	if _, err := r.Rollback(ctx, id, agent, rev1.RevisionID, agentcfg.ConfigScopeAgent); err != nil {
+	rev1, _ := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"a"}}}, agentcfg.SetOptions{})
+	_, _ = r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"a", "b"}}}, agentcfg.SetOptions{})
+	if _, err := r.Rollback(ctx, id, agent, rev1.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	// A new revision after rollback chains from rev1 (the now-active).
-	rev3, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"a", "z"}}})
+	rev3, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"a", "z"}}}, agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set rev3: %v", err)
 	}
@@ -453,7 +471,7 @@ func TestStateStore_Hooks_RoundTrip_SectionMerge_Diff_Rollback(t *testing.T) {
 	rev1, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"s1"}},
 		Hooks:  &agentcfg.HooksSection{RunCompletion: &agentcfg.RunCompletionHook{Tool: "sink-a", TimeoutMS: 5000}},
-	})
+	}, agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set rev1: %v", err)
 	}
@@ -473,7 +491,7 @@ func TestStateStore_Hooks_RoundTrip_SectionMerge_Diff_Rollback(t *testing.T) {
 	rev2, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"s1"}},
 		Hooks:  &agentcfg.HooksSection{RunCompletion: &agentcfg.RunCompletionHook{Tool: "sink-b", TimeoutMS: 5000}},
-	})
+	}, agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set rev2: %v", err)
 	}
@@ -498,7 +516,7 @@ func TestStateStore_Hooks_RoundTrip_SectionMerge_Diff_Rollback(t *testing.T) {
 	}
 
 	// Rollback to rev1 → active hook is sink-a again.
-	if _, err := r.Rollback(ctx, id, agent, rev1.RevisionID, agentcfg.ConfigScopeAgent); err != nil {
+	if _, err := r.Rollback(ctx, id, agent, rev1.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	active2, _, err := r.Active(ctx, id, agent, agentcfg.ConfigScopeAgent)

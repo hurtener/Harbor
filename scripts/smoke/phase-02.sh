@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: static-only
-# Phase 02 — configuration loader smoke.
-# The config package has no HTTP surface; correctness is validated by go test.
-# This script exists so the drift-audit's plan↔smoke pairing rule is satisfied
-# and so `make preflight` accounting includes phase 02.
+# PREFLIGHT_REQUIRES: unit-tests
+# Phase 02 smoke — configuration loader.
+#
+# The config package has no HTTP surface, but `make preflight` does not run
+# `go test`, so a skip-only script left this shipped phase with zero preflight
+# coverage (AGENTS.md §4.2 item 5). Shape follows scripts/smoke/phase-05.sh:
+# one NAMED test, so its rename or deletion fails preflight loud.
+#
+# The defaults golden is the right thing to pin here — it is what makes a
+# silently changed default (the config equivalent of a wire-shape drift)
+# visible.
 
 set -euo pipefail
 
@@ -13,6 +19,15 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-skip "phase 02: config package validated by go test (no HTTP surface)"
+# Per-phase log path — the unit-tests batch runs concurrently.
+LOG="${TMPDIR:-/tmp}/harbor-smoke-phase-02-go-test.log"
+
+if [ -d "internal/config" ]; then
+    assert_go_tests_pass "${LOG}" './internal/config/...' \
+        'phase 02: config defaults golden intact' \
+        TestDefaults_BaselineGolden
+else
+    skip 'phase 02: internal/config absent (package not yet implemented)'
+fi
 
 smoke_summary

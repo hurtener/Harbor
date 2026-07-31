@@ -64,7 +64,7 @@ func selRegistryWithTwoAgents(t *testing.T, q identity.Quadruple) agentcfg.Regis
 		Skills:       &agentcfg.SkillsSelection{Names: []string{"boot-skill"}},
 		Hooks:        &agentcfg.HooksSection{RunCompletion: &agentcfg.RunCompletionHook{Tool: "boot_hook"}},
 		Naming:       &agentcfg.NamingSection{Auto: true, MaxTitleLen: 40},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("SetRevision(boot): %v", err)
 	}
 	if _, err := reg.SetRevision(ctx, q, selNamedAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
@@ -73,7 +73,7 @@ func selRegistryWithTwoAgents(t *testing.T, q identity.Quadruple) agentcfg.Regis
 		Skills:       &agentcfg.SkillsSelection{Names: []string{"named-skill"}},
 		Hooks:        &agentcfg.HooksSection{RunCompletion: &agentcfg.RunCompletionHook{Tool: "named_hook"}},
 		Naming:       &agentcfg.NamingSection{Auto: true, MaxTitleLen: 90},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("SetRevision(named): %v", err)
 	}
 	return reg

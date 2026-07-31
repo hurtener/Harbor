@@ -71,7 +71,7 @@ func seedConnectionsWithOrigins(t *testing.T, reg agentcfg.Registry, name string
 	payload := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{
 		{Name: name, Transport: agentcfg.MCPTransportHTTP, URL: "https://example.invalid/" + name, OAuthDiscoveryAllowedOrigins: origins},
 	}}}
-	if _, err := reg.SetRevision(context.Background(), projID(), projAgent, agentcfg.ConfigScopeAgent, payload); err != nil {
+	if _, err := reg.SetRevision(context.Background(), projID(), projAgent, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 }

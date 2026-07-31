@@ -68,7 +68,110 @@ var (
 	// to the reserved internal sentinel ("__agentcfg__"); fails closed so the
 	// per-user key space can never alias onto the agent-level chain.
 	ErrReservedUser = errors.New("agentcfg: user id collides with the reserved internal slot")
+	// ErrRevisionConflict — a conditional write declared an expected
+	// content hash (SetOptions.ExpectedContentHash) and the agent's active
+	// revision no longer carries it, or there is no active revision at all.
+	// NOTHING is persisted: no revision record, no active-pointer move, no
+	// emitted event. The caller re-reads the active revision and retries.
+	ErrRevisionConflict = errors.New("agentcfg: revision conflict")
 )
+
+// ExpectNoActiveRevision is the reserved [SetOptions.ExpectedContentHash]
+// value meaning "I read this agent BEFORE it had any config, and I expect it
+// STILL to have none." It succeeds only when the agent has no active
+// revision, and is refused with [ErrRevisionConflict] the moment any
+// revision exists.
+//
+// # Why a sentinel exists at all
+//
+// The composition protocol the expected-revision token serves is: read,
+// modify, write back with the read revision's content hash, so a concurrent
+// sibling's write is refused rather than silently reverted. That protocol had
+// no expressible form at its OWN base case. On an agent with no config,
+// `agent_config.get` answers `set:false` with no hash to echo, and every
+// non-empty token was refused — so the only token a first contributor could
+// send was the empty one, which means "unconditional". Two contributors
+// composing onto a fresh agent therefore BOTH wrote unconditionally and the
+// second silently reverted the first: exactly the lost update the token
+// exists to prevent, on the one write where a caller had no way to opt out.
+//
+// # Why this value
+//
+// A content hash is [ContentHash]'s output: exactly 64 lowercase hex
+// characters. "-" is not a possible hash, so the sentinel can never collide
+// with a real expectation no matter what payload is written — the property a
+// sentinel living inside a hash-shaped field must have, and it is asserted by
+// a test rather than argued.
+//
+// Returning a zero-state token from the READ instead was considered and
+// rejected: it changes `agent_config.get`'s response shape (a new field on
+// every read, mirrored into the Console client and the generated reference)
+// to carry a value that would still have to be a reserved non-hash string —
+// the same sentinel, plus a wire-shape change, plus a second place for it to
+// drift.
+//
+// It is ADDITIVE. An absent token is still the unconditional write, and a
+// 64-hex token still behaves exactly as it did.
+const ExpectNoActiveRevision = "-"
+
+// SetOptions carries the optional preconditions a durable spine write
+// (SetRevision / Rollback) may declare. The ZERO value is the
+// unconditional write — byte-for-byte the behaviour that shipped before
+// this option existed, on every door.
+type SetOptions struct {
+	// ExpectedContentHash, when non-empty, requires the agent's ACTIVE
+	// revision to carry exactly this content hash at write time. A
+	// mismatch — or no active revision at all — fails with
+	// ErrRevisionConflict and persists nothing.
+	//
+	// The reserved value [ExpectNoActiveRevision] ("-") inverts the
+	// no-active-revision arm: it REQUIRES the agent to have no active
+	// revision, and is refused once one exists. It is what makes the
+	// read-modify-write composition protocol expressible at its base case,
+	// where a read answers `set:false` and there is no hash to echo. A real
+	// content hash is 64 lowercase hex characters, so the sentinel can never
+	// collide with one.
+	//
+	// The expectation is compared against the content hash, not the
+	// revision id, because a rollback repoints the active pointer WITHOUT
+	// changing the content: a revision-id token would raise a false
+	// conflict on the restore path. The guarded quantity is a value, so
+	// the token is a value.
+	//
+	// # The bound on the guarantee — read this before relying on it
+	//
+	// The comparison is atomic against every other spine writer IN THIS
+	// PROCESS, via the agent-config service's per-owner striped write
+	// lock, which is held across each door's whole read-modify-write.
+	//
+	// It is NOT atomic across Runtime processes sharing one StateStore.
+	// The StateStore has no compare-and-swap primitive — its own
+	// interface godoc says it does not enforce CAS — and the active
+	// pointer is written with a fresh event id on every save, so the slot
+	// is overwritten unconditionally. Two Runtime processes sharing one
+	// Postgres or SQLite store CAN STILL LOSE AN UPDATE, and this option
+	// does not claim otherwise. Closing that gap needs a conditional-write
+	// primitive on the StateStore interface across the persistence triad;
+	// it is a separate change and is not pretended here.
+	//
+	// What the bounded guarantee is still worth: the window it closes is
+	// the READ-TO-WRITE window — seconds to minutes for a human editing a
+	// config in the Console, and however long an agent takes to compose
+	// one. The window it cannot close cross-process is the driver's own
+	// read-modify-write, on the order of microseconds. Single-process the
+	// guard is exact; multi-process it is a large reduction in loss
+	// probability and not an elimination.
+	//
+	// # It constrains only the writer that supplies it
+	//
+	// An unconditional writer can still clobber a conditional one, by
+	// design: the token is a precondition on this write, never a lock on
+	// the agent. A caller wanting exclusivity needs every writer of that
+	// agent's config to participate, which is a deployment convention and
+	// not something the runtime enforces — making the token mandatory
+	// would break every caller that does not send one.
+	ExpectedContentHash string
+}
 
 // ConfigScope is the durable-config ownership discriminator. One Registry
 // implementation serves two keyings: the admin/tenant durable config (keyed
@@ -123,6 +226,60 @@ type PromptLayers struct {
 	// ABOVE the base without mutating it (the composition order is the
 	// security boundary — the agent-config authorization model).
 	User *string `json:"user,omitempty"`
+}
+
+// NamedBlock is one named, operator-authored unit of additive prompt text
+// held in the ExtraSystemBlocks section. The Name is the ADDRESS a
+// contributor uses to find and replace exactly its own contribution; the
+// Body is rendered verbatim.
+type NamedBlock struct {
+	// Name addresses the block within the section. It is unique within the
+	// section and drawn from a restricted identifier charset so it stays
+	// legible in a transcript and in a diff. It is NEVER emitted as an XML
+	// tag — attribution here is a data-model property, not a prompt-syntax
+	// one, so the prompt's structural taxonomy never becomes a function of
+	// caller input.
+	Name string `json:"name"`
+	// Body is the block's prompt text. It renders VERBATIM (unescaped) in
+	// the operator-trusted additive position — see ExtraSystemBlocks for
+	// the trust argument and the obligation it creates.
+	Body string `json:"body"`
+}
+
+// ExtraSystemBlocks is the ORDERED list of named, operator-authored
+// additive prompt blocks pinned by a config revision. It exists so N
+// independent capability sources can each contribute — and later remove —
+// exactly their own text, without any of them having to re-derive the
+// others' contributions from prose.
+//
+// # Order is SEMANTIC
+//
+// The declared slice order IS the render order, so the canonical form
+// PRESERVES it and a re-ordering is a real new revision with a different
+// ContentHash and a visible diff. This is the deliberate asymmetry with
+// SkillsSelection.Names (sortDedup'd) and OAuthProvidersSection.Providers
+// (sorted by name): for those, order is not semantic and a re-ordering
+// must NOT perturb the hash. Sorting blocks would silently re-order an
+// operator's prompt and hide the change from the diff.
+//
+// # Trust — argued from the write door
+//
+// The section has exactly ONE write door, and it sits in the admin method
+// set — the same tier that writes PromptLayers.Base, which is already
+// rendered verbatim and is strictly more powerful (it is the whole spine).
+// Blocks therefore render VERBATIM, unescaped, each preceded by a
+// plain-text `[name]` label. Contrast PromptLayers.User, which IS escaped
+// precisely because a claim-free session path can write it.
+//
+// The obligation this creates, stated rather than engineered away:
+// ESCAPING IS NOT THE BOUNDARY HERE — the write door's authority tier is.
+// A capability that wants to surface user-authored or model-authored text
+// MUST NOT put it in a block; it uses the UNTRUSTED-framed memory tiers or
+// PromptLayers.User instead.
+type ExtraSystemBlocks struct {
+	// Blocks is the ordered list. A slice, never a map: map iteration order
+	// is not a composition order.
+	Blocks []NamedBlock `json:"blocks"`
 }
 
 // ToolExposure is the forward-compatible tool/MCP-exposure section of the
@@ -526,6 +683,10 @@ type ConfigPayload struct {
 	LLMParams      *LLMParams             `json:"llm_params,omitempty"`
 	Hooks          *HooksSection          `json:"hooks,omitempty"`
 	Naming         *NamingSection         `json:"naming,omitempty"`
+	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
+	// named additive prompt blocks. Absent (nil) contributes nothing and
+	// leaves the system prompt byte-identical.
+	ExtraSystemBlocks *ExtraSystemBlocks `json:"extra_system_blocks,omitempty"`
 }
 
 // Revision is an immutable, content-addressed agent-config record with a
@@ -592,6 +753,10 @@ type Diff struct {
 	// Naming is the per-field delta of the session auto-naming policy
 	// section.
 	Naming NamingDiff
+	// ExtraSystemBlocks is the structured delta of the ordered additive
+	// prompt blocks (added / removed / body-changed by name, plus the
+	// order-only reorder flag).
+	ExtraSystemBlocks ExtraSystemBlocksDiff
 }
 
 // Registry is the durable, identity-scoped, versioned desired-state
@@ -602,7 +767,15 @@ type Registry interface {
 	// advances the active pointer to it. An idempotent re-set of
 	// byte-identical canonical content (relative to the current active
 	// revision) is a no-op that returns the existing active revision.
-	SetRevision(ctx context.Context, id identity.Quadruple, agentID string, scope ConfigScope, payload ConfigPayload) (Revision, error)
+	//
+	// opts carries the optional precondition. Its zero value is the
+	// unconditional write. When opts.ExpectedContentHash is set, the
+	// precondition is evaluated BEFORE the idempotent-re-set
+	// short-circuit, so a stale expectation is never converted into a
+	// misleading success by a payload that happens to equal the current
+	// content; a failed precondition returns ErrRevisionConflict and
+	// persists nothing.
+	SetRevision(ctx context.Context, id identity.Quadruple, agentID string, scope ConfigScope, payload ConfigPayload, opts SetOptions) (Revision, error)
 	// Active returns the agent's current active revision and whether one
 	// exists. No active pointer returns (zero, false, nil).
 	Active(ctx context.Context, id identity.Quadruple, agentID string, scope ConfigScope) (Revision, bool, error)
@@ -616,7 +789,12 @@ type Registry interface {
 	// Rollback writes a new active pointer to an existing revision
 	// WITHOUT mutating or deleting any revision. A missing target fails
 	// loud with ErrRevisionNotFound.
-	Rollback(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope ConfigScope) (Revision, error)
+	//
+	// opts carries the same optional precondition SetRevision takes: when
+	// opts.ExpectedContentHash is set, the CURRENTLY-ACTIVE revision must
+	// carry that content hash or the repoint is refused with
+	// ErrRevisionConflict and the pointer is left where it was.
+	Rollback(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope ConfigScope, opts SetOptions) (Revision, error)
 	// Diff returns the deterministic compare of two existing revisions.
 	Diff(ctx context.Context, id identity.Quadruple, agentID, fromRev, toRev string, scope ConfigScope) (Diff, error)
 	// Close releases resources. Idempotent.
@@ -707,6 +885,16 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 			}
 		}
 		out.Hooks = hs
+	}
+	if p.ExtraSystemBlocks != nil {
+		// ORDER-PRESERVING by construction. normalizeNamedBlocks trims and
+		// de-duplicates but NEVER sorts — the declared order is the render
+		// order, so a re-ordering must change the content hash and appear in
+		// the diff. An all-empty section drops out of the canonical form.
+		blocks := normalizeNamedBlocks(p.ExtraSystemBlocks.Blocks)
+		if len(blocks) > 0 {
+			out.ExtraSystemBlocks = &ExtraSystemBlocks{Blocks: blocks}
+		}
 	}
 	if p.Naming != nil {
 		// A non-nil naming section is ALWAYS preserved (model trimmed to the
@@ -814,6 +1002,46 @@ func normalizeConnections(in []MCPConnectionDescriptor) []MCPConnectionDescripto
 	out := make([]MCPConnectionDescriptor, 0, len(names))
 	for _, n := range names {
 		out = append(out, byName[n])
+	}
+	return out
+}
+
+// normalizeNamedBlocks returns a name-unique copy of the additive prompt
+// blocks IN THEIR DECLARED ORDER. Blocks with an empty (or whitespace-only)
+// name or body are dropped — a phantom block never perturbs the content
+// hash. The FIRST occurrence of a name wins and holds its position (the
+// write door refuses a duplicate outright, so this is a defensive
+// canonicalisation for the direct SetRevision door, not a merge rule).
+//
+// It deliberately does NOT sort. Skills.Names is sortDedup'd and
+// OAuthProviders is sorted by name, both because "a re-ordering of a set
+// does not change the hash" (ContentHash's own godoc). For blocks a
+// re-ordering DOES change the rendered prompt, so it MUST change the hash.
+// Adding a sort here — to make the section "consistent with its siblings" —
+// is the mutation the order-preservation and order-is-semantic tests exist
+// to turn red.
+//
+// A nil input returns nil; an all-dropped input returns nil so an
+// all-empty section drops out of the canonical form.
+func normalizeNamedBlocks(in []NamedBlock) []NamedBlock {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]NamedBlock, 0, len(in))
+	for _, b := range in {
+		name := strings.TrimSpace(b.Name)
+		if name == "" || strings.TrimSpace(b.Body) == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, NamedBlock{Name: name, Body: b.Body})
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -1069,6 +1297,96 @@ func (p ConfigPayload) LLMParamsView() (*LLMParams, bool) {
 		return nil, false
 	}
 	return p.LLMParams, true
+}
+
+// ExtraSystemBlockList returns the agent's ordered additive prompt blocks
+// from a payload, or nil when the payload pins no blocks section. The
+// returned slice is the payload's own (read-only) backing array — callers
+// that mutate must copy first. A convenience for the run-start projection
+// and the diff.
+func (p ConfigPayload) ExtraSystemBlockList() []NamedBlock {
+	if p.ExtraSystemBlocks == nil {
+		return nil
+	}
+	return p.ExtraSystemBlocks.Blocks
+}
+
+// ExtraSystemBlocksDiff is the structured delta of the additive prompt
+// blocks across two revisions. Added / Removed / Changed are sorted so the
+// diff is deterministic; Reordered is the ORDER-only signal that has no
+// analogue on the sorted sibling sections, and it is the reason the
+// normalizer must not sort.
+type ExtraSystemBlocksDiff struct {
+	// Added are the block names present only in the to-revision.
+	Added []string
+	// Removed are the block names present only in the from-revision.
+	Removed []string
+	// Changed are the names present in both whose BODY differs.
+	Changed []string
+	// Reordered reports that the two revisions carry the SAME name set in a
+	// DIFFERENT order. Order is render order, so a pure re-ordering is a
+	// real prompt change and must be visible in the diff.
+	Reordered bool
+}
+
+// Changed reports whether the blocks section differs between the two
+// revisions, including an order-only change.
+func (d ExtraSystemBlocksDiff) HasChanges() bool {
+	return len(d.Added) > 0 || len(d.Removed) > 0 || len(d.Changed) > 0 || d.Reordered
+}
+
+// DiffExtraSystemBlocks computes the structured delta of two block
+// sections. Exported so the diff is one canonical implementation shared by
+// the driver and tests. An absent section compares as an empty list.
+func DiffExtraSystemBlocks(from, to ConfigPayload) ExtraSystemBlocksDiff {
+	fromBlocks := from.ExtraSystemBlockList()
+	toBlocks := to.ExtraSystemBlockList()
+
+	fromBody := make(map[string]string, len(fromBlocks))
+	fromOrder := make([]string, 0, len(fromBlocks))
+	for _, b := range fromBlocks {
+		fromBody[b.Name] = b.Body
+		fromOrder = append(fromOrder, b.Name)
+	}
+	toBody := make(map[string]string, len(toBlocks))
+	toOrder := make([]string, 0, len(toBlocks))
+	for _, b := range toBlocks {
+		toBody[b.Name] = b.Body
+		toOrder = append(toOrder, b.Name)
+	}
+
+	var d ExtraSystemBlocksDiff
+	for _, name := range toOrder {
+		body, ok := fromBody[name]
+		switch {
+		case !ok:
+			d.Added = append(d.Added, name)
+		case body != toBody[name]:
+			d.Changed = append(d.Changed, name)
+		}
+	}
+	for _, name := range fromOrder {
+		if _, ok := toBody[name]; !ok {
+			d.Removed = append(d.Removed, name)
+		}
+	}
+	sort.Strings(d.Added)
+	sort.Strings(d.Removed)
+	sort.Strings(d.Changed)
+
+	// Reordered is the SAME-NAME-SET, different-position signal. It is
+	// computed only when neither side added nor removed a name, so an
+	// add/remove that necessarily shifts positions does not also raise a
+	// misleading reorder flag.
+	if len(d.Added) == 0 && len(d.Removed) == 0 {
+		for i := range toOrder {
+			if fromOrder[i] != toOrder[i] {
+				d.Reordered = true
+				break
+			}
+		}
+	}
+	return d
 }
 
 // PromptLayersDiff is the text delta of the base + user prompt layers

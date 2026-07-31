@@ -197,7 +197,8 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 	appliedLive := s.discoveryApplier != nil
 	applyErr, emitErr := adminwrite.Apply(
 		func() (revert func() error, err error) {
-			written, recErr := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)
+			written, recErr := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,
+				agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 			if recErr != nil {
 				return nil, recErr
 			}
@@ -222,7 +223,7 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 					// caller must SEE rather than a silent degrade to a revision-only
 					// write — roll the just-written revision back so the call has NO
 					// observable effect, then return the apply error.
-					if _, rbErr := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent); rbErr != nil {
+					if _, rbErr := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent, compensatingWrite()); rbErr != nil {
 						return nil, fmt.Errorf("live allow-list apply failed AND revision rollback failed (state may be inconsistent): %w", errors.Join(setErr, rbErr))
 					}
 					return nil, setErr
@@ -239,7 +240,7 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 						errs = append(errs, e)
 					}
 				}
-				if _, e := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent); e != nil {
+				if _, e := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent, compensatingWrite()); e != nil {
 					errs = append(errs, e)
 				}
 				return errors.Join(errs...)
@@ -290,6 +291,9 @@ func (s *Service) rebuildWithDiscoveryOrigins(active agentcfg.Revision, hasActiv
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
+		// The ordered additive prompt blocks are a sibling section like any
+		// other: this verb replaces only its own, so the blocks survive.
+		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		payload.OAuthProviders = active.Payload.OAuthProviders
 	}
 	if len(servers) > 0 {

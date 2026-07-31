@@ -105,8 +105,15 @@ type StartRequest struct {
 	// default priority.
 	Priority int `json:"priority,omitempty"`
 	// IdempotencyKey, when non-empty, deduplicates the spawn: a second
-	// `start` with the same key (namespaced by session) returns the
-	// existing task handle with Reused=true. Empty disables dedup.
+	// `start` with the same key returns the existing task handle with
+	// Reused=true. Empty disables dedup.
+	//
+	// The key is namespaced by the caller's FULL identity triple
+	// (tenant, user, session), not by the session alone: it identifies
+	// one caller's retry, and a caller is the whole triple. Two callers
+	// on opposite sides of an isolation boundary can present the same
+	// key — even against the same session id — and each gets its own
+	// task, never a reused handle and never a conflict.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// InputArtifactIDs attach operator-uploaded
 	// artifacts as multimodal inputs the run consumes on its first
@@ -155,7 +162,8 @@ type StartRequest struct {
 	// the envelope. Step boundaries and tool-dispatch events stream as
 	// today. A documented behaviour choice, not a surprise.
 	//
-	// Idempotency: `start` dedupes on `(session, idempotency_key)` and
+	// Idempotency: `start` dedupes on
+	// `(tenant, user, session, idempotency_key)` and
 	// folds `output_schema` into the task's content identity — a genuine
 	// retry (same body, same schema) returns the existing handle; a
 	// REUSED key with a DIFFERENT schema is caller misuse and is rejected
@@ -184,6 +192,77 @@ type StartRequest struct {
 	// field. The two agent-id carriers on a run are deliberately
 	// distinct and must not be unified.
 	AgentID string `json:"agent_id,omitempty"`
+	// CallerMemory is caller-supplied content admitted into the run's
+	// `<read_only_external_memory>` tier under the FIXED runtime-owned
+	// `caller_supplied` map key. It is the ONE additive path for putting
+	// retrieved, caller-held content in front of the model; the tier it
+	// lands in ships a five-line anti-prompt-injection preamble whose
+	// entire premise is that its contents are hostile.
+	//
+	// It COMPOSES with the runtime's own retrieval rather than replacing
+	// it: the External tier renders a map, the runtime writes its own
+	// keys, and this field contributes exactly one more. The caller names
+	// NO key — it supplies only the value — so a caller can never shadow,
+	// rename or displace a runtime-written key, and a runtime producer can
+	// never collide with a caller.
+	//
+	// SCOPE — it can reach exactly one prompt position. It never reaches
+	// the trusted system-prompt spine (that is what SystemPromptOverride
+	// does, and why this field exists), and it never writes the
+	// conversation-memory tier, which is a claim about the session's
+	// stored turns that only the runtime may make.
+	//
+	// Any valid JSON value is accepted — an object, an array, a string, a
+	// number. An explicit `null` is REFUSED rather than treated as absent:
+	// a caller that believes its memory reached the model when it did not
+	// is the silent degradation this field exists to avoid. A document
+	// larger than the 32 KiB Protocol-edge cap is REFUSED with
+	// CodeInvalidRequest before a task exists, and the refusal names this
+	// field. Absent (the backward-compatible default) → byte-identical
+	// wire shape and run behaviour.
+	//
+	// THE CAP IS A RESOURCE BOUND AND WIRE-SIZE GUARD, NOT A SECURITY
+	// BOUNDARY, and nothing may be inferred from it about how much content
+	// a caller can put in front of the model — the same principal can send
+	// substantially more through `Query` (uncapped below the transport
+	// envelope, landing in the unframed conversation position) or through
+	// `agent_config.session.set_user_prompt` (claim-free, 1 MiB body,
+	// landing INSIDE the system prompt). What contains this payload is the
+	// tier it lands in, not its size. The reasoning is on
+	// `maxCallerMemoryBytes`.
+	//
+	// NEGOTIATE BEFORE YOU RELY ON IT. A Runtime that predates this field
+	// discards the member and answers success — the run then proceeds
+	// without the memory the caller believes it supplied. This transport
+	// now decodes strictly, so such a member is refused loudly from here
+	// forward, but that cannot reach an already-deployed older Runtime. A
+	// client checks `VersionHandshake.Accepts(CapCallerMemory)` (or the
+	// `runtime.info.capabilities` list) and treats the capability's ABSENCE
+	// as "unsupported" rather than discovering the loss after the fact.
+	//
+	// Idempotency: `caller_memory` folds into the task's content identity,
+	// so a reused idempotency key carrying DIFFERENT memory is a loud
+	// conflict rather than a silent adoption of the first payload.
+	//
+	// AT REST: the payload is PERSISTED on the task record, which the
+	// StateStore writes to disk. It goes through the audit redactor on the
+	// way in — the same one Description and Query take, so the three
+	// caller-controlled fields on a task are consistent rather than one of
+	// them silently raw — and the redacted form is what both the store and
+	// the prompt see (exactly as for Query). A payload that is not valid
+	// JSON is refused loud and persists nothing.
+	//
+	// RESIDUAL RISK, stated rather than implied: that redactor is a
+	// PATTERN redactor, not a sanitiser. It replaces secret-shaped KEYS
+	// (api_key / password / secret / token / cookie / authorization) and
+	// inline `Bearer …` / `Basic …` VALUES anywhere in the document, and it
+	// does nothing else — it does not detect PII, it does not detect a
+	// credential that looks like ordinary prose, and it cannot make hostile
+	// text safe. The untrusted prompt framing remains the mitigation for
+	// prompt injection. An operator who pipes third-party content through
+	// `caller_memory` still has a data-leakage path no prompt wrapper and
+	// no pattern redactor closes.
+	CallerMemory json.RawMessage `json:"caller_memory,omitempty"`
 }
 
 // StartResponse is the wire response for the `start` Protocol method.

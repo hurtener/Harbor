@@ -108,7 +108,7 @@ func (s *Service) UserSkillsUpsert(ctx context.Context, req prototypes.AgentConf
 	if err != nil {
 		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
 	}
-	rev, err := s.recordUserSkillsMembership(ctx, q, req.AgentID, addName, skill.Name)
+	rev, err := s.recordUserSkillsMembership(ctx, q, req.AgentID, addName, skill.Name, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
 	}
@@ -144,7 +144,7 @@ func (s *Service) UserSkillsDelete(ctx context.Context, req prototypes.AgentConf
 	}
 	// Remove the name from the durable ConfigScopeUser membership so the
 	// revision never lists a name whose body is gone.
-	rev, err := s.recordUserSkillsMembership(ctx, q, req.AgentID, removeName, req.Name)
+	rev, err := s.recordUserSkillsMembership(ctx, q, req.AgentID, removeName, req.Name, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err
 	}
@@ -179,7 +179,7 @@ func (s *Service) userScopeSkillByName(ctx context.Context, q identity.Quadruple
 // the user's durable prompt layer or narrow-only disables. Serialised
 // per-owner (ConfigScopeUser, tenant, real-user, agent) so distinct users
 // never contend. This is the user-scope analogue of recordSkillsMembership.
-func (s *Service) recordUserSkillsMembership(ctx context.Context, q identity.Quadruple, agentID string, op membershipOp, name string) (agentcfg.Revision, error) {
+func (s *Service) recordUserSkillsMembership(ctx context.Context, q identity.Quadruple, agentID string, op membershipOp, name string, opts agentcfg.SetOptions) (agentcfg.Revision, error) {
 	defer s.lockOwner(agentcfg.ConfigScopeUser, q.TenantID, q.UserID, agentID)()
 	active, hasActive, err := s.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeUser)
 	if err != nil {
@@ -212,5 +212,5 @@ func (s *Service) recordUserSkillsMembership(ctx context.Context, q identity.Qua
 		payload.PromptLayers = active.Payload.PromptLayers
 		payload.ToolExposure = active.Payload.ToolExposure
 	}
-	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeUser, payload)
+	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeUser, payload, opts)
 }

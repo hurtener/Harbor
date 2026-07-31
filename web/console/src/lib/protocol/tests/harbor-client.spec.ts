@@ -232,7 +232,20 @@ describe('search.query namespace (Phase 108b)', () => {
 		const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
 		expect(url).toBe('http://127.0.0.1:18080/v1/control/search.query');
 		const body = JSON.parse(init.body as string);
-		expect(body.identity).toEqual(CONNECTION.identity);
+		// The body carries NO `identity` member, and this assertion is
+		// inverted from what it originally read (D-374). It used to assert
+		// `body.identity` EQUALLED the connection identity — encoding the bug:
+		// `SearchRequest` declares no `identity` field, it scopes through
+		// `filter`, and the Runtime's control transport now decodes strictly,
+		// so a folded `identity` is refused `unknown field "identity"` (400).
+		// The member was accepted and discarded before the strict decode landed,
+		// which is why a test could assert its presence and still pass.
+		expect(body).not.toHaveProperty('identity');
+		// Identity is not lost — it rides the headers, which is what the
+		// handler's `resolveIdentity` reads.
+		const headers = init.headers as Record<string, string>;
+		expect(headers['X-Harbor-Tenant']).toBe(CONNECTION.identity.tenant);
+		expect(headers['X-Harbor-User']).toBe(CONNECTION.identity.user);
 		expect(body.query).toBe('youtube');
 		expect(body.page_size).toBe(8);
 	});

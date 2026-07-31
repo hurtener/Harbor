@@ -67,7 +67,7 @@ func (r *countingFailRegistry) Active(context.Context, identity.Quadruple, strin
 	return agentcfg.Revision{}, false, nil
 }
 
-func (r *countingFailRegistry) SetRevision(context.Context, identity.Quadruple, string, agentcfg.ConfigScope, agentcfg.ConfigPayload) (agentcfg.Revision, error) {
+func (r *countingFailRegistry) SetRevision(context.Context, identity.Quadruple, string, agentcfg.ConfigScope, agentcfg.ConfigPayload, agentcfg.SetOptions) (agentcfg.Revision, error) {
 	return agentcfg.Revision{}, errInjected
 }
 
@@ -79,7 +79,7 @@ func (r *countingFailRegistry) ListRevisions(context.Context, identity.Quadruple
 	return nil, errInjected
 }
 
-func (r *countingFailRegistry) Rollback(context.Context, identity.Quadruple, string, string, agentcfg.ConfigScope) (agentcfg.Revision, error) {
+func (r *countingFailRegistry) Rollback(context.Context, identity.Quadruple, string, string, agentcfg.ConfigScope, agentcfg.SetOptions) (agentcfg.Revision, error) {
 	return agentcfg.Revision{}, errInjected
 }
 
@@ -245,19 +245,20 @@ func TestRunOne_PromptLayersProjectionError_FailsRun(t *testing.T) {
 }
 
 // TestRunOne_HookProjectionError_FailsRun — the run-completion-hook read (the
-// fourth Active read: LLM overrides, then the prompt-layer projection's agent
-// + user scopes, then the hook) fails the run LOUD.
+// FIFTH Active read: LLM overrides, then the prompt-layer projection's agent
+// + user scopes, then the additive-prompt-blocks read that rides the same
+// seam, then the hook) fails the run LOUD.
 func TestRunOne_HookProjectionError_FailsRun(t *testing.T) {
 	env := newFailDriverEnv(t)
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.AgentConfig = &countingFailRegistry{failAt: 4}
+		o.AgentConfig = &countingFailRegistry{failAt: 5}
 		o.AgentConfigID = "fail-agent"
 	})
 	spawnAndAwaitFailure(t, env.reg, nil, planner.TaskErrorCodeRunLoopError, "run-completion-hook projection failed")
 }
 
 // TestRunOne_NamingProjectionError_FailsRun — the naming-policy read (the
-// fifth Active read, reached only when the naming deps are wired) fails the
+// SIXTH Active read, reached only when the naming deps are wired) fails the
 // run LOUD.
 func TestRunOne_NamingProjectionError_FailsRun(t *testing.T) {
 	env := newFailDriverEnv(t)
@@ -274,7 +275,7 @@ func TestRunOne_NamingProjectionError_FailsRun(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sessReg.CloseRegistry(context.Background()) })
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.AgentConfig = &countingFailRegistry{failAt: 5}
+		o.AgentConfig = &countingFailRegistry{failAt: 6}
 		o.AgentConfigID = "fail-agent"
 		o.SessionTitler = sessReg
 		o.NamingLLM = namingCompleterFunc(func(_ context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {

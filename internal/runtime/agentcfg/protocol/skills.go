@@ -81,7 +81,7 @@ func (s *Service) SkillsUpsert(ctx context.Context, req prototypes.AgentConfigSk
 	if err != nil {
 		return prototypes.AgentConfigSkillsUpsertResponse{}, err
 	}
-	rev, err := s.recordSkillsMembership(ctx, q, req.AgentID, addName, skill.Name)
+	rev, err := s.recordSkillsMembership(ctx, q, req.AgentID, addName, skill.Name, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigSkillsUpsertResponse{}, err
 	}
@@ -115,7 +115,7 @@ func (s *Service) SkillsDelete(ctx context.Context, req prototypes.AgentConfigSk
 	if err := s.skills.Delete(ctx, q, req.Name, skills.ScopeSession); err != nil {
 		return prototypes.AgentConfigSkillsDeleteResponse{}, err
 	}
-	rev, err := s.recordSkillsMembership(ctx, q, req.AgentID, removeName, req.Name)
+	rev, err := s.recordSkillsMembership(ctx, q, req.AgentID, removeName, req.Name, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigSkillsDeleteResponse{}, err
 	}
@@ -139,7 +139,7 @@ const (
 // active revision's set (not from the SkillStore), so the revision trail
 // is a pure function of prior revisions — the SkillStore holds bodies, the
 // registry holds the versioned membership.
-func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadruple, agentID string, op membershipOp, name string) (agentcfg.Revision, error) {
+func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadruple, agentID string, op membershipOp, name string, opts agentcfg.SetOptions) (agentcfg.Revision, error) {
 	defer s.lockAgent(q.TenantID, agentID)()
 	active, hasActive, err := s.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
@@ -178,9 +178,12 @@ func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadrup
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
+		// The ordered additive prompt blocks are a sibling section like any
+		// other: this verb replaces only its own, so the blocks survive.
+		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		payload.OAuthProviders = active.Payload.OAuthProviders
 	}
-	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload)
+	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload, opts)
 }
 
 // skillFromInput maps a wire skill input onto a runtime skills.Skill. The

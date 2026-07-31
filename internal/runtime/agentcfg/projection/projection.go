@@ -1040,6 +1040,42 @@ func ActivePromptLayers(ctx context.Context, reg agentcfg.Registry, agentID stri
 	return base, user, true, nil
 }
 
+// ActiveExtraSystemBlocks resolves the agent's active-config ORDERED
+// additive prompt blocks at run start. It returns the blocks in their
+// declared order and whether the active revision carries a blocks section
+// (ok). A nil registry, an empty agentID, an agent with no active revision,
+// or an active revision with no blocks section returns (nil, false, nil) —
+// the backward-compatible "no durable blocks" path, which contributes
+// nothing to the prompt. A registry read error is returned so the caller
+// fails the run loudly (CLAUDE.md §13): no silent fall-through.
+//
+// The returned slice is a fresh copy, so the run's snapshot cannot be
+// mutated through the registry's retained payload and vice versa. The
+// active revision is read ONCE per run; concurrent / in-flight runs keep
+// their own snapshot (the concurrent-reuse contract). Only the identity
+// triple is used (the registry is identity-scoped, never keyed by run) —
+// agent_id is a KEY, never an isolation filter (CLAUDE.md §6).
+func ActiveExtraSystemBlocks(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) ([]agentcfg.NamedBlock, bool, error) {
+	if reg == nil || agentID == "" {
+		return nil, false, nil
+	}
+	rev, found, rerr := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	if rerr != nil {
+		return nil, false, rerr
+	}
+	if !found || rev.Payload.ExtraSystemBlocks == nil {
+		return nil, false, nil
+	}
+	blocks := rev.Payload.ExtraSystemBlockList()
+	if len(blocks) == 0 {
+		return nil, false, nil
+	}
+	// Positional copy — the declared order IS the render order.
+	out := make([]agentcfg.NamedBlock, len(blocks))
+	copy(out, blocks)
+	return out, true, nil
+}
+
 // ApplyPromptLayers overlays the agent's active-config durable prompt layers
 // onto the run's resolved per-run override bundle at run start. It is the
 // ONE shared seam both run-loop drivers (the production dev driver and the
@@ -1082,9 +1118,20 @@ func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, overlayStore 
 	}
 	user := composeUserLayer(adminUser, durableUser, overlay.UserPrompt)
 
+	// The durable ORDERED additive prompt blocks. They ride the same
+	// run-start seam as the prompt layers so both binaries reach them
+	// through ONE function and cannot drift, but they are a DIFFERENT
+	// position: they compose into the operator-trusted additive guidance
+	// and are NOT suppressed by a session SystemPromptOverride, which
+	// replaces only the base+user spine.
+	blocks, _, berr := ActiveExtraSystemBlocks(ctx, reg, agentID, id)
+	if berr != nil {
+		return nil, berr
+	}
+
 	// The admin base is ALWAYS the spine — it is never sourced from the
 	// session overlay (base-unwritable-by-session is structural).
-	if base == "" && user == "" {
+	if base == "" && user == "" && len(blocks) == 0 {
 		return ov, nil
 	}
 	if ov == nil {
@@ -1097,6 +1144,15 @@ func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, overlayStore 
 	if user != "" {
 		u := user
 		ov.UserPromptLayer = &u
+	}
+	if len(blocks) > 0 {
+		// Positional projection onto the planner shape — no sort, no map:
+		// the declared order is the render order.
+		pb := make([]planner.NamedBlock, 0, len(blocks))
+		for _, b := range blocks {
+			pb = append(pb, planner.NamedBlock{Name: b.Name, Body: b.Body})
+		}
+		ov.ExtraSystemBlocks = pb
 	}
 	return ov, nil
 }

@@ -132,6 +132,63 @@ assert_grep_count() {
     fi
 }
 
+# assert_go_tests_pass <log-path> <go-test-args> <description> <test-name>...
+# Runs `go test -v -run '^(T1|T2|…)$' <go-test-args>` and asserts every named
+# test actually RAN and PASSED.
+#
+# The exit code alone is NOT a sufficient assertion here, and this is the whole
+# reason the helper exists: `go test -run` whose filter matches nothing prints
+# "no tests to run" and exits ZERO. A guard that only checks the exit code
+# therefore reports OK after the test it names is renamed or deleted — the
+# same "the pass value is also the can't-tell value" shape as a SKIP standing
+# in for an OK (AGENTS.md §4.2 item 5). So the helper greps the `-v` output
+# for a `--- PASS:` line per NAME; a rename turns it into a FAIL.
+#
+# <go-test-args> is a single word-split string, ordinarily just the package
+# list (e.g. "./internal/state/... ./x/..."). It may ALSO carry extra `go test`
+# flags ahead of the packages — "-race -count=1 ./internal/x/" — because they
+# land after `-run` on the command line, which `go test` accepts. That is how a
+# caller keeps the race detector on a leg that had it before adopting this
+# helper; do NOT force `-race` here, since most callers' legs are cheap
+# non-concurrent suites that preflight runs on every commit.
+#
+# `CGO_ENABLED=0` is deliberately NOT set: on Linux the race detector needs
+# cgo, and `CGO_ENABLED=0 go test -race` fails to BUILD. Harbor's CGo ban
+# governs the shipped binary, not a race-instrumented test binary.
+assert_go_tests_pass() {
+    local log="$1" pkgs="$2" desc="$3"
+    shift 3
+    local names=("$@")
+    if ! command -v go >/dev/null 2>&1; then
+        skip "${desc}: go toolchain not available"
+        return
+    fi
+    local joined pattern t rc=0
+    joined="$(printf '%s|' "${names[@]}")"
+    pattern="^(${joined%|})$"
+    # shellcheck disable=SC2086 # pkgs is a deliberate flags+packages word split
+    go test -v -run "${pattern}" ${pkgs} >"${log}" 2>&1 || rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        fail "${desc} — go test exited ${rc}"
+        printf -- '--- go test output (tail) ---\n'
+        tail -40 "${log}" | sed 's/^/    /'
+        return
+    fi
+    local missing=''
+    for t in "${names[@]}"; do
+        if ! grep -qE -- "^[[:space:]]*--- PASS: ${t} \(" "${log}"; then
+            missing="${missing} ${t}"
+        fi
+    done
+    if [ -n "${missing}" ]; then
+        fail "${desc} — go test exited 0 but these named test(s) never ran (renamed, deleted, or filtered out):${missing}"
+        printf -- '--- go test output (tail) ---\n'
+        tail -40 "${log}" | sed 's/^/    /'
+        return
+    fi
+    ok "${desc} (${#names[@]} named test(s) ran and passed)"
+}
+
 # assert_status <expected> <url> <description>
 # Used once the dev server runs (Phase 01+).
 assert_status() {
@@ -357,7 +414,11 @@ assert_json_path_resolves() {
         return
     fi
     local body status
-    body="{\"identity\":{\"tenant\":\"${tn}\",\"user\":\"${us}\",\"session\":\"${se}\"},\"id\":\"${ref_id}\",\"scope\":{\"tenant\":\"${tn}\",\"user\":\"${us}\",\"session\":\"${se}\"}}"
+    # NO `identity` member: the artifacts wire types scope by `scope` alone.
+    # The control transport decodes strictly (D-374), so a stray `identity`
+    # is a 400 — it used to be discarded in silence, which is why this helper
+    # carried one while reading as though it were load-bearing.
+    body="{\"id\":\"${ref_id}\",\"scope\":{\"tenant\":\"${tn}\",\"user\":\"${us}\",\"session\":\"${se}\"}}"
     status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
         -X POST -H "Authorization: Bearer ${auth}" -H 'Content-Type: application/json' \
         -d "${body}" "${get_ref_url}" || true)

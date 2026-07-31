@@ -104,7 +104,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigSkills_AtRunStart(t *testing.T)
 	// Set an active revision pinning {a,c} → the next run sees only a,c.
 	r1, err := reg.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"a", "c"}},
-	})
+	}, agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set r1: %v", err)
 	}
@@ -119,10 +119,10 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigSkills_AtRunStart(t *testing.T)
 	// Set a wider revision, then roll back to r1 → the next run narrows again.
 	if _, err := reg.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"a", "b", "c"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set r2: %v", err)
 	}
-	if _, err := reg.Rollback(ctx, q, agentID, r1.RevisionID, agentcfg.ConfigScopeAgent); err != nil {
+	if _, err := reg.Rollback(ctx, q, agentID, r1.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	got, err = d.projectAgentConfigSkills(ctx, d.agentConfigID, q, acTestViews("a", "b", "c"))
@@ -189,7 +189,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigToolExposure_AtRunStart(t *test
 	d := &RunLoopDriver{agentConfig: reg, agentConfigID: agentID, catalog: cat}
 	if _, err := reg.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}, DisabledTools: []string{"srvB_three"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
 	v, err = d.projectAgentConfigCatalog(ctx, d.agentConfigID, q, filter)
@@ -240,7 +240,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigPromptLayers_AtRunStart(t *test
 	// Set an active revision pinning base+user → the next run carries them.
 	r1, err := reg.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: base("OPERATOR_BASE"), User: base("USER_LAYER")},
-	})
+	}, agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set r1: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigPromptLayers_AtRunStart(t *test
 	// the next run sees the user layer again.
 	if _, err := reg.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: base("OPERATOR_BASE")},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set r2: %v", err)
 	}
 	ovR2, err := d.projectAgentConfigPromptLayers(ctx, d.agentConfigID, q, &planner.LLMOverrides{})
@@ -267,7 +267,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigPromptLayers_AtRunStart(t *test
 	if ovR2.UserPromptLayer != nil {
 		t.Fatalf("r2 should have no user layer: %+v", ovR2.UserPromptLayer)
 	}
-	if _, err := reg.Rollback(ctx, q, agentID, r1.RevisionID, agentcfg.ConfigScopeAgent); err != nil {
+	if _, err := reg.Rollback(ctx, q, agentID, r1.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	ov, err = d.projectAgentConfigPromptLayers(ctx, d.agentConfigID, q, nil)

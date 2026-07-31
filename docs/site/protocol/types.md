@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 339 canonical Harbor Protocol wire types, generated from the single-source
+The 342 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -69,6 +69,7 @@ Declared in `internal/protocol/types`.
 | `agent_id` | `string` |  |
 | `connection` | `types.AgentConfigMCPConnectionDescriptor` — see [`AgentConfigMCPConnectionDescriptor`](./types.md#agentconfigmcpconnectiondescriptor) |  |
 | `headers` | `map[string]string` | optional (`omitempty`) |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigAddMCPConnectionResponse
 
@@ -116,6 +117,7 @@ Declared in `internal/protocol/types`.
 | `llm_params` | `types.AgentConfigLLMParamsDiff` — see [`AgentConfigLLMParamsDiff`](./types.md#agentconfigllmparamsdiff) |  |
 | `hooks` | `types.AgentConfigHooksDiff` — see [`AgentConfigHooksDiff`](./types.md#agentconfighooksdiff) |  |
 | `naming` | `types.AgentConfigNamingDiff` — see [`AgentConfigNamingDiff`](./types.md#agentconfignamingdiff) |  |
+| `extra_system_blocks` | `types.AgentConfigExtraSystemBlocksDiff` — see [`AgentConfigExtraSystemBlocksDiff`](./types.md#agentconfigextrasystemblocksdiff) |  |
 
 ## AgentConfigDiffRequest
 
@@ -136,6 +138,25 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `diff` | `types.AgentConfigDiff` — see [`AgentConfigDiff`](./types.md#agentconfigdiff) |  |
 | `protocol_version` | `string` |  |
+
+## AgentConfigExtraSystemBlocks
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `blocks` | `[]types.AgentConfigNamedBlock` — see [`AgentConfigNamedBlock`](./types.md#agentconfignamedblock) |  |
+
+## AgentConfigExtraSystemBlocksDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `added` | `[]string` | optional (`omitempty`) |
+| `removed` | `[]string` | optional (`omitempty`) |
+| `changed` | `[]string` | optional (`omitempty`) |
+| `reordered` | `bool` |  |
 
 ## AgentConfigGetRequest
 
@@ -281,6 +302,15 @@ Declared in `internal/protocol/types`.
 | `basic_username` | `string` | optional (`omitempty`) |
 | `meta_key` | `string` | optional (`omitempty`) |
 
+## AgentConfigNamedBlock
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `body` | `string` |  |
+
 ## AgentConfigNaming
 
 Declared in `internal/protocol/types`.
@@ -364,6 +394,7 @@ Declared in `internal/protocol/types`.
 | `llm_params` | `*types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) | optional (`omitempty`) |
 | `hooks` | `*types.AgentConfigHooks` — see [`AgentConfigHooks`](./types.md#agentconfighooks) | optional (`omitempty`) |
 | `naming` | `*types.AgentConfigNaming` — see [`AgentConfigNaming`](./types.md#agentconfignaming) | optional (`omitempty`) |
+| `extra_system_blocks` | `*types.AgentConfigExtraSystemBlocks` — see [`AgentConfigExtraSystemBlocks`](./types.md#agentconfigextrasystemblocks) | optional (`omitempty`) |
 
 ## AgentConfigPromptLayers
 
@@ -396,6 +427,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `name` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigRemoveMCPConnectionResponse
 
@@ -416,6 +448,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `name` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigRemoveOAuthProviderResponse
 
@@ -451,6 +484,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `revision_id` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigRollbackResponse
 
@@ -577,6 +611,26 @@ Declared in `internal/protocol/types`.
 | `overlay` | `types.AgentConfigSessionOverlay` — see [`AgentConfigSessionOverlay`](./types.md#agentconfigsessionoverlay) |  |
 | `protocol_version` | `string` |  |
 
+## AgentConfigSetExtraSystemBlocksRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `extra_system_blocks` | `types.AgentConfigExtraSystemBlocks` — see [`AgentConfigExtraSystemBlocks`](./types.md#agentconfigextrasystemblocks) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
+
+## AgentConfigSetExtraSystemBlocksResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
 ## AgentConfigSetLLMParamsRequest
 
 Declared in `internal/protocol/types`.
@@ -586,6 +640,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `llm_params` | `types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetLLMParamsResponse
 
@@ -626,6 +681,7 @@ Declared in `internal/protocol/types`.
 | `agent_id` | `string` |  |
 | `name` | `string` |  |
 | `allowed_origins` | `[]string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetMCPDiscoveryOriginsResponse
 
@@ -649,6 +705,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `provider` | `types.AgentConfigOAuthProviderDescriptor` — see [`AgentConfigOAuthProviderDescriptor`](./types.md#agentconfigoauthproviderdescriptor) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetOAuthProviderResponse
 
@@ -669,6 +726,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `prompt_layers` | `types.AgentConfigPromptLayers` — see [`AgentConfigPromptLayers`](./types.md#agentconfigpromptlayers) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetPromptLayersResponse
 
@@ -688,6 +746,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `payload` | `types.AgentConfigPayload` — see [`AgentConfigPayload`](./types.md#agentconfigpayload) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetRevisionResponse
 
@@ -707,6 +766,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `tool_exposure` | `types.AgentConfigToolExposure` — see [`AgentConfigToolExposure`](./types.md#agentconfigtoolexposure) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetToolExposureResponse
 
@@ -757,6 +817,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `name` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSkillsDeleteResponse
 
@@ -811,6 +872,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `skill` | `types.AgentConfigSkillInput` — see [`AgentConfigSkillInput`](./types.md#agentconfigskillinput) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSkillsUpsertResponse
 
@@ -924,6 +986,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `revision_id` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigUserRollbackResponse
 
@@ -943,6 +1006,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `payload` | `types.AgentConfigUserPayload` — see [`AgentConfigUserPayload`](./types.md#agentconfiguserpayload) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigUserSetRevisionResponse
 
@@ -962,6 +1026,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `name` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigUserSkillsDeleteResponse
 
@@ -999,6 +1064,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `skill` | `types.AgentConfigSkillInput` — see [`AgentConfigSkillInput`](./types.md#agentconfigskillinput) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigUserSkillsUpsertResponse
 
@@ -1851,14 +1917,6 @@ Declared in `internal/protocol/types`.
 | `set` | `bool` |  |
 | `protocol_version` | `string` |  |
 
-## GovernancePostureRequest
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `tenant_id` | `string` | optional (`omitempty`) |
-
 ## GovernancePostureResponse
 
 Declared in `internal/protocol/types`.
@@ -1985,14 +2043,6 @@ Declared in `internal/protocol/types`.
 | `reason` | `string` |  |
 | `outcome` | `string` |  |
 | `occurred_at` | `time.Time` |  |
-
-## LLMPostureRequest
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `tenant_id` | `string` | optional (`omitempty`) |
 
 ## LLMPostureResponse
 
@@ -2832,6 +2882,7 @@ Declared in `internal/protocol/types`.
 | `temperature` | `*float64` | optional (`omitempty`) |
 | `max_tokens` | `*int` | optional (`omitempty`) |
 | `system_prompt_override` | `*string` | optional (`omitempty`) |
+| `extra_instructions` | `*string` | optional (`omitempty`) |
 | `model` | `*string` | optional (`omitempty`) |
 
 ## RunSetOverridesRequest
@@ -3132,6 +3183,7 @@ Declared in `internal/protocol/types`.
 | `input_artifact_dispositions` | `map[string]string` | optional (`omitempty`) |
 | `output_schema` | `json.RawMessage` | optional (`omitempty`) |
 | `agent_id` | `string` | optional (`omitempty`) |
+| `caller_memory` | `json.RawMessage` | optional (`omitempty`) |
 
 ## StartResponse
 

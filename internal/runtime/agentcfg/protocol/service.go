@@ -102,6 +102,15 @@ var (
 	// (CLAUDE.md §13). The model is validated via the same validateModel path
 	// as set_llm_params.
 	ErrInvalidNaming = errors.New("agentcfg/protocol: invalid naming section")
+	// ErrInvalidExtraSystemBlocks — a set_extra_system_blocks (or a
+	// set_revision carrying a blocks section) supplied a block with an
+	// empty / out-of-charset name, an empty body, or a DUPLICATE name.
+	// Uniqueness is what makes remove-by-name well defined — it is the
+	// whole composability property the section exists for — so a duplicate
+	// is refused loud BEFORE any registry write rather than silently
+	// de-duplicated (CLAUDE.md §13). The message names the offender and,
+	// for a duplicate, BOTH offending positions.
+	ErrInvalidExtraSystemBlocks = errors.New("agentcfg/protocol: invalid extra system blocks section")
 )
 
 // namingMaxTitleLenBounds is the inclusive [min,max] a set max_title_len must
@@ -168,6 +177,14 @@ type Service struct {
 	// injected at the cmd/harbor + devstack boundary (the §4.4 boundary keeps
 	// the concrete MCP driver out of this package).
 	attacher ConnectionAttacher
+	// detacher tears a just-attached MCP server back down when the add's
+	// revision write then fails (the expected-revision precondition being the
+	// reachable case). Optional — nil ⇒ the compensation logs the residual live
+	// server LOUD rather than pretending it was undone (CLAUDE.md §13). The
+	// concrete is the same object that satisfies ConnectionAttacher, injected at
+	// the cmd/harbor + devstack boundary, so attach and compensating detach can
+	// never drift onto different registries.
+	detacher ConnectionDetacher
 	// discoveryApplier applies a connection's OAuth-discovery cross-origin
 	// allow-list to the LIVE MCP registry for
 	// `agent_config.set_mcp_discovery_origins` (and the run-start
@@ -298,6 +315,29 @@ type Service struct {
 // ~2KiB regardless of how many owners ever write.
 const writeLockShards = 256
 
+// compensatingWrite is the UNCONDITIONAL write option used by the internal
+// compensation paths — the revision rollbacks and empty-payload
+// neutralisations that undo a forward write whose live side-effect (a
+// provider install, a discovery-origin apply) then failed, and the audit-emit
+// reverts that follow them.
+//
+// A compensation is deliberately unconditional. It has no caller and no base
+// to compare against: it is restoring a pointer the same locked
+// read-modify-write just moved, so an expected-content precondition would be
+// comparing against a state this code path itself produced. Applying the
+// caller's token here would turn a successful undo into a refusal and leave
+// the observable half-applied state the compensation exists to erase.
+//
+// The forward write of each door, by contrast, carries the caller's token.
+//
+// It is a FUNCTION rather than a package-level `var` so it is immutable by
+// construction. A `var` holding a value every compensation path reads is
+// package-level mutable state, which CLAUDE.md §5 forbids outside `init()`,
+// driver registries and metric definitions — and the reason is exactly this
+// shape: nothing mutates it today, and a single stray assignment would
+// silently re-arm a precondition on every undo path at once.
+func compensatingWrite() agentcfg.SetOptions { return agentcfg.SetOptions{} }
+
 // lockAgent acquires the agent-tier write lock for (tenant, agent) and
 // returns the release func (call via defer). It serialises every admin write
 // verb's read-modify-write against concurrent writes to the same agent.
@@ -397,6 +437,20 @@ func WithConnectionAttacher(a ConnectionAttacher) Option {
 	return func(s *Service) {
 		if a != nil {
 			s.attacher = a
+		}
+	}
+}
+
+// WithConnectionDetacher wires the concrete that tears a just-attached MCP
+// server back down when `agent_config.add_mcp_connection`'s revision write
+// fails after the attach succeeded. A nil detacher leaves that compensation
+// logging the residual live server loudly instead of silently leaking it. The
+// concrete (which imports the MCP driver) is the same object wired as the
+// attacher; this package depends only on the interface.
+func WithConnectionDetacher(d ConnectionDetacher) Option {
+	return func(s *Service) {
+		if d != nil {
+			s.detacher = d
 		}
 	}
 }
@@ -782,6 +836,16 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	if err := s.validateNaming(req.Payload.Naming); err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
+	// A full-payload set that pins additive prompt blocks runs the SAME
+	// name-charset + uniqueness + non-empty-body validation the
+	// set_extra_system_blocks door enforces, so a section this second door
+	// persists is one the first door would have accepted (parity at both
+	// doors). Rejected loud before any registry write.
+	if req.Payload.ExtraSystemBlocks != nil {
+		if err := validateExtraSystemBlocks(req.Payload.ExtraSystemBlocks.Blocks); err != nil {
+			return prototypes.AgentConfigSetRevisionResponse{}, err
+		}
+	}
 	// A full-payload set that pins MCP connection descriptors runs every
 	// descriptor through the SAME shape validator the add_mcp_connection door
 	// enforces, so a descriptor this second door persists is a descriptor the
@@ -816,7 +880,8 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	if payload.Connections != nil {
 		payload.Connections.Servers = normalizedConns
 	}
-	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, payload)
+	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, payload,
+		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
@@ -878,7 +943,8 @@ func (s *Service) Rollback(ctx context.Context, req prototypes.AgentConfigRollba
 		return prototypes.AgentConfigRollbackResponse{}, err
 	}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
-	rev, err := s.registry.Rollback(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.RevisionID, agentcfg.ConfigScopeAgent)
+	rev, err := s.registry.Rollback(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.RevisionID, agentcfg.ConfigScopeAgent,
+		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigRollbackResponse{}, err
 	}
@@ -965,6 +1031,16 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 			}
 		}
 		out.Hooks = wh
+	}
+	if p.ExtraSystemBlocks != nil {
+		// ORDER-PRESERVING: the projection copies the slice positionally.
+		// A map here — or a sort — would silently re-order the operator's
+		// composed prompt on the way to the reader.
+		wb := make([]prototypes.AgentConfigNamedBlock, 0, len(p.ExtraSystemBlocks.Blocks))
+		for _, b := range p.ExtraSystemBlocks.Blocks {
+			wb = append(wb, prototypes.AgentConfigNamedBlock{Name: b.Name, Body: b.Body})
+		}
+		out.ExtraSystemBlocks = &prototypes.AgentConfigExtraSystemBlocks{Blocks: wb}
 	}
 	if p.Naming != nil {
 		out.Naming = &prototypes.AgentConfigNaming{
@@ -1175,6 +1251,12 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 		}
 		out.Hooks = dh
 	}
+	if p.ExtraSystemBlocks != nil {
+		// ORDER-PRESERVING, same reason as the wire projection above.
+		out.ExtraSystemBlocks = &agentcfg.ExtraSystemBlocks{
+			Blocks: blocksToDomain(p.ExtraSystemBlocks.Blocks),
+		}
+	}
 	if p.Naming != nil {
 		out.Naming = &agentcfg.NamingSection{
 			Auto:           p.Naming.Auto,
@@ -1275,6 +1357,14 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			ModelChanged: d.Naming.ModelChanged,
 			ModelFrom:    d.Naming.ModelFrom,
 			ModelTo:      d.Naming.ModelTo,
+		},
+		ExtraSystemBlocks: prototypes.AgentConfigExtraSystemBlocksDiff{
+			Added:   append([]string(nil), d.ExtraSystemBlocks.Added...),
+			Removed: append([]string(nil), d.ExtraSystemBlocks.Removed...),
+			Changed: append([]string(nil), d.ExtraSystemBlocks.Changed...),
+			// Order is render order, so a pure re-ordering is a real change
+			// and the reader must be able to see it.
+			Reordered: d.ExtraSystemBlocks.Reordered,
 		},
 	}
 }

@@ -338,11 +338,20 @@ func Deprecations() []Deprecation {
 	return out
 }
 
-// Capability is a Protocol surface a Runtime can advertise. The Protocol
-// exposes several surfaces (RFC §5.2 — task control, streaming events,
-// state snapshots, topology, artifacts, traces/metrics); a Capability is
-// how a Runtime tells a client *which* of them are live, so a client
-// negotiates rather than discovering a missing surface by a 404.
+// Capability is a negotiable Protocol admission a Runtime can advertise.
+// Most are surfaces: the Protocol exposes several (RFC §5.2 — task
+// control, streaming events, state snapshots, topology, artifacts,
+// traces/metrics), and a Capability is how a Runtime tells a client
+// *which* of them are live, so a client negotiates rather than
+// discovering a missing surface by a 404.
+//
+// A Capability may also advertise an additive optional REQUEST FIELD on
+// an existing method (CapCallerMemory is the first). That case is
+// narrower than a surface and is admitted for one reason: a missing
+// method announces itself with CodeUnknownMethod, a missing optional
+// field does not — a Runtime predating it discards the member and answers
+// success. The bounding rule, so this does not become a capability per
+// field, is on CapCallerMemory.
 //
 // Capability is a fixed string enum, not a registration seam: a new
 // Protocol surface adds its Capability constant in the phase that ships
@@ -431,6 +440,35 @@ const (
 	// advertised. Backward-compatible (RFC §5.3 minor-class addition) — no
 	// version bump.
 	CapToolAnnotations Capability = "tool_annotations"
+	// CapCallerMemory — the `start` request's `caller_memory` admission:
+	// the Runtime accepts caller-supplied content into the run's
+	// UNTRUSTED-framed external memory tier.
+	//
+	// This is the first Capability that advertises a REQUEST FIELD rather
+	// than a method cluster, and the widening is deliberate. A missing
+	// METHOD announces itself — the caller gets CodeUnknownMethod and knows
+	// immediately. A missing optional FIELD does not: `encoding/json`
+	// discards a member no field matches, so a Runtime predating the field
+	// answers 200 and the run proceeds without the content the caller
+	// believes it supplied. Strict request decoding closes that hole from
+	// this Protocol revision forward, but it cannot reach backwards: a
+	// Runtime shipped before the strict decode still drops the member
+	// silently. The capability is what a client checks to detect exactly
+	// that Runtime, because a build that predates this constant cannot
+	// advertise it.
+	//
+	// The rule that keeps this from becoming a capability per field: an
+	// optional wire field earns a Capability ONLY when its absence is
+	// undetectable by probing the method — i.e. an additive optional member
+	// on a method that already existed. A field on a NEW method is covered
+	// by that method's own capability and must not get a second one
+	// (CLAUDE.md §13 — one mechanism per concept).
+	//
+	// Unconditional: the admission lives on the task-control surface's
+	// `start` dispatch, so every Runtime advertising CapTaskControl admits
+	// it. There is no separate wiring to gate on. Backward-compatible
+	// (RFC §5.3 minor-class addition) — no version bump.
+	CapCallerMemory Capability = "caller_memory"
 )
 
 // canonicalCapabilities is the registered set — the universe of
@@ -453,6 +491,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapAgentConfig:      {},
 	CapSessionLifecycle: {},
 	CapToolAnnotations:  {},
+	CapCallerMemory:     {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

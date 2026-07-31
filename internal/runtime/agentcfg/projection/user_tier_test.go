@@ -17,7 +17,7 @@ func setUserDisables(t *testing.T, reg agentcfg.Registry, id identity.Quadruple,
 	t.Helper()
 	if _, err := reg.SetRevision(context.Background(), id, projAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{DisabledTools: toolNames},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set user disables: %v", err)
 	}
 }
@@ -52,7 +52,7 @@ func TestPlannerCatalog_AdminSurvivesEmptyUser(t *testing.T) {
 	reg := newRegistry(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set admin: %v", err)
 	}
 	setUserDisables(t, reg, projID(), nil) // empty user revision
@@ -76,7 +76,7 @@ func TestPlannerCatalog_UserCannotReEnableAdminDisabled(t *testing.T) {
 	reg := newRegistry(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{DisabledTools: []string{"srvA_alpha"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set admin: %v", err)
 	}
 	// The user revision disables a DIFFERENT tool; it has no way to express
@@ -106,7 +106,7 @@ func TestPlannerCatalog_ThreeSetUnion(t *testing.T) {
 	ov := newOverlay(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set admin: %v", err)
 	}
 	setUserDisables(t, reg, projID(), []string{"srvB_gamma"})

@@ -672,6 +672,13 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			if applier, ok := in.MCPAttacher.(agentcfgprotocol.DiscoveryOriginApplier); ok {
 				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithDiscoveryOriginApplier(applier))
 			}
+			// The same concrete also tears a just-attached server back down when
+			// the add's revision write fails after it (the expected-revision
+			// conflict). Binding the compensation to the object that attached
+			// guarantees it detaches through the same registry + catalog.
+			if detacher, ok := in.MCPAttacher.(agentcfgprotocol.ConnectionDetacher); ok {
+				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionDetacher(detacher))
+			}
 		}
 		if in.OAuthProviderInstaller != nil {
 			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithProviderInstaller(in.OAuthProviderInstaller))

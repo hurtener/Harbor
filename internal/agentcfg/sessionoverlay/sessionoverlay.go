@@ -135,28 +135,65 @@ type store struct {
 	clock  func() time.Time
 	closed atomic.Bool
 
+	// writeLocksMu guards writeLocks. It is held only for the map lookup +
+	// refcount adjustment, never across the slot lock or the store I/O.
+	writeLocksMu sync.Mutex
 	// writeLocks serialises the mutate() read-modify-write per overlay slot
 	// (the full (tenant, user, session) triple + agent). The overlay row is
 	// last-write-wins, so two concurrent SAME-session edits (e.g.
 	// AddPersonalSkill racing SetSourceDisables) would each load → apply →
 	// save from the other's pre-write snapshot, losing one update. A per-slot
 	// lock held across the whole read-modify-write makes it atomic.
-	writeLocks sync.Map // map[string]*sync.Mutex
+	//
+	// The map is REFCOUNTED, not append-only: an entry is created on the
+	// first holder and removed when the last one releases it. A map that only
+	// ever grew would accumulate one entry per distinct (triple + agent) for
+	// the lifetime of the process, and sessions are unbounded — so any
+	// authenticated caller writing an overlay under a fresh session id in a
+	// loop grows it without limit. Refcounting bounds it by the number of
+	// writes IN FLIGHT, which is what the locks are actually for.
+	writeLocks map[string]*slotLock
+}
+
+// slotLock is one overlay slot's write lock plus the number of holders and
+// waiters currently referencing it. refs is guarded by store.writeLocksMu,
+// never by mu itself.
+type slotLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // lockSlot acquires the per-overlay-slot write lock and returns the release
 // func (call via defer). Keyed by the full triple + agent so distinct
 // sessions / agents never contend.
+//
+// The reference is taken BEFORE the slot lock is acquired and dropped AFTER
+// it is released, so an entry is only ever removed while no goroutine holds
+// or awaits it: a waiter can never be handed a lock that a releaser is about
+// to delete and a later arrival re-create, which would break mutual exclusion
+// for the slot.
 func (s *store) lockSlot(id identity.Quadruple, agentID string) func() {
 	key := id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID + "\x00" + agentID
-	mu, _ := s.writeLocks.LoadOrStore(key, &sync.Mutex{})
-	m, ok := mu.(*sync.Mutex)
+
+	s.writeLocksMu.Lock()
+	sl, ok := s.writeLocks[key]
 	if !ok {
-		// Impossible by construction: writeLocks only ever stores *sync.Mutex.
-		panic("agentcfg/sessionoverlay: writeLocks held a non-mutex value")
+		sl = &slotLock{}
+		s.writeLocks[key] = sl
 	}
-	m.Lock()
-	return m.Unlock
+	sl.refs++
+	s.writeLocksMu.Unlock()
+
+	sl.mu.Lock()
+	return func() {
+		sl.mu.Unlock()
+		s.writeLocksMu.Lock()
+		sl.refs--
+		if sl.refs == 0 {
+			delete(s.writeLocks, key)
+		}
+		s.writeLocksMu.Unlock()
+	}
 }
 
 // NewStore builds a session-overlay Store over a StateStore. st is
@@ -172,7 +209,7 @@ func NewStore(st state.StateStore, clock func() time.Time) (Store, error) {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &store{state: st, clock: clock}, nil
+	return &store{state: st, clock: clock, writeLocks: make(map[string]*slotLock)}, nil
 }
 
 // sessionQuad zeroes the RunID so the overlay is SESSION-scoped (it spans

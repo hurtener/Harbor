@@ -217,8 +217,12 @@ fi
 #     internal/search/preview_bound_test.go — a >= 32 KiB synthesised preview
 #     is not drivable through a dev smoke, and asserting a mechanism the
 #     smoke cannot produce is the defect this plan's first draft shipped.
+# NO `identity` member: `SearchRequest` scopes through `filter` and declares
+# no `identity` field, so the control transport's strict decode (D-374)
+# refuses one with `unknown field "identity"` (400). Identity comes from the
+# bearer, which the search handler resolves and defaults on its own.
 assert_post_status_auth 200 "$(api_url /v1/control/search.query)" \
-    '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"query":"","page_size":5}' \
+    '{"query":"","page_size":5}' \
     "${DEV_BEARER}" \
     'phase 213: search.query round-trips after the preview-bound de-aliasing'
 

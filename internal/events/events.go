@@ -228,6 +228,11 @@ type RunOverridesSetPayload struct {
 	// SetSystemPrompt reports whether the system-prompt-override field
 	// was set.
 	SetSystemPrompt bool
+	// SetExtraInstructions reports whether the additive extra-instructions
+	// field was set. The flag only — the guidance TEXT is caller-supplied
+	// free text and is deliberately absent from this payload, like every
+	// other override value.
+	SetExtraInstructions bool
 	// SetModel reports whether the model-override field was set (the
 	// session-level model swap).
 	SetModel bool

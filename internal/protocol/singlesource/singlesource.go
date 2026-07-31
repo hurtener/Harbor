@@ -141,6 +141,7 @@ var CanonicalMethods = map[string]struct{}{
 	"agent_config.skills.delete":             {},
 	"agent_config.set_tool_exposure":         {},
 	"agent_config.set_prompt_layers":         {},
+	"agent_config.set_extra_system_blocks":   {},
 	"agent_config.set_llm_params":            {},
 	"agent_config.add_mcp_connection":        {},
 	"agent_config.remove_mcp_connection":     {},
@@ -300,11 +301,12 @@ var CanonicalWireTypes = map[string]string{
 	"MetricsSnapshot":    "types",
 	// posture-pair wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
-	"GovernancePostureRequest":  "types",
+	// No `GovernancePostureRequest` / `LLMPostureRequest`: both methods take
+	// the shared `RuntimeInfoRequest` envelope. The two request types were
+	// orphans publishing a `tenant_id` field nothing decoded.
 	"GovernancePostureResponse": "types",
 	"IdentityTierView":          "types",
 	"RateLimitView":             "types",
-	"LLMPostureRequest":         "types",
 	"LLMPostureResponse":        "types",
 	// admin-scoped governance tenant-override wire types — the
 	// `governance.{set,get}_tenant_overrides` request/response shapes
@@ -331,6 +333,9 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigToolExposureDiff":                 "types",
 	"AgentConfigLoadingModeChange":                "types",
 	"AgentConfigPromptLayers":                     "types",
+	"AgentConfigNamedBlock":                       "types",
+	"AgentConfigExtraSystemBlocks":                "types",
+	"AgentConfigExtraSystemBlocksDiff":            "types",
 	"AgentConfigPromptLayersDiff":                 "types",
 	"AgentConfigLLMParams":                        "types",
 	"AgentConfigLLMParamsDiff":                    "types",
@@ -365,6 +370,8 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigSetToolExposureResponse":          "types",
 	"AgentConfigSetPromptLayersRequest":           "types",
 	"AgentConfigSetPromptLayersResponse":          "types",
+	"AgentConfigSetExtraSystemBlocksRequest":      "types",
+	"AgentConfigSetExtraSystemBlocksResponse":     "types",
 	"AgentConfigSetLLMParamsRequest":              "types",
 	"AgentConfigSetLLMParamsResponse":             "types",
 	"AgentConfigMCPConnectionDescriptor":          "types",

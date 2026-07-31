@@ -768,6 +768,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		t.Parallel()
 		ri := dispatch(t, mkSurface(t, false, false, false))
 		want := []types.Capability{
+			types.CapCallerMemory,
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
 			types.CapStateSnapshots,
@@ -787,6 +788,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		t.Parallel()
 		ri := dispatch(t, mkSurface(t, true, false, false))
 		want := []types.Capability{
+			types.CapCallerMemory,
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
 			types.CapStateSnapshots,
@@ -815,6 +817,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		ri := dispatch(t, mkSurface(t, false, true, false))
 		want := []types.Capability{
 			types.CapAgentConfig,
+			types.CapCallerMemory,
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
 			types.CapStateSnapshots,
@@ -841,6 +844,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		// pinning the deterministic wire ordering of the third conditional cap.
 		ri := dispatch(t, mkSurface(t, false, false, true))
 		want := []types.Capability{
+			types.CapCallerMemory,
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
 			types.CapSessionLifecycle,
@@ -857,6 +861,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		ri := dispatch(t, mkSurface(t, true, true, true))
 		want := []types.Capability{
 			types.CapAgentConfig,
+			types.CapCallerMemory,
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
 			types.CapSessionLifecycle,

@@ -418,7 +418,7 @@ func (r *wvRig) wvDeclare(t *testing.T, id identity.Identity, agentID string, co
 	if _, err := r.cfg.SetRevision(context.Background(), identity.Quadruple{Identity: id},
 		agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 			Connections: &agentcfg.ConnectionsSection{Servers: conns},
-		}); err != nil {
+		}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("declare %q for %s/%s: %v", agentID, id.TenantID, agentID, err)
 	}
 }

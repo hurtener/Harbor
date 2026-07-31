@@ -45,6 +45,18 @@ export interface RunOverrides {
   max_tokens?: number;
   /** A one-message system-prompt override (empty string clears it). */
   system_prompt_override?: string;
+  /**
+   * A one-message ADDITIVE guidance block. Appended to the agent's system
+   * prompt — never a replacement — and it survives a
+   * `system_prompt_override` set in the same request.
+   *
+   * TRUST: rendered VERBATIM and UNESCAPED into the operator-trusted
+   * `<additional_guidance>` position, so it is NOT the place for recalled
+   * conversation memory, retrieved documents, or any other user-authored
+   * text. It composes BELOW any tenant-wide block and can never clear it;
+   * an empty string is a no-op, not a deletion.
+   */
+  extra_instructions?: string;
   /** A one-message model swap (must have a configured ModelProfile). */
   model?: string;
 }

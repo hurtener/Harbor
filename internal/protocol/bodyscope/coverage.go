@@ -36,6 +36,7 @@ var requestSurfaces = map[string]Surface{
 	"AgentConfigSetLLMProviderRequest":           SurfaceAgentConfig,
 	"AgentConfigSetMCPDiscoveryOriginsRequest":   SurfaceAgentConfig,
 	"AgentConfigSetOAuthProviderRequest":         SurfaceAgentConfig,
+	"AgentConfigSetExtraSystemBlocksRequest":     SurfaceAgentConfig,
 	"AgentConfigSetPromptLayersRequest":          SurfaceAgentConfig,
 	"AgentConfigSetRevisionRequest":              SurfaceAgentConfig,
 	"AgentConfigSetToolExposureRequest":          SurfaceAgentConfig,
