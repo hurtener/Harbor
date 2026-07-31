@@ -230,8 +230,23 @@ type Task struct {
 	// historical row.
 	//
 	// Bounded and validated at the Protocol edge before the spawn (32 KiB,
-	// non-null, valid JSON); persisted verbatim via the whole-record
-	// marshal, so no migration is required on any driver.
+	// non-null, valid JSON); persisted via the whole-record marshal, so no
+	// migration is required on any driver.
+	//
+	// It is stored REDACTED. Spawn runs it through the same audit redactor
+	// Description and Query take — the field is caller-controlled content
+	// that the whole-record marshal writes to the StateStore on disk, and
+	// leaving one of three sibling caller-controlled fields raw while the
+	// other two were redacted stored secrets at rest AND misled anyone who
+	// inferred the fields behaved alike. Being structured JSON, it goes
+	// through the redactor's value walk rather than the string path:
+	// objects, arrays, numbers, booleans and null survive structurally
+	// intact and only secret-shaped keys and inline `Bearer …` / `Basic …`
+	// values are replaced. The redacted form is also what reaches the
+	// prompt, which is already true of Query.
+	//
+	// The redaction does NOT weaken idempotency: the task's content hash
+	// folds the PRE-redaction bytes.
 	//
 	// The `omitempty` tag is load-bearing for the same reason it is on
 	// OutputSchema: a nil json.RawMessage marshals to the JSON literal
@@ -301,10 +316,14 @@ type SpawnRequest struct {
 	// does not re-validate it. Nil means the caller supplied none, which
 	// is the pre-field behaviour on every path.
 	//
-	// Persisted onto `Task.CallerMemory`; consumed by the run loop's
-	// External-tier composition. Folded into the task's content identity
-	// so a reused idempotency key carrying DIFFERENT caller memory is a
-	// loud conflict rather than a silent adoption of the original payload.
+	// Persisted onto `Task.CallerMemory` AFTER the audit redactor runs over
+	// it (see that field); consumed by the run loop's External-tier
+	// composition. Folded into the task's content identity — from the
+	// PRE-redaction bytes — so a reused idempotency key carrying DIFFERENT
+	// caller memory is a loud conflict rather than a silent adoption of the
+	// original payload. An in-process caller that bypasses the Protocol edge
+	// and supplies bytes that are not valid JSON is refused loud at Spawn;
+	// nothing persists.
 	CallerMemory json.RawMessage
 }
 

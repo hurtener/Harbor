@@ -146,17 +146,37 @@ func (d *MCPConnectionDetacher) SetOAuthDiscoveryOrigins(ctx context.Context, ow
 // owner's connection even if a name reaches it, and the guard sits at the
 // registry's own choke point rather than in this caller alone.
 func (d *MCPConnectionDetacher) Detach(ctx context.Context, source string, owner toolauth.Owner) error {
-	if dc, ok := d.catalog.(tools.CatalogSourceDeregisterer); ok {
+	return detachSource(ctx, d.catalog, d.registry, source, owner, d.logger,
+		"mcp: detached runtime-added server at run-start reconcile")
+}
+
+// detachSource is the ONE teardown implementation both detach callers share:
+// the run-start reconcile's detach pass ([MCPConnectionDetacher.Detach]) and
+// the add door's compensating detach
+// ([MCPConnectionAttacher.DetachConnection], which runs when an attach
+// succeeded and its revision write then failed). A second copy would drift on
+// the next change to either half of the teardown (CLAUDE.md §13); `reason` is
+// the only thing that legitimately differs between them, so it is the only
+// thing parameterised.
+//
+// It deregisters the source's tools from the catalog (when the catalog
+// supports source deregistration — the optional CatalogSourceDeregisterer
+// companion) and from the MCP registry, closing its transport gracefully. An
+// already-gone source is a no-op (ErrServerNotFound is swallowed —
+// idempotent), which is what makes it safe to call on a compensation path that
+// cannot know how far the attach got.
+func detachSource(ctx context.Context, catalog tools.ToolCatalog, registry *mcpdrv.Registry, source string, owner toolauth.Owner, logger *slog.Logger, reason string) error {
+	if dc, ok := catalog.(tools.CatalogSourceDeregisterer); ok {
 		removed := dc.DeregisterSource(tools.ToolSourceID(source))
-		if d.logger != nil {
-			d.logger.InfoContext(ctx, "mcp: detached runtime-added server at run-start reconcile",
+		if logger != nil {
+			logger.InfoContext(ctx, reason,
 				slog.String("source", source), slog.Int("tools_deregistered", removed))
 		}
 	}
-	if d.registry == nil {
+	if registry == nil {
 		return nil
 	}
-	if err := d.registry.Deregister(ctx, source, owner); err != nil {
+	if err := registry.Deregister(ctx, source, owner); err != nil {
 		if errors.Is(err, mcpdrv.ErrServerNotFound) {
 			return nil // already detached — idempotent.
 		}
