@@ -391,17 +391,23 @@ export function runChecks() {
  * parse that yields nothing is treated as a hard failure by the caller rather
  * than as "no violations", because a guard that silently matches zero rows is
  * indistinguishable from a passing one.
+ *
+ * `request` is null for a method that carries NO JSON body (today only
+ * `events.subscribe`, whose filter travels as headers/query on a GET SSE
+ * stream). Those rows are captured rather than dropped so a call site aimed at
+ * one gets an accurate diagnosis instead of "not a canonical route".
  * @param {string} src
- * @returns {Map<string, {method: string, request: string}>}
+ * @returns {Map<string, {method: string, request: string|null}>}
  */
 function parseMethodsTable(src) {
-  /** @type {Map<string, {method: string, request: string}>} */
+  /** @type {Map<string, {method: string, request: string|null}>} */
   const out = new Map();
-  const row =
-    /^\|\s*`([^`]+)`\s*\|\s*`(?:GET|POST)\s+([^`]+)`\s*\|[^|]*\|\s*\[`([^`]+)`\][^|]*\|/gm;
+  const row = /^\|\s*`([^`]+)`\s*\|\s*`(?:GET|POST)\s+([^`]+)`\s*\|[^|]*\|([^|]*)\|/gm;
   let m;
   while ((m = row.exec(src)) !== null) {
-    out.set(m[2].trim(), { method: m[1], request: m[3] });
+    const cell = m[3].trim();
+    const link = /^\[`([^`]+)`\]/.exec(cell);
+    out.set(m[2].trim(), { method: m[1], request: link ? link[1] : null });
   }
   return out;
 }
@@ -482,6 +488,14 @@ export function checkBodyIdentityFold(manifest) {
       violations.push(
         `[body-identity] ${site.file}:${site.line} calls "${site.path}", which is not a route in ` +
           `the generated methods reference — either the path is wrong or the method is not canonical`,
+      );
+      continue;
+    }
+    if (entry.request === null) {
+      violations.push(
+        `[body-identity] ${site.file}:${site.line} calls "${entry.method}" through \`request()\`, but ` +
+          `that method carries NO JSON body (its inputs travel as headers/query) — any body this ` +
+          `sends, identity fold included, is not part of its wire contract`,
       );
       continue;
     }
