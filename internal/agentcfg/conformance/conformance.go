@@ -93,6 +93,15 @@ func Run(t *testing.T, mk Factory, mkFaulty FaultFactory) {
 			t.Run("ConditionalWrite_MismatchRefusedAndPersistsNothing", func(t *testing.T) { testConditionalMismatch(t, mk, scope) })
 			t.Run("ConditionalWrite_NoActiveRevisionRefused", func(t *testing.T) { testConditionalNoActive(t, mk, scope) })
 			t.Run("ConditionalWrite_EmptyTokenIsUnconditional", func(t *testing.T) { testConditionalEmptyToken(t, mk, scope) })
+			// The FIRST-WRITE token. Without it the read-modify-write
+			// composition protocol has no expressible form at its base case
+			// (a read that answers "no config" has no hash to echo), so two
+			// first contributors silently revert each other — a lost update
+			// on the one write the token exists to protect. Registered here,
+			// beside the four rows above, so a second driver inherits it.
+			t.Run("ConditionalWrite_FirstWriteSentinel", func(t *testing.T) { testConditionalFirstWrite(t, mk, scope) })
+			t.Run("ConditionalWrite_FirstWriteSentinelRefusedOnceSet", func(t *testing.T) { testConditionalFirstWriteRefused(t, mk, scope) })
+			t.Run("ConditionalWrite_FirstWriteSentinelPreventsLostUpdate", func(t *testing.T) { testConditionalFirstWriteLostUpdate(t, mk, scope) })
 			// The PARTIAL-WRITE row. A write that does not complete must
 			// leave no revision behind. It lives in the SHARED suite for the
 			// same reason the precondition rows do: the invariant is owed by
@@ -599,10 +608,11 @@ func testConditionalMismatch(t *testing.T, mk Factory, scope agentcfg.ConfigScop
 	}
 }
 
-// testConditionalNoActive — a token supplied when the agent has NO active
-// revision is a conflict. "I expect none" has no expressible value in a
-// hash-typed token (empty means unconditional), so a token against an empty
-// slot fails rather than silently creating the first revision.
+// testConditionalNoActive — a HASH token supplied when the agent has NO
+// active revision is a conflict: the caller claims to have read content that
+// does not exist. ("I expect none" is expressible, but only through the
+// reserved agentcfg.ExpectNoActiveRevision sentinel — see
+// testConditionalFirstWrite.)
 func testConditionalNoActive(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
 	ctx := context.Background()
 	r := mk(t)
@@ -626,6 +636,135 @@ func testConditionalNoActive(t *testing.T, mk Factory, scope agentcfg.ConfigScop
 	if len(revs) != 0 {
 		t.Fatalf("a refused first write persisted %d revisions", len(revs))
 	}
+}
+
+// testConditionalFirstWrite — the reserved sentinel succeeds exactly when the
+// agent has no active revision, and it is a REAL precondition rather than a
+// synonym for the empty token: the write lands, and the sentinel value never
+// leaks into the recorded revision's own content hash.
+func testConditionalFirstWrite(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
+	ctx := context.Background()
+	r := mk(t)
+	id := admin()
+	if _, ok, err := r.Active(ctx, id, agentID, scope); err != nil || ok {
+		t.Fatalf("fixture broken: expected no active revision, ok=%v err=%v", ok, err)
+	}
+
+	first, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a"),
+		agentcfg.SetOptions{ExpectedContentHash: agentcfg.ExpectNoActiveRevision})
+	if err != nil {
+		t.Fatalf("the first-write sentinel must succeed on an agent with no active revision, got %v", err)
+	}
+	if first.ParentRevisionID != "" {
+		t.Fatalf("first revision has parent %q, want none", first.ParentRevisionID)
+	}
+	if first.ContentHash == agentcfg.ExpectNoActiveRevision {
+		t.Fatal("the sentinel leaked into the recorded content hash")
+	}
+	// The sentinel MUST NOT be a possible content hash — that is the whole
+	// argument for putting it inside a hash-shaped field. A content hash is
+	// sha256 hex: 64 lowercase hex characters.
+	if !hashShaped(first.ContentHash) {
+		t.Fatalf("content hash %q is not 64 lowercase hex characters — the sentinel's no-collision argument rests on this", first.ContentHash)
+	}
+	if hashShaped(agentcfg.ExpectNoActiveRevision) {
+		t.Fatalf("the sentinel %q is hash-shaped and COULD collide with a real expectation", agentcfg.ExpectNoActiveRevision)
+	}
+	active, ok, err := r.Active(ctx, id, agentID, scope)
+	if err != nil || !ok || active.RevisionID != first.RevisionID {
+		t.Fatalf("first-write sentinel did not advance the active pointer: %q ok=%v err=%v", active.RevisionID, ok, err)
+	}
+}
+
+// testConditionalFirstWriteRefused — once ANY revision is active the sentinel
+// is refused with ErrRevisionConflict and persists nothing, on both the
+// content-write door and the pointer-move door. A sentinel that degraded to
+// "unconditional" once a revision existed would be the silent last-writer-wins
+// it was added to remove.
+func testConditionalFirstWriteRefused(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
+	ctx := context.Background()
+	r := mk(t)
+	id := admin()
+	base := mustSet(t, r, id, scope, skillsPayload("a"))
+	before, err := r.ListRevisions(ctx, id, agentID, scope, 0)
+	if err != nil {
+		t.Fatalf("list before: %v", err)
+	}
+
+	if _, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("b"),
+		agentcfg.SetOptions{ExpectedContentHash: agentcfg.ExpectNoActiveRevision}); !errors.Is(err, agentcfg.ErrRevisionConflict) {
+		t.Fatalf("the first-write sentinel against an agent that HAS a revision must fail ErrRevisionConflict, got %v", err)
+	}
+	after, err := r.ListRevisions(ctx, id, agentID, scope, 0)
+	if err != nil {
+		t.Fatalf("list after: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("a refused first-write sentinel persisted a revision: %d -> %d", len(before), len(after))
+	}
+	active, ok, err := r.Active(ctx, id, agentID, scope)
+	if err != nil || !ok || active.RevisionID != base.RevisionID {
+		t.Fatalf("a refused first-write sentinel moved the active pointer: %q ok=%v err=%v", active.RevisionID, ok, err)
+	}
+	if _, rerr := r.Rollback(ctx, id, agentID, base.RevisionID, scope,
+		agentcfg.SetOptions{ExpectedContentHash: agentcfg.ExpectNoActiveRevision}); !errors.Is(rerr, agentcfg.ErrRevisionConflict) {
+		t.Fatalf("the first-write sentinel on Rollback must fail ErrRevisionConflict, got %v", rerr)
+	}
+}
+
+// testConditionalFirstWriteLostUpdate is the row that reproduces the DEFECT the
+// sentinel closes, and then shows it closed.
+//
+// Two independent contributors compose onto a fresh agent. Both read (`set:
+// false` — no hash to echo) and both write. Without an expressible "expect
+// none" token, B's only option is the empty token, which is unconditional, so
+// A's contribution is silently gone and B is told 200. With the sentinel, B is
+// refused and can re-read.
+func testConditionalFirstWriteLostUpdate(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
+	ctx := context.Background()
+	r := mk(t)
+	id := admin()
+
+	// Both contributors read the same empty base.
+	if _, ok, err := r.Active(ctx, id, agentID, scope); err != nil || ok {
+		t.Fatalf("fixture broken: expected no active revision, ok=%v err=%v", ok, err)
+	}
+	// A writes first, holding the first-write token.
+	if _, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("alpha"),
+		agentcfg.SetOptions{ExpectedContentHash: agentcfg.ExpectNoActiveRevision}); err != nil {
+		t.Fatalf("contributor A's first write: %v", err)
+	}
+	// B writes second, holding the SAME token it could express from its own
+	// read. It must be refused rather than reverting A.
+	_, bErr := r.SetRevision(ctx, id, agentID, scope, skillsPayload("beta"),
+		agentcfg.SetOptions{ExpectedContentHash: agentcfg.ExpectNoActiveRevision})
+	if !errors.Is(bErr, agentcfg.ErrRevisionConflict) {
+		t.Fatalf("contributor B's write = %v, want ErrRevisionConflict — B reverted A silently", bErr)
+	}
+	active, ok, err := r.Active(ctx, id, agentID, scope)
+	if err != nil || !ok {
+		t.Fatalf("Active: ok=%v err=%v", ok, err)
+	}
+	names := active.Payload.SkillNames()
+	if len(names) != 1 || names[0] != "alpha" {
+		t.Fatalf("final content = %v, want [alpha] — contributor A's write was silently reverted", names)
+	}
+}
+
+// hashShaped reports whether s has the shape agentcfg.ContentHash always
+// produces: exactly 64 lowercase hex characters (sha256 hex). It is what makes
+// the reserved sentinel provably un-collidable rather than merely unlikely.
+func hashShaped(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := range len(s) {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // absentHash is a syntactically-valid SHA-256 hex string no payload hashes to.

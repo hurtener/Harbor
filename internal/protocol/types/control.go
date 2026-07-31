@@ -217,11 +217,24 @@ type StartRequest struct {
 	// so a reused idempotency key carrying DIFFERENT memory is a loud
 	// conflict rather than a silent adoption of the first payload.
 	//
-	// RESIDUAL RISK, stated rather than implied: Harbor does not sanitise
-	// this payload — the untrusted framing IS the mitigation, and
-	// redaction is the caller's job. An operator who pipes third-party
-	// content through `caller_memory` without redacting it has a
-	// data-leakage path no prompt wrapper closes.
+	// AT REST: the payload is PERSISTED on the task record, which the
+	// StateStore writes to disk. It goes through the audit redactor on the
+	// way in — the same one Description and Query take, so the three
+	// caller-controlled fields on a task are consistent rather than one of
+	// them silently raw — and the redacted form is what both the store and
+	// the prompt see (exactly as for Query). A payload that is not valid
+	// JSON is refused loud and persists nothing.
+	//
+	// RESIDUAL RISK, stated rather than implied: that redactor is a
+	// PATTERN redactor, not a sanitiser. It replaces secret-shaped KEYS
+	// (api_key / password / secret / token / cookie / authorization) and
+	// inline `Bearer …` / `Basic …` VALUES anywhere in the document, and it
+	// does nothing else — it does not detect PII, it does not detect a
+	// credential that looks like ordinary prose, and it cannot make hostile
+	// text safe. The untrusted prompt framing remains the mitigation for
+	// prompt injection. An operator who pipes third-party content through
+	// `caller_memory` still has a data-leakage path no prompt wrapper and
+	// no pattern redactor closes.
 	CallerMemory json.RawMessage `json:"caller_memory,omitempty"`
 }
 

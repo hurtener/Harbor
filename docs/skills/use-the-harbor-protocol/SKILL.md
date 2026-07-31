@@ -208,7 +208,9 @@ The rules, all enforced at the edge before any task is created:
 - It can never write the conversation-memory tier — that is a claim about the session's stored turns only the runtime makes.
 - Each admitting run emits `memory.caller_block_admitted` carrying `bytes` / `tier` / `key` and **no fragment of your content**, so an operator can audit that caller-asserted memory entered a run without the audit trail becoming a copy of it.
 
-**One thing Harbor does not do for you:** it does not sanitise this payload. The untrusted framing is the mitigation for the MODEL; it is not redaction. If you pipe third-party content through `caller_memory` without redacting it first, you own that data-leakage path.
+**What happens to it at rest.** The payload is stored on the task record, which the StateStore writes to disk. It goes through the **audit redactor** on the way in — the same one `query` and the task description take, so all three caller-controlled fields behave alike — and the redacted form is what both the store and the prompt see. Structure survives: the redactor walks the decoded JSON, so objects, arrays, numbers, booleans and `null` come back intact and only secret-shaped **keys** (`api_key` / `password` / `secret` / `token` / `cookie` / `authorization`) and inline `Bearer …` / `Basic …` **values** are replaced with `***`. Your idempotency key is unaffected — content identity is computed before redaction.
+
+**One thing Harbor does not do for you:** that redactor is a **pattern** redactor, not a sanitiser. It does not detect PII, it does not detect a credential that looks like ordinary prose, and it cannot make hostile text safe — the untrusted framing is the mitigation for the MODEL, and it is not redaction either. If you pipe third-party content through `caller_memory` without redacting it first, you still own that data-leakage path.
 
 **It selects configuration only.** The run's southbound tool provenance (`_meta.agent_id` on outbound MCP calls) and its RFC 8693 acting principal (`actor_token`) stay the runtime's boot-derived value — the acting principal is the runtime's own verified identity and is never client-supplied. `tasks.get` / `tasks.list` reflect the selection on `task.agent_id`; an **absent** value means the caller named none and the run bound the runtime's configured default ("defaulted", not "unknown").
 
@@ -545,8 +547,23 @@ POST /v1/agent_config/set_revision
 ```
 
 - **Matching** → the write proceeds exactly as an unconditional write would.
-- **Not matching**, or **no active revision exists** → `409 {"code": "revision_conflict"}`, and **nothing is persisted**: no revision, no active-pointer move, no `agent.config.revised` event.
+- **Not matching**, or **a hash sent when no active revision exists** → `409 {"code": "revision_conflict"}`, and **nothing is persisted**: no revision, no active-pointer move, no `agent.config.revised` event.
 - **Omitted** (the default) → byte-for-byte the unconditional behaviour that has always shipped. Nothing you have today changes.
+
+**The first write needs its own token.** When `agent_config.get` answers `{"set": false}` the agent has no config yet and there is no `content_hash` to echo back. Send the reserved value `"-"`:
+
+```jsonc
+POST /v1/agent_config/get     → { "set": false }          // no hash exists
+
+POST /v1/agent_config/set_extra_system_blocks
+{ "agent_id": "support-bot",
+  "extra_system_blocks": { "blocks": [ /* your block */ ] },
+  "expected_content_hash": "-" }                          // "I expect there to be none"
+```
+
+It succeeds only while the agent has no active revision, and returns `409 {"code": "revision_conflict"}` the moment one exists. **Send it — do not omit the token on a first write.** Omitting it is an unconditional write, so two contributors composing onto a fresh agent both succeed and the second silently reverts the first. A real content hash is always 64 lowercase hex characters, so `"-"` can never collide with one.
+
+**Whichever token you send, the compensation is the same.** `add_mcp_connection` is the one door whose live effect (dial → handshake → register) necessarily runs before its write. On a `409` there it does not merely refuse: the server it just attached is **detached**, an inline wire-OAuth provider installed for that binding is **uninstalled**, and a terminal `mcp.connection.failed` event fires. So the "nothing is persisted" promise holds for the world, not only for the revision — a refused add never leaves a live server that no revision names (which `remove_mcp_connection` could never remove) and never leaves the lifecycle stuck on `pending`.
 
 It is available on all **seventeen** spine-writing doors — `set_revision`, `rollback`, `skills.upsert`, `skills.delete`, `set_tool_exposure`, `set_prompt_layers`, `set_extra_system_blocks`, `set_llm_params`, `add_mcp_connection`, `remove_mcp_connection`, `set_mcp_discovery_origins`, `set_oauth_provider`, `remove_oauth_provider`, and the four `user.*` twins (`user.set_revision`, `user.rollback`, `user.skills.upsert`, `user.skills.delete`). It is **not** on `set_llm_provider` (which installs a provider and writes no revision) or on the `agent_config.session.*` verbs (which write the ephemeral session overlay, not the durable spine).
 
@@ -578,7 +595,7 @@ POST /v1/agent_config/set_extra_system_blocks
 ```
 
 - **Order is the render order.** The array order is what the model sees, it is part of the revision's `content_hash`, and a pure re-ordering is a real new revision that `agent_config.diff` reports as `extra_system_blocks.reordered: true`. (Contrast `skills.names` and `oauth_providers`, whose orders are canonicalised by sorting.)
-- **It is a WHOLE-SECTION desired-state replace**, like every sibling section. There are deliberately no per-block verbs — a block is one element of an ordered composition, so a per-item upsert has no well-defined insertion position. **To add or remove exactly your own block: `agent_config.get` → append or drop your entry BY NAME → write the full list back with the read revision's `content_hash` as `expected_content_hash` (§8c).** Without the token you can silently delete a sibling contributor's block; with it you get `409 {"code": "revision_conflict"}` and retry.
+- **It is a WHOLE-SECTION desired-state replace**, like every sibling section. There are deliberately no per-block verbs — a block is one element of an ordered composition, so a per-item upsert has no well-defined insertion position. **To add or remove exactly your own block: `agent_config.get` → append or drop your entry BY NAME → write the full list back with the read revision's `content_hash` as `expected_content_hash` (§8c), or `"-"` when the read answered `{"set": false}`.** Without a token you can silently delete a sibling contributor's block; with it you get `409 {"code": "revision_conflict"}` and retry.
 - **Names are unique and match `[A-Za-z0-9._-]{1,64}`.** A duplicate or malformed name is refused `400 {"code": "invalid_request"}`, naming the offender and (for a duplicate) both positions, and nothing is persisted. Uniqueness is what makes remove-by-name well defined.
 - **Bodies render VERBATIM** — unescaped, in declared order, each behind a plain-text `[name]` label, inside the existing `<additional_guidance>` section. They compose BELOW the runtime's baked operator guidance and ABOVE the additive `extra_instructions`, and they **survive a session `system_prompt_override`** (which replaces only the base+user spine).
 - **The verb is admin-scoped, and that tier IS the trust boundary.** Blocks are unescaped because only the admin tier — the same tier that writes `prompt_layers.base`, which is already verbatim and strictly more powerful — can write them. **Therefore: never put user-authored or model-authored text in a block.** Recalled conversation content belongs in `start.caller_memory`, which lands in the untrusted-framed memory tier; user instructions belong in `prompt_layers.user`, which IS escaped precisely because a claim-free session path can write it.
@@ -637,7 +654,7 @@ That's a working CLI chatbot in 30 lines. Wrap the same in React/Svelte/Vue/what
 - **SSE stream opens but no events.** The `payload.TaskID` capital-T gotcha — your handler is reading `payload.task_id` (lowercase). Fix the case.
 - **A control call returns `404 {"code": "unknown_method"}` or 405/501.** This runtime doesn't serve that surface. Call `runtime.info` first, branch on `capabilities`, and degrade the feature instead of crashing (the [versioning & compatibility contract](https://hurtener.github.io/Harbor/protocol/versioning-and-compatibility)).
 - **Artifact upload returns 413 Payload Too Large.** The request body exceeded the Runtime's `protocol.max_request_bytes` (default 4 MiB) — the canonical `{"code": "request_too_large"}` envelope. Chunk uploads aren't supported in V1.1; raise `protocol.max_request_bytes` in the Runtime's `harbor.yaml` if you need larger inline uploads.
-- **An agent-config write returns `409 {"code": "revision_conflict"}`.** You sent an `expected_content_hash` and another writer moved the base between your read and your write. Nothing was persisted. Re-read `agent_config.get`, re-apply your edit on the current content, and resubmit with the fresh hash — see §8c. (You also get this code when you send a token and the agent has **no** active revision: a hash-typed token cannot express "I expect none".)
+- **An agent-config write returns `409 {"code": "revision_conflict"}`.** You sent an `expected_content_hash` and another writer moved the base between your read and your write. Nothing was persisted. Re-read `agent_config.get`, re-apply your edit on the current content, and resubmit with the fresh hash — see §8c. (You also get this code when you send a *hash* and the agent has **no** active revision — send the reserved `"-"` for that case — and when you send `"-"` and a revision already exists.)
 - **Topology snapshot rejected.** This Runtime doesn't advertise the `topology_snapshot` capability — check `runtime.info.capabilities` before enabling the panel.
 - **The Console reads internal Runtime objects.** It doesn't — that would be a CLAUDE.md §13 violation. If you suspect leakage, file a bug; the Console reads only what's documented as a Protocol surface.
 

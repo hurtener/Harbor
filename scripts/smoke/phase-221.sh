@@ -84,10 +84,10 @@ assert_grep_present 'CodeRevisionConflict' "${STATUS_GO}" \
 #     Counting the t.Run REGISTRATIONS, not the function declarations: a row
 #     whose registration is deleted still declares its function, so a
 #     declaration count would stay green while the row stopped executing.
-assert_grep_count 't\.Run\("ConditionalWrite_' "${CONFORMANCE_GO}" 4 \
-    'phase 221: the shared conformance suite RUNS the four precondition rows'
-assert_grep_count 'func testConditional' "${CONFORMANCE_GO}" 4 \
-    'phase 221: the shared conformance suite declares the four precondition rows'
+assert_grep_count 't\.Run\("ConditionalWrite_' "${CONFORMANCE_GO}" 7 \
+    'phase 221: the shared conformance suite RUNS the seven precondition rows'
+assert_grep_count 'func testConditional' "${CONFORMANCE_GO}" 7 \
+    'phase 221: the shared conformance suite declares the seven precondition rows'
 
 # (5b) The PARTIAL-WRITE atomicity row, in the same shared suite and for the
 #      same reason: a second driver must inherit "a write that did not
@@ -305,7 +305,7 @@ else
         TestRollback_ConditionalWrite_MatchMismatchAndNoActive
 
     assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/agentcfg/drivers/statestore/' \
-        'phase 221: the shared conformance suite (incl. the four precondition rows) passes under both scope arms' \
+        'phase 221: the shared conformance suite (incl. the seven precondition rows) passes under both scope arms' \
         TestStateStore_Conformance
 
     # THE PARTIAL-WRITE RESIDUE. The write path is two Saves with no
@@ -342,6 +342,22 @@ else
         TestE2E_AgentConfig_ConditionalWrite_IdentityPropagation \
         TestE2E_AgentConfig_ConditionalWrite_FailureModes \
         TestE2E_AgentConfig_ConditionalWrite_ConcurrencyStress
+
+    # A refusal must be side-effect free (D-370). The 409 arrives on a door that
+    # has ALREADY dialled, handshaken and registered a live MCP server, so the
+    # conditional write's guarantee is only true if the attach is compensated.
+    # These name the tests explicitly because the defect shipped past a suite
+    # that asserted the refusal and never the residue: deleting the
+    # compensation leaves "caller gets a 409" and "no revision persisted" green.
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/runtime/agentcfg/protocol/' \
+        'phase 221: a revision_conflict compensates the live attach instead of stranding it' \
+        TestAddMCPConnection_RevisionConflict_CompensatesTheAttach \
+        TestAddMCPConnection_RevisionConflict_UninstallsInlineWireProvider \
+        TestAddMCPConnection_AuthRequiredConflict_CompensatesTheAttach \
+        TestAddMCPConnection_UnconditionalAddIsUnchanged \
+        TestAddMCPConnection_FailedAttachDoesNotDetach \
+        TestAddMCPConnection_ConflictWithNoDetacherFailsLoud \
+        TestAddMCPConnection_CompensatingDetachFailureIsNotSwallowed
 fi
 
 smoke_summary
