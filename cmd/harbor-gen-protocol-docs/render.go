@@ -6,19 +6,6 @@ import (
 	"strings"
 )
 
-// fieldKeyMode selects how a struct field's wire key is derived.
-type fieldKeyMode int
-
-const (
-	// fieldNameKeys — the wire key is the Go field name (event
-	// payloads carry no json tags; encoding/json uses the field name
-	// verbatim, hence the documented capital-letter keys).
-	fieldNameKeys fieldKeyMode = iota
-	// jsonTagKeys — the wire key is the json struct tag (the Protocol
-	// wire types are fully snake_case-tagged).
-	jsonTagKeys
-)
-
 // sealTypes are the embedded marker types the renderer hides from
 // payload field tables — they are compile-time seals, not wire fields
 // (encoding/json emits nothing for them).
@@ -30,13 +17,14 @@ var sealTypes = map[string]bool{
 }
 
 // renderStructFields writes one markdown table covering t's exported
-// fields. mode selects the wire-key derivation; embedded seal markers
-// are skipped. Nested anonymous structs are flattened the way
+// fields, keyed the way encoding/json keys them: the `json` tag's name
+// when the field carries one, the Go field name otherwise. Embedded seal
+// markers are skipped. Nested anonymous structs are flattened the way
 // encoding/json flattens them only for the seal markers — every other
 // field (including embedded named structs) renders as one row whose
 // type cell names the nested shape.
-func renderStructFields(b *strings.Builder, t reflect.Type, mode fieldKeyMode) {
-	rows := structFieldRows(t, mode)
+func renderStructFields(b *strings.Builder, t reflect.Type) {
+	rows := structFieldRows(t)
 	if len(rows) == 0 {
 		b.WriteString("_(no wire fields)_\n")
 		return
@@ -57,8 +45,14 @@ type fieldRow struct {
 
 // structFieldRows derives the deterministic field-table rows for t
 // (declaration order — reflect guarantees it, and declaration order is
-// the wire order encoding/json emits).
-func structFieldRows(t reflect.Type, mode fieldKeyMode) []fieldRow {
+// the wire order encoding/json emits). The wire key is derived exactly
+// the way encoding/json derives it: a `json` tag name renames the field,
+// `json:"-"` drops it, and an absent or name-less tag falls back to the
+// Go field name. Protocol wire types are fully snake_case-tagged; event
+// payloads are a mix (an untagged payload keeps its capitalised Go field
+// names on the wire, a tagged one does not), so the derivation is one
+// rule for both pages rather than a per-page assumption.
+func structFieldRows(t reflect.Type) []fieldRow {
 	var rows []fieldRow
 	for i := range t.NumField() {
 		f := t.Field(i)
@@ -69,25 +63,37 @@ func structFieldRows(t reflect.Type, mode fieldKeyMode) []fieldRow {
 			continue
 		}
 
+		tag, tagged := f.Tag.Lookup("json")
+		if tagged && tag == "-" {
+			// The one unescapable form: `json:"-"` drops the field.
+			// (`json:"-,"` instead names the wire key "-".)
+			continue
+		}
+
 		key := f.Name
-		notes := ""
-		if mode == jsonTagKeys {
-			tag := f.Tag.Get("json")
-			if tag == "-" {
-				continue
-			}
+		var opts []string
+		if tagged {
 			parts := strings.Split(tag, ",")
 			if parts[0] != "" {
 				key = parts[0]
 			}
 			for _, opt := range parts[1:] {
-				if opt == "omitempty" {
-					notes = "optional (`omitempty`)"
+				switch opt {
+				case "omitempty":
+					opts = append(opts, "optional (`omitempty`)")
+				case "omitzero":
+					opts = append(opts, "optional (`omitzero`)")
+				case "string":
+					opts = append(opts, "JSON-string-encoded (`,string`)")
 				}
 			}
 		}
 
-		rows = append(rows, fieldRow{key: key, goType: goTypeCell(f.Type), notes: notes})
+		rows = append(rows, fieldRow{
+			key:    key,
+			goType: goTypeCell(f.Type),
+			notes:  strings.Join(opts, "; "),
+		})
 	}
 	return rows
 }

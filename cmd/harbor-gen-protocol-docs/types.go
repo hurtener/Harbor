@@ -39,7 +39,7 @@ func renderTypesPage() (string, error) {
 		home := singlesource.CanonicalWireTypes[name]
 		fmt.Fprintf(&b, "\n## %s\n\n", name)
 		fmt.Fprintf(&b, "Declared in `internal/protocol/%s`.\n\n", home)
-		renderStructFields(&b, t, jsonTagKeys)
+		renderStructFields(&b, t)
 	}
 
 	return b.String(), nil
