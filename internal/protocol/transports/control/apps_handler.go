@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -70,9 +69,9 @@ func decodeAppsRequest(method methods.Method, body []byte) (any, *protoerrors.Er
 			"method %q is not a canonical Protocol MCP Apps method", string(method))
 	}
 	if len(body) > 0 {
-		if jerr := json.Unmarshal(body, target); jerr != nil {
+		if jerr := decodeStrict(body, target); jerr != nil {
 			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
-				"method %q: request body is not a valid request", string(method))
+				"method %q: request body is not a valid request: %s", string(method), decodeDetail(jerr))
 		}
 	}
 	return target, nil

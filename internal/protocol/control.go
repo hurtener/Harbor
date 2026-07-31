@@ -276,13 +276,38 @@ func (s *ControlSurface) emitAdminScopeUsed(ctx context.Context, caller identity
 const maxOutputSchemaBytes = 64 * 1024
 
 // maxCallerMemoryBytes caps the `start` request's `caller_memory`
-// document size. It is the ONLY bound on this content class: the
-// LLM-edge context-leak guard byte-exempts everything that is not a
-// tool-role message (`internal/llm/safety.go`, `offloadableText :=
-// m.Role == RoleTool`) and memory tiers render under the system role,
-// so nothing downstream re-checks these bytes until the token-budget
-// guard fails the whole run late. The cap therefore lives at the edge,
-// before a task exists.
+// document size. It is a RESOURCE BOUND AND WIRE-SIZE GUARD — read the
+// next paragraph before reasoning from it, because it is easy to mistake
+// for something it is not.
+//
+// IT IS NOT A SECURITY BOUNDARY, AND NOTHING MAY BE INFERRED FROM IT
+// ABOUT HOW MUCH CONTENT A CALLER CAN PUT IN FRONT OF THE MODEL. The
+// same principal, on the same request, can send substantially more —
+// through paths that land in positions carrying LESS framing, not more:
+//
+//   - `StartRequest.Query` has no cap of its own. A caller may spend the
+//     whole remaining envelope on it, and it becomes the run's user turn
+//     — the conversation position, which carries no anti-injection
+//     preamble at all.
+//   - `agent_config.session.set_user_prompt` requires a valid identity
+//     and NO scope claim (it is the session-safe tier). It writes
+//     `prompt_layers.user`, which renders INSIDE the system prompt, and
+//     its transport bounds the body at 1 MiB — 32× this constant.
+//
+// So "the caller's content is capped at 32 KiB, therefore X is
+// contained" does not hold for any X. What actually contains this
+// payload is POSITIONAL: it reaches exactly one tier, that tier ships an
+// anti-prompt-injection preamble, and it can never reach the trusted
+// spine. The bound below is about bytes, not about trust.
+//
+// What the bound DOES do, which is real work: nothing downstream
+// re-checks these bytes. The LLM-edge context-leak guard byte-exempts
+// everything that is not a tool-role message (`internal/llm/safety.go`,
+// `offloadableText := m.Role == RoleTool`) and memory tiers render under
+// the system role, so an unbounded document would travel all the way to
+// the token-budget guard and fail the whole run late, after the prompt
+// was assembled. The bound therefore lives at the edge, before a task
+// exists, so an oversized document costs one refusal instead of a run.
 //
 // CAP ORDERING IS AN INVARIANT, NOT A COINCIDENCE. This constant MUST
 // stay strictly below the control transport's whole-body cap
@@ -293,11 +318,14 @@ const maxOutputSchemaBytes = 64 * 1024
 // below names the field precisely so a test can tell the two apart, and
 // the phase smoke pins the ordering mechanically.
 //
-// 32 KiB is not an operator knob. A dial on "how much untrusted caller
-// content may enter a prompt" is a security-posture downgrade dressed as
-// tuning. If a legitimate caller is ever refused here, the answer is an
-// additive optional config key defaulting to this constant — never a
-// raise of the constant.
+// It is still not an operator knob, for a reason that survives the
+// correction above: a per-request byte dial on an admission whose real
+// containment is positional buys nothing an operator can act on, and the
+// cap-ordering invariant makes a configurable value a foot-gun (a value
+// at or above the envelope cap silently disables the field's own check).
+// If a legitimate caller is ever refused here, the answer is an additive
+// optional config key defaulting to this constant, validated strictly
+// below `maxBodyBytes`.
 const maxCallerMemoryBytes = 32 * 1024
 
 // jsonNullLiteral is the four bytes `json.RawMessage` holds after

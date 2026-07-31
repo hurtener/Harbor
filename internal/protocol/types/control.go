@@ -221,6 +221,25 @@ type StartRequest struct {
 	// field. Absent (the backward-compatible default) → byte-identical
 	// wire shape and run behaviour.
 	//
+	// THE CAP IS A RESOURCE BOUND AND WIRE-SIZE GUARD, NOT A SECURITY
+	// BOUNDARY, and nothing may be inferred from it about how much content
+	// a caller can put in front of the model — the same principal can send
+	// substantially more through `Query` (uncapped below the transport
+	// envelope, landing in the unframed conversation position) or through
+	// `agent_config.session.set_user_prompt` (claim-free, 1 MiB body,
+	// landing INSIDE the system prompt). What contains this payload is the
+	// tier it lands in, not its size. The reasoning is on
+	// `maxCallerMemoryBytes`.
+	//
+	// NEGOTIATE BEFORE YOU RELY ON IT. A Runtime that predates this field
+	// discards the member and answers success — the run then proceeds
+	// without the memory the caller believes it supplied. This transport
+	// now decodes strictly, so such a member is refused loudly from here
+	// forward, but that cannot reach an already-deployed older Runtime. A
+	// client checks `VersionHandshake.Accepts(CapCallerMemory)` (or the
+	// `runtime.info.capabilities` list) and treats the capability's ABSENCE
+	// as "unsupported" rather than discovering the loss after the fact.
+	//
 	// Idempotency: `caller_memory` folds into the task's content identity,
 	// so a reused idempotency key carrying DIFFERENT memory is a loud
 	// conflict rather than a silent adoption of the first payload.

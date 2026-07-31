@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -77,45 +76,45 @@ func decodeArtifactsRequest(method methods.Method, body []byte) (any, *types.Art
 	case methods.MethodArtifactsList:
 		req := &types.ArtifactsListRequest{}
 		if len(body) > 0 {
-			if err := json.Unmarshal(body, req); err != nil {
+			if err := decodeStrict(body, req); err != nil {
 				return nil, nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
-					"method %q: request body is not a valid ArtifactsListRequest", string(method))
+					"method %q: request body is not a valid ArtifactsListRequest: %s", string(method), decodeDetail(err))
 			}
 		}
 		return req, &req.Scope, nil
 	case methods.MethodArtifactsPut:
 		req := &types.ArtifactsPutRequest{}
 		if len(body) > 0 {
-			if err := json.Unmarshal(body, req); err != nil {
+			if err := decodeStrict(body, req); err != nil {
 				return nil, nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
-					"method %q: request body is not a valid ArtifactsPutRequest", string(method))
+					"method %q: request body is not a valid ArtifactsPutRequest: %s", string(method), decodeDetail(err))
 			}
 		}
 		return req, &req.Scope, nil
 	case methods.MethodArtifactsGet:
 		req := &types.ArtifactsGetRequest{}
 		if len(body) > 0 {
-			if err := json.Unmarshal(body, req); err != nil {
+			if err := decodeStrict(body, req); err != nil {
 				return nil, nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
-					"method %q: request body is not a valid ArtifactsGetRequest", string(method))
+					"method %q: request body is not a valid ArtifactsGetRequest: %s", string(method), decodeDetail(err))
 			}
 		}
 		return req, &req.Scope, nil
 	case methods.MethodArtifactsGetRef:
 		req := &types.ArtifactsGetRefRequest{}
 		if len(body) > 0 {
-			if err := json.Unmarshal(body, req); err != nil {
+			if err := decodeStrict(body, req); err != nil {
 				return nil, nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
-					"method %q: request body is not a valid ArtifactsGetRefRequest", string(method))
+					"method %q: request body is not a valid ArtifactsGetRefRequest: %s", string(method), decodeDetail(err))
 			}
 		}
 		return req, &req.Scope, nil
 	case methods.MethodArtifactsDelete:
 		req := &types.ArtifactsDeleteRequest{}
 		if len(body) > 0 {
-			if err := json.Unmarshal(body, req); err != nil {
+			if err := decodeStrict(body, req); err != nil {
 				return nil, nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
-					"method %q: request body is not a valid ArtifactsDeleteRequest", string(method))
+					"method %q: request body is not a valid ArtifactsDeleteRequest: %s", string(method), decodeDetail(err))
 			}
 		}
 		return req, &req.Scope, nil

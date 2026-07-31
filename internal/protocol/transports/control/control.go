@@ -42,6 +42,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -545,9 +546,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func decodeRequest(method methods.Method, body []byte) (any, *protoerrors.Error) {
 	if method == methods.MethodStart {
 		var sr types.StartRequest
-		if err := json.Unmarshal(body, &sr); err != nil {
+		if err := decodeStrict(body, &sr); err != nil {
 			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
-				"method %q: request body is not a valid StartRequest", string(method))
+				"method %q: request body is not a valid StartRequest: %s", string(method), decodeDetail(err))
 		}
 		return &sr, nil
 	}
@@ -556,18 +557,83 @@ func decodeRequest(method methods.Method, body []byte) (any, *protoerrors.Error)
 	// StartRequest nor a ControlRequest.
 	if methods.IsTopologyMethod(method) {
 		var tr types.TopologySnapshotRequest
-		if err := json.Unmarshal(body, &tr); err != nil {
+		if err := decodeStrict(body, &tr); err != nil {
 			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
-				"method %q: request body is not a valid TopologySnapshotRequest", string(method))
+				"method %q: request body is not a valid TopologySnapshotRequest: %s", string(method), decodeDetail(err))
 		}
 		return &tr, nil
 	}
 	var cr types.ControlRequest
-	if err := json.Unmarshal(body, &cr); err != nil {
+	if err := decodeStrict(body, &cr); err != nil {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
-			"method %q: request body is not a valid ControlRequest", string(method))
+			"method %q: request body is not a valid ControlRequest: %s", string(method), decodeDetail(err))
 	}
 	return &cr, nil
+}
+
+// decodeStrict decodes a control-transport request body into target and
+// REFUSES any member the wire type does not define. It is the ONE decode
+// on this transport — every handler in the package routes through it, so
+// there is no lax sibling to drift against (CLAUDE.md §13 forbids two
+// implementations of one concept).
+//
+// # Why unknown members are refused rather than dropped
+//
+// `encoding/json`'s default is to discard a member no field matches. On a
+// Protocol request that turns a caller's explicit instruction into a
+// SUCCESS that did not happen: a client speaking a newer Protocol sends an
+// additive optional field, an older Runtime drops it, and the run proceeds
+// without the content the caller believes it supplied. That is the silent
+// degradation CLAUDE.md §13 forbids, at a version boundary, and no amount
+// of downstream validation can recover it — the bytes are gone before any
+// validator sees them.
+//
+// The refusal is not a new Protocol posture. Every OTHER Harbor Protocol
+// request handler already decodes strictly (the whole
+// `internal/protocol/transports/stream` family, the Go Protocol client,
+// the agent-config credential-descriptor decodes whose "rejected BY NAME"
+// guarantee is stated in their godoc). This transport was the outlier; the
+// asymmetry was an omission, not a policy.
+//
+// It also rejects trailing data after the JSON document, which
+// `json.Unmarshal` did and a bare `Decoder.Decode` does not — the swap
+// must not loosen anything.
+func decodeStrict(body []byte, target any) error {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(target); err != nil {
+		return err
+	}
+	if dec.More() {
+		return errTrailingData
+	}
+	return nil
+}
+
+// errTrailingData is returned by decodeStrict when a second JSON value
+// follows the request document. `json.Unmarshal` refused this shape, so
+// keeping it refused is what makes the strict decode a strict SUPERSET of
+// the decode it replaced.
+var errTrailingData = errors.New("unexpected trailing data after the JSON document")
+
+// maxDecodeDetailBytes bounds how much of a decoder error is echoed back
+// to the caller. The detail is what makes a strict refusal actionable —
+// `json: unknown field "caller_memory"` names the field the caller must
+// stop sending, which is the whole point of refusing instead of dropping.
+// The bound exists because the quoted member name is caller-controlled and
+// a request body may carry 64 KiB of it.
+const maxDecodeDetailBytes = 160
+
+// decodeDetail renders a decoder error for the wire: the reason, bounded.
+// It never carries a decoded VALUE — `encoding/json` reports the offending
+// member's name and type, never its contents — so this cannot echo caller
+// payload back out.
+func decodeDetail(err error) string {
+	msg := err.Error()
+	if len(msg) > maxDecodeDetailBytes {
+		return msg[:maxDecodeDetailBytes] + "…"
+	}
+	return msg
 }
 
 // writeDispatchError maps a Dispatch error onto the wire. Dispatch's

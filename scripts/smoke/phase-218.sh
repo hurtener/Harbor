@@ -245,7 +245,12 @@ else
         P218_CODE=$(printf '%s' "${P218_BODY}" | jq -r '.code // .error.code // ""' 2>/dev/null || echo "")
     }
 
-    ID='{"tenant":"dev","user":"dev","session":"dev"}'
+    # The bodies below carry NO `identity` member. `SearchRequest` scopes
+    # through `filter` and declares no `identity` field, so the control
+    # transport's strict decode (D-374) refuses one with `unknown field
+    # "identity"` (400) — which is what these legs hit. Identity comes from the
+    # bearer; the search handler does its own defaulting and cross-tenant
+    # gating on `filter`, which is exactly what this phase exists to test.
 
     # (1) THE NON-REGRESSION. The five methods must still answer for an ordinary
     # own-scope caller. D-352 named this exact failure mode for the sibling fix:
@@ -268,7 +273,7 @@ else
     else
     for m in search.query search.sessions search.tasks search.events search.artifacts; do
         p218_post "$(api_url "/v1/control/${m}")" \
-            "{\"identity\":${ID},\"query\":\"\",\"page_size\":5}"
+            "{\"query\":\"\",\"page_size\":5}"
         case "${P218_STATUS}" in
             404|405|501|000)
                 skip "phase 218: ${m} absent from this build (${P218_STATUS})"
@@ -307,7 +312,7 @@ else
     # five methods through the Protocol dispatcher and compares the wire code
     # exactly. Those legs run below and FAIL loud.
     p218_post "$(api_url /v1/control/search.query)" \
-        "{\"identity\":${ID},\"query\":\"\",\"page_size\":5,\"filter\":{\"user_ids\":[\"phase218-not-the-caller\"]}}"
+        "{\"query\":\"\",\"page_size\":5,\"filter\":{\"user_ids\":[\"phase218-not-the-caller\"]}}"
     case "${P218_STATUS}" in
         404|405|501|000)
             skip "phase 218: search.query absent from this build (${P218_STATUS})"
@@ -334,7 +339,7 @@ else
     if command -v curl >/dev/null 2>&1; then
         P218_ANON=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
             -H 'Content-Type: application/json' -X POST \
-            -d "{\"identity\":${ID},\"query\":\"\",\"page_size\":5,\"filter\":{\"user_ids\":[\"phase218-not-the-caller\"]}}" \
+            -d "{\"query\":\"\",\"page_size\":5,\"filter\":{\"user_ids\":[\"phase218-not-the-caller\"]}}" \
             "$(api_url /v1/control/search.query)" 2>/dev/null || true)
         case "${P218_ANON:-000}" in
             401|403)
