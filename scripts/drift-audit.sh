@@ -452,6 +452,77 @@ else
     ok 'smoke regex portability: no non-portable \t/\d escapes in grep -E patterns (BSD matches them, GNU does not)'
 fi
 
+# -----------------------------------------------------------------------------
+# mktemp template portability — the SAME macOS/Linux divergence class as the
+# grep-escape guard above, and the second one to reach CI unnoticed.
+#
+# GNU mktemp (Linux, where CI runs preflight) REJECTS a template with fewer
+# than three trailing `X`s outright: `mktemp: too few X's in template`, exit
+# non-zero. BSD mktemp (macOS, where contributors run preflight) accepts it and
+# invents a suffix. So a template without them passes every local run and kills
+# the script in CI — after every assertion has already reported OK, which is
+# what makes it expensive to read.
+#
+# A `mktemp` with NO template (`mktemp`, `mktemp -d`) is portable by
+# construction and is deliberately not flagged; only an invocation that PASSES
+# a template is checked, and the requirement is exactly the GNU one: the
+# template ends in `XXX` or longer.
+#
+# Redirects (`mktemp -d 2>/dev/null`) are stripped before the scan — they are
+# not template arguments, and treating one as a template is how a guard of this
+# shape acquires false positives and then gets deleted.
+#
+# The scan splits each line into command segments on the shell operators and
+# only considers a segment that STARTS with `mktemp`. That is what keeps this
+# guard from tripping on its own source: the word appears here in prose, in a
+# grep pattern and inside awk regexes, none of which are command position. This
+# file is deliberately still IN scope — it runs its own `mktemp` at the
+# markdownlint output path, and a guard that exempts its own file cannot see it.
+# -----------------------------------------------------------------------------
+bad_mktemp=$(grep -rn 'mktemp' scripts --include='*.sh' 2>/dev/null \
+    | grep -vE ':[0-9]+:[[:space:]]*#' \
+    | awk -F: '
+        {
+            path = $1; lineno = $2
+            body = $0
+            sub(/^[^:]*:[^:]*:/, "", body)
+            # Split on the shell operators ONLY. `$` and `{` are deliberately
+            # NOT separators: `${TMPDIR:-/tmp}/name.XXXXXX` is one argument,
+            # and splitting it truncates the template before its X'"'"'s.
+            nseg = split(body, seg, /[`|;&(]+/)
+            for (s = 1; s <= nseg; s++) {
+                inv = seg[s]
+                sub(/^[[:space:]]+/, "", inv)
+                if (inv !~ /^mktemp([[:space:]]|$)/) continue  # not command position
+                sub(/^mktemp/, "", inv)
+                # The invocation ends at a shell terminator. `.` is NOT one —
+                # it is the conventional separator before the X'"'"'s
+                # (`name.XXXXXX`), and treating it as a terminator hid every
+                # dotted template'"'"'s suffix.
+                sub(/[);|&].*$/, "", inv)
+                gsub(/[0-9]*[<>]+[^[:space:]]+/, " ", inv)  # drop redirects
+                ntok = split(inv, tok, /[[:space:]]+/)
+                template = ""
+                for (i = 1; i <= ntok; i++) {
+                    if (tok[i] == "") continue
+                    if (substr(tok[i], 1, 1) == "-") continue  # option flag
+                    template = tok[i]
+                    break
+                }
+                gsub(/["'"'"'`]/, "", template)             # strip shell quoting FIRST
+                if (template == "") continue                # no template: portable
+                if (template !~ /XXX$/)
+                    printf "%s:%s: %s\n", path, lineno, template
+            }
+        }' || true)
+if [ -n "${bad_mktemp}" ]; then
+    while IFS= read -r line; do
+        [ -n "${line}" ] && fail "mktemp template portability: template without trailing X's (GNU mktemp rejects it outright; BSD accepts it — use e.g. \"\${TMPDIR:-/tmp}/name.XXXXXX\") — ${line}"
+    done <<< "${bad_mktemp}"
+else
+    ok 'mktemp template portability: every mktemp template carries trailing X'"'"'s (GNU rejects fewer than three; BSD does not)'
+fi
+
 # Summary
 printf '\n=== drift-audit summary ===\n'
 printf 'OK:   %d\n' "${OK}"

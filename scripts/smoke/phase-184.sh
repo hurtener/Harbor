@@ -167,7 +167,11 @@ fi
 #     facade — the contract the scaffold template carries. The binary is
 #     built into a temp dir; no runtime assertion, just compilation.
 # ----------------------------------------------------------------------------
-SCAFFOLD_TMPDIR="$(mktemp -d 2>/dev/null || mktemp -d -t harbor-smoke)"
+# The fallback template carries trailing X's: GNU mktemp (Linux CI) rejects a
+# template with fewer than three of them, BSD mktemp (macOS) does not. The
+# first arm succeeds on both platforms so the fallback has never fired — which
+# is exactly why the trap sat here unnoticed.
+SCAFFOLD_TMPDIR="$(mktemp -d 2>/dev/null || mktemp -d "${TMPDIR:-/tmp}/harbor-smoke.XXXXXX")"
 trap 'rm -rf "${SCAFFOLD_TMPDIR}"' EXIT
 if HARBOR_VERSION="v0.0.0-smoke" go run ./cmd/harbor scaffold --name smoke-agent --output "${SCAFFOLD_TMPDIR}/smoke-agent" --with-server --with-tui --quiet 2>/dev/null; then
     if CGO_ENABLED=0 go build -o "${SCAFFOLD_TMPDIR}/smoke-binary" "./${SCAFFOLD_TMPDIR}/smoke-agent/cmd/smoke-agent" 2>/dev/null; then

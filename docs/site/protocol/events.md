@@ -1183,6 +1183,7 @@ Payload `RunOverridesSetPayload` — safe payload (delivered typed, verbatim).
 | `SetTemperature` | `bool` |  |
 | `SetMaxTokens` | `bool` |  |
 | `SetSystemPrompt` | `bool` |  |
+| `SetExtraInstructions` | `bool` |  |
 | `SetModel` | `bool` |  |
 | `OccurredAt` | `time.Time` |  |
 

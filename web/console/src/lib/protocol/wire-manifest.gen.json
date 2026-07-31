@@ -5986,6 +5986,11 @@
           "optional": true
         },
         {
+          "key": "extra_instructions",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "model",
           "type": "string",
           "optional": true

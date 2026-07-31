@@ -2,8 +2,8 @@
 // the Console Playground page consumes.
 //
 // `runs.set_overrides` records the reasoning-effort / temperature /
-// max-tokens / system-prompt override an operator applies to the NEXT
-// message in a session. The override is:
+// max-tokens / system-prompt / additive-guidance override an operator
+// applies to the NEXT message in a session. The override is:
 //
 //   - Session-scoped — keyed by the full identity triple
 //     `(tenant, user, session)`. A second session never sees the
@@ -62,6 +62,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,12 +78,24 @@ import (
 // tenant-wide baseline** (the run loop reads it at run start). Per field, a
 // non-nil session value wins, then the per-agent (agent-config) value, then
 // the tenant-wide baseline fills the rest. The session's SystemPromptOverride
-// (full system-prompt REPLACE) is session-only; the tenant's ExtraInstructions
-// (additive) is tenant-only; the per-agent layer carries sampling parameters
-// only (model / temperature / max-tokens / reasoning-effort) — never prompt
-// text. Returns nil when no layer set anything. config defaults are applied
-// last by the planner's applyLLMOverrides (an unset field leaves the request
-// untouched).
+// (full system-prompt REPLACE) is session-only; the per-agent layer carries
+// sampling parameters only (model / temperature / max-tokens /
+// reasoning-effort) — never prompt text. Returns nil when no layer set
+// anything. config defaults are applied last by the planner's
+// applyLLMOverrides (an unset field leaves the request untouched).
+//
+// # ExtraInstructions is the one field that JOINS across layers
+//
+// Every other field takes per-field last-writer-wins. ExtraInstructions —
+// the ADDITIVE guidance block — instead COMPOSES: the tenant-wide text comes
+// first, the session text is appended below it separated by a blank line, and
+// the session can never clear the tenant's. The reason is authorization, not
+// taste: the tenant-wide block is set through an admin-gated method while a
+// session override needs only a verified identity triple for the caller's own
+// session, so last-writer-wins would hand a non-admin caller a silent delete
+// on an admin-set compliance block. A present-but-empty session value is a
+// no-op, never a deletion; with no session contribution the tenant value
+// passes through byte-identical.
 //
 // This is the ONE production composition; cmd/harbor's run loop, the devstack
 // twin, and the integration test all call it (no re-implemented copy —
@@ -130,8 +143,41 @@ func ComposeLLMOverrides(session *PendingOverride, agent, tenant *planner.LLMOve
 		if session.SystemPromptOverride != nil {
 			out.SystemPromptOverride = session.SystemPromptOverride
 		}
+		// The ONE joining field: the session's additive guidance composes
+		// BELOW the tenant's rather than replacing it. See the doc comment.
+		out.ExtraInstructions = joinAdditiveGuidance(out.ExtraInstructions, session.ExtraInstructions)
 	}
 	return out
+}
+
+// additiveGuidanceSeparator is the blank line between two additive-guidance
+// contributions. It is the SAME separator the ReAct prompt builder already
+// uses between the operator's baked guidance and the override's additive
+// block, so a joined two-producer value renders indistinguishably from a
+// single block written by one author.
+const additiveGuidanceSeparator = "\n\n"
+
+// joinAdditiveGuidance composes two additive-guidance contributions, `above`
+// (the higher-authority tenant-wide text) first and `below` (the session
+// contribution) after, separated by a blank line.
+//
+// It NEVER replaces and never clears: a nil / empty / whitespace-only `below`
+// returns `above` untouched — the exact pointer, so a run with no session
+// contribution resolves byte-identically to the tenant-only value. A nil /
+// empty / whitespace-only `above` returns a fresh copy of `below`. The joined
+// result is a NEWLY allocated string: the tenant record's own string is never
+// appended into, so one run's join cannot corrupt the shared record another
+// run reads (CLAUDE.md §5 concurrent-reuse contract).
+func joinAdditiveGuidance(above, below *string) *string {
+	if below == nil || strings.TrimSpace(*below) == "" {
+		return above
+	}
+	if above == nil || strings.TrimSpace(*above) == "" {
+		v := *below
+		return &v
+	}
+	joined := strings.TrimSpace(*above) + additiveGuidanceSeparator + strings.TrimSpace(*below)
+	return &joined
 }
 
 // Sentinel errors the Service returns. The wire handler maps each onto
@@ -182,6 +228,11 @@ type PendingOverride struct {
 	// SystemPromptOverride, when non-nil, replaces the agent's system
 	// prompt for the next message only.
 	SystemPromptOverride *string
+	// ExtraInstructions, when non-nil, is the ADDITIVE guidance block for
+	// the next message. It composes BELOW the tenant-wide additive block
+	// (see ComposeLLMOverrides) and can never clear it; an empty or
+	// whitespace-only value contributes nothing and is not an error.
+	ExtraInstructions *string
 	// Model, when non-nil, is the validated model the next message's run
 	// requests (the session-level model swap).
 	Model *string
@@ -444,6 +495,15 @@ func (s *Service) validate(o prototypes.RunOverrides) (PendingOverride, error) {
 		v := *o.SystemPromptOverride
 		po.SystemPromptOverride = &v
 	}
+	if o.ExtraInstructions != nil {
+		// Copied BY VALUE, never aliased: the stored slot must not change
+		// under a caller that mutates its request struct afterwards. An
+		// empty or whitespace-only value is deliberately ACCEPTED — it
+		// contributes nothing at composition time and is not a channel for
+		// clearing the tenant-wide block (there is no run-level clear).
+		v := *o.ExtraInstructions
+		po.ExtraInstructions = &v
+	}
 	if o.Model != nil && *o.Model != "" {
 		m := *o.Model
 		if len(s.validModels) > 0 {
@@ -473,6 +533,7 @@ func (s *Service) emitAudit(ctx context.Context, id identity.Identity, po Pendin
 		slog.Bool("set_temperature", po.Temperature != nil),
 		slog.Bool("set_max_tokens", po.MaxTokens != nil),
 		slog.Bool("set_system_prompt", po.SystemPromptOverride != nil),
+		slog.Bool("set_extra_instructions", po.ExtraInstructions != nil),
 		slog.Bool("set_model", po.Model != nil),
 	}
 	if s.bus == nil {
@@ -486,8 +547,11 @@ func (s *Service) emitAudit(ctx context.Context, id identity.Identity, po Pendin
 		SetTemperature:     po.Temperature != nil,
 		SetMaxTokens:       po.MaxTokens != nil,
 		SetSystemPrompt:    po.SystemPromptOverride != nil,
-		SetModel:           po.Model != nil,
-		OccurredAt:         at,
+		// The FLAG only — the additive guidance text is caller-supplied
+		// free text and must never ride the bus (CLAUDE.md §7).
+		SetExtraInstructions: po.ExtraInstructions != nil,
+		SetModel:             po.Model != nil,
+		OccurredAt:           at,
 	}
 	ev := events.Event{
 		Type:       events.EventTypeRunOverridesSet,
