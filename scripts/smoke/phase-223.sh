@@ -132,24 +132,50 @@ fi
 #    is how thirteen unshipped phases were parked in the baseline as
 #    shipped-phase debt.
 #
-#    Computed against the live master plan, so a future reformat that
-#    reintroduces the blind spot FAILs here rather than silently re-arming it.
+#    THE COUNT IS COMPUTED, NEVER ASSIGNED. The first cut of this guard
+#    grepped preflight.sh for the fixed regex STRING and, on a match, set
+#    `rows_seen="${rows_total}"` — so the comparison below was true BY
+#    CONSTRUCTION and the guard could only ever detect a revert of that one
+#    string. It could not detect the master-plan reformat its own comment
+#    claimed it guarded, which is the failure this phase exists to remove:
+#    a guard whose pass value is also its can't-tell value. (Found by the
+#    v1.25 checkpoint's claims review; the same trap that had phase 221
+#    writing a broken `go test` helper beside the fix for it.)
+#
+#    So: EXTRACT preflight's row regex from its source, substitute each phase
+#    token the master plan actually carries, and RUN it against the master
+#    plan. Both directions now fail — reverting preflight's regex, AND
+#    reformatting a master-plan row into a shape the regex cannot see.
 # ----------------------------------------------------------------------------
 if [ -f "${MASTER}" ] && [ -f "${PREFLIGHT}" ]; then
-    rows_total="$(grep -cE '^\|[[:space:]]*[0-9][0-9a-z-]*[[:space:]]*\|' "${MASTER}" || true)"
-    rows_total="${rows_total:-0}"
-    # The regex preflight actually uses, extracted from the source rather than
-    # restated, so this guard cannot pass against a stale copy of it.
-    if grep -qF -- 'row="$(grep -m1 -E "^\| *${n} *\|" docs/plans/README.md' "${PREFLIGHT}"; then
-        rows_seen="${rows_total}"
+    # Every phase row, by a DELIBERATELY PERMISSIVE scan — this is the
+    # denominator, so it must see rows preflight's regex might not.
+    rows_total=0
+    rows_seen=0
+    # `^\| *${n} *\|` today. The `${n}` survives as LITERAL TEXT — the sed
+    # program is single-quoted so the shell expands nothing, and a command
+    # substitution's OUTPUT is never re-expanded. It is substituted per phase
+    # token in the loop below.
+    ROW_RE_TEMPLATE="$(sed -nE 's#.*grep -m1 -E "([^"]*)" docs/plans/README\.md.*#\1#p' "${PREFLIGHT}" | head -1)"
+    ROW_RE_NEEDLE='${n}'
+    if [ -z "${ROW_RE_TEMPLATE}" ] || [ "${ROW_RE_TEMPLATE}" = "${ROW_RE_TEMPLATE#*${ROW_RE_NEEDLE}}" ]; then
+        fail "phase 223: could not extract preflight's master-plan row regex from ${PREFLIGHT} (got '${ROW_RE_TEMPLATE:-none}') — this guard cannot run, and an unverifiable guard must not read as a passing one"
     else
-        rows_seen="$(grep -cE '^\|[[:space:]]*[0-9][0-9a-z-]*[[:space:]]+\|' "${MASTER}" || true)"
-        rows_seen="${rows_seen:-0}"
+        while IFS= read -r tok; do
+            [ -n "${tok}" ] || continue
+            rows_total=$((rows_total + 1))
+            row_re="${ROW_RE_TEMPLATE//${ROW_RE_NEEDLE}/${tok}}"
+            if grep -qE -- "${row_re}" "${MASTER}"; then
+                rows_seen=$((rows_seen + 1))
+            fi
+        done <<EOF
+$(grep -oE '^\|[[:space:]]*[0-9][0-9a-z-]*' "${MASTER}" | sed -E 's/^\|[[:space:]]*//' || true)
+EOF
     fi
     if [ "${rows_total}" -gt 0 ] && [ "${rows_seen}" -eq "${rows_total}" ]; then
         ok "phase 223: every master-plan phase row is resolvable by the preflight row regex (${rows_seen}/${rows_total})"
     else
-        fail "phase 223: only ${rows_seen}/${rows_total} master-plan phase rows are resolvable by the preflight row regex — the rest have no space before the closing pipe and default to Shipped, which mis-parks unshipped phases as shipped-phase debt"
+        fail "phase 223: only ${rows_seen}/${rows_total} master-plan phase rows are resolvable by the preflight row regex ('${ROW_RE_TEMPLATE:-none}') — an unresolvable row falls into the no-row arm and defaults to Shipped, which mis-parks unshipped phases as shipped-phase debt. Either the regex regressed (the historical case: '+\\|' instead of '*\\|', 233/339) or a row was reformatted into a shape it cannot see."
     fi
 else
     fail "phase 223: ${MASTER} or ${PREFLIGHT} is missing — the shipped/unshipped classifier has nothing to read"
@@ -203,6 +229,12 @@ EOF
             ok 'phase 223: every non-Shipped master-plan status word is named by phase_status_arm'
         fi
     fi
+else
+    # No `else` here meant a missing master plan or a missing preflight.sh
+    # produced SILENCE — assertion 6 simply vanished from the counters, which
+    # reads exactly like a script that never had it. Both files are repository
+    # fixtures, not optional surfaces; their absence is a FAIL.
+    fail "phase 223: cannot check the status vocabulary — missing $( [ -f "${MASTER}" ] || printf '%s ' "${MASTER}"; [ -f "${PREFLIGHT}" ] || printf '%s ' "${PREFLIGHT}" )"
 fi
 
 # ----------------------------------------------------------------------------

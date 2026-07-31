@@ -267,7 +267,10 @@ fi
 # verdict was never wrong (it is the exit code), but the file the failure
 # message points at was.
 if command -v npx >/dev/null 2>&1; then
-    MDLINT_OUT="$(mktemp -t harbor-markdownlint-XXXXXX)"
+    # The explicit `${TMPDIR:-/tmp}` path form, NOT `mktemp -t`: GNU coreutils
+    # documents `-t` as deprecated, and phase-220.sh:304 already says so where
+    # it makes the same call. The trailing X's are mandatory for GNU mktemp.
+    MDLINT_OUT="$(mktemp "${TMPDIR:-/tmp}/harbor-markdownlint-XXXXXX")"
     if make -s markdownlint >"${MDLINT_OUT}" 2>&1; then
         ok 'markdownlint (pinned cli2, CI-parity globs) clean'
         rm -f "${MDLINT_OUT}"
@@ -430,26 +433,99 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Smoke regex portability — `\t` and `\d` inside a grep -E pattern are matched
-# by BSD grep (macOS, where contributors run preflight) and NOT by GNU grep
-# (Linux, where CI runs it). A guard written with either one passes locally and
-# is dead in CI, which is the failure mode this whole gate exists to prevent:
-# it does not error, it silently never matches.
+# Smoke regex portability — `\t`, `\d` and `\n` inside a grep -E pattern are
+# matched by BSD grep (macOS, where contributors run preflight) and NOT by GNU
+# grep (Linux, where CI runs it). A guard written with any of them passes
+# locally and is dead in CI, which is the failure mode this whole gate exists
+# to prevent: it does not error, it silently never matches.
 #
 # `\s`, `\w` and `\b` are supported by BOTH and are deliberately NOT flagged.
 #
-# Use a POSIX class instead: `[[:space:]]` for `\t`, `[[:digit:]]` for `\d`.
-# Shell contexts (printf '%s\t', IFS=$'\t') are unaffected — this scans only
-# quoted patterns handed to an assert_grep_* helper or a `grep -E` call.
+# `\n` joined the scan after the v1.25 checkpoint found `[^\n]` in
+# scripts/smoke/phase-222.sh used as "any character". An ERE bracket expression
+# has NO C escapes, so `[^\n]` is the class "neither a backslash nor the letter
+# n" — a violating declaration containing an `n` between the anchors slips past
+# on CI while the local run catches it, the same divergence class as `\t`/`\d`
+# and with the same silent-never-matches signature. grep is line-oriented, so a
+# pattern never needs to exclude a newline: `.` already cannot cross one.
+#
+# Use a POSIX class instead: `[[:space:]]` for `\t`, `[[:digit:]]` for `\d`,
+# and plain `.` where `[^\n]` was meant. Shell contexts (printf '%s\t',
+# IFS=$'\t') are unaffected — this scans only quoted patterns handed to an
+# assert_grep_* helper or a `grep -E` call.
+#
+# BACKSLASH CONTINUATIONS ARE JOINED FIRST. The scan used to be a single
+# `grep -rnE`, which requires the helper name and its quoted pattern on ONE
+# line — and the house style for these helpers puts the pattern on the NEXT
+# line:
+#
+#     assert_not_grep "${WIRE_GO}" \
+#         'ExtraSystemBlocks[^\n]*map\[' \
+#         'desc'
+#
+# so the guard could not see the very shape that motivated widening it to
+# `\n`. Mutation-verified: with the one-line scan, re-introducing that exact
+# `[^\n]` left this check reporting OK. The awk below rebuilds each LOGICAL
+# line (joining trailing-backslash continuations, the way the shell does) and
+# reports the line the logical line STARTED on, so multi-line calls are in
+# scope. A guard that cannot see the corpus's dominant call shape is the
+# §4.2-item-5 problem wearing a different hat.
 # -----------------------------------------------------------------------------
-bad_escapes=$(grep -rnE "(assert_grep[a-z_]*|grep [^|;]*-[a-zA-Z]*E[^|;]*)[[:space:]]+'[^']*\\\\[td]" \
-    scripts/smoke/*.sh scripts/*.sh 2>/dev/null | grep -vE ":[0-9]+:[[:space:]]*#" || true)
+bad_escapes=$(awk '
+    BEGIN {
+        q = sprintf("%c", 39)   # a single quote, unquotable inside this program
+        # The ORIGINAL single-line pattern, with two changes: `\n` joins the
+        # flagged set, and the backslash must be UNESCAPED. The parity guard
+        # `([^q]*[^q\\])?` is what keeps `"\\n\\n"` — an ERE escape for a
+        # LITERAL backslash followed by the letter n, which is exactly how
+        # scripts/smoke/phase-220.sh greps the Go source text `"\n\n"` — from
+        # being reported. Without it the widened set turns correct code red,
+        # and a guard that cries wolf gets deleted.
+        #
+        # The helper alternation is `(assert|soft)_[a-z_]*grep[a-z_]*`, not
+        # `assert_grep[a-z_]*`. The narrower form named only five of the eight
+        # grep-shaped helpers the corpus defines — it could not see
+        # `assert_not_grep`, `assert_not_grep_or_fail`, `assert_not_grep_or_skip`,
+        # `assert_block_grep` or `soft_grep`, and `assert_not_grep` is exactly
+        # where the `[^\n]` that motivated widening this guard lived.
+        #
+        # `[^q]*` — not `[[:space:]]+` — between the helper and the pattern.
+        # The pattern is the FIRST single-quoted argument AFTER the helper
+        # token, which is not always the adjacent one: `assert_grep_present`
+        # takes the pattern first, but `assert_grep` / `assert_not_grep` /
+        # `assert_block_grep` take the FILE first. Requiring adjacency made the
+        # guard blind to every file-first helper. Anchoring on "first quoted
+        # arg after the helper" (rather than "any quoted arg on the line") is
+        # what keeps `printf '%s\n' "${out}" | grep -qE '...'` from being a
+        # false positive: the printf'"'"'s escape sits BEFORE the grep token.
+        re = "((assert|soft)_[a-z_]*grep[a-z_]*|grep [^|;]*-[a-zA-Z]*E[^|;]*)[^" q "]*" \
+             q "([^" q "]*[^" q "\\\\])?\\\\[tdn]"
+    }
+    FNR == 1 { buf = ""; start = 0 }
+    {
+        line = $0
+        if (buf == "") { start = FNR }
+        # Strip the continuation backslash and keep accumulating.
+        if (line ~ /\\$/) {
+            sub(/\\$/, "", line)
+            buf = buf line
+            next
+        }
+        buf = buf line
+        logical = buf
+        buf = ""
+        stripped = logical
+        sub(/^[[:space:]]+/, "", stripped)
+        if (substr(stripped, 1, 1) == "#") next   # whole-line comment
+        if (logical ~ re) printf "%s:%s\n", FILENAME, start
+    }
+' scripts/smoke/*.sh scripts/*.sh 2>/dev/null || true)
 if [ -n "${bad_escapes}" ]; then
     while IFS= read -r line; do
-        [ -n "${line}" ] && fail "smoke regex portability: non-portable '\\t'/'\\d' in a grep -E pattern (GNU grep will never match it; use [[:space:]] / [[:digit:]]) — ${line%%:*}:$(printf '%s' "${line}" | cut -d: -f2)"
+        [ -n "${line}" ] && fail "smoke regex portability: non-portable '\\t'/'\\d'/'\\n' in a grep -E pattern (GNU grep will never match it; use [[:space:]] / [[:digit:]] / plain .) — ${line}"
     done <<< "${bad_escapes}"
 else
-    ok 'smoke regex portability: no non-portable \t/\d escapes in grep -E patterns (BSD matches them, GNU does not)'
+    ok 'smoke regex portability: no non-portable \t/\d/\n escapes in grep -E patterns (BSD matches them, GNU does not)'
 fi
 
 # -----------------------------------------------------------------------------
@@ -473,11 +549,32 @@ fi
 # shape acquires false positives and then gets deleted.
 #
 # The scan splits each line into command segments on the shell operators and
-# only considers a segment that STARTS with `mktemp`. That is what keeps this
-# guard from tripping on its own source: the word appears here in prose, in a
-# grep pattern and inside awk regexes, none of which are command position. This
-# file is deliberately still IN scope — it runs its own `mktemp` at the
+# only considers a segment whose COMMAND WORD is `mktemp`. That is what keeps
+# this guard from tripping on its own source: the word appears here in prose, in
+# a grep pattern and inside awk regexes, none of which are command position.
+# This file is deliberately still IN scope — it runs its own `mktemp` at the
 # markdownlint output path, and a guard that exempts its own file cannot see it.
+#
+# "Command word" is NOT "first word". The first cut tested `^mktemp`, which is
+# only true when the invocation LEADS its segment, and a measured probe found
+# five shapes it silently walked past: after `if`, after `then`, behind a
+# one-shot env assignment (`TMPDIR=/x mktemp …`), behind `!`, and behind
+# `command`. So the leading shell keywords, one-shot env assignments, `!` and
+# `command` are stripped FIRST, repeatedly, and the command-word test runs on
+# what is left. A guard that only sees the easy shape is worth about as much as
+# no guard, and reads as though it covers the corpus.
+#
+# The same probe found the opposite defect: `mktemp -p /tmp name.XXXXXX` was
+# FLAGGED, because `-p`'s directory argument was mistaken for the template. A
+# guard that cries wolf gets deleted, which is strictly worse than not having
+# one, so option arguments are consumed: `-p`, `--tmpdir` and `--suffix`.
+# (Residual, named rather than hidden: GNU's `--tmpdir` takes an OPTIONAL
+# ATTACHED argument, so a bare `--tmpdir /dir tmpl.XX` really does treat `/dir`
+# as the template and this guard would consume it and miss the bad template.
+# The corpus has no such invocation, and erring toward a false negative is the
+# right trade for a guard whose failure mode is deletion. `-t` is deliberately
+# NOT in the consuming set: `mktemp -t TEMPLATE` takes a real template, which
+# must carry the X's like any other.)
 # -----------------------------------------------------------------------------
 bad_mktemp=$(grep -rn 'mktemp' scripts --include='*.sh' 2>/dev/null \
     | grep -vE ':[0-9]+:[[:space:]]*#' \
@@ -492,7 +589,16 @@ bad_mktemp=$(grep -rn 'mktemp' scripts --include='*.sh' 2>/dev/null \
             nseg = split(body, seg, /[`|;&(]+/)
             for (s = 1; s <= nseg; s++) {
                 inv = seg[s]
-                sub(/^[[:space:]]+/, "", inv)
+                # Peel everything that can legally PRECEDE a command word:
+                # shell keywords, `!`, `command`, and one-shot env
+                # assignments. Repeatedly, because they compose
+                # (`if ! TMPDIR=/x command mktemp …`).
+                while (1) {
+                    sub(/^[[:space:]]+/, "", inv)
+                    if (sub(/^(!|if|then|elif|else|while|until|do|command|time|exec|nohup|builtin)[[:space:]]+/, "", inv)) continue
+                    if (sub(/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/, "", inv)) continue
+                    break
+                }
                 if (inv !~ /^mktemp([[:space:]]|$)/) continue  # not command position
                 sub(/^mktemp/, "", inv)
                 # The invocation ends at a shell terminator. `.` is NOT one —
@@ -503,9 +609,16 @@ bad_mktemp=$(grep -rn 'mktemp' scripts --include='*.sh' 2>/dev/null \
                 gsub(/[0-9]*[<>]+[^[:space:]]+/, " ", inv)  # drop redirects
                 ntok = split(inv, tok, /[[:space:]]+/)
                 template = ""
+                eat_next = 0
                 for (i = 1; i <= ntok; i++) {
                     if (tok[i] == "") continue
-                    if (substr(tok[i], 1, 1) == "-") continue  # option flag
+                    if (eat_next) { eat_next = 0; continue }   # option ARGUMENT
+                    if (substr(tok[i], 1, 1) == "-") {
+                        # Flags whose argument is a DIRECTORY or a SUFFIX, not
+                        # a template. `--flag=value` carries its own argument.
+                        if (tok[i] ~ /^(-p|--tmpdir|--suffix)$/) eat_next = 1
+                        continue
+                    }
                     template = tok[i]
                     break
                 }
