@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 339 canonical Harbor Protocol wire types, generated from the single-source
+The 344 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -117,6 +117,7 @@ Declared in `internal/protocol/types`.
 | `llm_params` | `types.AgentConfigLLMParamsDiff` — see [`AgentConfigLLMParamsDiff`](./types.md#agentconfigllmparamsdiff) |  |
 | `hooks` | `types.AgentConfigHooksDiff` — see [`AgentConfigHooksDiff`](./types.md#agentconfighooksdiff) |  |
 | `naming` | `types.AgentConfigNamingDiff` — see [`AgentConfigNamingDiff`](./types.md#agentconfignamingdiff) |  |
+| `extra_system_blocks` | `types.AgentConfigExtraSystemBlocksDiff` — see [`AgentConfigExtraSystemBlocksDiff`](./types.md#agentconfigextrasystemblocksdiff) |  |
 
 ## AgentConfigDiffRequest
 
@@ -137,6 +138,25 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `diff` | `types.AgentConfigDiff` — see [`AgentConfigDiff`](./types.md#agentconfigdiff) |  |
 | `protocol_version` | `string` |  |
+
+## AgentConfigExtraSystemBlocks
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `blocks` | `[]types.AgentConfigNamedBlock` — see [`AgentConfigNamedBlock`](./types.md#agentconfignamedblock) |  |
+
+## AgentConfigExtraSystemBlocksDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `added` | `[]string` | optional (`omitempty`) |
+| `removed` | `[]string` | optional (`omitempty`) |
+| `changed` | `[]string` | optional (`omitempty`) |
+| `reordered` | `bool` |  |
 
 ## AgentConfigGetRequest
 
@@ -282,6 +302,15 @@ Declared in `internal/protocol/types`.
 | `basic_username` | `string` | optional (`omitempty`) |
 | `meta_key` | `string` | optional (`omitempty`) |
 
+## AgentConfigNamedBlock
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `body` | `string` |  |
+
 ## AgentConfigNaming
 
 Declared in `internal/protocol/types`.
@@ -365,6 +394,7 @@ Declared in `internal/protocol/types`.
 | `llm_params` | `*types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) | optional (`omitempty`) |
 | `hooks` | `*types.AgentConfigHooks` — see [`AgentConfigHooks`](./types.md#agentconfighooks) | optional (`omitempty`) |
 | `naming` | `*types.AgentConfigNaming` — see [`AgentConfigNaming`](./types.md#agentconfignaming) | optional (`omitempty`) |
+| `extra_system_blocks` | `*types.AgentConfigExtraSystemBlocks` — see [`AgentConfigExtraSystemBlocks`](./types.md#agentconfigextrasystemblocks) | optional (`omitempty`) |
 
 ## AgentConfigPromptLayers
 
@@ -579,6 +609,26 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
 | `overlay` | `types.AgentConfigSessionOverlay` — see [`AgentConfigSessionOverlay`](./types.md#agentconfigsessionoverlay) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSetExtraSystemBlocksRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `extra_system_blocks` | `types.AgentConfigExtraSystemBlocks` — see [`AgentConfigExtraSystemBlocks`](./types.md#agentconfigextrasystemblocks) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
+
+## AgentConfigSetExtraSystemBlocksResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigSetLLMParamsRequest

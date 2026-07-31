@@ -418,6 +418,12 @@ type RunContext struct {
 //     — it can extend the operator's guidance but never precede, replace,
 //     or weaken the base. A session SystemPromptOverride replaces the whole
 //     base+user spine for its single message.
+//   - ExtraSystemBlocks are the durable, operator-authored NAMED blocks
+//     resolved from the agent's active config at run start. They render
+//     VERBATIM, in declared order, into the operator-trusted additive
+//     position, each behind a plain-text `[name]` label, and they survive a
+//     SystemPromptOverride. Nil or empty renders nothing (no empty
+//     wrapper). Order is SEMANTIC — it is the render order.
 type LLMOverrides struct {
 	Model                *string
 	Temperature          *float64
@@ -427,6 +433,29 @@ type LLMOverrides struct {
 	SystemPromptOverride *string
 	BasePromptLayer      *string
 	UserPromptLayer      *string
+	ExtraSystemBlocks    []NamedBlock
+}
+
+// NamedBlock is one named unit of additive, operator-authored prompt text
+// carried on [LLMOverrides.ExtraSystemBlocks]. It exists so N independent
+// capability sources can each contribute — and later remove — exactly
+// their own text, addressed by name.
+//
+// The Body renders VERBATIM (unescaped) in the operator-trusted additive
+// guidance position. That trust comes from the WRITE DOOR — the durable
+// section behind it is admin-only, the same tier that writes the whole
+// prompt spine — not from any escaping here. A block must therefore never
+// carry user-authored or model-authored text; recalled content belongs in
+// the UNTRUSTED-framed [MemoryBlocks] tiers.
+//
+// The Name is a plain-text label for a human reading a transcript. It is
+// never emitted as an XML tag, so the prompt's structural taxonomy is
+// never a function of config data. It is NOT a security boundary: to the
+// model, two blocks from two capabilities are one contiguous run of
+// trusted guidance.
+type NamedBlock struct {
+	Name string
+	Body string
 }
 
 // ToolCallDeferred is a pending native tool-call the planner will

@@ -13,6 +13,7 @@
 //	POST /v1/agent_config/rollback        — repoint the active pointer
 //	POST /v1/agent_config/set_tool_exposure — set MCP pause/resume + per-tool policy
 //	POST /v1/agent_config/set_prompt_layers — set the layered system prompt (base + user)
+//	POST /v1/agent_config/set_extra_system_blocks — set the ordered named additive prompt blocks
 //	POST /v1/agent_config/add_mcp_connection — add a NEW MCP server connection (dial + handshake + OAuth)
 //	POST /v1/agent_config/remove_mcp_connection — remove a runtime-added MCP server connection (a revision + next-turn detach)
 //	POST /v1/agent_config/skills/list     — list the agent's skills
@@ -178,6 +179,8 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveSetToolExposure(w, r, body, wireID)
 	case "set_prompt_layers":
 		h.serveSetPromptLayers(w, r, body, wireID)
+	case "set_extra_system_blocks":
+		h.serveSetExtraSystemBlocks(w, r, body, wireID)
 	case "set_llm_params":
 		h.serveSetLLMParams(w, r, body, wireID)
 	case "add_mcp_connection":
@@ -381,6 +384,27 @@ func (h *AgentConfigHandler) serveSetPromptLayers(w http.ResponseWriter, r *http
 	resp, err := h.service.SetPromptLayers(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigSetPromptLayers, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+// serveSetExtraSystemBlocks routes the admin-tier additive-prompt-blocks
+// write. It reaches this function only after the admin-scope gate above —
+// that gate is the trust boundary the verbatim rendering of block bodies
+// rests on.
+func (h *AgentConfigHandler) serveSetExtraSystemBlocks(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigSetExtraSystemBlocksRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigSetExtraSystemBlocks) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.SetExtraSystemBlocks(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigSetExtraSystemBlocks, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)
@@ -910,7 +934,8 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	case errors.Is(err, agentcfgprotocol.ErrUnknownModel),
 		errors.Is(err, agentcfgprotocol.ErrInvalidLLMParams),
 		errors.Is(err, agentcfgprotocol.ErrInvalidHooks),
-		errors.Is(err, agentcfgprotocol.ErrInvalidNaming):
+		errors.Is(err, agentcfgprotocol.ErrInvalidNaming),
+		errors.Is(err, agentcfgprotocol.ErrInvalidExtraSystemBlocks):
 		// A pinned model with no configured ModelProfile, an out-of-range
 		// sampling value, an invalid hooks section (negative timeout), or an
 		// invalid naming policy (a bad bound, or a repeat_every with no cap) is

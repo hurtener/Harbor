@@ -548,7 +548,7 @@ POST /v1/agent_config/set_revision
 - **Not matching**, or **no active revision exists** → `409 {"code": "revision_conflict"}`, and **nothing is persisted**: no revision, no active-pointer move, no `agent.config.revised` event.
 - **Omitted** (the default) → byte-for-byte the unconditional behaviour that has always shipped. Nothing you have today changes.
 
-It is available on all **sixteen** spine-writing doors — `set_revision`, `rollback`, `skills.upsert`, `skills.delete`, `set_tool_exposure`, `set_prompt_layers`, `set_llm_params`, `add_mcp_connection`, `remove_mcp_connection`, `set_mcp_discovery_origins`, `set_oauth_provider`, `remove_oauth_provider`, and the four `user.*` twins (`user.set_revision`, `user.rollback`, `user.skills.upsert`, `user.skills.delete`). It is **not** on `set_llm_provider` (which installs a provider and writes no revision) or on the `agent_config.session.*` verbs (which write the ephemeral session overlay, not the durable spine).
+It is available on all **seventeen** spine-writing doors — `set_revision`, `rollback`, `skills.upsert`, `skills.delete`, `set_tool_exposure`, `set_prompt_layers`, `set_extra_system_blocks`, `set_llm_params`, `add_mcp_connection`, `remove_mcp_connection`, `set_mcp_discovery_origins`, `set_oauth_provider`, `remove_oauth_provider`, and the four `user.*` twins (`user.set_revision`, `user.rollback`, `user.skills.upsert`, `user.skills.delete`). It is **not** on `set_llm_provider` (which installs a provider and writes no revision) or on the `agent_config.session.*` verbs (which write the ephemeral session overlay, not the durable spine).
 
 **Recovering from a conflict.** Re-read `agent_config.get` for the current `revision_id` + `content_hash`, call `agent_config.diff` with `from_revision` = the id you originally read and `to_revision` = the current id to see what moved, re-apply your edit on top, and resubmit with the fresh hash. One extra round trip on a rare path.
 
@@ -560,6 +560,30 @@ Two more things worth knowing:
 
 - **The token constrains only the writer that supplies it.** A concurrent writer that omits it can still overwrite you, by design — the token is a precondition on your write, never a lock on the agent. Exclusivity requires every writer of that agent's config to participate.
 - **It is a precondition, never an authority.** It is compared strictly after the identity and scope gates and can only ever cause a write to be *refused*. A valid token never buys a caller a write it could not otherwise make.
+
+### 8d. Contributing ONE prompt block without owning the whole prompt — `extra_system_blocks`
+
+If two independent capabilities each want to add a paragraph to an agent's system prompt, the layered prompt does not help: `prompt_layers.base` and `prompt_layers.user` are ONE string each, so the second contributor has to know — and re-send — the first's text, and removing one contribution means re-deriving the composition from prose.
+
+`POST /v1/agent_config/set_extra_system_blocks` gives that composition a NAMED, ORDERED carrier:
+
+```jsonc
+POST /v1/agent_config/set_extra_system_blocks
+{ "agent_id": "support-bot",
+  "extra_system_blocks": { "blocks": [
+      { "name": "billing-policy", "body": "Never quote a refund amount; hand off to billing." },
+      { "name": "tone",          "body": "Answer in <=3 sentences." }
+  ] },
+  "expected_content_hash": "9f2c…" }
+```
+
+- **Order is the render order.** The array order is what the model sees, it is part of the revision's `content_hash`, and a pure re-ordering is a real new revision that `agent_config.diff` reports as `extra_system_blocks.reordered: true`. (Contrast `skills.names` and `oauth_providers`, whose orders are canonicalised by sorting.)
+- **It is a WHOLE-SECTION desired-state replace**, like every sibling section. There are deliberately no per-block verbs — a block is one element of an ordered composition, so a per-item upsert has no well-defined insertion position. **To add or remove exactly your own block: `agent_config.get` → append or drop your entry BY NAME → write the full list back with the read revision's `content_hash` as `expected_content_hash` (§8c).** Without the token you can silently delete a sibling contributor's block; with it you get `409 {"code": "revision_conflict"}` and retry.
+- **Names are unique and match `[A-Za-z0-9._-]{1,64}`.** A duplicate or malformed name is refused `400 {"code": "invalid_request"}`, naming the offender and (for a duplicate) both positions, and nothing is persisted. Uniqueness is what makes remove-by-name well defined.
+- **Bodies render VERBATIM** — unescaped, in declared order, each behind a plain-text `[name]` label, inside the existing `<additional_guidance>` section. They compose BELOW the runtime's baked operator guidance and ABOVE the additive `extra_instructions`, and they **survive a session `system_prompt_override`** (which replaces only the base+user spine).
+- **The verb is admin-scoped, and that tier IS the trust boundary.** Blocks are unescaped because only the admin tier — the same tier that writes `prompt_layers.base`, which is already verbatim and strictly more powerful — can write them. **Therefore: never put user-authored or model-authored text in a block.** Recalled conversation content belongs in `start.caller_memory`, which lands in the untrusted-framed memory tier; user instructions belong in `prompt_layers.user`, which IS escaped precisely because a claim-free session path can write it.
+- **The `[name]` label is legibility, not a security boundary.** It helps a human reading a transcript tell contributions apart. To the model, two blocks from two capabilities are one contiguous run of trusted guidance.
+- Omitting the section entirely leaves the composed prompt byte-identical to an agent that never had one. Every sibling section (prompt layers, skills, tool exposure, connections, OAuth providers, LLM params, hooks, naming) is carried forward across a block write, and vice versa.
 
 ## 9. A minimal client (TS, ~30 LoC)
 

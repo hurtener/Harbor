@@ -500,6 +500,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigSetPromptLayersRequest", Response: "AgentConfigSetPromptLayersResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigSetExtraSystemBlocks: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSetExtraSystemBlocks),
+			Mutates: true,
+			Request: "AgentConfigSetExtraSystemBlocksRequest", Response: "AgentConfigSetExtraSystemBlocksResponse",
+			Auth: adminNote,
+		},
 		methods.MethodAgentConfigSetLLMParams: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSetLLMParams),
 			Mutates: true,
