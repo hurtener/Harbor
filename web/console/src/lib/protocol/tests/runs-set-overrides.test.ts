@@ -35,6 +35,7 @@ const ALLOWED_OVERRIDE_KEYS = new Set([
 	'temperature',
 	'max_tokens',
 	'system_prompt_override',
+	'extra_instructions',
 	'model'
 ]);
 
@@ -97,6 +98,26 @@ describe('runs.set_overrides wire round-trip', () => {
 			new Set(['session_id', 'reasoning_effort', 'temperature', 'max_tokens', 'system_prompt_override'])
 		);
 		expect(sent).not.toHaveProperty('top_p');
+	});
+
+	it('carries extra_instructions alongside system_prompt_override', async () => {
+		// The additive block and the whole-spine replace are NOT mutually
+		// exclusive: the base prompt is replaced AND the additive guidance
+		// still appends. Both must survive the strict decoder in one request.
+		const fetchImpl = strictSetOverridesFetch();
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+
+		const overrides: RunOverrides = {
+			session_id: 's1',
+			system_prompt_override: 'You are terse.',
+			extra_instructions: 'Cite every source.'
+		};
+		await expect(client.runs.setOverrides(overrides)).resolves.toBeDefined();
+
+		const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+		const sent = JSON.parse(init.body as string).overrides as Record<string, unknown>;
+		expect(sent.extra_instructions).toBe('Cite every source.');
+		expect(sent.system_prompt_override).toBe('You are terse.');
 	});
 
 	it('a phantom override key would 400 the whole request (the guarded regression)', async () => {

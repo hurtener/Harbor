@@ -59,6 +59,33 @@ type RunOverrides struct {
 	// which composes into the run's `<read_only_external_memory>` tier
 	// behind the anti-prompt-injection preamble and displaces nothing.
 	SystemPromptOverride *string `json:"system_prompt_override,omitempty"`
+	// ExtraInstructions, when non-nil, is an ADDITIVE block of guidance
+	// for the next message. It is appended to — never a replacement of —
+	// the agent's system prompt, and it survives a SystemPromptOverride
+	// set in the same request (the two are not mutually exclusive: the
+	// base spine is replaced AND this block still appends).
+	//
+	// TRUST: the block renders VERBATIM and UNESCAPED into the
+	// operator-trusted `<additional_guidance>` position. Whoever may set
+	// overrides for a session may therefore write text the model reads as
+	// operator guidance. This is the same authority `SystemPromptOverride`
+	// on this struct already carries, and it is strictly less powerful.
+	// It is therefore NOT the home for recalled conversation memory,
+	// retrieved documents, or any other user-authored text — those belong
+	// in `StartRequest.caller_memory`, whose tier carries the
+	// anti-prompt-injection framing this position deliberately does not.
+	//
+	// It composes BELOW any tenant-wide extra instructions (tenant text
+	// first, separated by a blank line) and can never clear them: there is
+	// no run-level clear, and a present-but-empty value is accepted as a
+	// no-op rather than as a deletion. The tenant block is admin-set; a
+	// run-level erase would be a privilege inversion.
+	//
+	// The value is bounded by the transport's whole-body limit and, late,
+	// by the LLM edge's token-budget guard; there is no per-field byte cap
+	// (`SystemPromptOverride`, unbounded on this same struct, would make
+	// one on the weaker sibling pure ceremony).
+	ExtraInstructions *string `json:"extra_instructions,omitempty"`
 	// Model, when non-nil, overrides the model the next message's run
 	// requests. The runtime rejects a model with no configured
 	// `ModelProfile` with CodeInvalidRequest (fail loud at set time). The

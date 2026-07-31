@@ -2093,6 +2093,7 @@ export interface RunOverrides {
   temperature?: number;
   max_tokens?: number;
   system_prompt_override?: string;
+  extra_instructions?: string;
   model?: string;
 }
 

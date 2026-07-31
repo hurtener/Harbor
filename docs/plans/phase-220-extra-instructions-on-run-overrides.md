@@ -71,16 +71,24 @@ internal/protocol/
 
 internal/runtime/runs/protocol/
 ├── overrides.go                      # PendingOverride field, validate copy,
-│                                     #   ComposeLLMOverrides join, emitAudit flag
-└── overrides_test.go                 # the join table + the no-clear property
-                                      #   + the D-025 concurrent-reuse extension
+│                                     #   ComposeLLMOverrides join (joinAdditiveGuidance),
+│                                     #   emitAudit flag
+└── extra_instructions_test.go        # NEW sibling of overrides_test.go (same
+                                      #   protocol_test package, shared helpers):
+                                      #   the join table + the no-clear property
+                                      #   + the D-025 concurrent-reuse run
 
 internal/events/
 └── events.go                         # RunOverridesSetPayload.SetExtraInstructions
 
 internal/planner/react/
-└── promptlayers_test.go              # the composed value renders verbatim and
-                                      #   survives SystemPromptOverride
+└── extra_instructions_composed_test.go  # NEW: the COMPOSED value renders verbatim,
+                                      #   survives SystemPromptOverride, absent-safe
+
+internal/runtime/serve/
+└── runloop_extra_instructions_test.go   # NEW: the join is reached through the run
+                                      #   loop's own resolveLLMOverrides (unexported,
+                                      #   so this must be an in-package test)
 
 web/console/src/lib/protocol/
 ├── runs.ts                           # the hand-mirrored optional field
@@ -252,3 +260,24 @@ Measured on the branch with `go test -count=1 -cover` before any change; each ta
 - [ ] §18: `docs/skills/use-the-harbor-protocol/SKILL.md` updated in the same PR
 - [ ] If new vocabulary: glossary updated
 - [ ] If a brief finding was departed from: justified above + decisions.md entry filed (D-365)
+
+## As shipped — deviations (§4.3)
+
+Each is recorded in D-365 as well; they are repeated here so the plan is not read as the built shape.
+
+1. **Unit tests land in a NEW sibling `internal/runtime/runs/protocol/extra_instructions_test.go`**, not appended to `overrides_test.go`. Same `protocol_test` package, same shared helpers.
+2. **A driver-level test was ADDED beyond the plan** — `TestResolveLLMOverrides_ExtraInstructionsJoin_TenantThenSession` in `internal/runtime/serve`. The plan asserts the join is reached through `RunLoopDriver.resolveLLMOverrides`, but that method is unexported, so the integration test (like its phase-92b predecessor) calls `ComposeLLMOverrides` directly. An in-package test closes the claim mechanically instead of leaving it as prose.
+3. **The react "absent ⇒ unchanged" test is `TestComposition_AbsentExtraInstructionsRendersNoGuidanceSection`**, not `..._IsByteIdentical`. "Byte-identical to the pre-change output" cannot be asserted inside one build. The property is pinned in two halves that can be: the react test asserts an absent field renders no `<additional_guidance>` section and produces a body byte-equal to a bundle without the dimension, and the join table asserts the composer returns the tenant's **exact pointer** when the session contributes nothing — stricter than equality.
+4. **The smoke's phase-gate SKIP arm was DELETED.** Mutation-verified: with the arm in place, deleting the wire field produced `OK 0 / SKIP 1 / FAIL 0` and exit 0. The skeleton's raw `${HARBOR_DEV_TOKEN}` reads were replaced with `common.sh`'s `dev_bearer` (issue #624), and its `run_filtered_tests` helper (which SKIPs when `-run` matches nothing) with `assert_go_tests_pass` (which FAILs when a NAMED test does not run).
+5. **A stale `§7` cross-reference in `docs/skills/use-the-harbor-protocol/SKILL.md` was corrected** under §17.6 — it pointed the `system_prompt_override` contrast at the topology-snapshot section.
+
+## As shipped — coverage
+
+Measured with `go test -count=1 -cover` on the branch.
+
+| Package | Target (baseline) | As shipped | Verdict |
+|---|---|---|---|
+| `internal/runtime/runs/protocol` | 88% | **89.8%** | met, improved by the join table |
+| `internal/planner/react` | 87% | **87.0%** | held (test-only change) |
+| `internal/events` | 93% | **93.4%** | held (one struct field, no new statements) |
+| `internal/protocol/types` | 62% | **62.6%** | held (a wire-struct field adds no statements) |

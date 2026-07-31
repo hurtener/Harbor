@@ -965,8 +965,14 @@ export class RunsNamespace {
 	 * `runs.set_overrides` — record the next-message override. `overrides`
 	 * carries `session_id` plus the optional tuning fields
 	 * (`reasoning_effort` / `temperature` / `max_tokens` /
-	 * `system_prompt_override` / `model`). The override is session-scoped
-	 * and one-shot — it applies to the next `user_message` only.
+	 * `system_prompt_override` / `extra_instructions` / `model`). The
+	 * override is session-scoped and one-shot — it applies to the next
+	 * `user_message` only.
+	 *
+	 * `extra_instructions` is ADDITIVE (appended to the system prompt, and
+	 * it survives a `system_prompt_override` in the same request) while
+	 * `system_prompt_override` REPLACES the whole spine. The additive block
+	 * composes BELOW any tenant-wide block and can never clear it.
 	 *
 	 * The parameter is typed against the named `RunOverrides` wire
 	 * interface (NOT `Record<string, unknown>`) so `tsc` rejects a phantom
