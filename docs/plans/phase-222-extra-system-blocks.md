@@ -51,21 +51,21 @@ The upstream ask proposed `ExtraSystemBlocks` on the PER-RUN override bundle. **
 
 ## Acceptance criteria
 
-- [ ] `agentcfg.ConfigPayload` gains `ExtraSystemBlocks *ExtraSystemBlocks` and the wire payload gains `extra_system_blocks`, carrying `Blocks []NamedBlock{Name, Body string}`.
-- [ ] A new admin verb `agent_config.set_extra_system_blocks` records a revision REPLACING ONLY that section — prompt layers, skills, tool exposure, connections, OAuth providers, LLM params, hooks and naming are all carried forward (the bidirectional section-preservation invariant, pinned in all directions).
-- [ ] The verb is in `canonicalAgentConfigMethods` AND `canonicalAgentConfigAdminMethods` (`internal/protocol/methods/methods.go:1370-1472`), so it gates on the verified `auth.ScopeAdmin` claim. A non-admin caller is refused.
-- [ ] The session-user safe subset cannot write the section: `agent_config.session.set_user_prompt` still produces a payload whose only prompt content is `PromptLayers.User` (extending the assertion at `internal/runtime/agentcfg/protocol/user.go:21,41`).
-- [ ] **Ordering is the declared slice order.** The renderer emits blocks in payload order with no sort and no map iteration anywhere on the path. Rendering the same payload N times is byte-identical.
-- [ ] **`NormalizePayload` does NOT sort the block list** (`internal/agentcfg/agentcfg.go:633-670`) — unlike `Skills.Names` (`sortDedup`, line 647) and `OAuthProviders` (`normalizeOAuthProviders`, sorted by name, lines 826-863), whose orders are NOT semantic. A re-ordering of blocks therefore changes the `ContentHash` (`agentcfg.go:868-877`) and is a real new revision, visible in the diff.
-- [ ] Block names are unique within the section and match a restricted identifier charset; a duplicate name is refused at the write door with `invalid_request`, naming both offending positions.
-- [ ] **Render position and trust:** blocks render VERBATIM (unescaped) inside `<additional_guidance>`, after the binary's baked operator guidance and BEFORE the additive extra-instructions, each preceded by a plain-text `[name]` label. A block name never becomes an XML tag.
-- [ ] Blocks survive a session `SystemPromptOverride` — the same property `ExtraInstructions` has, and for the same structural reason (`buildSystemContent` is reached on both branches of `baseRequest`, `prompt.go:201-227`).
-- [ ] **Absent ⇒ byte-identical.** An existing stored revision with no `extra_system_blocks` key unmarshals to nil, contributes nothing, and produces a system prompt byte-equal to today's — pinned by a byte-equality test, not by inspection.
-- [ ] Run-start projection resolves the active revision's blocks into the run's override bundle through the SAME shared projection `cmd/harbor` and `harbortest/devstack` both reach (`internal/runtime/agentcfg/projection`), next-turn only; in-flight runs keep their immutable snapshot (D-025).
-- [ ] The revision diff reports the block delta by name (added / removed / body-changed) plus a reorder flag; `agent.config.revised` is emitted; rollback repoints.
-- [ ] Identity is scoped by the triple; `agent_id` is a key, never an isolation filter (§6); admin authority is derived server-side from the verified session, never the request body.
-- [ ] `make protocol-ts-gen` and `make protocol-docs-gen` regenerate to a clean diff; the Console typed client mirrors the method and both wire types by hand; `ProtocolVersion` does not move.
-- [ ] `scripts/smoke/phase-222.sh` passes against the preflight dev server with OK ≥ 12 and FAIL = 0.
+- [x] `agentcfg.ConfigPayload` gains `ExtraSystemBlocks *ExtraSystemBlocks` and the wire payload gains `extra_system_blocks`, carrying `Blocks []NamedBlock{Name, Body string}`.
+- [x] A new admin verb `agent_config.set_extra_system_blocks` records a revision REPLACING ONLY that section — prompt layers, skills, tool exposure, connections, OAuth providers, LLM params, hooks and naming are all carried forward (the bidirectional section-preservation invariant, pinned in all directions).
+- [x] The verb is in `canonicalAgentConfigMethods` AND `canonicalAgentConfigAdminMethods` (`internal/protocol/methods/methods.go:1370-1472`), so it gates on the verified `auth.ScopeAdmin` claim. A non-admin caller is refused.
+- [x] The session-user safe subset cannot write the section: `agent_config.session.set_user_prompt` still produces a payload whose only prompt content is `PromptLayers.User` (extending the assertion at `internal/runtime/agentcfg/protocol/user.go:21,41`).
+- [x] **Ordering is the declared slice order.** The renderer emits blocks in payload order with no sort and no map iteration anywhere on the path. Rendering the same payload N times is byte-identical.
+- [x] **`NormalizePayload` does NOT sort the block list** (`internal/agentcfg/agentcfg.go:633-670`) — unlike `Skills.Names` (`sortDedup`, line 647) and `OAuthProviders` (`normalizeOAuthProviders`, sorted by name, lines 826-863), whose orders are NOT semantic. A re-ordering of blocks therefore changes the `ContentHash` (`agentcfg.go:868-877`) and is a real new revision, visible in the diff.
+- [x] Block names are unique within the section and match a restricted identifier charset; a duplicate name is refused at the write door with `invalid_request`, naming both offending positions.
+- [x] **Render position and trust:** blocks render VERBATIM (unescaped) inside `<additional_guidance>`, after the binary's baked operator guidance and BEFORE the additive extra-instructions, each preceded by a plain-text `[name]` label. A block name never becomes an XML tag.
+- [x] Blocks survive a session `SystemPromptOverride` — the same property `ExtraInstructions` has, and for the same structural reason (`buildSystemContent` is reached on both branches of `baseRequest`, `prompt.go:201-227`).
+- [x] **Absent ⇒ byte-identical.** An existing stored revision with no `extra_system_blocks` key unmarshals to nil, contributes nothing, and produces a system prompt byte-equal to today's — pinned by a byte-equality test, not by inspection.
+- [x] Run-start projection resolves the active revision's blocks into the run's override bundle through the SAME shared projection `cmd/harbor` and `harbortest/devstack` both reach (`internal/runtime/agentcfg/projection`), next-turn only; in-flight runs keep their immutable snapshot (D-025).
+- [x] The revision diff reports the block delta by name (added / removed / body-changed) plus a reorder flag; `agent.config.revised` is emitted; rollback repoints.
+- [x] Identity is scoped by the triple; `agent_id` is a key, never an isolation filter (§6); admin authority is derived server-side from the verified session, never the request body.
+- [x] `make protocol-ts-gen` and `make protocol-docs-gen` regenerate to a clean diff; the Console typed client mirrors the method and both wire types by hand; `ProtocolVersion` does not move.
+- [x] `scripts/smoke/phase-222.sh` passes against the preflight dev server with OK ≥ 12 and FAIL = 0.
 
 ## Files added or changed
 
@@ -309,6 +309,39 @@ Measured on the branch with `go test -count=1 -cover` before any change; each ta
 - `internal/planner/react`: **87%** (measured baseline 87.0%) — the renderer and its fixed slot.
 - `internal/protocol/types`: **62%** (measured baseline 62.6%) — wire structs add no statements; stated so a reviewer does not read the low number as a regression this phase caused.
 
+### As shipped — measured after the change
+
+Re-measured with `go test -count=1 -cover` on `dev-experimental` after the wave landed. Every target
+is met. (The `internal/agentcfg` and `internal/runtime/agentcfg/protocol` figures are shared with
+phase 221, which landed in the same wave and touches both packages; the numbers below are the
+composite post-wave state, which is the state the gate actually measures.)
+
+| Package | Target (baseline) | As shipped | Verdict |
+|---|---:|---:|---|
+| `internal/runtime/agentcfg/protocol` | 85% (85.5%) | **86.9%** | met — the write door, the validation table and the preservation matrix |
+| `internal/agentcfg` | 77% (77.1%) | **80.3%** | met — the order-preserving normalizer, the hash asymmetry and the block diff |
+| `internal/runtime/agentcfg/projection` | 82% (82.1%) | **82.3%** | met — the run-start resolution and the overlay |
+| `internal/planner/react` | 87% (87.0%) | **87.0%** | held — the renderer and its fixed slot |
+| `internal/protocol/types` | 62% (62.6%) | **62.6%** | held — wire structs add no statements |
+
+### As shipped — deviations (§4.3)
+
+Each is recorded in D-367 as well; they are repeated here so the plan is not read as the built shape.
+
+1. **This section's verb is the SEVENTEENTH spine-writing door, and phase 221's exact-count guards
+   caught it** — `scripts/smoke/phase-221.sh` reported three FAILs (17 found, 16 wanted) on the wire
+   types, the json tags and the Console mirror. Bumping the counts alone would have been the wrong
+   fix: 221's behavioural door table and its reflection twin are hand-enumerated, so they would have
+   stayed green while the new door went undriven. Both were extended, so the new door is DRIVEN with
+   a stale token and asserted to refuse with `ErrRevisionConflict`; the smoke's three counts, the two
+   test length assertions, the two test names and the glossary's door count all move together.
+   Mutation-verified both ways.
+2. **The smoke's ordering fixture was inert as authored and was replaced.** Its two-block fixture was
+   `[alpha, beta]` — already sorted — so the ordering assertion reported OK against a sorting mutant.
+   The fixture is now deliberately reverse-alphabetical (`[zulu, alpha]`), which is what makes
+   mutation 7 (add a sort to `payloadToWire`, rebuild the binary, re-run the live smoke) turn the
+   live ordering leg red.
+
 ## Dependencies
 
 - **221** — the expected-revision token on the agent-config write requests. It also edits `internal/protocol/types/agentconfig.go` and lands in Stage 1. This phase is Stage 2 and **rebases on 221**: the new request type carries 221's token from the start (a write request added after the token exists and does not take it is an immediate inconsistency), and `make protocol-ts-gen` / `make protocol-docs-gen` run once AFTER the rebase so the committed manifest and generated docs carry both changes. Regenerating in parallel and merging two generated diffs is the D-223 / D-209 failure mode this ordering avoids. The token is also what makes the whole-section desired-state replace safe for two concurrent contributors — the reason this phase ships one verb rather than per-item verbs.
@@ -332,16 +365,16 @@ Measured on the branch with `go test -count=1 -cover` before any change; each ta
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target, from a `go test -cover` run recorded in the PR description
-- [ ] If multi-isolation paths changed: cross-session isolation test passes — the integration test's same-`agent_id`-two-tenants arm
-- [ ] **If this phase builds a reusable artifact: concurrent-reuse test passes** — `TestSetExtraSystemBlocks_ConcurrentReuse_NoCrossTalk`, N=128 against one shared `Service` + registry under `-race`, asserting no data races, no context bleed (each tenant sees only its own blocks in its own order), no cancellation cross-talk, no goroutine leak
-- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists** — `test/integration/agentcfg_extra_system_blocks_test.go`, real drivers on every seam, identity propagation asserted, four failure modes covered, under `-race`
-- [ ] The six mutation runs recorded in the PR description, each naming the sub-test that went red
-- [ ] Rebased on 221 BEFORE running `make protocol-ts-gen` / `make protocol-docs-gen`; the new request carries 221's expected-revision token; both generators produce a clean diff
-- [ ] §18: `docs/skills/use-the-harbor-protocol/SKILL.md` updated in the same PR
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (D-367)
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target, from a `go test -cover` run recorded in the PR description
+- [x] If multi-isolation paths changed: cross-session isolation test passes — the integration test's same-`agent_id`-two-tenants arm
+- [x] **If this phase builds a reusable artifact: concurrent-reuse test passes** — `TestSetExtraSystemBlocks_ConcurrentReuse_NoCrossTalk`, N=128 against one shared `Service` + registry under `-race`, asserting no data races, no context bleed (each tenant sees only its own blocks in its own order), no cancellation cross-talk, no goroutine leak
+- [x] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists** — `test/integration/agentcfg_extra_system_blocks_test.go`, real drivers on every seam, identity propagation asserted, four failure modes covered, under `-race`
+- [x] The six mutation runs recorded in the PR description, each naming the sub-test that went red
+- [x] Rebased on 221 BEFORE running `make protocol-ts-gen` / `make protocol-docs-gen`; the new request carries 221's expected-revision token; both generators produce a clean diff
+- [x] §18: `docs/skills/use-the-harbor-protocol/SKILL.md` updated in the same PR
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed (D-367)

@@ -11,6 +11,12 @@
 # matches in non-test Go source. Test files (_test.go) are
 # contributor-internal and exempt.
 #
+# The exemption is ANCHORED ON THE PATH FIELD (`^[^:]*_test\.go:`), never
+# on the line body. A bare `grep -v '_test\.go'` discards any VIOLATING
+# line that merely MENTIONS a _test.go filename — and a production
+# comment citing an integration test by its `phaseNN_*_test.go` name is
+# exactly that shape, so the unanchored form was blind to 26 real hits.
+#
 # The patterns are intentionally narrow (numbering forms only) so
 # legitimate runtime vocabulary — e.g. "three phases: pending, running,
 # completed" or a domain "stage" — never trips the scan.
@@ -26,7 +32,7 @@ source "scripts/smoke/common.sh"
 # One assertion per acceptance grep (plan §Acceptance criteria).
 check_jargon() {
     local pattern="$1" label="$2" hits
-    hits=$(grep -rE "$pattern" --include='*.go' internal/ cmd/ 2>/dev/null | grep -v '_test\.go' || true)
+    hits=$(grep -rE "$pattern" --include='*.go' internal/ cmd/ 2>/dev/null | grep -vE '^[^:]*_test\.go:' || true)
     if [ -z "$hits" ]; then
         ok "phase 102: no '${label}' jargon in non-test Go source under internal/ + cmd/"
     else

@@ -20,8 +20,9 @@
 //
 // The driver under test is constructed by the caller via a Factory
 // callback so SQLite / Postgres legs can pass their own DSN / KEK
-// setup. See internal/tools/auth/conformance_test.go and
-// test/integration/phase30_tool_oauth_test.go for the call sites.
+// setup. See internal/tools/auth/conformance_test.go and the
+// tool-OAuth integration suite under test/integration/ for the call
+// sites.
 package conformancetest
 
 import (

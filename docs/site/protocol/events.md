@@ -15,7 +15,10 @@ cursor), `occurred_at`, the flat identity (`tenant` / `user` / `session` / `run`
 
 - **Safe payloads** — types the declaring subsystem marked as carrying no secret-shaped
   data. The bus skips the audit redactor; the subscriber receives the typed shape below
-  verbatim. Field keys are the Go field names (e.g. `TaskID`, capital `T`).
+  verbatim. Field keys are whatever `encoding/json` emits: most payloads carry no
+  struct tags, so their keys are the Go field names (e.g. `TaskID`, capital `T`); a
+  payload whose fields ARE tagged uses the tag name. The Wire key column below is
+  authoritative per payload — read it, don't assume the casing.
 - **Redacted payloads** — everything else is walked by the audit redactor on publish;
   the subscriber receives a redacted key/value map derived from the declared shape.
 
@@ -179,7 +182,7 @@ Payload `ArtifactDeletedPayload` — safe payload (delivered typed, verbatim).
 
 | Wire key | Go type | Notes |
 |---|---|---|
-| `ArtifactID` | `string` |  |
+| `artifact_id` | `string` |  |
 
 ## `artifacts.uploaded`
 
@@ -187,11 +190,11 @@ Payload `ArtifactUploadedPayload` — safe payload (delivered typed, verbatim).
 
 | Wire key | Go type | Notes |
 |---|---|---|
-| `ArtifactID` | `string` |  |
-| `MimeType` | `string` |  |
-| `SizeBytes` | `int64` |  |
-| `Source` | `string` |  |
-| `Namespace` | `string` |  |
+| `artifact_id` | `string` |  |
+| `mime_type` | `string` | optional (`omitempty`) |
+| `size_bytes` | `int64` |  |
+| `source` | `string` | optional (`omitempty`) |
+| `namespace` | `string` | optional (`omitempty`) |
 
 ## `audit.admin_scope_used`
 
@@ -823,9 +826,9 @@ Payload `CallerBlockAdmittedPayload` — safe payload (delivered typed, verbatim
 
 | Wire key | Go type | Notes |
 |---|---|---|
-| `Bytes` | `int` |  |
-| `Tier` | `string` |  |
-| `Key` | `string` |  |
+| `bytes` | `int` |  |
+| `tier` | `string` |  |
+| `key` | `string` |  |
 
 ## `memory.health_changed`
 
@@ -1436,17 +1439,17 @@ Payload `InputDispositionResolvedPayload` — safe payload (delivered typed, ver
 
 | Wire key | Go type | Notes |
 |---|---|---|
-| `Identity` | `identity.Quadruple` |  |
-| `TaskID` | `string` |  |
-| `ArtifactID` | `string` |  |
-| `MIME` | `string` |  |
-| `Disposition` | `string` |  |
-| `Layer` | `string` |  |
-| `Degraded` | `bool` |  |
-| `DegradedFrom` | `string` |  |
-| `DegradationReason` | `string` |  |
-| `Tool` | `string` |  |
-| `OccurredAt` | `time.Time` |  |
+| `identity` | `identity.Quadruple` |  |
+| `task_id` | `string` |  |
+| `artifact_id` | `string` |  |
+| `mime` | `string` |  |
+| `disposition` | `string` |  |
+| `layer` | `string` |  |
+| `degraded` | `bool` |  |
+| `degraded_from` | `string` | optional (`omitempty`) |
+| `degradation_reason` | `string` | optional (`omitempty`) |
+| `tool` | `string` | optional (`omitempty`) |
+| `occurred_at` | `time.Time` |  |
 
 ## `task.patch_applied`
 
@@ -1601,7 +1604,7 @@ Payload `ToolFailedPayload` — safe payload (delivered typed, verbatim).
 | `Attempts` | `int` |  |
 | `ErrorClass` | `tools.ErrorClass` |  |
 | `ErrorMessage` | `string` |  |
-| `ScopeShortfall` | `*tools.ScopeShortfallDetail` |  |
+| `ScopeShortfall` | `*tools.ScopeShortfallDetail` | optional (`omitempty`) |
 
 ## `tool.invalid_args`
 

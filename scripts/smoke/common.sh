@@ -132,9 +132,9 @@ assert_grep_count() {
     fi
 }
 
-# assert_go_tests_pass <log-path> <packages> <description> <test-name>...
-# Runs `go test -v -run '^(T1|T2|…)$' <packages>` and asserts every named test
-# actually RAN and PASSED.
+# assert_go_tests_pass <log-path> <go-test-args> <description> <test-name>...
+# Runs `go test -v -run '^(T1|T2|…)$' <go-test-args>` and asserts every named
+# test actually RAN and PASSED.
 #
 # The exit code alone is NOT a sufficient assertion here, and this is the whole
 # reason the helper exists: `go test -run` whose filter matches nothing prints
@@ -144,7 +144,17 @@ assert_grep_count() {
 # in for an OK (AGENTS.md §4.2 item 5). So the helper greps the `-v` output
 # for a `--- PASS:` line per NAME; a rename turns it into a FAIL.
 #
-# <packages> is a single word-split string (e.g. "./internal/state/... ./x/...").
+# <go-test-args> is a single word-split string, ordinarily just the package
+# list (e.g. "./internal/state/... ./x/..."). It may ALSO carry extra `go test`
+# flags ahead of the packages — "-race -count=1 ./internal/x/" — because they
+# land after `-run` on the command line, which `go test` accepts. That is how a
+# caller keeps the race detector on a leg that had it before adopting this
+# helper; do NOT force `-race` here, since most callers' legs are cheap
+# non-concurrent suites that preflight runs on every commit.
+#
+# `CGO_ENABLED=0` is deliberately NOT set: on Linux the race detector needs
+# cgo, and `CGO_ENABLED=0 go test -race` fails to BUILD. Harbor's CGo ban
+# governs the shipped binary, not a race-instrumented test binary.
 assert_go_tests_pass() {
     local log="$1" pkgs="$2" desc="$3"
     shift 3
@@ -156,7 +166,7 @@ assert_go_tests_pass() {
     local joined pattern t rc=0
     joined="$(printf '%s|' "${names[@]}")"
     pattern="^(${joined%|})$"
-    # shellcheck disable=SC2086 # pkgs is a deliberate multi-package word split
+    # shellcheck disable=SC2086 # pkgs is a deliberate flags+packages word split
     go test -v -run "${pattern}" ${pkgs} >"${log}" 2>&1 || rc=$?
     if [ "${rc}" -ne 0 ]; then
         fail "${desc} — go test exited ${rc}"

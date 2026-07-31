@@ -290,8 +290,8 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 // This is intentional: a resumed pause is terminal, and keeping a
 // resumed checkpoint around would be an unbounded store leak with no
 // consumer. Do not "fix" the missing post-resume-across-restart
-// Status — checkpoint_test.go / phase50_durability_test.go assert
-// this behaviour.
+// Status — the package's checkpoint tests and the pause-durability
+// integration suite assert this behaviour.
 func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision, payload map[string]any) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("pauseresume: resume cancelled: %w", err)

@@ -223,7 +223,7 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 					// caller must SEE rather than a silent degrade to a revision-only
 					// write — roll the just-written revision back so the call has NO
 					// observable effect, then return the apply error.
-					if _, rbErr := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent, compensatingWrite); rbErr != nil {
+					if _, rbErr := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent, compensatingWrite()); rbErr != nil {
 						return nil, fmt.Errorf("live allow-list apply failed AND revision rollback failed (state may be inconsistent): %w", errors.Join(setErr, rbErr))
 					}
 					return nil, setErr
@@ -240,7 +240,7 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 						errs = append(errs, e)
 					}
 				}
-				if _, e := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent, compensatingWrite); e != nil {
+				if _, e := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent, compensatingWrite()); e != nil {
 					errs = append(errs, e)
 				}
 				return errors.Join(errs...)

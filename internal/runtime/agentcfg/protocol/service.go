@@ -329,7 +329,14 @@ const writeLockShards = 256
 // the observable half-applied state the compensation exists to erase.
 //
 // The forward write of each door, by contrast, carries the caller's token.
-var compensatingWrite = agentcfg.SetOptions{}
+//
+// It is a FUNCTION rather than a package-level `var` so it is immutable by
+// construction. A `var` holding a value every compensation path reads is
+// package-level mutable state, which CLAUDE.md §5 forbids outside `init()`,
+// driver registries and metric definitions — and the reason is exactly this
+// shape: nothing mutates it today, and a single stray assignment would
+// silently re-arm a precondition on every undo path at once.
+func compensatingWrite() agentcfg.SetOptions { return agentcfg.SetOptions{} }
 
 // lockAgent acquires the agent-tier write lock for (tenant, agent) and
 // returns the release func (call via defer). It serialises every admin write

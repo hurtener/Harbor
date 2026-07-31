@@ -105,7 +105,7 @@
 // triple `(tool.approval_requested, tool.approved, tool.rejected)` +
 // the `*ErrToolRejected` sentinel. The first consumers are:
 //
-//   - `test/integration/phase31_approval_gates_test.go` —
+//   - the approval-gates integration suite under `test/integration/` —
 //     end-to-end APPROVE and REJECT cycles against real
 //     `pauseresume.Coordinator` + real `events.EventBus` + real
 //     `audit.Redactor` + real `steering.Inbox`.

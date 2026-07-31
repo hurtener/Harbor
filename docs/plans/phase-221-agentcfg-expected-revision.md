@@ -2,7 +2,7 @@
 
 ## Summary
 
-Every write onto the agent-config revision spine is unconditional last-writer-wins, and there is no conflict detection anywhere on the path — so two writers composing into one agent's config silently revert each other and both are told `200`. This phase adds ONE optional field, `expected_content_hash`, to all **sixteen** spine-writing request types, and ONE comparison inside the registry driver's existing read-modify-write. Present ⇒ a write whose base has moved is refused with a new machine-branchable `revision_conflict` code (HTTP 409). Absent ⇒ the path is byte-for-byte what it is today. The guarantee is stated with its bound: the compare-and-write is atomic **within one Runtime process** and nowhere else, because the persistence floor has no CAS primitive and this phase does not pretend otherwise.
+Every write onto the agent-config revision spine is unconditional last-writer-wins, and there is no conflict detection anywhere on the path — so two writers composing into one agent's config silently revert each other and both are told `200`. This phase adds ONE optional field, `expected_content_hash`, to all **sixteen** spine-writing request types (SEVENTEEN as shipped — phase 222 added the thirteenth agent-scope door in the same wave and this phase's exact-count guards caught it; see "Every door found" and the deviation section), and ONE comparison inside the registry driver's existing read-modify-write. Present ⇒ a write whose base has moved is refused with a new machine-branchable `revision_conflict` code (HTTP 409). Absent ⇒ the path is byte-for-byte what it is today. The guarantee is stated with its bound: the compare-and-write is atomic **within one Runtime process** and nowhere else, because the persistence floor has no CAS primitive and this phase does not pretend otherwise.
 
 ## RFC anchor
 
@@ -50,21 +50,25 @@ None. The one place this phase looks like a departure is that it does not build 
 
 ## Acceptance criteria
 
-- [ ] `expected_content_hash` is an optional string on all **sixteen** spine-writing request types (twelve admin + four user-tier), enumerated in "Every door found". A seventeenth spine writer added later without the field fails the smoke's door-count guard.
-- [ ] With the field **empty**, every one of the sixteen paths produces byte-identical behaviour to the pre-phase build: same revision minted, same content hash, same parent pointer, same emitted event, same response. Pinned by a golden test that drives each door and compares the persisted records against a recorded pre-phase golden.
-- [ ] With the field **set and matching** the active revision's content hash, the write proceeds exactly as the unconditional write would.
-- [ ] With the field **set and NOT matching**, the write is refused with `protoerrors.CodeRevisionConflict`, mapped to HTTP 409, and **nothing is persisted** — no revision record, no active-pointer move, no `agent.config.revised` event.
-- [ ] With the field set and **no active revision exists**, the write is refused with the same code.
-- [ ] The precondition is evaluated **before** the shipped idempotent-re-set short-circuit, so a stale token is never converted into a success by a payload that happens to equal the current content. A caller retrying a write that already landed gets an honest conflict, not a misleading `200`.
-- [ ] The comparison lives in the registry driver's `SetRevision` / `Rollback` read-modify-write — the same read that already loads the active revision (`internal/agentcfg/drivers/statestore/statestore.go:236`), so the precondition is compared against the **latest** value before the write, with no extra store round-trip.
-- [ ] The precondition is threaded through the `agentcfg.Registry` interface as **one** options struct on the existing methods, not as a parallel `SetRevisionIf` method (§13 — no two mechanisms for one concept).
-- [ ] `internal/agentcfg/conformance` gains rows for match / mismatch / absent-active / empty-token-is-unconditional, so any future driver inherits the contract.
-- [ ] The token is a precondition and never an authority: a request carrying a valid token but an insufficient scope is refused by the **scope** gate, and a request carrying a token with an incomplete identity triple is refused by the **identity** gate. Both pinned.
-- [ ] Two writers actually race one shared registry under `-race` and **exactly one** is refused; the winner's content is intact and the loser persisted nothing.
-- [ ] `CodeRevisionConflict` is registered in `canonicalCodes`, mapped to 409 in the control transport's status binding, present in the Protocol conformance code matrix, and carried into the regenerated `docs/site/protocol/errors.md` and the lockstep wire manifest.
-- [ ] Every godoc, the generated Protocol reference row, and the `use-the-harbor-protocol` skill state the **single-process bound** alongside the guarantee. No text anywhere claims unqualified conflict detection.
-- [ ] `ProtocolVersion` is unchanged.
-- [ ] `scripts/smoke/phase-221.sh` shows `OK ≥ 12`, `FAIL = 0` against a live preflight build, and each guard turns an `OK` into a `FAIL` (never a SKIP) when mutated.
+- [x] `expected_content_hash` is an optional string on all **seventeen** spine-writing request types (thirteen admin + four user-tier), enumerated in "Every door found". A further spine writer added later without the field fails the smoke's door-count guard.
+
+  **As shipped this criterion read "sixteen" (twelve admin + four user-tier), and that was correct when the phase landed.** Phase 222's `agent_config.set_extra_system_blocks` is the thirteenth admin door, and this phase's exact-count guards caught it — see the "As shipped — deviation: the door count moved to SEVENTEEN one phase later" section below. The number is corrected here rather than left standing, because §2 makes this file a binding spec and the code, the tests, `scripts/smoke/phase-221.sh`, `docs/glossary.md` and `docs/skills/use-the-harbor-protocol/SKILL.md` all say seventeen. "Every door found" below still enumerates the original twelve admin doors; the thirteenth is named in the deviation section.
+- [ ] With the field **empty**, every one of the paths produces byte-identical behaviour to the pre-phase build: same revision minted, same content hash, same parent pointer, same emitted event, same response. Pinned by a golden test that drives each door and compares the persisted records against a recorded pre-phase golden.
+
+  **NOT MET as written — deliberately left unticked (§4.3).** No such golden test exists. A repo-wide grep for golden tests over this surface returns only the pre-existing `TestStateStore_AgentScope_Golden_KindsUnchanged` and `TestWriteLockShard_GoldenAndBounded`, neither of which drives the doors or compares persisted records against a recorded pre-phase baseline. **What actually ships** is a weaker form of the same property, and calling it weaker is the point: one `internal/agentcfg/conformance` row asserts an empty token behaves as an unconditional write, and the live smoke asserts a `200` on an absent-token write. That covers "an absent token does not refuse"; it does not cover "the persisted records are byte-identical to the pre-phase build across every door", which is what the criterion promised and what would actually catch a silent change to the revision record, the parent pointer or the emitted event on a door nobody edited. The honest closing move is a recorded-golden test over the door table, which is worth filing on its own rather than back-dating a tick.
+- [x] With the field **set and matching** the active revision's content hash, the write proceeds exactly as the unconditional write would.
+- [x] With the field **set and NOT matching**, the write is refused with `protoerrors.CodeRevisionConflict`, mapped to HTTP 409, and **nothing is persisted** — no revision record, no active-pointer move, no `agent.config.revised` event.
+- [x] With the field set and **no active revision exists**, the write is refused with the same code.
+- [x] The precondition is evaluated **before** the shipped idempotent-re-set short-circuit, so a stale token is never converted into a success by a payload that happens to equal the current content. A caller retrying a write that already landed gets an honest conflict, not a misleading `200`.
+- [x] The comparison lives in the registry driver's `SetRevision` / `Rollback` read-modify-write — the same read that already loads the active revision (`internal/agentcfg/drivers/statestore/statestore.go:236`), so the precondition is compared against the **latest** value before the write, with no extra store round-trip.
+- [x] The precondition is threaded through the `agentcfg.Registry` interface as **one** options struct on the existing methods, not as a parallel `SetRevisionIf` method (§13 — no two mechanisms for one concept).
+- [x] `internal/agentcfg/conformance` gains rows for match / mismatch / absent-active / empty-token-is-unconditional, so any future driver inherits the contract.
+- [x] The token is a precondition and never an authority: a request carrying a valid token but an insufficient scope is refused by the **scope** gate, and a request carrying a token with an incomplete identity triple is refused by the **identity** gate. Both pinned.
+- [x] Two writers actually race one shared registry under `-race` and **exactly one** is refused; the winner's content is intact and the loser persisted nothing.
+- [x] `CodeRevisionConflict` is registered in `canonicalCodes`, mapped to 409 in the control transport's status binding, present in the Protocol conformance code matrix, and carried into the regenerated `docs/site/protocol/errors.md` and the lockstep wire manifest.
+- [x] Every godoc, the generated Protocol reference row, and the `use-the-harbor-protocol` skill state the **single-process bound** alongside the guarantee. No text anywhere claims unqualified conflict detection.
+- [x] `ProtocolVersion` is unchanged.
+- [x] `scripts/smoke/phase-221.sh` shows `OK ≥ 12`, `FAIL = 0` against a live preflight build, and each guard turns an `OK` into a `FAIL` (never a SKIP) when mutated.
 
 ## Which token, and why
 
@@ -104,6 +108,8 @@ The read side already hands the caller both candidates on every revision: `Agent
 ## Every door found
 
 Verified by grepping every `registry.SetRevision` / `registry.Rollback` call site outside tests and the conformance suite. **Sixteen** methods write the durable revision spine and all sixteen take the token.
+
+**As shipped the live count is SEVENTEEN.** Phase 222 added `agent_config.set_extra_system_blocks` as a thirteenth agent-scope door and threaded the token through it — caught by this phase's exact-count guards, not by review. The enumeration below is the sixteen this phase found and is left as its record; the authoritative live count is maintained by the guards (`scripts/smoke/phase-221.sh`'s exact-count assertions and `TestConditionalWrite_AllSeventeenDoorsAcceptTheToken`), never by this list. See the deviation section near the end.
 
 Agent scope (`ConfigScopeAgent`) — twelve:
 
@@ -264,10 +270,10 @@ Precondition-before-short-circuit is deliberate. The alternative order would let
   - `TestSetRevision_ConditionalWrite_MatchingHashProceeds` / `..._MismatchRefused` / `..._NoActiveRevisionRefused` — the three precondition outcomes, `errors.Is(err, agentcfg.ErrRevisionConflict)`.
   - `TestSetRevision_ConditionalWrite_RefusalPersistsNothing` — after a refusal: `ListRevisions` length unchanged, `Active` unchanged, and a subscribed real in-memory bus received **no** `agent.config.revised`.
   - `TestSetRevision_ConditionalWrite_PreconditionPrecedesIdempotentReset` — the ordering pin: a stale token plus a payload equal to the *current* content is a conflict, not a success. This test fails if the two blocks are transposed, which is the only way to catch that transposition.
-  - `TestSetRevision_EmptyTokenIsUnconditional` — the §10 golden: each of the sixteen doors driven with an empty token against a shared fixture, comparing the persisted revision record, content hash, parent pointer, and emitted event to a recorded pre-phase golden.
+  - ~~`TestSetRevision_EmptyTokenIsUnconditional` — the §10 golden: each of the sixteen doors driven with an empty token against a shared fixture, comparing the persisted revision record, content hash, parent pointer, and emitted event to a recorded pre-phase golden.~~ **NOT SHIPPED.** No test of this name or shape exists in the tree. The §10 absent-token property is covered in a weaker form — one `internal/agentcfg/conformance` row ("empty token is unconditional") plus the live smoke's absent-token `200` — which proves an absent token does not *refuse*, and does not prove the persisted records are byte-identical across every door. See the unticked acceptance criterion above.
   - `TestRollback_ConditionalWrite_*` — the same three outcomes on the pointer-move door.
   - `TestConditionalWrite_TokenIsPreconditionNotAuthority` — a valid token with an insufficient scope is refused by the scope gate; a valid token with an incomplete identity triple is refused by `ErrIdentityRequired`. The token never rescues either.
-  - `TestConditionalWrite_AllSixteenDoorsAcceptTheToken` — table-driven over the sixteen methods; a new spine writer without the field fails here as well as in the smoke.
+  - `TestConditionalWrite_AllSixteenDoorsAcceptTheToken` — table-driven over the sixteen methods; a new spine writer without the field fails here as well as in the smoke. **As shipped it is `TestConditionalWrite_AllSeventeenDoorsAcceptTheToken`** (`internal/runtime/agentcfg/protocol/conditional_write_test.go`) — phase 222 added the seventeenth door and extended the table rather than only bumping a count, which is exactly the behaviour this guard was written to force.
   - `TestErrorCode_RevisionConflict_RegisteredAndMappedTo409` — `IsValidCode`, `Codes()` membership, and the control-transport status binding.
 - **Integration:** `test/integration/phase221_agentcfg_conditional_write_test.go` — the real `agentcfg` statestore driver over **real** StateStore drivers (in-memory **and** a file-backed SQLite via `t.TempDir()`, so the precondition is exercised against a real SQL read-modify-write, not just a map), a real in-memory `EventBus`, a real `audit.Redactor`, the real `agentcfg` protocol `Service`, and the real REST control transport over an `httptest.Server`. Covers: a Console-shaped read → edit → conditional write round-trip returning 409 with `{"code":"revision_conflict"}` after an interleaved second writer; identity propagation through every layer (two tenants and two users, each conditional write scoped to its own slot, no cross-talk); the empty-token path returning 200 with the same body shape as the pre-phase build; **failure mode** — a closed bus on the winning write, asserting the revision still landed and the conflict path is unaffected by the emit failure; and the `agent_config.get` → `agent_config.diff` recovery loop a conflicted client actually runs.
 - **Conformance:** `internal/agentcfg/conformance` gains four rows run against the statestore driver (and every future driver): matching token proceeds; mismatching token fails `ErrRevisionConflict` with nothing persisted; token with no active revision fails; empty token is unconditional. Placed in the shared suite rather than the driver's own tests specifically so a second driver cannot ship the interface without the precondition (§9 parity).
@@ -299,6 +305,49 @@ Baselines below were measured on this branch with `go test -cover` before any ch
 - `internal/protocol/conformance`: **82%** — baseline measured 81.8%; hold it.
 - `internal/protocol/types`: no target — the change is sixteen struct fields and their godoc, which contain no statements, so the package's measured 62.6% cannot move. That figure sits below what other plans state for the package; the shortfall predates this phase and is not addressed by it.
 
+### As shipped — measured after the change
+
+Re-measured with `go test -count=1 -cover` on `dev-experimental` after the wave landed. Two targets
+are NOT met and are recorded as permanent deviations (§4.3) rather than restated as met. PR #623's
+body disclosed both; this table is the plan-file record §4.2 item 11 requires.
+
+| Package | Baseline | Target | As shipped | Verdict |
+|---|---:|---:|---:|---|
+| `internal/agentcfg/drivers/statestore` | 80.1% | 85% | **80.4%** | improved toward, **SHORT** |
+| `internal/agentcfg` | 77.1% | 80% | **80.3%** | met |
+| `internal/runtime/agentcfg/protocol` | 85.5% | 85% | **86.9%** | met |
+| `internal/protocol/errors` | 100% | 100% | **100%** | met |
+| `internal/protocol/transports/control` | 73.9% | 74% | **74.2%** | met |
+| `internal/protocol/conformance` | 81.8% | 82% | **81.8%** | flat, **SHORT** |
+| `internal/protocol/types` | 62.6% | none | **62.6%** | no target |
+
+**`internal/agentcfg/drivers/statestore` — the 85% target rested on a wrong prediction about where
+the uncovered statements are.** The precondition itself landed well covered: `SetRevision` measures
+88.6% and every conditional branch is driven by the driver tests, the four conformance rows and the
+exactly-one-wins race. The package's residual is elsewhere and this phase does not touch it — the
+`StateStore` error arms in `emitRevised` (50.0%), `emitReverted` (50.0%), `loadActiveRevision`
+(66.7%), `saveRevision` (66.7%), `loadRevision` (72.7%) and `saveActive` (71.4%), each an
+`if err != nil` return on a `Save` / `Load` that neither the in-mem nor the SQLite driver fails in a
+test. Adding ~4.6pp would mean building a fault-injecting `StateStore` fake purely to walk those
+returns — coverage padding on the §17.3 "no mocks at the seam" boundary. Recorded as short.
+
+**`internal/protocol/conformance` — the 82% "hold it" target was above its own stated baseline.**
+The line reads "**82%** — baseline measured 81.8%; hold it", which is internally contradictory: a
+floor 0.2pp above the baseline is a raise, not a hold. The package held exactly at 81.8%; the
+phase's contribution there is one row in the code matrix, which adds no statements. The target was
+misstated at authoring time and the honest reading is "hold at 81.8%", which was achieved.
+
+### As shipped — deviation: the door count moved to SEVENTEEN one phase later
+
+This plan enumerates and asserts **sixteen** spine-writing doors, and that was correct when it
+shipped. Phase 222's `agent_config.set_extra_system_blocks` is the seventeenth, and this phase's
+exact-count guards caught it exactly as designed — `scripts/smoke/phase-221.sh` reported three FAILs
+(17 found, 16 wanted) on the wire types, the json tags and the Console mirror. Phase 222 extended
+the behavioural table and its reflection twin rather than bumping the counts alone, so the new door
+is DRIVEN with a stale token and asserted to refuse with `ErrRevisionConflict` like its siblings.
+See D-367. The sixteen-door text above is left as the record of what this phase shipped; the live
+count is maintained by the guards, not by this file.
+
 ## Dependencies
 
 - 92a — the registry, the revision spine, the content hash, and the idempotent re-set this phase makes conditional.
@@ -325,17 +374,17 @@ Both land in `docs/glossary.md` in this PR.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target (re-measured with `go test -cover`, figures recorded in the PR)
-- [ ] If multi-isolation paths changed: cross-session isolation test passes — the integration test drives two tenants and two users through the conditional path and asserts no cross-slot effect
-- [ ] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** The `agentcfg.Registry` driver and the agent-config `Service` are both reusable artifacts; `TestService_ConcurrentReuse_MixedConditionalAndUnconditional` and `TestSetRevision_ConcurrentConditionalWriters_ExactlyOneWins` each run N=128 against one shared instance.
-- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** `test/integration/phase221_agentcfg_conditional_write_test.go`.
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (none departed; D-366 files the decision itself)
-- [ ] D-223 lockstep: `make protocol-ts-gen-check` clean after rebasing onto phase 219's manifest
-- [ ] D-209: `make protocol-docs-gen-check` clean; `docs/site/protocol/errors.md` + `types.md` regenerated, never hand-edited
-- [ ] §18: `docs/skills/use-the-harbor-protocol/SKILL.md` updated in this PR with the field, the code, and the process bound
-- [ ] Every mutation in "Smoke script additions" executed, and the observed OK/FAIL delta recorded in the PR
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [ ] Coverage on touched packages ≥ stated target — **NOT met on two packages, deliberately left unticked (§4.3).** `internal/agentcfg/drivers/statestore` shipped at 80.4% against 85%, and `internal/protocol/conformance` held at 81.8% against a misstated 82% "hold" target. Both are recorded with their measured figures and their reasons in "As shipped — measured after the change" above. Neither is claimed as met.
+- [x] If multi-isolation paths changed: cross-session isolation test passes — the integration test drives two tenants and two users through the conditional path and asserts no cross-slot effect
+- [x] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** The `agentcfg.Registry` driver and the agent-config `Service` are both reusable artifacts; `TestService_ConcurrentReuse_MixedConditionalAndUnconditional` and `TestSetRevision_ConcurrentConditionalWriters_ExactlyOneWins` each run N=128 against one shared instance.
+- [x] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** `test/integration/phase221_agentcfg_conditional_write_test.go`.
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed (none departed; D-366 files the decision itself)
+- [x] D-223 lockstep: `make protocol-ts-gen-check` clean after rebasing onto phase 219's manifest
+- [x] D-209: `make protocol-docs-gen-check` clean; `docs/site/protocol/errors.md` + `types.md` regenerated, never hand-edited
+- [x] §18: `docs/skills/use-the-harbor-protocol/SKILL.md` updated in this PR with the field, the code, and the process bound
+- [x] Every mutation in "Smoke script additions" executed, and the observed OK/FAIL delta recorded in the PR

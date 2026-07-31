@@ -84,12 +84,6 @@ assert_grep_present 'CodeRevisionConflict' "${STATUS_GO}" \
 #     Counting the t.Run REGISTRATIONS, not the function declarations: a row
 #     whose registration is deleted still declares its function, so a
 #     declaration count would stay green while the row stopped executing.
-#     The count moved 4 -> 7 when the FIRST-WRITE sentinel landed (the
-#     composition protocol had no expressible token at its base case, so two
-#     first contributors silently reverted each other). Bumping the count
-#     alone would have been the wrong fix, so the three new rows are
-#     BEHAVIOURAL: they drive the sentinel, refuse it once a revision exists,
-#     and reproduce-then-close the lost update.
 assert_grep_count 't\.Run\("ConditionalWrite_' "${CONFORMANCE_GO}" 7 \
     'phase 221: the shared conformance suite RUNS the seven precondition rows'
 assert_grep_count 'func testConditional' "${CONFORMANCE_GO}" 7 \
@@ -140,7 +134,13 @@ else
             skip 'phase 221: dev server unreachable — live assertions skipped (run under make preflight)'
             ;;
         404)
-            skip 'phase 221: agent_config.set_revision not mounted on this build — live assertions skipped'
+            # NOT a skip. `agent_config.set_revision` shipped waves before this
+            # phase, so on a REACHABLE server its absence is an un-mounted
+            # REGRESSION, not a future surface — the 404 -> SKIP convention
+            # (§4.2 item 4) covers a phase-N+1 script against a phase-N build,
+            # which this is not. The sibling instruments already do it this way:
+            # phase-222.sh:266 and common.sh's `assert_post_status_auth`.
+            fail 'phase 221: agent_config.set_revision answered 404 on a reachable server — the route did not mount (it shipped waves ago; an absent route here is a regression, not a future surface)'
             ;;
         *)
             # p221_post <url> <body>  -> sets P221_STATUS / P221_BODY / P221_CODE
@@ -191,8 +191,17 @@ else
             #      content hash back through agent_config.get, then write under
             #      a DELIBERATELY-BOGUS hash.
             p221_post "${ROUTE}" "{\"identity\":${ID},\"agent_id\":\"${AGENT}\",\"payload\":{\"skills\":{\"names\":[\"smoke-a\"]}}}"
+            # A FAILED SEED IS A FAILURE, NOT A SKIP. This one arm gated the
+            # WHOLE live conflict section — including the only over-the-wire
+            # 409/revision_conflict assertion this phase has — so a server that
+            # answered anything but 200 here reported green having asserted
+            # nothing about the feature. A smoke that cannot seed has not run
+            # (§4.2 item 5). The bearer comes from `dev_bearer`, which resolves
+            # the admin-scoped dev bootstrap token both under preflight and
+            # against a hand-booted `harbor dev`; if it does not resolve, the
+            # curl/jq preamble above has already skipped this whole block.
             if [ "${P221_STATUS}" != '200' ]; then
-                skip "phase 221: could not seed a revision (status ${P221_STATUS}, code ${P221_CODE:-none}) — the live conflict probe needs an admin-scoped bearer"
+                fail "phase 221: could not seed a revision (status ${P221_STATUS}, code ${P221_CODE:-none}) — the live conflict section, including the ONLY over-the-wire 409/revision_conflict assertion, cannot run"
             else
                 ok 'phase 221: the UNCONDITIONAL write path still answers 200 (absent token == today, byte for byte)'
 
@@ -243,44 +252,80 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Unit-test legs. Each FAILS on a genuine failure and SKIPs only when the
-# filter matches no tests at all.
+# Unit-test legs. Every leg names its tests EXPLICITLY and goes through
+# common.sh's `assert_go_tests_pass`, which greps the `-v` output for a
+# `--- PASS:` line per name.
+#
+# The private `p221_go_test` helper this replaced checked only the EXIT CODE.
+# `go test -run NoSuchTest` prints `ok <pkg> [no tests to run]` and exits ZERO,
+# so all five legs reported OK against a rename or a deletion of the test they
+# name — including the seventeen-door table and the end-to-end round trip. Its
+# one SKIP arm grepped `no test files`, which is a DIFFERENT string from the
+# `no tests to run` a vanished filter actually prints, so it never fired.
+# Reproduced before the repair: renaming TestSetRevision_ConditionalWrite_* away
+# left `OK: 1 SKIP: 0 FAIL: 0`. Re-verified after: the same rename FAILs.
+# (AGENTS.md §4.2 item 5 — a guard whose pass value is also its can't-tell value
+# is not a guard.) The helper was written beside the cure: phase 223 added
+# `assert_go_tests_pass` in this same wave for exactly this defect.
+#
+# `-race -count=1` is passed through the go-test-args parameter so these legs
+# keep the race detector and the cache bypass the private helper had.
 # ---------------------------------------------------------------------------
-
-# p221_go_test <run-regex> <package> <description>
-p221_go_test() {
-    local pattern="$1" pkg="$2" desc="$3" out rc
-    out=$(go test -race -count=1 -run "${pattern}" "${pkg}" 2>&1) && rc=0 || rc=$?
-    if [ "${rc}" -ne 0 ]; then
-        printf '%s\n' "${out}" | tail -20 >&2
-        fail "${desc}"
-        return
-    fi
-    if printf '%s' "${out}" | grep -q 'no test files'; then
-        skip "${desc}: package has no tests"
-        return
-    fi
-    ok "${desc}"
-}
 
 if ! command -v go >/dev/null 2>&1; then
     skip 'phase 221: go toolchain unavailable — unit-test legs skipped'
 else
-    p221_go_test 'TestSetRevision_ConditionalWrite|TestRollback_ConditionalWrite' \
-        ./internal/agentcfg/drivers/statestore/ \
-        'phase 221: the driver conditional-write tests pass under -race (incl. the ordering pin)'
-    p221_go_test 'TestStateStore_Conformance' \
-        ./internal/agentcfg/drivers/statestore/ \
-        'phase 221: the shared conformance suite (incl. the seven precondition rows) passes under both scope arms'
-    p221_go_test 'TestSetRevision_Concurrent|TestConditionalWrite_ConcurrentReuse|TestConditionalWrite_CrossProcessBound' \
-        ./internal/agentcfg/drivers/statestore/ \
-        'phase 221: N=128 racing writers yield exactly one winner, and the cross-process residual is pinned AS ABSENT'
-    p221_go_test 'TestConditionalWrite' \
-        ./internal/runtime/agentcfg/protocol/ \
-        'phase 221: all seventeen doors thread the token, and the token is never an authority'
-    p221_go_test 'TestE2E_AgentConfig_ConditionalWrite' \
-        ./test/integration/ \
-        'phase 221: the end-to-end conditional-write round trip passes over real drivers'
+    P221_GOLOG="$(mktemp "${TMPDIR:-/tmp}/phase221-gotest.XXXXXX")"
+    trap 'rm -f "${P221_GOLOG}"' EXIT
+
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/agentcfg/drivers/statestore/' \
+        'phase 221: the driver conditional-write tests pass under -race (incl. the ordering pin)' \
+        TestSetRevision_ConditionalWrite_MatchingHashProceeds \
+        TestSetRevision_ConditionalWrite_MismatchRefused \
+        TestSetRevision_ConditionalWrite_NoActiveRevisionRefused \
+        TestSetRevision_ConditionalWrite_RefusalPersistsNothing \
+        TestSetRevision_ConditionalWrite_PreconditionPrecedesIdempotentReset \
+        TestRollback_ConditionalWrite_MatchMismatchAndNoActive
+
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/agentcfg/drivers/statestore/' \
+        'phase 221: the shared conformance suite (incl. the seven precondition rows) passes under both scope arms' \
+        TestStateStore_Conformance
+
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/agentcfg/drivers/statestore/' \
+        'phase 221: N=128 racing writers yield exactly one winner, and the cross-process residual is pinned AS ABSENT' \
+        TestSetRevision_ConcurrentConditionalWriters_ExactlyOneWins \
+        TestSetRevision_ConcurrentUnconditionalWriters_AllSucceed \
+        TestConditionalWrite_ConcurrentReuse_NoCrossOwnerBleed \
+        TestConditionalWrite_CrossProcessBoundIsDocumented
+
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/runtime/agentcfg/protocol/' \
+        'phase 221: all seventeen doors thread the token, and the token is never an authority' \
+        TestConditionalWrite_AllSeventeenDoorsAcceptTheToken \
+        TestConditionalWrite_SeventeenRequestTypesDeclareTheField \
+        TestConditionalWrite_TokenIsPreconditionNotAuthority
+
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./test/integration/' \
+        'phase 221: the end-to-end conditional-write round trip passes over real drivers' \
+        TestE2E_AgentConfig_ConditionalWrite \
+        TestE2E_AgentConfig_ConditionalWrite_IdentityPropagation \
+        TestE2E_AgentConfig_ConditionalWrite_FailureModes \
+        TestE2E_AgentConfig_ConditionalWrite_ConcurrencyStress
+
+    # A refusal must be side-effect free (D-370). The 409 arrives on a door that
+    # has ALREADY dialled, handshaken and registered a live MCP server, so the
+    # conditional write's guarantee is only true if the attach is compensated.
+    # These name the tests explicitly because the defect shipped past a suite
+    # that asserted the refusal and never the residue: deleting the
+    # compensation leaves "caller gets a 409" and "no revision persisted" green.
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/runtime/agentcfg/protocol/' \
+        'phase 221: a revision_conflict compensates the live attach instead of stranding it' \
+        TestAddMCPConnection_RevisionConflict_CompensatesTheAttach \
+        TestAddMCPConnection_RevisionConflict_UninstallsInlineWireProvider \
+        TestAddMCPConnection_AuthRequiredConflict_CompensatesTheAttach \
+        TestAddMCPConnection_UnconditionalAddIsUnchanged \
+        TestAddMCPConnection_FailedAttachDoesNotDetach \
+        TestAddMCPConnection_ConflictWithNoDetacherFailsLoud \
+        TestAddMCPConnection_CompensatingDetachFailureIsNotSwallowed
 fi
 
 smoke_summary

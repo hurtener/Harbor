@@ -93,15 +93,15 @@
 // ErrAuthRequired + the tool.auth_required event). The §13
 // primitive-with-consumer obligation is discharged in-PR by:
 //
-//   - integration test `test/integration/phase30_tool_oauth_test.go`
+//   - the tool-OAuth integration suite under test/integration/,
 //     exercising the full pause/resume cycle against a real
 //     Coordinator + a real events.EventBus + a real audit.Redactor +
 //     an httptest-backed authorization server doing PKCE +
 //     RFC 7591 dynamic client registration + metadata discovery, for
 //     BOTH binding scopes, plus the A2A AUTH_REQUIRED convergence
 //     assertion.
-//   - the package-local concurrent_test.go pinning D-025 (N≥100
-//     concurrent operations against one shared *Provider).
+//   - the package-local concurrent-reuse test (N≥100 concurrent
+//     operations against one shared *Provider).
 //
 // The tool-side approval gates are the sibling consumer
 // layered on the same primitives.

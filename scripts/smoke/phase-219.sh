@@ -18,10 +18,19 @@
 #
 # GUARD DISCIPLINE — every ASSERTION below FAILS on breakage. The only two
 # skipping arms are the harness preamble (§4.2 item 4): the route probe and the
-# token/jq availability check, both of which run BEFORE any assertion and
-# describe the harness, not the surface. No assertion in this file can answer
-# SKIP. Counted rather than asserted: 19 `ok` arms, 24 `fail` arms, 2 `skip`
-# arms — and both skips are above.
+# `jq` availability check, both of which run BEFORE any assertion and describe
+# the harness, not the surface. No assertion in this file can answer SKIP.
+#
+# An UNRESOLVABLE dev bearer is a FAIL, not a third skip: see the note at the
+# `dev_bearer` call below (issue #624).
+#
+# Counted rather than asserted, so a future edit has a number to reconcile
+# against: 18 literal `ok` arms, 24 literal `fail` arms, 2 literal `skip` arms,
+# plus two legs delegated to `assert_go_tests_pass` (which emits its own
+# ok/fail). Observed counters on the shipping build: OK 20 / SKIP 0 / FAIL 0.
+# The header previously claimed "19 ok / 24 fail / 2 skip" against an actual
+# 20/25/2 — a stale count in a file whose whole subject is instruments that
+# report what they did not measure.
 #
 # ONE residual, named rather than hidden: if `/v1/control/start` itself
 # vanished, the route probe would skip the whole live section and this script
@@ -178,13 +187,30 @@ case "${PROBE:-000}" in
         ;;
 esac
 
-if [ -z "${HARBOR_DEV_TOKEN:-}" ] || ! command -v jq >/dev/null 2>&1; then
-    skip "phase 219: HARBOR_DEV_TOKEN/jq unavailable — live assertions skipped (run under 'make preflight')"
+# THE BEARER COMES FROM common.sh's `dev_bearer`, NEVER from a raw
+# `${HARBOR_DEV_TOKEN}` read (issue #624, which this script was the reported
+# instance of). A raw read resolves to empty outside preflight — where a
+# contributor iterating locally runs this — so nine live assertions collapsed
+# into one SKIP and the script still exited 0: `OK 8 / SKIP 1 / FAIL 0`
+# standalone versus 20/0/0 under preflight. That is §4.2 item 5, and it makes
+# the script's honesty a function of how it is invoked. `dev_bearer` falls back
+# to `${HARBOR_DATA_DIR}/server.log`, which a hand-booted `harbor dev` has.
+#
+# An UNRESOLVABLE bearer is a FAIL, not a SKIP: the route probe above already
+# proved a server is answering on this port, so a server we can reach but
+# cannot authenticate against is a broken harness, and a broken harness that
+# reports green is the whole defect class this wave is draining.
+TOKEN="$(dev_bearer)"
+if ! command -v jq >/dev/null 2>&1; then
+    skip 'phase 219: jq not available — live assertions skipped'
     smoke_summary
     exit 0
 fi
-
-TOKEN="${HARBOR_DEV_TOKEN}"
+if [ -z "${TOKEN}" ]; then
+    fail 'phase 219: no dev bearer resolved (HARBOR_DEV_TOKEN unset and no ${HARBOR_DATA_DIR}/server.log) — control.start answered on this port, so the live legs SHOULD run; they would prove nothing without a bearer'
+    smoke_summary || true
+    exit 1
+fi
 # A distinctive, greppable marker. It is the payload's ONLY content, so any
 # appearance of it outside the prompt is a leak we can name precisely.
 MARKER="phase219-marker-9f3c1a-do-not-log"
@@ -352,18 +378,34 @@ if go test -race -count=1 \
 else
     fail "phase 219: go test -race FAILED for internal/protocol, internal/runtime/runctx or internal/planner/react"
 fi
-if go test -race -count=1 -run 'CallerMemory' ./test/integration/ >/dev/null 2>&1; then
-    ok "phase 219: go test -race passes for the caller-memory integration suite (real drivers, recording LLM edge)"
-else
-    fail "phase 219: go test -race FAILED for test/integration -run CallerMemory"
-fi
+# THE TWO FILTERED LEGS NAME THEIR TESTS EXPLICITLY, through common.sh's
+# `assert_go_tests_pass`. They used to be exit-code-only `go test -run` guards,
+# and `go test -run NoSuchTest` prints `ok <pkg> [no tests to run]` and exits
+# ZERO — so both reported OK once the tests they name were renamed away. The
+# unfiltered whole-package run above is not affected: with no `-run` filter
+# there is no filter to go stale. (AGENTS.md §4.2 item 5.)
+#
+# `-race -count=1` rides in the go-test-args parameter, so these legs keep the
+# race detector they had.
+GOLOG_219="$(mktemp "${TMPDIR:-/tmp}/phase219-gotest.XXXXXX")"
+trap 'rm -f "${GOLOG_219}"' EXIT
+
+assert_go_tests_pass "${GOLOG_219}" '-race -count=1 ./test/integration/' \
+    'phase 219: the caller-memory integration suite (real drivers, recording LLM edge)' \
+    TestE2E_CallerMemory_ReachesTheExternalTierAndNothingElse \
+    TestE2E_CallerMemory_ComposesWithSemanticRecall \
+    TestE2E_CallerMemory_OverCapRefusedAndNoTaskCreated \
+    TestE2E_CallerMemory_UnauthenticatedRefusedBeforeTheBody \
+    TestE2E_CallerMemory_AdmissionEventFiresWhenTheRunFails \
+    TestE2E_CallerMemory_ConcurrentAcrossTenantsOverTheWire
+
 # The run loop's OWN refusal branch and its admission emit. Reachable only
 # from an in-process caller (the Protocol edge refuses an inadmissible payload
 # before a task exists), so nothing above this line exercises it.
-if go test -race -count=1 -run 'CallerMemory|MalformedCallerMemory' ./internal/runtime/serve/ >/dev/null 2>&1; then
-    ok "phase 219: go test -race passes for the run-loop composition + admission-emit suite"
-else
-    fail "phase 219: go test -race FAILED for internal/runtime/serve -run CallerMemory"
-fi
+assert_go_tests_pass "${GOLOG_219}" '-race -count=1 ./internal/runtime/serve/' \
+    'phase 219: the run-loop composition + admission-emit suite' \
+    TestRunOne_CallerMemoryCompositionError_FailsRunLoud \
+    TestRunOne_CallerMemory_AdmittedAndAnnounced \
+    TestSpawn_MalformedCallerMemory_RefusedAtPersist
 
 smoke_summary
