@@ -827,10 +827,18 @@ func overrideExtraInstructions(rc planner.RunContext) string {
 // prompt-side <available_tools> quick reference.
 // Schemas, side_effects, and examples live in the provider's native
 // Tools[] declaration; the prompt duplicates none of them.
+//
+// The name rendered is the SANITIZED one — the same form the tool is
+// declared under in `req.Tools[]`, and the only name the model can
+// actually call. Rendering the raw catalog key here instead would show the
+// model a name that does not exist on the provider side: a dotted key like
+// `clock.now` is declared as `clock_now`, and an over-long key is declared
+// shortened. Both surfaces go through one transform so the quick reference
+// and the declaration can never disagree.
 func renderToolNameDesc(t tools.Tool) string {
 	var b strings.Builder
 	b.WriteString("- ")
-	b.WriteString(t.Name)
+	b.WriteString(sanitizeToolName(t.Name))
 	if t.Description != "" {
 		b.WriteString(": ")
 		b.WriteString(oneLine(t.Description))
