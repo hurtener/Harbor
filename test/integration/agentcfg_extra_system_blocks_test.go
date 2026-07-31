@@ -294,6 +294,52 @@ func TestE2E_AgentConfigExtraSystemBlocks_NContributorRoundTrip(t *testing.T) {
 	}
 }
 
+// TestE2E_AgentConfigExtraSystemBlocks_EmitsConfigRevised — a block write is a
+// config revision like any other, so it rides the SHARED emit rather than
+// growing a private one: the canonical `agent.config.revised` event fires on
+// the real bus, and it carries NO block body (the payload is content-free by
+// construction; the section text lives only in the revision).
+func TestE2E_AgentConfigExtraSystemBlocks_EmitsConfigRevised(t *testing.T) {
+	h := esbHarnessOn(t, esbInmem(t))
+	ctx := context.Background()
+
+	sub, err := h.bus.Subscribe(ctx, events.Filter{
+		Admin: true,
+		Types: []events.EventType{agentcfg.EventTypeConfigRevised},
+	})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	t.Cleanup(sub.Cancel)
+
+	const secret = "esb-body-that-must-not-ride-the-event"
+	if res := esbAdmin(t, h.handler, "/v1/agent_config/set_extra_system_blocks",
+		prototypes.AgentConfigSetExtraSystemBlocksRequest{
+			AgentID: esbAgent, ExtraSystemBlocks: esbBlocks("emitted", secret),
+		}); res.status != http.StatusOK {
+		t.Fatalf("write: status %d body %v", res.status, res.body)
+	}
+
+	select {
+	case ev, ok := <-sub.Events():
+		if !ok {
+			t.Fatal("subscription closed before agent.config.revised arrived")
+		}
+		if ev.Type != agentcfg.EventTypeConfigRevised {
+			t.Fatalf("event type = %q, want %q", ev.Type, agentcfg.EventTypeConfigRevised)
+		}
+		raw, merr := json.Marshal(ev.Payload)
+		if merr != nil {
+			t.Fatalf("marshal payload: %v", merr)
+		}
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("the emitted event carries the block BODY: %s", raw)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for agent.config.revised — a block write must ride the shared revision emit")
+	}
+}
+
 // TestE2E_AgentConfigExtraSystemBlocks_ReachesTheBuiltPrompt closes the seam
 // the phase exists to close: a block written over the Protocol reaches the
 // system prompt the real ReAct builder produces, through the real run-start
