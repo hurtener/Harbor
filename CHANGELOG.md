@@ -114,6 +114,15 @@ position that any `runs.set_overrides` caller can now write.
   not declare. In particular the `artifacts.*` methods scope by `scope`, and a
   stray `identity` object beside it is now a 400 rather than a silent drop.
 
+  **The Console was itself sending that stray member**, on all five
+  `artifacts.*` methods and on `search.query` — its transport folds the identity
+  triple into every request body by default, *below* the typed client surface,
+  and six request types declare no `identity` field. Those six call sites now
+  pass `omitBodyIdentity`, and a lockstep check (`npm run lint`) enforces the
+  rule in both directions: a call site must suppress the fold **iff** its
+  request type has no `identity`. Third-party clients that fold identity the
+  same way should audit the same six methods.
+
 - **`memory.caller_block_admitted` — a new canonical event recording the FACT
   of an admission, never the content.** It carries `bytes`, `tier` and `key`
   and no fragment of the payload. It fires at admission, which precedes

@@ -28,6 +28,17 @@
  *       in-place field-type swap the parser cannot resolve is the documented
  *       residual this guard does NOT catch (it surfaces downstream at the
  *       `svelte-check` use site).
+ *   (e) [BODY-IDENTITY FOLD — mandatory] a `request()` call site whose Protocol
+ *       request type declares NO `identity` field but which does not pass
+ *       `omitBodyIdentity: true` (the transport would fold an `identity` key the
+ *       wire type does not define, and the Runtime decodes strictly — HTTP 400
+ *       `unknown field "identity"`), or the converse: a call site that passes the
+ *       flag for a type that DOES declare `identity` (the fold is load-bearing
+ *       there, and suppressing it strips the scope the handler reconciles).
+ *       See D-374. The route -> request-type join is read from the GENERATED
+ *       `docs/site/protocol/methods.md` rather than re-derived here, so there is
+ *       exactly one source for it (`cmd/harbor-gen-protocol-docs`), itself kept
+ *       fresh by `make protocol-docs-gen-check` and its own Go lockstep tests.
  *
  * Usage:
  *   node scripts/check-protocol-ts-lockstep.mjs       # CLI gate (wired into `npm run lint`)
@@ -42,6 +53,10 @@ const CONSOLE_ROOT = resolve(HERE, '..');
 const LIB_DIR = join(CONSOLE_ROOT, 'src', 'lib');
 const MANIFEST_PATH = join(LIB_DIR, 'protocol', 'wire-manifest.gen.json');
 const ALLOW_PATH = join(HERE, 'protocol-ts-untyped-allow.json');
+// The GENERATED Protocol methods reference (repo root -> docs/site/protocol).
+// It carries the route -> request-type join check (e) needs; re-deriving that
+// join here would be a second source for it (CLAUDE.md §13).
+const METHODS_MD_PATH = resolve(CONSOLE_ROOT, '..', '..', 'docs', 'site', 'protocol', 'methods.md');
 
 /**
  * Recursively list `.ts` files under `dir`, skipping declaration-collision-free
@@ -364,6 +379,136 @@ export function runChecks() {
     }
   }
 
+  // ---- (e) body-identity fold vs. the request type's `identity` field ------
+  violations.push(...checkBodyIdentityFold(manifest));
+
+  return violations;
+}
+
+/**
+ * Parse the GENERATED Protocol methods reference into `route -> {method,
+ * request}`. The table shape is fixed by `cmd/harbor-gen-protocol-docs`; a
+ * parse that yields nothing is treated as a hard failure by the caller rather
+ * than as "no violations", because a guard that silently matches zero rows is
+ * indistinguishable from a passing one.
+ * @param {string} src
+ * @returns {Map<string, {method: string, request: string}>}
+ */
+function parseMethodsTable(src) {
+  /** @type {Map<string, {method: string, request: string}>} */
+  const out = new Map();
+  const row =
+    /^\|\s*`([^`]+)`\s*\|\s*`(?:GET|POST)\s+([^`]+)`\s*\|[^|]*\|\s*\[`([^`]+)`\][^|]*\|/gm;
+  let m;
+  while ((m = row.exec(src)) !== null) {
+    out.set(m[2].trim(), { method: m[1], request: m[3] });
+  }
+  return out;
+}
+
+/**
+ * Find every `transport.request(...)` call site under `src/lib`, returning the
+ * requested path, whether the call passes `omitBodyIdentity`, and its location.
+ *
+ * The path regex is MULTILINE-aware deliberately: the formatter routinely wraps
+ * the path onto its own line, and a line-oriented scan silently missed a third
+ * of the call sites (and the one pre-existing `omitBodyIdentity` case) when this
+ * sweep was first written by hand.
+ * @returns {{file: string, line: number, path: string, omit: boolean}[]}
+ */
+function findRequestCallSites() {
+  /** @type {{file: string, line: number, path: string, omit: boolean}[]} */
+  const sites = [];
+  const call = /\.request\s*(?:<[^>()]*>)?\s*\(\s*['"]([^'"]+)['"]/g;
+  for (const file of walkTs(LIB_DIR)) {
+    const src = readFileSync(file, 'utf8');
+    const rel = relative(CONSOLE_ROOT, file);
+    let m;
+    call.lastIndex = 0;
+    while ((m = call.exec(src)) !== null) {
+      // Span the whole call expression so a trailing opts object on any
+      // following line is seen.
+      const open = src.indexOf('(', m.index);
+      let depth = 0;
+      let j = open;
+      for (; j < src.length; j++) {
+        if (src[j] === '(') depth++;
+        else if (src[j] === ')') {
+          depth--;
+          if (depth === 0) break;
+        }
+      }
+      sites.push({
+        file: rel,
+        line: src.slice(0, m.index).split('\n').length,
+        path: m[1],
+        omit: src.slice(open, j + 1).includes('omitBodyIdentity'),
+      });
+    }
+  }
+  return sites;
+}
+
+/**
+ * Check (e). Every Console call site must fold the body identity if and only if
+ * its Protocol request type declares an `identity` field.
+ * @param {{types: Record<string, {fields?: {key: string}[]}>}} manifest
+ * @returns {string[]}
+ */
+export function checkBodyIdentityFold(manifest) {
+  /** @type {string[]} */
+  const violations = [];
+
+  if (!existsSync(METHODS_MD_PATH)) {
+    return [
+      `[body-identity] the generated methods reference is missing at ` +
+        `${METHODS_MD_PATH} — run 'make protocol-docs-gen'. This check cannot run without ` +
+        `the route -> request-type join, and skipping it silently is how the ` +
+        `artifacts fold regressed for four phases.`,
+    ];
+  }
+  const routes = parseMethodsTable(readFileSync(METHODS_MD_PATH, 'utf8'));
+  if (routes.size === 0) {
+    return [
+      `[body-identity] parsed ZERO rows from the generated methods reference — the table shape ` +
+        `changed and this check has gone inert. Fix the parser in ` +
+        `scripts/check-protocol-ts-lockstep.mjs rather than leaving it matching nothing.`,
+    ];
+  }
+
+  for (const site of findRequestCallSites()) {
+    const entry = routes.get(site.path);
+    if (entry === undefined) {
+      violations.push(
+        `[body-identity] ${site.file}:${site.line} calls "${site.path}", which is not a route in ` +
+          `the generated methods reference — either the path is wrong or the method is not canonical`,
+      );
+      continue;
+    }
+    const type = manifest.types[entry.request];
+    if (type === undefined) {
+      violations.push(
+        `[body-identity] ${site.file}:${site.line} calls "${entry.method}", whose request type ` +
+          `"${entry.request}" is not in the wire manifest — run 'make protocol-ts-gen'`,
+      );
+      continue;
+    }
+    const hasIdentity = (type.fields ?? []).some((f) => f.key === 'identity');
+    if (!hasIdentity && !site.omit) {
+      violations.push(
+        `[body-identity] ${site.file}:${site.line} calls "${entry.method}" without ` +
+          `\`omitBodyIdentity: true\`, but ${entry.request} declares no \`identity\` field — the ` +
+          `transport's fold would add a member the wire type does not define, and the Runtime ` +
+          `decodes strictly, so this is an HTTP 400 \`unknown field "identity"\` at runtime (D-374)`,
+      );
+    } else if (hasIdentity && site.omit) {
+      violations.push(
+        `[body-identity] ${site.file}:${site.line} calls "${entry.method}" with ` +
+          `\`omitBodyIdentity: true\`, but ${entry.request} DOES declare an \`identity\` field — ` +
+          `suppressing the fold strips the scope the handler reconciles; drop the flag`,
+      );
+    }
+  }
   return violations;
 }
 
