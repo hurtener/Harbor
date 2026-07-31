@@ -288,6 +288,13 @@ fi
 # internal and exempt. The sibling public test kit harbortest/ is a DELIBERATE
 # carve-out (D-282): its ~150 D-094-mirror annotations are load-bearing
 # twin-lockstep maintenance markers, so harbortest/ stays out of the scan set.
+#
+# The exemption is ANCHORED ON THE PATH FIELD (`^[^:]*_test\.go:`), never on the
+# line body. A bare `grep -v '_test\.go'` discards any VIOLATING line that merely
+# MENTIONS a _test.go filename — and a production comment citing an integration
+# test by its `phaseNN_*_test.go` name is exactly that shape, so the unanchored
+# form was blind to 26 real hits (v1.25 checkpoint F5).
+#
 # The patterns are intentionally narrow (numbering forms only) so legitimate
 # runtime vocabulary — e.g. "three phases: pending, running, completed" —
 # never trips the scan.
@@ -305,7 +312,7 @@ godoc_jargon_patterns=(
     '\bwave-[0-9]+'
 )
 for pat in "${godoc_jargon_patterns[@]}"; do
-    hits=$(grep -rE "$pat" --include='*.go' internal/ cmd/ sdk/ 2>/dev/null | grep -v '_test\.go' || true)
+    hits=$(grep -rE "$pat" --include='*.go' internal/ cmd/ sdk/ 2>/dev/null | grep -vE '^[^:]*_test\.go:' || true)
     if [ -n "$hits" ]; then
         fail "godoc hygiene: pattern '${pat}' found in non-test Go source (phase 102):"
         printf '%s\n' "$hits" | head -10 | sed 's/^/       /'

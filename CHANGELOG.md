@@ -17,6 +17,379 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.25.0] — 2026-07-31
+
+Five phases, one coherent slice: **the prompt-composition surface** — how a
+Protocol client contributes to what the model sees — plus a tooling-integrity
+phase that repairs the instrument measuring the rest. No Protocol wire-version
+change (`ProtocolVersion` stays `0.1.0`), no migration, and every wire addition
+is an optional field or an additive error code.
+
+**The defect this wave closes is not the one that was reported.** The upstream
+ask was "Harbor offers no additive path for contributing prompt content." It
+does — two of them, both shipped and both documented. What was true is narrower
+and worse: **the safe paths were not reachable over the Protocol, so the surface
+steered consumers toward the unsafe one.** `planner.MemoryBlocks` carries
+recalled content behind an anti-prompt-injection preamble and appeared nowhere
+in `internal/protocol/`; `planner.LLMOverrides.ExtraInstructions` renders
+additively into a trusted position and was absent from `RunOverrides`. A
+consumer needing either reached for `system_prompt_override`, which replaces the
+whole base+user spine, silently suppresses the operator's durable user layer,
+and seats caller content in the **trusted** base position.
+
+**Upgrading — two things to read before you deploy**, both under *Action
+required* at the end of this entry. The conditional-write guarantee is exact
+within one Runtime process and **absent across processes**, and
+`extra_instructions` renders **verbatim and unescaped** in an operator-trusted
+position that any `runs.set_overrides` caller can now write.
+
+### Added — a caller can hand a run its own recalled memory, in the UNTRUSTED tier
+
+- **`start` takes an optional `caller_memory`.** It is a `json.RawMessage`
+  (`StartRequest.CallerMemory`, `caller_memory,omitempty`) composed into the
+  run's **External** memory tier — the one the ReAct planner renders as a
+  system message behind a five-line anti-prompt-injection preamble, in the
+  documented most-stable-first order that preserves KV-cache prefixes. This is
+  the slot that already existed for exactly this content; it is now reachable
+  from a Protocol client. An omitted field produces a byte-identical wire shape
+  and byte-identical run behaviour, golden-compared rather than asserted.
+
+- **The caller names no key.** It supplies a value; the runtime writes it under
+  one fixed runtime-owned map key, `caller_supplied`
+  (`runctx.CallerSuppliedKey`). There is therefore no reserved-key deny-list to
+  maintain and no future collision surface: runtime producers may add sibling
+  keys forever and can never collide with a caller, and a caller can never
+  shadow, rename or displace a runtime key. Runtime semantic recall
+  (`recalled_turns`) and caller-supplied content COMPOSE in the same tier
+  rather than competing for it.
+
+- **The `Conversation` tier is NOT caller-writable.** The runtime writes that
+  slot unconditionally whenever the memory patch is non-empty, so a caller
+  writing it would be two producers on one slot with silent last-writer-wins.
+  The reported need is served by External; widening buys nothing and costs the
+  collision.
+
+- **The bound sits at the Protocol edge, before a task exists.** A payload over
+  **32 KiB** is refused `invalid_request` **and no session row and no task are
+  created** — the refusal precedes `Spawn`. The refusal text names
+  `caller_memory`, which is load-bearing: the control transport caps the whole
+  body at 64 KiB with the same error code, so a field cap that ever rose to
+  meet the envelope cap would become unreachable dead code while every
+  status-code test kept passing. The ordering is pinned mechanically. An
+  explicit `"caller_memory": null` is refused rather than read as absent, and a
+  malformed document is refused rather than dropped.
+
+  This is deliberately **not** an operator knob. A dial on "how much untrusted
+  caller content may enter a prompt" is a security-posture downgrade dressed as
+  tuning. If a legitimate caller is ever refused, the answer is an additive
+  optional config key defaulting to the constant — never a raise of the
+  constant.
+
+- **`memory.caller_block_admitted` — a new canonical event recording the FACT
+  of an admission, never the content.** It carries `bytes`, `tier` and `key`
+  and no fragment of the payload. It fires at admission, which precedes
+  planning, so it lands whether or not the run subsequently succeeds. A Console
+  that cannot tell caller-asserted memory from runtime-retrieved memory can
+  audit neither.
+
+- **A documentation correction that changes where the bound had to live.**
+  `internal/runtime/runctx/memory_fetch.go` claimed the LLM-edge context-leak
+  guard was "the authoritative backstop" for an oversized memory tier. **It
+  never has been.** `findContextLeak` applies its byte check to text only when
+  the message is `RoleTool`, and memory tiers render as `RoleSystem`. The real
+  backstop is the token-budget guard, which fires after the whole prompt is
+  built and fails the run late. The comment is corrected, and that correction
+  is why this bound sits at the Protocol edge rather than being left to a
+  downstream guard that does not cover it. Both halves are pinned by greps, so
+  a future author who re-adds the claim — or who changes the exemption the
+  argument rests on — is forced to re-derive rather than silently invalidate it.
+
+- **The honest residual, stated rather than implied.** This makes it possible
+  to put untrusted content in front of a model over the wire. That is the
+  point; the mitigation is **positional** (the untrusted tier and its framing),
+  not filtering. **An operator who pipes third-party content through
+  `caller_memory` without redacting it has a data-leakage path no prompt
+  wrapper closes.** The 32 KiB cap is also the only bound: one caller block
+  cannot alone exhaust a context window, but a caller block plus a large
+  `retrieval_top_k` plus a long trajectory can, and there is no per-tenant rate
+  or volume accounting on admitted caller memory — spend is metered at the LLM
+  edge, admission is not.
+
+### Added — `extra_instructions` on run overrides, composing BELOW the tenant value
+
+- **`runs.set_overrides` takes an optional `extra_instructions`.** The
+  underlying field is not new: `planner.LLMOverrides.ExtraInstructions` has
+  been additive since the tenant-override completion, renders verbatim into
+  `<additional_guidance>`, and survives a `system_prompt_override` in the same
+  request. What was missing is reach — `RunOverrides` exposed `session_id`,
+  `reasoning_effort`, `temperature`, `max_tokens`, `system_prompt_override` and
+  `model`, and no additive field, so the only producer was the admin-gated
+  tenant-override record. This ships one optional wire field with **zero new
+  prompt semantics**: no new section, no new error code, no version move.
+
+- **The run-level value COMPOSES BELOW the tenant value — tenant first, joined
+  by a blank line — and can NEVER clear it.** This is an authorization
+  decision, not a style choice. `governance.set_tenant_overrides` is
+  admin-scope-gated; `runs.set_overrides` requires only a verified identity
+  triple targeting the caller's own session. Today a tenant's additive block is
+  unremovable by any session-level caller — a session `system_prompt_override`
+  replaces the base spine but leaves `<additional_guidance>` intact. Per-field
+  last-writer-wins would hand a **non-admin caller a silent delete on an
+  admin-set compliance block**. Composition preserves the property, and the
+  order continues the existing trust ordering in that section (operator-baked →
+  additive → per-turn repair).
+
+- **There is no run-level clear, and an empty value is accepted rather than
+  refused.** An empty or whitespace-only run-level value contributes nothing
+  and returns the tenant value untouched — the exact pointer, so a run with no
+  session contribution resolves byte-identically to before. That is what stops
+  "clear" being reachable by the back door of "set it to empty". The join emits
+  no dangling separator and allocates a fresh string, so the shared tenant
+  record every other concurrent run reads is never mutated.
+
+- **Consequence stated rather than hidden:** the two contributions are **not**
+  distinguishable to the model. Both sit in one trusted block. Per-source
+  attribution is the durable per-agent surface's job — see the next section.
+
+- **The event carries a FLAG, never the text.**
+  `events.RunOverridesSetPayload` gains `SetExtraInstructions bool`. The value
+  is caller-supplied free text and never rides the bus.
+
+- **Binding non-goal — this is NOT the home for recalled memory or any
+  user-authored text.** `<additional_guidance>` is joined RAW, in deliberate
+  contrast to `<user_instructions>`, which is escaped and carries an explicit
+  subordinate framing. Recalled or retrieved content belongs in
+  `start.caller_memory` above. The field's own godoc names it, and a smoke
+  guard keeps the pointer there.
+
+### Added — ordered, named prompt blocks on the agent-config payload
+
+- **A new agent-config payload section, `extra_system_blocks`**, carrying an
+  ORDERED list of `{name, body}` blocks, written by one admin verb
+  (`agent_config.set_extra_system_blocks`) as a **whole-section desired-state
+  replace**. The prompt surface was two flat `*string`s (`Base`, `User`), so N
+  independent capability sources that each want to contribute one block
+  collapsed into one opaque string and removing one contributor's text meant
+  re-deriving the whole composition from prose. Blocks exist so each
+  contributor can find and replace exactly its own.
+
+- **It lands on the durable payload, not on the per-run bundle** — which is
+  where the upstream ask put it. A per-run bundle is reconstructed by whoever
+  assembles the next request, so a per-run block list inherits the same "who
+  reconstructs the rest" problem it is meant to solve. On the config payload
+  the list is durable state the registry owns, readable by name through
+  `agent_config.get`, and mutable by a name-addressed read-modify-write that
+  the expected-revision token below makes safe against a concurrent second
+  contributor. That token is why this ships **one** section-replace verb rather
+  than per-item upsert and delete verbs.
+
+- **Order is the declared slice order, and normalization MUST NOT sort it.**
+  This is a deliberate asymmetry with two sibling sections: skill names are
+  sorted and de-duplicated, and OAuth providers are sorted by name, both
+  because a re-ordering of a SET must not perturb the content hash. For blocks
+  a re-ordering DOES change the rendered prompt, so it MUST change the hash,
+  mint a real revision, and appear in the diff — which gains a `Reordered` flag
+  its sorted siblings have no analogue for. The carrier is a slice and never a
+  map anywhere on the write → normalize → hash → project → render path.
+
+- **Rendered VERBATIM, in declared order, each behind a plain-text `[name]`
+  label**, into the same `<additional_guidance>` position — after the binary's
+  baked operator guidance and before the additive extra-instructions. Blocks
+  survive a session `system_prompt_override`, for the same structural reason
+  `extra_instructions` does. Names are unique and charset-restricted
+  (`^[A-Za-z0-9._-]{1,64}$`); a duplicate is refused with `invalid_request`
+  naming **both** offending positions rather than silently de-duplicated,
+  because uniqueness is what makes remove-by-name well defined.
+
+- **Trust is argued from the WRITE DOOR, not assumed.** The section has exactly
+  one write door and it sits in the admin method set — the same tier that
+  writes `PromptLayers.Base`, which is already verbatim and strictly more
+  powerful. Escaping a block while leaving `Base` unescaped would defend
+  against a writer who can already replace the entire prompt, and would mangle
+  an operator's angle brackets. **The obligation that creates is stated rather
+  than engineered away: a capability that wants to surface user-authored or
+  model-authored text MUST NOT put it in a block** — it uses the untrusted
+  memory tier above, or `PromptLayers.User`, which is escaped precisely because
+  it has a lower-tier write path. Two tested guards make a future reopening
+  loud.
+
+- **The `[name]` label is for a human reading a transcript. It is not a
+  security boundary and must not be described as one.** To the model, two
+  blocks from two capabilities are one contiguous run of trusted guidance. A
+  `<block name=…>` prompt tag was rejected: the attribution the ask needs is a
+  data-model property, and minting a tag from config data would make the
+  prompt's structural taxonomy a function of caller input.
+
+- **Absent ⇒ byte-identical.** A stored revision written before this release
+  unmarshals to nil, normalizes out of the canonical form entirely, and does
+  not perturb its content hash; the renderer returns nothing, so the composed
+  system prompt is byte-equal to before. Pinned by a byte-equality test rather
+  than by inspection. No `harbor.yaml` key, no new error code.
+
+- **No cap on block count or body size, deliberately.** The two real bounds are
+  the wire door's `MaxRequestBytes` and the LLM edge's token-budget guard. The
+  byte-leak check does **not** cover this content — verified rather than
+  assumed, because the obvious assumption is wrong: system-role text is exempt
+  from the leak detector. A per-section cap would be operator policy with no
+  consumer asking for it, and `PromptLayers.Base` — unbounded on the same
+  surface today — would make it pure asymmetry.
+
+### Added — an optional precondition on every agent-config write
+
+- **`expected_content_hash`, one optional string on all seventeen
+  spine-writing request types.** Every write onto the durable agent-config
+  revision spine was unconditional last-writer-wins with no conflict detection
+  anywhere on the path: two writers composing into one agent's config silently
+  reverted each other and **both were told `200`**. Present and matching ⇒ the
+  write proceeds. Present and not matching, or present with no active revision
+  ⇒ refused and **nothing is persisted** — no revision record, no
+  active-pointer move, no `agent.config.revised` event. Absent ⇒ byte-for-byte
+  the previous behaviour on every door.
+
+  The count is asserted, not documented. The section shipped at sixteen doors
+  and the ordered-blocks verb above made it seventeen — caught by the
+  exact-count guard, which is what it is for. A future eighteenth spine writer
+  added without the field fails three ways, including a behavioural table that
+  drives each door with a stale token (the only one of the three that catches a
+  door which declares the field and then drops it on the floor).
+
+- **A content hash, not a revision id.** `agent_config.rollback` repoints the
+  active revision **without necessarily changing the content**, so rolling back
+  to the content a writer already read leaves the content identical and the
+  revision id different. A revision-id token would refuse that write — turning
+  "the operator restored exactly what you read" into a false positive on
+  Harbor's own recovery path. Accepting *either* token was rejected: two fields
+  answering one question means four combinations to specify and a client that
+  can silently pick the weaker one.
+
+- **`revision_conflict` — a new error code, mapped to HTTP 409.** Nothing
+  existing fits: the body was well-formed (so not `invalid_request`) and the
+  server did not fault (so not `runtime_error`, which would additionally make
+  the conflict unbranchable — a client could not tell "re-read and retry" from
+  a server bug). No `data` field is added to the error envelope; a conflicted
+  client re-reads `agent_config.get`, which already returns both `revision_id`
+  and `content_hash`.
+
+- **The evaluation order is load-bearing.** The precondition runs **before**
+  the existing idempotent-re-set short-circuit. The other order would convert a
+  stale token into a `200` whenever the caller's payload happens to equal the
+  current content — a success that misleads the caller into believing its base
+  was still valid. A transposition is the one mutation that leaves every
+  grep-for-presence guard green, so it is pinned twice.
+
+- **The token is a PRECONDITION, never an AUTHORITY.** It is compared strictly
+  after the identity and scope gates, it can only ever cause a write to be
+  refused, and no value of it widens what a caller may write. A valid token
+  with an incomplete identity triple is refused by the identity gate; a valid
+  token with no admin scope is refused by the scope gate; neither is reported
+  as `revision_conflict`.
+
+- **Two things it does not do, named rather than discovered later.** An
+  unconditional writer can still clobber a conditional one — the token
+  constrains the writer that supplies it, not the ones that do not. And two
+  callers creating an agent's very first revision cannot express "I expect
+  none"; that window is deliberately out of scope.
+
+### Fixed — the preflight inert-smoke gate, and the classifier that measured it
+
+- **`scripts/smoke/inert-baseline.txt` drains to zero, and thirteen of its
+  twenty-four entries were the measuring instrument's own false positives.**
+  The v1.24 release switched on a gate: a smoke belonging to a **shipped** phase
+  that reports `OK: 0` and `FAIL: 0` asserted nothing. Twenty-four scripts
+  violated it and were parked as declared debt. Measurement showed the count
+  itself was wrong — the shipped/not-shipped classifier failed two independent
+  ways, and **thirteen of the twenty-four were not shipped phases at all.** Its
+  row regex could see 233 of 339 master-plan rows and treated the other 106 as
+  shipped; its status vocabulary named two of the eight not-shipped words in
+  use and defaulted the rest to shipped. **The correction can only relax, never
+  tighten**, and that is verified rather than argued: both classifiers were run
+  over all 360 phase tokens — 345 unchanged, 15 relaxed, 0 tightened.
+
+- **The eleven genuinely-inert smokes got real assertions**, and the helper
+  they use closes a trap. `go test -run NoSuchTest ./pkg` prints "no tests to
+  run" and exits **zero**, so a smoke that names a test and asserts only the
+  exit code reports OK forever after that test is renamed or deleted. The new
+  `assert_go_tests_pass` helper greps a `--- PASS:` line **per name**, so a
+  rename is a FAIL. Every one of the eleven repairs was mutation-verified, and
+  the captured output shows `go test` exiting 0 in each case — the exit-code
+  guard would have been a false OK on all eight of the pure-Go repairs.
+
+- **Three residual holes in the gate itself, each closed rather than deferred.**
+  A smoke that exits 0 without printing a summary was invisible to **both**
+  gates and is now a FAIL naming the missing call. A baseline line naming a
+  deleted script rotted forever and is now asserted as a property of the file.
+  An unparseable master-plan row was indistinguishable from a missing one and
+  is now reported by name — scoped to the classification call site rather than
+  to every smoke, because reporting the twenty-one rowless smokes on every run
+  would be noise an operator learns to scroll past, which is the failure mode
+  this exists to close rather than reproduce.
+
+- **`scripts/drift-audit.sh` no longer writes its markdownlint output to a
+  fixed `/tmp` path.** `make preflight` runs the audit internally, so two
+  concurrent audits clobbered each other's diagnostic and an operator could
+  read someone else's violations. The verdict was never wrong — it comes from
+  the exit code — but the file the failure message *named* was.
+
+### Action required
+
+- **The conditional-write guarantee is exact within ONE Runtime process and
+  ABSENT across processes. Do not read this release as "Harbor now prevents
+  lost updates."** The atomicity comes from one thing: the agent-config
+  service's 256-way striped per-owner write lock, taken by every door as its
+  first act after identity validation and held across its whole
+  read-modify-write. It does **not** come from the store, and the store says so
+  in its own interface godoc — it stores and returns a version integer and
+  enforces no compare-and-set. **Two Runtime processes sharing one Postgres or
+  SQLite StateStore can still silently lose an update, with both writers told
+  they succeeded.**
+
+  That residual is written into the field's godoc, the error code's godoc, the
+  generated Protocol reference row and the operator skill, and it is **pinned
+  by a test that asserts it as absent**: two independently-constructed
+  registries over one real file-backed SQLite store, one writer suspended
+  between its precondition read and its save, the other completing an entire
+  conditional write under the same token — and the lost update still occurs. If
+  a future change ever does make the write cross-process safe, that test fails
+  and all four texts must be corrected. The fix that would close it is named
+  rather than hinted: a conditional-write primitive on the `StateStore`
+  interface across the in-memory / SQLite / Postgres triad, with conformance
+  rows. That is its own release.
+
+  **What to do today:** if you run more than one Runtime process against a
+  shared store, treat `expected_content_hash` as a defence against concurrent
+  writers *within* a process and not as a distributed lock. Single-process
+  deployments get the full guarantee.
+
+- **`extra_instructions` renders verbatim and unescaped in an operator-trusted
+  position, and any caller of `runs.set_overrides` can now write there.**
+  `<additional_guidance>` is joined RAW — no escaping, in deliberate contrast
+  to `<user_instructions>`. Before this release the only producer of that text
+  was the **admin-gated** tenant-override record. After it, any caller who can
+  reach `runs.set_overrides` for their own session can write into it. That is a
+  real widening and it is recorded in the field's godoc, the Protocol reference
+  and the operator skill in those words.
+
+  **It grants no authority CLASS that surface does not already grant.**
+  `system_prompt_override` sits on the same struct, is reachable by the same
+  caller, and is strictly more powerful — it replaces the entire base spine,
+  verbatim and unescaped. A deployment that trusts a session caller with
+  `system_prompt_override` already trusts them with strictly less. Gating the
+  weaker capability behind admin while leaving the stronger one ungated on the
+  same method would be incoherent, so no per-field gate was added.
+
+  **The open question is the METHOD's authorization tier, and it is carried
+  forward rather than resolved.** If your deployment wants operator-only prompt
+  authorship, the gate belongs on `runs.set_overrides` itself, covering both
+  prompt-text fields — a separate decision about an already-shipped surface.
+  **What to do today:** audit who holds a token that can reach
+  `runs.set_overrides` for a session, and treat that as prompt-authorship
+  authority.
+
+- **Nothing else in this release requires an action.** Every wire addition is
+  an optional field or an additive error code; an omitted field reproduces the
+  previous behaviour byte-for-byte on every affected path, and each of those
+  claims is pinned by a golden or byte-equality test rather than asserted.
+
 ## [1.24.0] — 2026-07-30
 
 Seven phases: artifact read-path byte correctness, a heavy-content threshold

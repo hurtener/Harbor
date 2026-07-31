@@ -274,7 +274,10 @@ func renderEventsPage() (string, error) {
 	b.WriteString("`payload`. Two payload classes exist:\n\n")
 	b.WriteString("- **Safe payloads** — types the declaring subsystem marked as carrying no secret-shaped\n")
 	b.WriteString("  data. The bus skips the audit redactor; the subscriber receives the typed shape below\n")
-	b.WriteString("  verbatim. Field keys are the Go field names (e.g. `TaskID`, capital `T`).\n")
+	b.WriteString("  verbatim. Field keys are whatever `encoding/json` emits: most payloads carry no\n")
+	b.WriteString("  struct tags, so their keys are the Go field names (e.g. `TaskID`, capital `T`); a\n")
+	b.WriteString("  payload whose fields ARE tagged uses the tag name. The Wire key column below is\n")
+	b.WriteString("  authoritative per payload — read it, don't assume the casing.\n")
 	b.WriteString("- **Redacted payloads** — everything else is walked by the audit redactor on publish;\n")
 	b.WriteString("  the subscriber receives a redacted key/value map derived from the declared shape.\n")
 
@@ -300,7 +303,7 @@ func renderEventsPage() (string, error) {
 				delivery = "safe payload (delivered typed, verbatim)"
 			}
 			fmt.Fprintf(&b, "\nPayload `%s` — %s.\n\n", pt.Name(), delivery)
-			renderStructFields(&b, pt, fieldNameKeys)
+			renderStructFields(&b, pt)
 		}
 	}
 

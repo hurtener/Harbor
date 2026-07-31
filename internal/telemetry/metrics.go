@@ -625,13 +625,11 @@ func PrometheusHandler(reg *MetricsRegistry) (http.Handler, error) {
 // `stop` function cancels the subscription and joins the drain
 // goroutine; production callers `defer stop()` at process teardown.
 //
-// PR #91: this helper pins the
-// events→metrics wiring shape in production code BEFORE the
-// `harbor dev` bootstrap reinvents it. originally shipped
-// the bridge only as a test-local goroutine in
-// `test/integration/phase56_metrics_test.go::drainToMetrics`;
-// extracting it here exposes one canonical contract for the future
-// server bootstrap to consume.
+// This helper pins the events→metrics wiring shape in production code
+// BEFORE the `harbor dev` bootstrap reinvents it. The bridge originally
+// existed only as a test-local drain goroutine inside the metrics
+// integration suite; extracting it here exposes one canonical contract
+// for the server bootstrap to consume.
 //
 // Both bus and reg are mandatory; a nil either returns
 // ErrBridgeMisconfigured. The filter is the standard events.Filter

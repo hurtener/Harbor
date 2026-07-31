@@ -50,18 +50,18 @@ The upstream ask stated that Harbor offers "no additive sibling" to whole-spine 
 
 ## Acceptance criteria
 
-- [ ] `RunOverrides` carries `ExtraInstructions *string` with JSON key `extra_instructions,omitempty`, and the field is godoc'd as ADDITIVE, verbatim-rendered, and operator-trusted — including the plain statement of who may write it.
-- [ ] `runs/protocol.PendingOverride` carries the validated value; `Service.validate` copies it by value (no aliasing of the caller's string header).
-- [ ] **The precedence decision, pinned by test: the run-level value COMPOSES with the tenant value, tenant first, joined by a blank line. It never replaces it, and there is no run-level way to clear it.** A request that sets `extra_instructions` while a tenant record also sets one produces `tenant + "\n\n" + run` in the resolved bundle.
-- [ ] The join lives in `runsprotocol.ComposeLLMOverrides` — the ONE production composition that `cmd/harbor`'s run loop, the `harbortest/devstack` twin and the integration test all reach through `RunLoopDriver.resolveLLMOverrides` (`internal/runtime/serve/runloop.go:646-682`). No second copy.
-- [ ] A present-but-empty (or whitespace-only) `extra_instructions` is ACCEPTED and contributes nothing — it is not an error, and specifically not a channel for clearing the tenant block. `overrideExtraInstructions` already trims (`prompt.go:766-773`); the composition must not emit a dangling `"\n\n"`.
-- [ ] Every existing behaviour of the tenant producer is unchanged when the run-level field is absent: with `extra_instructions` unset, the resolved `LLMOverrides.ExtraInstructions` is byte-identical to today's, and the rendered system content is byte-identical.
-- [ ] `<additional_guidance>` still renders the composed value VERBATIM (no escaping) and still survives a session `SystemPromptOverride` in the same request — asserted on the composed two-producer value, not only on a single-producer one.
-- [ ] `events.RunOverridesSetPayload` gains `SetExtraInstructions bool`; the VALUE is never emitted (the payload's existing SafePayload rule, `internal/events/events.go:199-212`), and the flag appears in the `emitAudit` log attrs too.
-- [ ] Identity stays mandatory and cross-session stays refused: a request with an incomplete triple is `ErrIdentityRequired` → 401, and a `session_id` outside the verified session is `ErrCrossSessionScope` → refused, both unchanged and both re-asserted with the new field set (a new field must not open a new door).
-- [ ] `make protocol-ts-gen` regenerates `wire-manifest.gen.json` to a clean diff; `web/console/src/lib/protocol/runs.ts` mirrors the field by hand; `ALLOWED_OVERRIDE_KEYS` in `web/console/src/lib/protocol/tests/runs-set-overrides.test.ts:31-38` gains the key.
-- [ ] `make protocol-docs-gen` regenerates `docs/site/protocol/types.md`; `docs/skills/use-the-harbor-protocol/SKILL.md` (surface `protocol`) is updated in the SAME PR per §18.
-- [ ] `scripts/smoke/phase-220.sh` passes against the preflight dev server with OK ≥ 10 and FAIL = 0.
+- [x] `RunOverrides` carries `ExtraInstructions *string` with JSON key `extra_instructions,omitempty`, and the field is godoc'd as ADDITIVE, verbatim-rendered, and operator-trusted — including the plain statement of who may write it.
+- [x] `runs/protocol.PendingOverride` carries the validated value; `Service.validate` copies it by value (no aliasing of the caller's string header).
+- [x] **The precedence decision, pinned by test: the run-level value COMPOSES with the tenant value, tenant first, joined by a blank line. It never replaces it, and there is no run-level way to clear it.** A request that sets `extra_instructions` while a tenant record also sets one produces `tenant + "\n\n" + run` in the resolved bundle.
+- [x] The join lives in `runsprotocol.ComposeLLMOverrides` — the ONE production composition that `cmd/harbor`'s run loop, the `harbortest/devstack` twin and the integration test all reach through `RunLoopDriver.resolveLLMOverrides` (`internal/runtime/serve/runloop.go:646-682`). No second copy.
+- [x] A present-but-empty (or whitespace-only) `extra_instructions` is ACCEPTED and contributes nothing — it is not an error, and specifically not a channel for clearing the tenant block. `overrideExtraInstructions` already trims (`prompt.go:766-773`); the composition must not emit a dangling `"\n\n"`.
+- [x] Every existing behaviour of the tenant producer is unchanged when the run-level field is absent: with `extra_instructions` unset, the resolved `LLMOverrides.ExtraInstructions` is byte-identical to today's, and the rendered system content is byte-identical.
+- [x] `<additional_guidance>` still renders the composed value VERBATIM (no escaping) and still survives a session `SystemPromptOverride` in the same request — asserted on the composed two-producer value, not only on a single-producer one.
+- [x] `events.RunOverridesSetPayload` gains `SetExtraInstructions bool`; the VALUE is never emitted (the payload's existing SafePayload rule, `internal/events/events.go:199-212`), and the flag appears in the `emitAudit` log attrs too.
+- [x] Identity stays mandatory and cross-session stays refused: a request with an incomplete triple is `ErrIdentityRequired` → 401, and a `session_id` outside the verified session is `ErrCrossSessionScope` → refused, both unchanged and both re-asserted with the new field set (a new field must not open a new door).
+- [x] `make protocol-ts-gen` regenerates `wire-manifest.gen.json` to a clean diff; `web/console/src/lib/protocol/runs.ts` mirrors the field by hand; `ALLOWED_OVERRIDE_KEYS` in `web/console/src/lib/protocol/tests/runs-set-overrides.test.ts:31-38` gains the key.
+- [x] `make protocol-docs-gen` regenerates `docs/site/protocol/types.md`; `docs/skills/use-the-harbor-protocol/SKILL.md` (surface `protocol`) is updated in the SAME PR per §18.
+- [x] `scripts/smoke/phase-220.sh` passes against the preflight dev server with OK ≥ 10 and FAIL = 0.
 
 ## Files added or changed
 
@@ -247,19 +247,19 @@ Measured on the branch with `go test -count=1 -cover` before any change; each ta
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target, from a `go test -cover` run recorded in the PR description
-- [ ] If multi-isolation paths changed: cross-session isolation test passes — the integration test's two-tenant concurrent arm
-- [ ] **If this phase builds a reusable artifact: concurrent-reuse test passes** — `TestComposeLLMOverrides_ConcurrentReuse_NoCrossTalk`, N=128 against one shared `Service` + `Store` under `-race`, asserting no data races, no context bleed (each goroutine sees exactly its own two segments), no cancellation cross-talk, and no goroutine leak (no goroutines are started; the package baseline holds)
-- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists** — `test/integration/run_extra_instructions_test.go`, real drivers on every seam, identity propagation asserted, three failure modes covered, under `-race`
-- [ ] The four mutation runs recorded in the PR description, each naming the sub-test that went red
-- [ ] Rebased on 219 BEFORE running `make protocol-ts-gen` / `make protocol-docs-gen`; both regenerate to a clean diff
-- [ ] §18: `docs/skills/use-the-harbor-protocol/SKILL.md` updated in the same PR
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (D-365)
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target, from a `go test -cover` run recorded in the PR description
+- [x] If multi-isolation paths changed: cross-session isolation test passes — the integration test's two-tenant concurrent arm
+- [x] **If this phase builds a reusable artifact: concurrent-reuse test passes** — `TestComposeLLMOverrides_ConcurrentReuse_NoCrossTalk`, N=128 against one shared `Service` + `Store` under `-race`, asserting no data races, no context bleed (each goroutine sees exactly its own two segments), no cancellation cross-talk, and no goroutine leak (no goroutines are started; the package baseline holds)
+- [x] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists** — `test/integration/run_extra_instructions_test.go`, real drivers on every seam, identity propagation asserted, three failure modes covered, under `-race`
+- [x] The four mutation runs recorded in the PR description, each naming the sub-test that went red
+- [x] Rebased on 219 BEFORE running `make protocol-ts-gen` / `make protocol-docs-gen`; both regenerate to a clean diff
+- [x] §18: `docs/skills/use-the-harbor-protocol/SKILL.md` updated in the same PR
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed (D-365)
 
 ## As shipped — deviations (§4.3)
 

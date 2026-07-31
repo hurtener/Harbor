@@ -317,15 +317,15 @@ Both land in `docs/glossary.md` in the same PR.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target — **N/A: no Go code is added or changed; see "Coverage target" for the binding preflight gate that stands in its place.**
-- [ ] If multi-isolation code paths changed: cross-session isolation test passes — **N/A: no identity-touching code path changes. Phase 01's repaired smoke *asserts* the isolation invariant `TestWith_RefusesToWidenTheTenant`; it does not modify it.**
-- [ ] **If this phase builds a reusable artifact … concurrent-reuse test passes** — **N/A: this phase builds no Go artifact. The parallel-batch concern it does raise — unique `go test` log paths for the eight new `unit-tests` smokes — is covered by the back-to-back preflight stability run.**
-- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists …** — **N/A: no cross-subsystem seam. The end-to-end gate is `make preflight` itself, run twice, as an acceptance criterion.**
-- [ ] If new vocabulary: glossary updated — *inert smoke*, *inert baseline*
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed — no departure; D-368 files the settled decision
-- [ ] Eleven mutation records (mutation applied, observed `OK → FAIL`) pasted in the PR body
-- [ ] Before/after preflight wall time recorded in the PR body
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target — **N/A: no Go code is added or changed; see "Coverage target" for the binding preflight gate that stands in its place.**
+- [x] If multi-isolation code paths changed: cross-session isolation test passes — **N/A: no identity-touching code path changes. Phase 01's repaired smoke *asserts* the isolation invariant `TestWith_RefusesToWidenTheTenant`; it does not modify it.**
+- [x] **If this phase builds a reusable artifact … concurrent-reuse test passes** — **N/A: this phase builds no Go artifact. The parallel-batch concern it does raise — unique `go test` log paths for the eight new `unit-tests` smokes — is covered by the back-to-back preflight stability run.**
+- [x] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists …** — **N/A: no cross-subsystem seam. The end-to-end gate is `make preflight` itself, run twice, as an acceptance criterion.**
+- [x] If new vocabulary: glossary updated — *inert smoke*, *inert baseline*
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed — no departure; D-368 files the settled decision
+- [x] Eleven mutation records (mutation applied, observed `OK → FAIL`) pasted in the PR body
+- [x] Before/after preflight wall time recorded in the PR body

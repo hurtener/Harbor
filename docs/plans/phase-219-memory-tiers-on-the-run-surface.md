@@ -227,40 +227,40 @@ renders a map, so the future episodic/long-term producer composes additional key
 
 ## Acceptance criteria
 
-- [ ] `StartRequest` carries an additive optional `caller_memory` field; an omitted field produces a
+- [x] `StartRequest` carries an additive optional `caller_memory` field; an omitted field produces a
       byte-identical wire shape and byte-identical run behaviour (golden-compared, not asserted).
-- [ ] A `start` carrying `caller_memory` renders it inside `<read_only_external_memory>` at the fixed
+- [x] A `start` carrying `caller_memory` renders it inside `<read_only_external_memory>` at the fixed
       `caller_supplied` key, with the five-line UNTRUSTED rules block unchanged.
-- [ ] Runtime recall and caller-supplied content COMPOSE: with `memory.retrieval: semantic` on and a
+- [x] Runtime recall and caller-supplied content COMPOSE: with `memory.retrieval: semantic` on and a
       `caller_memory` present, the tier carries BOTH `recalled_turns` and `caller_supplied`, and neither
       producer's value is altered by the other.
-- [ ] The `caller_supplied` key is unreachable by the caller: the caller supplies a value only, and no
+- [x] The `caller_supplied` key is unreachable by the caller: the caller supplies a value only, and no
       caller input can shadow, rename or displace a runtime-written key.
-- [ ] `MemoryBlocks.Conversation` is never written from the wire — asserted as a property, over the wire,
+- [x] `MemoryBlocks.Conversation` is never written from the wire — asserted as a property, over the wire,
       with a `caller_memory` payload that would be visible in the Conversation tier if it leaked there.
-- [ ] Composition is nil-safe on both sides: it works when the session has no memory at all
+- [x] Composition is nil-safe on both sides: it works when the session has no memory at all
       (`ProjectMemoryBlocks` returns nil at `internal/runtime/runctx/runctx.go:55-57`) AND when no memory
       subsystem is configured at all (`internal/runtime/serve/runloop.go:1034` leaves `memBlocks` nil).
-- [ ] A payload over `maxCallerMemoryBytes` is refused `invalid_request` **and no task is created** — the
+- [x] A payload over `maxCallerMemoryBytes` is refused `invalid_request` **and no task is created** — the
       count check is the load-bearing half; a status-code assertion alone would not catch a refusal that
       happened after `Spawn`.
-- [ ] The over-cap refusal **names `caller_memory`**, and `maxCallerMemoryBytes` is strictly below the
+- [x] The over-cap refusal **names `caller_memory`**, and `maxCallerMemoryBytes` is strictly below the
       control transport's `maxBodyBytes` — otherwise the transport's identical `invalid_request` answers
       first and the field's own cap is unreachable dead code that every status-code test keeps passing
       against (the state `maxOutputSchemaBytes` is already in; see Risks).
-- [ ] An explicit `"caller_memory": null` is refused rather than treated as absent, and a syntactically
+- [x] An explicit `"caller_memory": null` is refused rather than treated as absent, and a syntactically
       invalid document is refused. Neither silently no-ops (§13).
-- [ ] A `start` with an incomplete identity triple is refused before the field is inspected.
-- [ ] `memory.caller_block_admitted` is emitted once per admitting run, carries `bytes` / `tier` / `key`,
+- [x] A `start` with an incomplete identity triple is refused before the field is inspected.
+- [x] `memory.caller_block_admitted` is emitted once per admitting run, carries `bytes` / `tier` / `key`,
       and carries **no fragment of the caller's content** — asserted by sending a distinctive marker and
       proving it is absent from the emitted event (CLAUDE.md §7 rules 6-7).
-- [ ] The event fires even when the run subsequently fails, because admission precedes planning.
-- [ ] `MemoryBlocks`' identity-contract godoc states the contract per provenance; the false
+- [x] The event fires even when the run subsequently fails, because admission precedes planning.
+- [x] `MemoryBlocks`' identity-contract godoc states the contract per provenance; the false
       `ErrContextLeak` claim at `internal/runtime/runctx/memory_fetch.go:30-38` is corrected.
-- [ ] `make protocol-ts-gen`, `make protocol-docs-gen` and `make protocol-ts-types-gen` regenerate clean;
+- [x] `make protocol-ts-gen`, `make protocol-docs-gen` and `make protocol-ts-types-gen` regenerate clean;
       the Console typed client mirrors the field by hand; `ProtocolVersion` does not move. **This phase
       OWNS the generated wire manifest for Stage 1** (D-223 / D-209).
-- [ ] `scripts/smoke/phase-219.sh` passes with OK > 0 and FAIL = 0, and every guard in it is
+- [x] `scripts/smoke/phase-219.sh` passes with OK > 0 and FAIL = 0, and every guard in it is
       mutation-verified: breaking the thing it guards turns `OK` into `FAIL`, never into `SKIP`.
 
 ## Files added or changed
@@ -532,25 +532,29 @@ it toward the target") is what this leans on, stated rather than glossed.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] **If this phase builds a reusable artifact: concurrent-reuse test passes** —
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [ ] Coverage on touched packages ≥ stated target — **NOT met on two packages, deliberately left
+      unticked (§4.3).** `internal/protocol/types` held flat at 62.6% against a 65% target that rested
+      on a false premise, and `internal/protocol` reached 78.7% against 80%. Both are recorded with
+      their measured figures and their reasons in "As shipped — measured after the change" above; the
+      second leans on §14's "explicitly improves it toward the target" clause. Neither is claimed as met.
+- [x] If multi-isolation paths changed: cross-session isolation test passes
+- [x] **If this phase builds a reusable artifact: concurrent-reuse test passes** —
       `TestComposeCallerMemory_ConcurrentReuse_NoCrossTalk` runs N=128 against one shared surface under
       `-race`, asserting no data races, no content bleed (each goroutine's own marker present, every
       other goroutine's absent), no cancellation cross-talk, and no goroutine leak (the helper starts
       none; the package settle test holds the baseline).
-- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an
+- [x] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an
       integration test exists** — `test/integration/caller_memory_test.go`, real drivers on the seam, a
       recording LLM edge so the assertion is on bytes that reached the model, identity propagation across
       two tenants on one shared server, three failure modes, under `-race`.
-- [ ] Every smoke guard mutation-verified `OK → FAIL` (never `OK → SKIP`); the five mutations and their
+- [x] Every smoke guard mutation-verified `OK → FAIL` (never `OK → SKIP`); the five mutations and their
       observed failures named in the PR body
-- [ ] `make protocol-ts-gen-check` / `protocol-docs-gen-check` / `protocol-ts-types-gen-check` clean
-- [ ] §18 sweep: `use-the-harbor-protocol` (surface: protocol) and `configure-memory-and-skills`
+- [x] `make protocol-ts-gen-check` / `protocol-docs-gen-check` / `protocol-ts-types-gen-check` clean
+- [x] §18 sweep: `use-the-harbor-protocol` (surface: protocol) and `configure-memory-and-skills`
       (surface: memory) updated in this PR
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (D-364)
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed (D-364)
