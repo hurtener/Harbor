@@ -665,8 +665,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 122 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 122 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster four + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + governance.set_posture one + agent-config control plane seventeen + agent-config session safe subset five + state.history one + agent-config user tier five + durable-per-user skills three + sessions.delete one + sessions.set_title one + events.list one)", len(got))
+	if len(got) != 123 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 123 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster four + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + governance.set_posture one + agent-config control plane eighteen + agent-config session safe subset five + state.history one + agent-config user tier five + durable-per-user skills three + sessions.delete one + sessions.set_title one + events.list one)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -783,6 +783,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodAgentConfigSkillsDelete:             {},
 		methods.MethodAgentConfigSetToolExposure:          {},
 		methods.MethodAgentConfigSetPromptLayers:          {},
+		methods.MethodAgentConfigSetExtraSystemBlocks:     {},
 		methods.MethodAgentConfigSetLLMParams:             {},
 		methods.MethodAgentConfigAddMCPConnection:         {},
 		methods.MethodAgentConfigRemoveMCPConnection:      {},

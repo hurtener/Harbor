@@ -71,6 +71,63 @@ type AgentConfigPromptLayers struct {
 	User *string `json:"user,omitempty"`
 }
 
+// AgentConfigNamedBlock is the wire projection of one named, additive
+// prompt block: the NAME a contributor addresses its own contribution by,
+// and the BODY that renders.
+type AgentConfigNamedBlock struct {
+	// Name addresses the block within the section. Unique within the
+	// section, drawn from a restricted identifier charset
+	// (`[A-Za-z0-9._-]{1,64}`), and NEVER emitted as an XML tag — the
+	// attribution is a data-model property, so the prompt's structural
+	// taxonomy is never a function of caller input.
+	Name string `json:"name"`
+	// Body is the block's prompt text. Rendered VERBATIM — see
+	// AgentConfigExtraSystemBlocks.
+	Body string `json:"body"`
+}
+
+// AgentConfigExtraSystemBlocks is the wire projection of an agent's
+// ORDERED list of named, operator-authored additive prompt blocks. It
+// exists so N independent capability sources can each contribute — and
+// later remove — exactly their own text, addressed by name, instead of
+// collapsing into one opaque string nobody can safely edit.
+//
+// # Order is SEMANTIC
+//
+// The declared array order IS the render order. It is preserved through
+// normalisation, it is part of the revision's `content_hash`, and a pure
+// re-ordering is therefore a real new revision that the diff reports.
+// (Contrast `skills.names` and `oauth_providers`, whose orders are NOT
+// semantic and ARE canonicalised by sorting.)
+//
+// # Rendering and trust
+//
+// Blocks render VERBATIM — unescaped — inside the `<additional_guidance>`
+// section, after the runtime's baked operator guidance and before the
+// additive extra-instructions, each preceded by a plain-text `[name]`
+// label. They survive a session `system_prompt_override`.
+//
+// The section is written by ONE verb,
+// `agent_config.set_extra_system_blocks`, which sits in the ADMIN tier —
+// the same tier that writes `prompt_layers.base`, which is already
+// verbatim and strictly more powerful. That authority tier, not an
+// escaper, is the boundary.
+//
+// THE OBLIGATION THIS CREATES: a block MUST NOT carry user-authored or
+// model-authored text. Recalled conversation content belongs in the
+// UNTRUSTED-framed memory tiers (`start.caller_memory`); user
+// instructions belong in `prompt_layers.user`, which IS escaped precisely
+// because a claim-free session path can write it.
+//
+// Selection rule — spine → `prompt_layers.base`; user-authored →
+// `prompt_layers.user`; per-capability additive attribution →
+// `extra_system_blocks`.
+type AgentConfigExtraSystemBlocks struct {
+	// Blocks is the ordered list. An ARRAY, never an object keyed by name:
+	// an object's key order is not a composition order.
+	Blocks []AgentConfigNamedBlock `json:"blocks"`
+}
+
 // AgentConfigLLMParams is the wire projection of an agent's per-agent
 // LLM-parameter section in a config revision: the sampling defaults pinned
 // for the agent (model / temperature / max-tokens / reasoning-effort).
@@ -415,6 +472,10 @@ type AgentConfigPayload struct {
 	// Naming, when non-nil, pins the agent's session auto-naming policy
 	// section for the revision.
 	Naming *AgentConfigNaming `json:"naming,omitempty"`
+	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
+	// named additive prompt blocks. Absent contributes nothing and leaves
+	// the composed system prompt byte-identical.
+	ExtraSystemBlocks *AgentConfigExtraSystemBlocks `json:"extra_system_blocks,omitempty"`
 }
 
 // AgentConfigRevisionView is the wire projection of one immutable config
@@ -589,21 +650,39 @@ type AgentConfigNamingDiff struct {
 	ModelTo      string `json:"model_to,omitempty"`
 }
 
+// AgentConfigExtraSystemBlocksDiff is the wire projection of the
+// structured delta of the additive prompt blocks across two revisions.
+type AgentConfigExtraSystemBlocksDiff struct {
+	// Added / Removed / Changed are block NAMES (sorted): present only in
+	// the to-revision, present only in the from-revision, and present in
+	// both with a different body. Bodies are never carried here — the
+	// revision payload is where the text lives.
+	Added   []string `json:"added,omitempty"`
+	Removed []string `json:"removed,omitempty"`
+	Changed []string `json:"changed,omitempty"`
+	// Reordered reports the SAME name set in a DIFFERENT order. Order is
+	// render order, so a pure re-ordering is a real prompt change; it has
+	// no analogue on the sorted sibling sections.
+	Reordered bool `json:"reordered"`
+}
+
 // AgentConfigDiff is the wire projection of a server-side revision
 // compare — the structured skills + tool-exposure + connection set-diffs,
 // the prompt-layer text delta, the per-agent LLM-parameter delta, the
-// run-lifecycle-hook delta, and the session auto-naming policy delta.
+// run-lifecycle-hook delta, the session auto-naming policy delta, and the
+// additive prompt-block delta.
 type AgentConfigDiff struct {
-	FromRevisionID string                        `json:"from_revision_id"`
-	ToRevisionID   string                        `json:"to_revision_id"`
-	Skills         AgentConfigSkillsDiff         `json:"skills"`
-	ToolExposure   AgentConfigToolExposureDiff   `json:"tool_exposure"`
-	PromptLayers   AgentConfigPromptLayersDiff   `json:"prompt_layers"`
-	Connections    AgentConfigConnectionsDiff    `json:"connections"`
-	OAuthProviders AgentConfigOAuthProvidersDiff `json:"oauth_providers"`
-	LLMParams      AgentConfigLLMParamsDiff      `json:"llm_params"`
-	Hooks          AgentConfigHooksDiff          `json:"hooks"`
-	Naming         AgentConfigNamingDiff         `json:"naming"`
+	FromRevisionID    string                           `json:"from_revision_id"`
+	ToRevisionID      string                           `json:"to_revision_id"`
+	Skills            AgentConfigSkillsDiff            `json:"skills"`
+	ToolExposure      AgentConfigToolExposureDiff      `json:"tool_exposure"`
+	PromptLayers      AgentConfigPromptLayersDiff      `json:"prompt_layers"`
+	Connections       AgentConfigConnectionsDiff       `json:"connections"`
+	OAuthProviders    AgentConfigOAuthProvidersDiff    `json:"oauth_providers"`
+	LLMParams         AgentConfigLLMParamsDiff         `json:"llm_params"`
+	Hooks             AgentConfigHooksDiff             `json:"hooks"`
+	Naming            AgentConfigNamingDiff            `json:"naming"`
+	ExtraSystemBlocks AgentConfigExtraSystemBlocksDiff `json:"extra_system_blocks"`
 }
 
 // AgentConfigGetRequest is the `agent_config.get` request — read the
@@ -764,6 +843,60 @@ type AgentConfigSetPromptLayersRequest struct {
 // response — the recorded config revision (or, on an idempotent re-set, the
 // existing active revision).
 type AgentConfigSetPromptLayersResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// AgentConfigSetExtraSystemBlocksRequest is the admin-scoped
+// `agent_config.set_extra_system_blocks` request — set the agent's ORDERED
+// list of named additive prompt blocks as a desired-state REPLACE of the
+// blocks section (every sibling section of the active revision is
+// preserved). The edit records a new config revision and applies to the
+// agent's NEXT run.
+//
+// # It is a WHOLE-SECTION replace, deliberately
+//
+// There are no per-block upsert / delete verbs. A block is one element of
+// an ORDERED composition whose order is semantic, so a per-item upsert has
+// no well-defined insertion position. A second contributor composes by
+// read-modify-write: `agent_config.get`, append or drop its own block by
+// NAME, write back — sending the read revision's `content_hash` as
+// ExpectedContentHash so a concurrent sibling's write is refused rather
+// than silently reverted.
+//
+// # Trust
+//
+// The bodies render VERBATIM in an operator-trusted position. This verb is
+// admin-gated, and that is the whole boundary — see
+// AgentConfigExtraSystemBlocks for the argument and the obligation it
+// creates (a block must never carry user-authored or model-authored text).
+type AgentConfigSetExtraSystemBlocksRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// ExtraSystemBlocks is the FULL desired state of the section. An empty
+	// list clears it. Names must be unique and match `[A-Za-z0-9._-]{1,64}`;
+	// a duplicate or malformed name is refused with `invalid_request`,
+	// naming the offender, and NOTHING is persisted.
+	ExtraSystemBlocks AgentConfigExtraSystemBlocks `json:"extra_system_blocks"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token. When
+	// non-empty, the write requires the agent's ACTIVE revision to still
+	// carry exactly this content hash (as returned by `agent_config.get`)
+	// at write time; a moved base is refused with the `revision_conflict`
+	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
+	// and every request that omits the field) is the unconditional
+	// last-writer-wins write every sibling door also performs.
+	//
+	// Sending it is how two independent contributors compose safely: the
+	// read-modify-write is only as safe as the token. The refusal is exact
+	// within one Runtime process; it is not a cross-process
+	// compare-and-swap.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
+}
+
+// AgentConfigSetExtraSystemBlocksResponse is the
+// `agent_config.set_extra_system_blocks` response — the recorded config
+// revision (or, on an idempotent re-set, the existing active revision).
+type AgentConfigSetExtraSystemBlocksResponse struct {
 	Revision        AgentConfigRevisionView `json:"revision"`
 	ProtocolVersion string                  `json:"protocol_version"`
 }

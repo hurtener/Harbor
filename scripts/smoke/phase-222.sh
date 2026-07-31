@@ -119,18 +119,13 @@ run_filtered_tests() {
 # 1. The phase gate: are the wire types declared?
 # ----------------------------------------------------------------------------
 
-SECTION_PRESENT=0
-if [ -f "${WIRE_GO}" ] && grep -qE 'type AgentConfigExtraSystemBlocks struct' "${WIRE_GO}"; then
-    SECTION_PRESENT=1
-    ok 'phase 222: the agent-config payload declares the AgentConfigExtraSystemBlocks section'
-else
-    skip 'phase 222: no AgentConfigExtraSystemBlocks wire type yet — the phase has not landed; every downstream guard skips with it'
-fi
-
-if [ "${SECTION_PRESENT}" = "0" ]; then
-    smoke_summary
-    exit 0
-fi
+# The phase has LANDED, so this is a FAIL arm, not a phase gate. A skeleton
+# SKIP here would fire on the feature's ABSENCE and report green — exactly the
+# instrument the wave's Gate-0 found four of. Every downstream guard below is
+# unconditional for the same reason.
+assert_grep "${WIRE_GO}" \
+    'type AgentConfigExtraSystemBlocks struct' \
+    'phase 222: the agent-config payload declares the AgentConfigExtraSystemBlocks section'
 
 # ----------------------------------------------------------------------------
 # 2. Ordering is deterministic BY CONSTRUCTION.
@@ -263,20 +258,35 @@ PROBE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -X POST -H 'Content-Type: application/json' -d '{}' "${SET_BLOCKS_URL}" 2>/dev/null || true)
 LIVE=1
 case "${PROBE:-000}" in
-    404|405|501|000|'')
-        skip "phase 222: agent_config.set_extra_system_blocks route not present (${PROBE:-000})"
+    000|'')
+        # No server reachable at all — a standalone run outside preflight.
+        skip 'phase 222: no dev server reachable; live assertions skipped (run under make preflight)'
+        LIVE=0
+        ;;
+    404|405|501)
+        # The route ships in the SAME PR as this script, so its absence on a
+        # reachable server is an un-mounted REGRESSION, not a future surface.
+        # The 404 -> SKIP convention exists for phase-N+1 scripts running
+        # against a phase-N build; it does not apply here.
+        fail "phase 222: agent_config.set_extra_system_blocks answered ${PROBE} on a reachable server — the route did not mount"
         LIVE=0
         ;;
 esac
 
+# THE BEARER COMES FROM common.sh's dev_bearer, NEVER from HARBOR_DEV_TOKEN
+# directly (issue #624): a smoke that reads the env var itself SKIPs outside
+# preflight while exiting 0, so it reports green having asserted nothing.
+# dev_bearer falls back to the dev server's log, so a standalone run against a
+# hand-booted `harbor dev` exercises the live legs too.
+TOKEN="$(dev_bearer)"
+
 if [ "${LIVE}" = "0" ]; then
     : # live assertions skipped; the guard tests below still run.
-elif [ -z "${HARBOR_DEV_TOKEN:-}" ] || ! command -v jq >/dev/null 2>&1; then
-    skip "phase 222: HARBOR_DEV_TOKEN/jq unavailable — live assertions skipped (run under 'make preflight')"
+elif [ -z "${TOKEN}" ] || ! command -v jq >/dev/null 2>&1; then
+    skip "phase 222: no dev bearer (dev_bearer) or jq — live assertions skipped (run under 'make preflight' or against a booted 'harbor dev')"
 elif ! command -v curl >/dev/null 2>&1; then
     skip 'phase 222: curl not available; cannot exercise live wire'
 else
-    TOKEN="${HARBOR_DEV_TOKEN}"
     ID_HEADERS=(-H "X-Harbor-Tenant: dev" -H "X-Harbor-User: dev" -H "X-Harbor-Session: dev")
     AGENT_ID="phase222-smoke-agent-$$-$(date +%s)"
 
@@ -299,7 +309,12 @@ else
             | jq -r '.revision.payload.extra_system_blocks.blocks[]?.name' 2>/dev/null || true
     }
 
-    TWO_BLOCKS='[{"name":"alpha","body":"Prefer SI units."},{"name":"beta","body":"Cite <sources> inline."}]'
+    # DELIBERATELY REVERSE-ALPHABETICAL. With an already-sorted pair the
+    # ordering assertion below is INERT: a sort anywhere on the write ->
+    # normalize -> hash -> project -> render path leaves [alpha, beta]
+    # untouched and the guard reports OK. Mutation-verified: adding a sort to
+    # payloadToWire turns this leg OK -> FAIL only with this fixture.
+    TWO_BLOCKS='[{"name":"zulu","body":"Prefer SI units."},{"name":"alpha","body":"Cite <sources> inline."}]'
 
     # --- A two-block write is accepted.
     CODE=$(post_code "${SET_BLOCKS_URL}" "$(blocks_payload "${TWO_BLOCKS}")")
@@ -314,10 +329,10 @@ else
     #     result is a FAIL — it would mean the composition order is not the
     #     operator's.
     NAMES="$(read_block_names | tr '\n' ',' | sed 's/,$//')"
-    if [ "${NAMES}" = "alpha,beta" ]; then
-        ok 'phase 222: agent_config.get returns the blocks IN THE WRITTEN ORDER (alpha,beta)'
+    if [ "${NAMES}" = "zulu,alpha" ]; then
+        ok 'phase 222: agent_config.get returns the blocks IN THE WRITTEN ORDER (zulu,alpha — NOT sorted)'
     else
-        fail "phase 222: block order round-tripped as '${NAMES}', want 'alpha,beta' — the declared order is not preserved"
+        fail "phase 222: block order round-tripped as '${NAMES}', want 'zulu,alpha' — the declared order is not preserved (a sort on the path would yield 'alpha,zulu')"
     fi
 
     # --- A duplicate block name is refused: remove-by-name must stay
@@ -345,10 +360,10 @@ else
         "{\"agent_id\":\"${AGENT_ID}\",\"prompt_layers\":{\"base\":\"You are a smoke-test agent.\"}}")
     if [ "${CODE}" = "200" ]; then
         NAMES="$(read_block_names | tr '\n' ',' | sed 's/,$//')"
-        if [ "${NAMES}" = "alpha,beta" ]; then
-            ok 'phase 222: a set_prompt_layers write PRESERVES the blocks section (direction 1)'
+        if [ "${NAMES}" = "zulu,alpha" ]; then
+            ok 'phase 222: a set_prompt_layers write PRESERVES the blocks section, in order (direction 1)'
         else
-            fail "phase 222: after set_prompt_layers the blocks read back as '${NAMES}', want 'alpha,beta' — a sibling verb dropped the new section"
+            fail "phase 222: after set_prompt_layers the blocks read back as '${NAMES}', want 'zulu,alpha' — a sibling verb dropped or re-ordered the new section"
         fi
     else
         fail "phase 222: the set_prompt_layers write returned ${CODE}, want 200 (cannot test preservation)"

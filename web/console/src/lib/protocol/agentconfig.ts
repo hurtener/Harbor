@@ -51,6 +51,35 @@ export interface AgentConfigPromptLayers {
 	user?: string;
 }
 
+/** One named, additive prompt block: the NAME a contributor addresses its own
+ * contribution by (unique, `[A-Za-z0-9._-]{1,64}`, never emitted as an XML
+ * tag) and the BODY that renders VERBATIM. Mirrors
+ * `types.AgentConfigNamedBlock`. */
+export interface AgentConfigNamedBlock {
+	name: string;
+	body: string;
+}
+
+/** An agent's ORDERED list of named, operator-authored additive prompt blocks,
+ * so N independent capability sources can each contribute — and later remove —
+ * exactly their own text.
+ *
+ * ORDER IS SEMANTIC: the declared array order IS the render order, it is part
+ * of the revision's `content_hash`, and a pure re-ordering is a real new
+ * revision the diff reports. (Contrast `skills.names` / `oauth_providers`,
+ * whose orders are canonicalised by sorting.)
+ *
+ * Blocks render VERBATIM — unescaped — inside `<additional_guidance>`, each
+ * behind a plain-text `[name]` label, and they survive a session
+ * `system_prompt_override`. The section is written only by the ADMIN-tier
+ * `agent_config.set_extra_system_blocks`; that authority tier, not an escaper,
+ * is the boundary. A block MUST NOT carry user-authored or model-authored
+ * text — use `start.caller_memory` or `prompt_layers.user` for that. Mirrors
+ * `types.AgentConfigExtraSystemBlocks`. */
+export interface AgentConfigExtraSystemBlocks {
+	blocks: AgentConfigNamedBlock[];
+}
+
 /** An agent's per-agent LLM-parameter section — the sampling defaults pinned
  * for the agent (model / temperature / max-tokens / reasoning-effort). Every
  * field optional; an unset field falls through to the tenant-wide baseline,
@@ -236,6 +265,7 @@ export interface AgentConfigPayload {
 	llm_params?: AgentConfigLLMParams;
 	hooks?: AgentConfigHooks;
 	naming?: AgentConfigNaming;
+	extra_system_blocks?: AgentConfigExtraSystemBlocks;
 }
 
 /** One immutable config revision. Mirrors `types.AgentConfigRevisionView`. */
@@ -362,6 +392,17 @@ export interface AgentConfigNamingDiff {
 	model_to?: string;
 }
 
+/** The structured additive-prompt-block delta across two revisions. `added` /
+ * `removed` / `changed` are block NAMES (sorted); `reordered` reports the SAME
+ * name set in a DIFFERENT order — a real prompt change with no analogue on the
+ * sorted sibling sections. Mirrors `types.AgentConfigExtraSystemBlocksDiff`. */
+export interface AgentConfigExtraSystemBlocksDiff {
+	added?: string[];
+	removed?: string[];
+	changed?: string[];
+	reordered: boolean;
+}
+
 /** A server-side revision compare. Mirrors `types.AgentConfigDiff`. */
 export interface AgentConfigDiff {
 	from_revision_id: string;
@@ -374,6 +415,7 @@ export interface AgentConfigDiff {
 	llm_params: AgentConfigLLMParamsDiff;
 	hooks: AgentConfigHooksDiff;
 	naming: AgentConfigNamingDiff;
+	extra_system_blocks: AgentConfigExtraSystemBlocksDiff;
 }
 
 /** `agent_config.get` request. */
@@ -512,6 +554,42 @@ export interface AgentConfigSetPromptLayersRequest {
 
 /** `agent_config.set_prompt_layers` response — the recorded revision. */
 export interface AgentConfigSetPromptLayersResponse {
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}
+
+/** `agent_config.set_extra_system_blocks` request — admin-scoped. Replaces
+ * ONLY the additive-prompt-blocks section as a WHOLE-SECTION desired state
+ * (every sibling section is preserved); an empty list clears it. There are
+ * deliberately no per-block verbs — a block is one element of an ORDERED
+ * composition whose order is semantic, so a per-item upsert has no
+ * well-defined insertion position. A second contributor composes by
+ * read-modify-write: `agent_config.get`, append or drop its own block by NAME,
+ * write back with the read revision's `content_hash` as
+ * `expected_content_hash`. Names must be unique and match
+ * `[A-Za-z0-9._-]{1,64}`; a duplicate or malformed name is refused with
+ * `invalid_request` and nothing is persisted. */
+export interface AgentConfigSetExtraSystemBlocksRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	extra_system_blocks: AgentConfigExtraSystemBlocks;
+	/**
+	 * OPTIONAL expected-revision token. When set, the write requires the
+	 * agent's ACTIVE revision to still carry exactly this `content_hash` (as
+	 * returned by `agent_config.get`); a moved base is refused with the
+	 * `revision_conflict` error code (HTTP 409) and nothing is persisted.
+	 * Omitted is the unconditional last-writer-wins write.
+	 *
+	 * Sending it is how two independent contributors compose safely: the
+	 * read-modify-write is only as safe as the token. The refusal is exact
+	 * within one Runtime process; it is not a cross-process
+	 * compare-and-swap.
+	 */
+	expected_content_hash?: string;
+}
+
+/** `agent_config.set_extra_system_blocks` response — the recorded revision. */
+export interface AgentConfigSetExtraSystemBlocksResponse {
 	revision: AgentConfigRevisionView;
 	protocol_version: string;
 }

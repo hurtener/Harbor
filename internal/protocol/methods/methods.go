@@ -349,6 +349,22 @@ const (
 	// next run. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
 	// The wire-transport route is `POST /v1/agent_config/set_prompt_layers`.
 	MethodAgentConfigSetPromptLayers Method = "agent_config.set_prompt_layers"
+	// MethodAgentConfigSetExtraSystemBlocks — admin verb: sets the agent's
+	// ORDERED list of named additive prompt blocks as a desired-state
+	// replace of the blocks section and records the change as a config
+	// revision. Every sibling section is preserved. The declared order IS
+	// the render order — it is part of the content hash, so a re-ordering
+	// is a real revision the diff reports. The bodies render VERBATIM,
+	// each behind a plain-text `[name]` label, in the operator-trusted
+	// additive guidance position, and they survive a session
+	// system-prompt override. There are no per-block verbs: a second
+	// contributor composes by read-modify-write, sending the read
+	// revision's content hash as the expected-revision token. Applies to
+	// the agent's next run. Identity-mandatory; requires the
+	// `auth.ScopeAdmin` claim — that tier IS the trust boundary the
+	// verbatim rendering rests on. The wire-transport route is
+	// `POST /v1/agent_config/set_extra_system_blocks`.
+	MethodAgentConfigSetExtraSystemBlocks Method = "agent_config.set_extra_system_blocks"
 	// MethodAgentConfigSetLLMParams — admin verb: sets the agent's per-agent
 	// LLM-parameter section (model / temperature / max-tokens /
 	// reasoning-effort) as a desired-state replace of the LLM-params section
@@ -1096,6 +1112,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsDelete:             {},
 	MethodAgentConfigSetToolExposure:          {},
 	MethodAgentConfigSetPromptLayers:          {},
+	MethodAgentConfigSetExtraSystemBlocks:     {},
 	MethodAgentConfigSetLLMParams:             {},
 	MethodAgentConfigAddMCPConnection:         {},
 	MethodAgentConfigRemoveMCPConnection:      {},
@@ -1353,11 +1370,12 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the thirty
+// canonicalAgentConfigMethods is the closed set of the thirty-one
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
 // (set_tool_exposure), the layered-prompt verb (set_prompt_layers), the
+// additive-prompt-blocks verb (set_extra_system_blocks), the
 // per-agent LLM-params verb (set_llm_params), the add-connection verb
 // (add_mcp_connection), the remove-connection verb (remove_mcp_connection),
 // the discovery-allowance write (set_mcp_discovery_origins), the OAuth-provider
@@ -1379,6 +1397,7 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsDelete:           {},
 	MethodAgentConfigSetToolExposure:        {},
 	MethodAgentConfigSetPromptLayers:        {},
+	MethodAgentConfigSetExtraSystemBlocks:   {},
 	MethodAgentConfigSetLLMParams:           {},
 	MethodAgentConfigAddMCPConnection:       {},
 	MethodAgentConfigRemoveMCPConnection:    {},
@@ -1461,6 +1480,7 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsDelete:           {},
 	MethodAgentConfigSetToolExposure:        {},
 	MethodAgentConfigSetPromptLayers:        {},
+	MethodAgentConfigSetExtraSystemBlocks:   {},
 	MethodAgentConfigSetLLMParams:           {},
 	MethodAgentConfigAddMCPConnection:       {},
 	MethodAgentConfigRemoveMCPConnection:    {},
@@ -1470,7 +1490,7 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSetLLMProvider:         {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the thirty
+// IsAgentConfigMethod reports whether m is one of the thirty-one
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new
