@@ -16,7 +16,19 @@
 #   - At least one OK once the phase has shipped.
 #   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
 #
-# GUARD DISCIPLINE — every branch below FAILS on breakage. NONE skips.
+# GUARD DISCIPLINE — every ASSERTION below FAILS on breakage. The only two
+# skipping arms are the harness preamble (§4.2 item 4): the route probe and the
+# token/jq availability check, both of which run BEFORE any assertion and
+# describe the harness, not the surface. No assertion in this file can answer
+# SKIP. Counted rather than asserted: 19 `ok` arms, 24 `fail` arms, 2 `skip`
+# arms — and both skips are above.
+#
+# ONE residual, named rather than hidden: if `/v1/control/start` itself
+# vanished, the route probe would skip the whole live section and this script
+# would still report OK 8 (the static guards) — above the inert-smoke gate's
+# OK-0 threshold. That is the §4.2 item 4 convention working as designed and
+# is not this phase's to change; a missing `start` route fails a great many
+# other smokes loudly first.
 #
 # The skeleton for this file carried the first grep below as a PHASE GATE with
 # a SKIP arm ("not yet shipped"). That arm is deleted. This phase HAS shipped,
