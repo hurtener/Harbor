@@ -84,10 +84,16 @@ assert_grep_present 'CodeRevisionConflict' "${STATUS_GO}" \
 #     Counting the t.Run REGISTRATIONS, not the function declarations: a row
 #     whose registration is deleted still declares its function, so a
 #     declaration count would stay green while the row stopped executing.
-assert_grep_count 't\.Run\("ConditionalWrite_' "${CONFORMANCE_GO}" 4 \
-    'phase 221: the shared conformance suite RUNS the four precondition rows'
-assert_grep_count 'func testConditional' "${CONFORMANCE_GO}" 4 \
-    'phase 221: the shared conformance suite declares the four precondition rows'
+#     The count moved 4 -> 7 when the FIRST-WRITE sentinel landed (the
+#     composition protocol had no expressible token at its base case, so two
+#     first contributors silently reverted each other). Bumping the count
+#     alone would have been the wrong fix, so the three new rows are
+#     BEHAVIOURAL: they drive the sentinel, refuse it once a revision exists,
+#     and reproduce-then-close the lost update.
+assert_grep_count 't\.Run\("ConditionalWrite_' "${CONFORMANCE_GO}" 7 \
+    'phase 221: the shared conformance suite RUNS the seven precondition rows'
+assert_grep_count 'func testConditional' "${CONFORMANCE_GO}" 7 \
+    'phase 221: the shared conformance suite declares the seven precondition rows'
 
 # (6) The change is ADDITIVE — the Protocol version does not move.
 assert_grep_present 'ProtocolVersion = "0\.1\.0"' "${VERSION_GO}" \
@@ -265,7 +271,7 @@ else
         'phase 221: the driver conditional-write tests pass under -race (incl. the ordering pin)'
     p221_go_test 'TestStateStore_Conformance' \
         ./internal/agentcfg/drivers/statestore/ \
-        'phase 221: the shared conformance suite (incl. the four precondition rows) passes under both scope arms'
+        'phase 221: the shared conformance suite (incl. the seven precondition rows) passes under both scope arms'
     p221_go_test 'TestSetRevision_Concurrent|TestConditionalWrite_ConcurrentReuse|TestConditionalWrite_CrossProcessBound' \
         ./internal/agentcfg/drivers/statestore/ \
         'phase 221: N=128 racing writers yield exactly one winner, and the cross-process residual is pinned AS ABSENT'

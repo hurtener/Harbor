@@ -177,6 +177,14 @@ type Service struct {
 	// injected at the cmd/harbor + devstack boundary (the §4.4 boundary keeps
 	// the concrete MCP driver out of this package).
 	attacher ConnectionAttacher
+	// detacher tears a just-attached MCP server back down when the add's
+	// revision write then fails (the expected-revision precondition being the
+	// reachable case). Optional — nil ⇒ the compensation logs the residual live
+	// server LOUD rather than pretending it was undone (CLAUDE.md §13). The
+	// concrete is the same object that satisfies ConnectionAttacher, injected at
+	// the cmd/harbor + devstack boundary, so attach and compensating detach can
+	// never drift onto different registries.
+	detacher ConnectionDetacher
 	// discoveryApplier applies a connection's OAuth-discovery cross-origin
 	// allow-list to the LIVE MCP registry for
 	// `agent_config.set_mcp_discovery_origins` (and the run-start
@@ -422,6 +430,20 @@ func WithConnectionAttacher(a ConnectionAttacher) Option {
 	return func(s *Service) {
 		if a != nil {
 			s.attacher = a
+		}
+	}
+}
+
+// WithConnectionDetacher wires the concrete that tears a just-attached MCP
+// server back down when `agent_config.add_mcp_connection`'s revision write
+// fails after the attach succeeded. A nil detacher leaves that compensation
+// logging the residual live server loudly instead of silently leaking it. The
+// concrete (which imports the MCP driver) is the same object wired as the
+// attacher; this package depends only on the interface.
+func WithConnectionDetacher(d ConnectionDetacher) Option {
+	return func(s *Service) {
+		if d != nil {
+			s.detacher = d
 		}
 	}
 }

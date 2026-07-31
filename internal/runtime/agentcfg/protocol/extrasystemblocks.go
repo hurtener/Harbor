@@ -23,7 +23,14 @@ import (
 // semantic, so a per-item upsert has no well-defined insertion position.
 // A second contributor composes by read-modify-write, sending the read
 // revision's content hash as the expected-revision token so a concurrent
-// sibling's write is refused rather than silently reverted.
+// sibling's write is refused rather than silently reverted. The BASE CASE
+// has its own token: when the read answered `set: false` (no config yet)
+// there is no hash to echo, so the caller sends the reserved
+// [agentcfg.ExpectNoActiveRevision] value, which succeeds only while no
+// revision exists. Omitting the token there would be an unconditional write,
+// and two contributors composing onto a fresh agent would silently revert
+// each other — which is the one case this protocol could not express until
+// the sentinel existed.
 //
 // The edit applies NEXT-turn (the run-start projection reads the active
 // revision; the immutable per-run snapshot is undisturbed for in-flight

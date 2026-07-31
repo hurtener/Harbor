@@ -78,20 +78,28 @@ func TestRunOne_CallerMemoryCompositionError_FailsRunLoud(t *testing.T) {
 }
 
 // TestSpawn_MalformedCallerMemory_RefusedAtPersist records where a
-// syntactically malformed payload actually dies on the IN-PROCESS door,
-// which is EARLIER than this phase's design assumed.
+// syntactically malformed payload dies on the IN-PROCESS door, which is
+// EARLIER than the caller-memory design assumed.
 //
 // The Protocol edge refuses it before `Spawn` (that path is covered in
-// `internal/protocol`). An in-process caller bypasses that edge — but the
-// task record's whole-record marshal then fails, because a malformed
-// `json.RawMessage` cannot be marshalled at all, and `Spawn` returns the
-// serialization error rather than persisting an unusable row. So the
-// composition step is never reached for this shape.
+// `internal/protocol`). An in-process caller bypasses that edge, and `Spawn`
+// refuses it explicitly: the caller-memory redaction step validates the
+// document before it touches the redactor and fails loud, so no unusable row
+// is ever persisted and the composition step is never reached for this shape.
 //
-// Pinned as a TEST rather than left as folklore: it is the difference
-// between "the run loop guards this" and "nothing has to, because the row
-// cannot exist" — and a future change that made the record marshal
-// tolerant would silently move the failure to a place nobody is watching.
+// That refusal used to be ACCIDENTAL rather than explicit — the task record's
+// whole-record marshal simply could not encode a malformed `json.RawMessage`.
+// It stopped being accidental when caller memory started going through the
+// audit redactor with its siblings: the redactor's raw-JSON path is
+// deliberately tolerant of non-JSON bytes (it re-quotes them as a string),
+// which would have made the marshal SUCCEED and relocated the failure to
+// whatever read the row later. The guard is therefore explicit now, and it
+// runs before the redactor rather than after the marshal.
+//
+// Pinned as a TEST rather than left as folklore: it is the difference between
+// "the run loop guards this" and "nothing has to, because the row cannot
+// exist" — and it is the trip-wire that caught the tolerant-redactor
+// regression in the first place.
 func TestSpawn_MalformedCallerMemory_RefusedAtPersist(t *testing.T) {
 	env := newFailDriverEnv(t)
 	ctx, err := identity.With(context.Background(), runLoopDriverTestID)
