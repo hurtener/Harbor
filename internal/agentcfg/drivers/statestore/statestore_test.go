@@ -312,7 +312,7 @@ func newRegistry(t *testing.T) agentcfg.Registry {
 
 // TestStateStore_Conformance runs the shared driver conformance suite.
 func TestStateStore_Conformance(t *testing.T) {
-	conformance.Run(t, newRegistry)
+	conformance.Run(t, newRegistry, newFaultyRegistry)
 }
 
 // TestStateStore_TenantIsolation asserts agent_id is a key, not an

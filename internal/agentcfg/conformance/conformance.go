@@ -24,6 +24,23 @@ import (
 // cleanup is called via t.Cleanup by Run.
 type Factory func(t *testing.T) agentcfg.Registry
 
+// FaultFactory builds a fresh, empty Registry whose backing store is ARMED
+// to fail the write that publishes a revision as the ACTIVE one, while the
+// write that persists the revision record itself still succeeds.
+//
+// It is a second, mandatory constructor rather than an optional capability
+// (CLAUDE.md §4.4 — no `Supports*` ceremony) because the invariant it feeds
+// is one every driver owes: a write that does not complete leaves NO
+// revision behind. A driver whose two writes ARE one atomic operation arms
+// the fault on that operation instead and passes the same row unchanged —
+// the assertion is about the residue, not about how many writes there were.
+//
+// It is a separate parameter of Run rather than a method on Factory so a
+// second driver cannot COMPILE without supplying one: the mechanism a driver
+// uses to leave an orphan is driver-specific (record kinds, table names),
+// so only the driver's own test can arm it.
+type FaultFactory func(t *testing.T) agentcfg.Registry
+
 // admin returns a complete admin caller identity.
 func admin() identity.Quadruple {
 	return identity.Quadruple{Identity: identity.Identity{
@@ -38,8 +55,9 @@ func skillsPayload(names ...string) agentcfg.ConfigPayload {
 }
 
 // Run executes the full conformance suite against a driver built by mk,
-// under both ConfigScope arms, plus the cross-scope invisibility assertion.
-func Run(t *testing.T, mk Factory) {
+// under both ConfigScope arms, plus the cross-scope invisibility assertion
+// and the partial-write atomicity row (driven by mkFaulty).
+func Run(t *testing.T, mk Factory, mkFaulty FaultFactory) {
 	t.Helper()
 	for _, sc := range []struct {
 		name  string
@@ -75,9 +93,56 @@ func Run(t *testing.T, mk Factory) {
 			t.Run("ConditionalWrite_MismatchRefusedAndPersistsNothing", func(t *testing.T) { testConditionalMismatch(t, mk, scope) })
 			t.Run("ConditionalWrite_NoActiveRevisionRefused", func(t *testing.T) { testConditionalNoActive(t, mk, scope) })
 			t.Run("ConditionalWrite_EmptyTokenIsUnconditional", func(t *testing.T) { testConditionalEmptyToken(t, mk, scope) })
+			// The PARTIAL-WRITE row. A write that does not complete must
+			// leave no revision behind. It lives in the SHARED suite for the
+			// same reason the precondition rows do: the invariant is owed by
+			// the interface, not by one driver's implementation of it.
+			t.Run("WriteAtomicity_FailedPointerWriteLeavesNoOrphanRevision", func(t *testing.T) {
+				testWriteAtomicity(t, mkFaulty, scope)
+			})
 		})
 	}
 	t.Run("CrossScopeInvisibility", func(t *testing.T) { testCrossScopeInvisibility(t, mk) })
+}
+
+// testWriteAtomicity — a store error between the revision write and the
+// active-pointer write leaves NO revision in history.
+//
+// The failure this pins is not a reader-correctness one: the pointer is the
+// source of truth, so an orphaned revision is invisible to Active and to the
+// run-start projection, and its content was never applied. It is an OPERATOR
+// one. `list_revisions` enumerates by record kind rather than by walking the
+// parent chain, so an orphan surfaces in history between two real revisions,
+// belonging to no chain and never having been active — which reads exactly
+// like a write that was lost. It also burns a revision id nothing references.
+//
+// The row asserts three things together, because any one of them alone stays
+// green through the defect: the write FAILS (a driver that silently succeeded
+// would be worse), the active pointer did NOT move, and history is EMPTY.
+func testWriteAtomicity(t *testing.T, mk FaultFactory, scope agentcfg.ConfigScope) {
+	ctx := context.Background()
+	r := mk(t)
+	id := admin()
+
+	if _, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("orphan-a"), agentcfg.SetOptions{}); err == nil {
+		t.Fatal("SetRevision reported success against a store armed to fail the active-pointer write")
+	}
+
+	rev, ok, err := r.Active(ctx, id, agentID, scope)
+	if err != nil {
+		t.Fatalf("Active after a failed write: %v", err)
+	}
+	if ok {
+		t.Fatalf("the active pointer moved despite the failed write: revision %s", rev.RevisionID)
+	}
+
+	revs, err := r.ListRevisions(ctx, id, agentID, scope, 0)
+	if err != nil {
+		t.Fatalf("ListRevisions after a failed write: %v", err)
+	}
+	if len(revs) != 0 {
+		t.Fatalf("a failed write left %d revision(s) in history: %+v — an unreferenced revision reads to an operator as a lost write", len(revs), revs)
+	}
 }
 
 // testCrossScopeInvisibility proves the two key spaces never alias: a

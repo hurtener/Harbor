@@ -288,7 +288,11 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 		return agentcfg.Revision{}, err
 	}
 	if err := r.saveActive(ctx, q, keys.activeKind, revID, now); err != nil {
-		return agentcfg.Revision{}, err
+		// The revision record landed and the pointer that would have named
+		// it did not. Compensate — see [registry.compensateOrphanRevision]
+		// for why a bare return here left a revision in history that no
+		// reader can reach.
+		return agentcfg.Revision{}, r.compensateOrphanRevision(ctx, q, keys.revPfx, revID, err)
 	}
 	rev := rec.toRevision()
 	r.emitRevised(ctx, agentID, rev)
@@ -578,6 +582,73 @@ func (r *registry) saveActive(ctx context.Context, q identity.Quadruple, activeK
 		return fmt.Errorf("%w: save active pointer: %w", agentcfg.ErrStateUnavailable, err)
 	}
 	return nil
+}
+
+// compensationTimeout bounds the compensating delete below. It exists so a
+// store that is hanging rather than erroring cannot hold the caller for the
+// compensation's sake: the caller's own write has already failed, and the
+// error it is owed must not wait on a best-effort cleanup.
+const compensationTimeout = 5 * time.Second
+
+// compensateOrphanRevision removes a revision record whose active-pointer
+// write then failed, and returns the error the caller receives.
+//
+// # The defect it closes
+//
+// The write path is two ordinary Saves: the immutable revision record, then
+// the pointer that makes it the active one. There is no transaction spanning
+// them — the StateStore interface has no such primitive, and adding one that
+// only two of the three drivers could honour is the "works only on Postgres"
+// design smell the persistence rules forbid. So a store error between the two
+// leaves a revision that EXISTS and that nothing references.
+//
+// Such an orphan is inert to every reader: the pointer is the source of
+// truth, so `Active` and the run-start projection never see it, and its
+// content was never applied to anything. What it does damage is the operator
+// view — `list_revisions` enumerates by record kind, not by walking the
+// parent chain, so the orphan appears in history between two real revisions
+// with no explanation. An operator reading that history sees a revision that
+// was never active and a parent chain that skips it, which reads as a lost
+// write. It also consumes a revision id that the next successful write's
+// parent chain will not mention.
+//
+// # Why a delete rather than a sweep
+//
+// The alternative — leaving the record and filtering unreferenced revisions
+// out of the reads, or sweeping them later — keeps the damage and adds a
+// second mechanism to hide it, and any filter that walked the parent chain
+// would need the whole chain resident to answer one list. Deleting at the
+// point of failure needs no new interface method (every driver already
+// implements Delete), no new record kind, no migration, and no background
+// loop; the compensation runs while the caller still holds the per-owner
+// write lock, so nothing can be pointing at the record it removes.
+//
+// # The context is deliberately un-cancellable
+//
+// The most likely reason the pointer write failed is the caller's context
+// being cancelled or timed out — and a compensation issued on that same
+// context would then fail on exactly the occasions it is needed. WithoutCancel
+// keeps the identity and trace values and drops only the cancellation; the
+// bounded timeout keeps a hung store from outliving the call.
+//
+// # What it does NOT claim
+//
+// This is compensation, not atomicity. A process that dies between the two
+// writes still leaves an orphan, and so does a store that refuses the delete
+// as well as the write — that second case is REPORTED in the returned error
+// and logged at Error rather than swallowed, because an unreferenced record
+// is a fact an operator must be told about.
+func (r *registry) compensateOrphanRevision(ctx context.Context, q identity.Quadruple, revPfx, revisionID string, cause error) error {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensationTimeout)
+	defer cancel()
+	if delErr := r.state.Delete(cctx, q, revPfx+revisionID); delErr != nil {
+		r.logger.ErrorContext(ctx, "agentcfg/statestore: the active-pointer write failed AND the compensating delete of its revision record failed — the revision is persisted but unreferenced, and will appear in revision history",
+			slog.String("revision_id", revisionID),
+			slog.String("error", delErr.Error()),
+			slog.String("cause", cause.Error()))
+		return fmt.Errorf("%w; the revision record %s could not be removed and is now unreferenced: %w", cause, revisionID, delErr)
+	}
+	return cause
 }
 
 // emitRevised publishes agent.config.revised. The revision is already

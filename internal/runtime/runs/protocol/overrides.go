@@ -14,6 +14,10 @@
 //     messages; a session that records an override then never sends a
 //     message simply drops it (documented behaviour — the phase plan's
 //     "next-message semantics" risk).
+//   - BOUNDED — an unconsumed slot is reclaimed by capacity pressure, not
+//     by time. The Store holds at most [DefaultMaxPendingOverrides] slots
+//     and evicts the OLDEST-recorded slot to admit a new identity. See
+//     [Store] for why the bound exists and why the policy is drop-oldest.
 //
 // # The seam (CLAUDE.md §4.4)
 //
@@ -58,6 +62,7 @@
 package protocol
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -240,33 +245,166 @@ type PendingOverride struct {
 	RecordedAt time.Time
 }
 
+// DefaultMaxPendingOverrides is the number of identity triples that may
+// hold an unconsumed pending override at once. A slot is a handful of
+// pointers, so the default is set for headroom over any plausible count
+// of sessions concurrently mid-compose rather than to conserve memory:
+// reaching it means slots are being recorded far faster than they are
+// consumed, which is the abusive shape, not the operator one.
+const DefaultMaxPendingOverrides = 4096
+
+// slotEntry is one identity's pending override plus its position in the
+// recording-order list. It is heap-allocated once per slot and mutated
+// in place on a re-Set, so a re-Set costs no list churn.
+type slotEntry struct {
+	id identity.Identity
+	po PendingOverride
+}
+
 // Store is the in-process, identity-scoped pending-override slot map.
 // It is a compiled artifact: constructed once via NewStore,
-// shared across N goroutines, with its single mutable field — the slot
-// map — guarded by an internally-synchronised sync.Mutex.
+// shared across N goroutines, with its mutable fields — the slot map and
+// its recording-order list — guarded by an internally-synchronised
+// sync.Mutex.
 //
 // The map is keyed by the identity triple so a session's pending
 // override is invisible to every other `(tenant, user, session)` —
 // multi-isolation is enforced by the key, not by a post-fetch filter.
+//
+// # The bound, and its drop policy (CLAUDE.md §5)
+//
+// A slot is written by `runs.set_overrides` and removed by the Consume
+// the next message performs. A session that records an override and then
+// never sends a message leaves its slot behind, so an UNBOUNDED map grows
+// with the count of such sessions for the lifetime of the process — an
+// availability defect any authenticated caller reaches by recording an
+// override under a fresh session id in a loop. The Store therefore holds
+// at most MaxSlots entries.
+//
+// The policy is DROP-OLDEST, and it is stated here because a silent
+// eviction would itself be the §13 silent-degradation shape:
+//
+//   - Evicting rather than REFUSING the write. A capacity refusal would
+//     let one caller filling the map deny the surface to every other
+//     tenant — it converts a memory-growth defect into a cross-tenant
+//     availability one, which is worse. Eviction confines the damage to
+//     the evicted slot.
+//   - OLDEST-recorded rather than newest. A slot's whole purpose is to be
+//     consumed by the very next message, so the longer one has sat
+//     unconsumed the more likely it is already abandoned. Dropping the
+//     newest would instead discard the write of the caller who just asked
+//     for it, while retaining slots nothing will ever read.
+//   - LOUD, once per eviction. Every eviction logs at Warn with the
+//     evicted triple and the instant the slot was recorded. There is no
+//     first-in-window suppression: below the bound an eviction is
+//     impossible, so a line here is never routine, and suppressing the
+//     second line would hide the scale of whatever is producing them.
+//   - No TTL. The slot already has a lifetime ("until the next message");
+//     a second, time-based expiry axis would be a second mechanism
+//     answering the same question, needing its own clock and sweeper. The
+//     bound alone closes the growth defect.
+//
+// An evicted slot is indistinguishable to its session from one that was
+// never recorded: the next message runs with no override, exactly as the
+// documented "recorded, then never sent" path already behaves.
 type Store struct {
 	mu    sync.Mutex
-	slots map[identity.Identity]PendingOverride
+	slots map[identity.Identity]*list.Element
+	// order holds *slotEntry, front = oldest recorded, back = newest.
+	order  *list.List
+	max    int
+	logger *slog.Logger
 }
 
-// NewStore builds an empty override Store. The returned *Store is safe
-// for concurrent use by N goroutines.
-func NewStore() *Store {
-	return &Store{slots: make(map[identity.Identity]PendingOverride)}
+// StoreOption configures NewStore.
+type StoreOption func(*Store)
+
+// WithMaxSlots bounds the number of identity triples that may hold a
+// pending override at once. A non-positive value is ignored (the default
+// stands) — there is no way to configure the bound AWAY, because an
+// unbounded slot map is the defect this bound exists to close.
+func WithMaxSlots(n int) StoreOption {
+	return func(s *Store) {
+		if n > 0 {
+			s.max = n
+		}
+	}
+}
+
+// WithStoreLogger sets the slog.Logger the Store reports evictions on. A
+// nil logger routes to slog.Default().
+func WithStoreLogger(l *slog.Logger) StoreOption {
+	return func(s *Store) {
+		if l != nil {
+			s.logger = l
+		}
+	}
+}
+
+// NewStore builds an empty override Store bounded at
+// [DefaultMaxPendingOverrides] slots. The returned *Store is safe for
+// concurrent use by N goroutines.
+func NewStore(opts ...StoreOption) *Store {
+	s := &Store{
+		slots:  make(map[identity.Identity]*list.Element),
+		order:  list.New(),
+		max:    DefaultMaxPendingOverrides,
+		logger: slog.Default(),
+	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // Set records po into the slot for id, replacing any prior pending
 // override for that identity triple. An operator that records two
 // overrides before sending a message keeps only the second — the slot
 // is last-write-wins, the documented behaviour.
+//
+// A re-Set REFRESHES the identity's position in the recording order, so
+// the most recently expressed intent is the last to be evicted. When the
+// Store is at MaxSlots and id is new, the oldest-recorded slot is evicted
+// to admit it (see [Store] for the policy and why it is not a refusal).
 func (s *Store) Set(id identity.Identity, po PendingOverride) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.slots[id] = po
+	if el, ok := s.slots[id]; ok {
+		if ent, ok := el.Value.(*slotEntry); ok {
+			ent.po = po
+		}
+		s.order.MoveToBack(el)
+		return
+	}
+	if len(s.slots) >= s.max {
+		s.evictOldestLocked()
+	}
+	s.slots[id] = s.order.PushBack(&slotEntry{id: id, po: po})
+}
+
+// evictOldestLocked drops the oldest-recorded slot and reports it at
+// Warn. The caller holds s.mu.
+func (s *Store) evictOldestLocked() {
+	el := s.order.Front()
+	if el == nil {
+		return
+	}
+	s.order.Remove(el)
+	ent, ok := el.Value.(*slotEntry)
+	if !ok {
+		// Impossible by construction: order only ever holds *slotEntry.
+		// Reported rather than ignored so a future change that broke the
+		// invariant does not silently stop evicting.
+		s.logger.Error("runs: pending-override order list held a non-entry value")
+		return
+	}
+	delete(s.slots, ent.id)
+	s.logger.Warn("runs: evicted the oldest pending override to admit a new one — the slot map is at capacity",
+		"tenant_id", ent.id.TenantID,
+		"user_id", ent.id.UserID,
+		"session_id", ent.id.SessionID,
+		"recorded_at", ent.po.RecordedAt,
+		"max_slots", s.max)
 }
 
 // Consume removes and returns the pending override for id. The second
@@ -279,11 +417,17 @@ func (s *Store) Set(id identity.Identity, po PendingOverride) {
 func (s *Store) Consume(id identity.Identity) (PendingOverride, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	po, ok := s.slots[id]
-	if ok {
-		delete(s.slots, id)
+	el, ok := s.slots[id]
+	if !ok {
+		return PendingOverride{}, false
 	}
-	return po, ok
+	delete(s.slots, id)
+	s.order.Remove(el)
+	ent, ok := el.Value.(*slotEntry)
+	if !ok {
+		return PendingOverride{}, false
+	}
+	return ent.po, true
 }
 
 // Peek returns the pending override for id WITHOUT removing it. Used by
@@ -291,8 +435,15 @@ func (s *Store) Consume(id identity.Identity) (PendingOverride, bool) {
 func (s *Store) Peek(id identity.Identity) (PendingOverride, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	po, ok := s.slots[id]
-	return po, ok
+	el, ok := s.slots[id]
+	if !ok {
+		return PendingOverride{}, false
+	}
+	ent, ok := el.Value.(*slotEntry)
+	if !ok {
+		return PendingOverride{}, false
+	}
+	return ent.po, true
 }
 
 // Clock is the time source the Service stamps RecordedAt / AppliedAt

@@ -89,6 +89,23 @@ assert_grep_count 't\.Run\("ConditionalWrite_' "${CONFORMANCE_GO}" 4 \
 assert_grep_count 'func testConditional' "${CONFORMANCE_GO}" 4 \
     'phase 221: the shared conformance suite declares the four precondition rows'
 
+# (5b) The PARTIAL-WRITE atomicity row, in the same shared suite and for the
+#      same reason: a second driver must inherit "a write that did not
+#      complete leaves NO revision behind", not re-derive it.
+#      Deregistering the row COMPILES (an unused func parameter is legal in
+#      Go), so the registration is counted, not the declaration — the same
+#      lesson the four rows above already carry.
+assert_grep_count 't\.Run\("WriteAtomicity_' "${CONFORMANCE_GO}" 1 \
+    'phase 221: the shared conformance suite RUNS the partial-write atomicity row'
+assert_grep_present 'mkFaulty FaultFactory' "${CONFORMANCE_GO}" \
+    'phase 221: conformance.Run TAKES the fault factory, so a second driver cannot compile without arming it'
+# The compensation itself, in the driver. A bare `return err` between the two
+# writes is the defect; the call is the fix.
+assert_grep_present 'compensateOrphanRevision\(ctx, q, keys\.revPfx, revID, err\)' "${DRIVER_GO}" \
+    'phase 221: the failed active-pointer write compensates its orphan revision'
+assert_grep_present 'context\.WithoutCancel\(ctx\)' "${DRIVER_GO}" \
+    'phase 221: the compensation runs on an un-cancellable context (a cancelled caller ctx is the likeliest cause of the failure it compensates)'
+
 # (6) The change is ADDITIVE — the Protocol version does not move.
 assert_grep_present 'ProtocolVersion = "0\.1\.0"' "${VERSION_GO}" \
     'phase 221: ProtocolVersion is unchanged (the change is additive)'
@@ -290,6 +307,21 @@ else
     assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/agentcfg/drivers/statestore/' \
         'phase 221: the shared conformance suite (incl. the four precondition rows) passes under both scope arms' \
         TestStateStore_Conformance
+
+    # THE PARTIAL-WRITE RESIDUE. The write path is two Saves with no
+    # transaction between them, so a store error after the first left a
+    # revision that EXISTS and that nothing references — inert to readers
+    # (the pointer is the source of truth) but visible in `list_revisions`,
+    # where it reads to an operator as a lost write. These name the tests
+    # explicitly because "the caller got an error" stays green through the
+    # whole defect: the residue is the assertion.
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/agentcfg/drivers/statestore/' \
+        'phase 221: a failed active-pointer write leaves no unreferenced revision behind' \
+        TestSetRevision_PointerWriteFailure_SurfacesTheStoreError \
+        TestSetRevision_PointerWriteFailure_RemovesTheOrphanRevision \
+        TestSetRevision_PointerWriteFailure_CompensatesOnACancelledContext \
+        TestSetRevision_CompensationFailure_IsReportedNotSwallowed \
+        TestSetRevision_SuccessfulWritePathIssuesNoDelete
 
     assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/agentcfg/drivers/statestore/' \
         'phase 221: N=128 racing writers yield exactly one winner, and the cross-process residual is pinned AS ABSENT' \
