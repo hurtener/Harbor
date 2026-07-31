@@ -253,12 +253,36 @@ type PendingOverride struct {
 // consumed, which is the abusive shape, not the operator one.
 const DefaultMaxPendingOverrides = 4096
 
+// DefaultMaxPendingOverridesPerTenant is the number of slots ONE tenant
+// may hold at once — one sixteenth of the global bound. It is the bound
+// that makes the eviction policy's isolation claim true rather than
+// merely intended: without it, the global bound alone means the caller
+// who fills the map evicts every OTHER tenant's slot, continuously (see
+// [Store] "Why a per-tenant sub-bound").
+//
+// The ratio is what the guarantee is made of, so it is stated rather
+// than left to be derived: at 4096 / 256 a single tenant can occupy at
+// most one sixteenth of the map, so its churn can never reach the global
+// bound and therefore can never displace a sibling tenant. Sixteen
+// distinct tenants would have to act together to reach it — and a tenant
+// id is a VERIFIED claim, not a caller-chosen string, which is the whole
+// asymmetry the sub-bound rests on.
+const DefaultMaxPendingOverridesPerTenant = 256
+
 // slotEntry is one identity's pending override plus its position in the
-// recording-order list. It is heap-allocated once per slot and mutated
-// in place on a re-Set, so a re-Set costs no list churn.
+// two recording-order lists — the global one and its tenant's. It is
+// heap-allocated once per slot and mutated in place on a re-Set, so a
+// re-Set costs no list churn.
 type slotEntry struct {
 	id identity.Identity
 	po PendingOverride
+	// globalEl / tenantEl are this entry's elements in Store.order and
+	// in Store.byTenant[id.TenantID]. Holding both is what keeps every
+	// admit, evict and Consume O(1): a bound whose enforcement is itself
+	// a linear scan is a poor answer to an availability defect, and this
+	// path's rate is attacker-controlled.
+	globalEl *list.Element
+	tenantEl *list.Element
 }
 
 // Store is the in-process, identity-scoped pending-override slot map.
@@ -281,39 +305,83 @@ type slotEntry struct {
 // override under a fresh session id in a loop. The Store therefore holds
 // at most MaxSlots entries.
 //
-// The policy is DROP-OLDEST, and it is stated here because a silent
-// eviction would itself be the §13 silent-degradation shape:
+// The policy is DROP-OLDEST, WITHIN THE ADMITTING TENANT, and it is
+// stated here because a silent eviction would itself be the §13
+// silent-degradation shape:
 //
-//   - Evicting rather than REFUSING the write. A capacity refusal would
-//     let one caller filling the map deny the surface to every other
-//     tenant — it converts a memory-growth defect into a cross-tenant
-//     availability one, which is worse. Eviction confines the damage to
-//     the evicted slot.
+//   - Evicting rather than REFUSING the write. A capacity refusal denies
+//     the surface to the caller that asked for it, and the slot it would
+//     have refused is the one that just expressed intent. Eviction spends
+//     an ABANDONED slot instead. This is a trade between two costs, not a
+//     containment argument — see the next bullet for what actually
+//     confines the damage.
+//   - A PER-TENANT sub-bound underneath the global one. This is the bullet
+//     that carries the isolation property, and it exists because the
+//     global bound ALONE does not: with one process-wide order list, a
+//     tenant recording overrides under fresh session ids evicts every
+//     other tenant's slot, continuously, for as long as it keeps writing.
+//     That is the very cross-tenant availability defect the first bullet
+//     is often read as ruling out, and eviction does not rule it out —
+//     the sub-bound does. A tenant at MaxSlotsPerTenant evicts ITS OWN
+//     oldest slot, so its churn is self-inflicted and reaches no sibling.
 //   - OLDEST-recorded rather than newest. A slot's whole purpose is to be
 //     consumed by the very next message, so the longer one has sat
 //     unconsumed the more likely it is already abandoned. Dropping the
 //     newest would instead discard the write of the caller who just asked
 //     for it, while retaining slots nothing will ever read.
 //   - LOUD, once per eviction. Every eviction logs at Warn with the
-//     evicted triple and the instant the slot was recorded. There is no
-//     first-in-window suppression: below the bound an eviction is
-//     impossible, so a line here is never routine, and suppressing the
-//     second line would hide the scale of whatever is producing them.
+//     evicted triple, the instant the slot was recorded, and WHICH bound
+//     forced it — a tenant evicting itself and a tenant being displaced
+//     by the global bound are different operator situations and must not
+//     read alike. There is no first-in-window suppression: below the
+//     bounds an eviction is impossible, so a line here is never routine,
+//     and suppressing the second line would hide the scale of whatever is
+//     producing them.
 //   - No TTL. The slot already has a lifetime ("until the next message");
 //     a second, time-based expiry axis would be a second mechanism
 //     answering the same question, needing its own clock and sweeper. The
-//     bound alone closes the growth defect.
+//     bounds alone close the growth defect.
+//
+// # Why a per-tenant sub-bound, and what it does NOT claim
+//
+// The asymmetry that makes the sub-bound work: a SESSION id is a
+// caller-chosen string, unbounded and free to mint, which is exactly why
+// the growth defect existed. A TENANT id is a verified claim on the
+// request identity. So bounding per tenant bounds the axis an attacker
+// controls by the axis it does not.
+//
+// Two residuals are stated rather than engineered away:
+//
+//  1. Enough DISTINCT tenants acting together still reach the global
+//     bound, and the slot evicted there does belong to another tenant.
+//     That needs MaxSlots / MaxSlotsPerTenant separately-authenticated
+//     tenants (sixteen at the defaults), not one caller with a loop.
+//  2. Inside one tenant, a user can still displace a sibling user's slot.
+//     The sub-bound is keyed on the tenant because that is the boundary
+//     the isolation claim names and the outermost one CLAUDE.md §6 makes
+//     integrity-critical; a second sub-bound axis would be a second
+//     mechanism answering a question nobody has reported, and the
+//     per-tenant bound must remain the outer one in any case or a tenant
+//     with many users would exceed its share of the global map.
 //
 // An evicted slot is indistinguishable to its session from one that was
 // never recorded: the next message runs with no override, exactly as the
 // documented "recorded, then never sent" path already behaves.
 type Store struct {
 	mu    sync.Mutex
-	slots map[identity.Identity]*list.Element
+	slots map[identity.Identity]*slotEntry
 	// order holds *slotEntry, front = oldest recorded, back = newest.
-	order  *list.List
-	max    int
-	logger *slog.Logger
+	// It carries the GLOBAL bound.
+	order *list.List
+	// byTenant holds one recording-order list per tenant that currently
+	// owns at least one slot; each also holds *slotEntry, front = that
+	// tenant's oldest. It carries the PER-TENANT bound. A tenant's list
+	// is deleted the moment it empties, so the map does not itself grow
+	// without bound over the tenants seen.
+	byTenant     map[string]*list.List
+	max          int
+	maxPerTenant int
+	logger       *slog.Logger
 }
 
 // StoreOption configures NewStore.
@@ -331,6 +399,23 @@ func WithMaxSlots(n int) StoreOption {
 	}
 }
 
+// WithMaxSlotsPerTenant bounds the number of slots ONE tenant may hold at
+// once. A non-positive value is ignored, for the same reason
+// [WithMaxSlots] ignores one: the sub-bound is what confines an evicting
+// caller's damage to its own tenant, so there is no way to configure it
+// away.
+//
+// A value above the global bound is CLAMPED to it by NewStore rather than
+// honoured, because a per-tenant bound the global bound reaches first can
+// never fire and would read as a guarantee that is not there.
+func WithMaxSlotsPerTenant(n int) StoreOption {
+	return func(s *Store) {
+		if n > 0 {
+			s.maxPerTenant = n
+		}
+	}
+}
+
 // WithStoreLogger sets the slog.Logger the Store reports evictions on. A
 // nil logger routes to slog.Default().
 func WithStoreLogger(l *slog.Logger) StoreOption {
@@ -342,17 +427,27 @@ func WithStoreLogger(l *slog.Logger) StoreOption {
 }
 
 // NewStore builds an empty override Store bounded at
-// [DefaultMaxPendingOverrides] slots. The returned *Store is safe for
-// concurrent use by N goroutines.
+// [DefaultMaxPendingOverrides] slots globally and
+// [DefaultMaxPendingOverridesPerTenant] slots per tenant. The returned
+// *Store is safe for concurrent use by N goroutines.
 func NewStore(opts ...StoreOption) *Store {
 	s := &Store{
-		slots:  make(map[identity.Identity]*list.Element),
-		order:  list.New(),
-		max:    DefaultMaxPendingOverrides,
-		logger: slog.Default(),
+		slots:        make(map[identity.Identity]*slotEntry),
+		order:        list.New(),
+		byTenant:     make(map[string]*list.List),
+		max:          DefaultMaxPendingOverrides,
+		maxPerTenant: DefaultMaxPendingOverridesPerTenant,
+		logger:       slog.Default(),
 	}
 	for _, o := range opts {
 		o(s)
+	}
+	// A per-tenant bound at or above the global bound can never fire, so
+	// it is clamped rather than left to read as a guarantee that is not
+	// there. This is also what keeps a small WithMaxSlots (tests, tight
+	// embedders) from silently disabling the sub-bound.
+	if s.maxPerTenant > s.max {
+		s.maxPerTenant = s.max
 	}
 	return s
 }
@@ -362,49 +457,121 @@ func NewStore(opts ...StoreOption) *Store {
 // overrides before sending a message keeps only the second — the slot
 // is last-write-wins, the documented behaviour.
 //
-// A re-Set REFRESHES the identity's position in the recording order, so
-// the most recently expressed intent is the last to be evicted. When the
-// Store is at MaxSlots and id is new, the oldest-recorded slot is evicted
-// to admit it (see [Store] for the policy and why it is not a refusal).
+// A re-Set REFRESHES the identity's position in both recording orders, so
+// the most recently expressed intent is the last to be evicted.
+//
+// Admitting a NEW identity consults the per-tenant bound FIRST: a tenant
+// already holding MaxSlotsPerTenant slots evicts its OWN oldest, so a
+// caller churning session ids can only ever displace itself. Only when
+// the admitting tenant is under its own bound and the map is at MaxSlots
+// does the global eviction run. See [Store] for the policy, why it is not
+// a refusal, and the two residuals it does not claim to close.
 func (s *Store) Set(id identity.Identity, po PendingOverride) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if el, ok := s.slots[id]; ok {
-		if ent, ok := el.Value.(*slotEntry); ok {
-			ent.po = po
+	if ent, ok := s.slots[id]; ok {
+		ent.po = po
+		s.order.MoveToBack(ent.globalEl)
+		if tl := s.byTenant[id.TenantID]; tl != nil {
+			tl.MoveToBack(ent.tenantEl)
 		}
-		s.order.MoveToBack(el)
 		return
 	}
-	if len(s.slots) >= s.max {
+	// Per-tenant bound first. Checking the global bound first would let a
+	// tenant at its own cap displace a SIBLING whenever the map happened
+	// to be full — which is the defect the sub-bound exists to close.
+	tl := s.byTenant[id.TenantID]
+	switch {
+	case tl != nil && tl.Len() >= s.maxPerTenant:
+		s.evictOldestOfTenantLocked(id.TenantID)
+	case len(s.slots) >= s.max:
 		s.evictOldestLocked()
 	}
-	s.slots[id] = s.order.PushBack(&slotEntry{id: id, po: po})
+	ent := &slotEntry{id: id, po: po}
+	ent.globalEl = s.order.PushBack(ent)
+	tl = s.byTenant[id.TenantID]
+	if tl == nil {
+		tl = list.New()
+		s.byTenant[id.TenantID] = tl
+	}
+	ent.tenantEl = tl.PushBack(ent)
+	s.slots[id] = ent
 }
 
-// evictOldestLocked drops the oldest-recorded slot and reports it at
-// Warn. The caller holds s.mu.
+// evictOldestLocked drops the globally oldest-recorded slot and reports
+// it at Warn. The caller holds s.mu. This path runs only when the
+// admitting tenant is UNDER its own sub-bound, so the slot it takes may
+// belong to another tenant — which is residual 1 in [Store], and the log
+// line names the bound so an operator can tell the two situations apart.
 func (s *Store) evictOldestLocked() {
 	el := s.order.Front()
 	if el == nil {
 		return
 	}
-	s.order.Remove(el)
 	ent, ok := el.Value.(*slotEntry)
 	if !ok {
 		// Impossible by construction: order only ever holds *slotEntry.
 		// Reported rather than ignored so a future change that broke the
 		// invariant does not silently stop evicting.
+		s.order.Remove(el)
 		s.logger.Error("runs: pending-override order list held a non-entry value")
 		return
 	}
-	delete(s.slots, ent.id)
-	s.logger.Warn("runs: evicted the oldest pending override to admit a new one — the slot map is at capacity",
+	s.removeLocked(ent)
+	s.logger.Warn("runs: evicted the oldest pending override to admit a new one — the slot map is at its GLOBAL capacity",
 		"tenant_id", ent.id.TenantID,
 		"user_id", ent.id.UserID,
 		"session_id", ent.id.SessionID,
 		"recorded_at", ent.po.RecordedAt,
+		"bound", "global",
 		"max_slots", s.max)
+}
+
+// evictOldestOfTenantLocked drops the oldest-recorded slot BELONGING TO
+// tenant and reports it at Warn. The caller holds s.mu and has
+// established that the tenant is at its sub-bound.
+func (s *Store) evictOldestOfTenantLocked(tenant string) {
+	tl := s.byTenant[tenant]
+	if tl == nil {
+		return
+	}
+	el := tl.Front()
+	if el == nil {
+		return
+	}
+	ent, ok := el.Value.(*slotEntry)
+	if !ok {
+		tl.Remove(el)
+		s.logger.Error("runs: pending-override tenant order list held a non-entry value")
+		return
+	}
+	s.removeLocked(ent)
+	s.logger.Warn("runs: evicted this tenant's oldest pending override to admit a new one — the tenant is at its PER-TENANT capacity, so no other tenant's slot was touched",
+		"tenant_id", ent.id.TenantID,
+		"user_id", ent.id.UserID,
+		"session_id", ent.id.SessionID,
+		"recorded_at", ent.po.RecordedAt,
+		"bound", "per_tenant",
+		"max_slots_per_tenant", s.maxPerTenant)
+}
+
+// removeLocked unlinks ent from the slot map and from BOTH recording
+// orders, dropping the tenant's list once it empties. The caller holds
+// s.mu.
+//
+// The tenant-list delete is not tidiness: without it byTenant would grow
+// with the count of tenants ever seen and reintroduce the unbounded-map
+// defect one level up, on a key the caller does not choose but that a
+// long-lived process still accumulates.
+func (s *Store) removeLocked(ent *slotEntry) {
+	delete(s.slots, ent.id)
+	s.order.Remove(ent.globalEl)
+	if tl := s.byTenant[ent.id.TenantID]; tl != nil {
+		tl.Remove(ent.tenantEl)
+		if tl.Len() == 0 {
+			delete(s.byTenant, ent.id.TenantID)
+		}
+	}
 }
 
 // Consume removes and returns the pending override for id. The second
@@ -417,16 +584,15 @@ func (s *Store) evictOldestLocked() {
 func (s *Store) Consume(id identity.Identity) (PendingOverride, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	el, ok := s.slots[id]
+	ent, ok := s.slots[id]
 	if !ok {
 		return PendingOverride{}, false
 	}
-	delete(s.slots, id)
-	s.order.Remove(el)
-	ent, ok := el.Value.(*slotEntry)
-	if !ok {
-		return PendingOverride{}, false
-	}
+	// Both orders are popped alongside the map. A stale element left in
+	// either list is a tombstone that absorbs a later eviction, so the
+	// corresponding bound leaks back open by one slot per consumed entry
+	// — on the ORDINARY, non-abusive path.
+	s.removeLocked(ent)
 	return ent.po, true
 }
 
@@ -435,11 +601,7 @@ func (s *Store) Consume(id identity.Identity) (PendingOverride, bool) {
 func (s *Store) Peek(id identity.Identity) (PendingOverride, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	el, ok := s.slots[id]
-	if !ok {
-		return PendingOverride{}, false
-	}
-	ent, ok := el.Value.(*slotEntry)
+	ent, ok := s.slots[id]
 	if !ok {
 		return PendingOverride{}, false
 	}

@@ -197,6 +197,16 @@ token); a full `(tenant, user, session)` triple overrides the identity. An
 empty `{}` body keeps the default admin token, so the one-click attach flow is
 unchanged. This override is dev-only — `harbor serve` does not mint tokens.
 
+The four members above — `tenant`, `user`, `session`, `scopes` — are the only
+ones this body accepts, and **anything else is refused with a `400` naming it**
+rather than discarded. That matters because the endpoint mints a credential:
+a misspelled `scope` would otherwise be dropped and answer `200` with the
+default **admin** token, and a snake-cased `tenant_id` would answer `200` with
+a token for a **different** identity. The identity members are spelled the way
+the Protocol spells an identity scope everywhere else — `tenant` / `user` /
+`session`, not `tenant_id` / `user_id` / `session_id`, which are record-type
+field names.
+
 **Production** — the Runtime validates tokens against your OIDC provider via
 the `identity:` config block (`issuer`, `audience`, `jwks_url`,
 `jwt_algorithms`). Your identity provider mints the tokens; the bootstrap
