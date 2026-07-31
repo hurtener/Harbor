@@ -251,15 +251,8 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	// base had in fact moved. That is silent degradation. A conflict costs
 	// one re-read on a rare path and never lies.
 	if opts.ExpectedContentHash != "" {
-		if !hasActive {
-			return agentcfg.Revision{}, fmt.Errorf(
-				"%w: expected content hash %q but the agent has no active revision",
-				agentcfg.ErrRevisionConflict, opts.ExpectedContentHash)
-		}
-		if active.ContentHash != opts.ExpectedContentHash {
-			return agentcfg.Revision{}, fmt.Errorf(
-				"%w: expected content hash %q, active revision %s carries %q",
-				agentcfg.ErrRevisionConflict, opts.ExpectedContentHash, active.RevisionID, active.ContentHash)
+		if err := checkExpectation(opts, active, hasActive); err != nil {
+			return agentcfg.Revision{}, err
 		}
 	}
 
@@ -293,6 +286,50 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	rev := rec.toRevision()
 	r.emitRevised(ctx, agentID, rev)
 	return rev, nil
+}
+
+// checkExpectation evaluates the caller's expected-revision precondition
+// against the active revision the caller's own read-modify-write just loaded.
+// It is the ONE comparison both spine-writing doors (SetRevision's content
+// write and Rollback's pointer move) share, so the two can never disagree on
+// what a token means.
+//
+// Three arms:
+//
+//   - empty token ⇒ unconditional (byte-for-byte the pre-precondition
+//     behaviour);
+//   - agentcfg.ExpectNoActiveRevision ⇒ succeeds ONLY when the agent has no
+//     active revision. This is the base case of the read-modify-write
+//     composition protocol: a caller whose read answered "no config" has no
+//     hash to echo, and before the sentinel existed its only expressible
+//     token was the empty one — i.e. it could not opt out of last-writer-wins
+//     on the one write where two contributors are most likely to collide;
+//   - any other token ⇒ the active revision must exist and carry exactly it.
+//
+// The sentinel cannot collide with a real expectation: a content hash is
+// sha256 hex, so it is always 64 lowercase hex characters and never "-".
+func checkExpectation(opts agentcfg.SetOptions, active agentcfg.Revision, hasActive bool) error {
+	switch {
+	case opts.ExpectedContentHash == "":
+		return nil
+	case opts.ExpectedContentHash == agentcfg.ExpectNoActiveRevision:
+		if hasActive {
+			return fmt.Errorf(
+				"%w: expected no active revision, but revision %s is active carrying %q",
+				agentcfg.ErrRevisionConflict, active.RevisionID, active.ContentHash)
+		}
+		return nil
+	case !hasActive:
+		return fmt.Errorf(
+			"%w: expected content hash %q but the agent has no active revision (send %q to require that there be none)",
+			agentcfg.ErrRevisionConflict, opts.ExpectedContentHash, agentcfg.ExpectNoActiveRevision)
+	case active.ContentHash != opts.ExpectedContentHash:
+		return fmt.Errorf(
+			"%w: expected content hash %q, active revision %s carries %q",
+			agentcfg.ErrRevisionConflict, opts.ExpectedContentHash, active.RevisionID, active.ContentHash)
+	default:
+		return nil
+	}
 }
 
 func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
@@ -430,15 +467,8 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 		if aerr != nil {
 			return agentcfg.Revision{}, aerr
 		}
-		if !hasActive {
-			return agentcfg.Revision{}, fmt.Errorf(
-				"%w: expected content hash %q but the agent has no active revision",
-				agentcfg.ErrRevisionConflict, opts.ExpectedContentHash)
-		}
-		if active.ContentHash != opts.ExpectedContentHash {
-			return agentcfg.Revision{}, fmt.Errorf(
-				"%w: expected content hash %q, active revision %s carries %q",
-				agentcfg.ErrRevisionConflict, opts.ExpectedContentHash, active.RevisionID, active.ContentHash)
+		if err := checkExpectation(opts, active, hasActive); err != nil {
+			return agentcfg.Revision{}, err
 		}
 	}
 	now := r.clock().UTC()

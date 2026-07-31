@@ -35,6 +35,18 @@ import (
 // the unified pause/resume primitive (the tool-side OAuth lineage — NOT a
 // new auth dance).
 //
+// # The one door whose live effect precedes its write — and compensates
+//
+// This is the only agent-config write verb that cannot order its live effect
+// AFTER its revision write, because whether the server answers is the input to
+// what gets written. So the write can fail with the server already up — the
+// reachable case being an expected-revision precondition whose base moved. On
+// that path the add COMPENSATES rather than merely refusing: it detaches the
+// server, uninstalls a wire-OAuth provider it newly installed, and emits the
+// terminal `failed` lifecycle. Without that, a refused write left a live
+// server no revision named — one `remove_mcp_connection` answers not-found
+// for, and a lifecycle stuck on `pending`. See [Service.compensateAttach].
+//
 // # Secret hygiene (CLAUDE.md §7, load-bearing)
 //
 // The recorded revision, the diff, and every emitted event carry ONLY the
@@ -64,6 +76,34 @@ import (
 //     `failed` lifecycle, never a half-attached server).
 type ConnectionAttacher interface {
 	Attach(ctx context.Context, req AttachRequest) error
+}
+
+// ConnectionDetacher is the compensating twin of [ConnectionAttacher]: the
+// seam the add door uses to TEAR DOWN a server it successfully attached when
+// the revision write that would have named it then failed.
+//
+// It exists because the add door's two side effects are not one transaction.
+// The attach is live and irreversible-by-itself; the revision write can be
+// refused after it (an expected-revision precondition whose base moved is the
+// reachable case). Without this seam a refused write would leave a dialed,
+// handshaken, registered server that NO revision names — and therefore one
+// `agent_config.remove_mcp_connection` answers ErrConnectionNotFound for and
+// the run-start reconcile never sees, because the reconcile diffs the LIVE
+// owner view against the DECLARED set and an undeclared-but-live server is
+// exactly what it would detach only if it also appeared in the owner view of
+// a later run. A live server nothing can remove is worse than a failed add.
+//
+// The concrete (wired at the cmd/harbor + devstack boundary) is the same
+// object that satisfies [ConnectionAttacher], so attach and compensating
+// detach share one registry + one catalog and cannot drift apart. Optional —
+// a nil detacher makes the compensation report the leak loudly instead of
+// pretending it happened (CLAUDE.md §13).
+type ConnectionDetacher interface {
+	// DetachConnection deregisters the named source's tools from the live
+	// catalog + MCP registry and closes its transport, scoped to the
+	// (tenant, agentID) owner the attach stamped. Idempotent: a source
+	// already gone is a no-op.
+	DetachConnection(ctx context.Context, tenant, agentID, name string) error
 }
 
 // AttachRequest is the input to a ConnectionAttacher. It carries the
@@ -264,6 +304,10 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		// and emit the terminal `added` event.
 		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 		if recErr != nil {
+			// The attach SUCCEEDED and the write did not. Compensate — see
+			// [Service.compensateAttach] for why a bare return here left a live,
+			// unremovable server behind.
+			s.compensateAttach(ctx, q, id, req.AgentID, desc, wireProvider, wireProviderIsNew, recErr)
 			return prototypes.AgentConfigAddMCPConnectionResponse{}, recErr
 		}
 		s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateOnline, rev.RevisionID, "", "")
@@ -284,10 +328,23 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		}
 		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 		if recErr != nil {
+			// Same shape as the online branch: the live half of the add ran and
+			// the write did not. The attach did not bring the server online, but
+			// it may have registered before the authorization requirement
+			// surfaced, and an inline wire provider was certainly installed — so
+			// the compensation runs here too. DetachConnection is idempotent, so
+			// a connection that never registered costs a no-op.
+			s.compensateAttach(ctx, q, id, req.AgentID, desc, wireProvider, wireProviderIsNew, recErr)
 			return prototypes.AgentConfigAddMCPConnectionResponse{}, recErr
 		}
 		token, parkErr := s.parkForAuth(ctx, id, req.AgentID, desc)
 		if parkErr != nil {
+			// The revision IS recorded (so the connection is nameable and
+			// removable) but no terminal lifecycle event has fired — leaving a
+			// Console reader on the transient `pending` forever, which is the
+			// silent half of the same defect the compensation above closes. Emit
+			// the terminal `failed` with a scrubbed reason before returning.
+			s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateFailed, rev.RevisionID, "", safeReason(parkErr))
 			return prototypes.AgentConfigAddMCPConnectionResponse{}, parkErr
 		}
 		s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateAuthRequired, rev.RevisionID, string(token), "")
@@ -312,12 +369,7 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		// (nothing was persisted; the live install must not linger). A re-derived
 		// pre-existing provider (bind-by-name) is left in place — it was installed
 		// by its own set_oauth_provider and survives this failed attach.
-		if wireProviderIsNew && wireProvider != nil && s.providerInstaller != nil {
-			if uErr := s.providerInstaller.UninstallProvider(ctx, id.TenantID, req.AgentID, wireProvider.Name); uErr != nil {
-				s.logger.WarnContext(ctx, "agent-config: rollback of inline wire oauth provider after failed attach failed",
-					"agent_id", req.AgentID, "provider", wireProvider.Name, "error", uErr.Error())
-			}
-		}
+		s.uninstallWireProvider(ctx, id, req.AgentID, wireProvider, wireProviderIsNew, "failed attach")
 		reason := safeReason(attachErr)
 		s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateFailed, "", "", reason)
 		return prototypes.AgentConfigAddMCPConnectionResponse{
@@ -563,6 +615,76 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 		payload.OAuthProviders = &agentcfg.OAuthProvidersSection{Providers: providers}
 	}
 	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload, opts)
+}
+
+// compensateAttach undoes the LIVE half of an add whose revision write then
+// failed, and emits the terminal `failed` lifecycle so the add never ends on
+// the transient `pending`.
+//
+// # Why this exists (the defect it closes)
+//
+// The add door's two effects are ordered live-first: the attach dials,
+// handshakes, discovers and REGISTERS the server, and only then is the
+// descriptor written onto the revision spine. Every OTHER door with a live
+// side effect orders them the other way (write, then apply, then roll the
+// write back if the apply failed) — this one cannot, because "did the server
+// answer?" is the input to what gets written.
+//
+// So the write can fail AFTER the server is live. The reachable case is the
+// expected-revision precondition: a caller whose base moved between its read
+// and its add is answered `revision_conflict`, and the wire contract states
+// that on that answer NOTHING is persisted. Before this compensation that was
+// true of the SPINE and false of the world: no revision named the server, so
+// `agent_config.remove_mcp_connection` answered ErrConnectionNotFound for a
+// server that was dialed, registered and exposing tools — an unremovable live
+// connection, and a Console stuck on `pending` because no terminal event ever
+// fired. An inline wire-OAuth provider installed for the binding was left
+// installed too; its uninstall existed only on the attach-FAILED path.
+//
+// # What it does, and what it deliberately does not
+//
+// Detach (idempotent, owner-scoped), uninstall a NEWLY-installed inline wire
+// provider (a pre-existing bind-by-name provider is left alone — it was
+// installed by its own set_oauth_provider and outlives this add), then emit
+// `failed` carrying the scrubbed write error as the reason.
+//
+// It does NOT return an error and it does NOT mask the write failure: the
+// caller still receives the original `recErr` (the 409), because the
+// compensation is how the runtime keeps its own promise, not a second outcome
+// for the caller to branch on. A compensation step that itself fails is logged
+// LOUD and named precisely — a residual live server is a fact an operator must
+// be told about, never swallowed (CLAUDE.md §13).
+func (s *Service) compensateAttach(ctx context.Context, q identity.Quadruple, id identity.Identity, agentID string, desc agentcfg.MCPConnectionDescriptor, wireProvider *agentcfg.OAuthProviderDescriptor, wireProviderIsNew bool, cause error) {
+	if s.detacher == nil {
+		// Fail loud rather than pretend. A runtime wired with an attacher but
+		// no detacher genuinely cannot undo the attach, and the operator needs
+		// to know a live server outlived its refused write.
+		s.logger.ErrorContext(ctx, "agent-config: mcp connection attached but its revision write failed AND no ConnectionDetacher is wired — the server is LIVE and unnamed by any revision",
+			"agent_id", agentID, "server_id", desc.Name, "error", cause.Error())
+	} else if dErr := s.detacher.DetachConnection(ctx, id.TenantID, agentID, desc.Name); dErr != nil {
+		s.logger.ErrorContext(ctx, "agent-config: compensating detach after a failed connection revision write FAILED — the server may still be live and unnamed by any revision",
+			"agent_id", agentID, "server_id", desc.Name, "error", dErr.Error(), "cause", cause.Error())
+	}
+	s.uninstallWireProvider(ctx, id, agentID, wireProvider, wireProviderIsNew, "failed connection revision write")
+	s.emitConnectionLifecycle(ctx, q, agentID, desc, ConnectionStateFailed, "", "", safeReason(cause))
+}
+
+// uninstallWireProvider rolls back an inline wire-OAuth provider that THIS add
+// newly installed, so an add that did not persist leaves no orphan live
+// provider. A bind-by-NAME provider that pre-existed this call
+// (wireProviderIsNew == false) is left in place: it was installed by its own
+// set_oauth_provider and survives this add's outcome. A nil provider, or a
+// runtime with no installer wired, is a no-op. `phase` names the failure the
+// rollback is compensating so the two call sites' log lines stay
+// distinguishable.
+func (s *Service) uninstallWireProvider(ctx context.Context, id identity.Identity, agentID string, wireProvider *agentcfg.OAuthProviderDescriptor, wireProviderIsNew bool, phase string) {
+	if !wireProviderIsNew || wireProvider == nil || s.providerInstaller == nil {
+		return
+	}
+	if uErr := s.providerInstaller.UninstallProvider(ctx, id.TenantID, agentID, wireProvider.Name); uErr != nil {
+		s.logger.WarnContext(ctx, "agent-config: rollback of inline wire oauth provider failed",
+			"agent_id", agentID, "provider", wireProvider.Name, "phase", phase, "error", uErr.Error())
+	}
 }
 
 // prepareWireOAuthBinding resolves a connection's dev-gated wire OAuth binding

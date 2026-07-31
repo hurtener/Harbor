@@ -251,6 +251,7 @@ func WithArtifactEgressMaxBytes(n int) MCPAttacherOption {
 var (
 	_ agentcfgprotocol.ConnectionAttacher     = (*MCPConnectionAttacher)(nil)
 	_ agentcfgprotocol.DiscoveryOriginApplier = (*MCPConnectionAttacher)(nil)
+	_ agentcfgprotocol.ConnectionDetacher     = (*MCPConnectionAttacher)(nil)
 	_ projection.ConnectionReattacher         = (*MCPConnectionAttacher)(nil)
 )
 
@@ -441,6 +442,34 @@ func (a *MCPConnectionAttacher) SetOAuthDiscoveryOrigins(ctx context.Context, te
 		return nil, fmt.Errorf("%w: %q", agentcfgprotocol.ErrDiscoveryTargetNotLive, name)
 	}
 	return prev, err
+}
+
+// DetachConnection tears a runtime-added server back down on the add door's
+// COMPENSATION path: the attach succeeded, the revision write that would have
+// named it then failed (an expected-revision conflict being the reachable
+// case), and without this the server would stay live, registered and exposing
+// tools while no revision names it — so `remove_mcp_connection` answers
+// not-found and it can never be removed.
+//
+// It is deliberately a method on the ATTACHER rather than a second concrete:
+// the compensation must tear down through exactly the registry + catalog this
+// object attached through, and one object satisfying both halves is what makes
+// that true by construction rather than by wiring discipline. The teardown
+// itself is the shared [detachSource] the run-start reconcile also uses.
+//
+// The owner is stamped the same way [MCPConnectionAttacher.Attach] stamps it
+// and fails CLOSED on a missing component, so a compensating detach can never
+// widen into a process-global sweep that would drop a boot server or another
+// owner's connection. Idempotent — an attach that never reached registration
+// costs a no-op.
+func (a *MCPConnectionAttacher) DetachConnection(ctx context.Context, tenant, agentID, name string) error {
+	owner := toolauth.Owner{Tenant: tenant, Agent: agentID}
+	if owner.Tenant == "" || owner.Agent == "" {
+		return fmt.Errorf("%w: compensating detach of connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
+			ErrRuntimeAddOwnerMissing, name, owner.Tenant, owner.Agent)
+	}
+	return detachSource(ctx, a.catalog, a.registry, name, owner, a.logger,
+		"mcp: detached runtime-added server after its revision write failed")
 }
 
 // Close drains every runtime-added server's transport in reverse order. Wired
