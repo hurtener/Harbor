@@ -39,12 +39,16 @@ ERRORS_MD='docs/site/protocol/errors.md'
 # silently never fires on Linux CI).
 # ---------------------------------------------------------------------------
 
-# (1) EXACT count, not ">= 1": dropping one of the sixteen doors FAILS here.
+# (1) EXACT count, not ">= 1": dropping one of the seventeen doors FAILS here.
+# The count moved 16 -> 17 when phase 222's `set_extra_system_blocks` joined the
+# spine (CLAUDE.md §17.6 — the guard did exactly its job by refusing to let a
+# new door land silently; the door threads the token and is DRIVEN by
+# TestConditionalWrite_AllSeventeenDoorsAcceptTheToken, which moved with it).
 #     Mutation 3 (drop the field from one request type) turns this OK -> FAIL.
-assert_grep_count 'ExpectedContentHash string' "${TYPES_GO}" 16 \
-    'phase 221: all sixteen spine request types carry expected_content_hash'
-assert_grep_count 'expected_content_hash,omitempty' "${TYPES_GO}" 16 \
-    'phase 221: all sixteen json tags are optional (absent == unconditional)'
+assert_grep_count 'ExpectedContentHash string' "${TYPES_GO}" 17 \
+    'phase 221: all seventeen spine request types carry expected_content_hash'
+assert_grep_count 'expected_content_hash,omitempty' "${TYPES_GO}" 17 \
+    'phase 221: all seventeen json tags are optional (absent == unconditional)'
 
 # (2) The domain option + the sentinel.
 assert_grep_present 'type SetOptions struct' "${AGENTCFG_GO}" \
@@ -103,10 +107,10 @@ assert_grep_present 'NOT a cross-process compare-and-swap' "${ERRORS_GO}" \
 assert_grep_present 'CAN STILL LOSE AN UPDATE' "${ERRORS_MD}" \
     'phase 221: the GENERATED Protocol reference carries the bound (D-209)'
 
-# (8) The Console mirror — sixteen optional fields, hand-mirrored and
+# (8) The Console mirror — seventeen optional fields, hand-mirrored and
 #     lockstep-gated (D-223).
-assert_grep_count 'expected_content_hash\?: string;' "${TS_WIRE}" 16 \
-    'phase 221: the Console wire module mirrors the field on all sixteen types'
+assert_grep_count 'expected_content_hash\?: string;' "${TS_WIRE}" 17 \
+    'phase 221: the Console wire module mirrors the field on all seventeen types'
 
 # ---------------------------------------------------------------------------
 # Live guards. The block degrades to its OWN skip rather than exiting, so the
@@ -267,7 +271,7 @@ else
         'phase 221: N=128 racing writers yield exactly one winner, and the cross-process residual is pinned AS ABSENT'
     p221_go_test 'TestConditionalWrite' \
         ./internal/runtime/agentcfg/protocol/ \
-        'phase 221: all sixteen doors thread the token, and the token is never an authority'
+        'phase 221: all seventeen doors thread the token, and the token is never an authority'
     p221_go_test 'TestE2E_AgentConfig_ConditionalWrite' \
         ./test/integration/ \
         'phase 221: the end-to-end conditional-write round trip passes over real drivers'

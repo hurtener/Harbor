@@ -189,8 +189,19 @@ type LLMOverrides struct {
 
 // internal/runtime/agentcfg/projection
 func ActiveExtraSystemBlocks(ctx context.Context, reg agentcfg.Registry, agentID string,
-    id identity.Quadruple) (blocks []agentcfg.NamedBlock, ok bool, err error)
+    id identity.Quadruple) ([]agentcfg.NamedBlock, bool, error)
 ```
+
+**As built (§4.3).** The overlay rides the EXISTING `ApplyPromptLayers` seam
+rather than gaining its own run-loop call site: that function is already the ONE
+place both `cmd/harbor`'s run loop and the `harbortest/devstack` twin reach, so
+hosting the blocks there adds zero new drift surface. The disclosed consequence
+is one additional `Active` read per run, which shifted two failure-injection
+indices in `internal/runtime/serve/runloop_failures_test.go` (the hook read 4 →
+5, the naming read 5 → 6); both comments now name the new read. The validation
+and the two payload projections live in
+`internal/runtime/agentcfg/protocol/service.go` (already in the file list)
+rather than in a new file.
 
 ## The three decisions this phase settles
 
