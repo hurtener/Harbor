@@ -259,11 +259,20 @@ fi
 # drift on a rule like MD029 (a v0.33-vs-v0.40 ordered-list gap bit the v1.2.0
 # PR). A clone without npx (node) skips it — CI still enforces the gate.
 # -----------------------------------------------------------------------------
+#
+# The output path is mktemp'd, NOT a fixed `/tmp/harbor-markdownlint.out`.
+# `make preflight` runs this audit internally and sibling worktrees run
+# preflight concurrently, so a fixed path means two audits clobber each
+# other's diagnostic and the operator reads someone else's violations. The
+# verdict was never wrong (it is the exit code), but the file the failure
+# message points at was.
 if command -v npx >/dev/null 2>&1; then
-    if make -s markdownlint >/tmp/harbor-markdownlint.out 2>&1; then
+    MDLINT_OUT="$(mktemp -t harbor-markdownlint-XXXXXX)"
+    if make -s markdownlint >"${MDLINT_OUT}" 2>&1; then
         ok 'markdownlint (pinned cli2, CI-parity globs) clean'
+        rm -f "${MDLINT_OUT}"
     else
-        fail "markdownlint found violations — see /tmp/harbor-markdownlint.out (run \`make markdownlint\`)"
+        fail "markdownlint found violations — see ${MDLINT_OUT} (run \`make markdownlint\`)"
     fi
 else
     warn 'npx not installed; skipped markdownlint parity (CI still enforces it)'

@@ -1,13 +1,21 @@
 # Inert-smoke baseline — KNOWN DEBT, NOT AN EXEMPTION LIST.
 #
+# THE STEADY STATE OF THIS FILE IS EMPTY. It carries zero entries today and
+# `scripts/smoke/phase-223.sh` asserts that, so re-parking a script here is a
+# deliberate, reviewed act rather than a quiet one.
+#
 # `scripts/preflight.sh` fails when a smoke script belonging to a SHIPPED phase
 # produces zero OKs and zero FAILs: a shipped phase's surface exists, so its
 # smoke must assert something against it (CLAUDE.md §4.2 item 5).
 #
 # When that gate was first switched on (the wave-v1.24 §17.5 checkpoint audit)
-# 24 scripts already violated it. Failing all 24 on day one would have meant the
-# gate was disabled within a week, so they are listed here instead. The listing
-# buys them nothing except visibility:
+# 24 scripts violated it and were listed here as declared debt. Phase 223
+# drained all 24: thirteen were never shipped phases at all — the classifier
+# could not read their master-plan row and defaulted them to Shipped — and the
+# other eleven were given real assertions, each mutation-verified to turn its
+# OK into a FAIL.
+#
+# The listing buys a script nothing except visibility:
 #
 #   - A script NOT in this file that goes all-SKIP is a NEW regression and
 #     FAILS preflight. That is the case this gate exists for, and it is live.
@@ -15,38 +23,23 @@
 #     STALE ENTRY. Delete the line in the same PR — that is how the debt is
 #     paid down, and it is why the file cannot quietly rot.
 #
-# A stale entry is a WARNING rather than a FAIL on purpose: whether some of
-# these assert anything is environment-dependent (a live MCP server, a
-# benchmark budget, a platform-gated tool), so a stale entry on one machine is
-# not necessarily stale on another. A MISSING entry is always a FAIL.
+# A stale entry is a WARNING rather than a FAIL. The original rationale for
+# that posture was environment-dependence (a live MCP server, a benchmark
+# budget, a platform-gated tool). Phase 223 MEASURED that premise against the
+# 24 entries and it did not hold for a single one: all 24 reported OK: 0 /
+# FAIL: 0 on a plain checkout, and not one had a branch that WOULD have
+# asserted under a richer environment. The WARNING posture is kept anyway, on
+# a narrower and honest justification: the entry that provokes it is an entry
+# an operator deliberately added under an emergency, and turning a stale one
+# into a hard FAIL would block the very commit that pays the debt down. A
+# MISSING entry is still always a FAIL, and that is the direction that matters.
 #
 # Do NOT add a line here to silence a guard you just wrote. A new phase's smoke
-# that asserts nothing is not debt, it is an unfinished phase.
+# that asserts nothing is not debt, it is an unfinished phase. And do not add a
+# line for a phase that has NOT shipped: an unshipped phase's all-SKIP skeleton
+# is the §4.2 item 4 convention working correctly, preflight already classifies
+# it as INERT_PENDING, and phase-223.sh FAILs on a baseline line whose phase is
+# not Shipped.
 #
 # One path per line, relative to the repository root. `#` comments and blank
 # lines are ignored.
-
-scripts/smoke/phase-01.sh
-scripts/smoke/phase-02.sh
-scripts/smoke/phase-03.sh
-scripts/smoke/phase-04.sh
-scripts/smoke/phase-07.sh
-scripts/smoke/phase-23.sh
-scripts/smoke/phase-24.sh
-scripts/smoke/phase-42.sh
-scripts/smoke/phase-79.sh
-scripts/smoke/phase-85a.sh
-scripts/smoke/phase-85b.sh
-scripts/smoke/phase-85c.sh
-scripts/smoke/phase-85d.sh
-scripts/smoke/phase-85e.sh
-scripts/smoke/phase-85f.sh
-scripts/smoke/phase-85g.sh
-scripts/smoke/phase-85h.sh
-scripts/smoke/phase-85i.sh
-scripts/smoke/phase-85j.sh
-scripts/smoke/phase-85m.sh
-scripts/smoke/phase-86a.sh
-scripts/smoke/phase-107b.sh
-scripts/smoke/phase-132.sh
-scripts/smoke/phase-132-stream.sh
