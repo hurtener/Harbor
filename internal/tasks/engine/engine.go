@@ -20,7 +20,10 @@
 //
 //   - A primary `map[TaskID]*Task` holds the live task state.
 //   - A secondary `map[idempotencyKey]idempotencyRecord` resolves
-//     `(SessionID, IdempotencyKey)` lookups for `Spawn` dedup.
+//     `(TenantID, UserID, SessionID, IdempotencyKey)` lookups for
+//     `Spawn` dedup. The index is derived state, rebuilt from the
+//     persisted records at [Backend.Hydrate]; it is never itself
+//     persisted, so its key shape is a process-local concern.
 //   - A children index `map[TaskID][]TaskID` powers cascade-cancel
 //     BFS without scanning the primary map.
 //   - A single `sync.RWMutex` guards every map.
@@ -96,12 +99,40 @@ func New(bus events.EventBus, redactor audit.Redactor, backend Backend) (*Engine
 	return e, nil
 }
 
-// idempotencyKey scopes IdempotencyKey by SessionID. Spec'd by the
-// plan: same key across different sessions creates two distinct
-// tasks (the key is namespaced by SessionID).
+// idempotencyKey scopes IdempotencyKey by the FULL identity triple.
+// Same key under a different tenant, user, or session creates a
+// distinct task: dedup never reaches across an isolation boundary.
+//
+// The triple is spelled out field-by-field rather than embedding
+// identity.Quadruple so the key can never widen to include RunID —
+// a run-scoped idempotency key would defeat dedup across the retries
+// it exists to collapse (each retry is a new run).
+//
+// Every isolation component is structural, not incidental. Session
+// IDs are high-entropy, so a cross-tenant collision is not reachable
+// by guessing — but an isolation boundary is held by the shape of the
+// key, not by the entropy of one of its components (CLAUDE.md §6
+// rule 2: every identity-scoped lookup carries the full triple).
 type idempotencyKey struct {
+	TenantID  string
+	UserID    string
 	SessionID string
 	Key       string
+}
+
+// idemKeyFor builds the idempotency index key for an identity and a
+// caller-supplied key. It is the ONLY construction site for
+// idempotencyKey — Spawn's probe, Spawn's insert, Spawn's
+// compensation delete, the hydration rebuild, and the content-hash
+// lookup all route through it, so the key's shape cannot drift
+// between a write and the read that must match it.
+func idemKeyFor(id identity.Identity, key string) idempotencyKey {
+	return idempotencyKey{
+		TenantID:  id.TenantID,
+		UserID:    id.UserID,
+		SessionID: id.SessionID,
+		Key:       key,
+	}
 }
 
 // idempotencyRecord captures the bookkeeping required to detect a
@@ -160,12 +191,12 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// Idempotency check: same (SessionID, IdempotencyKey) seen?
-	// Empty IdempotencyKey disables dedup (every Spawn yields a fresh
-	// handle).
+	// Idempotency check: same (tenant, user, session, IdempotencyKey)
+	// seen? Empty IdempotencyKey disables dedup (every Spawn yields a
+	// fresh handle).
 	contentHash := spawnRequestContentHash(req)
 	if req.IdempotencyKey != "" {
-		idemK := idempotencyKey{SessionID: req.Identity.SessionID, Key: req.IdempotencyKey}
+		idemK := idemKeyFor(req.Identity.Identity, req.IdempotencyKey)
 		if existing, ok := e.idemIdx[idemK]; ok {
 			stored := e.tasks[existing.TaskID]
 			if stored == nil {
@@ -294,7 +325,7 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	}
 	e.tasks[id] = t
 	if req.IdempotencyKey != "" {
-		e.idemIdx[idempotencyKey{SessionID: req.Identity.SessionID, Key: req.IdempotencyKey}] = idempotencyRecord{
+		e.idemIdx[idemKeyFor(req.Identity.Identity, req.IdempotencyKey)] = idempotencyRecord{
 			TaskID:      id,
 			ContentHash: contentHash,
 		}
@@ -321,7 +352,7 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 			}
 			delete(e.tasks, id)
 			if req.IdempotencyKey != "" {
-				delete(e.idemIdx, idempotencyKey{SessionID: req.Identity.SessionID, Key: req.IdempotencyKey})
+				delete(e.idemIdx, idemKeyFor(req.Identity.Identity, req.IdempotencyKey))
 			}
 			if req.ParentTaskID != nil && *req.ParentTaskID != "" {
 				e.detachChildLocked(*req.ParentTaskID, id)
@@ -1014,7 +1045,7 @@ func (e *Engine) contentHashLocked(t *tasks.Task) [32]byte {
 	if t.IdempotencyKey == "" {
 		return [32]byte{}
 	}
-	if rec, ok := e.idemIdx[idempotencyKey{SessionID: t.Identity.SessionID, Key: t.IdempotencyKey}]; ok {
+	if rec, ok := e.idemIdx[idemKeyFor(t.Identity.Identity, t.IdempotencyKey)]; ok {
 		return rec.ContentHash
 	}
 	return [32]byte{}
