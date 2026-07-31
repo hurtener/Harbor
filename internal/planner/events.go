@@ -100,6 +100,22 @@ const (
 	// older trained models. Payload (ActionExtraFieldDroppedPayload,
 	// SafePayload) carries the run identity + the dropped field name.
 	EventTypePlannerActionExtraFieldDropped events.EventType = "planner.action_extra_field_dropped"
+
+	// EventTypePlannerToolDeclarationCollision — emitted by a planner
+	// when two catalog tools map onto ONE provider-safe function name and
+	// the second therefore cannot be declared for the turn. Declaring one
+	// function name twice makes provider-side dispatch ambiguous (the
+	// model's returned name would resolve to whichever tool matched
+	// first), so the collider is dropped — but the model is then offered
+	// a strictly smaller tool surface than the catalog holds, which the
+	// operator has to be able to see. The emit is the load-bearing
+	// fail-loudly surface that makes that drop non-silent (§13); without
+	// it the run degrades in total silence.
+	//
+	// Payload (ToolDeclarationCollisionPayload, SafePayload) carries the
+	// run identity, the colliding provider-safe name, and BOTH real
+	// catalog names so the operator can rename one of them.
+	EventTypePlannerToolDeclarationCollision events.EventType = "planner.tool_declaration_collision"
 )
 
 func init() {
@@ -112,6 +128,35 @@ func init() {
 	events.RegisterEventType(EventTypeTrajectoryCompressionFailed)
 	events.RegisterEventType(EventTypePlannerRepairGuidanceInjected)
 	events.RegisterEventType(EventTypePlannerActionExtraFieldDropped)
+	events.RegisterEventType(EventTypePlannerToolDeclarationCollision)
+}
+
+// ToolDeclarationCollisionPayload is the typed payload for
+// EventTypePlannerToolDeclarationCollision. SafePayload — every field is
+// operator-visible catalog metadata, never secret-shaped:
+//
+//   - `Identity` is the run's identity quadruple.
+//   - `DeclaredName` is the provider-safe function name both tools mapped
+//     onto — the name actually sent to the model.
+//   - `DeclaredTool` is the real catalog name of the tool that KEPT the
+//     declaration (the first one seen for that provider-safe name).
+//   - `DroppedTool` is the real catalog name of the tool that could NOT be
+//     declared for this turn. The model cannot call it until the collision
+//     is resolved by renaming one of the two.
+//
+// The remedy is always operator-side: rename one of the two catalog tools
+// so they no longer map onto a single provider-safe name. The planner
+// cannot disambiguate them itself — the catalog-name recovery path
+// (matching a provider-returned name back to a catalog tool) recomputes
+// the name transform statelessly, so any order-dependent disambiguation
+// would not survive the round trip.
+type ToolDeclarationCollisionPayload struct {
+	events.SafeSealed
+	Identity     identity.Quadruple
+	DeclaredName string
+	DeclaredTool string
+	DroppedTool  string
+	OccurredAt   time.Time
 }
 
 // DecisionPayload is the typed payload for EventTypePlannerDecision.

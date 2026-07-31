@@ -10974,3 +10974,83 @@ So on this door the write could fail with the server already up, and the `recErr
 **Documented surface updated in the same PR (§18).** `StartRequest.IdempotencyKey`'s wire godoc (`internal/protocol/types/control.go`) and the hand-written `docs/site/protocol/task-control.md` both said "per session"; both now say the triple. No wire shape changed — `idempotency_key` is the same field with the same JSON tag — so the generated Protocol reference regenerates with prose only.
 
 **Cross-references.** D-363 (the search cluster's user axis — the same "an omitted or unexamined isolation component is a boundary hole, fix it unconditionally" call, one subsystem over), D-352 (the artifact read key IS the isolation triple), D-356 (an artifact listing scopes to the caller's own user). CLAUDE.md §5, §6 (rules 1, 2, 9, 10), §9, §11, §13, §17.6, §18.
+
+---
+
+## D-377 — The model-visible tool name is BOUNDED and shortened tail-first, independently of the catalog key
+
+**Date:** 2026-07-31
+
+**Status:** Accepted
+
+**Context.** Tool catalog keys are `<sourceID>_<tool>` (`internal/tools/drivers/mcp/mcp.go:936`). The catalog is FLAT and process-global (`internal/tools/catalog.go:120` — `byName`), so a source id has to be globally unique, and operators reach for long, high-entropy ids to get that. The id is then repeated on every one of that source's tools, and a tool name is not paid once: it is paid on EVERY turn, TWICE per tool — once in the `req.Tools[]` declaration and once in the `<available_tools>` prompt section — plus once more each time the model writes the name to invoke it.
+
+The obvious remedy, re-keying the MCP registry so ids can be short, was probed and DISPROVED: a perfectly re-keyed registry (one `Registry` per owner) still fails at `catalog.Register("github_add"): duplicate tool name`, because the binding constraint is the flat catalog, not the registry key. D-301 settled that the catalog is flat; reversing it is an RFC, not a phase.
+
+**Decision.** Leave the catalog key long and globally unique. BOUND the model-visible name instead, at `maxToolNameBytes = 44` — deliberately below the provider's 64-byte ceiling — and shorten over-budget names TAIL-FIRST:
+
+```text
+<...retained tail (35 bytes)...>_<8-hex digest of the full sanitized name>
+```
+
+This is possible because the indirection already exists and is already load-bearing: `resolveDeclaredToolName` maps whatever the model returns back to the real catalog key by recomputing the forward transform over the catalog. Nothing about the key moves; no isolation property changes; no RFC is needed.
+
+**Tail-first, because the head is the part that repeats.** Sibling tools of one source share the head and differ only in the tail, so the tail is BOTH the discriminating half and the semantically useful half (it holds the verb). Head truncation is what caused D-378's silent collapse; keeping the tail fixes the cause rather than reporting it.
+
+**Why 44 and not a rounder number.** 44 implies `44 - 8 - 1 = 35` bytes of retained tail. Measured against a representative 30-verb GitHub-MCP tool set, 44 is the SMALLEST budget at which every verb still renders byte-exact — the longest, `get_pull_request_review_comments`, is 32. Budget 40 already clips that verb (29/30 survive); budget 24 loses a third of them (18/30); budget 48+ buys no comprehension and gives back roughly half the saving. The number is calibrated to a measured property, and `TestSanitizeToolName_KeepsTheVerbVisible` is what fails first if anyone tightens it.
+
+**Measured effect** (30 tools, declared-name bytes per turn across both surfaces; characters are measured exactly, tokens are NOT — no tokenizer is vendored, see below):
+
+| catalog key | key len | before (budget 64) | after (budget 44) | change |
+| --- | --- | --- | --- | --- |
+| `github` | 6 | 1334 | 1334 | 0% — in-budget names pass through unchanged |
+| high-entropy typical | 36 | 3124 | 2640 | −484 B/turn (−15%) |
+| owner-encoded long | 64 | 3840 | 2640 | −1200 B/turn (−31%) |
+
+**The token figure is an ESTIMATE and is labelled as one.** No tokenizer is vendored in this repo; the only in-repo estimator is `DefaultTokenEstimator` (`internal/planner/compression.go:79`), a chars/4 English heuristic that UNDERSTATES high-entropy alphanumeric strings. Dividing the measured character deltas by 4 (repo heuristic) and by 2.5 (the ~2-3 chars/token that high-entropy strings actually cost) brackets the long-key saving at roughly **300–480 tokens per turn**. That range is derived by division from exact character counts, not measured — do not quote it as measured.
+
+**A short per-source ALIAS was evaluated and REJECTED.** An alias (`s3_create_issue`) saves more, and it is the first idea anyone has. It fails on a property the current transform has and an alias cannot: `sanitizeToolName` is a PURE function of its argument. It reads no catalog, no ordering, no per-run state, so a name's model-visible form cannot shift. An alias assigned from catalog composition or ordinal position shifts the moment the catalog GROWS — and it grows mid-run by design, since discovered tools are appended per turn. A replayed historical `tool_call` would then no longer match any current declaration and the provider 400s. Making the alias stable instead requires per-run alias state, which the planner may not hold (§5 / D-025 forbid mutable state on the compiled artifact) and which `buildToolDeclarations` cannot reach. It would also be a SECOND mapping beside the existing one, which is §13's "two parallel implementations of one concept". The purity is recorded in godoc as load-bearing, not incidental, and `TestSanitizeToolName_Deterministic` pins it.
+
+**A prerequisite fix, not optional: `<available_tools>` leaked the raw key.** Verifying the indirection found it is NOT total. `renderToolNameDesc` (`internal/planner/react/prompt.go`) rendered `t.Name` RAW while `req.Tools[]` declared the sanitized form — so the model was already being shown a name it could not call (`clock.now` listed, `clock_now` declared), and half the per-turn prefix cost was paid on a surface no shortening would have touched. Both surfaces now go through one transform. This is a pre-existing correctness bug fixed under §17.6, not scope creep: shortening declarations while leaving the prompt raw would have made it strictly worse.
+
+**Surfaces audited for raw-key leaks** (the shortening is only safe if the indirection is total): declarations → sanitized; `<available_tools>` → **was raw, now sanitized**; assistant `tool_calls[].Name` trajectory replay (3 sites) → sanitized; `RoleTool` result messages → carry `ToolCallID`, never a name; model-to-runtime invocation parsing (5 projector sites) → `resolveDeclaredToolName`; `slog` sites → operator-only, not model-visible, correctly left raw. Two latent leaks are RECORDED, not fixed: `renderActionForLLM`'s `CallTool` branch echoes the raw key but is unreachable for `CallTool` (which routes through the native pair path), and dispatch error strings (`tool %q ...`) can carry the raw key into an observation. Neither is on the declaration path; both are follow-ups.
+
+**Cross-references.** D-378 (the silent-drop fix this ships with — a shortening scheme makes collisions likelier, so the loud diagnostic is what keeps it safe), D-301 (the flat catalog, which is why the key cannot shrink), D-025 (why per-run alias state is not available to the planner), D-209 / D-223 (both generated artifacts re-run). CLAUDE.md §5, §11, §13, §17.6, §18.
+
+---
+
+## D-378 — A tool declaration dropped on a name collision is ANNOUNCED, never silent
+
+**Date:** 2026-07-31
+
+**Status:** Accepted
+
+**Context.** `buildToolDeclarations` dedups on the model-visible name, because two catalog tools declared under one function name make provider-side dispatch ambiguous — the model's returned name resolves to whichever tool matched first. The dedup was correct; its FAILURE MODE was not. The collider was dropped with a bare `continue`: no error, no event, no log, no diagnostic of any kind.
+
+Combined with the old head truncation (D-377), that turned a naming accident into total silence. Measured on a 64-byte source id with a 30-tool server: **30 catalog tools in, 1 declaration out.** The `<available_tools>` prompt section meanwhile still listed all 30 (it dedups on the RAW name), so the model was TOLD about thirty tools and could call exactly one — and nothing anywhere said so. This is §13's forbidden silent degradation, exactly.
+
+**Decision.** Keep the drop — it is the right behaviour, and the alternatives are worse (see below) — but make it OBSERVABLE. A new canonical event, `planner.tool_declaration_collision`, carries a typed `SafePayload` naming the run identity, the colliding model-visible name, the catalog tool that KEPT the declaration, and the catalog tool that was DROPPED. The remedy is operator-side (rename one of the two), so the payload names both.
+
+**Why an event and not an error.** `buildToolDeclarations` runs at turn time on every planner step. Returning an error would fail EVERY run of an agent whose operator has two ambiguously-named tools — a config problem escalated into a total outage, and one best caught at registration rather than on turn N. Why not a log: this path has no logger, and the planner struct deliberately holds none (§5 / D-025 — no mutable state on the compiled artifact). `rc.Emit` is the established diagnostic channel for exactly this shape, with three precedents that are all soft-degrade paths made loud the same way: `planner.repair_exhausted`, `trajectory.compression_failed`, `planner.action_extra_field_dropped`.
+
+**Why not disambiguate instead of dropping.** Appending a disambiguating suffix to the second tool would keep both declared, and is tempting. It cannot work: `resolveDeclaredToolName` recovers the catalog name by recomputing the forward transform per tool, STATELESSLY. Any order-dependent disambiguation is not reproducible from the returned name alone, so the round trip breaks. Dropping and announcing is the only shape consistent with the stateless inverse D-377 depends on.
+
+**Verdict on every `seen`/`continue` site in the projection path — they are NOT all the same defect.** This was checked per site rather than fixed reflexively:
+
+| site | verdict |
+| --- | --- |
+| `deriveDiscoveredFromTrajectory` (~L61-75) | **Legitimate.** Dedups RAW names accumulated across `tool_search` observations. Same name = same tool; no information lost. Unchanged. |
+| `mergeDiscovered` (~L182-197) | **Legitimate.** Set union of two raw-name slices, order-preserving. Same name = same tool. Unchanged. |
+| `buildToolDeclarations` always-loaded loop | **THE DEFECT.** Dedups on the SHORTENED name, so distinct catalog tools collide and one vanishes. Now announced. |
+| `buildToolDeclarations` discovered loop | **Both.** Benign when discovery re-surfaces an already-loaded tool (same raw name — the intended skip); a real collapse when the raw names DIFFER. Split by comparing raw names. |
+| `buildToolDeclarations` reserved-control seeding | **Was a silent defect too.** An operator tool mapping onto `_spawn_task` was dropped silently. The control still wins — the planner cannot function without it — but the drop is now announced. |
+
+The distinguishing rule is one line: `seen` now maps the model-visible name to the REAL catalog name that claimed it, so the drop can compare them. Same raw name means benign, stay quiet. Different raw names means a lost surface, announce. A diagnostic that fired on the benign path would be noise, and noise is how a real signal gets ignored; `TestBuildToolDeclarations_BenignRediscoveryStaysQuiet` pins that direction.
+
+**Residual collisions remain reachable, which is why the diagnostic is load-bearing rather than theatre.** D-377's digest removes LENGTH-induced collisions, but the disallowed-character mapping is many-to-one by construction: `clock.now` and `clock/now` both sanitize to `clock_now` at any length. That is a catalog-naming problem no transform can fix, and it is the case the event exists for.
+
+**Known limit, stated rather than engineered away.** `rc.Emit` may be nil — the `RunContext.Emit` contract says concretes must nil-check, and tests routinely omit it. When it is nil the drop IS silent again. Production always wires `Emit`, so this is a test-harness gap, not a production one; it is recorded here rather than papered over, because a reader deserves to know the guarantee's exact edge.
+
+**Mutation-verified — every guard was broken and watched go RED, never OK to SKIP.** (1) Restore head truncation without the digest (the original bug) produces `catalog declarations = 1, want 30 — 29 tool(s) collapsed`, reproducing the defect exactly. (2) Restore head truncation WITH the digest: the collapse test passes but `KeepsTheVerbVisible` fails on all 30, confirming the two guards are independent. (3) Delete both `emitToolDeclarationCollision` calls: both loudness tests fail (`collision events = 0, want 1 — the drop was silent`). (4) Revert `renderToolNameDesc` to the raw name: `MatchesDeclaredNames` fails (`the model is shown a name it cannot call`). (5) Drop the `declared == dropped` benign guard: `BenignRediscoveryStaysQuiet` fails with 30 spurious events. (6) Revert `maxToolNameBytes` to 64: the cost guard fails (`long key costs 3840 bytes/turn vs typical 3124 — the declared name is not bounded`).
+
+**Cross-references.** D-377 (the tail-first shortening that removes the length-induced cause; this entry covers what shortening cannot remove), D-025 (why the planner holds no logger and no per-run state), D-209 / D-223 (the new event type regenerated into the Protocol reference and the Console wire manifest). CLAUDE.md §5 ("Fail loudly"), §11, §13 (silent degradation), §17.1, §17.3, §17.6, §18.

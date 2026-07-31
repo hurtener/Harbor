@@ -2,7 +2,9 @@ package react
 
 import (
 	"encoding/json"
+	"time"
 
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -240,13 +242,26 @@ func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.Too
 	reserved := reservedPlannerControlDeclarations()
 	decls := make([]llm.ToolDeclaration, 0, len(reserved)+len(always)+len(discovered))
 	// Dedup on the SANITIZED name — that is the function name the LLM
-	// sees, so two catalog names that sanitize to the same string would
-	// otherwise be sent as duplicate declarations and confuse provider
-	// dispatch. On such a (pathological) collision the second tool is
-	// dropped for the turn rather than declared ambiguously.
-	seen := make(map[string]struct{}, len(reserved)+len(always)+len(discovered))
+	// sees, so two catalog names that map onto the same string cannot both
+	// be declared: the model's returned name would resolve to whichever
+	// tool matched first, making provider-side dispatch ambiguous. The
+	// collider is dropped for the turn.
+	//
+	// `seen` maps the provider-safe name to the REAL catalog name that
+	// claimed it. Keeping the real name (rather than a bare set membership)
+	// is what lets the drop distinguish its two cases:
+	//
+	//   - Same real name → a benign re-encounter. Discovery routinely
+	//     re-surfaces an already-loaded tool; skipping it is the intended
+	//     behaviour and needs no announcement.
+	//   - Different real names → a genuine collision. The model is offered
+	//     a strictly smaller surface than the catalog holds, so the drop is
+	//     announced on the event bus. Degrading here in silence is the
+	//     forbidden pattern (§13): nothing downstream can otherwise tell
+	//     that a tool the operator registered never reached the model.
+	seen := make(map[string]string, len(reserved)+len(always)+len(discovered))
 	for _, r := range reserved {
-		seen[sanitizeToolName(r.Name)] = struct{}{}
+		seen[sanitizeToolName(r.Name)] = r.Name
 		decls = append(decls, r)
 	}
 	for _, t := range always {
@@ -254,10 +269,11 @@ func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.Too
 			continue
 		}
 		key := sanitizeToolName(t.Name)
-		if _, dup := seen[key]; dup {
+		if owner, dup := seen[key]; dup {
+			emitToolDeclarationCollision(rc, key, owner, t.Name)
 			continue
 		}
-		seen[key] = struct{}{}
+		seen[key] = t.Name
 		decls = append(decls, toolToDeclaration(t))
 	}
 	for _, name := range discovered {
@@ -265,17 +281,48 @@ func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.Too
 			continue
 		}
 		key := sanitizeToolName(name)
-		if _, dup := seen[key]; dup {
+		if owner, dup := seen[key]; dup {
+			emitToolDeclarationCollision(rc, key, owner, name)
 			continue
 		}
 		t, ok := rc.Catalog.Resolve(name)
 		if !ok {
 			continue
 		}
-		seen[key] = struct{}{}
+		seen[key] = name
 		decls = append(decls, toolToDeclaration(t))
 	}
 	return decls
+}
+
+// emitToolDeclarationCollision announces a tool that could not be declared
+// because another catalog tool already claimed its provider-safe function
+// name. It is a no-op when `declared` and `dropped` name the SAME catalog
+// tool — that is the benign re-encounter (discovery re-surfacing an
+// already-loaded tool), not a lost surface.
+//
+// A nil Emit closure (tests without observability) makes this a no-op, per
+// the RunContext.Emit contract; production always wires it.
+func emitToolDeclarationCollision(rc planner.RunContext, declaredName, declared, dropped string) {
+	if declared == dropped || rc.Emit == nil {
+		return
+	}
+	now := time.Now()
+	if rc.Clock != nil {
+		now = rc.Clock()
+	}
+	rc.Emit(events.Event{
+		Type:       planner.EventTypePlannerToolDeclarationCollision,
+		Identity:   rc.Quadruple,
+		OccurredAt: now,
+		Payload: planner.ToolDeclarationCollisionPayload{
+			Identity:     rc.Quadruple,
+			DeclaredName: declaredName,
+			DeclaredTool: declared,
+			DroppedTool:  dropped,
+			OccurredAt:   now,
+		},
+	})
 }
 
 // reservedPlannerControlDeclarations returns the synthetic
