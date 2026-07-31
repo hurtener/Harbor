@@ -6587,6 +6587,11 @@
           "key": "agent_id",
           "type": "string",
           "optional": true
+        },
+        {
+          "key": "caller_memory",
+          "type": "any",
+          "optional": true
         }
       ]
     },
@@ -8079,6 +8084,7 @@
     "mcp.raw_html_trust_toggled",
     "mcp.resource_offloaded",
     "mcp.resource_updated",
+    "memory.caller_block_admitted",
     "memory.health_changed",
     "memory.identity_rejected",
     "memory.item_deleted",

@@ -49,6 +49,15 @@ type RunOverrides struct {
 	// prompt for the next message only. An empty string is a valid
 	// override (it clears the system prompt for that one message);
 	// nil means "leave the agent's configured system prompt in place".
+	//
+	// NOT the additive path, and not the home for retrieved content.
+	// This field REPLACES the whole base+user prompt spine, which
+	// silently suppresses the operator's durable user layer, and it
+	// seats whatever it carries in the TRUSTED base position with no
+	// untrusted framing at all. To contribute recalled or otherwise
+	// retrieved content to a run, use `StartRequest.caller_memory`,
+	// which composes into the run's `<read_only_external_memory>` tier
+	// behind the anti-prompt-injection preamble and displaces nothing.
 	SystemPromptOverride *string `json:"system_prompt_override,omitempty"`
 	// Model, when non-nil, overrides the model the next message's run
 	// requests. The runtime rejects a model with no configured

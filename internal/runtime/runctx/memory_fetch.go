@@ -31,11 +31,20 @@ import (
 // applied to each recalled turn's text before it enters the prompt.
 // This bounds each turn, not the aggregate: the injected External
 // block is at most recall.TopK × 2 × this cap, so a small TopK keeps
-// it well under the context-window heavy-output threshold. A large
-// operator-set TopK can push the aggregate over that threshold — at
-// which point the LLM-edge context-leak guard fails the run loudly
-// with ErrContextLeak (never a silent leak; §13). That guard is the
-// authoritative backstop; this per-turn cap is the first line.
+// it modest. A large operator-set TopK can push the aggregate well
+// past that.
+//
+// THERE IS NO PER-TIER DOWNSTREAM BACKSTOP. The LLM-edge context-leak
+// guard does NOT cover this content: it applies its byte check only to
+// text carried under the TOOL role (`offloadableText := m.Role ==
+// RoleTool` in internal/llm/safety.go — non-tool text is byte-exempt by
+// that guard's own documented design), and memory tiers render under
+// the SYSTEM role. The only downstream guard that sees an oversized
+// memory tier is the token-budget check, which fires after the whole
+// prompt is assembled and fails the run late with
+// ErrContextWindowExceeded. This per-turn cap is therefore the first
+// line AND the only per-tier line; sizing TopK is an operator decision
+// with no safety net beneath it.
 const recalledTurnTextCap = 2048
 
 // FetchMemoryBlocks fetches the session's memory patch, optionally

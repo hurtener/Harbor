@@ -2,7 +2,9 @@ package protocol
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -273,6 +275,69 @@ func (s *ControlSurface) emitAdminScopeUsed(ctx context.Context, caller identity
 // every start. 64 KiB is generous for any realistic answer schema.
 const maxOutputSchemaBytes = 64 * 1024
 
+// maxCallerMemoryBytes caps the `start` request's `caller_memory`
+// document size. It is the ONLY bound on this content class: the
+// LLM-edge context-leak guard byte-exempts everything that is not a
+// tool-role message (`internal/llm/safety.go`, `offloadableText :=
+// m.Role == RoleTool`) and memory tiers render under the system role,
+// so nothing downstream re-checks these bytes until the token-budget
+// guard fails the whole run late. The cap therefore lives at the edge,
+// before a task exists.
+//
+// CAP ORDERING IS AN INVARIANT, NOT A COINCIDENCE. This constant MUST
+// stay strictly below the control transport's whole-body cap
+// (`maxBodyBytes`, 64 KiB). Both refuse with the identical
+// CodeInvalidRequest, so a field cap that rises to meet the envelope cap
+// becomes unreachable dead code that every status-code test keeps
+// passing against — the transport simply answers first. The refusal text
+// below names the field precisely so a test can tell the two apart, and
+// the phase smoke pins the ordering mechanically.
+//
+// 32 KiB is not an operator knob. A dial on "how much untrusted caller
+// content may enter a prompt" is a security-posture downgrade dressed as
+// tuning. If a legitimate caller is ever refused here, the answer is an
+// additive optional config key defaulting to this constant — never a
+// raise of the constant.
+const maxCallerMemoryBytes = 32 * 1024
+
+// jsonNullLiteral is the four bytes `json.RawMessage` holds after
+// decoding an explicit `"caller_memory": null`. An absent field decodes
+// to a nil RawMessage; an explicit null decodes to this. The two are
+// deliberately NOT collapsed: a caller that wrote null asked for
+// something, and answering "accepted" while dropping it is the silent
+// degradation CLAUDE.md §13 forbids.
+const jsonNullLiteral = "null"
+
+// validateCallerMemory applies the `start` request's caller-memory edge
+// checks: the byte cap, the explicit-null refusal, and a JSON validity
+// check. It returns nil for an OMITTED field (the unchanged path —
+// byte-identical to a Runtime without it) and a Protocol error for every
+// payload the Runtime will not admit.
+//
+// Every refusal names `caller_memory`. That is load-bearing: the control
+// transport's own body-size refusal carries the SAME CodeInvalidRequest,
+// so the field name is the only thing that distinguishes this check's
+// answer from the envelope's.
+func validateCallerMemory(method string, raw json.RawMessage) error {
+	if raw == nil {
+		return nil
+	}
+	if len(raw) > maxCallerMemoryBytes {
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: caller_memory exceeds the %d-byte cap (%d bytes)",
+			method, maxCallerMemoryBytes, len(raw))
+	}
+	if strings.TrimSpace(string(raw)) == jsonNullLiteral {
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: caller_memory is explicitly null — omit the field to send no caller memory", method)
+	}
+	if !json.Valid(raw) {
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: caller_memory is not a valid JSON document", method)
+	}
+	return nil
+}
+
 // agentNotResolvableMsg is the SINGLE refusal text for an unresolvable
 // caller-named agent. It deliberately names neither the rejected id nor
 // the reason: "registered under another tenant" and "never existed" must
@@ -415,6 +480,16 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		}
 	}
 
+	// Caller-memory edge validation (reject-early). An over-cap,
+	// explicitly-null or malformed `caller_memory` is refused with
+	// CodeInvalidRequest BEFORE Spawn runs — no task is created that the
+	// edge could have rejected. This is the ONLY bound on the content
+	// class: see maxCallerMemoryBytes for why nothing downstream re-checks
+	// it.
+	if err := validateCallerMemory(string(method), sr.CallerMemory); err != nil {
+		return nil, err
+	}
+
 	handle, err := s.tasks.Spawn(ctx, tasks.SpawnRequest{
 		Identity:                  identity.Quadruple{Identity: id},
 		Kind:                      tasks.KindForeground,
@@ -426,6 +501,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		InputArtifactDispositions: sr.InputArtifactDispositions,
 		OutputSchema:              sr.OutputSchema,
 		AgentID:                   sr.AgentID,
+		CallerMemory:              sr.CallerMemory,
 	})
 	if err != nil {
 		return nil, mapTaskError(string(method), err)

@@ -444,6 +444,37 @@ Measured on `plan/v125-wave` with `go test -cover` before any change (the curren
 | `internal/planner/react` | 87.0% | **87%** (hold — regression guard only, no production change) |
 | `internal/tasks` | 87.2% | **87%** (hold — one persisted field) |
 
+### As shipped — measured after the change
+
+| Package | Before | Target | After | Verdict |
+|---|---:|---:|---:|---|
+| `internal/protocol` | 78.4% | 80% | **78.7%** | improved toward, SHORT |
+| `internal/protocol/types` | 62.6% | 65% | **62.6%** | flat — target rested on a false premise |
+| `internal/runtime/runctx` | 91.8% | 92% | **92.1%** | met |
+| `internal/runtime/serve` | 86.4% | 86% | **86.5%** | met |
+| `internal/planner/react` | 87.0% | 87% | **87.0%** | met |
+| `internal/tasks` | 87.2% | 87% | **87.2%** | met |
+
+Two targets are not met, and the reason matters more than the numbers.
+
+**`internal/protocol/types` cannot move on this phase's changes.** The plan
+predicted "the round-trip + omitempty tests" would lift it 2.4pp. They cannot:
+a struct FIELD addition contributes zero statements to a coverage denominator,
+and a JSON round-trip exercises `encoding/json`, not this package. The
+package's actual uncovered surface is nineteen `IsValid*` enum validators
+(`agents.go`, `artifacts.go`, `flows.go`, `memory.go`, `tasks.go`, `tools.go`),
+four zero-coverage `artifacts.go` helpers, and three partially-covered
+`version.go` functions — every one unrelated to caller memory.
+Covering them to hit an arithmetic target would be coverage padding, so the
+target is recorded as unreachable-by-this-phase rather than met. **Follow-up
+worth filing on its own:** those validators are wire-contract code with no
+test at all.
+
+**`internal/protocol` improved 78.4% → 78.7% and is 1.3pp short of 80%.** Every
+new branch this phase adds is covered by the edge table; the residual is
+pre-existing surface. §14's alternative clause ("or this PR explicitly improves
+it toward the target") is what this leans on, stated rather than glossed.
+
 ## Dependencies
 
 - **84e** — the run-loop memory step whose External tier this composes into, and whose `FetchMemoryBlocks`

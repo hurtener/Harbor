@@ -460,10 +460,23 @@ const (
 // [ErrMemoryBlockUnserializable] rather than degrading to an empty
 // wrapper.
 //
-// Identity contract: the Runtime MUST have already filtered each blob
-// to the run's `(tenant, user, session)` scope before populating this
-// struct. The prompt builder never re-applies identity filtering — it
-// renders exactly what it is handed (RFC §6.6, CLAUDE.md §6).
+// Identity contract, stated PER PROVENANCE because the tiers have more
+// than one producer:
+//
+//   - STORE-DERIVED content — anything read out of a MemoryStore, a
+//     StateStore or any other identity-scoped substrate — MUST have
+//     already been filtered to the run's `(tenant, user, session)` scope
+//     before it is placed here. The prompt builder never re-applies
+//     identity filtering; it renders exactly what it is handed
+//     (RFC §6.6, CLAUDE.md §6).
+//   - CALLER-SUPPLIED content is not store-derived, so there is no
+//     filtering to perform. It arrives in a request body under the
+//     caller's own verified triple and is admitted only into the run
+//     minted for that same triple. The contract above governs store
+//     READS; this path performs none, and content flows in, never out.
+//
+// This is a sharpening, not a relaxation: nothing that was filtered
+// before stops being filtered.
 type MemoryBlocks struct {
 	// External is the long-term / retrieved memory tier. Rendered into
 	// the `<read_only_external_memory>` prompt section. Nil to omit.

@@ -183,6 +183,31 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
 
 A named agent is accepted when EITHER its id equals the runtime's configured default agent id, OR a config revision exists for your tenant under that id (write one with `agent_config.set_revision` — see §7). Anything else is refused with a `400 {"code": "invalid_request"}` envelope **before any task is created**, never quietly replaced by the default: a caller that named agent A, silently got agent B, and was told it succeeded is exactly the failure this rule prevents. The refusal is deliberately uninformative — an id belonging to another tenant and an id that never existed produce the identical error, so the edge cannot be probed for cross-tenant existence.
 
+To contribute **content you already retrieved** — recalled conversation memory, a document your own store fetched, anything you want the model to consider without asserting it as instruction — add the optional `caller_memory` field (D-364). **This is the field to reach for, NOT `system_prompt_override`.**
+
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {}, "query": "Continue where we left off.",
+       "caller_memory": {"recalled": [{"user": "my order id is 4471",
+                                       "assistant": "noted, tracking it"}]}}'
+```
+
+Where it lands, and why that is the whole point. The value is composed into the run's `<read_only_external_memory>` prompt tier under the FIXED runtime-owned map key `caller_supplied`, beside whatever the runtime's own retrieval wrote there (`recalled_turns`) — **it composes, it never replaces**. You name no key, so you can never shadow a runtime key and a future runtime producer can never collide with you. That tier ships a five-line anti-prompt-injection preamble whose entire premise is that its contents are hostile, which is exactly why it is the position a caller may write.
+
+Contrast with `runs.set_overrides`' `system_prompt_override` (§7), which is what this field exists to divert you away from: that one **replaces the whole base+user prompt spine**, silently suppressing the operator's durable user layer, and seats your content in the **trusted** base position with no framing at all. It is the right tool for changing the agent's instructions and the wrong tool for supplying it with content.
+
+The rules, all enforced at the edge before any task is created:
+
+- Any JSON value — object, array, string, number.
+- **An explicit `"caller_memory": null` is REFUSED**, not treated as absent. Omit the field if you have nothing to send; a caller that believes its memory reached the model when it did not is the failure this refuses to hide.
+- Over **32 KiB** → `400 {"code": "invalid_request"}`, with a message that names `caller_memory`. No task is created.
+- It can never write the conversation-memory tier — that is a claim about the session's stored turns only the runtime makes.
+- Each admitting run emits `memory.caller_block_admitted` carrying `bytes` / `tier` / `key` and **no fragment of your content**, so an operator can audit that caller-asserted memory entered a run without the audit trail becoming a copy of it.
+
+**One thing Harbor does not do for you:** it does not sanitise this payload. The untrusted framing is the mitigation for the MODEL; it is not redaction. If you pipe third-party content through `caller_memory` without redacting it first, you own that data-leakage path.
+
 **It selects configuration only.** The run's southbound tool provenance (`_meta.agent_id` on outbound MCP calls) and its RFC 8693 acting principal (`actor_token`) stay the runtime's boot-derived value — the acting principal is the runtime's own verified identity and is never client-supplied. `tasks.get` / `tasks.list` reflect the selection on `task.agent_id`; an **absent** value means the caller named none and the run bound the runtime's configured default ("defaulted", not "unknown").
 
 For multimodal input, upload artifacts FIRST (`artifacts.put`, see §6) and pass the returned IDs in `input_artifact_ids` (D-166). The per-MIME dispatch — image inline vs PDF/audio as ArtifactStub — happens inside the planner; your client just passes refs. To override how an attachment is handed to the model, add the optional `input_artifact_dispositions` map (Phase 84b — D-189), keyed by artifact id with values `ref` | `inline` | `provider_native` | `tool:<name>` (e.g. `{"art_x": "tool:pdf.extract"}` forces the named catalog tool). Your hint is the top precedence layer (hint > the agent's `multimodal.disposition` config map > the runtime default: image inline, everything else ref); an omitted map keeps today's behaviour. `tasks.get` reflects the hint on `input_artifacts[].disposition`, and the resolution (including degradations — e.g. an unknown `tool:<name>`) is observable as `task.input_disposition.resolved` events. A `provider_native` hint is honoured end-to-end (Phase 84c — D-190): the LLM driver uploads the attachment to the provider's file surface and the upload is observable as `llm.provider_file.uploaded` events (artifact ref, provider, modality, `file_id`).
