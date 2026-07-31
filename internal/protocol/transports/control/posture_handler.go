@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -37,9 +36,9 @@ func (h *Handler) servePosture(w http.ResponseWriter, r *http.Request, method me
 
 	req := &types.RuntimeInfoRequest{}
 	if len(body) > 0 {
-		if jerr := json.Unmarshal(body, req); jerr != nil {
+		if jerr := decodeStrict(body, req); jerr != nil {
 			h.writeError(w, r, protoerrors.Newf(protoerrors.CodeInvalidRequest,
-				"method %q: request body is not a valid RuntimeInfoRequest", string(method)))
+				"method %q: request body is not a valid RuntimeInfoRequest: %s", string(method), decodeDetail(jerr)))
 			return
 		}
 	}

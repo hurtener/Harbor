@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: static-only
+#
+# MUTATION PAYLOAD — NOT A SMOKE SCRIPT. DO NOT "FIX" THE DEFECT BELOW.
+#
+# scripts/smoke/phase-224.sh copies this file into a THROWAWAY fixture corpus
+# (under $TMPDIR, never the working tree) as `scripts/smoke/phase-02.sh` and
+# asserts that scripts/drift-audit.sh's "smoke regex portability" guard reports
+# a FAIL for it. The defect is deliberate and is the whole point of the file.
+#
+# It is stored with a `.txt` suffix so the live repository's own guards skip it:
+# drift-audit globs `scripts/smoke/*.sh` (not `*.sh.txt`) for the escape scan
+# and greps `scripts --include='*.sh'` for the mktemp scan. Renaming this file
+# to `.sh` would make the real audit FAIL on the repository itself.
+#
+# THE SHAPE IS DELIBERATE. `[^\n]` is written as the SECOND argument of a
+# file-first helper on a BACKSLASH-CONTINUED line. That is the hardest shape
+# the guard has to see, and it is the exact shape that defeated the guard's
+# first cut (a single-line `grep -rnE` could not join the continuation, and the
+# helper alternation named only five of the corpus's eight grep-shaped
+# helpers). A payload written as a one-line `assert_grep_present` call would
+# pass against the OLD broken guard too, and would therefore prove nothing.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "${ROOT}"
+
+# shellcheck source=scripts/smoke/common.sh
+source "scripts/smoke/common.sh"
+
+WIRE_GO='internal/fixture/fixture.go'
+
+assert_not_grep "${WIRE_GO}" \
+    'ExtraSystemBlocks[^\n]*map\[' \
+    'fixture: blocks are an ordered slice, never a map'
+
+smoke_summary

@@ -236,7 +236,10 @@ func TestE2E_StateHistory_WindowedReplay(t *testing.T) {
 	//    CodePresignUnsupported/501 — which proves the id reached the
 	//    resolver well-formed. (The 200-resolves leg is gated behind a
 	//    HARBOR_LIVE_* S3 env per §17.8.)
-	getRefBody := fmt.Sprintf(`{"identity":{"tenant":"t-e2e","user":"u-e2e","session":"s-e2e"},"id":%q,"scope":{"tenant":"t-e2e","user":"u-e2e","session":"s-e2e"}}`, refID)
+	// No `identity` member — the artifacts wire types scope by `scope`.
+	// The control transport decodes strictly, so a stray `identity` is a
+	// 400 rather than a silently discarded member.
+	getRefBody := fmt.Sprintf(`{"id":%q,"scope":{"tenant":"t-e2e","user":"u-e2e","session":"s-e2e"}}`, refID)
 	rst, rraw := stack.post(t, "/v1/control/artifacts.get_ref", getRefBody, id)
 	switch rst {
 	case http.StatusOK:
@@ -251,7 +254,7 @@ func TestE2E_StateHistory_WindowedReplay(t *testing.T) {
 	//    load-bearing gate (the ref routes to the resolver) is already
 	//    asserted above; this is a soft existence confirmation.
 	lst, lraw := stack.post(t, "/v1/control/artifacts.list",
-		`{"identity":{"tenant":"t-e2e","user":"u-e2e","session":"s-e2e"},"scope":{"tenant":"t-e2e","user":"u-e2e","session":"s-e2e"}}`, id)
+		`{"scope":{"tenant":"t-e2e","user":"u-e2e","session":"s-e2e"}}`, id)
 	if lst == http.StatusOK && !strings.Contains(string(lraw), refID) {
 		t.Errorf("artifacts.list does not mention the seeded ref %q", refID)
 	}

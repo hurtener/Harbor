@@ -373,13 +373,28 @@ export class ArtifactsNamespace {
 	constructor(t: Transport) {
 		this.#t = t;
 	}
-	/** `artifacts.list` — the identity-scoped, metadata-only artifact catalog. */
+	/**
+	 * `artifacts.list` — the identity-scoped, metadata-only artifact catalog.
+	 *
+	 * Every method on this namespace passes `omitBodyIdentity`. The five
+	 * artifacts request types scope by `scope` and declare NO `identity`
+	 * field, so the transport's default identity fold would add a member the
+	 * wire type does not define — refused `unknown field "identity"` (400)
+	 * now that the control transport decodes strictly (D-374). The identity
+	 * still rides the `X-Harbor-*` headers, so `resolveIdentity` is
+	 * unaffected. Enforced by the lockstep scan in
+	 * `web/console/scripts/check-protocol-ts-lockstep.mjs`.
+	 */
 	list<R = unknown>(req: Record<string, unknown>): Promise<R> {
-		return this.#t.request<R>('/v1/control/artifacts.list', req);
+		return this.#t.request<R>('/v1/control/artifacts.list', req, 'POST', {
+			omitBodyIdentity: true,
+		});
 	}
 	/** `artifacts.put` — the Console / Playground file-upload pipeline. */
 	put<R = unknown>(req: Record<string, unknown>): Promise<R> {
-		return this.#t.request<R>('/v1/control/artifacts.put', req);
+		return this.#t.request<R>('/v1/control/artifacts.put', req, 'POST', {
+			omitBodyIdentity: true,
+		});
 	}
 	/**
 	 * `artifacts.get` — the driver-independent byte read. Served by every
@@ -390,15 +405,24 @@ export class ArtifactsNamespace {
 	 * (`total_size_bytes` / `returned_bytes` / `truncated`).
 	 */
 	get<R = unknown>(req: Record<string, unknown>): Promise<R> {
-		return this.#t.request<R>('/v1/control/artifacts.get', req);
+		return this.#t.request<R>('/v1/control/artifacts.get', req, 'POST', {
+			omitBodyIdentity: true,
+		});
 	}
 	/** `artifacts.get_ref` — the read-side presigned-URL resolver (D-022/D-026). */
 	getRef<R = unknown>(req: Record<string, unknown>): Promise<R> {
-		return this.#t.request<R>('/v1/control/artifacts.get_ref', req);
+		return this.#t.request<R>('/v1/control/artifacts.get_ref', req, 'POST', {
+			omitBodyIdentity: true,
+		});
 	}
 	/** `artifacts.delete` — admin-gated, audited artifact eviction (Phase 108o / D-187). */
 	delete<R = unknown>(req: { scope: Record<string, unknown>; id: string }): Promise<R> {
-		return this.#t.request<R>('/v1/control/artifacts.delete', req as unknown as Record<string, unknown>);
+		return this.#t.request<R>(
+			'/v1/control/artifacts.delete',
+			req as unknown as Record<string, unknown>,
+			'POST',
+			{ omitBodyIdentity: true }
+		);
 	}
 }
 
@@ -750,6 +774,19 @@ export class ControlNamespace {
 			 * with `invalid_request` at the Protocol edge before a task
 			 * exists. Omitted (the default) keeps the wire shape and run
 			 * behaviour byte-identical.
+			 *
+			 * That 32 KiB is a RESOURCE BOUND and wire-size guard, not a
+			 * security boundary — the same caller can send more through
+			 * `query` (uncapped below the transport envelope) or through
+			 * `agent_config.session.set_user_prompt` (claim-free, 1 MiB
+			 * body, landing inside the system prompt). What contains this
+			 * payload is the tier it lands in, not its size.
+			 *
+			 * NEGOTIATE FIRST: `await client.capabilities()` then branch
+			 * on `caps.has('caller_memory')`. A runtime predating the
+			 * field discards the member and answers 200, so treat the
+			 * capability's absence as unsupported rather than discovering
+			 * the loss after the run.
 			 *
 			 * Harbor does not sanitise the payload — the tier's
 			 * anti-prompt-injection framing IS the mitigation, and
@@ -1592,11 +1629,24 @@ export class SearchNamespace {
 	constructor(t: Transport) {
 		this.#t = t;
 	}
-	/** `search.query` — fan-out across sessions/tasks/events/artifacts. */
+	/**
+	 * `search.query` — fan-out across sessions/tasks/events/artifacts.
+	 *
+	 * Passes `omitBodyIdentity`: `SearchRequest` scopes through `filter` and
+	 * declares NO `identity` field, so the transport's default fold would add
+	 * a member the wire type does not define — refused `unknown field
+	 * "identity"` (400) under the strict control-transport decode (D-374).
+	 * Identity still rides the `X-Harbor-*` headers, and the search handler
+	 * does its own identity defaulting + cross-tenant gating on `filter`.
+	 * No e2e spec covers this call, so it is the one site in this class that
+	 * would have failed in production rather than in CI.
+	 */
 	query(req: SearchRequest = {}): Promise<SearchResponse> {
 		return this.#t.request<SearchResponse>(
 			'/v1/control/search.query',
-			req as unknown as Record<string, unknown>
+			req as unknown as Record<string, unknown>,
+			'POST',
+			{ omitBodyIdentity: true }
 		);
 	}
 }

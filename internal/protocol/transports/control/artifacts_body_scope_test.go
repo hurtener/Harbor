@@ -84,10 +84,23 @@ func withAdminIdentity(h http.Handler, id identity.Identity) http.Handler {
 }
 
 // artifactScopeBody renders a body carrying exactly the given artifact
-// scope triple plus an id, which the two content reads require.
-func artifactScopeBody(tenant, user, session string) string {
-	return `{"scope":{"tenant":"` + tenant + `","user":"` + user + `","session":"` + session +
-		`"},"id":"art_deadbeefdead"}`
+// scope triple, plus the `id` member for the methods whose wire type
+// declares one.
+//
+// The id is per-method rather than unconditional because the control
+// transport decodes strictly: `ArtifactsListRequest` and
+// `ArtifactsPutRequest` have no `id` field, so a blanket id made those two
+// rows a 400 that never reached the body-scope gate this test exists to
+// pin. Before the strict decode landed the member was silently discarded
+// and the rows passed — a fixture that was testing less than it claimed.
+func artifactScopeBody(method methods.Method, tenant, user, session string) string {
+	scope := `{"scope":{"tenant":"` + tenant + `","user":"` + user + `","session":"` + session + `"}`
+	switch method {
+	case methods.MethodArtifactsGet, methods.MethodArtifactsGetRef, methods.MethodArtifactsDelete:
+		return scope + `,"id":"art_deadbeefdead"}`
+	default:
+		return scope + `}`
+	}
 }
 
 // TestArtifactsBodyScope_PerMethodSurfaceSelection pins every arm of the
@@ -139,7 +152,7 @@ func TestArtifactsBodyScope_PerMethodSurfaceSelection(t *testing.T) {
 			// A body naming a FOREIGN tenant but the caller's own user and
 			// session — the only foreign-tenant shape the gate can reach,
 			// since user and session are pinned on every row here.
-			status, perr := postMethod(t, mux, tc.method, artifactScopeBody("t-other", "u1", "s1"))
+			status, perr := postMethod(t, mux, tc.method, artifactScopeBody(tc.method, "t-other", "u1", "s1"))
 
 			if tc.wantRefused {
 				if status == http.StatusOK {

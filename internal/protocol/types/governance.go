@@ -25,21 +25,23 @@ import "time"
 // (no deploy), and the change lands on every session's next run. Key
 // rotation (`governance.rotate_*`) remains a separate phase.
 
-// GovernancePostureRequest is the `governance.posture` request body.
+// `governance.posture` takes the shared posture request envelope,
+// RuntimeInfoRequest — not a type of its own. The whole posture family
+// (the five `runtime.*` / `metrics.*` reads plus `governance.posture` and
+// `llm.posture`) is decoded into that one envelope by the control
+// transport, and the CROSS-TENANT SELECTOR IS `identity.tenant`: a body
+// tenant differing from the ctx-verified tenant requires the
+// `auth.ScopeAdmin` / `auth.ScopeConsoleFleet` claim and emits the
+// `governance.posture.read_admin` audit event.
 //
-// TenantID is forward-looking: an empty value (the default) reads the
-// caller's own tenant — no scope claim required. A non-empty value that
-// differs from the caller's identity-resolved tenant is a cross-tenant
-// read and requires the `auth.ScopeAdmin` scope claim (closed
-// two-scope set). V1 ships a single tenant per Harbor instance, so the
-// cross-tenant path is reachable in code but the value space is a
-// singleton; the field exists so a post-V1 multi-tenant deployment
-// finds the surface ready.
-type GovernancePostureRequest struct {
-	// TenantID — empty = the caller's own tenant; non-empty + different
-	// from the caller's resolved tenant = requires auth.ScopeAdmin.
-	TenantID string `json:"tenant_id,omitempty"`
-}
+// A `GovernancePostureRequest` carrying a `tenant_id` field used to be
+// declared here. Nothing ever decoded it — the field was discarded, so an
+// admin naming another tenant silently received its OWN posture with a
+// 200. It was removed rather than implemented: the selector it duplicated
+// already exists, is gated, is audited, and is tested, so implementing a
+// second spelling of it would be the CLAUDE.md §13 parallel-implementation
+// shape and would raise an unanswerable question the moment the two
+// disagreed.
 
 // GovernancePostureResponse is the `governance.posture` response body —
 // the read-only projection of the runtime's governance configuration.

@@ -11,6 +11,17 @@
 # BEFORE a task exists, and announced by `memory.caller_block_admitted`, which
 # carries a SIZE and never content.
 #
+# THE 32 KiB BOUND IS A RESOURCE BOUND AND WIRE-SIZE GUARD, NOT A SECURITY
+# BOUNDARY. The same principal can send substantially more through `query`
+# (uncapped below the 64 KiB envelope, landing in the unframed conversation
+# position) or through the claim-free `agent_config.session.set_user_prompt`
+# (1 MiB body, landing INSIDE the system prompt). What contains this payload is
+# POSITIONAL — the untrusted-framed tier it lands in — never its size. Do not
+# reason "the content is capped, therefore X is contained"; that inference does
+# not hold. What the bound does do is real: nothing downstream re-checks these
+# bytes (S5 below), so an unbounded document would fail the run late instead of
+# costing one refusal.
+#
 # Conventions (AGENTS.md §4.2):
 #   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
 #   - At least one OK once the phase has shipped.
@@ -25,16 +36,16 @@
 # `dev_bearer` call below (issue #624).
 #
 # Counted rather than asserted, so a future edit has a number to reconcile
-# against: 18 literal `ok` arms, 24 literal `fail` arms, 2 literal `skip` arms,
+# against: 21 literal `ok` arms, 29 literal `fail` arms, 2 literal `skip` arms,
 # plus two legs delegated to `assert_go_tests_pass` (which emits its own
-# ok/fail). Observed counters on the shipping build: OK 20 / SKIP 0 / FAIL 0.
+# ok/fail). Observed counters on the shipping build: OK 23 / SKIP 0 / FAIL 0.
 # The header previously claimed "19 ok / 24 fail / 2 skip" against an actual
 # 20/25/2 — a stale count in a file whose whole subject is instruments that
 # report what they did not measure.
 #
 # ONE residual, named rather than hidden: if `/v1/control/start` itself
 # vanished, the route probe would skip the whole live section and this script
-# would still report OK 8 (the static guards) — above the inert-smoke gate's
+# would still report OK 9 (the static guards) — above the inert-smoke gate's
 # OK-0 threshold. That is the §4.2 item 4 convention working as designed and
 # is not this phase's to change; a missing `start` route fails a great many
 # other smokes loudly first.
@@ -47,20 +58,28 @@
 # exit 0. That is §4.2 item 5 inverted, and it is the exact shape the
 # wave-v1.24 checkpoint audit rewrote out of `scripts/smoke/phase-215.sh`.
 #
-# The grep is still load-bearing, for a reason worth stating because it is the
-# OPPOSITE of the intuitive one. `decodeRequest` unmarshals a `start` body with
-# plain `json.Unmarshal` and NO `DisallowUnknownFields`
-# (internal/protocol/transports/control/control.go), so a build WITHOUT the
-# field answers 200 to a request carrying one and silently IGNORES it. Every
-# admission assertion below would go green against a runtime where the feature
-# does not exist — 200 with a task_id is exactly what an inert runtime returns.
-# The static grep is what makes that state distinguishable, so it must fail
-# loudly rather than excuse itself.
+# The grep is still load-bearing, and the reason CHANGED in the v1.25 §17.5
+# checkpoint — the original reason is recorded because it is what motivated
+# D-374. It read: "`decodeRequest` unmarshals a `start` body with plain
+# `json.Unmarshal` and NO `DisallowUnknownFields`, so a build WITHOUT the field
+# answers 200 to a request carrying one and silently IGNORES it." That was true
+# and it was the defect: the transport now decodes STRICTLY through
+# `decodeStrict`, so a build without the field refuses the request by name
+# instead of answering 200 (D-374).
+#
+# The grep survives for a narrower reason: strict decoding is a property of the
+# TRANSPORT, and this guard is on the wire TYPE. A build that kept the strict
+# decode and dropped the field would refuse correctly — but so would a build
+# that never had the field, and neither state is what "shipped" means here.
+# The static grep is what distinguishes "the field exists" from "the transport
+# happens to reject everything", so it must fail loudly rather than excuse
+# itself.
 #
 # Each guard below was verified by mutation: breaking the thing it protects
 # turns its OK into a FAIL, never into a SKIP.
 #
-# Done-definition: OK >= 14, FAIL = 0. Observed on the shipping build: 20/0/0.
+# Done-definition: OK >= 14, FAIL = 0. Observed on the shipping build: 23/0/0
+# with a live server, 9/0/0 (static only) without one.
 
 set -euo pipefail
 
@@ -79,7 +98,7 @@ source "scripts/smoke/common.sh"
 if grep -q 'json:"caller_memory,omitempty"' internal/protocol/types/control.go 2>/dev/null; then
     ok "phase 219 static: StartRequest carries the caller_memory wire field"
 else
-    fail "phase 219 static: StartRequest has no caller_memory wire field in internal/protocol/types/control.go — this phase shipped it, so its absence is a regression; the runtime would answer 200 and silently DROP every caller-supplied memory block (decodeRequest does not reject unknown fields)"
+    fail "phase 219 static: StartRequest has no caller_memory wire field in internal/protocol/types/control.go — this phase shipped it, so its absence is a regression; every caller-supplied memory block would be refused as an unknown member (or, on a build predating the strict decode, silently dropped behind a 200)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -168,6 +187,25 @@ elif [ "${CALLER_CAP}" -lt "${ENVELOPE_CAP_KIB}" ]; then
     ok "phase 219 static: maxCallerMemoryBytes (${CALLER_CAP} KiB) is strictly below the control transport's body cap (${ENVELOPE_CAP_KIB} KiB) — the field check is reachable"
 else
     fail "phase 219 static: maxCallerMemoryBytes (${CALLER_CAP} KiB) is NOT below the transport body cap (${ENVELOPE_CAP_KIB} KiB) — the transport answers first with the SAME 400, so the field's own cap is unreachable dead code"
+fi
+
+# (S7) TRUTHFULNESS GUARD (D-375). The cap's godoc must NOT describe the
+#      bound as a security posture. It is a resource bound and wire-size
+#      guard: the SAME principal can send more through `query` (uncapped
+#      below the envelope) and through the claim-free
+#      `agent_config.session.set_user_prompt` (1 MiB, landing inside the
+#      system prompt). A bound described as a security boundary invites a
+#      later author to reason FROM it — "content is capped, therefore X is
+#      contained" — and that inference does not hold.
+#
+#      Mutation-verified: re-add "security-posture downgrade" to the
+#      maxCallerMemoryBytes godoc and this leg turns red. ---
+if grep -q 'security-posture' internal/protocol/control.go 2>/dev/null; then
+    fail "phase 219 static: internal/protocol/control.go describes a cap in security-posture terms — maxCallerMemoryBytes is a resource bound and wire-size guard, and the same principal can send more content into a MORE trusted prompt position through query and agent_config.session.set_user_prompt (D-375)"
+elif grep -q 'RESOURCE BOUND AND WIRE-SIZE GUARD' internal/protocol/control.go 2>/dev/null; then
+    ok "phase 219 static: the caller-memory cap is documented as a resource bound and wire-size guard, not a security boundary (D-375)"
+else
+    fail "phase 219 static: internal/protocol/control.go no longer states what the caller-memory cap IS — the correction that it is a resource bound and wire-size guard, not a security boundary, has been dropped (D-375)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -330,7 +368,7 @@ OVER_RESP="$(post_in_session "${REFUSE_SESSION}" "${START_URL}" "${OVER_BODY}")"
 OVER_CODE="$(code_in_session "${REFUSE_SESSION}" "${START_URL}" "${OVER_BODY}")"
 OVER_MSG="$(printf '%s' "${OVER_RESP}" | jq -r '.error.message // .message // empty' 2>/dev/null || printf '')"
 if [ "${OVER_CODE}" != "400" ]; then
-    fail "phase 219: a 40 KiB caller_memory returned ${OVER_CODE}, want 400 — the Protocol-edge bound is the ONLY bound (the LLM-edge leak guard byte-exempts system-role text, internal/llm/safety.go:360)"
+    fail "phase 219: a 40 KiB caller_memory returned ${OVER_CODE}, want 400 — the Protocol-edge bound is the only thing that re-checks these bytes before the token-budget guard (the LLM-edge leak guard byte-exempts system-role text, internal/llm/safety.go:360)"
 elif printf '%s' "${OVER_MSG}" | grep -q 'caller_memory'; then
     ok "phase 219: an over-cap caller_memory is refused 400 by the FIELD check (the refusal names caller_memory: ${OVER_MSG})"
 else
@@ -355,13 +393,61 @@ else
     fail "phase 219: a malformed caller_memory document returned ${BAD_CODE}, want 400"
 fi
 
+# --- (5b) STRICT DECODE (D-374). An unknown member on a `start` body is
+#          REFUSED and the refusal NAMES it. This is the version-boundary half
+#          of the silent-loss fix: a client speaking a newer Protocol sends an
+#          additive optional field, and a Runtime that does not know it must
+#          say so rather than discard the member and answer success.
+#
+#          The member name below is deliberately shaped like a plausible FUTURE
+#          field, not like garbage — the failure this guards is a real additive
+#          field arriving early, not a typo.
+#
+#          Mutation-verified: delete `dec.DisallowUnknownFields()` from
+#          `decodeStrict` (internal/protocol/transports/control/control.go) and
+#          this leg turns red (the start is ACCEPTED). ---
+UNKNOWN_BODY='{"query":"phase-219 smoke: unknown member","caller_memoryy":{"a":1}}'
+UNKNOWN_RESP="$(post_in_session "${REFUSE_SESSION}" "${START_URL}" "${UNKNOWN_BODY}")"
+UNKNOWN_CODE="$(code_in_session "${REFUSE_SESSION}" "${START_URL}" "${UNKNOWN_BODY}")"
+UNKNOWN_MSG="$(printf '%s' "${UNKNOWN_RESP}" | jq -r '.error.message // .message // empty' 2>/dev/null || printf '')"
+if [ "${UNKNOWN_CODE}" != "400" ]; then
+    fail "phase 219: a start carrying an unknown member returned ${UNKNOWN_CODE}, want 400 — the control transport is discarding members it does not recognise, so a client sending a field this Runtime predates is told it succeeded (D-374)"
+elif printf '%s' "${UNKNOWN_MSG}" | grep -q 'caller_memoryy'; then
+    ok "phase 219: an unknown member on start is refused 400 and the refusal NAMES it (${UNKNOWN_MSG})"
+else
+    fail "phase 219: the 400 refusal does not name the unknown member (got [${UNKNOWN_MSG}]) — a refusal that will not say WHICH member is unusable for a client trying to find out what this Runtime supports"
+fi
+
 read -r AFTER_STATUS AFTER_COUNT <<< "$(count_refusal_session_tasks)"
 if [ "${BEFORE_STATUS}" != "200" ] || [ "${AFTER_STATUS}" != "200" ] || [ -z "${BEFORE_COUNT}" ] || [ -z "${AFTER_COUNT}" ]; then
     fail "phase 219: task count unreadable (tasks.list ${BEFORE_STATUS} → ${AFTER_STATUS}) — a refused start MUST NOT create a task, and this guard cannot say whether it did"
 elif [ "${BEFORE_COUNT}" = "${AFTER_COUNT}" ] && [ "${AFTER_COUNT}" = "0" ]; then
-    ok "phase 219: three refused starts created NO task in a fresh session (count stayed 0) — refused before the task exists"
+    ok "phase 219: four refused starts (over-cap, explicit null, malformed, unknown member) created NO task in a fresh session (count stayed 0) — refused before the task exists"
 else
     fail "phase 219: refusal-session task count ${BEFORE_COUNT} → ${AFTER_COUNT}, want 0 → 0: a refused start MUST NOT create a task"
+fi
+
+# --- (6) CAPABILITY ADVERTISEMENT (D-374). `runtime.info` advertises
+#         `caller_memory`, so a client can negotiate the admission instead of
+#         discovering its loss after a run. This is the half strict decoding
+#         cannot supply: a Runtime deployed BEFORE the strict decode still
+#         drops the member silently, and the only thing that distinguishes it
+#         is that it does not list the capability.
+#
+#         Mutation-verified: remove `types.CapCallerMemory` from
+#         `wiredCapabilitiesFor` (internal/protocol/posture.go) and this leg
+#         turns red. ---
+INFO_URL="$(api_url /v1/control/runtime.info)"
+INFO_CODE="$(code_in_session "${ADMIT_SESSION}" "${INFO_URL}" '{}')"
+if [ "${INFO_CODE}" = "404" ] || [ "${INFO_CODE}" = "405" ] || [ "${INFO_CODE}" = "501" ]; then
+    fail "phase 219: runtime.info answered ${INFO_CODE} — this build serves start, so the posture surface it negotiates against must be reachable; a client cannot detect caller_memory support without it"
+else
+    INFO_RESP="$(post_in_session "${ADMIT_SESSION}" "${INFO_URL}" '{}')"
+    if printf '%s' "${INFO_RESP}" | jq -e '.capabilities | index("caller_memory")' >/dev/null 2>&1; then
+        ok "phase 219: runtime.info advertises the caller_memory capability — a client negotiates the admission rather than discovering its absence after the run"
+    else
+        fail "phase 219: runtime.info does not advertise caller_memory (capabilities: $(printf '%s' "${INFO_RESP}" | jq -c '.capabilities // "unreadable"' 2>/dev/null)) — a client has no way to tell this Runtime from one that discards the field"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
