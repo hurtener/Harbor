@@ -96,7 +96,7 @@ func (e *Engine) hydrate(ctx context.Context) error {
 		}
 		e.tasks[t.ID] = t
 		if t.IdempotencyKey != "" {
-			e.idemIdx[idempotencyKey{SessionID: t.Identity.SessionID, Key: t.IdempotencyKey}] = idempotencyRecord{
+			e.idemIdx[idemKeyFor(t.Identity.Identity, t.IdempotencyKey)] = idempotencyRecord{
 				TaskID:      t.ID,
 				ContentHash: rec.ContentHash,
 			}
