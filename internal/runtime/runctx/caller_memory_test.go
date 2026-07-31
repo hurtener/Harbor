@@ -135,10 +135,21 @@ func TestComposeCallerMemory_Matrix(t *testing.T) {
 	})
 }
 
-// TestComposeCallerMemory_NoAliasing asserts the returned blocks share no
-// map with the input, so a later write to either is invisible to the
-// other. The run loop's value is derived from identity-scoped store
-// reads and must stay untouched.
+// TestComposeCallerMemory_NoAliasing asserts BOTH halves of the scoped
+// no-aliasing contract, because an earlier cut asserted only the first
+// while the godoc claimed "the returned struct shares no map with the
+// input" for the whole struct:
+//
+//   - `External` — the tier this function WRITES — is a fresh map. A
+//     write to either side is invisible to the other.
+//   - `Conversation` is carried across BY REFERENCE, and that is pinned
+//     AS PRESENT rather than left unstated. It is a residual, not an
+//     oversight: copying an arbitrary `any` needs a reflective or
+//     round-trip deep copy, and a top-level-only copy would leave the
+//     same claim half-true one level down. Nothing downstream writes the
+//     tier, so the sharing is safe today. A future deep copy turns this
+//     assertion RED, which is the point — the godoc must be re-derived
+//     with it rather than silently outliving the mechanism.
 func TestComposeCallerMemory_NoAliasing(t *testing.T) {
 	mb := &planner.MemoryBlocks{
 		External:     map[string]any{"recalled_turns": recalledTurnsFixture()},
@@ -160,11 +171,19 @@ func TestComposeCallerMemory_NoAliasing(t *testing.T) {
 		t.Fatal("the caller's key was written into the INPUT map")
 	}
 
-	// The two maps are genuinely distinct: a write to the result is not
-	// observable through the input.
+	// The two External maps are genuinely distinct: a write to the result
+	// is not observable through the input.
 	got.External.(map[string]any)["written_after"] = true
 	if _, shared := mb.External.(map[string]any)["written_after"]; shared {
 		t.Fatal("the result aliases the input's External map")
+	}
+
+	// THE RESIDUAL, PINNED AS PRESENT. `Conversation` IS shared. Assert
+	// it in the direction the godoc states, so the doc and the mechanism
+	// cannot drift apart in either direction.
+	got.Conversation.(map[string]any)["written_after"] = true
+	if _, shared := mb.Conversation.(map[string]any)["written_after"]; !shared {
+		t.Fatal("Conversation is no longer shared with the input — the tier is now copied, which is an IMPROVEMENT, but ComposeCallerMemory's godoc still scopes its no-aliasing guarantee to External only. Widen the godoc and delete this assertion.")
 	}
 }
 
