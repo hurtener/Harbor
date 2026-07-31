@@ -310,9 +310,28 @@ func newRegistry(t *testing.T) agentcfg.Registry {
 	return reg
 }
 
-// TestStateStore_Conformance runs the shared driver conformance suite.
+// TestStateStore_Conformance runs the shared driver conformance suite over the
+// in-memory state driver.
 func TestStateStore_Conformance(t *testing.T) {
-	conformance.Run(t, newRegistry, newFaultyRegistry)
+	conformance.Run(t, newRegistry, newFaultyRegistry, newCommittedFaultRegistry)
+}
+
+// TestStateStore_Conformance_SQLite runs the SAME suite — including both
+// partial-write fault arms — over the durable SQLite state driver.
+//
+// The atomicity and compensation rows were armed over the in-memory driver
+// alone, which is one driver's answer to a question the §9 triad owes in
+// parity. The in-memory store is also the weakest possible witness for a
+// residue assertion: "the record survived" and "the record was removed" are
+// answered by a map under the same lock as the writes. SQLite answers them
+// from a file, through a WAL and a real transaction, which is where a
+// compensating delete can plausibly behave differently from its in-memory
+// twin. Postgres is deliberately NOT added blind here — an arm that cannot be
+// executed on this branch is exactly the inert guard this wave keeps finding;
+// the state driver's own DSN-gated conformance already pins Save/Load/Delete
+// parity beneath this layer.
+func TestStateStore_Conformance_SQLite(t *testing.T) {
+	conformance.Run(t, newSQLiteRegistry, newSQLiteFaultyRegistry, newSQLiteCommittedFaultRegistry)
 }
 
 // TestStateStore_TenantIsolation asserts agent_id is a key, not an
