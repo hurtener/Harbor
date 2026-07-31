@@ -49,10 +49,21 @@ func TestSanitizeToolName(t *testing.T) {
 			t.Errorf("sanitizeToolName(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
-	// 64-char cap.
+	// Over-budget names are shortened to exactly maxToolNameBytes. The
+	// budget is deliberately BELOW the provider's 64-byte ceiling: a tool
+	// name is paid on every turn, twice per tool, so the model-visible form
+	// is bounded independently of how long the catalog key is.
 	long := strings.Repeat("a", 100)
-	if got := sanitizeToolName(long); len(got) != 64 {
-		t.Errorf("sanitizeToolName(len=100) len = %d, want 64", len(got))
+	if got := sanitizeToolName(long); len(got) != maxToolNameBytes {
+		t.Errorf("sanitizeToolName(len=100) len = %d, want %d", len(got), maxToolNameBytes)
+	}
+	if maxToolNameBytes > 64 {
+		t.Fatalf("maxToolNameBytes = %d exceeds the provider ceiling of 64", maxToolNameBytes)
+	}
+	// Shortening retains the TAIL, not the head: sibling tools of one
+	// source share a long prefix, so the tail is what distinguishes them.
+	if got := sanitizeToolName(strings.Repeat("x", 80) + "_verb"); !strings.Contains(got, "_verb_") {
+		t.Errorf("sanitizeToolName dropped the tail: got %q, want it to retain %q", got, "_verb")
 	}
 }
 

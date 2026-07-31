@@ -8211,6 +8211,7 @@
     "planner.max_steps_exceeded",
     "planner.repair_exhausted",
     "planner.repair_guidance_injected",
+    "planner.tool_declaration_collision",
     "run.hook_dispatched",
     "run.hook_failed",
     "runs.overrides_set",

@@ -135,15 +135,16 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	memory.EventTypeMemoryCallerBlockAdmitted: {Payloads: []reflect.Type{reflect.TypeOf(memory.CallerBlockAdmittedPayload{})}},
 
 	// --- Planner.
-	planner.EventTypePlannerDecision:                {Payloads: []reflect.Type{reflect.TypeOf(planner.DecisionPayload{})}},
-	planner.EventTypePlannerFinish:                  {Note: "Registered anchor — no canonical emit path in this version (a planner's terminal decision is observable via `planner.decision` with `DecisionKind: Finish` and the `task.*` lifecycle events)."},
-	planner.EventTypePlannerError:                   {Note: "Registered anchor — no canonical emit path in this version (planner failures surface as `task.failed`)."},
-	planner.EventTypePlannerRepairExhausted:         {Payloads: []reflect.Type{reflect.TypeOf(planner.RepairExhaustedPayload{})}},
-	planner.EventTypePlannerMaxStepsExceeded:        {Payloads: []reflect.Type{reflect.TypeOf(planner.MaxStepsExceededPayload{})}},
-	planner.EventTypeTrajectoryCompressed:           {Payloads: []reflect.Type{reflect.TypeOf(planner.TrajectoryCompressedPayload{})}},
-	planner.EventTypeTrajectoryCompressionFailed:    {Payloads: []reflect.Type{reflect.TypeOf(planner.TrajectoryCompressionFailedPayload{})}},
-	planner.EventTypePlannerRepairGuidanceInjected:  {Payloads: []reflect.Type{reflect.TypeOf(planner.RepairGuidanceInjectedPayload{})}},
-	planner.EventTypePlannerActionExtraFieldDropped: {Payloads: []reflect.Type{reflect.TypeOf(planner.ActionExtraFieldDroppedPayload{})}},
+	planner.EventTypePlannerDecision:                 {Payloads: []reflect.Type{reflect.TypeOf(planner.DecisionPayload{})}},
+	planner.EventTypePlannerFinish:                   {Note: "Registered anchor — no canonical emit path in this version (a planner's terminal decision is observable via `planner.decision` with `DecisionKind: Finish` and the `task.*` lifecycle events)."},
+	planner.EventTypePlannerError:                    {Note: "Registered anchor — no canonical emit path in this version (planner failures surface as `task.failed`)."},
+	planner.EventTypePlannerRepairExhausted:          {Payloads: []reflect.Type{reflect.TypeOf(planner.RepairExhaustedPayload{})}},
+	planner.EventTypePlannerMaxStepsExceeded:         {Payloads: []reflect.Type{reflect.TypeOf(planner.MaxStepsExceededPayload{})}},
+	planner.EventTypeTrajectoryCompressed:            {Payloads: []reflect.Type{reflect.TypeOf(planner.TrajectoryCompressedPayload{})}},
+	planner.EventTypeTrajectoryCompressionFailed:     {Payloads: []reflect.Type{reflect.TypeOf(planner.TrajectoryCompressionFailedPayload{})}},
+	planner.EventTypePlannerRepairGuidanceInjected:   {Payloads: []reflect.Type{reflect.TypeOf(planner.RepairGuidanceInjectedPayload{})}},
+	planner.EventTypePlannerActionExtraFieldDropped:  {Payloads: []reflect.Type{reflect.TypeOf(planner.ActionExtraFieldDroppedPayload{})}},
+	planner.EventTypePlannerToolDeclarationCollision: {Payloads: []reflect.Type{reflect.TypeOf(planner.ToolDeclarationCollisionPayload{})}},
 
 	// --- Protocol edge (artifacts surface + auth middleware + Console
 	// flows-page telemetry).
