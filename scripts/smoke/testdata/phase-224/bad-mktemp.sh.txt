@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: static-only
+#
+# MUTATION PAYLOAD — NOT A SMOKE SCRIPT. DO NOT "FIX" THE DEFECT BELOW.
+#
+# scripts/smoke/phase-224.sh copies this file into a THROWAWAY fixture corpus
+# (under $TMPDIR, never the working tree) as `scripts/smoke/phase-03.sh` and
+# asserts that scripts/drift-audit.sh's "mktemp template portability" guard
+# reports a FAIL for it. The two-X template is deliberate: GNU mktemp (Linux,
+# where CI runs preflight) rejects it outright, BSD mktemp (macOS, where
+# contributors run preflight) accepts it.
+#
+# Stored with a `.txt` suffix so the live repository's own guards skip it —
+# the mktemp scan greps `scripts --include='*.sh'`, which does not match
+# `*.sh.txt`. Renaming this file to `.sh` would make the real audit FAIL on
+# the repository itself.
+#
+# THE SHAPE IS DELIBERATE. The invocation does not LEAD its segment: it sits
+# behind a one-shot env assignment inside a command substitution. That is one
+# of the five shapes the guard's first cut (`^mktemp`) silently walked past,
+# so a payload written as a bare leading `mktemp foo.XX` would have passed
+# against the broken guard and proved nothing.
+
+set -euo pipefail
+
+OUT="$(TMPDIR="${TMPDIR:-/tmp}" mktemp "${TMPDIR:-/tmp}/harbor-fixture.XX")"
+rm -f "${OUT}"
