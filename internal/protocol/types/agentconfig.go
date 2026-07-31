@@ -1565,7 +1565,9 @@ type AgentConfigUserSkillsUpsertRequest struct {
 	Skill    AgentConfigSkillInput `json:"skill"`
 	// ExpectedContentHash is the OPTIONAL expected-revision token. When
 	// non-empty, the write requires the agent's ACTIVE revision to still
-	// carry exactly this content hash (as returned by `agent_config.get`)
+	// carry exactly this content hash (as returned by `agent_config.user.get`,
+	// NOT `agent_config.get` — this door writes the USER tier and
+	// `agent_config.get` reads the AGENT tier, so its hash would never match)
 	// at write time; a moved base is refused with the `revision_conflict`
 	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
 	// and every request that omits the field) is the unconditional
@@ -1603,7 +1605,9 @@ type AgentConfigUserSkillsDeleteRequest struct {
 	Name     string        `json:"name"`
 	// ExpectedContentHash is the OPTIONAL expected-revision token. When
 	// non-empty, the write requires the agent's ACTIVE revision to still
-	// carry exactly this content hash (as returned by `agent_config.get`)
+	// carry exactly this content hash (as returned by `agent_config.user.get`,
+	// NOT `agent_config.get` — this door writes the USER tier and
+	// `agent_config.get` reads the AGENT tier, so its hash would never match)
 	// at write time; a moved base is refused with the `revision_conflict`
 	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
 	// and every request that omits the field) is the unconditional
@@ -1701,7 +1705,9 @@ type AgentConfigUserSetRevisionRequest struct {
 	Payload  AgentConfigUserPayload `json:"payload"`
 	// ExpectedContentHash is the OPTIONAL expected-revision token. When
 	// non-empty, the write requires the agent's ACTIVE revision to still
-	// carry exactly this content hash (as returned by `agent_config.get`)
+	// carry exactly this content hash (as returned by `agent_config.user.get`,
+	// NOT `agent_config.get` — this door writes the USER tier and
+	// `agent_config.get` reads the AGENT tier, so its hash would never match)
 	// at write time; a moved base is refused with the `revision_conflict`
 	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
 	// and every request that omits the field) is the unconditional
@@ -1770,7 +1776,9 @@ type AgentConfigUserRollbackRequest struct {
 	RevisionID string        `json:"revision_id"`
 	// ExpectedContentHash is the OPTIONAL expected-revision token. When
 	// non-empty, the write requires the agent's ACTIVE revision to still
-	// carry exactly this content hash (as returned by `agent_config.get`)
+	// carry exactly this content hash (as returned by `agent_config.user.get`,
+	// NOT `agent_config.get` — this door writes the USER tier and
+	// `agent_config.get` reads the AGENT tier, so its hash would never match)
 	// at write time; a moved base is refused with the `revision_conflict`
 	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
 	// and every request that omits the field) is the unconditional
