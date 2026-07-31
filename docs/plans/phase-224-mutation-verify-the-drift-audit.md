@@ -258,7 +258,7 @@ None. "Mutation verification" is already the wave's working vocabulary (`docs/pl
 ## Pre-merge checklist
 
 - [x] `make drift-audit` passes
-- [x] `make preflight` passes — **deferred to CI by instruction** for this PR; `make vet`, `make test` (`-race`), `make lint`, `make build`, `make check-mirror`, `markdownlint-cli2` repo-wide and `bash scripts/smoke/phase-224.sh` standalone were all run locally
+- [ ] `make preflight` passes — **NOT RUN LOCALLY, by explicit operator directive** (no local preflight, no hand-booted dev server; CI runs the identical gate on the PR). Marked unticked rather than ticked-with-an-asterisk: a checklist that records a gate as passed when it was not run is the same shape of dishonest signal this phase exists to remove. What *was* run locally, and is the evidence standing in for it: `make vet`, `make test` (`-race`), `make lint`, `make build`, `make check-mirror`, `make drift-audit` (`OK: 1401 / WARN: 0 / FAIL: 0`), `markdownlint-cli2` repo-wide (534 files, 0 errors), `bash scripts/smoke/phase-224.sh` standalone (`OK: 25 / SKIP: 0 / FAIL: 0`), and the four meta-mutations
 - [x] `make check-mirror` passes
 - [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve — and, for the first time, the `brief NN` half of that claim is actually checked (D1)
 - [x] Coverage on touched packages ≥ stated target — N/A, no Go packages touched
