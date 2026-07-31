@@ -84,6 +84,61 @@ else
 fi
 
 # --------------------------------------------------------------------
+# 1b. THE SLOT-MAP BOUND. A pending override is written by
+#     runs.set_overrides and removed by the Consume the next message
+#     performs — so a session that records one and never sends a message
+#     leaves its slot behind. Unbounded, that map grows with the count of
+#     such sessions for the life of the process, which any authenticated
+#     caller reaches by recording under a fresh session id in a loop.
+#
+#     The guards are NAMED tests plus the two source pins, because "the
+#     override round-trips" (the assertions above) stays green through the
+#     whole defect: the bound is invisible until the map is over it.
+# --------------------------------------------------------------------
+OVERRIDES_GO="${RUNS_PROTOCOL_PKG}/overrides.go"
+if [ -f "${OVERRIDES_GO}" ]; then
+    assert_grep_present 'DefaultMaxPendingOverrides = [0-9]+' "${OVERRIDES_GO}" \
+        'phase 73n: the pending-override slot map declares a capacity bound'
+    # The eviction, not merely the constant: a declared-but-unused bound is
+    # the shape this guard exists to refuse.
+    assert_grep_present 'if len\(s\.slots\) >= s\.max \{' "${OVERRIDES_GO}" \
+        'phase 73n: Set ENFORCES the bound (a declared-but-unenforced cap is the same defect)'
+    assert_grep_present 's\.order\.Front\(\)' "${OVERRIDES_GO}" \
+        'phase 73n: the drop policy is OLDEST-first (dropping the newest discards the write just asked for)'
+    P73N_GOLOG="$(mktemp "${TMPDIR:-/tmp}/phase73n-gotest.XXXXXX")"
+    trap 'rm -f "${P73N_GOLOG}"' EXIT
+    assert_go_tests_pass "${P73N_GOLOG}" "-race -count=1 ./${RUNS_PROTOCOL_PKG}/" \
+        'phase 73n: the pending-override slot map is bounded, evicts oldest-first, and reclaims on Consume' \
+        TestStore_Set_BoundsSlotMapUnderNInserts \
+        TestStore_Set_EvictsOldestRecordedFirst \
+        TestStore_Set_ReSetRefreshesRecencyAndDoesNotGrow \
+        TestStore_Consume_ReclaimsCapacity \
+        TestStore_Set_BoundHoldsUnderConcurrentWriters \
+        TestNewStore_DefaultBoundIsApplied \
+        TestWithMaxSlots_NonPositiveKeepsTheDefault
+else
+    skip 'phase 73n: overrides.go not present yet — slot-map bound guards SKIP'
+fi
+
+# The sibling shape, in the agent-config SESSION-overlay path: its per-slot
+# write-lock map is keyed by the same unbounded (triple + agent) space and is
+# refcounted rather than append-only for exactly the same reason.
+OVERLAY_GO='internal/agentcfg/sessionoverlay/sessionoverlay.go'
+if [ -f "${OVERLAY_GO}" ]; then
+    assert_grep_present 'delete\(s\.writeLocks, key\)' "${OVERLAY_GO}" \
+        'phase 73n: the session-overlay write-lock map releases its slot entries (refcounted, not append-only)'
+    assert_go_tests_pass "${P73N_GOLOG:-$(mktemp "${TMPDIR:-/tmp}/phase73n-overlay.XXXXXX")}" \
+        '-race -count=1 ./internal/agentcfg/sessionoverlay/' \
+        'phase 73n: the session-overlay write-lock map is bounded AND still excludes per slot' \
+        TestLockSlot_ReleasesTheSlotEntry \
+        TestLockSlot_KeepsTheEntryWhileHeld \
+        TestLockSlot_SerialisesConcurrentHoldersOfOneSlot \
+        TestLockSlot_DistinctSlotsDoNotContend
+else
+    skip 'phase 73n: sessionoverlay.go not present yet — write-lock bound guards SKIP'
+fi
+
+# --------------------------------------------------------------------
 # 2. Chat-module encapsulation invariant (CLAUDE.md §4.5 #11).
 #    No code inside $lib/chat/ imports anything outside $lib/chat/.
 # --------------------------------------------------------------------
