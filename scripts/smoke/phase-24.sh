@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: static-only
-# Phase 24 smoke — Memory strategies (truncation, rolling_summary).
+# PREFLIGHT_REQUIRES: unit-tests
+# Phase 24 smoke — memory strategies (truncation, rolling_summary).
 #
-# Phase 24 is a pure Go package extension (internal/memory/strategy +
-# internal/memory/drivers/inmem changes) with no HTTP / Protocol
-# surface; correctness is verified by `go test -race
-# ./internal/memory/...` under `make test` and the cross-subsystem
-# integration test in `test/integration/memory_strategies_test.go`
-# (per AGENTS.md §17).
+# internal/memory/strategy ships no HTTP / Protocol surface, but `make
+# preflight` does not run `go test`, so a skip-only script left this shipped
+# phase with zero preflight coverage (AGENTS.md §4.2 item 5). Shape follows
+# scripts/smoke/phase-05.sh: NAMED tests, so a rename fails loud.
 #
-# The preflight surface check has nothing to assert here, so this
-# script SKIPs and lets the test gate carry the load.
+# Both named tests are on the fail-loudly seam (§5): a strategy must restore
+# its snapshot faithfully, and must REJECT an invalid one rather than degrade
+# to an empty state.
 
 set -euo pipefail
 
@@ -20,6 +19,16 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-skip "phase 24: memory strategies — Go package only; validated by go test ./internal/memory/..."
+# Per-phase log path — the unit-tests batch runs concurrently.
+LOG="${TMPDIR:-/tmp}/harbor-smoke-phase-24-go-test.log"
+
+if [ -d "internal/memory/strategy" ]; then
+    assert_go_tests_pass "${LOG}" './internal/memory/strategy' \
+        'phase 24: memory strategy snapshot restore + invalid-snapshot refusal hold' \
+        TestRollingSummary_Restore \
+        TestNone_RejectsInvalidSnapshot
+else
+    skip 'phase 24: internal/memory/strategy absent (package not yet implemented)'
+fi
 
 smoke_summary
