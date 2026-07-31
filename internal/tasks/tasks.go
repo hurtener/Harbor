@@ -223,6 +223,23 @@ type Task struct {
 	// provenance and its RFC 8693 acting principal stay boot-derived and
 	// are never read from here.
 	AgentID string `json:",omitempty"`
+	// CallerMemory is the caller-supplied content this task's run admits
+	// into its `<read_only_external_memory>` tier under the fixed
+	// runtime-owned `caller_supplied` map key. Empty means the caller
+	// supplied none — the pre-field behaviour and the value on every
+	// historical row.
+	//
+	// Bounded and validated at the Protocol edge before the spawn (32 KiB,
+	// non-null, valid JSON); persisted verbatim via the whole-record
+	// marshal, so no migration is required on any driver.
+	//
+	// The `omitempty` tag is load-bearing for the same reason it is on
+	// OutputSchema: a nil json.RawMessage marshals to the JSON literal
+	// `null` and UNMARSHALS BACK to the 4-byte RawMessage("null"), NOT
+	// nil — so without omitempty a durable-backed task that carried no
+	// caller memory would hydrate with a non-empty CallerMemory and the
+	// run loop would compose a `caller_supplied` key holding JSON null.
+	CallerMemory json.RawMessage `json:",omitempty"`
 }
 
 // SpawnRequest is the input shape for `Spawn`. Identity is mandatory.
@@ -279,6 +296,16 @@ type SpawnRequest struct {
 	// identity so a reused idempotency key naming a DIFFERENT agent is a
 	// loud conflict rather than a silent adoption of the original agent.
 	AgentID string
+	// CallerMemory is the caller-supplied memory block, already bounded
+	// and validated at the Protocol edge before the spawn — the registry
+	// does not re-validate it. Nil means the caller supplied none, which
+	// is the pre-field behaviour on every path.
+	//
+	// Persisted onto `Task.CallerMemory`; consumed by the run loop's
+	// External-tier composition. Folded into the task's content identity
+	// so a reused idempotency key carrying DIFFERENT caller memory is a
+	// loud conflict rather than a silent adoption of the original payload.
+	CallerMemory json.RawMessage
 }
 
 // SpawnToolRequest is the input shape for `SpawnTool`. The shape

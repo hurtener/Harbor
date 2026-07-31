@@ -184,6 +184,45 @@ type StartRequest struct {
 	// field. The two agent-id carriers on a run are deliberately
 	// distinct and must not be unified.
 	AgentID string `json:"agent_id,omitempty"`
+	// CallerMemory is caller-supplied content admitted into the run's
+	// `<read_only_external_memory>` tier under the FIXED runtime-owned
+	// `caller_supplied` map key. It is the ONE additive path for putting
+	// retrieved, caller-held content in front of the model; the tier it
+	// lands in ships a five-line anti-prompt-injection preamble whose
+	// entire premise is that its contents are hostile.
+	//
+	// It COMPOSES with the runtime's own retrieval rather than replacing
+	// it: the External tier renders a map, the runtime writes its own
+	// keys, and this field contributes exactly one more. The caller names
+	// NO key — it supplies only the value — so a caller can never shadow,
+	// rename or displace a runtime-written key, and a runtime producer can
+	// never collide with a caller.
+	//
+	// SCOPE — it can reach exactly one prompt position. It never reaches
+	// the trusted system-prompt spine (that is what SystemPromptOverride
+	// does, and why this field exists), and it never writes the
+	// conversation-memory tier, which is a claim about the session's
+	// stored turns that only the runtime may make.
+	//
+	// Any valid JSON value is accepted — an object, an array, a string, a
+	// number. An explicit `null` is REFUSED rather than treated as absent:
+	// a caller that believes its memory reached the model when it did not
+	// is the silent degradation this field exists to avoid. A document
+	// larger than the 32 KiB Protocol-edge cap is REFUSED with
+	// CodeInvalidRequest before a task exists, and the refusal names this
+	// field. Absent (the backward-compatible default) → byte-identical
+	// wire shape and run behaviour.
+	//
+	// Idempotency: `caller_memory` folds into the task's content identity,
+	// so a reused idempotency key carrying DIFFERENT memory is a loud
+	// conflict rather than a silent adoption of the first payload.
+	//
+	// RESIDUAL RISK, stated rather than implied: Harbor does not sanitise
+	// this payload — the untrusted framing IS the mitigation, and
+	// redaction is the caller's job. An operator who pipes third-party
+	// content through `caller_memory` without redacting it has a
+	// data-leakage path no prompt wrapper closes.
+	CallerMemory json.RawMessage `json:"caller_memory,omitempty"`
 }
 
 // StartResponse is the wire response for the `start` Protocol method.

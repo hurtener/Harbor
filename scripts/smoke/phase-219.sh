@@ -16,29 +16,30 @@
 #   - At least one OK once the phase has shipped.
 #   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
 #
-# GUARD DISCIPLINE — the phase gate, and why there is exactly ONE skipping arm.
+# GUARD DISCIPLINE — every branch below FAILS on breakage. NONE skips.
 #
-# The single grep below (the `caller_memory` wire field on the canonical type)
-# is the PHASE GATE. Until the phase lands it is the ONLY branch that can
-# SKIP, and its SKIP names precisely what is missing, so it cannot be mistaken
-# for a pass. Once the field exists, every assertion in this file is a hard
-# FAIL on breakage — there is no second skipping arm anywhere below.
+# The skeleton for this file carried the first grep below as a PHASE GATE with
+# a SKIP arm ("not yet shipped"). That arm is deleted. This phase HAS shipped,
+# so the field's absence is a REGRESSION, not a forward-compatibility case —
+# and the SKIP arm made deleting `StartRequest.CallerMemory`, the single most
+# obvious way to break this feature, produce `OK 0 / SKIP 1 / FAIL 0` and an
+# exit 0. That is §4.2 item 5 inverted, and it is the exact shape the
+# wave-v1.24 checkpoint audit rewrote out of `scripts/smoke/phase-215.sh`.
 #
-# The gate is necessary rather than defensive: the runtime decodes a `start`
-# body strictly, so a build WITHOUT the field answers 400 to a request carrying
-# it — byte-indistinguishable from a validation refusal. The static grep is
-# what resolves that ambiguity, and it is the reason a live 400 can be read as
-# a FAIL once the field is present (§4.2 item 5).
-#
-# DELETE-ON-SHIP is NOT required: when the field lands, the gate's OK arm fires
-# and every other guard becomes live automatically. No line in this file needs
-# editing when the phase ships, which is the property that stops the gate
-# rotting into an exemption.
+# The grep is still load-bearing, for a reason worth stating because it is the
+# OPPOSITE of the intuitive one. `decodeRequest` unmarshals a `start` body with
+# plain `json.Unmarshal` and NO `DisallowUnknownFields`
+# (internal/protocol/transports/control/control.go), so a build WITHOUT the
+# field answers 200 to a request carrying one and silently IGNORES it. Every
+# admission assertion below would go green against a runtime where the feature
+# does not exist — 200 with a task_id is exactly what an inert runtime returns.
+# The static grep is what makes that state distinguishable, so it must fail
+# loudly rather than excuse itself.
 #
 # Each guard below was verified by mutation: breaking the thing it protects
 # turns its OK into a FAIL, never into a SKIP.
 #
-# Done-definition once shipped: OK >= 14, FAIL = 0.
+# Done-definition: OK >= 14, FAIL = 0. Observed on the shipping build: 20/0/0.
 
 set -euo pipefail
 
@@ -49,19 +50,20 @@ cd "${ROOT}"
 source "scripts/smoke/common.sh"
 
 # ---------------------------------------------------------------------------
-# PHASE GATE. The one skipping arm in this file.
+# (S1) The wire field itself. FAILS on absence — this phase shipped it, so
+#      there is no pre-219 build to be forward-compatible with, and the live
+#      assertions below cannot tell an inert runtime from a working one on
+#      their own (see the header).
 # ---------------------------------------------------------------------------
 if grep -q 'json:"caller_memory,omitempty"' internal/protocol/types/control.go 2>/dev/null; then
     ok "phase 219 static: StartRequest carries the caller_memory wire field"
 else
-    skip "phase 219: not yet shipped — internal/protocol/types/control.go has no \`caller_memory\` field on StartRequest, so the Protocol edge cannot admit a caller-supplied memory block and every assertion below would be testing a surface that does not exist. This is the ONLY skipping arm; it disappears the moment the field lands."
-    smoke_summary
-    exit 0
+    fail "phase 219 static: StartRequest has no caller_memory wire field in internal/protocol/types/control.go — this phase shipped it, so its absence is a regression; the runtime would answer 200 and silently DROP every caller-supplied memory block (decodeRequest does not reject unknown fields)"
 fi
 
 # ---------------------------------------------------------------------------
-# Static trip-wires (run regardless of the live server). Past the gate, every
-# branch below FAILS on breakage.
+# Static trip-wires (run regardless of the live server). Every branch below
+# FAILS on breakage.
 # ---------------------------------------------------------------------------
 
 # (S2) D-223 lockstep: the REGENERATED manifest knows the field. A hand-mirror
@@ -77,10 +79,16 @@ fi
 #      producer. The runtime's own recall path must never write it: if it did,
 #      the two producers would be indistinguishable in the prompt and the
 #      provenance property this phase exists for would be silently dead.
-if grep -q 'CallerSuppliedKey' internal/runtime/runctx/caller_memory.go 2>/dev/null; then
-    ok "phase 219 static: runctx.CallerSuppliedKey is declared in the composition home"
+#      The pattern is ANCHORED on the whole declaration, name AND value. The
+#      first draft grepped the bare substring `CallerSuppliedKey`, which a
+#      rename to `CallerSuppliedKeyRENAMED` still satisfies — mutation-verified
+#      as an inert guard and rewritten. Both halves matter: the exported name is
+#      what the run loop and the admission event read, and the literal is the
+#      key a Console trace reader greps for.
+if grep -qE '^const CallerSuppliedKey = "caller_supplied"$' internal/runtime/runctx/caller_memory.go 2>/dev/null; then
+    ok "phase 219 static: runctx.CallerSuppliedKey is declared in the composition home, with its documented value"
 else
-    fail "phase 219 static: internal/runtime/runctx/caller_memory.go does not declare CallerSuppliedKey — the fixed External-tier key is the whole collision-freedom argument"
+    fail "phase 219 static: internal/runtime/runctx/caller_memory.go does not declare 'const CallerSuppliedKey = \"caller_supplied\"' — the fixed External-tier key is the whole collision-freedom argument, and both its NAME and its VALUE are load-bearing"
 fi
 if grep -q 'caller_supplied' internal/runtime/runctx/memory_fetch.go 2>/dev/null; then
     fail "phase 219 static: memory_fetch.go writes the caller_supplied key — the runtime's recall producer MUST NOT write the caller's key (two indistinguishable producers on one map key)"
@@ -336,6 +344,14 @@ if go test -race -count=1 -run 'CallerMemory' ./test/integration/ >/dev/null 2>&
     ok "phase 219: go test -race passes for the caller-memory integration suite (real drivers, recording LLM edge)"
 else
     fail "phase 219: go test -race FAILED for test/integration -run CallerMemory"
+fi
+# The run loop's OWN refusal branch and its admission emit. Reachable only
+# from an in-process caller (the Protocol edge refuses an inadmissible payload
+# before a task exists), so nothing above this line exercises it.
+if go test -race -count=1 -run 'CallerMemory|MalformedCallerMemory' ./internal/runtime/serve/ >/dev/null 2>&1; then
+    ok "phase 219: go test -race passes for the run-loop composition + admission-emit suite"
+else
+    fail "phase 219: go test -race FAILED for internal/runtime/serve -run CallerMemory"
 fi
 
 smoke_summary
