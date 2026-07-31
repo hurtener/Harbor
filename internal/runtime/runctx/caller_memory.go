@@ -67,9 +67,21 @@ var ErrCallerMemoryTierShape = errors.New("runctx: External memory tier is not a
 //
 // It returns a NEW *planner.MemoryBlocks and never mutates its argument:
 // the run loop's value is derived from identity-scoped store reads and
-// must stay untouched, and the returned struct shares no map with the
-// input, so a later writer to either cannot be observed through the
-// other.
+// must stay untouched.
+//
+// The no-aliasing guarantee is scoped to the tier this function WRITES.
+// `External` is rebuilt as a fresh map whose entries are copied across,
+// so a later write to either side's `External` cannot be observed
+// through the other. `Conversation` is carried across BY REFERENCE — it
+// is an `any` this function never reads into and never writes, so
+// copying it would mean a reflective or round-trip deep copy of an
+// arbitrary value, and a partial (top-level-only) copy would be worse
+// than none: a half-true invariant is what a future author reasons
+// from. The sharing is safe today because nothing downstream writes the
+// tier — the planner's renderer only reads it — and it is pinned by a
+// test asserting BOTH halves, the copy AND the share, so a change to
+// either forces this sentence to be re-derived rather than silently
+// invalidated.
 //
 // Behaviour:
 //   - An empty raw returns mb unchanged and byte-identically (the same

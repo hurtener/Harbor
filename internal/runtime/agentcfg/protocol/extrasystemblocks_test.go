@@ -103,8 +103,17 @@ func TestSetExtraSystemBlocks_ReorderIsANewRevision(t *testing.T) {
 }
 
 // TestSetExtraSystemBlocks_RefusesMalformedInput — the write door refuses a
-// duplicate name, an empty name, an out-of-charset name and an empty body,
+// duplicate name, an empty name, an out-of-charset name and a BLANK body,
 // and PERSISTS NOTHING in each case.
+//
+// The whitespace-only body case is the one an adversarial review found
+// missing. The door checked `b.Body == ""` while canonicalisation drops
+// `strings.TrimSpace(b.Body) == ""`, so `{"name":"x","body":"  "}`
+// returned 200, minted a revision, and left the block out of it: a caller
+// told its write succeeded, reading back a config that does not contain
+// what it wrote. The door's rule and the canonical form's rule must name
+// the SAME set — the gap between them is where silent degradation lives
+// (CLAUDE.md §13).
 func TestSetExtraSystemBlocks_RefusesMalformedInput(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -130,7 +139,27 @@ func TestSetExtraSystemBlocks_RefusesMalformedInput(t *testing.T) {
 		{
 			name:        "empty body",
 			blocks:      wireBlocks("named", ""),
-			wantInError: []string{"blocks[0]", "empty body"},
+			wantInError: []string{"blocks[0]", "blank body"},
+		},
+		{
+			// The gap: canonicalisation drops this, so the door must too.
+			name:        "whitespace-only body (spaces)",
+			blocks:      wireBlocks("named", "   "),
+			wantInError: []string{"blocks[0]", "blank body"},
+		},
+		{
+			name:        "whitespace-only body (tabs and newlines)",
+			blocks:      wireBlocks("named", "\t\n  \n"),
+			wantInError: []string{"blocks[0]", "blank body"},
+		},
+		{
+			// A blank body among VALID siblings: the refusal must not
+			// depend on the offender being the only block, because the
+			// silently-dropped case in production looked exactly like a
+			// partial success.
+			name:        "blank body beside valid siblings",
+			blocks:      wireBlocks("alpha", "real text", "beta", " ", "gamma", "more text"),
+			wantInError: []string{"blocks[1]", "blank body", `"beta"`},
 		},
 	}
 	for _, tc := range cases {

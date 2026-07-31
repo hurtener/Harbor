@@ -83,6 +83,13 @@ type AgentConfigNamedBlock struct {
 	Name string `json:"name"`
 	// Body is the block's prompt text. Rendered VERBATIM — see
 	// AgentConfigExtraSystemBlocks.
+	//
+	// A BLANK body is REFUSED, and blank means whitespace-only, not just
+	// empty. Canonicalisation drops any block whose body trims to empty,
+	// so a door that accepted `"  "` would answer 200 for a block the
+	// stored revision does not contain. The rule is stated here because
+	// it is a wire-contract refusal a caller must be able to anticipate:
+	// to REMOVE a block, omit it from the list, never blank its body.
 	Body string `json:"body"`
 }
 

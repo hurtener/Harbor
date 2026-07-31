@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -46,13 +47,23 @@ import (
 var blockNameRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 // validateExtraSystemBlocks rejects a blocks section with a malformed or
-// duplicated name, or an empty body, BEFORE any registry write — no
+// duplicated name, or a BLANK body, BEFORE any registry write — no
 // revision, no active-pointer move, no event (CLAUDE.md §13).
 //
 // A duplicate name is refused rather than de-duplicated because uniqueness
 // is what makes remove-by-name well defined, and remove-by-name is the
 // composability property the whole section exists to provide. The message
 // names BOTH offending positions so the caller can find them.
+//
+// THE BODY CHECK IS `TrimSpace`, NOT `== ""`, AND THE TWO ARE NOT
+// INTERCHANGEABLE. Canonicalisation drops any block whose body trims to
+// empty, so an exact-empty-only check at the door accepted `{"name":"x",
+// "body":"  "}` with a 200, minted a revision, and left the block out of
+// it — a caller told its write succeeded, reading back a config that does
+// not contain what it wrote. That is silent degradation (§13) on an
+// operator-facing door. The door's rule and the canonical form's rule must
+// name the same set, so the door refuses everything canonicalisation would
+// drop.
 func validateExtraSystemBlocks(blocks []prototypes.AgentConfigNamedBlock) error {
 	seen := make(map[string]int, len(blocks))
 	for i, b := range blocks {
@@ -60,8 +71,8 @@ func validateExtraSystemBlocks(blocks []prototypes.AgentConfigNamedBlock) error 
 			return fmt.Errorf("%w: blocks[%d].name %q must match %s",
 				ErrInvalidExtraSystemBlocks, i, b.Name, blockNameRE.String())
 		}
-		if b.Body == "" {
-			return fmt.Errorf("%w: blocks[%d] (name %q) has an empty body",
+		if strings.TrimSpace(b.Body) == "" {
+			return fmt.Errorf("%w: blocks[%d] (name %q) has a blank body — a body that is empty or only whitespace is dropped by canonicalisation, so accepting it would return success for a block the stored revision does not contain",
 				ErrInvalidExtraSystemBlocks, i, b.Name)
 		}
 		if first, dup := seen[b.Name]; dup {
