@@ -414,7 +414,11 @@ assert_json_path_resolves() {
         return
     fi
     local body status
-    body="{\"identity\":{\"tenant\":\"${tn}\",\"user\":\"${us}\",\"session\":\"${se}\"},\"id\":\"${ref_id}\",\"scope\":{\"tenant\":\"${tn}\",\"user\":\"${us}\",\"session\":\"${se}\"}}"
+    # NO `identity` member: the artifacts wire types scope by `scope` alone.
+    # The control transport decodes strictly (D-374), so a stray `identity`
+    # is a 400 — it used to be discarded in silence, which is why this helper
+    # carried one while reading as though it were load-bearing.
+    body="{\"id\":\"${ref_id}\",\"scope\":{\"tenant\":\"${tn}\",\"user\":\"${us}\",\"session\":\"${se}\"}}"
     status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
         -X POST -H "Authorization: Bearer ${auth}" -H 'Content-Type: application/json' \
         -d "${body}" "${get_ref_url}" || true)

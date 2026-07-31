@@ -10972,6 +10972,9 @@ So on this door the write could fail with the server already up, and the `recErr
 
 1. `test/integration/events_page_test.go` and `phase125_state_history_test.go` sent `"identity"` to `artifacts.put` / `artifacts.get_ref`. The artifacts wire types scope by `"scope"`; there is no `identity` field. The member had been silently discarded for four phases while the fixtures read as though the scoping were load-bearing — and they passed, because the scope was backfilled from the verified header anyway.
 2. `internal/protocol/transports/control/artifacts_body_scope_test.go` sent one shared body carrying `"id"` to all five artifacts methods. `ArtifactsListRequest` and `ArtifactsPutRequest` have no `id`, so those two rows were testing a body the transport had quietly edited. The helper is now method-aware.
+3. `scripts/smoke/common.sh::assert_json_path_resolves` — the SHARED smoke helper — sent the same stray `identity` to `artifacts.get_ref`. This is the §17.6 "grep production for the same call site" rule paying out a third time, and it is the one that would have failed CI preflight rather than a unit run.
+
+**The sweep was mechanical, not by eye.** A throwaway checker strict-decoded every literal `-d '{…}'` body posted to a `/v1/control/<method>` route across `scripts/smoke/`, `docs/site/`, `docs/skills/` and `docs/recipes/` against the wire type that method's handler decodes into. 29 literal bodies; after the three fixes the only remaining hit is the deliberate 400-demonstrating example added to the `use-the-harbor-protocol` skill. In particular the five tagged executable quickstart steps `scripts/smoke/phase-113a.sh` runs against a live server were verified clean. The checker was not kept — it duplicates what the transport now enforces, and a scanner that only reads *literal* bodies would be a guard whose coverage silently shrinks as bodies become interpolated.
 
 Production was checked for the same shape and is clean: the Console reaches artifacts through the typed client's per-method request types, which the D-223 lockstep gate keeps in step with the Go structs.
 
@@ -10982,7 +10985,7 @@ Production was checked for the same shape and is clean: the Console reaches arti
 3. The negative half is guarded too: `TestDecode_KnownMembersStillAccepted` posts a body of only declared members (including `caller_memory`) and requires 200, so the strict decode cannot pass by refusing everything — the regression that would be worse than the bug.
 4. `TestDecode_TrailingDataRefused` pins that the swap did not LOOSEN anything: `json.Unmarshal` refuses a second document after the first and a bare `Decoder.Decode` does not, so `decodeStrict` checks `dec.More()`.
 
-Live totals on the clean tree: `scripts/smoke/phase-219.sh` → `OK 23 / SKIP 0 / FAIL 0`.
+Live totals: `scripts/smoke/phase-219.sh` → `OK 23 / SKIP 0 / FAIL 0` against a live server, `OK 9 / SKIP 1 / FAIL 0` static-only. The D-375 guard was moved OUT of the live-gated region into the static section after the static-only run showed it skipping — a truthfulness guard over a Go source file has no business behind a route probe, and behind one it would have been silently unreachable on any run without a server.
 
 **Zero-version-move.** No wire type, method or error code changes; one capability constant is added to the canonical registry. `ProtocolVersion` holds at `0.1.0` — a capability addition is the RFC §5.3 minor-class change, exactly as the eight before it. `make protocol-ts-gen`, `make protocol-ts-types-gen` and `make protocol-docs-gen` re-run (only the wire-surface digest moves; a capability constant is not a wire type). The Console consumes capabilities as `ReadonlySet<string>`, so there is no TS union to extend.
 
@@ -11027,7 +11030,7 @@ So the cap's size tells a reader nothing about containment. What actually contai
 | `CHANGELOG.md` (unreleased 1.25.0 entry) | reproduced the "security-posture downgrade" sentence |
 | `docs/plans/phase-219-...md` | reproduced it; corrected in the as-shipped section |
 
-**Mutation-verified.** Re-add "security-posture downgrade dressed as tuning" to the `maxCallerMemoryBytes` godoc → `scripts/smoke/phase-219.sh` goes `OK 22 / FAIL 1` with the S7 leg red. The guard is two-sided: it also FAILS if the positive statement ("RESOURCE BOUND AND WIRE-SIZE GUARD") is deleted, so a future author cannot satisfy it by removing the characterisation instead of correcting it.
+**Mutation-verified, both sides.** Re-add "security-posture downgrade dressed as tuning" to the `maxCallerMemoryBytes` godoc → the S7 leg goes red naming the offending framing. Delete the positive statement ("RESOURCE BOUND AND WIRE-SIZE GUARD") instead → S7 goes red on the other arm, so a future author cannot satisfy the guard by removing the characterisation rather than correcting it. Both were observed; a one-sided guard here would have been the weaker instrument, because the cheapest way to silence a grep-for-a-bad-phrase is to say nothing at all. The guard is STATIC (no server needed), which is what makes it run on every invocation rather than only under preflight.
 
 **What did NOT change.** The constant is 32 KiB, before and after. No behaviour, no wire shape, no test outcome outside the new guard. This is a truthfulness fix, not a tuning change — and the reason it is worth a decision entry is that the false framing was already load-bearing in prose two phases downstream.
 

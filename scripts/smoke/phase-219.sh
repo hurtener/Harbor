@@ -45,7 +45,7 @@
 #
 # ONE residual, named rather than hidden: if `/v1/control/start` itself
 # vanished, the route probe would skip the whole live section and this script
-# would still report OK 8 (the static guards) — above the inert-smoke gate's
+# would still report OK 9 (the static guards) — above the inert-smoke gate's
 # OK-0 threshold. That is the §4.2 item 4 convention working as designed and
 # is not this phase's to change; a missing `start` route fails a great many
 # other smokes loudly first.
@@ -58,20 +58,28 @@
 # exit 0. That is §4.2 item 5 inverted, and it is the exact shape the
 # wave-v1.24 checkpoint audit rewrote out of `scripts/smoke/phase-215.sh`.
 #
-# The grep is still load-bearing, for a reason worth stating because it is the
-# OPPOSITE of the intuitive one. `decodeRequest` unmarshals a `start` body with
-# plain `json.Unmarshal` and NO `DisallowUnknownFields`
-# (internal/protocol/transports/control/control.go), so a build WITHOUT the
-# field answers 200 to a request carrying one and silently IGNORES it. Every
-# admission assertion below would go green against a runtime where the feature
-# does not exist — 200 with a task_id is exactly what an inert runtime returns.
-# The static grep is what makes that state distinguishable, so it must fail
-# loudly rather than excuse itself.
+# The grep is still load-bearing, and the reason CHANGED in the v1.25 §17.5
+# checkpoint — the original reason is recorded because it is what motivated
+# D-374. It read: "`decodeRequest` unmarshals a `start` body with plain
+# `json.Unmarshal` and NO `DisallowUnknownFields`, so a build WITHOUT the field
+# answers 200 to a request carrying one and silently IGNORES it." That was true
+# and it was the defect: the transport now decodes STRICTLY through
+# `decodeStrict`, so a build without the field refuses the request by name
+# instead of answering 200 (D-374).
+#
+# The grep survives for a narrower reason: strict decoding is a property of the
+# TRANSPORT, and this guard is on the wire TYPE. A build that kept the strict
+# decode and dropped the field would refuse correctly — but so would a build
+# that never had the field, and neither state is what "shipped" means here.
+# The static grep is what distinguishes "the field exists" from "the transport
+# happens to reject everything", so it must fail loudly rather than excuse
+# itself.
 #
 # Each guard below was verified by mutation: breaking the thing it protects
 # turns its OK into a FAIL, never into a SKIP.
 #
-# Done-definition: OK >= 14, FAIL = 0. Observed on the shipping build: 20/0/0.
+# Done-definition: OK >= 14, FAIL = 0. Observed on the shipping build: 23/0/0
+# with a live server, 9/0/0 (static only) without one.
 
 set -euo pipefail
 
@@ -90,7 +98,7 @@ source "scripts/smoke/common.sh"
 if grep -q 'json:"caller_memory,omitempty"' internal/protocol/types/control.go 2>/dev/null; then
     ok "phase 219 static: StartRequest carries the caller_memory wire field"
 else
-    fail "phase 219 static: StartRequest has no caller_memory wire field in internal/protocol/types/control.go — this phase shipped it, so its absence is a regression; the runtime would answer 200 and silently DROP every caller-supplied memory block (decodeRequest does not reject unknown fields)"
+    fail "phase 219 static: StartRequest has no caller_memory wire field in internal/protocol/types/control.go — this phase shipped it, so its absence is a regression; every caller-supplied memory block would be refused as an unknown member (or, on a build predating the strict decode, silently dropped behind a 200)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -179,6 +187,25 @@ elif [ "${CALLER_CAP}" -lt "${ENVELOPE_CAP_KIB}" ]; then
     ok "phase 219 static: maxCallerMemoryBytes (${CALLER_CAP} KiB) is strictly below the control transport's body cap (${ENVELOPE_CAP_KIB} KiB) — the field check is reachable"
 else
     fail "phase 219 static: maxCallerMemoryBytes (${CALLER_CAP} KiB) is NOT below the transport body cap (${ENVELOPE_CAP_KIB} KiB) — the transport answers first with the SAME 400, so the field's own cap is unreachable dead code"
+fi
+
+# (S7) TRUTHFULNESS GUARD (D-375). The cap's godoc must NOT describe the
+#      bound as a security posture. It is a resource bound and wire-size
+#      guard: the SAME principal can send more through `query` (uncapped
+#      below the envelope) and through the claim-free
+#      `agent_config.session.set_user_prompt` (1 MiB, landing inside the
+#      system prompt). A bound described as a security boundary invites a
+#      later author to reason FROM it — "content is capped, therefore X is
+#      contained" — and that inference does not hold.
+#
+#      Mutation-verified: re-add "security-posture downgrade" to the
+#      maxCallerMemoryBytes godoc and this leg turns red. ---
+if grep -q 'security-posture' internal/protocol/control.go 2>/dev/null; then
+    fail "phase 219 static: internal/protocol/control.go describes a cap in security-posture terms — maxCallerMemoryBytes is a resource bound and wire-size guard, and the same principal can send more content into a MORE trusted prompt position through query and agent_config.session.set_user_prompt (D-375)"
+elif grep -q 'RESOURCE BOUND AND WIRE-SIZE GUARD' internal/protocol/control.go 2>/dev/null; then
+    ok "phase 219 static: the caller-memory cap is documented as a resource bound and wire-size guard, not a security boundary (D-375)"
+else
+    fail "phase 219 static: internal/protocol/control.go no longer states what the caller-memory cap IS — the correction that it is a resource bound and wire-size guard, not a security boundary, has been dropped (D-375)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -421,25 +448,6 @@ else
     else
         fail "phase 219: runtime.info does not advertise caller_memory (capabilities: $(printf '%s' "${INFO_RESP}" | jq -c '.capabilities // "unreadable"' 2>/dev/null)) — a client has no way to tell this Runtime from one that discards the field"
     fi
-fi
-
-# --- (S7) TRUTHFULNESS GUARD (D-375). The cap's godoc must NOT describe the
-#          bound as a security posture. It is a resource bound and wire-size
-#          guard: the SAME principal can send more through `query` (uncapped
-#          below the envelope) and through the claim-free
-#          `agent_config.session.set_user_prompt` (1 MiB, landing inside the
-#          system prompt). A bound described as a security boundary invites a
-#          later author to reason FROM it — "content is capped, therefore X is
-#          contained" — and that inference does not hold.
-#
-#          Mutation-verified: re-add "security-posture downgrade" to the
-#          maxCallerMemoryBytes godoc and this leg turns red. ---
-if grep -q 'security-posture' internal/protocol/control.go 2>/dev/null; then
-    fail "phase 219 static: internal/protocol/control.go describes a cap in security-posture terms — maxCallerMemoryBytes is a resource bound and wire-size guard, and the same principal can send more content into a MORE trusted prompt position through query and agent_config.session.set_user_prompt (D-375)"
-elif grep -q 'RESOURCE BOUND AND WIRE-SIZE GUARD' internal/protocol/control.go 2>/dev/null; then
-    ok "phase 219 static: the caller-memory cap is documented as a resource bound and wire-size guard, not a security boundary (D-375)"
-else
-    fail "phase 219 static: internal/protocol/control.go no longer states what the caller-memory cap IS — the correction that it is a resource bound and wire-size guard, not a security boundary, has been dropped (D-375)"
 fi
 
 # ---------------------------------------------------------------------------
