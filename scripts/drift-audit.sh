@@ -242,6 +242,22 @@ if [ -x scripts/skills/check-frontmatter.sh ]; then
 fi
 
 # -----------------------------------------------------------------------------
+# Smoke-corpus body-identity guard (D-374). A Protocol request type with no
+# `identity` field is not scoped by one; the control transport decodes
+# strictly, so a smoke body carrying an `identity` member for such a method is
+# a 400 at runtime. The Console half of this rule lives in the TS lockstep
+# scan (`npm run lint`); this is the shell half. The corpus has produced two
+# separate instances of the bug, so it does not stay unguarded.
+# -----------------------------------------------------------------------------
+if [ -x scripts/check-smoke-body-identity.sh ]; then
+    if scripts/check-smoke-body-identity.sh; then
+        :   # the helper prints its own [OK] line
+    else
+        fail 'a smoke body sends `identity` to a Protocol method whose request type has no such field — see the guard output above and D-374'
+    fi
+fi
+
+# -----------------------------------------------------------------------------
 # Phase 106 regression guard — the Playground placeholder bubble must not
 # come back. The literal text was load-bearing for the V1.1 bug where
 # operators saw no model output.

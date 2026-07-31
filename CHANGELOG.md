@@ -114,14 +114,23 @@ position that any `runs.set_overrides` caller can now write.
   not declare. In particular the `artifacts.*` methods scope by `scope`, and a
   stray `identity` object beside it is now a 400 rather than a silent drop.
 
-  **The Console was itself sending that stray member**, on all five
-  `artifacts.*` methods and on `search.query` — its transport folds the identity
-  triple into every request body by default, *below* the typed client surface,
-  and six request types declare no `identity` field. Those six call sites now
-  pass `omitBodyIdentity`, and a lockstep check (`npm run lint`) enforces the
-  rule in both directions: a call site must suppress the fold **iff** its
-  request type has no `identity`. Third-party clients that fold identity the
-  same way should audit the same six methods.
+  **Eleven request types declare no `identity` field** — the five `artifacts.*`
+  (which scope by `scope`), the five `search.*` (which share `SearchRequest`
+  and scope by `filter`), and `governance.set_posture`. **Audit all eleven if
+  your client folds identity into request bodies**, as Harbor's own Console and
+  smoke corpus both did:
+
+  - The **Console** sent it on all five `artifacts.*` and on `search.query` —
+    its transport folds the triple *below* the typed client surface, where
+    caller-side typing cannot see it. Those call sites now suppress the fold,
+    and a lockstep check (`npm run lint`) enforces the rule in both directions:
+    a call site suppresses the fold **iff** its request type has no `identity`.
+  - The **smoke corpus** sent it to four `search.*` methods. A second guard
+    (`scripts/check-smoke-body-identity.sh`, run by `make drift-audit`) covers
+    that corpus.
+
+  Clients built on the Go Protocol client are unaffected: they marshal typed
+  wire structs, which have no `identity` field to populate.
 
 - **`memory.caller_block_admitted` — a new canonical event recording the FACT
   of an admission, never the content.** It carries `bytes`, `tier` and `key`
