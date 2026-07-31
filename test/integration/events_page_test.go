@@ -389,10 +389,14 @@ func TestE2E_Phase73g_EventsPage_TruncatedPayloadArtifactRoundTrip(t *testing.T)
 	scope := map[string]any{"tenant": "tenant-A", "user": "u-A", "session": "s-A"}
 
 	putStatus, putBody := callEventsArtifacts(t, srv.URL, methods.MethodArtifactsPut, map[string]any{
-		"identity": scope,
-		"scope":    scope,
-		"bytes":    "aGVhdnktcGF5bG9hZC1ieXRlcw==", // base64("heavy-payload-bytes")
-		"opts":     map[string]any{"mime_type": "application/octet-stream"},
+		// No `identity` member: the artifacts wire types scope by `scope`
+		// alone. The control transport decodes strictly, so a stray
+		// `identity` is now a 400 — it used to be discarded in silence,
+		// which is why this fixture carried one for four phases while
+		// reading as though it were load-bearing.
+		"scope": scope,
+		"bytes": "aGVhdnktcGF5bG9hZC1ieXRlcw==", // base64("heavy-payload-bytes")
+		"opts":  map[string]any{"mime_type": "application/octet-stream"},
 	})
 	if putStatus != http.StatusOK {
 		t.Fatalf("artifacts.put: status = %d, want 200; body=%v", putStatus, putBody)
@@ -407,9 +411,13 @@ func TestE2E_Phase73g_EventsPage_TruncatedPayloadArtifactRoundTrip(t *testing.T)
 	}
 
 	getStatus, _ := callEventsArtifacts(t, srv.URL, methods.MethodArtifactsGetRef, map[string]any{
-		"identity": scope,
-		"scope":    scope,
-		"id":       artID,
+		// No `identity` member: the artifacts wire types scope by `scope`
+		// alone. The control transport decodes strictly, so a stray
+		// `identity` is now a 400 — it used to be discarded in silence,
+		// which is why this fixture carried one for four phases while
+		// reading as though it were load-bearing.
+		"scope": scope,
+		"id":    artID,
 	})
 	// The in-mem driver is not a presigner — get_ref reports
 	// presign_unsupported (501) — but the identity MATCHED, so it must
@@ -434,10 +442,9 @@ func TestE2E_Phase73g_EventsPage_ArtifactGetRefIdentityRejected(t *testing.T) {
 
 	ownerScope := map[string]any{"tenant": "tenant-A", "user": "u-A", "session": "s-A"}
 	putStatus, putBody := callEventsArtifacts(t, srv.URL, methods.MethodArtifactsPut, map[string]any{
-		"identity": ownerScope,
-		"scope":    ownerScope,
-		"bytes":    "dHJ1bmNhdGVkLXBheWxvYWQ=", // base64("truncated-payload")
-		"opts":     map[string]any{"mime_type": "application/octet-stream"},
+		"scope": ownerScope,
+		"bytes": "dHJ1bmNhdGVkLXBheWxvYWQ=", // base64("truncated-payload")
+		"opts":  map[string]any{"mime_type": "application/octet-stream"},
 	})
 	if putStatus != http.StatusOK {
 		t.Fatalf("artifacts.put (owner): status = %d, want 200; body=%v", putStatus, putBody)
@@ -447,9 +454,8 @@ func TestE2E_Phase73g_EventsPage_ArtifactGetRefIdentityRejected(t *testing.T) {
 
 	otherScope := map[string]any{"tenant": "tenant-B", "user": "u-B", "session": "s-B"}
 	getStatus, getBody := callEventsArtifacts(t, srv.URL, methods.MethodArtifactsGetRef, map[string]any{
-		"identity": otherScope,
-		"scope":    otherScope,
-		"id":       artID,
+		"scope": otherScope,
+		"id":    artID,
 	})
 	// A cross-tenant get_ref must NOT return the bytes URL — acceptable
 	// outcomes are not_found (the artifact is invisible to tenant-B) or

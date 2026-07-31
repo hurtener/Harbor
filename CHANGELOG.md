@@ -79,11 +79,40 @@ position that any `runs.set_overrides` caller can now write.
   explicit `"caller_memory": null` is refused rather than read as absent, and a
   malformed document is refused rather than dropped.
 
-  This is deliberately **not** an operator knob. A dial on "how much untrusted
-  caller content may enter a prompt" is a security-posture downgrade dressed as
-  tuning. If a legitimate caller is ever refused, the answer is an additive
-  optional config key defaulting to the constant — never a raise of the
-  constant.
+  **That cap is a resource bound and a wire-size guard, not a security
+  boundary** (D-375). It exists because nothing downstream re-checks these
+  bytes — the LLM-edge leak guard byte-exempts system-role text — so without it
+  an oversized document reaches the token-budget guard and fails the whole run
+  late instead of costing one cheap refusal. Nothing may be inferred from it
+  about how much content a caller can put in front of the model: the same
+  principal can send more through the uncapped `query` (landing in the
+  *unframed* conversation position) and through the claim-free
+  `agent_config.session.set_user_prompt` (1 MiB body, landing *inside* the
+  system prompt). What contains this payload is positional, never its size.
+
+  It is still deliberately **not** an operator knob, on the operational
+  argument rather than a security one: a byte dial buys nothing an operator can
+  act on, and a configurable value is a foot-gun against the cap-ordering
+  invariant above. If a legitimate caller is ever refused, the answer is an
+  additive optional config key defaulting to the constant and validated
+  strictly below the envelope cap.
+
+- **Negotiate `caller_memory` before you rely on it, and unknown members are
+  now refused rather than dropped** (D-374). A runtime that predates the field
+  would have discarded it and answered **200** — the run then proceeds without
+  the memory the caller believes it supplied, and nothing says so. Two changes
+  close that: `runtime.info.capabilities` now advertises `caller_memory` (the
+  ninth Protocol capability, and the first to advertise an additive optional
+  request *field* rather than a method cluster — a client reads its **absence**
+  to identify an older runtime), and the **control transport now decodes
+  strictly**, so a member no wire type declares comes back `400
+  {"code": "invalid_request"}` with the member **named**. Every other Harbor
+  Protocol handler already decoded strictly; the control transport was the
+  outlier. No deprecation window applies — `Deprecation` can only describe a
+  method, error code, wire field or capability being retired, and unknown-member
+  tolerance is none of those. **Action for clients:** strip members Harbor does
+  not declare. In particular the `artifacts.*` methods scope by `scope`, and a
+  stray `identity` object beside it is now a 400 rather than a silent drop.
 
 - **`memory.caller_block_admitted` — a new canonical event recording the FACT
   of an admission, never the content.** It carries `bytes`, `tier` and `key`
@@ -109,9 +138,11 @@ position that any `runs.set_overrides` caller can now write.
   point; the mitigation is **positional** (the untrusted tier and its framing),
   not filtering. **An operator who pipes third-party content through
   `caller_memory` without redacting it has a data-leakage path no prompt
-  wrapper closes.** The 32 KiB cap is also the only bound: one caller block
-  cannot alone exhaust a context window, but a caller block plus a large
-  `retrieval_top_k` plus a long trajectory can, and there is no per-tenant rate
+  wrapper closes.** The 32 KiB cap is the only thing that re-checks these
+  *bytes* before the token-budget guard — it is not the only path by which a
+  caller's content reaches the model, and it bounds one block rather than the
+  aggregate: a caller block plus a large `retrieval_top_k` plus a long
+  trajectory can still exhaust a context window, and there is no per-tenant rate
   or volume accounting on admitted caller memory — spend is metered at the LLM
   edge, admission is not.
 

@@ -290,6 +290,12 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshot
 		types.CapTaskControl,
 		types.CapEventsSubscribe,
 		types.CapRuntimePosture,
+		// The `start` request's caller-memory admission rides the
+		// task-control surface's own dispatch — there is no separate
+		// wiring to gate on, so it is advertised wherever task control is.
+		// A client reads its ABSENCE to identify a Runtime that predates
+		// the field and would discard it silently.
+		types.CapCallerMemory,
 	}
 	if topologyAvailable {
 		caps = append(caps, types.CapTopologySnapshot)

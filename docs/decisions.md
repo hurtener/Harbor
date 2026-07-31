@@ -10640,6 +10640,8 @@ The searchers were **not equally broken**, and the asymmetry was re-confirmed ag
 5. **Runtime-retrieved-on-caller-intent is REJECTED, not deferred.** D-211 already wired `SearchTurns` into the run loop behind `memory.retrieval: semantic`, with `retrieval_top_k` / `retrieval_min_score` as the operator's dials. A Protocol "retrieval intent" field would be a second way to ask for retrieval Harbor already performs — the §13 shape — and it answers a question the reported consumer never asked. Their words were "inject recalled conversation memory": they had the content and no safe slot for it.
 6. **A THIRD prompt tier was rejected.** It costs a new wrapper, a new golden fixture, and an edit to the load-bearing most-stable→least-stable injection order whose stated purpose is KV-cache prefix stability — for provenance separation the External tier's map already provides at zero planner cost. This phase is invisible to the planner, and a regression test makes that a fact rather than an intention.
 7. **A bound enforced at the edge, before a task exists.** `maxCallerMemoryBytes = 32 KiB`, refused `invalid_request` before `Spawn`, mirroring `output_schema`. Not an operator knob: a dial on "how much untrusted caller content may enter a prompt" is a security-posture downgrade dressed as tuning. Reopening condition, stated once: if a legitimate caller is refused, the answer is an additive optional config key defaulting to the constant — never a raise of the constant.
+
+    > **Correction (D-375).** The middle sentence describes this cap as a security posture and it is not one. The bound is a RESOURCE BOUND AND WIRE-SIZE GUARD: the same principal, on the same request, can send substantially more through `StartRequest.Query` (uncapped below the 64 KiB envelope) and through the claim-free `agent_config.session.set_user_prompt` (1 MiB body, landing INSIDE the system prompt) — so raising this constant would not be a security downgrade, because the posture it is claimed to protect does not exist at this bound. The conclusion (not an operator knob) survives on a different argument; D-375 gives it. The paragraph is left as written (the log is append-only) with the correction attached rather than folded in.
 8. **CAP ORDERING IS AN INVARIANT.** `maxCallerMemoryBytes` MUST stay strictly below the control transport's `maxBodyBytes` (64 KiB). Both refuse with an identical `CodeInvalidRequest`, so a field cap that rises to meet the envelope cap becomes UNREACHABLE dead code while every status-code test keeps passing — the transport simply answers first. The refusal text NAMES the field, the smoke pins the ordering mechanically, and the over-cap smoke payload is sized to land BETWEEN the two caps.
 9. **Observable, size-only.** `memory.caller_block_admitted` carries `bytes` / `tier` / `key` and no fragment of the content. It fires at admission, which precedes planning, so it lands whether or not the run subsequently succeeds. A Console that cannot tell caller-asserted memory from runtime-retrieved memory can audit neither (RFC §5.2, D-062).
 10. **The fix is documentation as much as code.** `SystemPromptOverride`'s godoc, the generated Protocol reference, the Console client and both affected operator skills point at the additive field. A field nobody finds reproduces the defect in a new place.
@@ -10878,3 +10880,97 @@ Three shapes were available and the reason for the choice is an authorization as
 Neither correction touches the decision. The carrier is still a slice, order is still semantic, `NormalizePayload` still must not sort, and every test cited above still holds. Only two claims about *how thoroughly that is enforced* are narrowed to what is true.
 
 **Cross-references.** D-366 (the expected-revision token, which is what makes the whole-section replace safe for two contributors and therefore why there are no per-item verbs), D-364 (the UNTRUSTED-framed caller-memory tier — where user-authored text goes instead), D-365 (the per-run additive string; a DIFFERENT carrier, and neither is a carrier for the other), D-283 (the reflection-driven rebuild-completeness guard, which covered the new section in both directions the moment it was added to `ConfigPayload`), D-025 (concurrent reuse; N=128 against one shared `Service`), D-209 / D-223 (the generated Protocol reference and the Console wire-manifest lockstep, both re-run after rebasing on D-366). CLAUDE.md §4.2, §5, §6, §7, §9, §10, §11, §13, §17.1, §17.3, §17.6, §18. RFC §5.2, §6.2, §6.5, §6.15, §6.16.
+
+---
+
+## D-374 — Unknown request members are refused, not discarded: the control transport joins the strict-decode posture every other Protocol handler already had, and `caller_memory` gets a capability so the loss is detectable against a Runtime that predates the field
+
+**Date:** 2026-07-31
+
+**Status:** Shipped (v1.25 §17.5 checkpoint, in-wave). Found by the v1.25 adversarial checkpoint review (W5).
+
+**The defect.** `internal/protocol/transports/control` decoded every request body with `json.Unmarshal`, which discards a member no struct field matches. A client that sends `caller_memory` (new in v1.25) to a Runtime predating it therefore receives a **200** and a task id, and the run proceeds without the memory the caller believes it supplied. That is the CLAUDE.md §13 silent-degradation shape at a version boundary, and it is unrecoverable downstream: the bytes are gone before any validator sees them. `caller_memory` is the instance; the class is every additive optional field the Protocol will ever gain.
+
+**Decision — both halves ship, because they cover different populations and neither alone closes the hole.**
+
+1. **Strict decoding on the control transport.** One helper, `decodeStrict`, at the package's single decode point; every handler in the package routes through it (`start` / the nine steering controls / `topology.snapshot`, plus the posture, search, MCP, MCP-Apps and artifacts clusters the same package serves). An unknown member is refused `CodeInvalidRequest`, and **the refusal NAMES it** — a refusal that will not say which member is unusable for a client trying to learn what the Runtime supports, and it is otherwise indistinguishable from the transport's own malformed-body answer, which carries the identical code. The echoed decoder detail is bounded (the member name is caller-controlled and the body may carry 64 KiB of it) and can never carry a decoded VALUE, because `encoding/json` reports names and types only.
+2. **A capability, `CapCallerMemory` (`"caller_memory"`), advertised unconditionally by every Runtime wiring task control.** Strict decoding is forward-only: it cannot reach a Runtime already deployed without it, which is exactly the Runtime in the reported scenario. The capability can, because a build predating the constant cannot advertise it — so a client checks `VersionHandshake.Accepts(CapCallerMemory)` (or `runtime.info.capabilities`) and treats ABSENCE as unsupported instead of discovering the loss after the run.
+
+**The capability mechanism already existed and was reused; no second one was invented (§13).** `internal/protocol/types/version.go` has carried `Capability` + `canonicalCapabilities` + `Capabilities()` + `VersionHandshake.Accepts` since the versioning-discipline phase, with per-instance advertisement projected through `PostureSurface.wiredCapabilitiesFor` onto `runtime.info.capabilities`, and consumers already branching on it (the Console's `client.capabilities()`, the TUI's `HasCapability`). Eight capabilities were registered; this is the ninth.
+
+**What IS new is the granularity, and the bounding rule is written down so it does not become a capability per field.** Every prior capability advertises a SURFACE — a method cluster. This one advertises an additive optional REQUEST FIELD. The asymmetry that justifies it: a missing method announces itself (`CodeUnknownMethod`), a missing optional field does not. **The rule: an optional wire field earns a Capability only when its absence is undetectable by probing the method — i.e. an additive optional member on a method that already existed.** A field on a NEW method is covered by that method's own capability and must not get a second one. Recorded on `CapCallerMemory`'s godoc, not only here.
+
+**The strict-decode / deprecation-window tension, resolved on evidence rather than assumption.** §8 requires a deprecation window for breaking Protocol changes, and turning on `DisallowUnknownFields` does refuse bodies a prior Runtime accepted. Three findings decide it, in order of weight:
+
+1. **Strict decoding is already Harbor's shipped Protocol posture, at this same `ProtocolVersion 0.1.0`, on every OTHER request handler.** The entire `internal/protocol/transports/stream` family decodes with `DisallowUnknownFields` (sessions, memory, tools, agents, agent-config, governance, auth, tasks, runs, flows, events-list, pause-list, state-history, aggregate), as does `internal/protocol/client`. Two agent-config wire types state "rejected BY NAME via DisallowUnknownFields" in their godoc as a load-bearing security property. **The control transport was the outlier; the asymmetry was an omission, not a policy.** A third-party client that is forward-compatible against Harbor's Protocol already cannot send an unknown member to `memory.put` or `agent_config.set_revision`. Two decode postures for one concept is itself the §13 parallel-implementation shape, and closing it is what this does.
+2. **A deprecation window is not expressible here, and that is diagnostic rather than convenient.** `DeprecationKind` is a closed set of four — method / error_code / wire_field / capability. "Unknown-member tolerance" is none of them: there is no `Subject` to name, no `Replacement`, and nothing being removed from the surface. The registry that would hold the window cannot represent the entry. The window mechanism was built for retiring elements OF the surface; unknown-member tolerance is not an element of the surface, it is the absence of validation on inputs the surface never defined.
+3. **A window here would be self-defeating.** A deprecation window is a grace period during which BOTH behaviours are safe. The old behaviour is the defect — its entire content is "for the next N versions we will continue to discard members you believe we honoured." You cannot run a grace period on a data-loss bug. And the break is directional and self-announcing: a client sending a benign decorative member learns at the first request, with the member name in the message. That is the least-whipsaw failure available; the alternative is a client that never learns.
+
+**Conclusion: no window, strict decode ships now, unconditionally, with no per-type or per-version toggle.** A staged mechanism was considered and rejected — the stages would have had to be a `Deprecation` entry the format cannot express plus a lax path kept alive behind it, which is two implementations of one decode (§13) guarding a behaviour that is wrong on both sides of the switch. The scoping that IS applied is the one that costs nothing: the change is confined to the control transport, because that is the only package that was lax.
+
+**Two real defects the strict decode surfaced immediately, fixed here under §17.6 rather than papered over.** Both were live in Harbor's own tests and both are the exact silent-loss shape:
+
+1. `test/integration/events_page_test.go` and `phase125_state_history_test.go` sent `"identity"` to `artifacts.put` / `artifacts.get_ref`. The artifacts wire types scope by `"scope"`; there is no `identity` field. The member had been silently discarded for four phases while the fixtures read as though the scoping were load-bearing — and they passed, because the scope was backfilled from the verified header anyway.
+2. `internal/protocol/transports/control/artifacts_body_scope_test.go` sent one shared body carrying `"id"` to all five artifacts methods. `ArtifactsListRequest` and `ArtifactsPutRequest` have no `id`, so those two rows were testing a body the transport had quietly edited. The helper is now method-aware.
+
+Production was checked for the same shape and is clean: the Console reaches artifacts through the typed client's per-method request types, which the D-223 lockstep gate keeps in step with the Go structs.
+
+**Mutation-verified, each turning `OK` into `FAIL`, never into `SKIP`.**
+
+1. Delete `dec.DisallowUnknownFields()` from `decodeStrict` → `TestDecode_UnknownMemberRefusedAndNamed` FAILS on all three arms (`status = 200, want 400` for `start`), `TestDecode_UnknownMemberDetailIsBounded` FAILS, and the LIVE smoke leg FAILS (`a start carrying an unknown member returned 200, want 400`) — which also drags the no-task-on-refusal counter leg red (`count 0 → 2`), because the accepted body really did spawn tasks.
+2. Remove `types.CapCallerMemory` from `wiredCapabilitiesFor` → all five arms of `TestPostureSurface_Info_WiredCapabilities` FAIL, and against a rebuilt binary the live smoke leg FAILS naming the advertised set.
+3. The negative half is guarded too: `TestDecode_KnownMembersStillAccepted` posts a body of only declared members (including `caller_memory`) and requires 200, so the strict decode cannot pass by refusing everything — the regression that would be worse than the bug.
+4. `TestDecode_TrailingDataRefused` pins that the swap did not LOOSEN anything: `json.Unmarshal` refuses a second document after the first and a bare `Decoder.Decode` does not, so `decodeStrict` checks `dec.More()`.
+
+Live totals on the clean tree: `scripts/smoke/phase-219.sh` → `OK 23 / SKIP 0 / FAIL 0`.
+
+**Zero-version-move.** No wire type, method or error code changes; one capability constant is added to the canonical registry. `ProtocolVersion` holds at `0.1.0` — a capability addition is the RFC §5.3 minor-class change, exactly as the eight before it. `make protocol-ts-gen`, `make protocol-ts-types-gen` and `make protocol-docs-gen` re-run (only the wire-surface digest moves; a capability constant is not a wire type). The Console consumes capabilities as `ReadonlySet<string>`, so there is no TS union to extend.
+
+**Cross-references.** D-364 (the `caller_memory` field whose silent loss is the reported instance), D-375 (the sibling correction from the same review, on the same field's cap), D-223 / D-209 (the manifest and generated-reference lockstep, both re-run), D-093 (the Console client's hand-maintained wire types the lockstep gate keeps honest). CLAUDE.md §4.2, §5, §8, §13, §17.6, §18. RFC §5.2, §5.3.
+
+---
+
+## D-375 — The caller-memory cap is a resource bound and wire-size guard, not a security boundary: the same principal can send more content into a MORE trusted prompt position
+
+**Date:** 2026-07-31
+
+**Status:** Shipped (v1.25 §17.5 checkpoint, in-wave). Found by the v1.25 adversarial checkpoint review (W2). Truthfulness fix — **the value is unchanged**.
+
+**The defect.** `maxCallerMemoryBytes` (32 KiB) was described in security terms in six places — most sharply as "a dial on how much untrusted caller content may enter a prompt is a **security-posture downgrade** dressed as tuning" (D-364 item 7, and verbatim in the constant's godoc). It is not a security property, and describing it as one invites a later author to reason **from** it — "the caller's content is capped, therefore X is contained" — an inference that does not hold for any X.
+
+**Why it does not hold, with the paths named.** The SAME principal, needing no additional claim, can put substantially more content in front of the model, through positions carrying LESS framing rather than more:
+
+- **`StartRequest.Query`** has no cap of its own. Its only bound is the control transport's 64 KiB whole-body envelope, so a caller may spend nearly twice this constant on it — and it becomes the run's **user turn**, the conversation position, which carries no anti-prompt-injection preamble at all. The 32 KiB tier it is being compared against does.
+- **`agent_config.session.set_user_prompt`** is the session-safe tier: identity-mandatory, **no scope claim** (the handler's `agentConfigSessionSafeRoutes` arm falls through with a bare comment; every other route demands `auth.ScopeAdmin` or `auth.ScopeAgentConfigUser`). It writes `prompt_layers.user`, which renders **inside the system prompt**, and its transport bounds the body at **1 MiB** — 32× this constant. It is escaped, which is a real mitigation and a positional one; it is not a byte bound.
+
+So the cap's size tells a reader nothing about containment. What actually contains this payload is **positional**: it reaches exactly one tier, that tier ships the five-line untrusted framing, and it can never reach the trusted spine (that is `SystemPromptOverride`, and making this path reachable is what stops consumers reaching for it — D-364).
+
+**Decision — describe the bound as what it is, and leave the value alone.** It is a **resource bound and wire-size guard**, and the work it does is real:
+
+- **Nothing downstream re-checks these bytes.** `findContextLeak` byte-exempts everything that is not a tool-role message and memory tiers render under the system role, so an unbounded document travels to the token-budget guard and fails the whole run **late**, after the prompt is assembled. The bound at the edge turns that into one cheap refusal before a task exists. (This is D-364's own finding; only its characterisation is corrected.)
+- **The cap-ordering invariant is unaffected** and remains the operational reason the constant is not configurable: it MUST stay strictly below the transport's `maxBodyBytes`, because both refuse with an identical `CodeInvalidRequest` and a field cap that rises to meet the envelope cap becomes unreachable dead code every status-code test keeps passing against.
+
+**"Not an operator knob" survives, on a different argument.** D-364 justified it as a security-posture downgrade; that justification is retracted. The conclusion holds anyway: a per-request byte dial on an admission whose containment is positional buys nothing an operator can act on, and a configurable value is a foot-gun against the cap-ordering invariant (a value at or above the envelope cap silently disables the field's own check). The reopening condition is unchanged in substance and tightened in form — an additive optional config key defaulting to the constant, **validated strictly below `maxBodyBytes`**.
+
+**Every location corrected, found by grep rather than by the review's list.** The review named the ones it happened to see; these are all of them.
+
+| Location | What it said |
+| --- | --- |
+| `internal/protocol/control.go` (`maxCallerMemoryBytes` godoc) | "a security-posture downgrade dressed as tuning"; "It is the ONLY bound on this content class" |
+| `internal/protocol/types/control.go` (`CallerMemory` godoc) | stated the cap without stating what kind of bound it is |
+| `docs/decisions.md` D-364 item 7 | the source of the phrasing — correction attached, log stays append-only |
+| `docs/glossary.md` "Caller-supplied memory block" | "Bounded at 32 KiB at the Protocol edge" with no characterisation |
+| `docs/skills/use-the-harbor-protocol/SKILL.md` §3 | the over-cap rule, uncharacterised |
+| `docs/skills/configure-memory-and-skills/SKILL.md` §1 | "bounded at 32 KiB per request at the edge" |
+| `scripts/smoke/phase-219.sh` (header + over-cap leg) | "the Protocol-edge bound is the ONLY bound" |
+| `web/console/src/lib/protocol/client.ts` (`callerMemory` doc) | the over-cap rule, uncharacterised |
+| `CHANGELOG.md` (unreleased 1.25.0 entry) | reproduced the "security-posture downgrade" sentence |
+| `docs/plans/phase-219-...md` | reproduced it; corrected in the as-shipped section |
+
+**Mutation-verified.** Re-add "security-posture downgrade dressed as tuning" to the `maxCallerMemoryBytes` godoc → `scripts/smoke/phase-219.sh` goes `OK 22 / FAIL 1` with the S7 leg red. The guard is two-sided: it also FAILS if the positive statement ("RESOURCE BOUND AND WIRE-SIZE GUARD") is deleted, so a future author cannot satisfy it by removing the characterisation instead of correcting it.
+
+**What did NOT change.** The constant is 32 KiB, before and after. No behaviour, no wire shape, no test outcome outside the new guard. This is a truthfulness fix, not a tuning change — and the reason it is worth a decision entry is that the false framing was already load-bearing in prose two phases downstream.
+
+**A related overclaim, corrected in the same pass.** D-364's phrase "the bound is the ONLY bound" is true about *resource exhaustion* and was being read as being about *content admission*. The godoc now separates the two: it is the only thing that re-checks these BYTES before the token-budget guard, and it is not the only path by which a caller's content reaches the model.
+
+**Cross-references.** D-364 (the decision this corrects; item 7 carries the pointer), D-374 (the sibling fix from the same review, on the same field's version boundary), D-367 (the same "this label is not a security boundary" discipline, applied to the extra-system-block `[name]` label — the precedent this follows). CLAUDE.md §5, §7, §13, §18. RFC §6.5.

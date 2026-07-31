@@ -558,3 +558,59 @@ it toward the target") is what this leans on, stated rather than glossed.
       (surface: memory) updated in this PR
 - [x] If new vocabulary: glossary updated
 - [x] If a brief finding was departed from: justified above + decisions.md entry filed (D-364)
+
+## Corrections from the v1.25 §17.5 checkpoint review (2026-07-31)
+
+Two findings against this phase, both fixed **in-wave** rather than deferred. Neither changes a value or
+a behaviour this plan specifies; one adds a surface, the other corrects prose that was load-bearing.
+
+### The 32 KiB cap is a resource bound and wire-size guard, NOT a security boundary (D-375)
+
+This plan justified the constant partly as a security posture — "a knob on 'how much untrusted caller
+content may enter a prompt' is a security-posture downgrade dressed as tuning" (in "Brief findings
+incorporated", reading brief 04 §5), and the framing propagated verbatim into the constant's godoc,
+D-364 item 7, the glossary, both operator skills, the smoke header and the CHANGELOG.
+
+**It is not one, and the plan's own bound chain is what shows it.** The chain above is correct about
+BYTES and was over-read as being about ADMISSION. The same principal, on the same request, can put
+substantially more content in front of the model through positions carrying *less* framing:
+
+- `StartRequest.Query` has no cap of its own; its only bound is the same 64 KiB envelope, and it becomes
+  the run's user turn — the conversation position, which ships no anti-injection preamble.
+- `agent_config.session.set_user_prompt` is the session-safe tier (identity-mandatory, **no** scope
+  claim — `agentConfigSessionSafeRoutes` in `internal/protocol/transports/stream/agentconfig_handler.go`),
+  writes `prompt_layers.user` *inside* the system prompt, and its transport bounds the body at
+  `maxAgentConfigBodyBytes = 1 << 20` — 32× this constant.
+
+So "the content is capped, therefore X is contained" holds for no X. Containment here is **positional**:
+one tier, with the untrusted framing, never the spine. The bound's real work — stopping an oversized
+document from reaching the token-budget guard and failing the run late — is exactly what this plan's
+chain establishes, and that is now how it is described everywhere.
+
+**The "no operator config key" non-goal above survives, on the operational argument instead:** a byte
+dial buys nothing an operator can act on when containment is positional, and a configurable value is a
+foot-gun against the cap-ordering invariant (a value at or above the envelope cap silently disables the
+field's own check). The reopening condition is unchanged in substance, tightened in form — the additive
+`protocol.max_caller_memory_bytes` must validate **strictly below** `maxBodyBytes`.
+
+The value is unchanged: 32 KiB before, 32 KiB after.
+
+### `caller_memory` degraded silently against a Runtime predating it (D-374)
+
+The plan verified the bound chain and the refusal paths but not the **version boundary**. A client
+sending `caller_memory` to a Runtime shipped before this phase received a 200 and a task id, because the
+control transport decoded with `json.Unmarshal`, which discards an unmatched member — the §13 silent
+degradation this phase exists to prevent, reappearing one layer out. Two changes close it:
+
+- **Strict decoding on the control transport**, through one `decodeStrict` helper covering every cluster
+  the package serves. An unknown member is refused `invalid_request` **naming the member**. This brings
+  the last lax handler into line: the whole `internal/protocol/transports/stream` family and the Go
+  Protocol client already decoded strictly at this same `ProtocolVersion 0.1.0`. No deprecation window
+  applies — the reasoning is in D-374.
+- **`types.CapCallerMemory`**, advertised unconditionally in `runtime.info.capabilities`. Strict decoding
+  is forward-only and cannot reach an already-deployed Runtime; the capability can, because a build
+  predating the constant cannot advertise it. A client treats ABSENCE as "unsupported".
+
+`scripts/smoke/phase-219.sh` gains three legs (the unknown-member refusal, the capability advertisement,
+and the D-375 truthfulness guard), all mutation-verified `OK → FAIL`; live totals move from
+`OK 20 / SKIP 0 / FAIL 0` to `OK 23 / SKIP 0 / FAIL 0`.

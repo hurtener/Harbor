@@ -204,9 +204,23 @@ The rules, all enforced at the edge before any task is created:
 
 - Any JSON value — object, array, string, number.
 - **An explicit `"caller_memory": null` is REFUSED**, not treated as absent. Omit the field if you have nothing to send; a caller that believes its memory reached the model when it did not is the failure this refuses to hide.
-- Over **32 KiB** → `400 {"code": "invalid_request"}`, with a message that names `caller_memory`. No task is created.
+- Over **32 KiB** → `400 {"code": "invalid_request"}`, with a message that names `caller_memory`. No task is created. **That cap is a resource bound and a wire-size guard, not a security boundary** — it stops an oversized document reaching the token-budget guard and failing your whole run late. Do not read it as a limit on how much content you can put in front of the model: `query` is uncapped below the 64 KiB envelope and lands in the *unframed* conversation position, and `agent_config.session.set_user_prompt` needs no scope claim, takes a 1 MiB body, and lands *inside* the system prompt. What contains `caller_memory` is the tier it goes to, never its size.
+- **Negotiate before you rely on it.** Call `runtime.info` and check for `caller_memory` in `capabilities`. A runtime that predates the field would **discard it and answer 200** — your run proceeds without the memory you sent, and nothing tells you. Current runtimes refuse an unknown member by name (see below), but that cannot help you against an older deployment; the capability can, because a build predating the field cannot advertise it.
 - It can never write the conversation-memory tier — that is a claim about the session's stored turns only the runtime makes.
 - Each admitting run emits `memory.caller_block_admitted` carrying `bytes` / `tier` / `key` and **no fragment of your content**, so an operator can audit that caller-asserted memory entered a run without the audit trail becoming a copy of it.
+
+**Unknown members are refused, never dropped.** Every Protocol request body is decoded strictly: a member no wire type declares comes back `400 {"code": "invalid_request"}` with the member **named** in the message (`json: unknown field "…"`). This is deliberate and it is how you discover a field a runtime does not support:
+
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {}, "query": "hi", "caller_memoryy": {}}'
+# → 400 {"code":"invalid_request",
+#        "message":"method \"start\": request body is not a valid StartRequest: json: unknown field \"caller_memoryy\""}
+```
+
+Two consequences for your client: strip fields the runtime does not declare (typos and speculative fields are 400s, not no-ops), and remember that a **stray** member is refused even when a correctly-spelled sibling carries the same information — e.g. the `artifacts.*` methods scope by `scope`, and adding an `identity` object beside it is a 400.
 
 **One thing Harbor does not do for you:** it does not sanitise this payload. The untrusted framing is the mitigation for the MODEL; it is not redaction. If you pipe third-party content through `caller_memory` without redacting it first, you own that data-leakage path.
 

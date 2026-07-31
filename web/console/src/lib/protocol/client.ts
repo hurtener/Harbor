@@ -751,6 +751,19 @@ export class ControlNamespace {
 			 * exists. Omitted (the default) keeps the wire shape and run
 			 * behaviour byte-identical.
 			 *
+			 * That 32 KiB is a RESOURCE BOUND and wire-size guard, not a
+			 * security boundary — the same caller can send more through
+			 * `query` (uncapped below the transport envelope) or through
+			 * `agent_config.session.set_user_prompt` (claim-free, 1 MiB
+			 * body, landing inside the system prompt). What contains this
+			 * payload is the tier it lands in, not its size.
+			 *
+			 * NEGOTIATE FIRST: `await client.capabilities()` then branch
+			 * on `caps.has('caller_memory')`. A runtime predating the
+			 * field discards the member and answers 200, so treat the
+			 * capability's absence as unsupported rather than discovering
+			 * the loss after the run.
+			 *
 			 * Harbor does not sanitise the payload — the tier's
 			 * anti-prompt-injection framing IS the mitigation, and
 			 * redaction is the caller's job.
