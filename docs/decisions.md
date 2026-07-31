@@ -10941,6 +10941,42 @@ So on this door the write could fail with the server already up, and the `recErr
 
 ---
 
+## D-371 — The spawn idempotency index key carries the full identity triple: dedup is bounded by an isolation boundary, not by the entropy of a session id
+
+**Date:** 2026-07-31
+
+**Status:** Accepted (v1.25). A §6 rule-2 fix found by the v1.25 adversarial checkpoint review and landed in-wave. Structural, not behavioural-for-legitimate-callers: no caller inside a single triple sees any change.
+
+**Context — the defect, verified by grep rather than by the report.** `internal/tasks/engine` keyed its spawn idempotency index on `(SessionID, IdempotencyKey)`. The review named two sites; there were **six**, and one of them was the hydration rebuild, which is the site that decides whether the shape survives a restart:
+
+- `engine/engine.go:102` — the `idempotencyKey` type declaration.
+- `engine/engine.go:168` — Spawn's dedup probe.
+- `engine/engine.go:279` — Spawn's index insert.
+- `engine/engine.go:306` — Spawn's compensation delete on failed group wiring.
+- `engine/engine.go:999` — `contentHashLocked`, the re-persist path's hash lookup.
+- `engine/backend.go:99` — the `Hydrate` rebuild, replaying persisted records at boot.
+
+`tenant_id` was in none of them. `user_id` was in none of them.
+
+**The reachable consequence, stated at its true size.** This was NOT a handle disclosure. `spawnRequestsEqual` (`engine/engine.go:1114`) compares `existing.Identity != req.Identity` as its first leg, so a colliding entry from another tenant fails the divergence compare rather than being returned — the caller gets `ErrIdempotencyConflict`. So the reachable damage is a **cross-tenant denial plus an existence oracle**: tenant B, presenting a session id and key that tenant A already used, is permanently unable to spawn under that key and learns that A holds it. Session ids are high-entropy, so this is not reachable by guessing. It is fixed anyway, and the reason is the whole point of the entry: **an isolation boundary is held by the shape of the key, not by the entropy of one of its components.** The same reasoning made D-363's user-axis fold unconditional rather than knob-gated.
+
+**Decision.** `idempotencyKey` carries `(TenantID, UserID, SessionID, Key)`.
+
+1. **`tenant_id` joins the key.** CLAUDE.md §6 rule 2 admits no exception for "the other component has enough entropy."
+2. **`user_id` joins it too, and the reasoning is recorded rather than assumed.** An idempotency key names ONE CALLER'S RETRY, and a caller in Harbor is the triple — not a session. That a session belongs to exactly one user is an invariant maintained by the session subsystem; this key does not lean on it. Leaning on it is the identical mistake one component over, and it costs nothing to not make it.
+3. **`RunID` does NOT join it,** and the type spells the three fields out rather than embedding `identity.Quadruple` so it cannot drift into the key later. A run-scoped idempotency key would defeat dedup across exactly the retries it exists to collapse — each retry is a new run.
+4. **One construction site.** `idemKeyFor(identity.Identity, string)` is the only place an `idempotencyKey` is built; all six sites route through it, so a write and the read that must match it cannot drift apart. Six hand-built struct literals were how a field went missing from all six at once.
+
+**Persistence: no migration, and the evidence is structural rather than a judgement call.** The index is **derived state that is never written to any store.** The durable driver persists task records keyed by the task's own ULID (`drivers/durable/record.go:61`, `taskKindPrefix+string(rec.Task.ID)`) under the identity triple's StateStore scope; the idempotency key appears in no key and no payload. The engine REBUILDS the index at `Hydrate` from each persisted task's own `Identity` + `IdempotencyKey` (`engine/backend.go:99`) — and `Task.Identity` is a full `identity.Quadruple` that already carries `TenantID`. So the corrected key is derivable from records written by the pre-fix code: existing rows are byte-identical, nothing is rewritten, and an upgrade rebuilds the narrower key from what is already on disk. `TestDurable_RestartSurvival_CrossTenantIdempotencyKeyStaysIsolated` pins this by writing through one engine instance and re-deriving through a second over the same store.
+
+**Tests, mutation-verified.** The invariant lands in the driver-agnostic conformance suite (`internal/tasks/conformancetest`) so both shipped drivers — and any third — inherit it: `Spawn_DifferentTenantsCanReuseKey` and `Spawn_DifferentUsersCanReuseKey` spawn a **colliding** `(session, key)` pair across the boundary and assert two distinct tasks, neither flagged `Reused`, each readable only by its owner, with the foreign `Get` still `ErrNotFound` — plus a same-tenant retry that still dedups, so the fix is shown to narrow the key rather than disable idempotency. Reverting `idemKeyFor` to the pre-fix shape fails both subtests on both drivers (`tasks: idempotency key reused with divergent SpawnRequest: key="collide-key"`) and fails the durable restart test at its second spawn.
+
+**Documented surface updated in the same PR (§18).** `StartRequest.IdempotencyKey`'s wire godoc (`internal/protocol/types/control.go`) and the hand-written `docs/site/protocol/task-control.md` both said "per session"; both now say the triple. No wire shape changed — `idempotency_key` is the same field with the same JSON tag — so the generated Protocol reference regenerates with prose only.
+
+**Cross-references.** D-363 (the search cluster's user axis — the same "an omitted or unexamined isolation component is a boundary hole, fix it unconditionally" call, one subsystem over), D-352 (the artifact read key IS the isolation triple), D-356 (an artifact listing scopes to the caller's own user). CLAUDE.md §5, §6 (rules 1, 2, 9, 10), §9, §11, §13, §17.6, §18.
+
+---
+
 ## D-379 — HA-47 (keying the live MCP registry by `(owner, name)`) is REFUSED; D-301's namespace guarantee gains the instrument it never had, and the `ScopeUser` token-Kind hazard it silently protects is recorded
 
 **Context.** A v1.25 proposal (HA-47) observed correctly that `internal/tools/drivers/mcp/registry.go` keys `servers` by the bare connection name while each entry carries an `auth.Owner{Tenant, Agent}`, and that `attach.go` consults that owner to refuse a cross-owner same-name attach (`ErrConnectionNameOwnerConflict`). The inference was that the owner already decides coexistence and should therefore become part of the key, letting a coordinator attach one logical MCP server for N `(tenant, agent)` pairs under one short name — removing the pressure to encode the owner into the server id, which spends bytes from the ReAct declaration path's 64-byte tool-name budget.

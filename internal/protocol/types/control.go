@@ -105,8 +105,15 @@ type StartRequest struct {
 	// default priority.
 	Priority int `json:"priority,omitempty"`
 	// IdempotencyKey, when non-empty, deduplicates the spawn: a second
-	// `start` with the same key (namespaced by session) returns the
-	// existing task handle with Reused=true. Empty disables dedup.
+	// `start` with the same key returns the existing task handle with
+	// Reused=true. Empty disables dedup.
+	//
+	// The key is namespaced by the caller's FULL identity triple
+	// (tenant, user, session), not by the session alone: it identifies
+	// one caller's retry, and a caller is the whole triple. Two callers
+	// on opposite sides of an isolation boundary can present the same
+	// key — even against the same session id — and each gets its own
+	// task, never a reused handle and never a conflict.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// InputArtifactIDs attach operator-uploaded
 	// artifacts as multimodal inputs the run consumes on its first
@@ -155,7 +162,8 @@ type StartRequest struct {
 	// the envelope. Step boundaries and tool-dispatch events stream as
 	// today. A documented behaviour choice, not a surprise.
 	//
-	// Idempotency: `start` dedupes on `(session, idempotency_key)` and
+	// Idempotency: `start` dedupes on
+	// `(tenant, user, session, idempotency_key)` and
 	// folds `output_schema` into the task's content identity — a genuine
 	// retry (same body, same schema) returns the existing handle; a
 	// REUSED key with a DIFFERENT schema is caller misuse and is rejected
