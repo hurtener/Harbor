@@ -19,9 +19,14 @@
 #   2. unit-tests: the owner-tag + owner-scoped-reconcile packages under -race
 #      (TestRegistry_BootServerVisibleToEverySession,
 #       TestReconcile_OwnerScoped_NeverDetachesBootOrOtherOwner, + siblings).
+#   2b. namespace-guarantee: the OTHER half of D-301 — a cross-owner same-name
+#      attach fails LOUD and PRE-DIAL, and the process-global bare-name catalog
+#      refuses the collision independently. Counts the PASS lines so a renamed
+#      or deleted test FAILS instead of passing vacuously ("no tests to run" is
+#      a `go test` success).
 #   3. The §17.1 integration test (real drivers, two owners + a boot server).
 #
-# Done-definition: OK >= 2, FAIL = 0.
+# Done-definition: OK >= 3, FAIL = 0.
 
 set -euo pipefail
 
@@ -80,6 +85,34 @@ elif go test -race -count=1 -timeout 240s \
     ok "unit-tests: owner-tag + owner-scoped-reconcile packages pass under -race"
 else
     fail "unit-tests: Phase 167 package tests failed (run: go test -race ./internal/tools/drivers/mcp/... ./internal/runtime/agentcfg/projection/...)"
+fi
+
+# ----------------------------------------------------------------------------
+# 2b. The D-301 NAMESPACE guarantee — a cross-owner same-name attach fails loud
+#     and PRE-DIAL; the bare-name catalog refuses the collision independently.
+#
+# The count check is deliberate. `go test -run <pattern>` with a pattern that
+# matches NOTHING prints "no tests to run" and exits 0, so an arm that only
+# checked the exit code would report OK forever after a rename — the vacuous
+# instrument this wave keeps finding. Requiring the exact PASS count makes a
+# renamed, deleted, or skipped test a FAIL.
+# ----------------------------------------------------------------------------
+
+GUARD_FILE="internal/tools/drivers/mcp/cross_owner_name_collision_test.go"
+GUARD_EXPECTED=3
+
+if [ ! -f "${GUARD_FILE}" ]; then
+    skip "namespace-guarantee: ${GUARD_FILE} absent (guard not yet landed)"
+else
+    guard_out="$(go test -race -count=1 -timeout 240s -v \
+        -run 'TestAttach_CrossOwnerSameName_RefusedPreDial|TestAttach_CrossOwnerDistinctNames_BothAttach|TestAttach_CrossOwnerSameName_CatalogIsTheSecondGate' \
+        ./internal/tools/drivers/mcp/ 2>&1 || true)"
+    guard_pass="$(printf '%s\n' "${guard_out}" | grep -c '^--- PASS: TestAttach_CrossOwner' || true)"
+    if [ "${guard_pass}" -eq "${GUARD_EXPECTED}" ]; then
+        ok "namespace-guarantee: cross-owner same-name attach fails loud + pre-dial (${guard_pass}/${GUARD_EXPECTED} D-301 guards pass)"
+    else
+        fail "namespace-guarantee: expected ${GUARD_EXPECTED} passing D-301 namespace guards, got ${guard_pass} (run: go test -race -v -run TestAttach_CrossOwner ./internal/tools/drivers/mcp/)"
+    fi
 fi
 
 # ----------------------------------------------------------------------------
