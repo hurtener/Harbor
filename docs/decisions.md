@@ -10878,3 +10878,39 @@ Three shapes were available and the reason for the choice is an authorization as
 Neither correction touches the decision. The carrier is still a slice, order is still semantic, `NormalizePayload` still must not sort, and every test cited above still holds. Only two claims about *how thoroughly that is enforced* are narrowed to what is true.
 
 **Cross-references.** D-366 (the expected-revision token, which is what makes the whole-section replace safe for two contributors and therefore why there are no per-item verbs), D-364 (the UNTRUSTED-framed caller-memory tier — where user-authored text goes instead), D-365 (the per-run additive string; a DIFFERENT carrier, and neither is a carrier for the other), D-283 (the reflection-driven rebuild-completeness guard, which covered the new section in both directions the moment it was added to `ConfigPayload`), D-025 (concurrent reuse; N=128 against one shared `Service`), D-209 / D-223 (the generated Protocol reference and the Console wire-manifest lockstep, both re-run after rebasing on D-366). CLAUDE.md §4.2, §5, §6, §7, §9, §10, §11, §13, §17.1, §17.3, §17.6, §18. RFC §5.2, §6.2, §6.5, §6.15, §6.16.
+
+---
+
+## D-371 — The spawn idempotency index key carries the full identity triple: dedup is bounded by an isolation boundary, not by the entropy of a session id
+
+**Date:** 2026-07-31
+
+**Status:** Accepted (v1.25). A §6 rule-2 fix found by the v1.25 adversarial checkpoint review and landed in-wave. Structural, not behavioural-for-legitimate-callers: no caller inside a single triple sees any change.
+
+**Context — the defect, verified by grep rather than by the report.** `internal/tasks/engine` keyed its spawn idempotency index on `(SessionID, IdempotencyKey)`. The review named two sites; there were **six**, and one of them was the hydration rebuild, which is the site that decides whether the shape survives a restart:
+
+- `engine/engine.go:102` — the `idempotencyKey` type declaration.
+- `engine/engine.go:168` — Spawn's dedup probe.
+- `engine/engine.go:279` — Spawn's index insert.
+- `engine/engine.go:306` — Spawn's compensation delete on failed group wiring.
+- `engine/engine.go:999` — `contentHashLocked`, the re-persist path's hash lookup.
+- `engine/backend.go:99` — the `Hydrate` rebuild, replaying persisted records at boot.
+
+`tenant_id` was in none of them. `user_id` was in none of them.
+
+**The reachable consequence, stated at its true size.** This was NOT a handle disclosure. `spawnRequestsEqual` (`engine/engine.go:1114`) compares `existing.Identity != req.Identity` as its first leg, so a colliding entry from another tenant fails the divergence compare rather than being returned — the caller gets `ErrIdempotencyConflict`. So the reachable damage is a **cross-tenant denial plus an existence oracle**: tenant B, presenting a session id and key that tenant A already used, is permanently unable to spawn under that key and learns that A holds it. Session ids are high-entropy, so this is not reachable by guessing. It is fixed anyway, and the reason is the whole point of the entry: **an isolation boundary is held by the shape of the key, not by the entropy of one of its components.** The same reasoning made D-363's user-axis fold unconditional rather than knob-gated.
+
+**Decision.** `idempotencyKey` carries `(TenantID, UserID, SessionID, Key)`.
+
+1. **`tenant_id` joins the key.** CLAUDE.md §6 rule 2 admits no exception for "the other component has enough entropy."
+2. **`user_id` joins it too, and the reasoning is recorded rather than assumed.** An idempotency key names ONE CALLER'S RETRY, and a caller in Harbor is the triple — not a session. That a session belongs to exactly one user is an invariant maintained by the session subsystem; this key does not lean on it. Leaning on it is the identical mistake one component over, and it costs nothing to not make it.
+3. **`RunID` does NOT join it,** and the type spells the three fields out rather than embedding `identity.Quadruple` so it cannot drift into the key later. A run-scoped idempotency key would defeat dedup across exactly the retries it exists to collapse — each retry is a new run.
+4. **One construction site.** `idemKeyFor(identity.Identity, string)` is the only place an `idempotencyKey` is built; all six sites route through it, so a write and the read that must match it cannot drift apart. Six hand-built struct literals were how a field went missing from all six at once.
+
+**Persistence: no migration, and the evidence is structural rather than a judgement call.** The index is **derived state that is never written to any store.** The durable driver persists task records keyed by the task's own ULID (`drivers/durable/record.go:61`, `taskKindPrefix+string(rec.Task.ID)`) under the identity triple's StateStore scope; the idempotency key appears in no key and no payload. The engine REBUILDS the index at `Hydrate` from each persisted task's own `Identity` + `IdempotencyKey` (`engine/backend.go:99`) — and `Task.Identity` is a full `identity.Quadruple` that already carries `TenantID`. So the corrected key is derivable from records written by the pre-fix code: existing rows are byte-identical, nothing is rewritten, and an upgrade rebuilds the narrower key from what is already on disk. `TestDurable_RestartSurvival_CrossTenantIdempotencyKeyStaysIsolated` pins this by writing through one engine instance and re-deriving through a second over the same store.
+
+**Tests, mutation-verified.** The invariant lands in the driver-agnostic conformance suite (`internal/tasks/conformancetest`) so both shipped drivers — and any third — inherit it: `Spawn_DifferentTenantsCanReuseKey` and `Spawn_DifferentUsersCanReuseKey` spawn a **colliding** `(session, key)` pair across the boundary and assert two distinct tasks, neither flagged `Reused`, each readable only by its owner, with the foreign `Get` still `ErrNotFound` — plus a same-tenant retry that still dedups, so the fix is shown to narrow the key rather than disable idempotency. Reverting `idemKeyFor` to the pre-fix shape fails both subtests on both drivers (`tasks: idempotency key reused with divergent SpawnRequest: key="collide-key"`) and fails the durable restart test at its second spawn.
+
+**Documented surface updated in the same PR (§18).** `StartRequest.IdempotencyKey`'s wire godoc (`internal/protocol/types/control.go`) and the hand-written `docs/site/protocol/task-control.md` both said "per session"; both now say the triple. No wire shape changed — `idempotency_key` is the same field with the same JSON tag — so the generated Protocol reference regenerates with prose only.
+
+**Cross-references.** D-363 (the search cluster's user axis — the same "an omitted or unexamined isolation component is a boundary hole, fix it unconditionally" call, one subsystem over), D-352 (the artifact read key IS the isolation triple), D-356 (an artifact listing scopes to the caller's own user). CLAUDE.md §5, §6 (rules 1, 2, 9, 10), §9, §11, §13, §17.6, §18.

@@ -26,11 +26,15 @@
 // the driver — the runtime engine knows whether a transition is
 // real before calling).
 //
-// Idempotency. `Spawn` keys on `(SessionID, IdempotencyKey)`:
+// Idempotency. `Spawn` keys on the full identity triple plus the
+// caller's key — `(TenantID, UserID, SessionID, IdempotencyKey)`:
 // same key → returns the existing `TaskHandle` with `Reused: true`;
 // divergent `SpawnRequest` under the same key returns
 // `ErrIdempotencyConflict`. Empty `IdempotencyKey` disables dedup
-// entirely (each Spawn yields a fresh handle, no collisions).
+// entirely (each Spawn yields a fresh handle, no collisions). Dedup
+// never reaches across an isolation boundary: two tenants (or two
+// users) presenting the SAME session id and the SAME key get two
+// distinct tasks, never a reused handle and never a conflict.
 //
 // Cancellation propagation. `Cancel` walks the children index per
 // `Task.PropagateOnCancel`:
@@ -243,8 +247,10 @@ type Task struct {
 }
 
 // SpawnRequest is the input shape for `Spawn`. Identity is mandatory.
-// `IdempotencyKey` is namespaced by `Identity.SessionID`: same key
-// across different sessions creates two distinct tasks.
+// `IdempotencyKey` is namespaced by the FULL identity triple: the same
+// key under a different tenant, user, or session creates a distinct
+// task. The key identifies a RETRY BY ONE CALLER, and a caller is the
+// triple — so every component of the triple namespaces it.
 //
 // `PropagateOnCancel` defaults to "cascade" when empty; "isolate"
 // is opt-in for tasks that must survive a parent's cancellation.

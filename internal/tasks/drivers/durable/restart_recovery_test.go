@@ -205,6 +205,78 @@ func TestDurable_RestartSurvival_IdempotencyPreserved(t *testing.T) {
 	}
 }
 
+// TestDurable_RestartSurvival_CrossTenantIdempotencyKeyStaysIsolated
+// asserts the tenant separation of the idempotency index SURVIVES a
+// restart — and, by construction, that no store migration is needed to
+// get it.
+//
+// The index is derived state: it is never written to the StateStore
+// (task records are keyed by the task's own ULID under the identity
+// triple's scope), and the engine rebuilds it at Hydrate from each
+// persisted task's own Identity + IdempotencyKey. So a change to the
+// index key's SHAPE has no on-disk footprint: the records this test
+// writes through instance 1 are byte-identical to what the pre-fix
+// code wrote, and instance 2 rebuilds the corrected key from them.
+func TestDurable_RestartSurvival_CrossTenantIdempotencyKeyStaysIsolated(t *testing.T) {
+	store := newStore(t)
+	defer func() { _ = store.Close(context.Background()) }()
+
+	// A COLLIDING (session, idempotency-key) pair across two tenants.
+	idA := identity.Identity{TenantID: "tenant-a", UserID: "user-x", SessionID: "sess-shared"}
+	idB := identity.Identity{TenantID: "tenant-b", UserID: "user-x", SessionID: "sess-shared"}
+	ctxA := ctxFor(t, idA)
+	ctxB := ctxFor(t, idB)
+	reqA := tasks.SpawnRequest{
+		Identity: identity.Quadruple{Identity: idA}, Kind: tasks.KindBackground,
+		Description: "idem", Query: "q", IdempotencyKey: "shared-key",
+	}
+	reqB := reqA
+	reqB.Identity = identity.Quadruple{Identity: idB}
+
+	bus1 := mkBus(t)
+	r1 := openOver(t, store, bus1)
+	hA, err := r1.Spawn(ctxA, reqA)
+	if err != nil {
+		t.Fatalf("Spawn tenant-a: %v", err)
+	}
+	hB, err := r1.Spawn(ctxB, reqB)
+	if err != nil {
+		t.Fatalf("Spawn tenant-b under a colliding (session, key): %v", err)
+	}
+	if hA.ID == hB.ID {
+		t.Fatalf("cross-tenant collision before restart: shared TaskID %s", hA.ID)
+	}
+	_ = r1.Close(context.Background())
+	_ = bus1.Close(context.Background())
+
+	// Reopen over the SAME store: hydration rebuilds the index.
+	bus2 := mkBus(t)
+	defer func() { _ = bus2.Close(context.Background()) }()
+	r2 := openOver(t, store, bus2)
+	defer func() { _ = r2.Close(context.Background()) }()
+
+	// Each tenant's retry dedups to ITS OWN pre-restart task — proving
+	// both index entries survived hydration under distinct keys rather
+	// than one clobbering the other.
+	againA, err := r2.Spawn(ctxA, reqA)
+	if err != nil {
+		t.Fatalf("tenant-a retry after restart: %v", err)
+	}
+	if againA.ID != hA.ID || !againA.Reused {
+		t.Errorf("tenant-a retry after restart: id=%s reused=%v, want %s true", againA.ID, againA.Reused, hA.ID)
+	}
+	againB, err := r2.Spawn(ctxB, reqB)
+	if err != nil {
+		t.Fatalf("tenant-b retry after restart: %v", err)
+	}
+	if againB.ID != hB.ID || !againB.Reused {
+		t.Errorf("tenant-b retry after restart: id=%s reused=%v, want %s true", againB.ID, againB.Reused, hB.ID)
+	}
+	if againA.ID == againB.ID {
+		t.Errorf("hydration collapsed two tenants onto one task: %s", againA.ID)
+	}
+}
+
 // TestDurable_RecoverySweep_RunningBecomesFailed asserts a task left
 // Running by a crash is transitioned to Failed{runtime_restarted} on
 // reopen, emitting exactly one task.failed event.
