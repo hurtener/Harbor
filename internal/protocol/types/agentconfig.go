@@ -724,6 +724,16 @@ type AgentConfigSetRevisionRequest struct {
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
 	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
+	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
 	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
@@ -781,6 +791,16 @@ type AgentConfigRollbackRequest struct {
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
 	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
+	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
 	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
@@ -809,6 +829,16 @@ type AgentConfigSetToolExposureRequest struct {
 	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
+	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
 	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
@@ -841,6 +871,16 @@ type AgentConfigSetPromptLayersRequest struct {
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
 	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
+	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
 	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
@@ -869,7 +909,12 @@ type AgentConfigSetPromptLayersResponse struct {
 // read-modify-write: `agent_config.get`, append or drop its own block by
 // NAME, write back — sending the read revision's `content_hash` as
 // ExpectedContentHash so a concurrent sibling's write is refused rather
-// than silently reverted.
+// than silently reverted. When the read answered `set: false` (the agent has
+// no config yet) there is no hash to echo: send the reserved first-write
+// token "-", which succeeds only while no revision exists. Omitting the
+// token there would be an unconditional write, and two contributors
+// composing onto a fresh agent would silently revert each other — the one
+// case the protocol could not express before the sentinel.
 //
 // # Trust
 //
@@ -892,6 +937,14 @@ type AgentConfigSetExtraSystemBlocksRequest struct {
 	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write every sibling door also performs.
+	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is the
+	// token to send when the read answered `set: false` and there is no hash
+	// to echo — without it the base case of the composition protocol has no
+	// expressible form and two first contributors silently revert each other.
+	// A real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
 	//
 	// Sending it is how two independent contributors compose safely: the
 	// read-modify-write is only as safe as the token. The refusal is exact
@@ -927,6 +980,16 @@ type AgentConfigSetLLMParamsRequest struct {
 	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
+	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
 	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
@@ -967,8 +1030,30 @@ type AgentConfigAddMCPConnectionRequest struct {
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
 	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
+	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
+	//
+	// This is the ONE door where the token can be evaluated only AFTER a
+	// live side effect: whether the server answers is the input to what gets
+	// written, so the dial / handshake / register runs first. A conflict
+	// therefore COMPENSATES rather than merely refusing — the just-attached
+	// server is detached, an inline wire-OAuth provider installed for this
+	// binding is uninstalled, and a terminal `mcp.connection.failed`
+	// lifecycle event is emitted carrying the conflict as its reason. The
+	// "NOTHING is persisted" guarantee above is therefore about the world,
+	// not just the revision spine: a refused add leaves no live server that
+	// no revision names (which `remove_mcp_connection` could never remove)
+	// and never leaves the lifecycle parked on the transient `pending`.
 	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
@@ -1020,6 +1105,16 @@ type AgentConfigRemoveMCPConnectionRequest struct {
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
 	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
+	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
 	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
@@ -1064,6 +1159,16 @@ type AgentConfigSetMCPDiscoveryOriginsRequest struct {
 	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
+	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
 	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
@@ -1115,6 +1220,16 @@ type AgentConfigSetOAuthProviderRequest struct {
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
 	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
+	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
 	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
@@ -1151,6 +1266,16 @@ type AgentConfigRemoveOAuthProviderRequest struct {
 	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
+	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
 	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
@@ -1232,6 +1357,16 @@ type AgentConfigSkillsUpsertRequest struct {
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
 	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
+	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
 	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
@@ -1259,6 +1394,16 @@ type AgentConfigSkillsDeleteRequest struct {
 	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
+	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
 	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
@@ -1426,6 +1571,16 @@ type AgentConfigUserSkillsUpsertRequest struct {
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
 	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
+	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
 	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
@@ -1453,6 +1608,16 @@ type AgentConfigUserSkillsDeleteRequest struct {
 	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
+	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
 	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
@@ -1542,6 +1707,16 @@ type AgentConfigUserSetRevisionRequest struct {
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
 	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
+	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
 	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
@@ -1600,6 +1775,16 @@ type AgentConfigUserRollbackRequest struct {
 	// error code (HTTP 409) and NOTHING is persisted. Empty (the default,
 	// and every request that omits the field) is the unconditional
 	// last-writer-wins write this door has always performed.
+	//
+	// The reserved value "-" is the FIRST-WRITE token: it requires the agent
+	// to have NO active revision, and is refused once one exists. It is what
+	// makes the read-modify-write composition protocol expressible at its
+	// base case — a caller whose `agent_config.get` answered `set: false`
+	// has no hash to echo, so before the sentinel its only expressible token
+	// was the empty one, i.e. it could not opt out of last-writer-wins on
+	// the one write where two contributors are most likely to collide. A
+	// real content hash is 64 lowercase hex characters, so "-" can never
+	// collide with one.
 	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.

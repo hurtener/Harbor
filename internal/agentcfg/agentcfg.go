@@ -76,6 +76,44 @@ var (
 	ErrRevisionConflict = errors.New("agentcfg: revision conflict")
 )
 
+// ExpectNoActiveRevision is the reserved [SetOptions.ExpectedContentHash]
+// value meaning "I read this agent BEFORE it had any config, and I expect it
+// STILL to have none." It succeeds only when the agent has no active
+// revision, and is refused with [ErrRevisionConflict] the moment any
+// revision exists.
+//
+// # Why a sentinel exists at all
+//
+// The composition protocol the expected-revision token serves is: read,
+// modify, write back with the read revision's content hash, so a concurrent
+// sibling's write is refused rather than silently reverted. That protocol had
+// no expressible form at its OWN base case. On an agent with no config,
+// `agent_config.get` answers `set:false` with no hash to echo, and every
+// non-empty token was refused — so the only token a first contributor could
+// send was the empty one, which means "unconditional". Two contributors
+// composing onto a fresh agent therefore BOTH wrote unconditionally and the
+// second silently reverted the first: exactly the lost update the token
+// exists to prevent, on the one write where a caller had no way to opt out.
+//
+// # Why this value
+//
+// A content hash is [ContentHash]'s output: exactly 64 lowercase hex
+// characters. "-" is not a possible hash, so the sentinel can never collide
+// with a real expectation no matter what payload is written — the property a
+// sentinel living inside a hash-shaped field must have, and it is asserted by
+// a test rather than argued.
+//
+// Returning a zero-state token from the READ instead was considered and
+// rejected: it changes `agent_config.get`'s response shape (a new field on
+// every read, mirrored into the Console client and the generated reference)
+// to carry a value that would still have to be a reserved non-hash string —
+// the same sentinel, plus a wire-shape change, plus a second place for it to
+// drift.
+//
+// It is ADDITIVE. An absent token is still the unconditional write, and a
+// 64-hex token still behaves exactly as it did.
+const ExpectNoActiveRevision = "-"
+
 // SetOptions carries the optional preconditions a durable spine write
 // (SetRevision / Rollback) may declare. The ZERO value is the
 // unconditional write — byte-for-byte the behaviour that shipped before
@@ -85,6 +123,14 @@ type SetOptions struct {
 	// revision to carry exactly this content hash at write time. A
 	// mismatch — or no active revision at all — fails with
 	// ErrRevisionConflict and persists nothing.
+	//
+	// The reserved value [ExpectNoActiveRevision] ("-") inverts the
+	// no-active-revision arm: it REQUIRES the agent to have no active
+	// revision, and is refused once one exists. It is what makes the
+	// read-modify-write composition protocol expressible at its base case,
+	// where a read answers `set:false` and there is no hash to echo. A real
+	// content hash is 64 lowercase hex characters, so the sentinel can never
+	// collide with one.
 	//
 	// The expectation is compared against the content hash, not the
 	// revision id, because a rollback repoints the active pointer WITHOUT
