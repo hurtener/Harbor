@@ -27,4 +27,47 @@ assert_grep_present "sanitizeToolName\(t\.Name\)" "internal/planner/react/discov
 assert_grep_present "sanitizeToolName\(call\.Tool\)" "internal/planner/react/prompt.go" \
     "phase 141: assistant tool_calls history replay is sanitized"
 
+# --- D-377 / D-378 — bounded model-visible names + the loud collision drop.
+COLL="internal/planner/react/tool_name_collision_test.go"
+DECL="internal/planner/react/discovered_tools.go"
+
+# The budget is deliberately BELOW the provider's 64-byte ceiling: a tool name
+# is paid on every turn, twice per tool. A revert to 64 must not pass silently.
+assert_grep_present "const maxToolNameBytes = 44" "${SANI}" \
+    "phase 141: the model-visible name budget is bounded below the 64-byte provider ceiling (D-377)"
+# Shortening keeps the TAIL (the verb), not the head (the repeated source id).
+# `s[:keep]` — the head truncation that collapsed a whole server onto one
+# declaration — must never come back.
+assert_grep_present "s\[len\(s\)-keep:\]" "${SANI}" \
+    "phase 141: over-budget names are shortened tail-first (D-377)"
+assert_grep_absent "return s\[:keep\]" "${SANI}" \
+    "phase 141: head truncation (the silent-collapse cause) is gone (D-378)"
+# Both model-visible surfaces go through ONE transform, or the model is shown
+# a name it cannot call.
+assert_grep_present "sanitizeToolName\(t\.Name\)" "internal/planner/react/prompt.go" \
+    "phase 141: the <available_tools> section renders the DECLARED name (D-377)"
+# The drop is announced. A bare `continue` here is the §13 silent degradation.
+assert_grep_present "emitToolDeclarationCollision" "${DECL}" \
+    "phase 141: a dropped declaration is announced on the bus (D-378)"
+assert_grep_present "EventTypePlannerToolDeclarationCollision" "internal/planner/events.go" \
+    "phase 141: the collision event type is registered (D-378)"
+
+# The behavioural gate. Static greps pin that the code SHAPE survives; these
+# pin that it BEHAVES — and assert_go_tests_pass fails on a rename rather than
+# reporting OK for a filter that matched nothing.
+assert_go_tests_pass "$(mktemp)" "-race -count=1 ./internal/planner/react/" \
+    "phase 141: bounded-name + loud-collision behaviour (D-377 / D-378)" \
+    TestBuildToolDeclarations_LongSourceIDDoesNotCollapse \
+    TestSanitizeToolName_KeepsTheVerbVisible \
+    TestSanitizeToolName_LongNamesStayDistinct \
+    TestSanitizeToolName_ShortNamesUnchanged \
+    TestSanitizeToolName_Deterministic \
+    TestRenderAvailableTools_MatchesDeclaredNames \
+    TestBuildToolDeclarations_ResidualCollisionIsLoud \
+    TestBuildToolDeclarations_CollisionWithReservedControlIsLoud \
+    TestBuildToolDeclarations_BenignRediscoveryStaysQuiet \
+    TestBuildToolDeclarations_DeclaredNameCostPerTurn
+
+assert_file "${COLL}" "phase 141: the collision + cost regression suite is present"
+
 smoke_summary
