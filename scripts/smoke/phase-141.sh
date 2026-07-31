@@ -52,6 +52,30 @@ assert_grep_present "emitToolDeclarationCollision" "${DECL}" \
 assert_grep_present "EventTypePlannerToolDeclarationCollision" "internal/planner/events.go" \
     "phase 141: the collision event type is registered (D-378)"
 
+# --- D-382 — resolution re-derives the forward transform, in the
+# declaration's own precedence. An exact catalog match is a MIS-DISPATCH: it
+# executes a dropped collider whose catalog name IS the provider-safe string,
+# under the declared tool's schema. The branch must not come back.
+DISP="internal/planner/react/tool_name_dispatch_test.go"
+
+assert_grep_absent "rc\.Catalog\.Resolve\(name\)" "${SANI}" \
+    "phase 141: resolution has no exact-match branch — it dispatched the DROPPED collider (D-382)"
+assert_grep_present "isReservedControlName\(name\)" "${SANI}" \
+    "phase 141: a reserved planner control never resolves to a catalog tool (D-382)"
+assert_grep_present "range rc\.DiscoveredTools" "${SANI}" \
+    "phase 141: resolution scans the discovered arm — a discovered tool was declared but undispatchable (D-382)"
+# The two model-visible surfaces must drop the SAME tool, not merely share the
+# transform: the section's dedup key is the sanitized name and it seeds the
+# reserved controls, exactly as buildToolDeclarations does.
+assert_grep_present "key := sanitizeToolName\(t\.Name\)" "internal/planner/react/prompt.go" \
+    "phase 141: <available_tools> dedups on the MODEL-VISIBLE name (D-382)"
+assert_grep_present "range reservedPlannerControlDeclarations\(\)" "internal/planner/react/prompt.go" \
+    "phase 141: <available_tools> reserves the planner-control names, as the declarations do (D-382)"
+# The budget is a parameter, so the shortener must be TOTAL (CLAUDE.md §5 —
+# a panic needs an impossible-by-construction case, and an argument is not one).
+assert_grep_present "minDigestBudget" "${SANI}" \
+    "phase 141: the shortener is total over every budget — no negative-slice panic (D-382)"
+
 # The behavioural gate. Static greps pin that the code SHAPE survives; these
 # pin that it BEHAVES — and assert_go_tests_pass fails on a rename rather than
 # reporting OK for a filter that matched nothing.
@@ -68,6 +92,21 @@ assert_go_tests_pass "$(mktemp)" "-race -count=1 ./internal/planner/react/" \
     TestBuildToolDeclarations_BenignRediscoveryStaysQuiet \
     TestBuildToolDeclarations_DeclaredNameCostPerTurn
 
+assert_go_tests_pass "$(mktemp)" "-race -count=1 ./internal/planner/react/" \
+    "phase 141: the declared name dispatches the DECLARED tool (D-382)" \
+    TestResolveDeclaredToolName_DroppedColliderIsNeverDispatched \
+    TestResolveDeclaredToolName_OrderIndependent \
+    TestResolveDeclaredToolName_MirrorsEveryDeclaration \
+    TestResolveDeclaredToolName_ReservedControlNeverResolvesToCatalogTool \
+    TestResolveDeclaredToolName_DiscoveredToolIsDispatchable \
+    TestResolveDeclaredToolName_ConcurrentReuse \
+    TestResolveDeclaredToolName_AdversarialRoundTrip \
+    TestRenderAvailableTools_DropsTheSameColliderAsTheDeclarations \
+    TestRenderAvailableTools_SetMatchesDeclarations \
+    TestSanitizeToolNameTo_TotalOverEveryBudget \
+    TestSanitizeToolNameTo_StaysDiscriminatingUnderTinyBudgets
+
 assert_file "${COLL}" "phase 141: the collision + cost regression suite is present"
+assert_file "${DISP}" "phase 141: the dispatch-resolution regression suite is present"
 
 smoke_summary

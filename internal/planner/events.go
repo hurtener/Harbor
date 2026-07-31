@@ -144,6 +144,19 @@ func init() {
 //     declared for this turn. The model cannot call it until the collision
 //     is resolved by renaming one of the two.
 //
+// # Read `DroppedTool` as UNREACHABLE, including under its own name
+//
+// The drop is total. `DeclaredName` is the only function name the model is
+// offered, and it dispatches to `DeclaredTool` — even in the case where
+// `DroppedTool` and `DeclaredName` are the SAME string, which is the
+// likeliest shape rather than an exotic one: built-in tool names are dotted
+// (`clock.now`) and injected tool-source keys are `<sourceID>_<tool>`, so a
+// server registered as `clock` exposing a `now` tool contributes the
+// catalog key `clock_now` and collides with the built-in. An operator
+// reading `declared_name: clock_now` beside `dropped_tool: clock_now` must
+// NOT conclude that the dropped tool is the one being called; the payload's
+// own two fields say which is which, and `DeclaredTool` is the answer.
+//
 // The remedy is always operator-side: rename one of the two catalog tools
 // so they no longer map onto a single provider-safe name. The planner
 // cannot disambiguate them itself — the catalog-name recovery path

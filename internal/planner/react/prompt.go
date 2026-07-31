@@ -651,6 +651,22 @@ func renderIdentitySection() string {
 // appear in the always-loaded set are not duplicated. This mirrors
 // the `req.Tools` construction in `react.Next` (AC-17) so the LLM's
 // prompt and its native tool surface stay in sync.
+//
+// # The dedup key is the MODEL-VISIBLE name, not the catalog key
+//
+// Entries render under their provider-safe (sanitized) name, so that is
+// what the dedup keys on — the same key the declaration builder dedups on,
+// so the section drops exactly the tool the declarations drop. Keying on
+// the raw catalog name instead listed one callable name TWICE on a residual
+// collision (`clock.now` and `clock_now` both render as `clock_now`), one
+// bullet per colliding tool with its own description, against a single
+// declaration: the model read the DROPPED tool's prose under a name that
+// dispatches to the surviving tool. "Stay in sync" has to mean the dropped
+// SET matches, not just the transform.
+//
+// The drop is not announced from here. The declaration builder emits
+// `planner.tool_declaration_collision` for the same catalog on the same
+// turn; a second emit would double-count one collision.
 func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) string {
 	// `maxToolExamples` is ignored — schemas live
 	// in req.Tools[]; the prompt renders name+description only.
@@ -659,25 +675,45 @@ func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) str
 	var b strings.Builder
 	b.WriteString("<available_tools>\n")
 
-	catalog := listTools(rc)
-	// Append discovered tools (resolved by name) that aren't already
-	// in the always-loaded set. Mirrors buildToolDeclarations() — the
-	// section stays consistent with the per-turn req.Tools slice.
-	seen := make(map[string]struct{}, len(catalog))
-	for _, t := range catalog {
-		seen[t.Name] = struct{}{}
+	listed := listTools(rc)
+	// Dedup on the model-visible name across BOTH arms, and append
+	// discovered tools (resolved by name) that no earlier entry already
+	// claimed. Mirrors buildToolDeclarations() — the section stays
+	// consistent with the per-turn req.Tools slice.
+	seen := make(map[string]struct{}, len(listed))
+	// Seed with the reserved planner controls, exactly as the declaration
+	// builder does. They are NOT listed here (the section is the operator
+	// catalog's quick reference; the controls are declared natively and
+	// documented in their own declarations) — but they own their names, so a
+	// catalog tool that maps onto one is dropped from the declarations and
+	// must be dropped from the section too. Otherwise `_spawn.task` renders
+	// as `_spawn_task` carrying the operator tool's description, under a name
+	// that fires the planner control. Seeded from the declaration builder's
+	// own source so the two sets cannot drift.
+	for _, r := range reservedPlannerControlDeclarations() {
+		seen[sanitizeToolName(r.Name)] = struct{}{}
+	}
+	catalog := make([]tools.Tool, 0, len(listed))
+	for _, t := range listed {
+		key := sanitizeToolName(t.Name)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		catalog = append(catalog, t)
 	}
 	if rc.Catalog != nil {
 		for _, name := range rc.DiscoveredTools {
 			if name == "" {
 				continue
 			}
-			if _, dup := seen[name]; dup {
+			key := sanitizeToolName(name)
+			if _, dup := seen[key]; dup {
 				continue
 			}
 			if t, ok := rc.Catalog.Resolve(name); ok {
 				catalog = append(catalog, t)
-				seen[name] = struct{}{}
+				seen[key] = struct{}{}
 			}
 		}
 	}
@@ -833,8 +869,22 @@ func overrideExtraInstructions(rc planner.RunContext) string {
 // actually call. Rendering the raw catalog key here instead would show the
 // model a name that does not exist on the provider side: a dotted key like
 // `clock.now` is declared as `clock_now`, and an over-long key is declared
-// shortened. Both surfaces go through one transform so the quick reference
-// and the declaration can never disagree.
+// shortened.
+//
+// Sharing the transform is NECESSARY for the two surfaces to agree and is
+// not sufficient for it: this function only renders a name, and which tools
+// reach it is decided by the caller's dedup. That dedup used to key on the
+// RAW catalog name while the declaration builder keyed on the sanitized one,
+// and it did not reserve the planner controls' names, so the section listed
+// tools the declarations had dropped — the model was told about tools it
+// could not call, under names that called something else.
+//
+// The agreement is therefore a property of the two dedups matching, which
+// no comment can assert on its own: `renderAvailableToolsSection` and
+// `buildToolDeclarations` key on the same name and seed from the same
+// reserved set, and a test asserts the two produce the SAME set of names
+// over a catalog holding every collision shape. That test is what keeps
+// this true — read it before changing either dedup.
 func renderToolNameDesc(t tools.Tool) string {
 	var b strings.Builder
 	b.WriteString("- ")
