@@ -280,9 +280,11 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 
 // wiredCapabilitiesFor returns the lexicographically-sorted subset of
 // canonical Protocol capabilities this Runtime instance has actually
-// wired. Always-on surfaces (task control, events subscribe, state snapshots,
-// runtime posture) are unconditional in the dev binary; conditional ones come
-// in via the matching deps flag. Adding a new
+// wired. Four are unconditional — task control, events subscribe, runtime
+// posture, and caller memory (which rides task control's own dispatch and
+// has no separate wiring to gate on). Every other capability, including
+// state snapshots, is conditional and comes in via the matching deps flag.
+// Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
 func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable bool) []types.Capability {

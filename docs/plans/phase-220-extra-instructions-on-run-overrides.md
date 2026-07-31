@@ -282,7 +282,7 @@ Measured with `go test -count=1 -cover` on the branch.
 
 | Package | Target (baseline) | As shipped | Verdict |
 |---|---|---|---|
-| `internal/runtime/runs/protocol` | 88% | **89.8%** | met, improved by the join table |
+| `internal/runtime/runs/protocol` | 88% | **87.2%** | **below target as of v1.25** — 89.8% at this phase's merge, improved by the join table; D-372's bounded slot map (eviction, refcounted write locks) then added statements this phase's tests do not reach. Re-measured for the v1.25 notes (D-386); the gap is D-372's to close, not this phase's. |
 | `internal/planner/react` | 87% | **87.0%** | held (test-only change) |
 | `internal/events` | 93% | **93.4%** | held (one struct field, no new statements) |
 | `internal/protocol/types` | 62% | **62.6%** | held (a wire-struct field adds no statements) |

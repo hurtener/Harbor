@@ -1616,7 +1616,7 @@ var canonicalTasksMethods = map[Method]struct{}{
 }
 
 // IsTasksMethod reports whether m is one of the two canonical `tasks.*`
-// methods (— `tasks.list`, `tasks.get`). The stream
+// methods (`tasks.list`, `tasks.get`). The stream
 // transport branches on this to route the request through the Tasks
 // dispatcher instead of the task-control / search / posture / topology
 // surfaces. NOT a control method — both are reads; the Console Tasks
@@ -1691,7 +1691,7 @@ var canonicalRunsMethods = map[Method]struct{}{
 }
 
 // IsRunsMethod reports whether m is one of the canonical `runs.*`
-// methods (— today just `runs.set_overrides`). The
+// methods (today just `runs.set_overrides`). The
 // stream transport branches on this to route the request through the
 // Runs handler instead of the task-control / search / posture / pause /
 // topology / artifacts / memory / mcp / tools / flows / agents /
@@ -1757,7 +1757,7 @@ var canonicalAuthMethods = map[Method]struct{}{
 }
 
 // IsAuthMethod reports whether m is one of the canonical `auth.*`
-// methods (— today just `auth.rotate_token`). The
+// methods (today just `auth.rotate_token`). The
 // stream transport branches on this to route the request through the
 // auth handler instead of the task-control / search / posture
 // surfaces. NOT a control method — a new non-control method extends

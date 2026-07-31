@@ -32,7 +32,7 @@ import "time"
 // transport, and the CROSS-TENANT SELECTOR IS `identity.tenant`: a body
 // tenant differing from the ctx-verified tenant requires the
 // `auth.ScopeAdmin` / `auth.ScopeConsoleFleet` claim and emits the
-// `governance.posture.read_admin` audit event.
+// `governance.posture_read_admin` audit event.
 //
 // A `GovernancePostureRequest` carrying a `tenant_id` field used to be
 // declared here. Nothing ever decoded it — the field was discarded, so an

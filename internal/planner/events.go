@@ -160,9 +160,9 @@ type ToolDeclarationCollisionPayload struct {
 }
 
 // DecisionPayload is the typed payload for EventTypePlannerDecision.
-// registered the event type; Harbor ships the
-// first emitter (the ReAct planner) AND the payload — satisfying the
-// §13 primitive-with-consumer rule for the long-registered type.
+// The event type was registered ahead of any producer; Harbor ships the
+// first emitter (the ReAct planner) AND the payload — so the type has a
+// consumer that exercises it end to end rather than sitting unemitted.
 // SafePayload — every field is operator-visible debug data:
 //
 //   - `Identity` is the run's identity quadruple.

@@ -165,8 +165,18 @@ const (
 	// CodeInvalidRequest (the body was fine) and NOT CodeRuntimeError (the
 	// server did not fault) — so a client can tell "your base moved, re-read
 	// and retry" apart from a malformed request or a server fault without
-	// parsing a message. Nothing is persisted on a refusal: no revision, no
-	// active-pointer move, no emitted event. The client recovers by
+	// parsing a message. Nothing is persisted on a refusal: no revision and
+	// no active-pointer move.
+	//
+	// A refusal emits no event on sixteen of the seventeen spine-writing
+	// doors. The exception is `agent_config.add_mcp_connection`, the one
+	// door whose live side effect must run BEFORE the conditional write
+	// (whether the server answers is the input to what gets written): a
+	// conflict there COMPENSATES the attach and emits a terminal
+	// `mcp.connection.failed` lifecycle event carrying the conflict as its
+	// reason, so the refusal leaves no live server that no revision names.
+	// The "nothing is persisted" guarantee is unaffected — the compensation
+	// removes state, it does not record any. The client recovers by
 	// re-reading `agent_config.get`, which returns both the current
 	// revision id and the current content hash. Maps to HTTP 409
 	// (Conflict) — the same state-forbids posture as CodeSessionRunning /
