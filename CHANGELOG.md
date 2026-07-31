@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.24.0] — 2026-07-30
+
 Seven phases: artifact read-path byte correctness, a heavy-content threshold
 split by purpose, the MCP arm of pass-by-reference routing, caller-named agent
 selection, run-start connection re-establishment, `_meta` path nesting for MCP
