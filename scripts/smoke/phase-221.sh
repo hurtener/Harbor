@@ -99,6 +99,23 @@ assert_grep_count 't\.Run\("WriteAtomicity_' "${CONFORMANCE_GO}" 1 \
     'phase 221: the shared conformance suite RUNS the partial-write atomicity row'
 assert_grep_present 'mkFaulty FaultFactory' "${CONFORMANCE_GO}" \
     'phase 221: conformance.Run TAKES the fault factory, so a second driver cannot compile without arming it'
+
+# (5c) The atomicity row's TWIN (D-380): a write REPORTED as failed may have
+#      LANDED, and a cleanup that assumes otherwise deletes the revision the
+#      durable pointer names — unrecoverable, because every door reads through
+#      that pointer. The two arms model opposite disk states behind one
+#      identical error value, so a suite carrying only one of them certifies a
+#      cleanup that is either useless or destructive depending on which half is
+#      missing. Counted as its OWN prefix rather than folded into the
+#      WriteAtomicity_ count: the two rows must both exist, and one count
+#      cannot say that.
+#      Counts here were settled by grepping the merged conformance.go, NOT by
+#      reasoning about the diff — the ConditionalWrite_ pair above is UNCHANGED
+#      at 7, which is the answer reasoning got wrong.
+assert_grep_count 't\.Run\("CompensationSafety_' "${CONFORMANCE_GO}" 1 \
+    'phase 221: the shared conformance suite RUNS the reported-failed-but-landed row'
+assert_grep_present 'mkCommitted CommittedFaultFactory' "${CONFORMANCE_GO}" \
+    'phase 221: conformance.Run TAKES the committed-fault factory too, so a second driver cannot compile without arming BOTH arms'
 # The compensation itself, in the driver. A bare `return err` between the two
 # writes is the defect; the call is the fix.
 assert_grep_present 'compensateOrphanRevision\(ctx, q, keys\.revPfx, revID, err\)' "${DRIVER_GO}" \
@@ -308,6 +325,17 @@ else
         'phase 221: the shared conformance suite (incl. the seven precondition rows) passes under both scope arms' \
         TestStateStore_Conformance
 
+    # The suite over the DURABLE driver too (D-380 W5). The atomicity rows were
+    # armed over the in-memory store alone, which is the weakest possible
+    # witness for a residue assertion — "the record survived" and "the record
+    # was removed" are answered by a map under the same lock as the writes.
+    # Named separately from TestStateStore_Conformance because
+    # assert_go_tests_pass anchors its -run pattern, so the parent name does
+    # NOT drag this one in.
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/agentcfg/drivers/statestore/' \
+        'phase 221: the conformance suite (incl. BOTH fault arms) also runs over the durable SQLite state driver' \
+        TestStateStore_Conformance_SQLite
+
     # THE PARTIAL-WRITE RESIDUE. The write path is two Saves with no
     # transaction between them, so a store error after the first left a
     # revision that EXISTS and that nothing references — inert to readers
@@ -322,6 +350,30 @@ else
         TestSetRevision_PointerWriteFailure_CompensatesOnACancelledContext \
         TestSetRevision_CompensationFailure_IsReportedNotSwallowed \
         TestSetRevision_SuccessfulWritePathIssuesNoDelete
+
+    # ...and that compensation deletes ONLY when the pointer DISOWNS the
+    # revision (D-380, correcting D-373). "The write failed" is what the store
+    # SAID; a deadline firing after commit, a dropped ack, a proxy timeout or a
+    # reset connection all report that over a write that LANDED, and deleting
+    # then manufactures a dangling pointer that no later write can repair,
+    # because every door reads through the pointer. The unknown answer (the
+    # re-read itself fails) RETAINS, which is the deliberate half. These name
+    # the tests explicitly because the leg above stays green through the whole
+    # regression: it only ever arms the write that did NOT land.
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/agentcfg/drivers/statestore/' \
+        'phase 221: a pointer write that COMMITTED and then errored keeps its revision, stays writable, and is announced' \
+        TestSetRevision_PointerWriteCommittedThenErrored_KeepsTheRevision \
+        TestSetRevision_PointerWriteCommittedThenErrored_LeavesTheAgentWritable \
+        TestSetRevision_PointerWriteCommittedThenErrored_StillAnnouncesTheRevision \
+        TestSetRevision_CompensationCannotReadThePointer_RetainsTheRevision
+
+    # The conformance rows' REGISTRATION guard, in Go rather than only in the
+    # greps above: deregistering a `t.Run` COMPILES (an unused func parameter
+    # is legal), so the suite stays green while the invariant stops being
+    # asserted. It lives in the conformance package, not the driver's.
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/agentcfg/conformance/' \
+        'phase 221: both fault rows are REGISTERED (deregistering one compiles, so Go asserts it too)' \
+        TestConformance_FaultRowsAreRegistered
 
     assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/agentcfg/drivers/statestore/' \
         'phase 221: N=128 racing writers yield exactly one winner, and the cross-process residual is pinned AS ABSENT' \
@@ -358,6 +410,50 @@ else
         TestAddMCPConnection_FailedAttachDoesNotDetach \
         TestAddMCPConnection_ConflictWithNoDetacherFailsLoud \
         TestAddMCPConnection_CompensatingDetachFailureIsNotSwallowed
+
+    # ...and compensates ONLY what THAT CALL created (D-381). The compensation
+    # shipped UNCONDITIONAL, so a refused re-add of an ALREADY-LIVE connection
+    # tore down a server the ACTIVE revision still names — a REFUSED write
+    # turned DESTRUCTIVE, which is the same broken claim in the opposite
+    # direction. These name the tests explicitly because the whole seven-test
+    # guard above stays green through the regression: every one of them uses a
+    # FRESH name.
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/runtime/agentcfg/protocol/' \
+        'phase 221: the compensation undoes only what THIS call created — a still-declared connection/provider survives a refusal' \
+        TestAddMCPConnection_RevisionConflict_KeepsAStillDeclaredConnection \
+        TestAddMCPConnection_RevisionConflict_KeepsAStillDeclaredWireProvider \
+        TestAddMCPConnection_RevisionConflict_KeepsAProviderASiblingDeclared \
+        TestAddMCPConnection_FailedAttach_KeepsAStillDeclaredWireProvider \
+        TestAddMCPConnection_RevisionConflict_RetainedReasonNamesTheUntouchedServer \
+        TestAddMCPConnection_CompensatingDetach_IsOwnerScoped
+
+    # ...and the THREE disk states one identical error value can hide (D-381
+    # closing D-380's finding against this door). "The write failed" is what the
+    # store SAID: a deadline firing after commit reports failure over a write
+    # that landed, and the pre-D-381 door detached on it, leaving a config entry
+    # naming a server nothing serves. The declared-ness re-read answers it with
+    # no second mechanism, because "did the write land?" and "does the pointer
+    # name it?" are the same question. The third row pins the UNKNOWN answer —
+    # the one arm that still tears down a landed write — so the residual cannot
+    # change silently.
+    assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/runtime/agentcfg/protocol/' \
+        'phase 221: a write REPORTED failed but LANDED keeps its connection; a partial landing is still detached; the unknown answer is loud' \
+        TestAddMCPConnection_WriteLandedThenErrored_DoesNotDetach \
+        TestAddMCPConnection_RecordLandedPointerStuck_DetachesAndIsCorrect \
+        TestAddMCPConnection_WriteLandedButPointerUnreadable_FallsBackLoudly
 fi
+
+# The OWNER-SCOPING guard, asserted on the SOURCE because its consequence is
+# invisible at runtime: a compensating detach addressed to the wrong owner is a
+# SILENT no-op (Registry.Deregister answers a foreign owner with
+# ErrServerNotFound; detachSource swallows it as idempotent), so the leak
+# returns with every test still green. The double now models owner scoping
+# structurally, and this pins the production call passing the CALLER's tenant.
+#     Mutation (pass a literal tenant to DetachConnection) turns this OK -> FAIL.
+ADDCONN_GO='internal/runtime/agentcfg/protocol/addconnection.go'
+assert_grep_present 'DetachConnection\(ctx, id\.TenantID, agentID, desc\.Name\)' "${ADDCONN_GO}" \
+    'phase 221: the compensating detach is addressed to the CALLER tenant + agent (a foreign owner is a silent no-op)'
+assert_grep_present 'wireProviderIsNew && !providerDeclared' "${ADDCONN_GO}" \
+    'phase 221: the compensating uninstall skips a wire provider the ACTIVE revision still declares'
 
 smoke_summary

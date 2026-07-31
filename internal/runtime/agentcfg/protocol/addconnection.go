@@ -654,19 +654,140 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 // for the caller to branch on. A compensation step that itself fails is logged
 // LOUD and named precisely — a residual live server is a fact an operator must
 // be told about, never swallowed (CLAUDE.md §13).
+//
+// # It compensates ONLY what THIS call created
+//
+// A same-owner same-name re-attach is ALLOWED and intended — it is the operator
+// replacing their own connection, and the MCP registry supersedes the live
+// registration in place. So the attach this compensates may have REPLACED a
+// server the ACTIVE revision still names rather than created a new one, and an
+// unconditional teardown would then make a REFUSED write DESTRUCTIVE: catalog
+// tools deregistered, transport closed, a terminal `failed` emitted for a
+// healthy connection, and in-flight runs stripped of its tools until the next
+// run-start reconcile re-attaches it. That is the same broken "a refusal
+// changes nothing" claim this compensation exists to keep, in the opposite
+// direction.
+//
+// So both teardowns are scoped by the ACTIVE revision, read HERE rather than
+// before the attach: the reachable failure is a moved base, so the winning
+// sibling revision — not the one this caller read — is what decides whether the
+// name is still declared. A connection the active revision still names is left
+// LIVE; a wire provider it still names is left INSTALLED. The predicate is
+// deliberately the same one the run-start reconcile uses to decide "keep it
+// attached", so the two cannot drift into contradicting each other.
+//
+// The residual, stated rather than papered over: when a racing sibling's
+// winning revision declares the same connection with a DIFFERENT descriptor,
+// the retained live server carries THIS call's descriptor while the revision
+// names the sibling's, and the reconcile's attach pass skips names that are
+// already live — so the divergence persists until that connection is next
+// detached. Retaining a declared connection is still the better failure: a
+// declared-but-dark connection breaks every run immediately, a descriptor
+// divergence breaks none.
 func (s *Service) compensateAttach(ctx context.Context, q identity.Quadruple, id identity.Identity, agentID string, desc agentcfg.MCPConnectionDescriptor, wireProvider *agentcfg.OAuthProviderDescriptor, wireProviderIsNew bool, cause error) {
-	if s.detacher == nil {
+	providerName := ""
+	if wireProvider != nil {
+		providerName = wireProvider.Name
+	}
+	connDeclared, providerDeclared, rErr := s.activeDeclarations(ctx, q, agentID, desc.Name, providerName)
+	if rErr != nil {
+		// Fail loud and say which way the ambiguity was resolved. The refinement
+		// below cannot be evaluated, so the unrefined compensation stands: it
+		// keeps the "no live server no revision names" guarantee, at the risk of
+		// tearing down a connection that IS still declared. Both outcomes heal at
+		// the next run-start reconcile; only one of them is silent, and this is
+		// not it.
+		s.logger.ErrorContext(ctx, "agent-config: could not read the active revision to scope the compensating teardown — compensating UNCONDITIONALLY, which may tear down a connection the active revision still declares",
+			"agent_id", agentID, "server_id", desc.Name, "error", rErr.Error(), "cause", cause.Error())
+	}
+
+	switch {
+	case connDeclared:
+		// The add REPLACED a still-declared connection. Tearing it down is the
+		// collateral, not the compensation — leave it live and say so.
+		s.logger.WarnContext(ctx, "agent-config: mcp connection revision write refused; the connection is still declared by the ACTIVE revision, so the live server was left in place (this add replaced a still-declared connection rather than creating one)",
+			"agent_id", agentID, "server_id", desc.Name, "cause", cause.Error())
+	case s.detacher == nil:
 		// Fail loud rather than pretend. A runtime wired with an attacher but
 		// no detacher genuinely cannot undo the attach, and the operator needs
 		// to know a live server outlived its refused write.
 		s.logger.ErrorContext(ctx, "agent-config: mcp connection attached but its revision write failed AND no ConnectionDetacher is wired — the server is LIVE and unnamed by any revision",
 			"agent_id", agentID, "server_id", desc.Name, "error", cause.Error())
-	} else if dErr := s.detacher.DetachConnection(ctx, id.TenantID, agentID, desc.Name); dErr != nil {
-		s.logger.ErrorContext(ctx, "agent-config: compensating detach after a failed connection revision write FAILED — the server may still be live and unnamed by any revision",
-			"agent_id", agentID, "server_id", desc.Name, "error", dErr.Error(), "cause", cause.Error())
+	default:
+		if dErr := s.detacher.DetachConnection(ctx, id.TenantID, agentID, desc.Name); dErr != nil {
+			s.logger.ErrorContext(ctx, "agent-config: compensating detach after a failed connection revision write FAILED — the server may still be live and unnamed by any revision",
+				"agent_id", agentID, "server_id", desc.Name, "error", dErr.Error(), "cause", cause.Error())
+		}
 	}
-	s.uninstallWireProvider(ctx, id, agentID, wireProvider, wireProviderIsNew, "failed connection revision write")
-	s.emitConnectionLifecycle(ctx, q, agentID, desc, ConnectionStateFailed, "", "", safeReason(cause))
+
+	// A provider the active revision still names is not this call's to uninstall,
+	// whatever the pre-attach install reported: uninstalling it would strip
+	// southbound bearer injection from every still-declared connection bound to
+	// it.
+	if providerDeclared && wireProviderIsNew {
+		s.logger.WarnContext(ctx, "agent-config: mcp connection revision write refused; the inline wire oauth provider is still declared by the ACTIVE revision, so it was left installed",
+			"agent_id", agentID, "server_id", desc.Name, "provider", providerName)
+	}
+	s.uninstallWireProvider(ctx, id, agentID, wireProvider, wireProviderIsNew && !providerDeclared, "failed connection revision write")
+
+	// The terminal event ALWAYS fires — a transient `pending` that never closes
+	// is the silent half of this defect. On the retained path the reason names
+	// the outcome precisely, because a bare `failed` describes a connection that
+	// is healthy, declared and still serving tools.
+	reason := safeReason(cause)
+	if connDeclared {
+		reason = boundedReason(retainedConnectionReasonPrefix + reason)
+	}
+	s.emitConnectionLifecycle(ctx, q, agentID, desc, ConnectionStateFailed, "", "", reason)
+}
+
+// retainedConnectionReasonPrefix marks the terminal `failed` lifecycle reason
+// emitted when the refused write tore NOTHING down because the connection is
+// still declared by the active revision. The lifecycle state set is closed
+// (pending | online | failed | auth_required) and this ADD did fail, so
+// `failed` is the honest terminal state for the attempt — but a reader of the
+// per-connection stream would otherwise read it as "this connection is dead",
+// which is exactly wrong here. The reason carries the distinction the state
+// cannot.
+const retainedConnectionReasonPrefix = "add refused; the pre-existing connection is still declared by the active revision and was NOT torn down: "
+
+// activeDeclarations reads the agent's ACTIVE agent-scope revision ONCE and
+// reports whether it currently names the connection and whether it currently
+// names the OAuth provider. An empty providerName reports false for the
+// provider half without searching.
+//
+// It is the compensation's scoping read: "is this name still DECLARED?" is the
+// same question the run-start reconcile asks before it decides to keep a live
+// server attached, so answering it from the same place keeps a refused write
+// and a reconcile sweep from contradicting each other. The read takes the
+// per-agent write lock so a concurrent edit cannot be observed half-applied,
+// exactly as the wire-OAuth name binding's read does. A read error is returned
+// to the caller (never swallowed into a false).
+func (s *Service) activeDeclarations(ctx context.Context, q identity.Quadruple, agentID, connName, providerName string) (connDeclared, providerDeclared bool, err error) {
+	release := s.lockAgent(q.TenantID, agentID)
+	active, hasActive, aErr := s.registry.Active(ctx, identity.Quadruple{Identity: q.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	release()
+	if aErr != nil {
+		return false, false, aErr
+	}
+	if !hasActive {
+		return false, false, nil
+	}
+	for _, d := range active.Payload.ConnectionDescriptors() {
+		if d.Name == connName {
+			connDeclared = true
+			break
+		}
+	}
+	if providerName != "" {
+		for _, p := range active.Payload.OAuthProviderDescriptors() {
+			if p.Name == providerName {
+				providerDeclared = true
+				break
+			}
+		}
+	}
+	return connDeclared, providerDeclared, nil
 }
 
 // uninstallWireProvider rolls back an inline wire-OAuth provider that THIS add
@@ -696,8 +817,12 @@ func (s *Service) uninstallWireProvider(ctx context.Context, id identity.Identit
 //   - Inline binding (`connection.oauth`): gate + validate the wire descriptor,
 //     DERIVE the downstream sink from the connection's own URL (never a wire
 //     field), install the provider owner-tagged, and rewrite the connection's
-//     OAuthProvider to the installed name. Newly installed ⇒ rolled back on a
-//     failed attach.
+//     OAuthProvider to the installed name. NEW only when the active revision does
+//     not already name a provider by that name — an inline install is an UPSERT,
+//     so re-adding a connection with the same inline binding re-installs a
+//     provider that already existed, and reporting THAT as "new" would let a
+//     failed attach or a refused write uninstall a provider other still-declared
+//     connections bind. Newly installed ⇒ rolled back on a failed attach.
 //   - Name binding (`oauth_provider`) to an already-installed WIRE provider (e.g.
 //     from a prior set_oauth_provider, whose downstream sink was deferred): re-derive
 //     that provider's sink from THIS connection's URL and re-install (upsert). Not
@@ -728,11 +853,19 @@ func (s *Service) prepareWireOAuthBinding(ctx context.Context, id identity.Ident
 		if s.providerInstaller == nil {
 			return nil, false, ErrProviderInstallUnavailable
 		}
+		// Does the active revision ALREADY name a provider by this name? If it
+		// does, this install is an upsert over a provider that outlives this add,
+		// so a rollback must not uninstall it. Read before the install (nothing
+		// live has happened yet, so a read error is a plain refusal).
+		_, alreadyDeclared, dErr := s.activeDeclarations(ctx, identity.Quadruple{Identity: id}, agentID, "", pdesc.Name)
+		if dErr != nil {
+			return nil, false, dErr
+		}
 		if err := s.providerInstaller.InstallProvider(ctx, id.TenantID, agentID, pdesc); err != nil {
 			return nil, false, err
 		}
 		desc.OAuthProvider = pdesc.Name
-		return &pdesc, true, nil
+		return &pdesc, !alreadyDeclared, nil
 	}
 	if strings.TrimSpace(desc.OAuthProvider) == "" {
 		return nil, false, nil
@@ -1020,10 +1153,17 @@ func safeReason(err error) string {
 	if err == nil {
 		return ""
 	}
-	msg := scrubReasonSecrets(err.Error())
+	return boundedReason(scrubReasonSecrets(err.Error()))
+}
+
+// boundedReason length-bounds an already-scrubbed operator-facing reason so a
+// pathological error cannot bloat an event. Split out of [safeReason] because
+// the compensation composes a reason from a fixed prefix plus a scrubbed cause
+// and must bound the RESULT, not just the cause.
+func boundedReason(msg string) string {
 	const maxReason = 512
 	if len(msg) > maxReason {
-		msg = msg[:maxReason] + "…"
+		return msg[:maxReason] + "…"
 	}
 	return msg
 }
