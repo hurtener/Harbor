@@ -132,6 +132,53 @@ assert_grep_count() {
     fi
 }
 
+# assert_go_tests_pass <log-path> <packages> <description> <test-name>...
+# Runs `go test -v -run '^(T1|T2|…)$' <packages>` and asserts every named test
+# actually RAN and PASSED.
+#
+# The exit code alone is NOT a sufficient assertion here, and this is the whole
+# reason the helper exists: `go test -run` whose filter matches nothing prints
+# "no tests to run" and exits ZERO. A guard that only checks the exit code
+# therefore reports OK after the test it names is renamed or deleted — the
+# same "the pass value is also the can't-tell value" shape as a SKIP standing
+# in for an OK (AGENTS.md §4.2 item 5). So the helper greps the `-v` output
+# for a `--- PASS:` line per NAME; a rename turns it into a FAIL.
+#
+# <packages> is a single word-split string (e.g. "./internal/state/... ./x/...").
+assert_go_tests_pass() {
+    local log="$1" pkgs="$2" desc="$3"
+    shift 3
+    local names=("$@")
+    if ! command -v go >/dev/null 2>&1; then
+        skip "${desc}: go toolchain not available"
+        return
+    fi
+    local joined pattern t rc=0
+    joined="$(printf '%s|' "${names[@]}")"
+    pattern="^(${joined%|})$"
+    # shellcheck disable=SC2086 # pkgs is a deliberate multi-package word split
+    go test -v -run "${pattern}" ${pkgs} >"${log}" 2>&1 || rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        fail "${desc} — go test exited ${rc}"
+        printf -- '--- go test output (tail) ---\n'
+        tail -40 "${log}" | sed 's/^/    /'
+        return
+    fi
+    local missing=''
+    for t in "${names[@]}"; do
+        if ! grep -qE -- "^[[:space:]]*--- PASS: ${t} \(" "${log}"; then
+            missing="${missing} ${t}"
+        fi
+    done
+    if [ -n "${missing}" ]; then
+        fail "${desc} — go test exited 0 but these named test(s) never ran (renamed, deleted, or filtered out):${missing}"
+        printf -- '--- go test output (tail) ---\n'
+        tail -40 "${log}" | sed 's/^/    /'
+        return
+    fi
+    ok "${desc} (${#names[@]} named test(s) ran and passed)"
+}
+
 # assert_status <expected> <url> <description>
 # Used once the dev server runs (Phase 01+).
 assert_status() {

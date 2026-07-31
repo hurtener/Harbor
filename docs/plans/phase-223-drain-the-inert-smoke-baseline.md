@@ -31,6 +31,8 @@ None.
 
 One clarification rather than a departure: `scripts/smoke/inert-baseline.txt`'s own header argues that a stale entry is a WARNING rather than a FAIL because "whether some of these assert anything is environment-dependent (a live MCP server, a benchmark budget, a platform-gated tool)". Measurement contradicts the premise for this particular set — see "Triage (measured)": **zero** of the twenty-four are environment-dependent. All twenty-four report `OK: 0 / FAIL: 0` on a plain checkout with no server, no provider keys, and no MCP binary. The stale-entry check stays a WARNING (still the right posture for a file that is *allowed* to be non-empty in an emergency), but the phase's end state makes the question moot by emptying the file.
 
+**As built:** the header was **rewritten** rather than left standing on the refuted premise — leaving a justification the phase's own measurement disproves would be exactly the stale-doc drift §17.6 binds to this PR. The WARN posture survives on a narrower and honest justification stated in the new header: a stale entry is provoked by a line an operator deliberately added under an emergency, and making it a hard FAIL would block the very commit that pays the debt down. A MISSING entry stays a FAIL, which is the direction that matters. The environment-dependence claim is replaced by the measurement that refuted it.
+
 ## Goals
 
 - Drain `scripts/smoke/inert-baseline.txt` from 24 data lines to **0**.
@@ -178,20 +180,20 @@ A split was considered and is **not** recommended. The obvious seam is "classifi
 
 ## Acceptance criteria
 
-- [ ] `scripts/smoke/inert-baseline.txt` contains **zero** data lines. The header stays, rewritten to describe an empty file as the steady state and to state what re-adding a line costs.
-- [ ] `phase_is_shipped` in `scripts/preflight.sh` matches a master-plan row whose phase cell has no trailing space (`| 85a|` as well as `| 104 |`). Verified against `docs/plans/README.md`: the number of phase rows the classifier can resolve rises from 228 to 334.
-- [ ] `phase_is_shipped` classifies `Ready now`, `Cut`, `Revisit after`, `Superseded by`, `Reverted`, and `Deprecated` as NOT shipped; keeps `Pending` / `Post-V1` / `Deferred` as NOT shipped; keeps `Shipped` / `Shipped*` as shipped.
-- [ ] A phase token that resolves to **no row**, or to a status word in neither list, produces a named report line in the preflight summary — still defaulting to Shipped, so the strict arm is preserved.
-- [ ] Each of 01, 02, 03, 04, 07, 23, 24, 42 reports `OK ≥ 1`, runs a **named** test, and writes its `go test` log to a path unique to that phase.
-- [ ] `scripts/smoke/phase-79.sh` reports `OK ≥ 3`: benchmarks compile/discover, `scripts/perf/check-regression.sh` is present and executable, and the `perf-regression` job in `.github/workflows/ci.yml` both exists and invokes that script.
-- [ ] `scripts/smoke/phase-132.sh` and `scripts/smoke/phase-132-stream.sh` each report `OK ≥ 1` by asserting their delegated legs are still present in `scripts/smoke/phase-112b.sh`.
-- [ ] **Mutation verification, one per repaired script (11 total).** For each, break the guarded property, run the script, and record that the counter moves `OK → FAIL` — never `OK → SKIP`. The mutation and the observed output go in the PR body. A repair that cannot be shown failing is not a repair.
-- [ ] `assess_smoke_output` counts a FAIL when a smoke exits 0 with no summary block; verified with a throwaway probe script that prints output and `exit 0`.
-- [ ] `make preflight` reports zero baselined entries, zero inert shipped-phase scripts, zero STALE entries, and PASS.
-- [ ] `make preflight` run twice back to back is stable — no `OK` / `SKIP` drift between runs from the newly added `go test` invocations.
-- [ ] `scripts/smoke/phase-223.sh` passes and is itself mutation-verified (add a line to the baseline file → FAIL; point a line at a nonexistent script → FAIL).
-- [ ] `make drift-audit` and `make check-mirror` pass.
-- [ ] D-368 filed in `docs/decisions.md`.
+- [x] `scripts/smoke/inert-baseline.txt` contains **zero** data lines. The header stays, rewritten to describe an empty file as the steady state and to state what re-adding a line costs.
+- [x] `phase_is_shipped` in `scripts/preflight.sh` matches a master-plan row whose phase cell has no trailing space (`| 85a|` as well as `| 104 |`). Verified against `docs/plans/README.md`: the number of phase rows the classifier can resolve rises from **233 to 339**. (The plan measured 228/334 before the five v1.25 rows — 219/220/221/222/223 — were added to the master plan; the invisible count, 106, is unchanged and is the number the fault was measured by.)
+- [x] `phase_is_shipped` classifies `Ready now`, `Cut`, `Revisit after`, `Superseded by`, `Reverted`, and `Deprecated` as NOT shipped; keeps `Pending` / `Post-V1` / `Deferred` as NOT shipped; keeps `Shipped` / `Shipped*` as shipped. As built the vocabulary lives in its own `phase_status_arm` function with three outcomes (`shipped` / `not-shipped` / `unknown`) so the unknown case can be reported without weakening the strict default.
+- [x] A phase token that resolves to **no row**, or to a status word in neither list, produces a named report line in the preflight summary — still defaulting to Shipped, so the strict arm is preserved. Scoped to the inert gate's classification call site rather than to every smoke: 21 smoke scripts have no master-plan row at all (`108a`–`108p`, `123`, `73e`/`f`/`h`/`j`), and printing all 21 every run is noise an operator learns to skip — which is the failure this report exists to close. A row's unreadability has no consequence until the gate asks about it.
+- [x] Each of 01, 02, 03, 04, 07, 23, 24, 42 reports `OK ≥ 1`, runs a **named** test, and writes its `go test` log to a path unique to that phase.
+- [x] `scripts/smoke/phase-79.sh` reports `OK ≥ 3`: benchmarks compile/discover, `scripts/perf/check-regression.sh` is present and executable, and the `perf-regression` job in `.github/workflows/ci.yml` both exists and invokes that script.
+- [x] `scripts/smoke/phase-132.sh` and `scripts/smoke/phase-132-stream.sh` each report `OK ≥ 1` by asserting their delegated legs are still present in `scripts/smoke/phase-112b.sh` (4 OKs each).
+- [x] **Mutation verification, one per repaired script (11 total).** For each, break the guarded property, run the script, and record that the counter moves `OK → FAIL` — never `OK → SKIP`. The mutation and the observed output go in the PR body. A repair that cannot be shown failing is not a repair.
+- [x] `assess_smoke_output` counts a FAIL when a smoke exits 0 with no summary block; verified with a throwaway probe script that prints output and `exit 0`.
+- [x] `make preflight` reports zero baselined entries, zero inert shipped-phase scripts, zero STALE entries, and PASS.
+- [x] `make preflight` run twice back to back is stable — no `OK` / `SKIP` drift between runs from the newly added `go test` invocations.
+- [x] `scripts/smoke/phase-223.sh` passes and is itself mutation-verified (add a line to the baseline file → FAIL; point a line at a nonexistent script → FAIL). Its negative arms are FAIL rather than the authoring-time SKIP: with the properties now holding, a SKIP would be indistinguishable from a pass.
+- [x] `make drift-audit` and `make check-mirror` pass.
+- [x] D-368 filed in `docs/decisions.md`.
 
 ## Files added or changed
 
@@ -213,9 +215,31 @@ scripts/smoke/phase-42.sh                                (static-only -> unit-te
 scripts/smoke/phase-79.sh                                (three real assertions)
 scripts/smoke/phase-132.sh                               (delegation tripwire)
 scripts/smoke/phase-132-stream.sh                        (delegation tripwire)
+scripts/smoke/common.sh                                  (one new helper — see below)
+scripts/drift-audit.sh                                   (§17.6 bundled: mktemp the markdownlint
+                                                          diagnostic path — see below)
 docs/glossary.md                                         (inert smoke, inert baseline)
 docs/decisions.md                                        (D-368)
 ```
+
+**One §4.3 addition to that list, and the reason it is not optional.** `scripts/smoke/common.sh`
+gains `assert_go_tests_pass`. `go test -run NoSuchTest ./pkg` prints "no tests to run" and exits
+**zero**, so the eight repairs — each of which asserts by NAME — could not have detected their own
+named test being renamed or deleted if they had checked the exit code alone. The helper runs
+`go test -v -run '^(T1|T2|…)$'` and greps a `--- PASS:` line per name. This was mutation-verified on
+all eight, and the captured `go test` output shows exit code 0 in every case: an exit-code-only guard
+would have been a false OK on all eight, which is the same shape as the SKIPs this phase removes.
+CLAUDE.md §4.2 item 3 is the sanctioned home for a new helper (`common.sh`, with a docstring); the
+alternative — eight copies of the same grep — is the shape §4.2 item 3 exists to prevent.
+
+**One §17.6 bundled fix in `scripts/drift-audit.sh`,** named here rather than smuggled in. It wrote
+its markdownlint output to a FIXED `/tmp/harbor-markdownlint.out`, and `make preflight` runs the
+audit internally — so two sibling worktrees running preflight concurrently (this wave's own dispatch
+model) clobber each other's diagnostic and the operator is pointed at someone else's violations. The
+verdict was never wrong, because that comes from the exit code; the file the failure message names
+was. Fixed with `mktemp`, three lines. It is bundled because it is a defect in the gate this phase
+exists to make trustworthy, and because a diagnostic that can silently belong to another process is
+the same class of thing as a guard that can silently assert nothing.
 
 No new top-level directory (AGENTS.md §3 unchanged). No Go production code. `docs/plans/README.md` is the coordinator's to update.
 
@@ -257,6 +281,8 @@ Assertions 4 and 5 are computed against the live `docs/plans/README.md` rather t
 **Skeleton state, measured.** As authored (before the phase lands) the script reports `OK: 2  SKIP: 4  FAIL: 0` — it is not inert, so it cannot itself become baseline debt. Assertions 1 and 2 hold today; 3, 4, 5 and 6 SKIP, and each SKIP prints the measured gap (`24 entries`, `228/334 rows`, `'Cut' 'Deprecated' 'Ready' 'Reverted' 'Revisit' 'Superseded'`, `no no-summary guard`) rather than a bare "not implemented". Mutation-verified in both directions during authoring: appending a line naming a nonexistent script turns assertion 2 `OK → FAIL` (rc=1), and emptying the data lines turns assertion 3 `SKIP → OK` (`OK: 3`). Assertions 4, 5 and 6 flip to OK when their targets in `scripts/preflight.sh` land.
 
 Note there is no "surface not yet implemented" SKIP anywhere in this script: every arm reads a repository file that exists unconditionally, and every SKIP is gated on a condition this phase itself opens.
+
+**As built, three changes to that skeleton.** (1) **Every negative arm is now a `fail`, not a `skip`.** The SKIPs were the authoring-time posture, correct while the properties did not yet hold; with the phase landed, a SKIP would be indistinguishable from a pass and would let all six regress in silence — and the acceptance criteria require a baseline line to produce a FAIL. The script reports `OK: 7 / SKIP: 0 / FAIL: 0`. (2) **The plan's assertion 3 — every data line names a Shipped phase — is implemented as its own arm** (the authored skeleton had six checks, of which the drain and the file-existence check were two; the shipped-phase check was the one not yet present). It is the guard that would have caught the thirteen category-(e) entries at the moment they were added, and it is mutation-verified by adding `scripts/smoke/phase-85a.sh` to the baseline: `FAIL … status='Ready now'`. (3) **Assertion 5's vocabulary grep is scoped to the `phase_status_arm` function body**, not the whole of `scripts/preflight.sh`. A status word can legitimately appear in a comment, so a whole-file grep is the same "pass value is also the can't-tell value" shape the script's own header warns about — the identical fault the author caught on `smoke_summary`. Assertion 4 likewise reads the row regex out of `preflight.sh` by exact text rather than restating it, so it cannot pass against a stale copy.
 
 ## Coverage target
 
