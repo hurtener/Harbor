@@ -550,7 +550,7 @@ func TestE2E_Phase216_FailureModes(t *testing.T) {
 						},
 					},
 				}},
-			}); err != nil {
+			}, agentcfg.SetOptions{}); err != nil {
 			t.Fatalf("seed the injection-carrying revision: %v", err)
 		}
 
@@ -664,7 +664,7 @@ func seedAgentConnection(t *testing.T, h *raHarness, agentID, name, url string) 
 			Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{{
 				Name: name, Transport: agentcfg.MCPTransportHTTP, URL: url,
 			}}},
-		}); err != nil {
+		}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed %q for %q: %v", name, agentID, err)
 	}
 }

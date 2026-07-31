@@ -40,7 +40,7 @@ func TestActivePromptLayers_ResolvesBaseAndUser(t *testing.T) {
 	reg := newRegistry(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: ps("the base"), User: ps("the user")},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	base, user, ok, err := projection.ActivePromptLayers(ctx, reg, projAgent, projID())
@@ -59,7 +59,7 @@ func TestActivePromptLayers_NoPromptSection(t *testing.T) {
 	reg := newRegistry(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"a"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	_, _, ok, err := projection.ActivePromptLayers(ctx, reg, projAgent, projID())
@@ -77,7 +77,7 @@ func TestApplyPromptLayers_OverlaysOntoNil(t *testing.T) {
 	reg := newRegistry(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: ps("B"), User: ps("U")},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	ov, err := projection.ApplyPromptLayers(ctx, reg, nil, projAgent, projID(), nil)
@@ -97,7 +97,7 @@ func TestApplyPromptLayers_PreservesExistingOverrides(t *testing.T) {
 	reg := newRegistry(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: ps("B")},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	existing := &planner.LLMOverrides{ExtraInstructions: ps("tenant default")}
@@ -142,13 +142,13 @@ func TestApplyPromptLayers_DurableUserLayer_Precedence(t *testing.T) {
 	// admin Base + admin User (ConfigScopeAgent).
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: ps("admin-base"), User: ps("admin-user")},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set admin: %v", err)
 	}
 	// the durable USER-scope layer (ConfigScopeUser).
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{User: ps("durable-user")},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set durable: %v", err)
 	}
 	// the ephemeral session overlay.
@@ -176,7 +176,7 @@ func TestApplyPromptLayers_DurableUserLayer_AloneReachesRun(t *testing.T) {
 	reg := newRegistry(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{User: ps("just-durable")},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set durable: %v", err)
 	}
 	got, err := projection.ApplyPromptLayers(ctx, reg, nil, projAgent, projID(), nil)
@@ -197,7 +197,7 @@ func TestApplyPromptLayers_EmptyDurable_ByteIdentical(t *testing.T) {
 	ov := newOverlay(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{User: ps("admin-user")},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set admin: %v", err)
 	}
 	if _, err := ov.SetUserPrompt(ctx, projID(), projAgent, "session-user"); err != nil {
@@ -226,14 +226,14 @@ func composedUserLayer(t *testing.T, adminUser, durableUser, sessionUser string)
 	if adminUser != "" {
 		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 			PromptLayers: &agentcfg.PromptLayers{User: ps(adminUser)},
-		}); err != nil {
+		}, agentcfg.SetOptions{}); err != nil {
 			t.Fatalf("set admin: %v", err)
 		}
 	}
 	if durableUser != "" {
 		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
 			PromptLayers: &agentcfg.PromptLayers{User: ps(durableUser)},
-		}); err != nil {
+		}, agentcfg.SetOptions{}); err != nil {
 			t.Fatalf("set durable: %v", err)
 		}
 	}
@@ -306,7 +306,7 @@ func (r *userScopeErrRegistry) Active(_ context.Context, _ identity.Quadruple, _
 	}
 	return agentcfg.Revision{}, false, nil
 }
-func (r *userScopeErrRegistry) SetRevision(context.Context, identity.Quadruple, string, agentcfg.ConfigScope, agentcfg.ConfigPayload) (agentcfg.Revision, error) {
+func (r *userScopeErrRegistry) SetRevision(context.Context, identity.Quadruple, string, agentcfg.ConfigScope, agentcfg.ConfigPayload, agentcfg.SetOptions) (agentcfg.Revision, error) {
 	return agentcfg.Revision{}, nil
 }
 func (r *userScopeErrRegistry) Get(context.Context, identity.Quadruple, string, string, agentcfg.ConfigScope) (agentcfg.Revision, error) {
@@ -315,7 +315,7 @@ func (r *userScopeErrRegistry) Get(context.Context, identity.Quadruple, string, 
 func (r *userScopeErrRegistry) ListRevisions(context.Context, identity.Quadruple, string, agentcfg.ConfigScope, int) ([]agentcfg.Revision, error) {
 	return nil, nil
 }
-func (r *userScopeErrRegistry) Rollback(context.Context, identity.Quadruple, string, string, agentcfg.ConfigScope) (agentcfg.Revision, error) {
+func (r *userScopeErrRegistry) Rollback(context.Context, identity.Quadruple, string, string, agentcfg.ConfigScope, agentcfg.SetOptions) (agentcfg.Revision, error) {
 	return agentcfg.Revision{}, nil
 }
 func (r *userScopeErrRegistry) Diff(context.Context, identity.Quadruple, string, string, string, agentcfg.ConfigScope) (agentcfg.Diff, error) {

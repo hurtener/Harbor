@@ -24,6 +24,13 @@ func TestHTTPStatus_Mapping_EveryCanonicalCode(t *testing.T) {
 		protoerrors.CodePresignUnsupported:    http.StatusNotImplemented,
 		protoerrors.CodeRequestTooLarge:       http.StatusRequestEntityTooLarge,
 		protoerrors.CodeSessionRunning:        http.StatusConflict,
+		// CodeSessionErased was registered in the exhaustiveness set below but
+		// never VALUE-asserted here, so its arm's returned status was
+		// unpinned — the exhaustiveness check only proves a row exists, not
+		// that it returns the right number. Added alongside
+		// CodeRevisionConflict, which would have shipped with the same gap.
+		protoerrors.CodeSessionErased:    http.StatusConflict,
+		protoerrors.CodeRevisionConflict: http.StatusConflict,
 	}
 	for code, want := range cases {
 		if got := HTTPStatus(code); got != want {
@@ -52,6 +59,7 @@ func TestHTTPStatus_Mapping_ExhaustiveOverCanonicalCodes(t *testing.T) {
 		protoerrors.CodeRequestTooLarge:       {},
 		protoerrors.CodeSessionRunning:        {},
 		protoerrors.CodeSessionErased:         {},
+		protoerrors.CodeRevisionConflict:      {},
 	}
 	for code := range mapped {
 		if !protoerrors.IsValidCode(code) {

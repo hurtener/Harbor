@@ -33,6 +33,11 @@ var errorTable = map[protoerrors.Code]errorEntry{
 		When:  "A `start` named a session id that was permanently deleted by `sessions.delete` (right-to-erasure). The session is terminal and cannot be reopened — its data is gone. A closed-but-not-erased session, by contrast, reopens normally on `start`.",
 		Retry: "No — the conversation was erased; start a new one with a fresh session id.",
 	},
+	protoerrors.CodeRevisionConflict: {
+		When: "An `agent_config.*` write declared an `expected_content_hash` and the agent's active revision no longer carries it — another writer moved the base between the caller's read and its write — or the agent has no active revision at all. The request was well-formed and authorised; nothing was persisted (no revision, no active-pointer move, no `agent.config.revised` event). " +
+			"The refusal is exact within ONE Runtime process: atomicity comes from the agent-config service's per-owner write lock, not from the StateStore, which enforces no compare-and-swap. Two Runtime processes sharing one store CAN STILL LOSE AN UPDATE, and this code does not claim otherwise. Omitting `expected_content_hash` keeps the unconditional last-writer-wins behaviour.",
+		Retry: "Yes, after re-reading — call `agent_config.get` for the current `revision_id` and `content_hash`, re-apply your edit on top (`agent_config.diff` compares what you read against what it is now), and resubmit with the fresh hash.",
+	},
 	protoerrors.CodeIdentityRequired: {
 		When:  "The request resolved no complete `(tenant, user, session)` identity scope — a missing bearer, a missing session (no `X-Harbor-Session` header and no default claim), or a body identity that contradicts the verified token. Identity is mandatory and fails closed.",
 		Retry: "No — attach a token / session first ([Auth & identity](./auth-and-identity.md)).",

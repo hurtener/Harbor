@@ -61,6 +61,14 @@ func Run(t *testing.T, mk Factory) {
 			t.Run("GetMissingFailsLoud", func(t *testing.T) { testGetMissing(t, mk, scope) })
 			t.Run("IdentityRequired", func(t *testing.T) { testIdentityRequired(t, mk, scope) })
 			t.Run("LLMParamsRoundTrip", func(t *testing.T) { testLLMParamsRoundTrip(t, mk, scope) })
+			// The expected-revision precondition. These four rows live in the
+			// SHARED suite rather than the statestore driver's own tests
+			// precisely so a second driver cannot ship the Registry interface
+			// without the precondition (RFC §9 conformance parity).
+			t.Run("ConditionalWrite_MatchingHashProceeds", func(t *testing.T) { testConditionalMatch(t, mk, scope) })
+			t.Run("ConditionalWrite_MismatchRefusedAndPersistsNothing", func(t *testing.T) { testConditionalMismatch(t, mk, scope) })
+			t.Run("ConditionalWrite_NoActiveRevisionRefused", func(t *testing.T) { testConditionalNoActive(t, mk, scope) })
+			t.Run("ConditionalWrite_EmptyTokenIsUnconditional", func(t *testing.T) { testConditionalEmptyToken(t, mk, scope) })
 		})
 	}
 	t.Run("CrossScopeInvisibility", func(t *testing.T) { testCrossScopeInvisibility(t, mk) })
@@ -73,11 +81,11 @@ func testCrossScopeInvisibility(t *testing.T, mk Factory) {
 	ctx := context.Background()
 	r := mk(t)
 	id := admin()
-	agentRev, err := r.SetRevision(ctx, id, agentID, agentcfg.ConfigScopeAgent, skillsPayload("agent-only"))
+	agentRev, err := r.SetRevision(ctx, id, agentID, agentcfg.ConfigScopeAgent, skillsPayload("agent-only"), agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set agent: %v", err)
 	}
-	userRev, err := r.SetRevision(ctx, id, agentID, agentcfg.ConfigScopeUser, skillsPayload("user-only"))
+	userRev, err := r.SetRevision(ctx, id, agentID, agentcfg.ConfigScopeUser, skillsPayload("user-only"), agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set user: %v", err)
 	}
@@ -143,7 +151,7 @@ func testSetActiveGet(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
 	if _, ok, err := mustActive(t, r, id, scope); err != nil || ok {
 		t.Fatalf("Active on empty: ok=%v err=%v", ok, err)
 	}
-	rev, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a", "b"))
+	rev, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a", "b"), agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("SetRevision: %v", err)
 	}
@@ -173,11 +181,11 @@ func testImmutability(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
 	ctx := context.Background()
 	r := mk(t)
 	id := admin()
-	rev1, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a"))
+	rev1, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a"), agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set rev1: %v", err)
 	}
-	rev2, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a", "b"))
+	rev2, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a", "b"), agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set rev2: %v", err)
 	}
@@ -202,11 +210,11 @@ func testIdempotentReset(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
 	r := mk(t)
 	id := admin()
 	// Different name order must canonicalise to the same content → no-op.
-	rev1, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("b", "a"))
+	rev1, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("b", "a"), agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set rev1: %v", err)
 	}
-	rev2, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a", "b"))
+	rev2, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a", "b"), agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set rev2: %v", err)
 	}
@@ -227,7 +235,7 @@ func testParentChain(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
 	r := mk(t)
 	id := admin()
 	rev1 := mustSet(t, r, id, scope, skillsPayload("a"))
-	rev2, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a", "b"))
+	rev2, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a", "b"), agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set rev2: %v", err)
 	}
@@ -270,7 +278,7 @@ func testRollback(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
 	id := admin()
 	rev1 := mustSet(t, r, id, scope, skillsPayload("a"))
 	rev2 := mustSet(t, r, id, scope, skillsPayload("a", "b"))
-	back, err := r.Rollback(ctx, id, agentID, rev1.RevisionID, scope)
+	back, err := r.Rollback(ctx, id, agentID, rev1.RevisionID, scope, agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
@@ -306,7 +314,7 @@ func testRollbackMissing(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
 	r := mk(t)
 	id := admin()
 	mustSet(t, r, id, scope, skillsPayload("a"))
-	_, err := r.Rollback(ctx, id, agentID, "01ZZZNONEXISTENT", scope)
+	_, err := r.Rollback(ctx, id, agentID, "01ZZZNONEXISTENT", scope, agentcfg.SetOptions{})
 	if !errors.Is(err, agentcfg.ErrRevisionNotFound) {
 		t.Fatalf("rollback to missing should be ErrRevisionNotFound, got %v", err)
 	}
@@ -352,11 +360,11 @@ func testIdentityRequired(t *testing.T, mk Factory, scope agentcfg.ConfigScope) 
 	ctx := context.Background()
 	r := mk(t)
 	incomplete := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-a"}}
-	if _, err := r.SetRevision(ctx, incomplete, agentID, scope, skillsPayload("a")); !errors.Is(err, agentcfg.ErrIdentityRequired) {
+	if _, err := r.SetRevision(ctx, incomplete, agentID, scope, skillsPayload("a"), agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrIdentityRequired) {
 		t.Fatalf("incomplete identity should be ErrIdentityRequired, got %v", err)
 	}
 	// Empty agent id also rejected.
-	if _, err := r.SetRevision(ctx, admin(), "", scope, skillsPayload("a")); !errors.Is(err, agentcfg.ErrIdentityRequired) {
+	if _, err := r.SetRevision(ctx, admin(), "", scope, skillsPayload("a"), agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrIdentityRequired) {
 		t.Fatalf("empty agent id should be ErrIdentityRequired, got %v", err)
 	}
 }
@@ -364,7 +372,7 @@ func testIdentityRequired(t *testing.T, mk Factory, scope agentcfg.ConfigScope) 
 // mustSet sets a revision and fails the test on error.
 func mustSet(t *testing.T, r agentcfg.Registry, id identity.Quadruple, scope agentcfg.ConfigScope, payload agentcfg.ConfigPayload) agentcfg.Revision {
 	t.Helper()
-	rev, err := r.SetRevision(context.Background(), id, agentID, scope, payload)
+	rev, err := r.SetRevision(context.Background(), id, agentID, scope, payload, agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("SetRevision: %v", err)
 	}
@@ -374,4 +382,176 @@ func mustSet(t *testing.T, r agentcfg.Registry, id identity.Quadruple, scope age
 func mustActive(t *testing.T, r agentcfg.Registry, id identity.Quadruple, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
 	t.Helper()
 	return r.Active(context.Background(), id, agentID, scope)
+}
+
+// ---------------------------------------------------------------------------
+// The expected-revision precondition (SetOptions.ExpectedContentHash).
+//
+// Four rows, run against every driver under both scope arms. They pin the
+// CONTRACT, not one driver's implementation of it: the token gates on the
+// ACTIVE revision's content hash; a failed precondition persists nothing; a
+// token against an agent with no active revision is a conflict; and the empty
+// token is byte-for-byte the unconditional write.
+//
+// The atomicity these rows describe is bounded to a single process — the
+// Registry has no store-level compare-and-swap to lean on (see
+// agentcfg.SetOptions). The rows below therefore assert the DECISION the
+// driver makes from the read it already performs; the racing-writers property
+// is asserted separately by the driver's own concurrency test.
+// ---------------------------------------------------------------------------
+
+// testConditionalMatch — a token equal to the active revision's content hash
+// lets the write through exactly as an unconditional write would.
+func testConditionalMatch(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
+	ctx := context.Background()
+	r := mk(t)
+	id := admin()
+	base := mustSet(t, r, id, scope, skillsPayload("a"))
+
+	next, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a", "b"),
+		agentcfg.SetOptions{ExpectedContentHash: base.ContentHash})
+	if err != nil {
+		t.Fatalf("matching token must proceed, got %v", err)
+	}
+	if next.RevisionID == base.RevisionID {
+		t.Fatalf("matching conditional write must mint a new revision")
+	}
+	if next.ParentRevisionID != base.RevisionID {
+		t.Fatalf("parent = %q, want %q", next.ParentRevisionID, base.RevisionID)
+	}
+	active, ok, err := r.Active(ctx, id, agentID, scope)
+	if err != nil || !ok {
+		t.Fatalf("Active after conditional write: ok=%v err=%v", ok, err)
+	}
+	if active.RevisionID != next.RevisionID {
+		t.Fatalf("active = %q, want the conditional write's revision %q", active.RevisionID, next.RevisionID)
+	}
+}
+
+// testConditionalMismatch — a token whose base has moved is refused with
+// ErrRevisionConflict, and NOTHING is persisted: the revision chain does not
+// grow and the active pointer does not move.
+func testConditionalMismatch(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
+	ctx := context.Background()
+	r := mk(t)
+	id := admin()
+	stale := mustSet(t, r, id, scope, skillsPayload("a"))
+	// A second writer moves the base out from under the token.
+	current := mustSet(t, r, id, scope, skillsPayload("a", "b"))
+	if current.ContentHash == stale.ContentHash {
+		t.Fatalf("fixture broken: the second write did not change the content hash")
+	}
+	before, err := r.ListRevisions(ctx, id, agentID, scope, 0)
+	if err != nil {
+		t.Fatalf("list before: %v", err)
+	}
+
+	_, err = r.SetRevision(ctx, id, agentID, scope, skillsPayload("a", "c"),
+		agentcfg.SetOptions{ExpectedContentHash: stale.ContentHash})
+	if !errors.Is(err, agentcfg.ErrRevisionConflict) {
+		t.Fatalf("stale token must fail ErrRevisionConflict, got %v", err)
+	}
+
+	after, err := r.ListRevisions(ctx, id, agentID, scope, 0)
+	if err != nil {
+		t.Fatalf("list after: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("a refused write persisted a revision: %d -> %d", len(before), len(after))
+	}
+	active, ok, err := r.Active(ctx, id, agentID, scope)
+	if err != nil || !ok {
+		t.Fatalf("Active after refusal: ok=%v err=%v", ok, err)
+	}
+	if active.RevisionID != current.RevisionID {
+		t.Fatalf("a refused write moved the active pointer: %q, want %q", active.RevisionID, current.RevisionID)
+	}
+	// The pointer-move door refuses on the same predicate.
+	if _, rerr := r.Rollback(ctx, id, agentID, stale.RevisionID, scope,
+		agentcfg.SetOptions{ExpectedContentHash: stale.ContentHash}); !errors.Is(rerr, agentcfg.ErrRevisionConflict) {
+		t.Fatalf("stale token on Rollback must fail ErrRevisionConflict, got %v", rerr)
+	}
+	active, ok, err = r.Active(ctx, id, agentID, scope)
+	if err != nil || !ok || active.RevisionID != current.RevisionID {
+		t.Fatalf("a refused rollback moved the active pointer: %q ok=%v err=%v", active.RevisionID, ok, err)
+	}
+}
+
+// testConditionalNoActive — a token supplied when the agent has NO active
+// revision is a conflict. "I expect none" has no expressible value in a
+// hash-typed token (empty means unconditional), so a token against an empty
+// slot fails rather than silently creating the first revision.
+func testConditionalNoActive(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
+	ctx := context.Background()
+	r := mk(t)
+	id := admin()
+	if _, ok, err := r.Active(ctx, id, agentID, scope); err != nil || ok {
+		t.Fatalf("fixture broken: expected no active revision, ok=%v err=%v", ok, err)
+	}
+
+	_, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("a"),
+		agentcfg.SetOptions{ExpectedContentHash: absentHash})
+	if !errors.Is(err, agentcfg.ErrRevisionConflict) {
+		t.Fatalf("token against no active revision must fail ErrRevisionConflict, got %v", err)
+	}
+	if _, ok, aerr := r.Active(ctx, id, agentID, scope); aerr != nil || ok {
+		t.Fatalf("a refused first write created an active revision: ok=%v err=%v", ok, aerr)
+	}
+	revs, err := r.ListRevisions(ctx, id, agentID, scope, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(revs) != 0 {
+		t.Fatalf("a refused first write persisted %d revisions", len(revs))
+	}
+}
+
+// absentHash is a syntactically-valid SHA-256 hex string no payload hashes to.
+// A literal keeps the no-active-revision row honest: the refusal must come
+// from the ABSENCE of an active revision, not from a malformed token.
+const absentHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// testConditionalEmptyToken — the zero SetOptions is the unconditional write:
+// a caller that supplies no token still gets last-writer-wins, including over
+// a base that moved. This is the compatibility row.
+func testConditionalEmptyToken(t *testing.T, mk Factory, scope agentcfg.ConfigScope) {
+	ctx := context.Background()
+	r := mk(t)
+	id := admin()
+	mustSet(t, r, id, scope, skillsPayload("a"))
+	mustSet(t, r, id, scope, skillsPayload("a", "b"))
+
+	// No token: the write lands regardless of how far the base has moved.
+	last, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("z"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("empty token must be unconditional, got %v", err)
+	}
+	active, ok, err := r.Active(ctx, id, agentID, scope)
+	if err != nil || !ok {
+		t.Fatalf("Active: ok=%v err=%v", ok, err)
+	}
+	if active.RevisionID != last.RevisionID {
+		t.Fatalf("unconditional write did not win: active=%q want=%q", active.RevisionID, last.RevisionID)
+	}
+	names := active.Payload.SkillNames()
+	if len(names) != 1 || names[0] != "z" {
+		t.Fatalf("unconditional write content = %v, want [z]", names)
+	}
+	// Rollback with no token is likewise unconditional.
+	revs, err := r.ListRevisions(ctx, id, agentID, scope, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(revs) < 2 {
+		t.Fatalf("fixture broken: want >= 2 revisions, got %d", len(revs))
+	}
+	oldest := revs[len(revs)-1]
+	if _, err := r.Rollback(ctx, id, agentID, oldest.RevisionID, scope, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("unconditional rollback must proceed, got %v", err)
+	}
+	active, ok, err = r.Active(ctx, id, agentID, scope)
+	if err != nil || !ok || active.RevisionID != oldest.RevisionID {
+		t.Fatalf("unconditional rollback did not repoint: %q want %q (ok=%v err=%v)",
+			active.RevisionID, oldest.RevisionID, ok, err)
+	}
 }

@@ -22,7 +22,7 @@ func TestActiveRunCompletionHook_Precedence(t *testing.T) {
 		reg := newRegistry(t)
 		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 			Hooks: &agentcfg.HooksSection{RunCompletion: &agentcfg.RunCompletionHook{Tool: "cfg-sink", TimeoutMS: 7000}},
-		}); err != nil {
+		}, agentcfg.SetOptions{}); err != nil {
 			t.Fatalf("SetRevision: %v", err)
 		}
 		got, ok, err := projection.ActiveRunCompletionHook(ctx, reg, projAgent, projID(), yaml)
@@ -69,7 +69,7 @@ func TestActiveRunCompletionHook_Precedence(t *testing.T) {
 		// transcript the operator meant to stop — the presence footgun.)
 		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 			Hooks: &agentcfg.HooksSection{RunCompletion: &agentcfg.RunCompletionHook{Tool: ""}},
-		}); err != nil {
+		}, agentcfg.SetOptions{}); err != nil {
 			t.Fatalf("SetRevision: %v", err)
 		}
 		got, ok, err := projection.ActiveRunCompletionHook(ctx, reg, projAgent, projID(), yaml)
@@ -87,7 +87,7 @@ func TestActiveRunCompletionHook_Precedence(t *testing.T) {
 		// same explicit no-hook opt-out.
 		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 			Hooks: &agentcfg.HooksSection{},
-		}); err != nil {
+		}, agentcfg.SetOptions{}); err != nil {
 			t.Fatalf("SetRevision: %v", err)
 		}
 		got, ok, err := projection.ActiveRunCompletionHook(ctx, reg, projAgent, projID(), yaml)

@@ -464,6 +464,7 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodeRequestTooLarge:       http.StatusRequestEntityTooLarge,
 	protoerrors.CodeSessionRunning:        http.StatusConflict,
 	protoerrors.CodeSessionErased:         http.StatusConflict,
+	protoerrors.CodeRevisionConflict:      http.StatusConflict,
 }
 
 // errorCodeMatrix is the closed set of canonical Protocol error codes
@@ -504,6 +505,16 @@ var errorCodeMatrix = []protoerrors.Code{
 	// the conformance-suite scenario lands when the Stack wires the
 	// reopen-capable SessionEnsurer (same posture as CodeSessionRunning).
 	protoerrors.CodeSessionErased,
+	// agent-config surface — `CodeRevisionConflict` (a durable config write
+	// declared an `expected_content_hash` and the agent's active revision no
+	// longer carries it). Exercised end-to-end by the agentcfg driver's
+	// conditional-write tests, the shared agentcfg conformance rows, the
+	// agent-config protocol-service door table, and
+	// test/integration/phase221_agentcfg_conditional_write_test.go; the
+	// conformance-suite scenario lands when the Stack wires an
+	// agent-config surface (same posture as the artifacts / sessions codes
+	// above).
+	protoerrors.CodeRevisionConflict,
 }
 
 // methodScopeFor returns the steering scope the suite uses when

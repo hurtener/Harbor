@@ -69,6 +69,7 @@ Declared in `internal/protocol/types`.
 | `agent_id` | `string` |  |
 | `connection` | `types.AgentConfigMCPConnectionDescriptor` — see [`AgentConfigMCPConnectionDescriptor`](./types.md#agentconfigmcpconnectiondescriptor) |  |
 | `headers` | `map[string]string` | optional (`omitempty`) |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigAddMCPConnectionResponse
 
@@ -396,6 +397,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `name` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigRemoveMCPConnectionResponse
 
@@ -416,6 +418,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `name` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigRemoveOAuthProviderResponse
 
@@ -451,6 +454,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `revision_id` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigRollbackResponse
 
@@ -586,6 +590,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `llm_params` | `types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetLLMParamsResponse
 
@@ -626,6 +631,7 @@ Declared in `internal/protocol/types`.
 | `agent_id` | `string` |  |
 | `name` | `string` |  |
 | `allowed_origins` | `[]string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetMCPDiscoveryOriginsResponse
 
@@ -649,6 +655,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `provider` | `types.AgentConfigOAuthProviderDescriptor` — see [`AgentConfigOAuthProviderDescriptor`](./types.md#agentconfigoauthproviderdescriptor) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetOAuthProviderResponse
 
@@ -669,6 +676,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `prompt_layers` | `types.AgentConfigPromptLayers` — see [`AgentConfigPromptLayers`](./types.md#agentconfigpromptlayers) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetPromptLayersResponse
 
@@ -688,6 +696,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `payload` | `types.AgentConfigPayload` — see [`AgentConfigPayload`](./types.md#agentconfigpayload) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetRevisionResponse
 
@@ -707,6 +716,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `tool_exposure` | `types.AgentConfigToolExposure` — see [`AgentConfigToolExposure`](./types.md#agentconfigtoolexposure) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetToolExposureResponse
 
@@ -757,6 +767,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `name` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSkillsDeleteResponse
 
@@ -811,6 +822,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `skill` | `types.AgentConfigSkillInput` — see [`AgentConfigSkillInput`](./types.md#agentconfigskillinput) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSkillsUpsertResponse
 
@@ -924,6 +936,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `revision_id` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigUserRollbackResponse
 
@@ -943,6 +956,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `payload` | `types.AgentConfigUserPayload` — see [`AgentConfigUserPayload`](./types.md#agentconfiguserpayload) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigUserSetRevisionResponse
 
@@ -962,6 +976,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `name` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigUserSkillsDeleteResponse
 
@@ -999,6 +1014,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `skill` | `types.AgentConfigSkillInput` — see [`AgentConfigSkillInput`](./types.md#agentconfigskillinput) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigUserSkillsUpsertResponse
 

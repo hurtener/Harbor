@@ -63,7 +63,7 @@ func TestActivePlannerCatalogView_NarrowOnly_AdminPauseSurvivesSessionEmpty(t *t
 	ov := newOverlay(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("admin pause: %v", err)
 	}
 	// Session tries to "un-disable" by disabling something else / nothing of srvA.
@@ -98,7 +98,7 @@ func TestActivePlannerCatalogView_NarrowOnly_SessionCannotEnableAdminDisabledToo
 	ov := newOverlay(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{DisabledTools: []string{"srvA_alpha"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("admin disable: %v", err)
 	}
 	// Session disable set names a DIFFERENT tool (it has no enable verb).
@@ -128,7 +128,7 @@ func TestApplyPromptLayers_SessionUserComposesAboveAdminBase(t *testing.T) {
 	adminBase := "OPERATOR BASE — guardrails"
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: &adminBase},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("admin base: %v", err)
 	}
 	if _, err := ov.SetUserPrompt(ctx, projID(), projAgent, "session refinement"); err != nil {
@@ -157,7 +157,7 @@ func TestApplyPromptLayers_AdminAndSessionUserLayersJoin(t *testing.T) {
 	adminUser := "admin user layer"
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: &base, User: &adminUser},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("admin layers: %v", err)
 	}
 	if _, err := ov.SetUserPrompt(ctx, projID(), projAgent, "session user layer"); err != nil {
@@ -208,7 +208,7 @@ func TestActiveSkillViews_PersonalSkillSurvivesAdminMembershipFilter(t *testing.
 	// Admin pins membership {a}. Session adds personal skill "p".
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"a"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("admin membership: %v", err)
 	}
 	if _, err := ov.AddPersonalSkill(ctx, projID(), projAgent, "p"); err != nil {
@@ -242,12 +242,12 @@ func TestActiveSkillViews_DurableUserSkillSurvivesAdminMembershipFilter(t *testi
 	// (ConfigScopeUser membership) and a session ephemeral skill "p".
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"a"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("admin membership: %v", err)
 	}
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"u"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("durable user membership: %v", err)
 	}
 	if _, err := ov.AddPersonalSkill(ctx, projID(), projAgent, "p"); err != nil {

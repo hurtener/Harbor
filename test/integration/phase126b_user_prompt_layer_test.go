@@ -87,7 +87,7 @@ func TestE2E_Phase126b_DurableUserPromptReachesRun(t *testing.T) {
 	// always-spine admin Base.
 	if _, err := reg.SetRevision(ctx, identity.Quadruple{Identity: alice}, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: ptr("operator base"), User: ptr("admin user layer")},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set admin: %v", err)
 	}
 	if _, err := ov.SetUserPrompt(ctx, identity.Quadruple{Identity: alice}, agent, "session refinement"); err != nil {

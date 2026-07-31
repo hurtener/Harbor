@@ -85,7 +85,8 @@ func (s *Service) RemoveOAuthProvider(ctx context.Context, req prototypes.AgentC
 	var rev agentcfg.Revision
 	applyErr, emitErr := adminwrite.Apply(
 		func() (revert func() error, err error) {
-			written, recErr := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)
+			written, recErr := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,
+				agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 			if recErr != nil {
 				return nil, recErr
 			}
@@ -97,7 +98,7 @@ func (s *Service) RemoveOAuthProvider(ctx context.Context, req prototypes.AgentC
 			if uErr := s.providerInstaller.UninstallProvider(ctx, id.TenantID, req.AgentID, name); uErr != nil {
 				// A real live uninstall failure (a Close error) — roll the
 				// just-written revision back so the call has NO observable effect.
-				if _, rbErr := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent); rbErr != nil {
+				if _, rbErr := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent, compensatingWrite); rbErr != nil {
 					return nil, fmt.Errorf("provider uninstall failed AND revision rollback failed (state may be inconsistent): %w", errors.Join(uErr, rbErr))
 				}
 				return nil, uErr
@@ -109,7 +110,7 @@ func (s *Service) RemoveOAuthProvider(ctx context.Context, req prototypes.AgentC
 				if e := s.providerInstaller.InstallProvider(ctx, id.TenantID, req.AgentID, dropped); e != nil {
 					errs = append(errs, e)
 				}
-				if _, e := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent); e != nil {
+				if _, e := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent, compensatingWrite); e != nil {
 					errs = append(errs, e)
 				}
 				return errors.Join(errs...)

@@ -353,7 +353,7 @@ func TestE2E_AgentConfig_MCPPolicy_Concurrency(t *testing.T) {
 	ctx := context.Background()
 	if _, err := h.registry.SetRevision(ctx, mpID(), mpAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed pause: %v", err)
 	}
 	idCtx, err := identity.WithVerified(ctx, mpID().Identity)

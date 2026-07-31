@@ -933,6 +933,16 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// onto the agent-level chain). An authorization failure.
 		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
 			m + ": " + err.Error()
+	case errors.Is(err, agentcfg.ErrRevisionConflict):
+		// A conditional write declared an `expected_content_hash` and the
+		// agent's active revision no longer carries it (or there is none).
+		// The body was well-formed and the caller was authorised — the
+		// target's CURRENT STATE forbids the write, and nothing was
+		// persisted. A dedicated machine-branchable code so a client can
+		// tell "re-read `agent_config.get` and retry" apart from a malformed
+		// request (400) or a server fault (500). 409 Conflict.
+		return protoerrors.CodeRevisionConflict, http.StatusConflict,
+			m + ": " + err.Error()
 	case errors.Is(err, agentcfg.ErrRevisionNotFound), errors.Is(err, skills.ErrSkillNotFound):
 		return protoerrors.CodeNotFound, http.StatusNotFound,
 			m + ": " + err.Error()

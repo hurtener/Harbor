@@ -232,7 +232,7 @@ func (r *selRig) selWriteAgent(t *testing.T, id identity.Identity, agentID, base
 		agentcfg.ConfigPayload{
 			PromptLayers: &agentcfg.PromptLayers{Base: &b},
 			LLMParams:    &agentcfg.LLMParams{Model: &m},
-		}); err != nil {
+		}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("SetRevision(%s/%s): %v", id.TenantID, agentID, err)
 	}
 }
@@ -350,7 +350,7 @@ func TestE2E_AgentSelection_UserLayerComposesUnderTheNamedAgent(t *testing.T) {
 	userLayer := "USER-LAYER"
 	if _, err := rig.cfg.SetRevision(context.Background(),
 		identity.Quadruple{Identity: id}, selAlpha, agentcfg.ConfigScopeUser,
-		agentcfg.ConfigPayload{PromptLayers: &agentcfg.PromptLayers{User: &userLayer}}); err != nil {
+		agentcfg.ConfigPayload{PromptLayers: &agentcfg.PromptLayers{User: &userLayer}}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("SetRevision(user): %v", err)
 	}
 

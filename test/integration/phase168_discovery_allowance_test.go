@@ -146,7 +146,7 @@ func (h *daHarness) registerServer(t *testing.T, tenant, agentID, name string, o
 	payload := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{
 		{Name: name, Transport: agentcfg.MCPTransportHTTP, URL: "https://" + name + ".invalid/rpc", OAuthDiscoveryAllowedOrigins: origins},
 	}}}
-	if _, err := h.reg.SetRevision(context.Background(), q, agentID, agentcfg.ConfigScopeAgent, payload); err != nil {
+	if _, err := h.reg.SetRevision(context.Background(), q, agentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed revision %s: %v", name, err)
 	}
 }

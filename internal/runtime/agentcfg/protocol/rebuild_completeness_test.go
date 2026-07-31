@@ -130,7 +130,7 @@ func rcAssertSiblingsSurvive(t *testing.T, verb, owned string, seed, got agentcf
 // so every subtest starts from the identical fully-populated baseline.
 func rcSeedActive(t *testing.T, ctx context.Context, reg agentcfg.Registry, seed agentcfg.ConfigPayload) {
 	t.Helper()
-	if _, err := reg.SetRevision(ctx, rcQuad(), rcAgent, agentcfg.ConfigScopeAgent, seed); err != nil {
+	if _, err := reg.SetRevision(ctx, rcQuad(), rcAgent, agentcfg.ConfigScopeAgent, seed, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed active revision: %v", err)
 	}
 }

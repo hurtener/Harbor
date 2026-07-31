@@ -78,7 +78,7 @@ func seedConnections(t *testing.T, reg agentcfg.Registry, names ...string) {
 		})
 	}
 	payload := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: servers}}
-	if _, err := reg.SetRevision(context.Background(), projID(), projAgent, agentcfg.ConfigScopeAgent, payload); err != nil {
+	if _, err := reg.SetRevision(context.Background(), projID(), projAgent, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed connections: %v", err)
 	}
 }

@@ -143,7 +143,7 @@ func TestActiveSkillViews_ActiveRevisionFilters(t *testing.T) {
 	ctx := context.Background()
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"a", "c"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
 	got, err := projection.ActiveSkillViews(ctx, reg, nil, projAgent, projID(), views("a", "b", "c"))
@@ -165,7 +165,7 @@ func TestActiveSkillViews_AdminPinnedMissingBody_FailsLoud(t *testing.T) {
 	ctx := context.Background()
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"a", "ghost"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
 	// views lacks "ghost" (its body was hard-deleted) → loud, not silent.
@@ -187,7 +187,7 @@ func TestActiveSkillViews_PersonalSkillMissingBody_Silent(t *testing.T) {
 	// skill "p" whose body is NOT in views.
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"a"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
 	if _, err := ov.AddPersonalSkill(ctx, projID(), projAgent, "p"); err != nil {
@@ -211,13 +211,13 @@ func TestActiveSkillViews_RollbackChangesProjection(t *testing.T) {
 	ctx := context.Background()
 	r1, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"a"}},
-	})
+	}, agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("set r1: %v", err)
 	}
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"a", "b", "c"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set r2: %v", err)
 	}
 	// Active now is r2 → projection keeps a,b,c.
@@ -229,7 +229,7 @@ func TestActiveSkillViews_RollbackChangesProjection(t *testing.T) {
 		t.Fatalf("r2 projection = %v, want [a b c]", names(got))
 	}
 	// Roll back to r1 → projection narrows to just a (next-turn effect).
-	if _, err := reg.Rollback(ctx, projID(), projAgent, r1.RevisionID, agentcfg.ConfigScopeAgent); err != nil {
+	if _, err := reg.Rollback(ctx, projID(), projAgent, r1.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	got, err = projection.ActiveSkillViews(ctx, reg, nil, projAgent, projID(), views("a", "b", "c"))
@@ -324,7 +324,7 @@ func TestActivePlannerCatalogView_PausedServerExcluded(t *testing.T) {
 	reg := newRegistry(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
 	v, err := projection.ActivePlannerCatalogView(ctx, reg, nil, projAgent, projID(), cat, baseFilter())
@@ -351,7 +351,7 @@ func TestActivePlannerCatalogView_DisabledToolExcluded(t *testing.T) {
 	reg := newRegistry(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{DisabledTools: []string{"srvA_alpha"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
 	v, err := projection.ActivePlannerCatalogView(ctx, reg, nil, projAgent, projID(), cat, baseFilter())
@@ -375,12 +375,12 @@ func TestActivePlannerCatalogView_ResumeRestores(t *testing.T) {
 	reg := newRegistry(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set paused: %v", err)
 	}
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{}, // resume all
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set resumed: %v", err)
 	}
 	v, err := projection.ActivePlannerCatalogView(ctx, reg, nil, projAgent, projID(), cat, baseFilter())
@@ -425,7 +425,7 @@ func setLoadingExposure(t *testing.T, reg agentcfg.Registry, server, tool map[st
 	t.Helper()
 	if _, err := reg.SetRevision(t.Context(), projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{ServerLoadingModes: server, ToolLoadingModes: tool},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set loading exposure: %v", err)
 	}
 }
@@ -575,7 +575,7 @@ func TestActivePlannerCatalogView_LoadingOverride_ExclusionStaysStrongerThanDefe
 			DisabledTools:    []string{"srvB_tool1"},
 			ToolLoadingModes: map[string]string{"srvA_tool1": "deferred"},
 		},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
 	v, err := projection.ActivePlannerCatalogView(ctx, reg, nil, projAgent, projID(), cat, baseFilter())

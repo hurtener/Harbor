@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:bbe322ce1593356936e4f89548a6808aa50348d686c1dcb2198e2370a03b86d7";
+export const WIRE_SURFACE_DIGEST = "sha256:506ba58076267de8404f08c6a4d2893aa7fa9f961bd106727a52474783d11f32";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -154,6 +154,7 @@ export type HarborErrorCode =
   | "payload_invalid"
   | "presign_unsupported"
   | "request_too_large"
+  | "revision_conflict"
   | "runtime_error"
   | "scope_mismatch"
   | "session_erased"
@@ -344,6 +345,7 @@ export interface AgentConfigAddMCPConnectionRequest {
   agent_id: string;
   connection: AgentConfigMCPConnectionDescriptor;
   headers?: Record<string, string>;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigAddMCPConnectionResponse {
@@ -563,6 +565,7 @@ export interface AgentConfigRemoveMCPConnectionRequest {
   identity: IdentityScope;
   agent_id: string;
   name: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigRemoveMCPConnectionResponse {
@@ -575,6 +578,7 @@ export interface AgentConfigRemoveOAuthProviderRequest {
   identity: IdentityScope;
   agent_id: string;
   name: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigRemoveOAuthProviderResponse {
@@ -598,6 +602,7 @@ export interface AgentConfigRollbackRequest {
   identity: IdentityScope;
   agent_id: string;
   revision_id: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigRollbackResponse {
@@ -677,6 +682,7 @@ export interface AgentConfigSetLLMParamsRequest {
   identity: IdentityScope;
   agent_id: string;
   llm_params: AgentConfigLLMParams;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetLLMParamsResponse {
@@ -701,6 +707,7 @@ export interface AgentConfigSetMCPDiscoveryOriginsRequest {
   agent_id: string;
   name: string;
   allowed_origins: string[];
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetMCPDiscoveryOriginsResponse {
@@ -716,6 +723,7 @@ export interface AgentConfigSetOAuthProviderRequest {
   identity: IdentityScope;
   agent_id: string;
   provider: AgentConfigOAuthProviderDescriptor;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetOAuthProviderResponse {
@@ -728,6 +736,7 @@ export interface AgentConfigSetPromptLayersRequest {
   identity: IdentityScope;
   agent_id: string;
   prompt_layers: AgentConfigPromptLayers;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetPromptLayersResponse {
@@ -739,6 +748,7 @@ export interface AgentConfigSetRevisionRequest {
   identity: IdentityScope;
   agent_id: string;
   payload: AgentConfigPayload;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetRevisionResponse {
@@ -750,6 +760,7 @@ export interface AgentConfigSetToolExposureRequest {
   identity: IdentityScope;
   agent_id: string;
   tool_exposure: AgentConfigToolExposure;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetToolExposureResponse {
@@ -784,6 +795,7 @@ export interface AgentConfigSkillsDeleteRequest {
   identity: IdentityScope;
   agent_id: string;
   name: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSkillsDeleteResponse {
@@ -814,6 +826,7 @@ export interface AgentConfigSkillsUpsertRequest {
   identity: IdentityScope;
   agent_id: string;
   skill: AgentConfigSkillInput;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSkillsUpsertResponse {
@@ -883,6 +896,7 @@ export interface AgentConfigUserRollbackRequest {
   identity: IdentityScope;
   agent_id: string;
   revision_id: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigUserRollbackResponse {
@@ -894,6 +908,7 @@ export interface AgentConfigUserSetRevisionRequest {
   identity: IdentityScope;
   agent_id: string;
   payload: AgentConfigUserPayload;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigUserSetRevisionResponse {
@@ -905,6 +920,7 @@ export interface AgentConfigUserSkillsDeleteRequest {
   identity: IdentityScope;
   agent_id: string;
   name: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigUserSkillsDeleteResponse {
@@ -926,6 +942,7 @@ export interface AgentConfigUserSkillsUpsertRequest {
   identity: IdentityScope;
   agent_id: string;
   skill: AgentConfigSkillInput;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigUserSkillsUpsertResponse {

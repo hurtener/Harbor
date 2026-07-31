@@ -500,6 +500,40 @@ The per-server `mcp.servers.*` admin verbs gate on the `admin` scope claim, and 
 
 Reads are unaffected: `mcp.servers.list` / `get` / `resources` / `prompts` / `health`, and the control-plane `refresh_discovery` / `probe`, resolve by bare name across the deployment as they always have — a boot-declared server stays visible to every session.
 
+### 8c. Not clobbering another writer — `expected_content_hash`
+
+Every `agent_config.*` spine write is **last-writer-wins by default**. If you read a config, edit it, and write it back, any change another writer made in between is silently reverted and you are told `200`. That window is seconds to minutes for a human editing in the Console, and however long your agent takes to compose a config.
+
+To close it, send the **expected-revision token**. `agent_config.get` returns both `revision_id` and `content_hash` on the active revision; pass that `content_hash` back as `expected_content_hash` on your write:
+
+```jsonc
+// 1. read
+POST /v1/agent_config/get     → { "revision": { "revision_id": "01J…", "content_hash": "9f2c…" }, "set": true }
+
+// 2. write under the base you read
+POST /v1/agent_config/set_revision
+{ "agent_id": "support-bot",
+  "payload": { /* … your edit … */ },
+  "expected_content_hash": "9f2c…" }
+```
+
+- **Matching** → the write proceeds exactly as an unconditional write would.
+- **Not matching**, or **no active revision exists** → `409 {"code": "revision_conflict"}`, and **nothing is persisted**: no revision, no active-pointer move, no `agent.config.revised` event.
+- **Omitted** (the default) → byte-for-byte the unconditional behaviour that has always shipped. Nothing you have today changes.
+
+It is available on all **sixteen** spine-writing doors — `set_revision`, `rollback`, `skills.upsert`, `skills.delete`, `set_tool_exposure`, `set_prompt_layers`, `set_llm_params`, `add_mcp_connection`, `remove_mcp_connection`, `set_mcp_discovery_origins`, `set_oauth_provider`, `remove_oauth_provider`, and the four `user.*` twins (`user.set_revision`, `user.rollback`, `user.skills.upsert`, `user.skills.delete`). It is **not** on `set_llm_provider` (which installs a provider and writes no revision) or on the `agent_config.session.*` verbs (which write the ephemeral session overlay, not the durable spine).
+
+**Recovering from a conflict.** Re-read `agent_config.get` for the current `revision_id` + `content_hash`, call `agent_config.diff` with `from_revision` = the id you originally read and `to_revision` = the current id to see what moved, re-apply your edit on top, and resubmit with the fresh hash. One extra round trip on a rare path.
+
+**Why a content hash and not a revision id.** `rollback` repoints the active pointer without necessarily changing the content. If the token were a revision id, an operator restoring exactly the content you read would be reported to you as a conflict — a false positive on the recovery path. The token tracks the value you computed against, which is what you actually depend on.
+
+**Know the bound before you rely on it.** The refusal is **exact within one Runtime process**. Its atomicity comes from the agent-config service's per-owner write lock — held across the whole read-modify-write — and **not** from the store, which has no compare-and-swap primitive. **Two Runtime processes sharing one Postgres or SQLite store can still lose an update**, and this feature does not claim otherwise. Single-instance deployments (including every `harbor dev`) get an exact guard; multi-process deployments get a large reduction in loss probability, not an elimination.
+
+Two more things worth knowing:
+
+- **The token constrains only the writer that supplies it.** A concurrent writer that omits it can still overwrite you, by design — the token is a precondition on your write, never a lock on the agent. Exclusivity requires every writer of that agent's config to participate.
+- **It is a precondition, never an authority.** It is compared strictly after the identity and scope gates and can only ever cause a write to be *refused*. A valid token never buys a caller a write it could not otherwise make.
+
 ## 9. A minimal client (TS, ~30 LoC)
 
 ```typescript
@@ -552,6 +586,7 @@ That's a working CLI chatbot in 30 lines. Wrap the same in React/Svelte/Vue/what
 - **SSE stream opens but no events.** The `payload.TaskID` capital-T gotcha — your handler is reading `payload.task_id` (lowercase). Fix the case.
 - **A control call returns `404 {"code": "unknown_method"}` or 405/501.** This runtime doesn't serve that surface. Call `runtime.info` first, branch on `capabilities`, and degrade the feature instead of crashing (the [versioning & compatibility contract](https://hurtener.github.io/Harbor/protocol/versioning-and-compatibility)).
 - **Artifact upload returns 413 Payload Too Large.** The request body exceeded the Runtime's `protocol.max_request_bytes` (default 4 MiB) — the canonical `{"code": "request_too_large"}` envelope. Chunk uploads aren't supported in V1.1; raise `protocol.max_request_bytes` in the Runtime's `harbor.yaml` if you need larger inline uploads.
+- **An agent-config write returns `409 {"code": "revision_conflict"}`.** You sent an `expected_content_hash` and another writer moved the base between your read and your write. Nothing was persisted. Re-read `agent_config.get`, re-apply your edit on the current content, and resubmit with the fresh hash — see §8c. (You also get this code when you send a token and the agent has **no** active revision: a hash-typed token cannot express "I expect none".)
 - **Topology snapshot rejected.** This Runtime doesn't advertise the `topology_snapshot` capability — check `runtime.info.capabilities` before enabling the panel.
 - **The Console reads internal Runtime objects.** It doesn't — that would be a CLAUDE.md §13 violation. If you suspect leakage, file a bug; the Console reads only what's documented as a Protocol surface.
 

@@ -298,6 +298,22 @@ type Service struct {
 // ~2KiB regardless of how many owners ever write.
 const writeLockShards = 256
 
+// compensatingWrite is the UNCONDITIONAL write option used by the internal
+// compensation paths — the revision rollbacks and empty-payload
+// neutralisations that undo a forward write whose live side-effect (a
+// provider install, a discovery-origin apply) then failed, and the audit-emit
+// reverts that follow them.
+//
+// A compensation is deliberately unconditional. It has no caller and no base
+// to compare against: it is restoring a pointer the same locked
+// read-modify-write just moved, so an expected-content precondition would be
+// comparing against a state this code path itself produced. Applying the
+// caller's token here would turn a successful undo into a refusal and leave
+// the observable half-applied state the compensation exists to erase.
+//
+// The forward write of each door, by contrast, carries the caller's token.
+var compensatingWrite = agentcfg.SetOptions{}
+
 // lockAgent acquires the agent-tier write lock for (tenant, agent) and
 // returns the release func (call via defer). It serialises every admin write
 // verb's read-modify-write against concurrent writes to the same agent.
@@ -816,7 +832,8 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	if payload.Connections != nil {
 		payload.Connections.Servers = normalizedConns
 	}
-	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, payload)
+	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, payload,
+		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
@@ -878,7 +895,8 @@ func (s *Service) Rollback(ctx context.Context, req prototypes.AgentConfigRollba
 		return prototypes.AgentConfigRollbackResponse{}, err
 	}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
-	rev, err := s.registry.Rollback(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.RevisionID, agentcfg.ConfigScopeAgent)
+	rev, err := s.registry.Rollback(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.RevisionID, agentcfg.ConfigScopeAgent,
+		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigRollbackResponse{}, err
 	}

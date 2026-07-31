@@ -75,7 +75,8 @@ func (s *Service) SetLLMParams(ctx context.Context, req prototypes.AgentConfigSe
 		payload.OAuthProviders = active.Payload.OAuthProviders
 	}
 
-	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)
+	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,
+		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigSetLLMParamsResponse{}, err
 	}
