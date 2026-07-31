@@ -297,7 +297,13 @@ fi
 if ! command -v go >/dev/null 2>&1; then
     skip 'phase 220: go toolchain not available — guard tests skipped'
 else
-    GOLOG="$(mktemp -t phase220-gotest)"
+    # Trailing X's are MANDATORY: GNU mktemp (the Linux CI runner) rejects a
+    # template with fewer than three trailing `X`s outright, while BSD mktemp
+    # (macOS, where contributors run preflight) accepts it — so a template
+    # without them passes locally and dies in CI. The explicit
+    # `${TMPDIR:-/tmp}` path form is preferred over `-t`, which GNU documents
+    # as deprecated.
+    GOLOG="$(mktemp "${TMPDIR:-/tmp}/phase220-gotest.XXXXXX")"
     trap 'rm -f "${GOLOG}"' EXIT
 
     assert_go_tests_pass "${GOLOG}" './internal/runtime/runs/protocol/' \
