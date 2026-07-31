@@ -69,10 +69,29 @@ var ErrCallerMemoryTierShape = errors.New("runctx: External memory tier is not a
 // the run loop's value is derived from identity-scoped store reads and
 // must stay untouched.
 //
-// The no-aliasing guarantee is scoped to the tier this function WRITES.
-// `External` is rebuilt as a fresh map whose entries are copied across,
-// so a later write to either side's `External` cannot be observed
-// through the other. `Conversation` is carried across BY REFERENCE — it
+// The no-aliasing guarantee is scoped to the tier this function WRITES,
+// and — stated precisely, because an earlier wording overclaimed it —
+// scoped to that tier's MAP rather than to the values inside it.
+// `External` is rebuilt as a fresh map, so adding, replacing or deleting
+// a TOP-LEVEL key on either side cannot be observed through the other;
+// in particular the caller's key is never written into the input. The
+// entries are copied SHALLOWLY, so a value that is itself a map or slice
+// is SHARED, and a mutation reaching INTO such a value — the runtime's
+// own producer writes `{"recalled_turns": []map[string]any{…}}`, so this
+// is the normal shape rather than a corner — IS visible on both sides.
+//
+// That sharing is safe today for a structural reason, not a hopeful one:
+// the input has exactly one holder. The blocks are built per run by the
+// memory fetch and handed straight to this function, whose result
+// replaces the local; the pre-composition value is then unreachable, so
+// there is no second observer for a nested write to reach. Deep-copying
+// an arbitrary `any` to close the gap would need a reflective or
+// round-trip copy — the same cost, and the same objection, that keeps
+// `Conversation` shared below. Both halves are pinned by a test, so a
+// producer that starts retaining its blocks past composition turns that
+// test's premise red rather than silently invalidating this paragraph.
+//
+// `Conversation` is carried across BY REFERENCE — it
 // is an `any` this function never reads into and never writes, so
 // copying it would mean a reflective or round-trip deep copy of an
 // arbitrary value, and a partial (top-level-only) copy would be worse

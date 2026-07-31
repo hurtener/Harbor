@@ -41,6 +41,25 @@ type Factory func(t *testing.T) agentcfg.Registry
 // so only the driver's own test can arm it.
 type FaultFactory func(t *testing.T) agentcfg.Registry
 
+// CommittedFaultFactory builds a fresh, empty Registry whose backing store
+// COMMITS the write that publishes a revision as the active one and then
+// reports that write as FAILED.
+//
+// It is a second fault arm rather than a variant of FaultFactory because the
+// two model opposite disk states behind one identical error value, and only
+// one of them is what the compensating cleanup assumes. "The write failed" is
+// what a store SAID; a deadline firing after commit, a dropped ack, a proxy
+// timeout or a reset connection all produce that answer over a write that
+// landed. A driver that cleans up unconditionally passes the FaultFactory row
+// and destroys the record its own durable pointer names on this one — which is
+// unrecoverable, because every door reads through that pointer.
+//
+// It is mandatory for the same reason FaultFactory is: the invariant is owed by
+// the interface, and a second driver must not be able to compile without
+// arming it. A driver whose two writes ARE one atomic operation arms the fault
+// on that operation's commit-then-report and passes the row unchanged.
+type CommittedFaultFactory func(t *testing.T) agentcfg.Registry
+
 // admin returns a complete admin caller identity.
 func admin() identity.Quadruple {
 	return identity.Quadruple{Identity: identity.Identity{
@@ -55,9 +74,10 @@ func skillsPayload(names ...string) agentcfg.ConfigPayload {
 }
 
 // Run executes the full conformance suite against a driver built by mk,
-// under both ConfigScope arms, plus the cross-scope invisibility assertion
-// and the partial-write atomicity row (driven by mkFaulty).
-func Run(t *testing.T, mk Factory, mkFaulty FaultFactory) {
+// under both ConfigScope arms, plus the cross-scope invisibility assertion and
+// the two partial-write rows: the write that did not land (mkFaulty) and the
+// write that landed and was reported as failed (mkCommitted).
+func Run(t *testing.T, mk Factory, mkFaulty FaultFactory, mkCommitted CommittedFaultFactory) {
 	t.Helper()
 	for _, sc := range []struct {
 		name  string
@@ -109,6 +129,15 @@ func Run(t *testing.T, mk Factory, mkFaulty FaultFactory) {
 			t.Run("WriteAtomicity_FailedPointerWriteLeavesNoOrphanRevision", func(t *testing.T) {
 				testWriteAtomicity(t, mkFaulty, scope)
 			})
+			// The row's TWIN, and the reason the row above is not the whole
+			// invariant: a write REPORTED as failed may have landed, and a
+			// cleanup that assumes otherwise destroys live config. Registered
+			// beside its twin so a second driver inherits both halves — one
+			// without the other is a cleanup that is either useless or
+			// destructive depending on which half is missing.
+			t.Run("CompensationSafety_ReportedFailureThatLandedStaysReadable", func(t *testing.T) {
+				testCompensationSafety(t, mkCommitted, scope)
+			})
 		})
 	}
 	t.Run("CrossScopeInvisibility", func(t *testing.T) { testCrossScopeInvisibility(t, mk) })
@@ -151,6 +180,57 @@ func testWriteAtomicity(t *testing.T, mk FaultFactory, scope agentcfg.ConfigScop
 	}
 	if len(revs) != 0 {
 		t.Fatalf("a failed write left %d revision(s) in history: %+v — an unreferenced revision reads to an operator as a lost write", len(revs), revs)
+	}
+}
+
+// testCompensationSafety — a write the store REPORTED as failed but which
+// actually landed must leave the agent READABLE.
+//
+// This is the inverse fault of testWriteAtomicity and it is the one that
+// matters more, because its damage is unrecoverable rather than cosmetic. An
+// orphan revision is inert to every reader; a DANGLING active pointer is not.
+// Every door into an agent's config resolves the pointer first, so a pointer
+// naming a revision that was cleaned up fails every read AND every subsequent
+// write — the config cannot be repaired by writing over it.
+//
+// The row therefore asserts the property, not the mechanism: after the failure
+// the agent must still be readable, and if a revision is active it must
+// resolve. A driver may satisfy that by not cleaning up, by cleaning up
+// conditionally, or by being genuinely atomic; the row does not care which.
+func testCompensationSafety(t *testing.T, mk CommittedFaultFactory, scope agentcfg.ConfigScope) {
+	ctx := context.Background()
+	r := mk(t)
+	id := admin()
+
+	if _, err := r.SetRevision(ctx, id, agentID, scope, skillsPayload("landed-a"), agentcfg.SetOptions{}); err == nil {
+		t.Fatal("SetRevision reported success against a store armed to report the active-pointer write as failed")
+	}
+
+	rev, ok, err := r.Active(ctx, id, agentID, scope)
+	if err != nil {
+		t.Fatalf("the agent is UNREADABLE after a reported-failed write that landed: %v — a cleanup that assumed the write did not land destroyed the revision the durable pointer names, and no later write can repair it", err)
+	}
+	if !ok {
+		// A driver whose pointer write is genuinely all-or-nothing may land
+		// here; that is a correct answer to this row.
+		return
+	}
+	if _, err := r.Get(ctx, id, agentID, rev.RevisionID, scope); err != nil {
+		t.Fatalf("the active pointer names revision %s but it does not resolve: %v — the pointer dangles", rev.RevisionID, err)
+	}
+	revs, err := r.ListRevisions(ctx, id, agentID, scope, 0)
+	if err != nil {
+		t.Fatalf("ListRevisions after a reported-failed write that landed: %v", err)
+	}
+	var found bool
+	for _, x := range revs {
+		if x.RevisionID == rev.RevisionID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("the ACTIVE revision %s is absent from history (%d row(s)) — history and the pointer disagree", rev.RevisionID, len(revs))
 	}
 }
 

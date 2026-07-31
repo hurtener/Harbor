@@ -249,6 +249,17 @@ type Task struct {
 	// values are replaced. The redacted form is also what reaches the
 	// prompt, which is already true of Query.
 	//
+	// RESIDUAL RISK, stated rather than implied: that redactor is a
+	// PATTERN redactor, not a sanitiser. It replaces secret-shaped KEYS
+	// (api_key / password / secret / token / cookie / authorization) and
+	// inline `Bearer …` / `Basic …` VALUES anywhere in the document, and it
+	// does nothing else — it does not detect PII, it does not detect a
+	// credential that looks like ordinary prose, and it cannot make hostile
+	// text safe. The untrusted prompt framing remains the mitigation for
+	// prompt injection. An operator who pipes third-party content through
+	// `caller_memory` still has a data-leakage path no prompt wrapper and
+	// no pattern redactor closes.
+	//
 	// The redaction does NOT weaken idempotency: the task's content hash
 	// folds the PRE-redaction bytes.
 	//
@@ -330,6 +341,17 @@ type SpawnRequest struct {
 	// original payload. An in-process caller that bypasses the Protocol edge
 	// and supplies bytes that are not valid JSON is refused loud at Spawn;
 	// nothing persists.
+	//
+	// RESIDUAL RISK, stated rather than implied: that redactor is a
+	// PATTERN redactor, not a sanitiser. It replaces secret-shaped KEYS
+	// (api_key / password / secret / token / cookie / authorization) and
+	// inline `Bearer …` / `Basic …` VALUES anywhere in the document, and it
+	// does nothing else — it does not detect PII, it does not detect a
+	// credential that looks like ordinary prose, and it cannot make hostile
+	// text safe. The untrusted prompt framing remains the mitigation for
+	// prompt injection. An operator who pipes third-party content through
+	// `caller_memory` still has a data-leakage path no prompt wrapper and
+	// no pattern redactor closes.
 	CallerMemory json.RawMessage
 }
 
