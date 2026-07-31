@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 142 canonical event types a Harbor Runtime can publish, read from the live
+The 143 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -1150,6 +1150,18 @@ Payload `RepairGuidanceInjectedPayload` — safe payload (delivered typed, verba
 | `Tier` | `string` |  |
 | `Counter` | `string` |  |
 | `Count` | `int` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `planner.tool_declaration_collision`
+
+Payload `ToolDeclarationCollisionPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Identity` | `identity.Quadruple` |  |
+| `DeclaredName` | `string` |  |
+| `DeclaredTool` | `string` |  |
+| `DroppedTool` | `string` |  |
 | `OccurredAt` | `time.Time` |  |
 
 ## `run.hook_dispatched`
