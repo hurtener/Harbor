@@ -132,6 +132,28 @@ position that any `runs.set_overrides` caller can now write.
   Clients built on the Go Protocol client are unaffected: they marshal typed
   wire structs, which have no `identity` field to populate.
 
+- **Removed: `GovernancePostureRequest.tenant_id` and
+  `LLMPostureRequest.tenant_id` — a Protocol field the Runtime never read.**
+  Both request types were orphans: the posture family is decoded into the
+  shared `RuntimeInfoRequest` envelope, so `tenant_id` was discarded and **an
+  admin naming another tenant silently received its OWN tenant's posture with a
+  200** — wrong data on an admin audit path, with no signal. The strict decode
+  turned that into a loud 400, which is how it surfaced.
+
+  **The cross-tenant read is not lost — it never lived here.** The selector is
+  `identity.tenant`: a body tenant differing from the verified tenant requires
+  the `admin` / `console:fleet` claim and emits `governance.posture.read_admin`.
+  That gate is implemented, audited and tested in both directions. The field was
+  a second, never-implemented spelling of it, so it was removed rather than
+  implemented — two selectors for one concept would have to answer "what if they
+  disagree?" for no benefit.
+
+  **If you send `tenant_id` to these methods, drop it and set
+  `identity.tenant` instead.** Both types are gone from the Protocol reference
+  and the generated TS wire types; a new `TestManifest_NoOrphanWireTypes` gate
+  fails the build if a wire type is ever again published without a method that
+  decodes it.
+
 - **`memory.caller_block_admitted` — a new canonical event recording the FACT
   of an admission, never the content.** It carries `bytes`, `tier` and `key`
   and no fragment of the payload. It fires at admission, which precedes

@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:0df0d8533e45781c551bc1d1ed45c82eef525567504e1c378bc26fd87bf4f0aa";
+export const WIRE_SURFACE_DIGEST = "sha256:5f8c5f8e7cc469a5b5bbb89731701d5c684d70bae0f3710524cc8587e6060572";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -1509,10 +1509,6 @@ export interface GovernanceGetTenantOverridesResponse {
   protocol_version: string;
 }
 
-export interface GovernancePostureRequest {
-  tenant_id?: string;
-}
-
 export interface GovernancePostureResponse {
   default_tier: string;
   resolved_tier: string;
@@ -1590,10 +1586,6 @@ export interface InterventionSummary {
   reason: string;
   outcome: string;
   occurred_at: string;
-}
-
-export interface LLMPostureRequest {
-  tenant_id?: string;
 }
 
 export interface LLMPostureResponse {
