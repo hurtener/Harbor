@@ -55,6 +55,48 @@ CONTROL_GOV_URL="$(api_url /v1/control/governance.posture)"
 CONTROL_LLM_URL="$(api_url /v1/control/llm.posture)"
 
 # ----------------------------------------------------------------------
+# STATIC assertions — the cross-tenant AUDIT EVENT NAME, pinned against an
+# oracle that is not the constant.
+#
+# PLACEMENT IS LOAD-BEARING: this block sits ABOVE every live probe, and
+# above the `if [ -z "${TOKEN}" ] … exit` below it. Its first draft sat next
+# to the cross-tenant legs it documents, which reads better and is wrong —
+# that region is past the early exit, so the whole pin was unreachable on any
+# run without a server and reported nothing while the script exited 0. A
+# truthfulness guard over a Go source file has no business behind a route
+# probe (the same correction D-374 records making to phase-219's D-375 leg).
+#
+# WHAT IT GUARDS. The event name is a wire contract with every subscriber's
+# filter, and no live leg here can observe it: this smoke never subscribes to
+# the bus, and the dev bearer carries both admin claims so its crossing is
+# always granted.
+#
+# WHY A HAND-WRITTEN LITERAL. `TestPostureDispatch_CrossTenantConfigReadEmitsAudit`
+# compares the emitted `ev.Type` against the very constants the emitter
+# publishes, so it is true by construction and a rename keeps it green.
+# `docs/site/protocol/events.md` is GENERATED from the canonical registry and
+# gated by `make protocol-docs-gen-check`, so regenerating it after a rename
+# keeps it agreeing with the constant too. Both sites track the constant;
+# neither can detect a change to it. Only a THIRD copy that does not derive
+# from it can — the literals below, typed out by hand, are that copy.
+POSTURE_EVENT_GOV='governance\.posture_read_admin'
+POSTURE_EVENT_LLM='llm\.posture_read_admin'
+GENERATED_EVENTS_MD='docs/site/protocol/events.md'
+
+if [ -f "${GENERATED_EVENTS_MD}" ]; then
+    assert_grep_present "\"${POSTURE_EVENT_GOV}\"" 'internal/governance/events.go' \
+        'phase-72g: the governance cross-tenant audit event name is the literal this smoke pins'
+    assert_grep_present "\"${POSTURE_EVENT_LLM}\"" 'internal/llm/events.go' \
+        'phase-72g: the llm cross-tenant audit event name is the literal this smoke pins'
+    assert_grep_present "^## .${POSTURE_EVENT_GOV}." "${GENERATED_EVENTS_MD}" \
+        'phase-72g: the generated Protocol event reference publishes the same governance event name'
+    assert_grep_present "^## .${POSTURE_EVENT_LLM}." "${GENERATED_EVENTS_MD}" \
+        'phase-72g: the generated Protocol event reference publishes the same llm event name'
+else
+    fail "phase-72g: ${GENERATED_EVENTS_MD} is missing — the generated Protocol event reference is one of the two sites the audit-event-name pin compares, so the pin cannot run and must not read as passing"
+fi
+
+# ----------------------------------------------------------------------
 # Assertion 1 — identity-mandatory: governance.posture without a Bearer
 # token returns 401. The auth.Middleware (Phase 61) fails closed on
 # missing authentication; the handler is never reached. We probe with
@@ -226,7 +268,7 @@ fi
 # THE REAL SELECTOR IS `identity.tenant`. `PostureSurface.Dispatch`
 # (internal/protocol/posture.go) compares the body tenant against the
 # ctx-verified tenant and demands `auth.ScopeAdmin` / `auth.ScopeConsoleFleet`,
-# emitting `governance.posture.read_admin`. The `tenant_id` field was a second,
+# emitting `governance.posture_read_admin`. The `tenant_id` field was a second,
 # never-implemented spelling of that and has been REMOVED (D-374).
 #
 # WHAT A LIVE PROBE CAN AND CANNOT REACH. `harbor dev` mints ONE bearer and it
@@ -235,8 +277,17 @@ fi
 # constraint phase-218 records for its own widening probe. So these legs assert
 # the half a live probe CAN reach: the crossing is ACCEPTED and answers. The
 # refusal half is pinned by `TestPostureDispatch_CrossTenantRequiresAdmin`
-# (both directions) and the audit emit by
-# `TestPostureDispatch_CrossTenantConfigReadEmitsAudit`.
+# (both directions).
+#
+# THE AUDIT EMIT IS PINNED BY `TestPostureDispatch_CrossTenantConfigReadEmitsAudit`
+# — BUT NOT ITS NAME, WHICH IS WHY THE STATIC LEG AT THE TOP OF THIS SCRIPT
+# EXISTS (it sits above the no-token early exit, not here). That test
+# subscribes and compares `ev.Type` against `governance.EventTypePostureReadAdmin`
+# / `llm.EventTypePostureReadAdmin` — the SAME constants the emitter publishes
+# (`posture.go:697` / `:708`). It therefore asserts "the event equals the
+# constant the emitter used", which is true by construction: renaming the
+# constant renames both sides and the test stays green while every subscriber's
+# filter silently breaks. An oracle derived from its subject is not an oracle.
 #
 # A 400 here is a FAIL, not a skip: it means the body shape stopped matching
 # the envelope the handler decodes, which is the defect this pair just had.

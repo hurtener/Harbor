@@ -99,10 +99,21 @@ OVERRIDES_GO="${RUNS_PROTOCOL_PKG}/overrides.go"
 if [ -f "${OVERRIDES_GO}" ]; then
     assert_grep_present 'DefaultMaxPendingOverrides = [0-9]+' "${OVERRIDES_GO}" \
         'phase 73n: the pending-override slot map declares a capacity bound'
+    # The PER-TENANT sub-bound underneath it. The global bound alone does not
+    # confine an evicting caller: with one process-wide order list, a tenant
+    # writing under fresh session ids evicts every OTHER tenant's slot,
+    # continuously — which is the cross-tenant availability defect the choice
+    # of eviction-over-refusal was recorded as ruling out. Executed before the
+    # sub-bound landed: one attacker tenant writing MaxSlots fresh sessions
+    # left `victim slot present = false`.
+    assert_grep_present 'DefaultMaxPendingOverridesPerTenant = [0-9]+' "${OVERRIDES_GO}" \
+        'phase 73n: the slot map declares a PER-TENANT sub-bound (the global bound alone does not confine an evicting caller)'
     # The eviction, not merely the constant: a declared-but-unused bound is
     # the shape this guard exists to refuse.
-    assert_grep_present 'if len\(s\.slots\) >= s\.max \{' "${OVERRIDES_GO}" \
-        'phase 73n: Set ENFORCES the bound (a declared-but-unenforced cap is the same defect)'
+    assert_grep_present 'case len\(s\.slots\) >= s\.max:' "${OVERRIDES_GO}" \
+        'phase 73n: Set ENFORCES the global bound (a declared-but-unenforced cap is the same defect)'
+    assert_grep_present 'case tl != nil && tl\.Len\(\) >= s\.maxPerTenant:' "${OVERRIDES_GO}" \
+        'phase 73n: Set ENFORCES the per-tenant sub-bound'
     assert_grep_present 's\.order\.Front\(\)' "${OVERRIDES_GO}" \
         'phase 73n: the drop policy is OLDEST-first (dropping the newest discards the write just asked for)'
     P73N_GOLOG="$(mktemp "${TMPDIR:-/tmp}/phase73n-gotest.XXXXXX")"
@@ -116,6 +127,24 @@ if [ -f "${OVERRIDES_GO}" ]; then
         TestStore_Set_BoundHoldsUnderConcurrentWriters \
         TestNewStore_DefaultBoundIsApplied \
         TestWithMaxSlots_NonPositiveKeepsTheDefault
+    # The sub-bound's own rows. Named individually rather than folded into the
+    # batch above because each covers a different way the isolation property
+    # can be lost: the property itself, the ORDER of the two checks (a
+    # global-first Set hands a churning caller a sibling's slot), the global
+    # bound surviving the sub-bound, the two tombstone paths, the operator's
+    # ability to tell the two evictions apart, and the per-tenant index not
+    # becoming the unbounded map one level up.
+    assert_go_tests_pass "${P73N_GOLOG}" "-race -count=1 ./${RUNS_PROTOCOL_PKG}/" \
+        'phase 73n: one tenant cannot evict another (the per-tenant sub-bound, and the bounds it does not claim)' \
+        TestStore_PerTenantBound_OneTenantCannotEvictAnother \
+        TestStore_AtGlobalCapacity_ATenantAtItsSubBoundEvictsItself \
+        TestStore_PerTenantBound_GlobalBoundStillHolds \
+        TestStore_PerTenantBound_ConsumeReleasesTheTenantList \
+        TestStore_Consume_ReclaimsGlobalCapacityAcrossTenants \
+        TestStore_EvictionLog_NamesWhichBoundFired \
+        TestStore_PerTenantBound_HoldsUnderConcurrentTenants \
+        TestStore_ByTenant_ReleasesATenantsListWhenItEmpties \
+        TestStore_ByTenant_ReleasesOnEvictionToo
 else
     skip 'phase 73n: overrides.go not present yet — slot-map bound guards SKIP'
 fi

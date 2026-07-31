@@ -24,6 +24,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -60,6 +61,29 @@ type bootstrapIdentity struct {
 // can request a token for an arbitrary principal already controls the
 // loopback dev surface. This is dev-only convenience — production
 // (`harbor serve`) never mounts this endpoint.
+//
+// # Unknown members are REFUSED, not discarded
+//
+// The body is decoded strictly: a member no field below matches fails
+// the request with 400 and the refusal NAMES the member. This endpoint
+// MINTS A CREDENTIAL, so the two silent-discard outcomes were not
+// tolerable. A caller that misspells `scopes` as `scope` intends a
+// no-scope token and would have received a FULL-ADMIN one; a caller that
+// spells the triple `tenant_id` / `user_id` / `session_id` intends one
+// principal and would have received a token for a DIFFERENT one. Both
+// answered 200, so neither caller could learn it had happened.
+//
+// # The field names ARE the canonical identity spelling
+//
+// `tenant` / `user` / `session` match the Protocol's identity-scope wire
+// shape (see the IdentityScope type in the Protocol's wire types) and the
+// bootstrap RESPONSE envelope below, which uses the same three names. The
+// snake_case `tenant_id` / `user_id` / `session_id` spellings that appear
+// elsewhere on the Protocol belong to RECORD types describing a stored
+// row (a session summary, a search hit), not to an identity scope
+// supplied as input. So there is nothing to rename here — the snake
+// variant is genuinely not a member of this type, and the strict decode
+// is what finally says so out loud.
 type BootstrapRequest struct {
 	// Tenant / User / Session override the minted token's identity
 	// triple. All three must be non-empty to take effect; a partial
@@ -224,8 +248,9 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // empty one) overrides the scope set.
 //
 // It fails closed with an error (the caller maps it to 400) on a
-// malformed body or a PARTIAL identity triple — identity is mandatory
-// (CLAUDE.md §6 rule 9), there is no "tenant-only" dev token.
+// malformed body, an UNKNOWN member, or a PARTIAL identity triple —
+// identity is mandatory (CLAUDE.md §6 rule 9), there is no "tenant-only"
+// dev token.
 func (h *BootstrapHandler) resolveMint(r *http.Request) (identity.Identity, []string, error) {
 	mintID := h.id
 	mintScopes := h.scopes
@@ -240,8 +265,8 @@ func (h *BootstrapHandler) resolveMint(r *http.Request) (identity.Identity, []st
 	}
 
 	var req BootstrapRequest
-	if err := json.Unmarshal(trimmed, &req); err != nil {
-		return identity.Identity{}, nil, fmt.Errorf("bootstrap request body is not valid JSON")
+	if err := decodeBootstrapStrict(trimmed, &req); err != nil {
+		return identity.Identity{}, nil, fmt.Errorf("bootstrap request body rejected: %s", boundedDecodeDetail(err))
 	}
 
 	// Identity override: all-or-nothing. A partial triple fails closed.
@@ -261,6 +286,51 @@ func (h *BootstrapHandler) resolveMint(r *http.Request) (identity.Identity, []st
 	}
 
 	return mintID, mintScopes, nil
+}
+
+// decodeBootstrapStrict decodes a bootstrap request body into target and
+// REFUSES any member target does not declare, naming it. It is the same
+// posture the Protocol's control transport applies to every request body
+// it decodes; this endpoint was outside that package and therefore
+// outside that sweep, while being the one endpoint in the tree that mints
+// a credential.
+//
+// The trailing-data check keeps the swap a strict SUPERSET of the
+// `json.Unmarshal` it replaced: Unmarshal refuses a second JSON document
+// after the first and a bare Decoder.Decode does not.
+func decodeBootstrapStrict(body []byte, target any) error {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(target); err != nil {
+		return err
+	}
+	if dec.More() {
+		return errBootstrapTrailingData
+	}
+	return nil
+}
+
+// errBootstrapTrailingData is returned by decodeBootstrapStrict when a
+// second JSON value follows the request document.
+var errBootstrapTrailingData = errors.New("unexpected trailing data after the JSON document")
+
+// maxBootstrapDetailBytes bounds how much of a decoder error is echoed to
+// the caller. The detail is what makes the refusal actionable — `json:
+// unknown field "scope"` names the member the caller must fix, which is
+// the whole point of refusing instead of dropping. The bound exists
+// because the quoted member name is caller-controlled. The detail can
+// never carry a decoded VALUE: encoding/json reports member names and
+// types only.
+const maxBootstrapDetailBytes = 160
+
+// boundedDecodeDetail renders a decoder error for the wire: the reason,
+// bounded.
+func boundedDecodeDetail(err error) string {
+	msg := err.Error()
+	if len(msg) > maxBootstrapDetailBytes {
+		return msg[:maxBootstrapDetailBytes] + "…"
+	}
+	return msg
 }
 
 // maxBootstrapBodyBytes bounds the optional bootstrap request body. The

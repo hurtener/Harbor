@@ -68,6 +68,41 @@
 # of this kind can enumerate shapes. Where a hardest-known shape exists it is
 # the one used (see the two payloads in scripts/smoke/testdata/phase-224/).
 #
+# ---------------------------------------------------------------------------
+# POPULATION, NOT JUST SHAPE — the second axis, added after this harness was
+# found blind along it
+# ---------------------------------------------------------------------------
+# A guard has a SHAPE (what counts as a violation) and a POPULATION (where it
+# looks). The first version of this harness verified shapes only: every
+# mutation planted its defect in `internal/fixture/fixture.go`, even for the
+# guards that scan `internal/ cmd/ sdk/`. So two REAL regressions passed it
+# unnoticed — narrowing the godoc scan's roots to `internal/` alone (dropping
+# `sdk/`, D-282's explicit adopter-facing extension) and deleting the
+# forbidden-name scan's whole `cmd/` block both produced `OK 25 / SKIP 0 /
+# FAIL 0`. The fixture files for those directories already existed; nothing
+# planted in them.
+#
+# The rule this leaves behind is the same one D-374 recorded one level down: a
+# sweep is only as wide as the population it enumerated. So every guard whose
+# population is a DIRECTORY LIST now gets one case PER directory, and the
+# mutation is planted in that directory's own fixture file:
+#
+#   godoc jargon scan  -> internal/ + cmd/ + sdk/          (3 cases)
+#   forbidden-name     -> root docs + plans + briefs +
+#                         internal/ + cmd/                  (5 cases)
+#   escape portability -> scripts/smoke/*.sh + scripts/*.sh (2 cases)
+#   mktemp portability -> scripts/smoke/** + scripts/**     (2 cases)
+#
+# The complementary half lives in drift-audit itself (check 2b, the population
+# census): a corpus that is EMPTY fails there, because no case planted in a
+# directory can fire if the directory is gone. Neither mechanism substitutes
+# for the other — the census sees a vanished corpus, these cases see a guard
+# that stopped reading a corpus that is still there.
+#
+# The residual, stated: a population a guard GAINS later (a fourth godoc root,
+# say) has no case until someone writes one. The `ok`-line census below cannot
+# see that, because adding a directory to an existing guard adds no `ok` line.
+#
 # The per-case residuals are enumerated in
 # docs/plans/phase-224-mutation-verify-the-drift-audit.md § "Coverage census".
 # The COVERAGE CENSUS at the bottom of this script is the mechanical half of
@@ -90,6 +125,7 @@ source "scripts/smoke/common.sh"
 
 AUDIT='scripts/drift-audit.sh'
 FRONTMATTER='scripts/skills/check-frontmatter.sh'
+BODY_IDENTITY='scripts/check-smoke-body-identity.sh'
 PAYLOADS='scripts/smoke/testdata/phase-224'
 
 WORK=''
@@ -106,7 +142,7 @@ trap cleanup EXIT
 # harness found nothing wrong" (AGENTS.md §4.2 item 5).
 # ----------------------------------------------------------------------------
 PRECONDITIONS_OK=1
-for required in "${AUDIT}" "${FRONTMATTER}" \
+for required in "${AUDIT}" "${FRONTMATTER}" "${BODY_IDENTITY}" \
                 "${PAYLOADS}/bad-escape.sh.txt" "${PAYLOADS}/bad-mktemp.sh.txt"; do
     if [ ! -f "${required}" ]; then
         fail "phase 224: ${required} is missing — the mutation harness has nothing to verify"
@@ -158,6 +194,27 @@ build_template() {
     cp "${AUDIT}" "${d}/scripts/drift-audit.sh"
     cp "${FRONTMATTER}" "${d}/scripts/skills/check-frontmatter.sh"
     chmod +x "${d}/scripts/drift-audit.sh" "${d}/scripts/skills/check-frontmatter.sh"
+
+    # The D-374 smoke body-identity helper is a STAND-IN here, not the real
+    # script, and the distinction is load-bearing enough to state twice (see
+    # the coverage census at the bottom). The real helper joins the generated
+    # wire manifest against the generated methods table and then walks the
+    # smoke corpus; reproducing all three in a fixture would be reproducing
+    # its logic, which is exactly the "test the copy, not the program" trap
+    # this harness exists to avoid. What IS under test here is drift-audit's
+    # DELEGATION to it — that a missing helper, a lost executable bit, or a
+    # non-zero exit each produce a loud FAIL rather than silence. That
+    # delegation shipped with no `else` at all, so a lost executable bit made
+    # the whole guard vanish; the stand-in is what lets both directions be
+    # exercised. The helper's own detection logic carries its own guards and
+    # its own mutation record under D-374.
+    cat > "${d}/scripts/check-smoke-body-identity.sh" <<'FIXTURE_EOF'
+#!/usr/bin/env bash
+# STAND-IN for scripts/check-smoke-body-identity.sh. See build_template.
+echo '[OK]   smoke body-identity: no identity body attributed to an identity-less method (fixture stand-in)'
+exit 0
+FIXTURE_EOF
+    chmod +x "${d}/scripts/check-smoke-body-identity.sh"
 
     cat > "${d}/AGENTS.md" <<'FIXTURE_EOF'
 # Fixture rules file
@@ -462,19 +519,68 @@ expect_caught() {
 # ----------------------------------------------------------------------------
 FIXTURE_PLAN='docs/plans/phase-01-fixture.md'
 FIXTURE_GO='internal/fixture/fixture.go'
+FIXTURE_CMD_GO='cmd/fixture/main.go'
+FIXTURE_SDK_GO='sdk/fixture/fixture.go'
+FIXTURE_BRIEF='docs/research/06-fixture.md'
 
 mut_mirror()        { printf 'A line CLAUDE.md carries and AGENTS.md does not.\n' >> "$1/CLAUDE.md"; }
 mut_required_file() { rm -f "$1/docs/glossary.md"; }
 mut_plan_smoke()    { rm -f "$1/scripts/smoke/phase-01.sh"; }
 mut_rfc_ref()       { printf '\nA stale anchor: RFC §99.99 does not exist.\n' >> "$1/${FIXTURE_PLAN}"; }
 mut_brief_ref()     { printf '\nA stale citation: brief 99 does not exist.\n' >> "$1/${FIXTURE_PLAN}"; }
-mut_forbidden_doc() { printf '\n%s\n' "${FORBIDDEN_WORD}" >> "$1/${FIXTURE_PLAN}"; }
-mut_forbidden_go()  { printf '\n// %s\n' "${FORBIDDEN_WORD}" >> "$1/${FIXTURE_GO}"; }
 mut_markdownlint()  { : > "$1/.markdownlint-should-fail"; }
 mut_playground()    { printf '<p>%s</p>\n' 'Message accepted by the Runtime.' \
                         >> "$1/web/console/src/routes/(console)/playground/+page.svelte"; }
-mut_bad_escape()    { cp "${PAYLOADS}/bad-escape.sh.txt" "$1/scripts/smoke/phase-02.sh"; }
-mut_bad_mktemp()    { cp "${PAYLOADS}/bad-mktemp.sh.txt" "$1/scripts/smoke/phase-03.sh"; }
+
+# --- forbidden-name scan: ONE case per POPULATION LIMB -----------------------
+# The scan assembles its file list from five separate blocks — a literal list
+# of root design docs, the phase-plan glob, the research-brief glob, a `find`
+# over internal/, and a `find` over cmd/. Deleting any ONE block leaves the
+# other four reporting the same single OK line, so a case per limb is what
+# makes a narrowing visible. The `cmd/` limb had no case at all: deleting its
+# whole block produced OK 25 / SKIP 0 / FAIL 0.
+mut_forbidden_rootdoc() { printf '\n%s\n' "${FORBIDDEN_WORD}" >> "$1/README.md"; }
+mut_forbidden_doc()     { printf '\n%s\n' "${FORBIDDEN_WORD}" >> "$1/${FIXTURE_PLAN}"; }
+mut_forbidden_brief()   { printf '\n%s\n' "${FORBIDDEN_WORD}" >> "$1/${FIXTURE_BRIEF}"; }
+mut_forbidden_go()      { printf '\n// %s\n' "${FORBIDDEN_WORD}" >> "$1/${FIXTURE_GO}"; }
+mut_forbidden_cmd()     { printf '\n// %s\n' "${FORBIDDEN_WORD}" >> "$1/${FIXTURE_CMD_GO}"; }
+
+# --- portability guards: ONE case per POPULATION ROOT ------------------------
+# The escape guard globs `scripts/smoke/*.sh scripts/*.sh`; the mktemp guard
+# greps `scripts` RECURSIVELY. Planting only under scripts/smoke/ means a
+# narrowing to smoke-only is invisible — and scripts/ root is where
+# drift-audit.sh, preflight.sh and the D-374 helper actually live, so it is
+# the limb whose loss would matter most.
+mut_bad_escape()      { cp "${PAYLOADS}/bad-escape.sh.txt" "$1/scripts/smoke/phase-02.sh"; }
+mut_bad_escape_root() { cp "${PAYLOADS}/bad-escape.sh.txt" "$1/scripts/portability-fixture.sh"; }
+mut_bad_mktemp()      { cp "${PAYLOADS}/bad-mktemp.sh.txt" "$1/scripts/smoke/phase-03.sh"; }
+mut_bad_mktemp_root() { cp "${PAYLOADS}/bad-mktemp.sh.txt" "$1/scripts/mktemp-fixture.sh"; }
+
+# --- delegated guards: the VANISH shape --------------------------------------
+# Both delegations were `if [ -x helper ]; then … fi` with no else. A lost
+# executable bit removed the entire check with no failure, no skip and no
+# output — the guard did not fail, it disappeared. The body-identity one is
+# worse still: it emits no `ok` of its own, so the coverage census below could
+# not see it either, and the harness went on claiming full coverage of a set
+# that did not include it.
+mut_frontmatter_notexec()   { chmod -x "$1/scripts/skills/check-frontmatter.sh"; }
+mut_bodyidentity_notexec()  { chmod -x "$1/scripts/check-smoke-body-identity.sh"; }
+mut_bodyidentity_missing()  { rm -f "$1/scripts/check-smoke-body-identity.sh"; }
+mut_bodyidentity_reports()  {
+    cat > "$1/scripts/check-smoke-body-identity.sh" <<'MUT_EOF'
+#!/usr/bin/env bash
+echo '[FAIL] smoke body-identity: fixture-induced violation'
+exit 1
+MUT_EOF
+    chmod +x "$1/scripts/check-smoke-body-identity.sh"
+}
+
+# --- population census -------------------------------------------------------
+# Removing a whole scanned corpus. Before the census existed this was SILENT:
+# the godoc scan's grep over a missing sdk/ errors into /dev/null under
+# `|| true`, the hit count stays zero, and the guard prints its OK having read
+# nothing.
+mut_census_empty_population() { rm -rf "$1/sdk"; }
 
 # A production comment naming an integration test by its `phaseNN_*_test.go`
 # filename. The v1.25 checkpoint's F5 finding: an UNANCHORED `grep -v
@@ -488,6 +594,23 @@ mut_godoc_jargon_plain() {
 mut_godoc_jargon_testpath() {
     printf '\n// Rationale: D-999. See fixture_regression_test.go for the round trip.\n' \
         >> "$1/${FIXTURE_GO}"
+}
+
+# The godoc scan's roots are `internal/ cmd/ sdk/`. Both cases below plant in a
+# root the harness previously never touched, so narrowing the argument list
+# turns them red instead of passing green. `sdk/` is D-282's explicit
+# adopter-facing extension and is the root a "tidy-up" is most likely to drop;
+# dropping it produced OK 25 / SKIP 0 / FAIL 0.
+#
+# Each also uses a DIFFERENT pattern from the guard's list, so between them the
+# four cases exercise four of the five patterns rather than the same one three
+# times — and the bad markers stay per-case attributable, which the shared
+# `found in non-test Go source` prefix alone would not be.
+mut_godoc_jargon_cmd() {
+    printf '\n// Delivered in Wave 8 of the rollout.\n' >> "$1/${FIXTURE_CMD_GO}"
+}
+mut_godoc_jargon_sdk() {
+    printf '\n// The rationale is recorded in brief 07.\n' >> "$1/${FIXTURE_SDK_GO}"
 }
 
 mut_headings() {
@@ -588,15 +711,35 @@ expect_caught 'brief cross-reference resolution' FAIL \
     "stale reference 'brief 99'" \
     mut_brief_ref
 
-expect_caught 'forbidden-name scan (docs limb)' FAIL \
+expect_caught 'population census (a scanned corpus went empty)' FAIL \
+    'population census: every scanned corpus is non-empty' \
+    'the Go source under sdk/ (the D-282 scan extension) population is EMPTY' \
+    mut_census_empty_population
+
+expect_caught 'forbidden-name scan (root-docs limb)' FAIL \
+    'forbidden-name scan clean' \
+    'present in README.md' \
+    mut_forbidden_rootdoc
+
+expect_caught 'forbidden-name scan (phase-plan limb)' FAIL \
     'forbidden-name scan clean' \
     'present in docs/plans/phase-01-fixture.md' \
     mut_forbidden_doc
 
-expect_caught 'forbidden-name scan (Go-source limb)' FAIL \
+expect_caught 'forbidden-name scan (research-brief limb)' FAIL \
+    'forbidden-name scan clean' \
+    'present in docs/research/06-fixture.md' \
+    mut_forbidden_brief
+
+expect_caught 'forbidden-name scan (internal/ limb)' FAIL \
     'forbidden-name scan clean' \
     'present in internal/fixture/fixture.go' \
     mut_forbidden_go
+
+expect_caught 'forbidden-name scan (cmd/ limb)' FAIL \
+    'forbidden-name scan clean' \
+    'present in cmd/fixture/main.go' \
+    mut_forbidden_cmd
 
 expect_caught 'Makefile drift-audit target' WARN \
     'Makefile has drift-audit target' \
@@ -617,6 +760,30 @@ expect_caught 'operator-skill frontmatter' FAIL \
     'skills frontmatter audit:' \
     'have malformed frontmatter' \
     mut_skill_frontmatter
+
+# --- the two DELEGATED guards, verified at the delegation --------------------
+# Both shipped as `if [ -x helper ]; then … fi` with NO else, so a guard that
+# could not run was indistinguishable from one that passed. These four cases
+# are the ones that would have caught it.
+expect_caught 'skills-frontmatter delegation (executable bit lost)' FAIL \
+    'skills frontmatter audit:' \
+    'delegated guard unavailable: scripts/skills/check-frontmatter.sh' \
+    mut_frontmatter_notexec
+
+expect_caught 'body-identity delegation (executable bit lost)' FAIL \
+    '' \
+    'delegated guard unavailable: scripts/check-smoke-body-identity.sh' \
+    mut_bodyidentity_notexec
+
+expect_caught 'body-identity delegation (helper missing)' FAIL \
+    '' \
+    'delegated guard unavailable: scripts/check-smoke-body-identity.sh' \
+    mut_bodyidentity_missing
+
+expect_caught 'body-identity delegation (helper reports a violation)' FAIL \
+    '' \
+    'a smoke body sends `identity` to a Protocol method' \
+    mut_bodyidentity_reports
 
 expect_caught 'playground placeholder regression' FAIL \
     'no playground placeholder text' \
@@ -646,6 +813,16 @@ expect_caught 'godoc jargon scan (test-path anchoring)' FAIL \
     "pattern '\bD-[0-9]+'" \
     mut_godoc_jargon_testpath
 
+expect_caught 'godoc jargon scan (cmd/ root)' FAIL \
+    'godoc hygiene: no internal phase jargon' \
+    "pattern '\b(Wave|Round|Stage)[ -][0-9A-Z]+'" \
+    mut_godoc_jargon_cmd
+
+expect_caught 'godoc jargon scan (sdk/ root, the D-282 extension)' FAIL \
+    'godoc hygiene: no internal phase jargon' \
+    "pattern '\b[Bb]rief [0-9]+'" \
+    mut_godoc_jargon_sdk
+
 expect_caught 'scaffold pin names a phantom release' FAIL \
     'is a published release' \
     'names no published release' \
@@ -661,15 +838,25 @@ expect_caught 'release ledger vs CHANGELOG' FAIL \
     'release ledger: v2.0.0 is published' \
     mut_release_ledger
 
-expect_caught 'smoke regex portability' FAIL \
+expect_caught 'smoke regex portability (scripts/smoke/ root)' FAIL \
     'smoke regex portability: no non-portable' \
-    'smoke regex portability: non-portable' \
+    'scripts/smoke/phase-02.sh:' \
     mut_bad_escape
 
-expect_caught 'mktemp template portability' FAIL \
+expect_caught 'smoke regex portability (scripts/ root)' FAIL \
+    'smoke regex portability: no non-portable' \
+    'scripts/portability-fixture.sh:' \
+    mut_bad_escape_root
+
+expect_caught 'mktemp template portability (scripts/smoke/ root)' FAIL \
     'every mktemp template carries trailing X' \
-    'mktemp template portability: template without trailing X' \
+    'scripts/smoke/phase-03.sh:' \
     mut_bad_mktemp
+
+expect_caught 'mktemp template portability (scripts/ root)' FAIL \
+    'every mktemp template carries trailing X' \
+    'scripts/mktemp-fixture.sh:' \
+    mut_bad_mktemp_root
 
 # ----------------------------------------------------------------------------
 # COVERAGE CENSUS — the mechanical half of "say what you do not cover".
@@ -684,15 +871,28 @@ expect_caught 'mktemp template portability' FAIL \
 #   - a signature no `ok` line matches  => a guard was renamed or deleted and
 #     the case above is now testing a message that no longer exists.
 #
-# Two verified guards are deliberately absent from this list because they print
-# no `ok` of their own: the NUL-byte check (FAIL-only) and the operator-skill
-# frontmatter check (whose OK is printed by the delegated child script). Both
-# have cases above. That is why the census total and the case count differ, and
-# the numbers are printed rather than left for the reader to reconstruct.
+# THREE verified guards are deliberately absent from this list because they
+# print no `ok` of their own: the NUL-byte check (FAIL-only) and the two
+# DELEGATED checks, whose OK lines are printed by the child script rather than
+# by drift-audit's own `ok`. All three have cases above. That is why the census
+# total and the case count differ, and the numbers are printed rather than left
+# for the reader to reconstruct.
+#
+# THE THIRD ONE IS WHY THIS PARAGRAPH IS NOT DECORATION. The smoke
+# body-identity delegation was added to drift-audit seven commits after this
+# harness was written. It emits no `ok`, so the mechanical cross-check below
+# could not see it; the hand-written exception list said "two"; and this script
+# went on printing "18 of 18 guards, 0 declared uncovered" while a nineteenth
+# guard sat entirely unverified — and that guard was itself the one with the
+# vanishing `if [ -x … ]`. An `ok`-keyed census cannot see a guard that emits
+# no `ok`, so the hand-maintained half of this list is LOAD-BEARING and must be
+# revisited whenever a delegated or FAIL-only guard is added. That limitation
+# is now stated here rather than implied by a number.
 # ----------------------------------------------------------------------------
 CENSUS_SIGNATURES=(
     'mirror invariant'
     'required: '
+    'population census: every scanned corpus is non-empty'
     'plan ↔ smoke pair OK'
     'all required headings present'
     'RFC reference(s) resolve'
@@ -749,7 +949,7 @@ EOF
     elif [ -n "${orphaned}" ]; then
         fail "phase 224: this harness expects OK line(s) that ${AUDIT} no longer emits —${orphaned}. A guard was renamed or deleted and the matching case above is now asserting against a message that does not exist."
     else
-        ok "phase 224: coverage census — all ${ok_line_count} of ${ok_line_count} guards that report an OK are mutation-verified above, plus the NUL-byte guard and the delegated skills-frontmatter guard (neither prints an OK of its own): ${CASES} mutations over 18 guard units, 0 declared uncovered"
+        ok "phase 224: coverage census — all ${ok_line_count} of ${ok_line_count} guards that report an OK are mutation-verified above, plus the NUL-byte guard and the TWO delegated guards (skills-frontmatter, D-374 smoke body-identity; none of the three prints an OK of its own): ${CASES} mutations over $((ok_line_count + 3)) guard units, 0 uncovered. Two are covered at the DELEGATION only — a missing helper, a lost executable bit, or a non-zero exit — not in the helpers' own detection logic, which carries its own guards; see build_template's stand-in note."
     fi
 fi
 

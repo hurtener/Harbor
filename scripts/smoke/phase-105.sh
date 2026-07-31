@@ -84,6 +84,43 @@ fi
 assert_body_path_truthy '.base_url' "${BOOTSTRAP_RESULT}" "bootstrap: base_url non-empty"
 assert_body_path_truthy '.protocol_version' "${BOOTSTRAP_RESULT}" "bootstrap: protocol_version non-empty"
 
+# 6b. Strict decode — this endpoint MINTS A CREDENTIAL, so a member it does
+#     not understand is REFUSED and NAMED rather than discarded. Before this
+#     guard existed, `{"scope":[]}` (a caller asking for a NO-SCOPE token)
+#     answered 200 with a FULL-ADMIN token, and a snake_cased triple answered
+#     200 with a token for the DEFAULT identity. Both are silent substitutions
+#     the caller could not detect.
+for BAD_BODY in '{"scope":[]}' '{"tenant_id":"other","user_id":"u","session_id":"s"}' '{"note":"hi"}'; do
+    BAD_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -d "${BAD_BODY}" "${BOOTSTRAP_URL}" || echo 000)"
+    if [ "${BAD_CODE}" = '400' ]; then
+        ok "bootstrap: unknown member refused (400) for ${BAD_BODY}"
+    else
+        fail "bootstrap: body ${BAD_BODY} returned ${BAD_CODE}, want 400 — a token-minting endpoint silently discarded a member it does not understand"
+    fi
+done
+
+# The refusal must NAME the member: a 400 that will not say which member is
+# unusable is indistinguishable from the malformed-body answer, which carries
+# the identical code.
+BAD_BODY_MSG="$(curl -sS -X POST -d '{"scope":[]}' "${BOOTSTRAP_URL}" || echo '{}')"
+if printf '%s' "${BAD_BODY_MSG}" | grep -qF 'scope'; then
+    ok 'bootstrap: the unknown-member refusal names the offending member'
+else
+    fail "bootstrap: the refusal does not name the offending member (got ${BAD_BODY_MSG}) — a caller cannot learn what to fix"
+fi
+
+# The negative half: a strict decode that refused EVERYTHING would satisfy the
+# legs above while breaking the one-click Console attach. Every DECLARED member
+# together must still mint.
+GOOD_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    -d '{"tenant":"acme","user":"alice","session":"s1","scopes":["admin"]}' \
+    "${BOOTSTRAP_URL}" || echo 000)"
+if [ "${GOOD_CODE}" = '200' ]; then
+    ok 'bootstrap: a body of only declared members still mints (the strict decode did not refuse everything)'
+else
+    fail "bootstrap: a fully-declared override body returned ${GOOD_CODE}, want 200 — the strict decode over-refused"
+fi
+
 # 7. Non-loopback rejection — requires a non-loopback peer. The preflight
 #    harness runs the dev server locally, so we can't simulate a non-loopback
 #    peer directly. SKIP with rationale.

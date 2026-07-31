@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	providerutils "github.com/maximhq/bifrost/core/providers/utils"
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
@@ -325,6 +326,19 @@ func TestProviderNative_CacheIsolation_AcrossSessions(t *testing.T) {
 // the canonical ArtifactStub rendering (the universal degradation,
 // RFC §6.5): the call succeeds, the chat request carries the stub
 // JSON text block, no file block, no upload event.
+//
+// THE FIXTURE IS BUILT BY THE UPSTREAM CONSTRUCTOR, NOT BY HAND
+// (CLAUDE.md §17.8). It previously hand-assembled a BifrostError with
+// the literal string "unsupported_operation" in Code — a fixture
+// encoding this implementer's reading of bifrost's contract, which is
+// self-consistent with the matcher by construction and would stay green
+// against a matcher wired to the wrong field. It now calls
+// `providerUtils.NewUnsupportedOperationError(FileUploadRequest,
+// Cohere)` — byte-for-byte the call Cohere's own FileUpload makes
+// (providers/cohere/cohere.go), for the same provider this test already
+// drives. If upstream renames the code, moves it off `Error.Code`, or
+// changes the field's type, this test goes red at the shape rather than
+// at a string this repository chose.
 func TestProviderNative_UnsupportedProvider_DegradesLoudly(t *testing.T) {
 	bus, busCleanup := openBus(t)
 	defer busCleanup()
@@ -340,12 +354,19 @@ func TestProviderNative_UnsupportedProvider_DegradesLoudly(t *testing.T) {
 	store := openArtifactStore(t)
 	stub := putTestArtifact(t, store, "s-unsup", "image/png", []byte("img"))
 	stubC := newStubClient()
-	code := "unsupported_operation"
+	// The error the real Cohere provider returns from FileUpload, built by
+	// the upstream constructor rather than transcribed here.
+	unsupported := providerutils.NewUnsupportedOperationError(
+		bfschemas.FileUploadRequest, bfschemas.Cohere)
+	// Guard the fixture itself: if a future bifrost drops the code (or moves
+	// it), the constructor still returns a *BifrostError and this test would
+	// silently start covering the generic upload-failure path instead of the
+	// degradation path it is named for.
+	if unsupported == nil || unsupported.Error == nil || unsupported.Error.Code == nil {
+		t.Fatalf("bifrost's NewUnsupportedOperationError no longer carries an Error.Code (%+v) — the degradation matcher keys on it, so this fixture can no longer exercise the path it names", unsupported)
+	}
 	stubC.uploadHandler = func(_ *bfschemas.BifrostFileUploadRequest) (*bfschemas.BifrostFileUploadResponse, *bfschemas.BifrostError) {
-		return nil, &bfschemas.BifrostError{Error: &bfschemas.ErrorField{
-			Message: "file upload is not supported by cohere provider",
-			Code:    &code,
-		}}
+		return nil, unsupported
 	}
 	drv := newDriverWithClientAndStore(stubC, bfschemas.Cohere, bus, store)
 	defer func() { _ = drv.Close(context.Background()) }()
