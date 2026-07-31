@@ -11093,6 +11093,59 @@ The distinguishing rule is one line: `seen` now maps the model-visible name to t
 
 ---
 
+## D-372 — The pending-override slot map takes a bound with a stated drop policy: evict-oldest, loud, no TTL
+
+**Date:** 2026-07-31
+
+**Status:** Accepted
+
+**Context.** `runs.set_overrides` records a one-shot next-message override into an in-process map keyed by the identity triple (`internal/runtime/runs/protocol/overrides.go`). A slot is written by the method and removed by the `Consume` the next message performs — so a session that records an override and then never sends a message leaves its slot behind, which the package godoc already described as the override being "dropped". The word was wrong: nothing dropped it. The map had no TTL, no eviction and no size cap, so those slots accumulated for the life of the process. Sessions are unbounded, so any authenticated caller reaches unbounded growth by recording an override under a fresh session id in a loop — an availability defect with no elevated claim in front of it. The same shape sat one directory away in the agent-config session-overlay store, whose per-slot write-lock `sync.Map` was append-only over the same unbounded `(triple + agent)` key space; it is fixed in the same PR, because patching one and leaving its twin is how a defect class survives its own fix (CLAUDE.md §17.6).
+
+**Decision.** The slot map holds at most `DefaultMaxPendingOverrides` (4096) entries. Admitting a new identity at capacity EVICTS the oldest-recorded slot. The write-lock map is REFCOUNTED instead: an entry exists only while a writer holds or awaits it.
+
+**The policy is stated, not implied — a silent eviction would itself be the §13 shape.** Four choices, each with the alternative it refuses:
+
+1. **Evict, do not REFUSE.** A capacity refusal lets one caller filling the map deny the surface to every other tenant — it converts a memory-growth defect into a cross-tenant availability one, which is strictly worse. Eviction confines the damage to the evicted slot.
+2. **Oldest-recorded, not newest.** A slot's whole purpose is to be consumed by the very next message, so the longer one has sat unconsumed the likelier it is already abandoned. Drop-newest holds the identical bound and discards the write of the caller who just asked for it — which is why the direction is pinned by its own test rather than left to the bound's arithmetic.
+3. **Loud, once per eviction, with no first-in-window suppression.** §5's drop-oldest-plus-window guidance is written for high-frequency event channels; this is an operator-initiated control-plane write, and below the bound an eviction is impossible. A line here is therefore never routine, and suppressing the second one would hide the scale of whatever is producing them.
+4. **No TTL.** The slot already has a lifetime — "until the next message". A second, time-based expiry axis would be a second mechanism answering one question, with its own clock and sweeper to own. The bound alone closes the growth.
+
+An evicted slot is indistinguishable to its session from one never recorded: the next message runs with no override, exactly the already-documented "recorded, then never sent" path.
+
+**Shape.** `NewStore` becomes variadic (`WithMaxSlots`, `WithStoreLogger`), so every existing call site compiles unchanged and the DEFAULT constructor — the one production uses — is the bounded one. A non-positive `WithMaxSlots` is IGNORED rather than honoured: an unbounded map is the defect, so there is no way to configure the bound away (the same posture as refusing an identity-downgrading knob). Ordering is a `container/list` beside the map, so eviction is O(1) rather than an O(n) scan on a path whose rate an attacker controls — a bound whose enforcement is itself a per-request linear scan is a poor answer to an availability defect. `Consume` pops the list alongside the map; the write-lock twin takes its reference BEFORE acquiring the slot lock and drops it AFTER releasing, so an entry is only ever deleted while nothing holds or awaits it — a delete that ignored the refcount would hand a waiter a different mutex than the holder released and silently stop excluding.
+
+**Mutation-verified**, each turning `OK` into `FAIL`, never into `SKIP`. (1) Delete the capacity check in `Set` → 6 unit FAILs and 3 smoke FAILs. (2) Evict `Back()` instead of `Front()` → the direction pin FAILs while the plain bound tests stay green, which is the whole reason the direction has its own row. (3) Drop the recency refresh on re-Set → 1 FAIL. (4) Drop the list pop in `Consume` → 1 FAIL, and it took a second draft of that test to catch: the first asserted only that surviving slots survived, which stays green because the leak shows up one eviction later, when a tombstone absorbs an eviction and the map grows PAST the bound. The test now forces the eviction and asserts the resident count EXACTLY. (5) Drop the default bound from `NewStore` → 2 FAILs, the guard that production is bounded and not merely the option-configured store. (6) Never delete the write-lock entry → 4 FAILs. (7) Delete it ignoring the refcount → the mutual-exclusion row FAILs alone, under `-race`.
+
+**Cross-references.** D-025 (concurrent reuse — the Store is a compiled artifact; the bound holds under N=128 concurrent writers), D-130 (`runs.set_overrides`, the surface this bounds). CLAUDE.md §4.4, §5, §6, §11, §13, §17.6.
+
+---
+
+## D-373 — A failed active-pointer write COMPENSATES its orphan revision; the atomicity it does not have is stated rather than implied
+
+**Date:** 2026-07-31
+
+**Status:** Accepted
+
+**Context.** The agent-config registry driver persists a revision and then moves the active pointer as two ordinary `StateStore.Save` calls (`internal/agentcfg/drivers/statestore/statestore.go`). A store error between them left a revision that EXISTS and that nothing references. The severity is bounded and worth stating precisely rather than inflating: the pointer is the source of truth, so an orphan is invisible to `Active` and to the run-start projection, and its content was never applied to any run. What it damages is the OPERATOR view — `ListRevisions` enumerates by record kind rather than by walking the parent chain, so the orphan appears in history between two real revisions, belonging to no chain and never having been active. That reads exactly like a lost write. It also burns a revision id the next successful write's parent chain will not mention.
+
+**Decision.** On a failed active-pointer write the driver DELETES the revision record it just wrote, then returns the store's own error. Not a transaction, and not a sweep.
+
+**Why not a transaction — the constraint decides it.** The `StateStore` interface spans the §9 triad (in-mem / SQLite / Postgres) with conformance parity. Both SQL drivers could span the two writes in one `BeginTx`; the in-memory driver would need a hand-rolled equivalent, and every future driver would inherit a method whose semantics are "atomic where the backend has transactions". §9 names a feature that only works on one backend a design smell, and §4.4 forbids the `Supports*` ceremony that would paper over it. A conditional-write primitive on the StateStore (`SaveIf`) across all three drivers with conformance rows is already the named real fix for the neighbouring cross-process gap (D-366); a transaction primitive belongs in that same interface phase, driven by both callers, not retrofitted here for one.
+
+**Why not a sweep.** Leaving the record and filtering unreferenced revisions out of the reads keeps the damage and adds a second mechanism to hide it; any filter that decided reachability would have to walk the parent chain, turning one list into a chain traversal. A background sweeper adds a loop, a schedule and a scan over a maintenance-elevated `ListKind`. Compensating at the point of failure needs no new interface method (`Delete` is already on the interface, so all three drivers already implement it), no new record kind, no migration and no goroutine — and it runs while the caller still holds the agent-config service's per-owner write lock, so nothing can be pointing at the record it removes.
+
+**The compensation runs on an un-cancellable context, and that is the subtle part.** The likeliest production reason for the pointer write to fail is the caller's context being cancelled or timed out — so a compensation issued on that same context would fail on exactly the occasions it exists for, and the orphan would survive the common case while the code read as if it were handled. `context.WithoutCancel` keeps the identity and trace values and drops only the cancellation; a bounded timeout keeps a hung store from outliving the call. This is pinned by a test whose fault store cancels the caller's context at the moment the write fails and then asserts the delete arrived on a LIVE context — passing `ctx` straight through turns it red.
+
+**What is NOT claimed.** This is compensation, not atomicity, and no text says otherwise. A process that dies between the two writes still leaves an orphan. A store that refuses the delete as well as the write also leaves one — and that case is REPORTED: the returned error wraps both the original cause and the delete failure and names the record as unreferenced, with an `Error`-level log beside it, because a residual record is a fact an operator must be told about rather than a detail to swallow (§13). A caller branching on `ErrStateUnavailable` is unaffected either way.
+
+**The invariant lives in the SHARED conformance suite, so a second driver inherits it.** `conformance.Run` grows a second, MANDATORY parameter — a `FaultFactory` that builds a Registry whose store is armed to fail the write that publishes a revision as active. It is a parameter rather than an optional capability because the invariant is owed by the interface, and it is a separate constructor rather than a method on `Factory` because the arming is driver-specific (record kinds here, table names elsewhere) and only the driver's own test can do it. A driver whose two writes ARE one atomic operation arms the fault on that operation and passes the row unchanged — the row asserts the RESIDUE, not the number of writes. A second driver cannot compile without supplying one.
+
+**Mutation-verified**, each turning `OK` into `FAIL`, never into `SKIP`. (1) Return the store error directly instead of compensating → 3 driver FAILs plus both conformance scope arms, and 3 smoke FAILs. (2) Compensate on the caller's `ctx` instead of `WithoutCancel` → 1 FAIL, the cancelled-context row, alone. (3) Swallow the delete error and return the cause → 1 FAIL, the honesty row. (4) Deregister the conformance row → COMPILES CLEANLY (an unused function parameter is legal in Go) and every Go test stays green; only the smoke's registration-count guard fires. That last one is why the guard counts `t.Run` REGISTRATIONS rather than `func test…` declarations — the same lesson D-366's rows already carry.
+
+**Cross-references.** D-366 (the expected-revision precondition on this same write path, and its named real fix `SaveIf` — the interface phase a transaction primitive would belong to), D-370 (the compensating detach on `add_mcp_connection`, the same compensation shape one layer up: a live effect whose write then failed), D-025 (concurrent reuse). CLAUDE.md §4.4, §9, §11, §13, §17.3, §17.6.
+
+---
+
 ## D-374 — Unknown request members are refused, not discarded: the control transport joins the strict-decode posture every other Protocol handler already had, and `caller_memory` gets a capability so the loss is detectable against a Runtime that predates the field
 
 **Date:** 2026-07-31
