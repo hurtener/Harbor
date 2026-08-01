@@ -436,9 +436,33 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 	if authReq.Source != string(env.source) || authReq.AuthorizeURL == "" || authReq.State == "" {
 		t.Fatalf("tool.auth_required payload incomplete: %+v", authReq)
 	}
-	pauseReqEv := phase111bWait(t, pauseReqSub, "pause.requested (the OAuth pause)")
-	if pauseReqEv.Identity.Identity != id {
-		t.Fatalf("pause.requested identity = %+v, want %+v", pauseReqEv.Identity.Identity, id)
+	oauthPauseReqEv := phase111bWait(t, pauseReqSub, "pause.requested (the OAuth pause)")
+	if oauthPauseReqEv.Identity.Identity != id {
+		t.Fatalf("OAuth pause.requested identity = %+v, want %+v", oauthPauseReqEv.Identity.Identity, id)
+	}
+	oauthPause, ok := oauthPauseReqEv.Payload.(pauseresume.PauseRequestedPayload)
+	if !ok {
+		t.Fatalf("OAuth pause.requested payload type = %T", oauthPauseReqEv.Payload)
+	}
+	if oauthPause.Token != authReq.PauseToken {
+		t.Fatalf("OAuth pause.requested token %q != tool.auth_required pause token %q", oauthPause.Token, authReq.PauseToken)
+	}
+
+	// Token returns ErrAuthRequired after creating its own pause, so the
+	// RunLoop records the failed tool step and then installs a SECOND pause for
+	// the planner's ExternalEvent decision. Wait for that run-level token before
+	// completing OAuth: otherwise a fast callback can be followed by RESUME
+	// while the RunLoop has not yet installed its outstanding pause.
+	runPauseReqEv := phase111bWait(t, pauseReqSub, "pause.requested (the planner run pause)")
+	if runPauseReqEv.Identity != q {
+		t.Fatalf("planner pause.requested identity = %+v, want %+v", runPauseReqEv.Identity, q)
+	}
+	runPause, ok := runPauseReqEv.Payload.(pauseresume.PauseRequestedPayload)
+	if !ok {
+		t.Fatalf("planner pause.requested payload type = %T", runPauseReqEv.Payload)
+	}
+	if runPause.Token == "" || runPause.Token == oauthPause.Token {
+		t.Fatalf("planner pause token %q, OAuth pause token %q: want distinct non-empty tokens", runPause.Token, oauthPause.Token)
 	}
 
 	// The tool body never ran pre-callback.
@@ -481,12 +505,11 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 		t.Fatalf("pause.resumed token %q != tool.auth_completed pause token %q", resPayload.Token, done.PauseToken)
 	}
 
-	// 4. CompleteFlow resumed the OAuth PAUSE, not the planner RUN. The
-	//    tool-level pause and the run's steering inbox are two distinct
-	//    coordination layers: this explicit control event is what releases the
-	//    RunLoop's ExternalEvent park after the token is durably persisted.
-	//    Omitting it leaves the run parked forever even though
-	//    pause.resumed was correctly emitted by the callback.
+	// 4. CompleteFlow resumed the OAuth pause (oauthPause.Token), not the
+	//    planner run pause (runPause.Token). The two pauses are deliberately
+	//    distinct coordination layers. With the run pause already installed
+	//    above, this explicit control event releases exactly the RunLoop's
+	//    outstanding ExternalEvent park after the token is durably persisted.
 	inbox, err := env.steerReg.Lookup(q)
 	if err != nil {
 		t.Fatalf("steering.Registry.Lookup: %v", err)
