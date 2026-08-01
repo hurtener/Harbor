@@ -4171,5 +4171,7 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.25.0...HEAD
+[1.25.0]: https://github.com/hurtener/Harbor/compare/v1.24.0...v1.25.0
 [1.10.0]: https://github.com/hurtener/Harbor/releases/tag/v1.10.0
 [1.0.0]: https://github.com/hurtener/Harbor/releases/tag/v1.0.0
