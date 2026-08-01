@@ -377,7 +377,11 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	}
 	session.waitContains(t, "HTTP 503")
 	session.command(t, 'j')
-	session.command(t, 'j')
+	// One retry transitions the failed entry into an in-flight canonical Start.
+	// Sending the chord again while that request is outstanding is not a second
+	// retry: it targets no failed entry and only introduces an unrelated local
+	// command error into this delivery assertion.
+	session.waitContains(t, "Retrying failed follow-up")
 	await(t, func() bool {
 		response, listErr := secondClient.TasksList(t.Context(), types.TaskListRequest{})
 		if listErr != nil {
