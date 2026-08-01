@@ -77,4 +77,4 @@ Closes #652 and #644 and supersedes weak Phase 223/224 evidence: canonical event
 
 ## Pre-merge checklist
 
-- [ ] Drift, mirror, CI preflight, mutation green-to-red, and docs checks pass
+- [x] Drift, mirror, CI preflight, mutation green-to-red, and docs checks pass

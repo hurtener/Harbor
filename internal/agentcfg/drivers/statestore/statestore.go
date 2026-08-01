@@ -365,13 +365,9 @@ func (r *registry) Get(ctx context.Context, id identity.Quadruple, agentID, revi
 // ListRevisions returns the revision history for the (identity, agent, scope)
 // slot, newest first.
 //
-// Cost note: ListKind has no identity-scoped enumeration, so this reads every
-// record carrying keys.revPfx across identities (a maintenance-scoped scan)
-// and narrows to keys.quad in Go below. The narrowing is correct and isolation
-// is preserved, but for ConfigScopeUser the scanned cardinality scales with
-// the whole user population rather than the smaller agent count. An
-// identity-scoped enumeration on the StateStore interface would bound this; it
-// is tracked as a follow-up rather than retrofitted here.
+// The StateStore performs the identity-and-kind-prefix narrowing before
+// returning records. The defensive identity check below keeps this consumer
+// fail-closed if a driver ever violates that mandatory contract.
 func (r *registry) ListRevisions(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope, limit int) ([]agentcfg.Revision, error) {
 	if err := r.validate(id, agentID); err != nil {
 		return nil, err
@@ -390,9 +386,8 @@ func (r *registry) ListRevisions(ctx context.Context, id identity.Quadruple, age
 	}
 	out := make([]agentcfg.Revision, 0, len(recs))
 	for _, sr := range recs {
-		// Filter to THIS agent's identity slot — ListKind crosses identity
-		// boundaries, so the scope narrowing is explicit here (agent_id is
-		// the key, the tenant is the isolation boundary).
+		// Defensively retain only this identity slot. Agent ID remains an
+		// entity key, not an isolation principal.
 		if sr.Identity.TenantID != q.TenantID || sr.Identity.UserID != q.UserID || sr.Identity.SessionID != q.SessionID {
 			continue
 		}

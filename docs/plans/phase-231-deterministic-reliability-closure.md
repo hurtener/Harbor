@@ -47,7 +47,7 @@ The final corrective tree passed 100 race-instrumented repetitions of the full a
 - [x] A focused real-PTY decoder test covers F1–F9 and fails when the Kitty wire translation is removed; the unquarantined workflow then passes at least 100 two-CPU Linux `-race` repetitions.
 - [x] A superseded inspection in the current identity/generation cannot close a newer action modal; a cross-generation or cross-identity result still invalidates it.
 - [x] A persisted session rename is followed by the terminal's rename-result acknowledgement before the next shortcut, so input cannot be consumed by the closing modal.
-- [ ] Stale issues have exact targeted `-race -count=100` and CI/full-suite evidence.
+- [x] Stale issues have exact targeted `-race -count=100` and CI/full-suite evidence.
 
 ## Files added or changed
 
@@ -89,4 +89,4 @@ The final corrective tree passed 100 race-instrumented repetitions of the full a
 
 ## Pre-merge checklist
 
-- [ ] Drift, mirror, CI preflight, exact repetitions, Linux stress, integration, and leak gates pass
+- [x] Drift, mirror, CI preflight, exact repetitions, Linux stress, integration, and leak gates pass

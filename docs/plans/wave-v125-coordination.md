@@ -132,8 +132,8 @@ rewriting phases 219–224:
 | 230 | Scoped state and audit convergence | D-392 |
 | 231 | Deterministic reliability closure | D-393 |
 
-The correction train is one staged PR into `dev-experimental`, with coherent
-phase commits and a frozen-head independent review before promotion. Normal
-users retain `extra_instructions` for personalization. The OAuth ScopeUser
-agent-key question remains deferred while D-379's same-name cross-owner gates
-remain mandatory and mutation-verified.
+The correction train merged into `dev-experimental` after a frozen-head
+independent review and a green CI/preflight run. Phases 225–231 are shipped in
+v1.25. Normal users retain `extra_instructions` for personalization. The OAuth
+ScopeUser agent-key question remains deferred while D-379's same-name
+cross-owner gates remain mandatory and mutation-verified.
