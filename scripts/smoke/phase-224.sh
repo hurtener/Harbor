@@ -470,9 +470,36 @@ ok 'phase 224: the pristine fixture corpus passes drift-audit clean — mutation
 # implying a verification that did not happen.
 # ----------------------------------------------------------------------------
 CASES=0
+SEEN_CASES=''
+# This manifest is intentionally independent of the expect_caught calls below.
+# The OK-line census proves every surviving guard has a case; this list proves
+# that deleting an entire case cannot turn its absence into a false 0-uncovered
+# report. The conditional markdownlint case is omitted because the host may not
+# have npx, in which case it is explicitly SKIPped rather than executed.
+EXPECTED_CASES=(
+    'mirror invariant' 'required design files' 'plan-to-smoke pairing'
+    'required plan headings' 'NUL byte in a phase plan'
+    'RFC cross-reference resolution' 'brief cross-reference resolution'
+    'population census (a scanned corpus went empty)'
+    'forbidden-name scan (root-docs limb)' 'forbidden-name scan (phase-plan limb)'
+    'forbidden-name scan (research-brief limb)' 'forbidden-name scan (internal/ limb)'
+    'forbidden-name scan (cmd/ limb)' 'Makefile drift-audit target'
+    'PREFLIGHT_REQUIRES header absent' 'PREFLIGHT_REQUIRES value unrecognised'
+    'operator-skill frontmatter' 'skills-frontmatter delegation (executable bit lost)'
+    'body-identity delegation (executable bit lost)' 'body-identity delegation (helper missing)'
+    'body-identity delegation (helper reports a violation)' 'playground placeholder regression'
+    'godoc jargon scan' 'godoc jargon scan (test-path anchoring)'
+    'godoc jargon scan (cmd/ root)' 'godoc jargon scan (sdk/ root, the D-282 extension)'
+    'scaffold pin names a phantom release' 'scaffold pin trails by two releases'
+    'release ledger vs CHANGELOG' 'smoke regex portability (scripts/smoke/ root)'
+    'smoke regex portability (scripts/ root)' 'mktemp template portability (scripts/smoke/ root)'
+    'mktemp template portability (scripts/ root)'
+)
 expect_caught() {
     local label="$1" sev="$2" ok_marker="$3" bad_marker="$4" mutate="$5"
     CASES=$((CASES + 1))
+    SEEN_CASES="${SEEN_CASES}
+${label}"
 
     local clean_ok=0 clean_bad=0
     if [ -z "${ok_marker}" ]; then
@@ -889,6 +916,19 @@ expect_caught 'mktemp template portability (scripts/ root)' FAIL \
 # revisited whenever a delegated or FAIL-only guard is added. That limitation
 # is now stated here rather than implied by a number.
 # ----------------------------------------------------------------------------
+# The execution manifest is a second, independent denominator. The signature
+# census below cannot see a deleted expect_caught block when its guard still
+# emits an OK line; this check makes that whole-case deletion fail loudly.
+missing_case=''
+for expected_case in "${EXPECTED_CASES[@]}"; do
+    if ! printf '%s\n' "${SEEN_CASES}" | grep -qxF -- "${expected_case}"; then
+        missing_case="${missing_case} '${expected_case}'"
+    fi
+done
+if [ -n "${missing_case}" ]; then
+    fail "phase 224: declared mutation case(s) did not execute —${missing_case}. A whole-case deletion must be red, not disappear from the coverage census."
+fi
+
 CENSUS_SIGNATURES=(
     'mirror invariant'
     'required: '

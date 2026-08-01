@@ -67,6 +67,7 @@ type Factory func() (state.StateStore, func())
 //   - ListKind_NoMatchesReturnsEmpty
 //   - ListKind_MetacharactersMatchLiterally
 //   - ListKind_AfterClose_Errors
+//   - ListKindForIdentity_IsolatedAndFailClosed
 //   - Save_AfterClose_Errors
 //   - Concurrent_SaveLoad_NoRace
 //   - GoroutineLeak_AfterClose
@@ -619,6 +620,40 @@ func Run(t *testing.T, factory Factory) {
 		_, err := s.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, "k:")
 		if !errors.Is(err, state.ErrStoreClosed) {
 			t.Fatalf("err=%v, want errors.Is ErrStoreClosed", err)
+		}
+	})
+
+	t.Run("ListKindForIdentity_IsolatedAndFailClosed", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		seeds := []state.StateRecord{
+			{ID: "01HABXXX00000005LS", Identity: tripleA(), Kind: "agentcfg.revision.a", Bytes: []byte("a")},
+			{ID: "01HABXXX00000006LS", Identity: tripleA(), Kind: "agentcfg.revision.b", Bytes: []byte("b")},
+			{ID: "01HABXXX00000007LS", Identity: tripleB(), Kind: "agentcfg.revision.a", Bytes: []byte("other")},
+		}
+		for _, rec := range seeds {
+			if err := s.Save(ctx, rec); err != nil {
+				t.Fatalf("Save(%s): %v", rec.ID, err)
+			}
+		}
+		got, err := s.ListKindForIdentity(ctx, tripleA(), "agentcfg.revision.")
+		if err != nil {
+			t.Fatalf("ListKindForIdentity: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("ListKindForIdentity returned %d records, want 2: %+v", len(got), got)
+		}
+		for _, rec := range got {
+			if rec.Identity != tripleA() {
+				t.Fatalf("ListKindForIdentity leaked %+v, want only %+v", rec.Identity, tripleA())
+			}
+		}
+		if _, err := s.ListKindForIdentity(ctx, identity.Quadruple{}, "agentcfg.revision."); !errors.Is(err, state.ErrIdentityRequired) {
+			t.Fatalf("incomplete identity err=%v, want ErrIdentityRequired", err)
+		}
+		if _, err := s.ListKindForIdentity(ctx, tripleA(), ""); !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("empty prefix err=%v, want ErrInvalidRecord", err)
 		}
 	})
 

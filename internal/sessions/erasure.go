@@ -390,7 +390,16 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 	// compliance totals (the count-inflation bug on session-id reuse).
 	stamp := sess.OpenedAt.UnixNano()
 	if hasLedger && ledger.SessionOpenedAt != stamp {
-		e.logger.WarnContext(ctx, "sessions: discarding stale erasure-ledger checkpoint from an abandoned prior lifecycle of a reused session id — its never-emitted record-of-fact is forfeited; this lifecycle's counts start from zero",
+		// A stale checkpoint still represents an erasure whose destructive
+		// work may have completed. Converge its record-of-fact before making
+		// room for this lifecycle: discarding it first would permanently lose
+		// the only auditable result of the prior lifecycle. emitErased is
+		// idempotent per lifecycle stamp, so a retry after a delete failure
+		// neither duplicates the old event nor loses the checkpoint.
+		if err := e.convergeStaleLedger(ctx, id, ledger); err != nil {
+			return zero, err
+		}
+		e.logger.WarnContext(ctx, "sessions: converged stale erasure-ledger checkpoint from an abandoned prior lifecycle before beginning this lifecycle's erasure",
 			slog.String("session_id", id.SessionID),
 			slog.String("tenant_id", id.TenantID),
 			slog.String("user_id", id.UserID),
@@ -501,6 +510,32 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 	// 6. Complete: registry clear + redacted record-of-fact emit + ledger
 	//    cleanup.
 	return e.completeErasure(ctx, id, ledger)
+}
+
+// convergeStaleLedger durably records the completion data held by a prior
+// lifecycle's ledger, then removes only that checkpoint. It deliberately does
+// not write a tombstone or clear registry state: both belong to the live,
+// newer lifecycle currently being erased.
+func (e *CascadeEraser) convergeStaleLedger(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) error {
+	if ledger.SessionOpenedAt == 0 {
+		return fmt.Errorf("sessions: stale erasure ledger has no lifecycle stamp")
+	}
+	resp := prototypes.SessionsDeleteResponse{
+		SessionID:           id.SessionID,
+		Deleted:             true,
+		StateRecordsDeleted: ledger.StateRecordsDeleted,
+		ArtifactsDeleted:    ledger.ArtifactsDeleted,
+		MemoryPurged:        ledger.MemoryPurged,
+	}
+	if !e.recordAlreadyEmitted(ctx, id, ledger.SessionOpenedAt) {
+		if err := e.emitErased(ctx, id, resp, ledger.SessionOpenedAt); err != nil {
+			return fmt.Errorf("sessions: converge stale erasure ledger record: %w", err)
+		}
+	}
+	if err := e.deleteLedger(ctx, id); err != nil {
+		return fmt.Errorf("sessions: converge stale erasure ledger cleanup: %w", err)
+	}
+	return nil
 }
 
 // completeErasure finishes the cascade's final leg. It (re-)clears the

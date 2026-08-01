@@ -263,6 +263,28 @@ func (d *driver) ListKind(_ context.Context, scope state.ListScope, kindPrefix s
 	return out, nil
 }
 
+// ListKindForIdentity implements state.StateStore's non-elevated
+// identity-scoped enumeration surface.
+func (d *driver) ListKindForIdentity(_ context.Context, id identity.Quadruple, kindPrefix string) ([]state.StateRecord, error) {
+	if d.closed.Load() {
+		return nil, state.ErrStoreClosed
+	}
+	if err := state.ValidateListKindForIdentity(id, kindPrefix); err != nil {
+		return nil, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var out []state.StateRecord
+	for key, rec := range d.records {
+		if key.Tenant != id.TenantID || key.User != id.UserID || key.Session != id.SessionID || key.Run != id.RunID || !strings.HasPrefix(key.Kind, kindPrefix) {
+			continue
+		}
+		rec.Bytes = cloneBytes(rec.Bytes)
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
 // Close implements state.StateStore. Idempotent.
 func (d *driver) Close(_ context.Context) error {
 	d.closed.Store(true)

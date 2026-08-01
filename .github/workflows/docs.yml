@@ -27,12 +27,6 @@ permissions:
   pages: write
   id-token: write
 
-# Only one deploy can be in flight at a time. A push to main that lands
-# while a previous build is mid-deploy supersedes it cleanly.
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
 jobs:
   build:
     name: build VitePress site
@@ -81,6 +75,12 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    # PR validation must never join this group: a global workflow-level
+    # Pages group serializes or cancels unrelated pull-request builds. Only
+    # deployments contend for the singleton Pages environment.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

@@ -427,7 +427,7 @@ func (r *registry) ListRevisions(ctx context.Context, id identity.Quadruple, age
 		return nil, err
 	}
 	q := keys.quad
-	recs, err := r.state.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, keys.revPfx)
+	recs, err := r.state.ListKindForIdentity(ctx, keys.quad, keys.revPfx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: list revisions: %w", agentcfg.ErrStateUnavailable, err)
 	}

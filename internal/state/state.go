@@ -157,6 +157,12 @@ type StateStore interface {
 	// never an error.
 	ListKind(ctx context.Context, scope ListScope, kindPrefix string) ([]StateRecord, error)
 
+	// ListKindForIdentity enumerates records for one complete identity whose
+	// Kind starts with kindPrefix. Unlike ListKind, this is not an elevated
+	// maintenance scan: the supplied triple is the complete read boundary.
+	// Prefix matching is literal and kindPrefix must be non-empty.
+	ListKindForIdentity(ctx context.Context, id identity.Quadruple, kindPrefix string) ([]StateRecord, error)
+
 	// Close releases driver resources. Subsequent calls return
 	// ErrStoreClosed (wrapped). Implementations MUST honour ctx
 	// during long teardowns.
@@ -237,6 +243,18 @@ func ValidateRecord(r StateRecord) error {
 func ValidateListKind(scope ListScope, kindPrefix string) error {
 	if !scope.MaintenanceScoped {
 		return ErrMaintenanceScopeRequired
+	}
+	if kindPrefix == "" {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
+// ValidateListKindForIdentity checks the common preconditions for the
+// identity-scoped enumeration surface.
+func ValidateListKindForIdentity(id identity.Quadruple, kindPrefix string) error {
+	if err := ValidateIdentity(id); err != nil {
+		return err
 	}
 	if kindPrefix == "" {
 		return ErrInvalidRecord
