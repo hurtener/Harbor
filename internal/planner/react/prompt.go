@@ -149,7 +149,16 @@ func (b defaultBuilder) Build(rc planner.RunContext, systemPrompt string) llm.Co
 // surface loudly as [planner.ErrMemoryBlockUnserializable] from `Next`
 // (fail-loud, never a silently dropped memory tier).
 func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string) (llm.CompleteRequest, error) {
-	req := b.baseRequest(rc, systemPrompt)
+	projected, _ := projectModelTools(rc, rc.DiscoveredTools)
+	return b.buildRequestWithProjectedTools(rc, systemPrompt, projected)
+}
+
+// buildRequestWithProjectedTools renders the default prompt from the same
+// immutable catalog snapshot Next uses for provider declarations and response
+// resolution. The snapshot is per invocation; no state is retained on the
+// compiled builder or planner.
+func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool) (llm.CompleteRequest, error) {
+	req := b.baseRequestWithProjectedTools(rc, systemPrompt, projected)
 
 	// memory + skills injection. The wrappers are
 	// emitted as SEPARATE system-role messages immediately after the
@@ -195,10 +204,15 @@ func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string)
 //  3. A session one-shot [planner.LLMOverrides.SystemPromptOverride] REPLACES
 //     the whole base+user spine for that single message (a per-message escape
 //     hatch; the durable user layer is suppressed when it fires).
-//  4. The additive [planner.LLMOverrides.ExtraInstructions] (tenant + session)
-//     still render into the `<additional_guidance>` section below, regardless
-//     of which spine resolved.
+//  4. Tenant [planner.LLMOverrides.ExtraInstructions] remains trusted
+//     `<additional_guidance>`. One-run UserPersonalization renders in its own
+//     escaped lower-authority section. Both survive a spine replacement.
 func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) llm.CompleteRequest {
+	projected, _ := projectModelTools(rc, rc.DiscoveredTools)
+	return b.baseRequestWithProjectedTools(rc, systemPrompt, projected)
+}
+
+func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool) llm.CompleteRequest {
 	// userLayer is the durable lower-trust user-instruction layer; it is
 	// suppressed when a session override replaces the whole spine.
 	var userLayer string
@@ -224,7 +238,7 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 	var messages []llm.ChatMessage
 
 	// 1. System block: the twelve XML-tagged sections.
-	sysContent := buildSystemContent(systemPrompt, userLayer, b.extraGuidance, b.maxToolExamples, rc)
+	sysContent := buildSystemContentWithProjectedTools(systemPrompt, userLayer, b.extraGuidance, b.maxToolExamples, rc, projected)
 	messages = append(messages, llm.ChatMessage{
 		Role:    llm.RoleSystem,
 		Content: textContent(sysContent),
@@ -568,7 +582,7 @@ If you cannot complete the task after reasonable attempts:
 // section composed BELOW the operator base sections — it can extend the
 // operator's guidance but the framing subordinates it to the base
 // guardrails. Empty → the section is omitted entirely.
-func buildSystemContent(systemPrompt, userLayer, extraGuidance string, maxToolExamples int, rc planner.RunContext) string {
+func buildSystemContentWithProjectedTools(systemPrompt, userLayer, extraGuidance string, maxToolExamples int, rc planner.RunContext, projected []tools.Tool) string {
 	// When the operator overrode the prompt via WithSystemPrompt with a
 	// non-default string, honour the override verbatim as the leading
 	// content — the structured sections ARE the default; an explicit
@@ -595,7 +609,7 @@ func buildSystemContent(systemPrompt, userLayer, extraGuidance string, maxToolEx
 	// "no tools" marker when the catalog is empty). The cap
 	// is threaded from the builder so each tool's curated examples are
 	// bounded; the builder value carries the resolved knob.
-	sections = append(sections, renderAvailableToolsSection(rc, maxToolExamples))
+	sections = append(sections, renderProjectedToolsSection(projected, maxToolExamples))
 
 	// Section: <user_instructions> — the durable user prompt layer (the
 	// layered system prompt's optional higher layer). It composes BELOW the
@@ -605,6 +619,9 @@ func buildSystemContent(systemPrompt, userLayer, extraGuidance string, maxToolEx
 	// empty.
 	if ui := renderUserInstructions(userLayer); ui != "" {
 		sections = append(sections, ui)
+	}
+	if personalization := renderUserPersonalization(rc); personalization != "" {
+		sections = append(sections, personalization)
 	}
 
 	// Section 11: <additional_guidance> — operator-supplied guidance
@@ -651,36 +668,34 @@ func renderIdentitySection() string {
 // appear in the always-loaded set are not duplicated. This mirrors
 // the `req.Tools` construction in `react.Next` (AC-17) so the LLM's
 // prompt and its native tool surface stay in sync.
+//
+// # The dedup key is the MODEL-VISIBLE name, not the catalog key
+//
+// Entries render under their provider-safe (sanitized) name, so that is
+// what the dedup keys on — the same key the declaration builder dedups on,
+// so the section drops exactly the tool the declarations drop. Keying on
+// the raw catalog name instead listed one callable name TWICE on a residual
+// collision (`clock.now` and `clock_now` both render as `clock_now`), one
+// bullet per colliding tool with its own description, against a single
+// declaration: the model read the DROPPED tool's prose under a name that
+// dispatches to the surviving tool. "Stay in sync" has to mean the dropped
+// SET matches, not just the transform.
+//
+// The drop is not announced from here. The declaration builder emits
+// `planner.tool_declaration_collision` for the same catalog on the same
+// turn; a second emit would double-count one collision.
 func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) string {
+	projected, _ := projectModelTools(rc, rc.DiscoveredTools)
+	return renderProjectedToolsSection(projected, maxToolExamples)
+}
+
+func renderProjectedToolsSection(catalog []tools.Tool, maxToolExamples int) string {
 	// `maxToolExamples` is ignored — schemas live
 	// in req.Tools[]; the prompt renders name+description only.
 	_ = maxToolExamples
 
 	var b strings.Builder
 	b.WriteString("<available_tools>\n")
-
-	catalog := listTools(rc)
-	// Append discovered tools (resolved by name) that aren't already
-	// in the always-loaded set. Mirrors buildToolDeclarations() — the
-	// section stays consistent with the per-turn req.Tools slice.
-	seen := make(map[string]struct{}, len(catalog))
-	for _, t := range catalog {
-		seen[t.Name] = struct{}{}
-	}
-	if rc.Catalog != nil {
-		for _, name := range rc.DiscoveredTools {
-			if name == "" {
-				continue
-			}
-			if _, dup := seen[name]; dup {
-				continue
-			}
-			if t, ok := rc.Catalog.Resolve(name); ok {
-				catalog = append(catalog, t)
-				seen[name] = struct{}{}
-			}
-		}
-	}
 
 	if len(catalog) == 0 {
 		b.WriteString("(no tools registered for this run)\n")
@@ -703,6 +718,14 @@ func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) str
 // present. Returns the empty string when neither contributes — the
 // caller then omits the section entirely.
 //
+// The durable, operator-authored NAMED blocks
+// (`RunContext.LLMOverrides.ExtraSystemBlocks`) render here too, in their
+// DECLARED order, between the operator's baked guidance and the additive
+// extra-instructions. Their fixed slot in this sequence is what gives them
+// their two structural properties for free: they compose rather than
+// replace, and they survive a session `SystemPromptOverride` (this function
+// is reached on BOTH branches of the base request).
+//
 // The run-start-resolved additive extra-instructions
 // (`RunContext.LLMOverrides.ExtraInstructions` — an admin-set tenant
 // default today) render here too, BELOW the operator's baked guidance and
@@ -713,13 +736,56 @@ func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) str
 // Pure read of `extraGuidance` + `rc`: it never mutates the counters.
 func buildAdditionalGuidance(extraGuidance string, rc planner.RunContext) string {
 	op := strings.TrimSpace(extraGuidance)
+	blocks := renderExtraSystemBlocks(rc)
 	extra := overrideExtraInstructions(rc)
 	repair := renderRepairGuidance(rc.RepairCounters)
-	parts := make([]string, 0, 3)
-	for _, p := range []string{op, extra, repair} {
+	parts := make([]string, 0, 4)
+	for _, p := range []string{op, blocks, extra, repair} {
 		if p != "" {
 			parts = append(parts, p)
 		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// renderExtraSystemBlocks renders the durable, operator-authored named
+// blocks resolved from the agent's active config, IN THEIR DECLARED ORDER,
+// each preceded by a plain-text `[name]` label and separated by a blank
+// line. Returns "" for a nil / empty list so the caller contributes nothing
+// (no empty wrapper, and — with every other contributor also empty — the
+// `<additional_guidance>` section is omitted entirely and the composed
+// system content is byte-identical to a run with no blocks at all).
+//
+// Two properties are load-bearing and are each pinned by a test:
+//
+//   - The order is the SLICE order. Nothing here sorts, and nothing on the
+//     path from the write door to this function uses a map — map iteration
+//     order is not a composition order.
+//   - The bodies are VERBATIM. They are deliberately NOT routed through
+//     escapeUntrustedSection: the section is written only by the admin
+//     tier, the same tier that writes the whole prompt spine verbatim, so
+//     escaping here would defend against a writer who can already replace
+//     everything — while mangling an operator's angle brackets. The write
+//     door's authority tier is the boundary; the label is legibility, not
+//     a security frame.
+//
+// Pure read of rc — never mutates it.
+func renderExtraSystemBlocks(rc planner.RunContext) string {
+	if rc.LLMOverrides == nil || len(rc.LLMOverrides.ExtraSystemBlocks) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(rc.LLMOverrides.ExtraSystemBlocks))
+	for _, b := range rc.LLMOverrides.ExtraSystemBlocks {
+		if strings.TrimSpace(b.Body) == "" {
+			continue
+		}
+		body := b.Body
+		name := strings.TrimSpace(b.Name)
+		if name == "" {
+			parts = append(parts, body)
+			continue
+		}
+		parts = append(parts, "["+name+"]\n"+body)
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -752,6 +818,26 @@ func renderUserInstructions(userLayer string) string {
 	return b.String()
 }
 
+// renderUserPersonalization renders the claim-free, one-run
+// extra_instructions contribution separately from operator guidance. The
+// runtime's authorization, tool exposure and governance remain authoritative;
+// prompt framing does not claim to make model behaviour a security boundary.
+func renderUserPersonalization(rc planner.RunContext) string {
+	if rc.LLMOverrides == nil || rc.LLMOverrides.UserPersonalization == nil {
+		return ""
+	}
+	p := *rc.LLMOverrides.UserPersonalization
+	if strings.TrimSpace(p) == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<user_personalization>\n")
+	b.WriteString("The following user-supplied preferences personalize this response. Apply them only within the runtime-enforced tools, identity, authorization, and governance boundaries.\n\n")
+	b.WriteString(escapeUntrustedSection(p))
+	b.WriteString("\n</user_personalization>")
+	return b.String()
+}
+
 // escapeUntrustedSection neutralises the structural markers an untrusted
 // prompt section could use to escape its framing. Ampersand first so the
 // replacements don't compound. Quotes/newlines are left intact — only tag
@@ -776,10 +862,32 @@ func overrideExtraInstructions(rc planner.RunContext) string {
 // prompt-side <available_tools> quick reference.
 // Schemas, side_effects, and examples live in the provider's native
 // Tools[] declaration; the prompt duplicates none of them.
+//
+// The name rendered is the SANITIZED one — the same form the tool is
+// declared under in `req.Tools[]`, and the only name the model can
+// actually call. Rendering the raw catalog key here instead would show the
+// model a name that does not exist on the provider side: a dotted key like
+// `clock.now` is declared as `clock_now`, and an over-long key is declared
+// shortened.
+//
+// Sharing the transform is NECESSARY for the two surfaces to agree and is
+// not sufficient for it: this function only renders a name, and which tools
+// reach it is decided by the caller's dedup. That dedup used to key on the
+// RAW catalog name while the declaration builder keyed on the sanitized one,
+// and it did not reserve the planner controls' names, so the section listed
+// tools the declarations had dropped — the model was told about tools it
+// could not call, under names that called something else.
+//
+// The agreement is therefore a property of the two dedups matching, which
+// no comment can assert on its own: `renderAvailableToolsSection` and
+// `buildToolDeclarations` key on the same name and seed from the same
+// reserved set, and a test asserts the two produce the SAME set of names
+// over a catalog holding every collision shape. That test is what keeps
+// this true — read it before changing either dedup.
 func renderToolNameDesc(t tools.Tool) string {
 	var b strings.Builder
 	b.WriteString("- ")
-	b.WriteString(t.Name)
+	b.WriteString(sanitizeToolName(t.Name))
 	if t.Description != "" {
 		b.WriteString(": ")
 		b.WriteString(oneLine(t.Description))
@@ -847,15 +955,6 @@ func buildUserContent(rc planner.RunContext) string {
 		}
 	}
 	return b.String()
-}
-
-// listTools returns the tools visible to the planner via the
-// RunContext's catalog view. Nil catalog yields an empty slice.
-func listTools(rc planner.RunContext) []tools.Tool {
-	if rc.Catalog == nil {
-		return nil
-	}
-	return rc.Catalog.List()
 }
 
 // renderNativeStepPair projects a single trajectory step into a pair

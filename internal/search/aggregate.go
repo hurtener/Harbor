@@ -63,20 +63,10 @@ func Query(ctx context.Context, reg *SearcherRegistry, callerID identity.Identit
 		return types.SearchResponse{}, err
 	}
 
-	// The identity-axis gate. One `adminScope` read serves all three axes
-	// so an entitled caller is never charged three predicate evaluations,
-	// and the axes are checked in the same order every Searcher checks
-	// them so a refusal names the same axis wherever it fires.
-	if !adminScope(ctx) {
-		if CrossTenantRequested(callerID.TenantID, req) {
-			return types.SearchResponse{}, ErrCrossTenantRequiresAdmin
-		}
-		if CrossUserRequested(callerID.UserID, req) {
-			return types.SearchResponse{}, ErrCrossUserRequiresAdmin
-		}
-		if CrossSessionFanInRequested(req) {
-			return types.SearchResponse{}, ErrCrossSessionRequiresAdmin
-		}
+	// Reuse the exact per-index identity-axis decision before fan-out. The
+	// indexes remain the audit owners because Query can target any subset.
+	if _, err := EvaluateScope(ctx, adminScope, callerID, req); err != nil {
+		return types.SearchResponse{}, err
 	}
 
 	indexes := req.Indexes
@@ -147,6 +137,7 @@ func Query(ctx context.Context, reg *SearcherRegistry, callerID identity.Identit
 				errors.Is(r.err, ErrCrossTenantRequiresAdmin) ||
 				errors.Is(r.err, ErrCrossUserRequiresAdmin) ||
 				errors.Is(r.err, ErrCrossSessionRequiresAdmin) ||
+				errors.Is(r.err, ErrAuditFailed) ||
 				errors.Is(r.err, ErrInvalidRequest) {
 				if firstHardErr == nil {
 					firstHardErr = fmt.Errorf("search.query: index %q hard error: %w", r.idx, r.err)

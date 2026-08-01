@@ -342,6 +342,10 @@ func (s *phase145SaveFailStore) ListKind(ctx context.Context, scope state.ListSc
 	return s.inner.ListKind(ctx, scope, kind)
 }
 
+func (s *phase145SaveFailStore) ListKindForIdentity(ctx context.Context, q identity.Quadruple, kind string) ([]state.StateRecord, error) {
+	return s.inner.ListKindForIdentity(ctx, q, kind)
+}
+
 func (s *phase145SaveFailStore) Close(ctx context.Context) error { return s.inner.Close(ctx) }
 
 func phase145Near(a, b float64) bool {

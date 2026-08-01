@@ -42,11 +42,12 @@ const (
 	declarativeActionAwaitToolName  = "_await_task"
 )
 
-func registerDeclarativeAction(cat tools.ToolCatalog) error {
+func registerDeclarativeAction(rc RegistryContext) error {
+	grantedScopes := append([]string(nil), rc.GrantedScopes...)
 	return inproc.RegisterFunc[DeclarativeActionArgs, DeclarativeActionOut](
-		cat, "declarative_action",
+		rc.Catalog, "declarative_action",
 		func(ctx context.Context, args DeclarativeActionArgs) (DeclarativeActionOut, error) {
-			return declarativeAction(ctx, cat, args)
+			return declarativeActionWithScopes(ctx, rc.Catalog, args, grantedScopes)
 		},
 		tools.WithDescription(
 			"Escape-hatch: dispatch any catalog tool by name + JSON args. "+
@@ -172,7 +173,12 @@ type DeclarativeRepairOutcome struct {
 // (identity failures are policy violations, not LLM-output-format
 // failures the planner can repair).
 func declarativeAction(ctx context.Context, cat tools.ToolCatalog, args DeclarativeActionArgs) (DeclarativeActionOut, error) {
-	if _, err := requireIdentity(ctx); err != nil {
+	return declarativeActionWithScopes(ctx, cat, args, nil)
+}
+
+func declarativeActionWithScopes(ctx context.Context, cat tools.ToolCatalog, args DeclarativeActionArgs, grantedScopes []string) (DeclarativeActionOut, error) {
+	q, err := requireIdentity(ctx)
+	if err != nil {
 		return DeclarativeActionOut{}, err
 	}
 
@@ -207,7 +213,15 @@ func declarativeAction(ctx context.Context, cat tools.ToolCatalog, args Declarat
 		}, nil
 	}
 
-	desc, ok := cat.Resolve(envelope.Tool)
+	catalogName, ok := modelToolNames(cat, q, grantedScopes).ResolveDeclared(envelope.Tool)
+	if !ok {
+		return DeclarativeActionOut{
+			Dispatched: false,
+			Tool:       envelope.Tool,
+			Error:      fmt.Sprintf("tool %q not found in declared catalog", envelope.Tool),
+		}, nil
+	}
+	desc, ok := cat.Resolve(catalogName)
 	if !ok {
 		return DeclarativeActionOut{
 			Dispatched: false,

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: static-only
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 23 smoke — MemoryStore foundation.
 #
-# Phase 23 is a pure Go package (internal/memory + drivers/inmem +
-# conformancetest) with no HTTP / Protocol surface; correctness is
-# verified by `go test -race ./internal/memory/...` under `make test`
-# and the cross-subsystem integration test in
-# `test/integration/memory_state_test.go` (per AGENTS.md §17).
+# internal/memory ships no HTTP / Protocol surface, but `make preflight` does
+# not run `go test`, so a skip-only script left this shipped phase with zero
+# preflight coverage (AGENTS.md §4.2 item 5). Shape follows
+# scripts/smoke/phase-05.sh: a NAMED test, so a rename fails loud.
 #
-# The preflight surface check has nothing to assert here, so this
-# script SKIPs and lets the test gate carry the load.
+# The named test is the in-mem driver's entry point into the shared memory
+# conformance suite (RFC §4.3 — one suite, every driver passes it). Naming
+# the entry point rather than running the whole package is what makes its
+# deletion a preflight FAIL instead of a silently smaller run.
 
 set -euo pipefail
 
@@ -19,6 +20,15 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-skip "phase 23: memory store — Go package only; validated by go test ./internal/memory/..."
+# Per-phase log path — the unit-tests batch runs concurrently.
+LOG="${TMPDIR:-/tmp}/harbor-smoke-phase-23-go-test.log"
+
+if [ -d "internal/memory" ]; then
+    assert_go_tests_pass "${LOG}" './internal/memory/drivers/inmem' \
+        'phase 23: in-mem MemoryStore driver passes the shared conformance suite' \
+        TestInMem_ConformanceSuite
+else
+    skip 'phase 23: internal/memory absent (package not yet implemented)'
+fi
 
 smoke_summary

@@ -9,7 +9,8 @@
 #     the caller's own registration.
 #   - static: Registry.Deregister carries an owner and compares it before the
 #     delete; the projection detach seam and the production detacher thread that
-#     owner through.
+#     owner through. Attach replacement preserves the same boundary through its
+#     transactional StageRegistration owner instead of a destructive pre-delete.
 #   - static: RefreshDiscovery / Probe are CLASSIFIED in godoc as reads, so a
 #     later reader cannot mistake their bare-name resolution for an oversight.
 #   - live: mcp.servers.set_raw_html_trust is identity-mandatory, and a name the
@@ -40,6 +41,13 @@ cd "${ROOT}"
 
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
+
+# The dev bearer is resolved through common.sh's `dev_bearer`, never by a raw
+# ${HARBOR_DEV_TOKEN} read: the raw read is EMPTY outside preflight, so every
+# live leg below degrades to a SKIP while the script still exits 0 — "a SKIP
+# that should be an OK is a bug" (AGENTS.md §4.2 item 5, issue #624).
+# dev_bearer prefers the exported value and falls back to the dev server log.
+HARBOR_DEV_TOKEN="$(dev_bearer)"
 
 REGISTRY_GO='internal/tools/drivers/mcp/registry.go'
 ATTACH_GO='internal/tools/drivers/mcp/attach.go'
@@ -125,10 +133,14 @@ assert_grep "${REGISTRY_GO}" \
     'e\.owner != owner' \
     'phase 211: Deregister compares the owner before removing the entry'
 
-# The owner is threaded from both production callers.
+# Attach replacement no longer calls Deregister before publication: its private
+# StageRegistration receipt atomically refuses a different prior owner and
+# displaces only the captured same-owner entry on Commit. Guard the owner handed
+# into that transaction, while the reconcile path below still guards the direct
+# Deregister caller.
 assert_grep "${ATTACH_GO}" \
-    'Registry\.Deregister\(ctx, ms\.Name, deps\.Owner\)' \
-    'phase 211: the attach replace threads its own owner into the deregister'
+    'Owner:[[:space:]]*p\.deps\.Owner,' \
+    'phase 211: the attach replace threads its own owner into the staged registration'
 
 assert_grep "${PROJECTION_GO}" \
     'Detach\(ctx context\.Context, source string, owner auth\.Owner\) error' \

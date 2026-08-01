@@ -45,6 +45,7 @@ func registerBPTestDriver(t *testing.T) {
 			}
 			return NewProvider([]OAuthConfig{oauthCfg}, ProviderDeps{
 				Store:       deps.Store,
+				Flows:       deps.Flows,
 				Bus:         deps.Bus,
 				Redactor:    deps.Redactor,
 				Coordinator: deps.Coordinator,

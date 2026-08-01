@@ -325,8 +325,8 @@ func (f CatalogFilter) matches(t Tool) bool {
 	return true
 }
 
-// ToolCatalog is Harbor's planner-addressable registry. Three
-// methods. Concrete V1 implementation is the in-memory catalog
+// ToolCatalog is Harbor's planner-addressable registry. Concrete V1
+// implementation is the in-memory catalog
 // (catalog.go); future drivers (remote-catalog, persistent-catalog)
 // plug in behind the interface.
 //
@@ -348,6 +348,20 @@ type ToolCatalog interface {
 	// over the catalog's search index. Returns an empty slice when no
 	// SearchCache is attached (honest "discovery unavailable").
 	Search(ctx context.Context, query string, tags []string, limit int) []Tool
+	// StageSource atomically replaces one provider's complete descriptor set
+	// and returns a receipt that must be committed or rolled back. Rollback is
+	// conditional: it restores the exact prior set only while the staged set is
+	// still current, so it cannot overwrite a later publication.
+	StageSource(source ToolSourceID, replacements []ToolDescriptor, replaceExisting bool) (CatalogSourceSwap, error)
+}
+
+// CatalogSourceSwap is the reversible publication receipt returned by
+// [ToolCatalog.StageSource]. Commit makes the staged set final. Rollback
+// restores the exact prior set iff this receipt's staged set is still current.
+// Both methods are idempotent and safe for concurrent use.
+type CatalogSourceSwap interface {
+	Commit()
+	Rollback() error
 }
 
 // CatalogReplacer is the optional surface a ToolCatalog exposes when

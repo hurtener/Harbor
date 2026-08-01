@@ -152,6 +152,39 @@ func TestRunsHandler_UnknownMethodRoute(t *testing.T) {
 	assertRunsErrCode(t, body, protoerrors.CodeUnknownMethod)
 }
 
+func TestRunsHandler_SetOverrides_RejectsTrailingJSON(t *testing.T) {
+	h, store := newRunsHandler(t)
+	for name, suffix := range map[string]string{
+		"second object": ` {}`,
+		"second scalar": ` true`,
+		"invalid junk":  ` trailing`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, body := doRunsRequest(t, h, "set_overrides",
+				`{"overrides":{"reasoning_effort":"low"}}`+suffix, &runsHandlerID)
+			if code != http.StatusBadRequest {
+				t.Fatalf("code = %d, want 400; body = %s", code, body)
+			}
+			assertRunsErrCode(t, body, protoerrors.CodeInvalidRequest)
+			if _, ok := store.Peek(runsHandlerID); ok {
+				t.Fatal("trailing data reached SetOverrides and mutated the store")
+			}
+		})
+	}
+}
+
+func TestRunsHandler_SetOverrides_AllowsTrailingWhitespace(t *testing.T) {
+	h, store := newRunsHandler(t)
+	code, body := doRunsRequest(t, h, "set_overrides",
+		`{"overrides":{"reasoning_effort":"low"}}`+" \n\t", &runsHandlerID)
+	if code != http.StatusOK {
+		t.Fatalf("code = %d, want 200; body = %s", code, body)
+	}
+	if _, ok := store.Peek(runsHandlerID); !ok {
+		t.Fatal("valid single document was not recorded")
+	}
+}
+
 func assertRunsErrCode(t *testing.T, body []byte, want protoerrors.Code) {
 	t.Helper()
 	var e protoerrors.Error

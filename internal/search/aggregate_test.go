@@ -253,6 +253,23 @@ func TestQuery_PropagatesHardIdentityErrorAsFailure(t *testing.T) {
 	}
 }
 
+func TestQuery_PropagatesAuditFailureInsteadOfReturningPartialRows(t *testing.T) {
+	t.Parallel()
+	good := &stubSearcher{
+		idx:  types.SearchIndexTasks,
+		rows: []types.SearchResultRow{mkRow(types.SearchIndexTasks, "must-not-return", time.Now())},
+	}
+	bad := &stubSearcher{idx: types.SearchIndexSessions, err: search.ErrAuditFailed}
+	reg, _ := search.NewRegistry(good, bad)
+	resp, err := search.Query(context.Background(), reg, callerID(), allowAdmin, types.SearchRequest{})
+	if !errors.Is(err, search.ErrAuditFailed) {
+		t.Fatalf("Query: audit failure should propagate, got response=%+v err=%v", resp, err)
+	}
+	if len(resp.Rows) != 0 {
+		t.Fatalf("Query returned partial rows after audit failure: %+v", resp.Rows)
+	}
+}
+
 func TestQuery_RejectsUnknownIndex(t *testing.T) {
 	t.Parallel()
 	reg, _ := search.NewRegistry(&stubSearcher{idx: types.SearchIndexSessions})

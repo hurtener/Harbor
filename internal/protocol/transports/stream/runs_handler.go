@@ -163,7 +163,17 @@ func decodeRunsBody(body []byte, req any) error {
 	}
 	dec := json.NewDecoder(bytesReader(body))
 	dec.DisallowUnknownFields()
-	return dec.Decode(req)
+	if err := dec.Decode(req); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected trailing JSON document")
+		}
+		return fmt.Errorf("unexpected trailing data: %w", err)
+	}
+	return nil
 }
 
 // writeServiceError maps a runs/protocol.Service error onto a canonical

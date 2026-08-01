@@ -114,7 +114,7 @@ func (f *agentFixture) writeRevision(t *testing.T, id identity.Identity, agentID
 	t.Helper()
 	_, err := f.cfg.SetRevision(context.Background(),
 		identity.Quadruple{Identity: id}, agentID, agentcfg.ConfigScopeAgent,
-		agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"alpha"}}})
+		agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"alpha"}}}, agentcfg.SetOptions{})
 	if err != nil {
 		t.Fatalf("SetRevision(%s/%s): %v", id.TenantID, agentID, err)
 	}

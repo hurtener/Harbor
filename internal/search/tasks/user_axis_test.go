@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
+	eventsubsys "github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -27,6 +28,7 @@ func denyingSearcher(t *testing.T, h *harness) *tasksearch.Searcher {
 	s, err := tasksearch.New(h.sessions, h.tasks, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("tasksearch.New: %v", err)
@@ -41,6 +43,7 @@ func claimedSearcher(t *testing.T, h *harness) *tasksearch.Searcher {
 	s, err := tasksearch.New(h.sessions, h.tasks, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: server.SearchAdminScopeFromAuth,
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("tasksearch.New: %v", err)
@@ -97,6 +100,44 @@ func TestTasksSearcher_NamedForeignUserRefused(t *testing.T) {
 	})
 	if !errors.Is(err, search.ErrCrossUserRequiresAdmin) {
 		t.Fatalf("named foreign user: got %v, want ErrCrossUserRequiresAdmin", err)
+	}
+}
+
+func TestTasksSearcher_GrantedWideningsEmitCanonicalAuditBeforeRead(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		req  types.SearchRequest
+	}{
+		{name: "tenant axis", req: types.SearchRequest{Filter: types.SearchFilter{
+			TenantIDs: []string{"tenant-target"}, UserIDs: []string{attacker},
+		}}},
+		{name: "user axis", req: types.SearchRequest{Filter: types.SearchFilter{UserIDs: []string{victim}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			defer h.cleanup()
+			seedTwoUsersOneTenant(t, h)
+			var got []eventsubsys.Event
+			s, err := tasksearch.New(h.sessions, h.tasks, search.Deps{
+				Redactor: patterns.New(), AdminScope: server.SearchAdminScopeFromAuth,
+				Audit: func(_ context.Context, ev eventsubsys.Event) error {
+					got = append(got, ev)
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("tasksearch.New: %v", err)
+			}
+			ctx := protocolauth.WithScopes(attackerCtx(t), []protocolauth.Scope{protocolauth.ScopeAdmin})
+			if _, err := s.Search(ctx, tc.req); err != nil {
+				t.Fatalf("Search: %v", err)
+			}
+			if len(got) != 1 || got[0].Type != eventsubsys.EventTypeAdminScopeUsed {
+				t.Fatalf("audit events = %+v, want one audit.admin_scope_used", got)
+			}
+		})
 	}
 }
 

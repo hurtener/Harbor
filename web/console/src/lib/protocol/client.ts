@@ -67,6 +67,8 @@ import type {
 	AgentConfigRollbackResponse,
 	AgentConfigSetToolExposureResponse,
 	AgentConfigSetPromptLayersResponse,
+	AgentConfigExtraSystemBlocks,
+	AgentConfigSetExtraSystemBlocksResponse,
 	AgentConfigLLMParams,
 	AgentConfigSetLLMParamsResponse,
 	AgentConfigMCPConnectionDescriptor,
@@ -371,13 +373,28 @@ export class ArtifactsNamespace {
 	constructor(t: Transport) {
 		this.#t = t;
 	}
-	/** `artifacts.list` — the identity-scoped, metadata-only artifact catalog. */
+	/**
+	 * `artifacts.list` — the identity-scoped, metadata-only artifact catalog.
+	 *
+	 * Every method on this namespace passes `omitBodyIdentity`. The five
+	 * artifacts request types scope by `scope` and declare NO `identity`
+	 * field, so the transport's default identity fold would add a member the
+	 * wire type does not define — refused `unknown field "identity"` (400)
+	 * now that the control transport decodes strictly (D-374). The identity
+	 * still rides the `X-Harbor-*` headers, so `resolveIdentity` is
+	 * unaffected. Enforced by the lockstep scan in
+	 * `web/console/scripts/check-protocol-ts-lockstep.mjs`.
+	 */
 	list<R = unknown>(req: Record<string, unknown>): Promise<R> {
-		return this.#t.request<R>('/v1/control/artifacts.list', req);
+		return this.#t.request<R>('/v1/control/artifacts.list', req, 'POST', {
+			omitBodyIdentity: true,
+		});
 	}
 	/** `artifacts.put` — the Console / Playground file-upload pipeline. */
 	put<R = unknown>(req: Record<string, unknown>): Promise<R> {
-		return this.#t.request<R>('/v1/control/artifacts.put', req);
+		return this.#t.request<R>('/v1/control/artifacts.put', req, 'POST', {
+			omitBodyIdentity: true,
+		});
 	}
 	/**
 	 * `artifacts.get` — the driver-independent byte read. Served by every
@@ -388,15 +405,24 @@ export class ArtifactsNamespace {
 	 * (`total_size_bytes` / `returned_bytes` / `truncated`).
 	 */
 	get<R = unknown>(req: Record<string, unknown>): Promise<R> {
-		return this.#t.request<R>('/v1/control/artifacts.get', req);
+		return this.#t.request<R>('/v1/control/artifacts.get', req, 'POST', {
+			omitBodyIdentity: true,
+		});
 	}
 	/** `artifacts.get_ref` — the read-side presigned-URL resolver (D-022/D-026). */
 	getRef<R = unknown>(req: Record<string, unknown>): Promise<R> {
-		return this.#t.request<R>('/v1/control/artifacts.get_ref', req);
+		return this.#t.request<R>('/v1/control/artifacts.get_ref', req, 'POST', {
+			omitBodyIdentity: true,
+		});
 	}
 	/** `artifacts.delete` — admin-gated, audited artifact eviction (Phase 108o / D-187). */
 	delete<R = unknown>(req: { scope: Record<string, unknown>; id: string }): Promise<R> {
-		return this.#t.request<R>('/v1/control/artifacts.delete', req as unknown as Record<string, unknown>);
+		return this.#t.request<R>(
+			'/v1/control/artifacts.delete',
+			req as unknown as Record<string, unknown>,
+			'POST',
+			{ omitBodyIdentity: true }
+		);
 	}
 }
 
@@ -730,6 +756,43 @@ export class ControlNamespace {
 			 * tool provenance stays the runtime's boot-derived value.
 			 */
 			agentId?: string;
+			/**
+			 * D-364 — caller-supplied content admitted into the run's
+			 * `<read_only_external_memory>` tier under the fixed
+			 * runtime-owned `caller_supplied` map key. It COMPOSES with
+			 * the runtime's own retrieval rather than replacing it, and
+			 * it can never reach the trusted system-prompt spine or the
+			 * conversation-memory tier.
+			 *
+			 * Prefer this over `system_prompt_override` for any retrieved
+			 * or recalled content: the override REPLACES the whole
+			 * base+user prompt spine and seats its content in the trusted
+			 * position with no untrusted framing.
+			 *
+			 * Any JSON value. An explicit `null` is refused rather than
+			 * treated as absent, and a document over 32 KiB is refused
+			 * with `invalid_request` at the Protocol edge before a task
+			 * exists. Omitted (the default) keeps the wire shape and run
+			 * behaviour byte-identical.
+			 *
+			 * That 32 KiB is a RESOURCE BOUND and wire-size guard, not a
+			 * security boundary — the same caller can send more through
+			 * `query` (uncapped below the transport envelope) or through
+			 * `agent_config.session.set_user_prompt` (claim-free, 1 MiB
+			 * body, landing inside the system prompt). What contains this
+			 * payload is the tier it lands in, not its size.
+			 *
+			 * NEGOTIATE FIRST: `await client.capabilities()` then branch
+			 * on `caps.has('caller_memory')`. A runtime predating the
+			 * field discards the member and answers 200, so treat the
+			 * capability's absence as unsupported rather than discovering
+			 * the loss after the run.
+			 *
+			 * Harbor does not sanitise the payload — the tier's
+			 * anti-prompt-injection framing IS the mitigation, and
+			 * redaction is the caller's job.
+			 */
+			callerMemory?: unknown;
 		} = {}
 	): Promise<R> {
 		const body: Record<string, unknown> = { query };
@@ -770,6 +833,14 @@ export class ControlNamespace {
 		// sent before the field existed.
 		if (opts.agentId !== undefined && opts.agentId !== '') {
 			body.agent_id = opts.agentId;
+		}
+		// D-364 — caller-supplied external-memory block. Elided when
+		// unset, so a run that supplies none is byte-identical on the wire
+		// to one sent before the field existed. `null` is deliberately NOT
+		// elided: the runtime refuses it loudly rather than treating it as
+		// absent, and swallowing it here would hide that from the caller.
+		if (opts.callerMemory !== undefined) {
+			body.caller_memory = opts.callerMemory;
 		}
 		return this.#t.request<R>('/v1/control/start', body);
 	}
@@ -933,8 +1004,14 @@ export class RunsNamespace {
 	 * `runs.set_overrides` — record the next-message override. `overrides`
 	 * carries `session_id` plus the optional tuning fields
 	 * (`reasoning_effort` / `temperature` / `max_tokens` /
-	 * `system_prompt_override` / `model`). The override is session-scoped
-	 * and one-shot — it applies to the next `user_message` only.
+	 * `system_prompt_override` / `extra_instructions` / `model`). The
+	 * override is session-scoped and one-shot — it applies to the next
+	 * `user_message` only.
+	 *
+	 * `extra_instructions` is ADDITIVE (appended to the system prompt, and
+	 * it survives a `system_prompt_override` in the same request) while
+	 * `system_prompt_override` REPLACES the whole spine. The additive block
+	 * composes BELOW any tenant-wide block and can never clear it.
 	 *
 	 * The parameter is typed against the named `RunOverrides` wire
 	 * interface (NOT `Record<string, unknown>`) so `tsc` rejects a phantom
@@ -1218,6 +1295,36 @@ export class AgentConfigNamespace {
 				agent_id: agentId,
 				prompt_layers: promptLayers as unknown as Record<string, unknown>,
 			},
+		);
+	}
+	/** `agent_config.set_extra_system_blocks` — set the ORDERED list of named
+	 * additive prompt blocks as a WHOLE-SECTION desired-state replace; records
+	 * a revision. Every sibling section is preserved; an empty list clears the
+	 * section. The declared array order IS the render order and is part of the
+	 * content hash, so a re-ordering is a real revision the diff reports. The
+	 * bodies render VERBATIM behind a plain-text `[name]` label and survive a
+	 * session `system_prompt_override`. Admin-scoped — that tier IS the trust
+	 * boundary; a block must never carry user-authored text.
+	 *
+	 * Pass `expectedContentHash` (the `content_hash` from the
+	 * `agent_config.get` this edit was composed against) so a concurrent
+	 * contributor's write is refused with `revision_conflict` rather than
+	 * silently reverted. */
+	setExtraSystemBlocks(
+		agentId: string,
+		extraSystemBlocks: AgentConfigExtraSystemBlocks,
+		expectedContentHash?: string,
+	): Promise<AgentConfigSetExtraSystemBlocksResponse> {
+		const body: Record<string, unknown> = {
+			agent_id: agentId,
+			extra_system_blocks: extraSystemBlocks as unknown as Record<string, unknown>,
+		};
+		if (expectedContentHash) {
+			body.expected_content_hash = expectedContentHash;
+		}
+		return this.#t.request<AgentConfigSetExtraSystemBlocksResponse>(
+			'/v1/agent_config/set_extra_system_blocks',
+			body,
 		);
 	}
 	/** `agent_config.set_llm_params` — set the per-agent LLM-parameter section
@@ -1522,11 +1629,24 @@ export class SearchNamespace {
 	constructor(t: Transport) {
 		this.#t = t;
 	}
-	/** `search.query` — fan-out across sessions/tasks/events/artifacts. */
+	/**
+	 * `search.query` — fan-out across sessions/tasks/events/artifacts.
+	 *
+	 * Passes `omitBodyIdentity`: `SearchRequest` scopes through `filter` and
+	 * declares NO `identity` field, so the transport's default fold would add
+	 * a member the wire type does not define — refused `unknown field
+	 * "identity"` (400) under the strict control-transport decode (D-374).
+	 * Identity still rides the `X-Harbor-*` headers, and the search handler
+	 * does its own identity defaulting + cross-tenant gating on `filter`.
+	 * No e2e spec covers this call, so it is the one site in this class that
+	 * would have failed in production rather than in CI.
+	 */
 	query(req: SearchRequest = {}): Promise<SearchResponse> {
 		return this.#t.request<SearchResponse>(
 			'/v1/control/search.query',
-			req as unknown as Record<string, unknown>
+			req as unknown as Record<string, unknown>,
+			'POST',
+			{ omitBodyIdentity: true }
 		);
 	}
 }

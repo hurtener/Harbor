@@ -356,6 +356,9 @@ func (s *listFailingStore) DeleteScope(context.Context, identity.Identity) (int,
 func (s *listFailingStore) ListKind(context.Context, state.ListScope, string) ([]state.StateRecord, error) {
 	return nil, s.listErr
 }
+func (s *listFailingStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
+	return nil, s.listErr
+}
 func (s *listFailingStore) Close(context.Context) error { return nil }
 
 // scopeRecordingStore records whether ListKind was called with the
@@ -380,6 +383,9 @@ func (s *scopeRecordingStore) ListKind(_ context.Context, scope state.ListScope,
 		return nil, state.ErrMaintenanceScopeRequired
 	}
 	s.sawMaintenanceScope = true
+	return nil, nil
+}
+func (s *scopeRecordingStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
 	return nil, nil
 }
 func (s *scopeRecordingStore) Close(context.Context) error { return nil }

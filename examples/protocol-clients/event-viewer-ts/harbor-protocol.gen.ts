@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:bbe322ce1593356936e4f89548a6808aa50348d686c1dcb2198e2370a03b86d7";
+export const WIRE_SURFACE_DIGEST = "sha256:5f8c5f8e7cc469a5b5bbb89731701d5c684d70bae0f3710524cc8587e6060572";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -33,6 +33,7 @@ export type HarborMethod =
   | "agent_config.session.skills.delete"
   | "agent_config.session.skills.list"
   | "agent_config.session.skills.upsert"
+  | "agent_config.set_extra_system_blocks"
   | "agent_config.set_llm_params"
   | "agent_config.set_llm_provider"
   | "agent_config.set_mcp_discovery_origins"
@@ -154,6 +155,7 @@ export type HarborErrorCode =
   | "payload_invalid"
   | "presign_unsupported"
   | "request_too_large"
+  | "revision_conflict"
   | "runtime_error"
   | "scope_mismatch"
   | "session_erased"
@@ -227,6 +229,7 @@ export type HarborEventType =
   | "mcp.raw_html_trust_toggled"
   | "mcp.resource_offloaded"
   | "mcp.resource_updated"
+  | "memory.caller_block_admitted"
   | "memory.health_changed"
   | "memory.identity_rejected"
   | "memory.item_deleted"
@@ -251,6 +254,7 @@ export type HarborEventType =
   | "planner.max_steps_exceeded"
   | "planner.repair_exhausted"
   | "planner.repair_guidance_injected"
+  | "planner.tool_declaration_collision"
   | "run.hook_dispatched"
   | "run.hook_failed"
   | "runs.overrides_set"
@@ -344,6 +348,7 @@ export interface AgentConfigAddMCPConnectionRequest {
   agent_id: string;
   connection: AgentConfigMCPConnectionDescriptor;
   headers?: Record<string, string>;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigAddMCPConnectionResponse {
@@ -375,6 +380,7 @@ export interface AgentConfigDiff {
   llm_params: AgentConfigLLMParamsDiff;
   hooks: AgentConfigHooksDiff;
   naming: AgentConfigNamingDiff;
+  extra_system_blocks: AgentConfigExtraSystemBlocksDiff;
 }
 
 export interface AgentConfigDiffRequest {
@@ -387,6 +393,17 @@ export interface AgentConfigDiffRequest {
 export interface AgentConfigDiffResponse {
   diff: AgentConfigDiff;
   protocol_version: string;
+}
+
+export interface AgentConfigExtraSystemBlocks {
+  blocks: AgentConfigNamedBlock[];
+}
+
+export interface AgentConfigExtraSystemBlocksDiff {
+  added?: string[];
+  removed?: string[];
+  changed?: string[];
+  reordered: boolean;
 }
 
 export interface AgentConfigGetRequest {
@@ -485,6 +502,11 @@ export interface AgentConfigMCPCredentialInjectionDescriptor {
   meta_key?: string;
 }
 
+export interface AgentConfigNamedBlock {
+  name: string;
+  body: string;
+}
+
 export interface AgentConfigNaming {
   auto?: boolean;
   after_turns?: number;
@@ -543,6 +565,7 @@ export interface AgentConfigPayload {
   llm_params?: AgentConfigLLMParams;
   hooks?: AgentConfigHooks;
   naming?: AgentConfigNaming;
+  extra_system_blocks?: AgentConfigExtraSystemBlocks;
 }
 
 export interface AgentConfigPromptLayers {
@@ -563,6 +586,7 @@ export interface AgentConfigRemoveMCPConnectionRequest {
   identity: IdentityScope;
   agent_id: string;
   name: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigRemoveMCPConnectionResponse {
@@ -575,6 +599,7 @@ export interface AgentConfigRemoveOAuthProviderRequest {
   identity: IdentityScope;
   agent_id: string;
   name: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigRemoveOAuthProviderResponse {
@@ -598,6 +623,7 @@ export interface AgentConfigRollbackRequest {
   identity: IdentityScope;
   agent_id: string;
   revision_id: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigRollbackResponse {
@@ -673,10 +699,23 @@ export interface AgentConfigSessionSkillsUpsertResponse {
   protocol_version: string;
 }
 
+export interface AgentConfigSetExtraSystemBlocksRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  extra_system_blocks: AgentConfigExtraSystemBlocks;
+  expected_content_hash?: string;
+}
+
+export interface AgentConfigSetExtraSystemBlocksResponse {
+  revision: AgentConfigRevisionView;
+  protocol_version: string;
+}
+
 export interface AgentConfigSetLLMParamsRequest {
   identity: IdentityScope;
   agent_id: string;
   llm_params: AgentConfigLLMParams;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetLLMParamsResponse {
@@ -701,6 +740,7 @@ export interface AgentConfigSetMCPDiscoveryOriginsRequest {
   agent_id: string;
   name: string;
   allowed_origins: string[];
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetMCPDiscoveryOriginsResponse {
@@ -716,6 +756,7 @@ export interface AgentConfigSetOAuthProviderRequest {
   identity: IdentityScope;
   agent_id: string;
   provider: AgentConfigOAuthProviderDescriptor;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetOAuthProviderResponse {
@@ -728,6 +769,7 @@ export interface AgentConfigSetPromptLayersRequest {
   identity: IdentityScope;
   agent_id: string;
   prompt_layers: AgentConfigPromptLayers;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetPromptLayersResponse {
@@ -739,6 +781,7 @@ export interface AgentConfigSetRevisionRequest {
   identity: IdentityScope;
   agent_id: string;
   payload: AgentConfigPayload;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetRevisionResponse {
@@ -750,6 +793,7 @@ export interface AgentConfigSetToolExposureRequest {
   identity: IdentityScope;
   agent_id: string;
   tool_exposure: AgentConfigToolExposure;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetToolExposureResponse {
@@ -784,6 +828,7 @@ export interface AgentConfigSkillsDeleteRequest {
   identity: IdentityScope;
   agent_id: string;
   name: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSkillsDeleteResponse {
@@ -814,6 +859,7 @@ export interface AgentConfigSkillsUpsertRequest {
   identity: IdentityScope;
   agent_id: string;
   skill: AgentConfigSkillInput;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSkillsUpsertResponse {
@@ -883,6 +929,7 @@ export interface AgentConfigUserRollbackRequest {
   identity: IdentityScope;
   agent_id: string;
   revision_id: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigUserRollbackResponse {
@@ -894,6 +941,7 @@ export interface AgentConfigUserSetRevisionRequest {
   identity: IdentityScope;
   agent_id: string;
   payload: AgentConfigUserPayload;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigUserSetRevisionResponse {
@@ -905,6 +953,7 @@ export interface AgentConfigUserSkillsDeleteRequest {
   identity: IdentityScope;
   agent_id: string;
   name: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigUserSkillsDeleteResponse {
@@ -926,6 +975,7 @@ export interface AgentConfigUserSkillsUpsertRequest {
   identity: IdentityScope;
   agent_id: string;
   skill: AgentConfigSkillInput;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigUserSkillsUpsertResponse {
@@ -1459,10 +1509,6 @@ export interface GovernanceGetTenantOverridesResponse {
   protocol_version: string;
 }
 
-export interface GovernancePostureRequest {
-  tenant_id?: string;
-}
-
 export interface GovernancePostureResponse {
   default_tier: string;
   resolved_tier: string;
@@ -1540,10 +1586,6 @@ export interface InterventionSummary {
   reason: string;
   outcome: string;
   occurred_at: string;
-}
-
-export interface LLMPostureRequest {
-  tenant_id?: string;
 }
 
 export interface LLMPostureResponse {
@@ -2075,6 +2117,7 @@ export interface RunOverrides {
   temperature?: number;
   max_tokens?: number;
   system_prompt_override?: string;
+  extra_instructions?: string;
   model?: string;
 }
 
@@ -2275,6 +2318,7 @@ export interface StartRequest {
   input_artifact_dispositions?: Record<string, string>;
   output_schema?: unknown;
   agent_id?: string;
+  caller_memory?: unknown;
 }
 
 export interface StartResponse {

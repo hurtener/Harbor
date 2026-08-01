@@ -44,6 +44,7 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/planner/trajectory"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // reasoningLLM is an llm.LLMClient that returns a scripted
@@ -126,6 +127,26 @@ func fixedQ83e(runID string) identity.Quadruple {
 	}
 }
 
+// phase83eCatalogView is the immutable run-visible catalog for the regular
+// `search` call used by the reasoning-capture leg. ReAct projects this exact
+// declaration to the provider and rejects any name outside it.
+type phase83eCatalogView struct {
+	list []tools.Tool
+}
+
+func (c phase83eCatalogView) Resolve(name string) (tools.Tool, bool) {
+	for _, tool := range c.list {
+		if tool.Name == name {
+			return tool, true
+		}
+	}
+	return tools.Tool{}, false
+}
+
+func (c phase83eCatalogView) List() []tools.Tool {
+	return append([]tools.Tool(nil), c.list...)
+}
+
 // TestE2E_Phase83e_ReasoningCaptured drives a single ReAct step and
 // asserts the captured provider-side reasoning trace reaches both the
 // `planner.decision` event payload and a runtime-built
@@ -167,6 +188,11 @@ func TestE2E_Phase83e_ReasoningCaptured(t *testing.T) {
 		Quadruple:  q,
 		Goal:       "find the weather",
 		Trajectory: traj,
+		Catalog: phase83eCatalogView{list: []tools.Tool{{
+			Name:        "search",
+			Description: "search fixture",
+			Loading:     tools.LoadingAlways,
+		}}},
 		Emit: func(ev events.Event) {
 			_ = bus.Publish(ctx, ev)
 		},

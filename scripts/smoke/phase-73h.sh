@@ -40,6 +40,13 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
+# The dev bearer is resolved through common.sh's `dev_bearer`, never by a raw
+# ${HARBOR_DEV_TOKEN} read: the raw read is EMPTY outside preflight, so every
+# live leg below degrades to a SKIP while the script still exits 0 — "a SKIP
+# that should be an OK is a bug" (AGENTS.md §4.2 item 5, issue #624).
+# dev_bearer prefers the exported value and falls back to the dev server log.
+HARBOR_DEV_TOKEN="$(dev_bearer)"
+
 # ----------------------------------------------------------------------------
 # 1. live-server: tasks.list with kinds=["background"] returns 200.
 # ----------------------------------------------------------------------------
@@ -139,7 +146,15 @@ CANCEL_URL="$(api_url /v1/control/cancel)"
 if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     if [[ -n "${HARBOR_DEV_TOKEN:-}" ]]; then
         # Deliberately omit the `tasks.control` scope — request scope=read.
-        body='{"identity":{"tenant":"phase73h-smoke","user":"phase73h-smoke","session":"phase73h-smoke","scope":"read"},"run":"phase73h-smoke-nonexistent-run","payload":{}}'
+        # `run` belongs INSIDE the identity scope — `ControlRequest` declares
+        # only `identity` / `payload` / `event_id`, and `IdentityScope` is
+        # where `run` lives. It sat at the top level here, where the decoder
+        # discarded it; under the strict decode (D-374) that is a 400 at the
+        # DECODE step, which lands before the scope check this leg exists to
+        # exercise. The arm below accepts 400 as well as 403, so the smoke
+        # stayed green while silently testing "any 400" instead of the
+        # scope-refusal path.
+        body='{"identity":{"tenant":"phase73h-smoke","user":"phase73h-smoke","session":"phase73h-smoke","run":"phase73h-smoke-nonexistent-run","scope":"read"},"payload":{}}'
         response=$(curl -s --max-time 5 \
             -X POST \
             -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \

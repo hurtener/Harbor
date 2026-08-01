@@ -110,7 +110,7 @@ type ConnectionReattacher interface {
 	// per-(owner, name) backoff, so the sweep never goes silent and never spams.
 	// The returned error is for the caller's loud log + the joined sweep error;
 	// it never means "fail the run".
-	Reattach(ctx context.Context, owner auth.Owner, id identity.Quadruple, desc agentcfg.MCPConnectionDescriptor) error
+	Reattach(ctx context.Context, owner auth.Owner, id identity.Quadruple, desc agentcfg.MCPConnectionDescriptor) (changed bool, err error)
 }
 
 // ErrReconcileRead wraps an active-revision read failure inside
@@ -304,16 +304,11 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 		// concrete gets.
 		return detached, 0, errors.Join(errs...)
 	}
-	// The ATTACH pass. The attached set is re-read AFTER the detach pass so a
-	// name torn down above is a candidate here (the within-one-transition
-	// replace), and so the live view is as fresh as this sweep can make it. The
-	// reattacher re-checks under its own lock regardless — this read is the cheap
-	// filter, not the guard.
-	live := make(map[string]struct{})
-	for _, src := range detacher.AttachedSources(ctx, owner) {
-		live[src] = struct{}{}
-	}
-	// Deterministic order so a partially-cancelled sweep is reproducible and the
+	// The ATTACH pass considers every declared descriptor, including names that
+	// are already live. Only the concrete owns the atomic owner+fingerprint read
+	// needed to distinguish an exact no-op from a same-name descriptor change;
+	// a name-only filter here would make URL/auth/annotation edits inert forever.
+	// Deterministic order keeps a partially-cancelled sweep reproducible and the
 	// tests can pin which connections were reached.
 	names := make([]string, 0, len(declared))
 	for name := range declared {
@@ -334,14 +329,14 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 			// or replaces a boot server.
 			continue
 		}
-		if _, isLive := live[name]; isLive {
-			continue // already carried under this owner — nothing to re-establish.
-		}
-		if aerr := reattacher.Reattach(ctx, owner, id, declared[name]); aerr != nil {
+		changed, aerr := reattacher.Reattach(ctx, owner, id, declared[name])
+		if aerr != nil {
 			errs = append(errs, &reattachFailure{name: name, err: aerr})
 			continue
 		}
-		attached++
+		if changed {
+			attached++
+		}
 	}
 	return detached, attached, errors.Join(errs...)
 }
@@ -1040,6 +1035,42 @@ func ActivePromptLayers(ctx context.Context, reg agentcfg.Registry, agentID stri
 	return base, user, true, nil
 }
 
+// ActiveExtraSystemBlocks resolves the agent's active-config ORDERED
+// additive prompt blocks at run start. It returns the blocks in their
+// declared order and whether the active revision carries a blocks section
+// (ok). A nil registry, an empty agentID, an agent with no active revision,
+// or an active revision with no blocks section returns (nil, false, nil) —
+// the backward-compatible "no durable blocks" path, which contributes
+// nothing to the prompt. A registry read error is returned so the caller
+// fails the run loudly (CLAUDE.md §13): no silent fall-through.
+//
+// The returned slice is a fresh copy, so the run's snapshot cannot be
+// mutated through the registry's retained payload and vice versa. The
+// active revision is read ONCE per run; concurrent / in-flight runs keep
+// their own snapshot (the concurrent-reuse contract). Only the identity
+// triple is used (the registry is identity-scoped, never keyed by run) —
+// agent_id is a KEY, never an isolation filter (CLAUDE.md §6).
+func ActiveExtraSystemBlocks(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) ([]agentcfg.NamedBlock, bool, error) {
+	if reg == nil || agentID == "" {
+		return nil, false, nil
+	}
+	rev, found, rerr := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	if rerr != nil {
+		return nil, false, rerr
+	}
+	if !found || rev.Payload.ExtraSystemBlocks == nil {
+		return nil, false, nil
+	}
+	blocks := rev.Payload.ExtraSystemBlockList()
+	if len(blocks) == 0 {
+		return nil, false, nil
+	}
+	// Positional copy — the declared order IS the render order.
+	out := make([]agentcfg.NamedBlock, len(blocks))
+	copy(out, blocks)
+	return out, true, nil
+}
+
 // ApplyPromptLayers overlays the agent's active-config durable prompt layers
 // onto the run's resolved per-run override bundle at run start. It is the
 // ONE shared seam both run-loop drivers (the production dev driver and the
@@ -1082,9 +1113,20 @@ func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, overlayStore 
 	}
 	user := composeUserLayer(adminUser, durableUser, overlay.UserPrompt)
 
+	// The durable ORDERED additive prompt blocks. They ride the same
+	// run-start seam as the prompt layers so both binaries reach them
+	// through ONE function and cannot drift, but they are a DIFFERENT
+	// position: they compose into the operator-trusted additive guidance
+	// and are NOT suppressed by a session SystemPromptOverride, which
+	// replaces only the base+user spine.
+	blocks, _, berr := ActiveExtraSystemBlocks(ctx, reg, agentID, id)
+	if berr != nil {
+		return nil, berr
+	}
+
 	// The admin base is ALWAYS the spine — it is never sourced from the
 	// session overlay (base-unwritable-by-session is structural).
-	if base == "" && user == "" {
+	if base == "" && user == "" && len(blocks) == 0 {
 		return ov, nil
 	}
 	if ov == nil {
@@ -1097,6 +1139,15 @@ func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, overlayStore 
 	if user != "" {
 		u := user
 		ov.UserPromptLayer = &u
+	}
+	if len(blocks) > 0 {
+		// Positional projection onto the planner shape — no sort, no map:
+		// the declared order is the render order.
+		pb := make([]planner.NamedBlock, 0, len(blocks))
+		for _, b := range blocks {
+			pb = append(pb, planner.NamedBlock{Name: b.Name, Body: b.Body})
+		}
+		ov.ExtraSystemBlocks = pb
 	}
 	return ov, nil
 }

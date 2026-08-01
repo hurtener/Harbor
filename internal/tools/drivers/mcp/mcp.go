@@ -378,6 +378,9 @@ func (c Config) validate() error {
 		if c.URL == "" {
 			return fmt.Errorf("%w: %s transport requires URL", ErrInvalidConfig, mode)
 		}
+		if _, err := config.NormalizeMCPHTTPURL(c.URL); err != nil {
+			return fmt.Errorf("%w: %s transport URL: %w", ErrInvalidConfig, mode, err)
+		}
 	case TransportStdio:
 		if len(c.Command) == 0 {
 			return fmt.Errorf("%w: stdio transport requires Command (argv form)", ErrInvalidConfig)
@@ -388,6 +391,11 @@ func (c Config) validate() error {
 	case TransportAuto:
 		if c.URL == "" && len(c.Command) == 0 {
 			return fmt.Errorf("%w: auto mode requires URL or Command", ErrInvalidConfig)
+		}
+		if c.URL != "" {
+			if _, err := config.NormalizeMCPHTTPURL(c.URL); err != nil {
+				return fmt.Errorf("%w: auto transport URL: %w", ErrInvalidConfig, err)
+			}
 		}
 	}
 	// Identity for server-pushed events: a fully-populated default

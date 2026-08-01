@@ -29,6 +29,14 @@ func (nilTagsCache) Close() error                             { return nil }
 // emit boundary must normalize nil to an empty array.
 func TestToolSearch_NilTags_SerializesAsEmptyArray(t *testing.T) {
 	cat := tools.NewCatalog(tools.WithSearchCache(nilTagsCache{}))
+	if err := cat.Register(tools.ToolDescriptor{
+		Tool: tools.Tool{Name: "untagged", Description: "a discovered tool with no tags"},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register untagged: %v", err)
+	}
 
 	// Precondition: the catalog yields a tool with a nil Tags slice.
 	if res := cat.Search(context.Background(), "anything", nil, 10); len(res) != 1 || res[0].Tags != nil {

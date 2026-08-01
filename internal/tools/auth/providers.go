@@ -40,8 +40,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"reflect"
 	"sort"
 	"sync"
+	"time"
 )
 
 // ProviderSet is the runtime home of constructed OAuth provider instances the
@@ -65,6 +68,9 @@ type ProviderSet interface {
 	// install fails loud (ErrProviderOwnerCollision); a re-install by the SAME
 	// owner replaces (and closes) the prior instance. owner must be non-zero.
 	Install(owner Owner, name string, p OAuthProvider) error
+	// Stage installs a provider without closing the displaced same-owner
+	// instance and returns an exact commit/rollback receipt.
+	Stage(owner Owner, name string, p OAuthProvider) (ProviderSwap, error)
 	// Uninstall removes the runtime-installed provider under name IFF owner
 	// matches the installed entry's owner, and CLOSES it (so a still-bound
 	// connection's next call fails LOUD, never an unauthenticated dial). A
@@ -83,6 +89,12 @@ type ProviderSet interface {
 	// owner-collision refusal. Never weakens the credential-sink invariant
 	// (owner is a reconcile-view tag, never a credential sink).
 	Uninstall(ctx context.Context, owner Owner, name string) error
+}
+
+// ProviderSwap is a reversible provider-set publication receipt.
+type ProviderSwap interface {
+	Commit(ctx context.Context) error
+	Rollback() error
 }
 
 // ProviderSet sentinel errors.
@@ -119,8 +131,9 @@ type providerEntry struct {
 
 // providerSet is the internally-synchronised concrete ProviderSet.
 type providerSet struct {
-	mu      sync.RWMutex
-	entries map[string]providerEntry
+	mu          sync.RWMutex
+	entries     map[string]providerEntry
+	generations map[string]uint64
 }
 
 // NewProviderSet builds a ProviderSet seeded from the boot-built provider map
@@ -135,7 +148,7 @@ func NewProviderSet(seed map[string]OAuthProvider) ProviderSet {
 		}
 		entries[name] = providerEntry{prov: p}
 	}
-	return &providerSet{entries: entries}
+	return &providerSet{entries: entries, generations: make(map[string]uint64)}
 }
 
 func (s *providerSet) Get(name string) (OAuthProvider, bool) {
@@ -176,14 +189,33 @@ func (s *providerSet) InstalledFor(owner Owner) []string {
 }
 
 func (s *providerSet) Install(owner Owner, name string, p OAuthProvider) error {
+	swap, err := s.Stage(owner, name, p)
+	if err != nil {
+		return err
+	}
+	// Install's publication is already committed; retain the historical
+	// contract that displaced-provider cleanup cannot turn it into a reported
+	// install refusal. Prepared callers use the receipt directly and warn.
+	// Install predates the context-aware staged API. Bridge that legacy
+	// non-context boundary with a bounded cleanup context so a displaced
+	// provider cannot stall installation indefinitely.
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := swap.Commit(cleanupCtx); err != nil {
+		slog.Warn("auth: provider installed but displaced provider cleanup failed", "provider", name, "error", err.Error())
+	}
+	return nil
+}
+
+func (s *providerSet) Stage(owner Owner, name string, p OAuthProvider) (ProviderSwap, error) {
 	if name == "" {
-		return ErrProviderNameEmpty
+		return nil, ErrProviderNameEmpty
 	}
 	if p == nil {
-		return ErrProviderNilInstance
+		return nil, ErrProviderNilInstance
 	}
 	if owner.IsZero() || owner.Tenant == "" || owner.Agent == "" {
-		return fmt.Errorf("%w (name=%q tenant=%q agent=%q)", ErrProviderOwnerMissing, name, owner.Tenant, owner.Agent)
+		return nil, fmt.Errorf("%w (name=%q tenant=%q agent=%q)", ErrProviderOwnerMissing, name, owner.Tenant, owner.Agent)
 	}
 	s.mu.Lock()
 	existing, ok := s.entries[name]
@@ -191,20 +223,75 @@ func (s *providerSet) Install(owner Owner, name string, p OAuthProvider) error {
 		switch {
 		case existing.owner.IsZero():
 			s.mu.Unlock()
-			return fmt.Errorf("%w: %q", ErrProviderBootCollision, name)
+			return nil, fmt.Errorf("%w: %q", ErrProviderBootCollision, name)
 		case existing.owner != owner:
 			s.mu.Unlock()
-			return fmt.Errorf("%w: %q (installed by tenant=%q agent=%q)", ErrProviderOwnerCollision, name, existing.owner.Tenant, existing.owner.Agent)
+			return nil, fmt.Errorf("%w: %q (installed by tenant=%q agent=%q)", ErrProviderOwnerCollision, name, existing.owner.Tenant, existing.owner.Agent)
 		}
 		// Same-owner re-install (upsert): replace and close the prior instance
 		// AFTER releasing the lock.
 	}
 	s.entries[name] = providerEntry{prov: p, owner: owner}
+	s.generations[name]++
+	generation := s.generations[name]
 	s.mu.Unlock()
-	if ok && existing.prov != nil {
-		_ = existing.prov.Close(context.Background())
+	return &providerSwap{set: s, name: name, prior: existing, hadPrior: ok, staged: p, generation: generation}, nil
+}
+
+type providerSwap struct {
+	mu         sync.Mutex
+	set        *providerSet
+	name       string
+	prior      providerEntry
+	hadPrior   bool
+	staged     OAuthProvider
+	generation uint64
+	done       bool
+}
+
+func (s *providerSwap) Commit(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return nil
+	}
+	s.done = true
+	if s.hadPrior && s.prior.prov != nil && !sameOAuthProvider(s.prior.prov, s.staged) {
+		return s.prior.prov.Close(ctx)
 	}
 	return nil
+}
+
+func (s *providerSwap) Rollback() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return nil
+	}
+	s.set.mu.Lock()
+	defer s.set.mu.Unlock()
+	if s.set.generations[s.name] != s.generation {
+		return fmt.Errorf("auth: provider rollback refused for %q: staged provider is no longer current", s.name)
+	}
+	if s.hadPrior {
+		s.set.entries[s.name] = s.prior
+	} else {
+		delete(s.set.entries, s.name)
+	}
+	s.set.generations[s.name]++
+	s.done = true
+	return nil
+}
+
+func sameOAuthProvider(a, b OAuthProvider) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
+	if av.Type() != bv.Type() || !av.Type().Comparable() {
+		return false
+	}
+	return av.Interface() == bv.Interface()
 }
 
 // Uninstall implements ProviderSet.Uninstall. Owner-scoping is enforced HERE at
@@ -231,6 +318,7 @@ func (s *providerSet) Uninstall(ctx context.Context, owner Owner, name string) e
 		return fmt.Errorf("%w: %q (installed by tenant=%q agent=%q)", ErrProviderOwnerCollision, name, e.owner.Tenant, e.owner.Agent)
 	}
 	delete(s.entries, name)
+	s.generations[name]++
 	s.mu.Unlock()
 	// Close the released instance so a still-bound connection's next call fails
 	// LOUD (never an unauthenticated dial). Close is idempotent.

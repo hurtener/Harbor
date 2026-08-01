@@ -47,6 +47,7 @@ import (
 	"github.com/hurtener/Harbor/internal/planner/react"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // devstackTrajReasoning is the deterministic provider-side trace the
@@ -54,9 +55,9 @@ import (
 const devstackTrajReasoning = "scripted reasoning for trajectory parity"
 
 // devstackTrajLLM replays: call 1 — a reasoning trace + one regular
-// tool-call (to a tool the catalog does not declare, so the executor's
-// loud error observation drives the repair loop and the step is
-// appended with the trace); call 2 — the terminal content answer.
+// tool-call through the declared model-visible name; call 2 — the terminal
+// content answer. Strict declaration resolution intentionally rejects
+// undeclared names before they can become executor trajectory steps.
 type devstackTrajLLM struct {
 	mu    sync.Mutex
 	calls int
@@ -72,7 +73,7 @@ func (c *devstackTrajLLM) Complete(_ context.Context, _ llm.CompleteRequest) (ll
 			Reasoning: devstackTrajReasoning,
 			ToolCalls: []llm.ToolCallStructured{{
 				ID:   "traj-call-1",
-				Name: "tool_the_catalog_never_declared",
+				Name: "trajectory_trace",
 				Args: json.RawMessage(`{}`),
 			}},
 		}, nil
@@ -92,6 +93,12 @@ func TestE2E_DevstackTasksGet_CarriesTrajectoryEnrichment(t *testing.T) {
 	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
 		LLMConfigSnapshot: phase110bLLMSnapshot(cfg),
 		PlannerOverride:   react.New(&devstackTrajLLM{}),
+		PreRegisterTools: []tools.ToolDescriptor{{
+			Tool: tools.Tool{Name: "trajectory.trace", Description: "trajectory enrichment fixture", Transport: tools.TransportInProcess, Source: "trajectory-test"},
+			Invoke: func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+				return tools.ToolResult{Value: "trace recorded"}, nil
+			},
+		}},
 	})
 	defer stack.Close()
 	if stack.RunLoopDriver == nil {

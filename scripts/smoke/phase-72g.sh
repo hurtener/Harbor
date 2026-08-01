@@ -33,6 +33,13 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
+# The dev bearer is resolved through common.sh's `dev_bearer`, never by a raw
+# ${HARBOR_DEV_TOKEN} read: the raw read is EMPTY outside preflight, so every
+# live leg below degrades to a SKIP while the script still exits 0 — "a SKIP
+# that should be an OK is a bug" (AGENTS.md §4.2 item 5, issue #624).
+# dev_bearer prefers the exported value and falls back to the dev server log.
+HARBOR_DEV_TOKEN="$(dev_bearer)"
+
 # ----------------------------------------------------------------------
 # Discover the dev Bearer token (parsed from the preflight server log
 # per the Phase 64 convention). If the log isn't present we SKIP the
@@ -41,11 +48,53 @@ source "scripts/smoke/common.sh"
 # ----------------------------------------------------------------------
 TOKEN=""
 if [ -n "${HARBOR_DATA_DIR:-}" ] && [ -f "${HARBOR_DATA_DIR}/server.log" ]; then
-    TOKEN="$(grep -m1 '^HARBOR_DEV_TOKEN=' "${HARBOR_DATA_DIR}/server.log" 2>/dev/null | sed 's/^HARBOR_DEV_TOKEN=//' || true)"
+    TOKEN="$(dev_bearer)"
 fi
 
 CONTROL_GOV_URL="$(api_url /v1/control/governance.posture)"
 CONTROL_LLM_URL="$(api_url /v1/control/llm.posture)"
+
+# ----------------------------------------------------------------------
+# STATIC assertions — the cross-tenant AUDIT EVENT NAME, pinned against an
+# oracle that is not the constant.
+#
+# PLACEMENT IS LOAD-BEARING: this block sits ABOVE every live probe, and
+# above the `if [ -z "${TOKEN}" ] … exit` below it. Its first draft sat next
+# to the cross-tenant legs it documents, which reads better and is wrong —
+# that region is past the early exit, so the whole pin was unreachable on any
+# run without a server and reported nothing while the script exited 0. A
+# truthfulness guard over a Go source file has no business behind a route
+# probe (the same correction D-374 records making to phase-219's D-375 leg).
+#
+# WHAT IT GUARDS. The event name is a wire contract with every subscriber's
+# filter, and no live leg here can observe it: this smoke never subscribes to
+# the bus, and the dev bearer carries both admin claims so its crossing is
+# always granted.
+#
+# WHY A HAND-WRITTEN LITERAL. `TestPostureDispatch_CrossTenantConfigReadEmitsAudit`
+# compares the emitted `ev.Type` against the very constants the emitter
+# publishes, so it is true by construction and a rename keeps it green.
+# `docs/site/protocol/events.md` is GENERATED from the canonical registry and
+# gated by `make protocol-docs-gen-check`, so regenerating it after a rename
+# keeps it agreeing with the constant too. Both sites track the constant;
+# neither can detect a change to it. Only a THIRD copy that does not derive
+# from it can — the literals below, typed out by hand, are that copy.
+POSTURE_EVENT_GOV='governance\.posture_read_admin'
+POSTURE_EVENT_LLM='llm\.posture_read_admin'
+GENERATED_EVENTS_MD='docs/site/protocol/events.md'
+
+if [ -f "${GENERATED_EVENTS_MD}" ]; then
+    assert_grep_present "\"${POSTURE_EVENT_GOV}\"" 'internal/governance/events.go' \
+        'phase-72g: the governance cross-tenant audit event name is the literal this smoke pins'
+    assert_grep_present "\"${POSTURE_EVENT_LLM}\"" 'internal/llm/events.go' \
+        'phase-72g: the llm cross-tenant audit event name is the literal this smoke pins'
+    assert_grep_present "^## .${POSTURE_EVENT_GOV}." "${GENERATED_EVENTS_MD}" \
+        'phase-72g: the generated Protocol event reference publishes the same governance event name'
+    assert_grep_present "^## .${POSTURE_EVENT_LLM}." "${GENERATED_EVENTS_MD}" \
+        'phase-72g: the generated Protocol event reference publishes the same llm event name'
+else
+    fail "phase-72g: ${GENERATED_EVENTS_MD} is missing — the generated Protocol event reference is one of the two sites the audit-event-name pin compares, so the pin cannot run and must not read as passing"
+fi
 
 # ----------------------------------------------------------------------
 # Assertion 1 — identity-mandatory: governance.posture without a Bearer
@@ -202,55 +251,101 @@ if [ "${status_llm}" = "200" ] && [ -f "${LLM_BODY}" ] && command -v jq >/dev/nu
 fi
 
 # ----------------------------------------------------------------------
-# Assertion 6 — cross-tenant rejection on governance.posture. A
-# non-admin caller requesting a different tenant_id returns 403
-# (D-079's auth.ScopeAdmin gate). The dev token is non-admin by
-# construction (Phase 64's dev signer mints user-scope tokens).
+# Assertions 6 + 7 — the D-079 cross-tenant path on governance.posture /
+# llm.posture.
+#
+# THESE ASSERTIONS WERE VACUOUS, AND THE SKIP TEXT MISDESCRIBED WHY.
+# They posted `{"tenant_id":"other-tenant"}` expecting 403. But the posture
+# family is decoded into the SHARED `RuntimeInfoRequest` envelope
+# (internal/protocol/transports/control/posture_handler.go), which has no
+# `tenant_id` field — nothing has ever decoded one. The member was
+# discarded, the request reduced to an empty body identity, the handler
+# backfilled it from the verified identity, and the answer was 200: the
+# caller's OWN posture. The `200` arm then reported SKIP blaming "dev token
+# carries admin scope", which was not the reason and is exactly why nobody
+# looked. The cross-tenant gate was never exercised.
+#
+# THE REAL SELECTOR IS `identity.tenant`. `PostureSurface.Dispatch`
+# (internal/protocol/posture.go) compares the body tenant against the
+# ctx-verified tenant and demands `auth.ScopeAdmin` / `auth.ScopeConsoleFleet`,
+# emitting `governance.posture_read_admin`. The `tenant_id` field was a second,
+# never-implemented spelling of that and has been REMOVED (D-374).
+#
+# WHAT A LIVE PROBE CAN AND CANNOT REACH. `harbor dev` mints ONE bearer and it
+# carries both admin-tier claims, so every crossing this bearer sends is
+# legitimately GRANTED — the refusal half is unreachable here, the same
+# constraint phase-218 records for its own widening probe. So these legs assert
+# the half a live probe CAN reach: the crossing is ACCEPTED and answers. The
+# refusal half is pinned by `TestPostureDispatch_CrossTenantRequiresAdmin`
+# (both directions).
+#
+# THE AUDIT EMIT IS PINNED BY `TestPostureDispatch_CrossTenantConfigReadEmitsAudit`
+# — BUT NOT ITS NAME, WHICH IS WHY THE STATIC LEG AT THE TOP OF THIS SCRIPT
+# EXISTS (it sits above the no-token early exit, not here). That test
+# subscribes and compares `ev.Type` against `governance.EventTypePostureReadAdmin`
+# / `llm.EventTypePostureReadAdmin` — the SAME constants the emitter publishes
+# (`posture.go:697` / `:708`). It therefore asserts "the event equals the
+# constant the emitter used", which is true by construction: renaming the
+# constant renames both sides and the test stays green while every subscriber's
+# filter silently breaks. An oracle derived from its subject is not an oracle.
+#
+# A 400 here is a FAIL, not a skip: it means the body shape stopped matching
+# the envelope the handler decodes, which is the defect this pair just had.
 # ----------------------------------------------------------------------
-cross_gov=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-    -X POST -H "Content-Type: application/json" \
-    -H "Authorization: Bearer ${TOKEN}" \
-    --data '{"tenant_id":"other-tenant"}' \
-    "${CONTROL_GOV_URL}" || true)
-case "${cross_gov}" in
-    403)
-        ok "phase-72g: governance.posture rejects cross-tenant non-admin request (403)"
-        ;;
-    404|405|501|000)
-        skip "phase-72g: governance.posture cross-tenant path not yet implemented (${cross_gov})"
-        ;;
-    200)
-        # If the dev signer mints an admin token (post-V1 / config change), the request
-        # succeeds — we DOWNGRADE to SKIP rather than FAIL since the assertion's intent
-        # is "non-admin → 403" and the precondition (non-admin token) was not met.
-        skip "phase-72g: dev token carries admin scope; cross-tenant rejection check inapplicable"
-        ;;
-    *)
-        fail "phase-72g: governance.posture cross-tenant status = ${cross_gov}, want 403"
-        ;;
-esac
+bearer_claim() {
+    local claim="$1"
+    if [ -z "${TOKEN:-}" ] || ! command -v base64 >/dev/null 2>&1; then
+        return 1
+    fi
+    local payload
+    payload="$(printf '%s' "${TOKEN}" | cut -d. -f2)"
+    payload="${payload//-/+}"
+    payload="${payload//_//}"
+    while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="${payload}="; done
+    local decoded
+    decoded="$(printf '%s' "${payload}" | base64 -d 2>/dev/null || printf '%s' "${payload}" | base64 -D 2>/dev/null)" || return 1
+    printf '%s' "${decoded}" | sed -n "s/.*\"${claim}\":\"\([^\"]*\)\".*/\1/p"
+}
 
-# ----------------------------------------------------------------------
-# Assertion 7 — cross-tenant rejection on llm.posture (same shape).
-# ----------------------------------------------------------------------
-cross_llm=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-    -X POST -H "Content-Type: application/json" \
-    -H "Authorization: Bearer ${TOKEN}" \
-    --data '{"tenant_id":"other-tenant"}' \
-    "${CONTROL_LLM_URL}" || true)
-case "${cross_llm}" in
-    403)
-        ok "phase-72g: llm.posture rejects cross-tenant non-admin request (403)"
-        ;;
-    404|405|501|000)
-        skip "phase-72g: llm.posture cross-tenant path not yet implemented (${cross_llm})"
-        ;;
-    200)
-        skip "phase-72g: dev token carries admin scope; cross-tenant rejection check inapplicable"
-        ;;
-    *)
-        fail "phase-72g: llm.posture cross-tenant status = ${cross_llm}, want 403"
-        ;;
-esac
+BEARER_USER="$(bearer_claim user || true)"
+BEARER_SESSION="$(bearer_claim session || true)"
+
+if [ -z "${TOKEN}" ]; then
+    skip 'phase-72g: no dev bearer resolved — the cross-tenant legs need an authenticated caller'
+elif [ -z "${BEARER_USER}" ] || [ -z "${BEARER_SESSION}" ]; then
+    # The posture body-scope policy PINS user and session; only the tenant is
+    # admin-elevatable. Without the bearer's own two components the probe
+    # cannot express "another tenant, my own user/session" and would be
+    # testing the pinned components instead of the gate.
+    skip 'phase-72g: could not read the bearer own (user, session) claims — the cross-tenant legs are pinned by the posture unit suite'
+else
+    CROSS_BODY="{\"identity\":{\"tenant\":\"phase72g-foreign-tenant\",\"user\":\"${BEARER_USER}\",\"session\":\"${BEARER_SESSION}\"}}"
+    for probe in "governance.posture:${CONTROL_GOV_URL}" "llm.posture:${CONTROL_LLM_URL}"; do
+        pname="${probe%%:*}"
+        purl="${probe#*:}"
+        cross=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+            -X POST -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            --data "${CROSS_BODY}" \
+            "${purl}" || true)
+        case "${cross}" in
+            200)
+                ok "phase-72g: ${pname} GRANTS a cross-tenant read to the admin-claimed dev bearer (200) — the D-079 crossing is live and the body shape matches the decoded envelope"
+                ;;
+            403)
+                fail "phase-72g: ${pname} refused a cross-tenant read (403) to a bearer carrying the admin claim — the D-079 grant path is broken"
+                ;;
+            400)
+                fail "phase-72g: ${pname} answered 400 to the cross-tenant body — the request shape no longer matches the envelope the posture handler decodes (RuntimeInfoRequest); this is the vacuous-assertion defect recurring"
+                ;;
+            404|405|501|000)
+                fail "phase-72g: ${pname} answered ${cross} — the posture surface is mounted for the assertions above, so an unreachable cross-tenant path here is a regression, not a not-yet-shipped surface"
+                ;;
+            *)
+                fail "phase-72g: ${pname} cross-tenant status = ${cross}, want 200 (granted under the admin claim)"
+                ;;
+        esac
+    done
+fi
 
 smoke_summary

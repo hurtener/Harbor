@@ -90,11 +90,26 @@ func mkTokenStore(t *testing.T) auth.TokenStore {
 	return ts
 }
 
+func mkFlowStore(t *testing.T) auth.FlowStore {
+	t.Helper()
+	store := mkStore(t)
+	sealer, err := auth.NewAESGCMSealer(fixedKEK(t))
+	if err != nil {
+		t.Fatalf("NewAESGCMSealer: %v", err)
+	}
+	flows, err := auth.NewFlowStore(store, sealer)
+	if err != nil {
+		t.Fatalf("NewFlowStore: %v", err)
+	}
+	return flows
+}
+
 func mkDeps(t *testing.T) auth.FactoryDeps {
 	t.Helper()
 	red := mkRedactor(t)
 	return auth.FactoryDeps{
 		Store:       mkTokenStore(t),
+		Flows:       mkFlowStore(t),
 		Bus:         mkBus(t, red),
 		Redactor:    red,
 		Coordinator: pauseresume.New(),

@@ -366,7 +366,7 @@ func (a *Account) GetKeysForProvider(_ context.Context, providerKey bfschemas.Mo
 		{
 			ID:     "harbor-default",
 			Name:   "harbor-default",
-			Value:  bfschemas.EnvVar{Val: a.primaryKey.Get()},
+			Value:  bfschemas.SecretVar{Val: a.primaryKey.Get()},
 			Models: append([]string(nil), a.primaryModels...),
 			Weight: 1.0,
 		},

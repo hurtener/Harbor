@@ -2,7 +2,7 @@
 
 # Protocol errors
 
-The 13 canonical Harbor Protocol error codes, generated from the single-source
+The 14 canonical Harbor Protocol error codes, generated from the single-source
 registry (`internal/protocol/errors`). The HTTP column is read from the same
 code-to-status binding the wire transport serves — the two cannot drift.
 
@@ -25,6 +25,7 @@ Clients branch on `code` (stable across Runtime refactors — RFC §5.3), never 
 | `payload_invalid` | 422 | A control payload violated an RFC §6.3 bound (depth > 6, > 64 keys, > 50 list items, a string > 4096 chars, > 16 KiB total) or carried an unsupported leaf type. | No — shrink / restructure the payload. |
 | `presign_unsupported` | 501 | An `artifacts.get_ref` request reached an ArtifactStore driver without presigned-URL support (in-mem / fs / sqlite / postgres blob drivers). The resolver fails loud instead of silently streaming bytes. | No — the configured driver cannot satisfy it; use a presign-capable store (S3 family) or download via the Console proxy. |
 | `request_too_large` | 413 | An `artifacts.put` body exceeded the configured `protocol.max_request_bytes` bound. The upload is refused loudly, never truncated. | No — shrink the payload or raise the operator-side bound. |
+| `revision_conflict` | 409 | An `agent_config.*` write declared an `expected_content_hash` and the agent's active revision no longer carries it — another writer moved the base between the caller's read and its write — or the agent has no active revision at all. The request was well-formed and authorised; nothing was persisted (no revision, no active-pointer move, no `agent.config.revised` event). The refusal is exact within ONE Runtime process: atomicity comes from the agent-config service's per-owner write lock, not from the StateStore, which enforces no compare-and-swap. Two Runtime processes sharing one store CAN STILL LOSE AN UPDATE, and this code does not claim otherwise. Omitting `expected_content_hash` keeps the unconditional last-writer-wins behaviour. | Yes, after re-reading — call `agent_config.get` (or `agent_config.user.get` if the door you are retrying is a `user.*` twin; they are separate revision spines and a hash from the wrong one never matches) for the current `revision_id` and `content_hash`, re-apply your edit on top (`agent_config.diff` compares what you read against what it is now), and resubmit with the fresh hash. |
 | `runtime_error` | 500 | An unclassified runtime-side failure — the catch-all. Also used on the SSE surface for subscriber-limit (429) and bus-closed (503) conditions. | Yes, with backoff — the request shape is not the problem. |
 | `scope_mismatch` | 403 | The caller's steering scope claim is below the control method's RFC §6.3 minimum, or a cross-tenant steering / mutation was attempted without `admin`. | No — the operation needs a higher scope. |
 | `session_erased` | 409 | A `start` named a session id that was permanently deleted by `sessions.delete` (right-to-erasure). The session is terminal and cannot be reopened — its data is gone. A closed-but-not-erased session, by contrast, reopens normally on `start`. | No — the conversation was erased; start a new one with a fresh session id. |

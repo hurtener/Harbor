@@ -331,6 +331,10 @@ func newWaveV19Env(t *testing.T, downstreamHosts ...string) *waveV19Env {
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
+	flows, err := auth.NewFlowStore(raw, sealer)
+	if err != nil {
+		t.Fatalf("NewFlowStore: %v", err)
+	}
 	store := &waveV19SpyStore{t: t, inner: innerStore}
 
 	prov, err := tokenexchange.New(auth.ProviderConfig{
@@ -341,7 +345,7 @@ func newWaveV19Env(t *testing.T, downstreamHosts ...string) *waveV19Env {
 		Extra:                  map[string]string{"audience": waveV19Audience},
 		AllowedDownstreamHosts: downstreamHosts,
 	}, auth.FactoryDeps{
-		Store: store, Bus: provBus, Redactor: red, Coordinator: coord,
+		Store: store, Flows: flows, Bus: provBus, Redactor: red, Coordinator: coord,
 		// DisableKeepAlives so the broker's httptest connections don't
 		// linger as idle keep-alive goroutines past the run — the
 		// concurrency leg's goroutine-baseline assertion is about the

@@ -132,16 +132,19 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	memory.EventTypeMemoryItemPut:          {Payloads: []reflect.Type{reflect.TypeOf(memory.MemoryMutationPayload{})}},
 	memory.EventTypeMemoryItemDeleted:      {Payloads: []reflect.Type{reflect.TypeOf(memory.MemoryMutationPayload{})}},
 
+	memory.EventTypeMemoryCallerBlockAdmitted: {Payloads: []reflect.Type{reflect.TypeOf(memory.CallerBlockAdmittedPayload{})}},
+
 	// --- Planner.
-	planner.EventTypePlannerDecision:                {Payloads: []reflect.Type{reflect.TypeOf(planner.DecisionPayload{})}},
-	planner.EventTypePlannerFinish:                  {Note: "Registered anchor — no canonical emit path in this version (a planner's terminal decision is observable via `planner.decision` with `DecisionKind: Finish` and the `task.*` lifecycle events)."},
-	planner.EventTypePlannerError:                   {Note: "Registered anchor — no canonical emit path in this version (planner failures surface as `task.failed`)."},
-	planner.EventTypePlannerRepairExhausted:         {Payloads: []reflect.Type{reflect.TypeOf(planner.RepairExhaustedPayload{})}},
-	planner.EventTypePlannerMaxStepsExceeded:        {Payloads: []reflect.Type{reflect.TypeOf(planner.MaxStepsExceededPayload{})}},
-	planner.EventTypeTrajectoryCompressed:           {Payloads: []reflect.Type{reflect.TypeOf(planner.TrajectoryCompressedPayload{})}},
-	planner.EventTypeTrajectoryCompressionFailed:    {Payloads: []reflect.Type{reflect.TypeOf(planner.TrajectoryCompressionFailedPayload{})}},
-	planner.EventTypePlannerRepairGuidanceInjected:  {Payloads: []reflect.Type{reflect.TypeOf(planner.RepairGuidanceInjectedPayload{})}},
-	planner.EventTypePlannerActionExtraFieldDropped: {Payloads: []reflect.Type{reflect.TypeOf(planner.ActionExtraFieldDroppedPayload{})}},
+	planner.EventTypePlannerDecision:                 {Payloads: []reflect.Type{reflect.TypeOf(planner.DecisionPayload{})}},
+	planner.EventTypePlannerFinish:                   {Note: "Registered anchor — no canonical emit path in this version (a planner's terminal decision is observable via `planner.decision` with `DecisionKind: Finish` and the `task.*` lifecycle events)."},
+	planner.EventTypePlannerError:                    {Note: "Registered anchor — no canonical emit path in this version (planner failures surface as `task.failed`)."},
+	planner.EventTypePlannerRepairExhausted:          {Payloads: []reflect.Type{reflect.TypeOf(planner.RepairExhaustedPayload{})}},
+	planner.EventTypePlannerMaxStepsExceeded:         {Payloads: []reflect.Type{reflect.TypeOf(planner.MaxStepsExceededPayload{})}},
+	planner.EventTypeTrajectoryCompressed:            {Payloads: []reflect.Type{reflect.TypeOf(planner.TrajectoryCompressedPayload{})}},
+	planner.EventTypeTrajectoryCompressionFailed:     {Payloads: []reflect.Type{reflect.TypeOf(planner.TrajectoryCompressionFailedPayload{})}},
+	planner.EventTypePlannerRepairGuidanceInjected:   {Payloads: []reflect.Type{reflect.TypeOf(planner.RepairGuidanceInjectedPayload{})}},
+	planner.EventTypePlannerActionExtraFieldDropped:  {Payloads: []reflect.Type{reflect.TypeOf(planner.ActionExtraFieldDroppedPayload{})}},
+	planner.EventTypePlannerToolDeclarationCollision: {Payloads: []reflect.Type{reflect.TypeOf(planner.ToolDeclarationCollisionPayload{})}},
 
 	// --- Protocol edge (artifacts surface + auth middleware + Console
 	// flows-page telemetry).
@@ -272,7 +275,10 @@ func renderEventsPage() (string, error) {
 	b.WriteString("`payload`. Two payload classes exist:\n\n")
 	b.WriteString("- **Safe payloads** — types the declaring subsystem marked as carrying no secret-shaped\n")
 	b.WriteString("  data. The bus skips the audit redactor; the subscriber receives the typed shape below\n")
-	b.WriteString("  verbatim. Field keys are the Go field names (e.g. `TaskID`, capital `T`).\n")
+	b.WriteString("  verbatim. Field keys are whatever `encoding/json` emits: most payloads carry no\n")
+	b.WriteString("  struct tags, so their keys are the Go field names (e.g. `TaskID`, capital `T`); a\n")
+	b.WriteString("  payload whose fields ARE tagged uses the tag name. The Wire key column below is\n")
+	b.WriteString("  authoritative per payload — read it, don't assume the casing.\n")
 	b.WriteString("- **Redacted payloads** — everything else is walked by the audit redactor on publish;\n")
 	b.WriteString("  the subscriber receives a redacted key/value map derived from the declared shape.\n")
 
@@ -298,7 +304,7 @@ func renderEventsPage() (string, error) {
 				delivery = "safe payload (delivered typed, verbatim)"
 			}
 			fmt.Fprintf(&b, "\nPayload `%s` — %s.\n\n", pt.Name(), delivery)
-			renderStructFields(&b, pt, fieldNameKeys)
+			renderStructFields(&b, pt)
 		}
 	}
 

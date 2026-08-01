@@ -641,14 +641,19 @@ func (c *client) MetricsSnapshot(ctx context.Context) (types.MetricsSnapshot, er
 // GovernancePosture reads the caller's effective governance tier.
 func (c *client) GovernancePosture(ctx context.Context) (types.GovernancePostureResponse, error) {
 	var out types.GovernancePostureResponse
-	err := c.callMethod(ctx, methods.MethodGovernancePosture, types.GovernancePostureRequest{}, &out)
+	// The shared posture envelope, carrying this client's identity — the
+	// same shape every sibling posture call sends. It previously sent a
+	// zero-valued `GovernancePostureRequest`, i.e. `{}` with no identity at
+	// all, and worked only because the handler backfills an empty body
+	// identity from the verified one.
+	err := c.callMethod(ctx, methods.MethodGovernancePosture, types.RuntimeInfoRequest{Identity: c.scope()}, &out)
 	return out, err
 }
 
 // LLMPosture reads the bound provider posture.
 func (c *client) LLMPosture(ctx context.Context) (types.LLMPostureResponse, error) {
 	var out types.LLMPostureResponse
-	err := c.callMethod(ctx, methods.MethodLLMPosture, types.LLMPostureRequest{}, &out)
+	err := c.callMethod(ctx, methods.MethodLLMPosture, types.RuntimeInfoRequest{Identity: c.scope()}, &out)
 	return out, err
 }
 

@@ -160,6 +160,14 @@ func (d *driver) Save(ctx context.Context, r state.StateRecord) error {
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
+	payload := r.Bytes
+	if payload == nil {
+		// database/sql binds a nil []byte as SQL NULL, but StateStore's
+		// byte-equality contract treats nil and an allocated empty slice as
+		// the same valid zero-length payload. Preserve that contract while
+		// satisfying the Postgres BYTEA NOT NULL storage invariant.
+		payload = []byte{}
+	}
 
 	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
 	if err != nil {
@@ -213,7 +221,7 @@ func (d *driver) Save(ctx context.Context, r state.StateRecord) error {
 	`
 	if _, err := tx.ExecContext(ctx, upsert,
 		r.Identity.TenantID, r.Identity.UserID, r.Identity.SessionID, r.Identity.RunID,
-		r.Kind, string(r.ID), r.Version, r.Bytes, updatedAt,
+		r.Kind, string(r.ID), r.Version, payload, updatedAt,
 	); err != nil {
 		return d.translateUpsertErr(err)
 	}
@@ -406,6 +414,42 @@ func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix
 	}
 	if err := rows.Err(); err != nil {
 		return nil, d.translateErr(err, "postgres: list kind rows")
+	}
+	return out, nil
+}
+
+// ListKindForIdentity implements StateStore's identity-scoped enumeration.
+func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple, kindPrefix string) ([]state.StateRecord, error) {
+	if d.closed.Load() {
+		return nil, state.ErrStoreClosed
+	}
+	if err := state.ValidateListKindForIdentity(id, kindPrefix); err != nil {
+		return nil, err
+	}
+	const q1 = `
+		SELECT tenant_id, user_id, session_id, run_id, kind, event_id, version, bytes, updated_at
+		FROM state_records
+		WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND run_id = $4
+		  AND kind LIKE $5 ESCAPE '\'
+	`
+	rows, err := d.db.QueryContext(ctx, q1, id.TenantID, id.UserID, id.SessionID, id.RunID, escapeLikePrefix(kindPrefix)+"%")
+	if err != nil {
+		return nil, d.translateErr(err, "postgres: list kind for identity")
+	}
+	defer rows.Close()
+	var out []state.StateRecord
+	for rows.Next() {
+		var tenantID, userID, sessionID, runID, kind, eventID string
+		var version int
+		var buf []byte
+		var updatedAt time.Time
+		if err := rows.Scan(&tenantID, &userID, &sessionID, &runID, &kind, &eventID, &version, &buf, &updatedAt); err != nil {
+			return nil, d.translateErr(err, "postgres: list kind for identity scan")
+		}
+		out = append(out, state.StateRecord{ID: state.EventID(eventID), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenantID, UserID: userID, SessionID: sessionID}, RunID: runID}, Kind: kind, Version: version, Bytes: buf, UpdatedAt: updatedAt})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, d.translateErr(err, "postgres: list kind for identity rows")
 	}
 	return out, nil
 }

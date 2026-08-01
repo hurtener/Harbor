@@ -283,7 +283,7 @@ func TestE2E_AgentConfig_RemoveConnection_RollbackPastAddDetaches(t *testing.T) 
 	}
 
 	// Roll back PAST the add → the descriptor is no longer declared.
-	if _, err := h.registry.Rollback(context.Background(), rmQuad(), rmAgent, baseRev, agentcfg.ConfigScopeAgent); err != nil {
+	if _, err := h.registry.Rollback(context.Background(), rmQuad(), rmAgent, baseRev, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
 	// The next run's reconcile detaches through the same path.

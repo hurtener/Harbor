@@ -49,7 +49,40 @@ type RunOverrides struct {
 	// prompt for the next message only. An empty string is a valid
 	// override (it clears the system prompt for that one message);
 	// nil means "leave the agent's configured system prompt in place".
+	//
+	// NOT the additive path, and not the home for retrieved content.
+	// This field REPLACES the whole base+user prompt spine, which
+	// silently suppresses the operator's durable user layer, and it
+	// seats whatever it carries in the TRUSTED base position with no
+	// untrusted framing at all. To contribute recalled or otherwise
+	// retrieved content to a run, use `StartRequest.caller_memory`,
+	// which composes into the run's `<read_only_external_memory>` tier
+	// behind the anti-prompt-injection preamble and displaces nothing.
 	SystemPromptOverride *string `json:"system_prompt_override,omitempty"`
+	// ExtraInstructions, when non-nil, is an ADDITIVE block of guidance
+	// for the next message. It is appended to — never a replacement of —
+	// the agent's system prompt, and it survives a SystemPromptOverride
+	// set in the same request (the two are not mutually exclusive: the
+	// base spine is replaced AND this block still appends).
+	//
+	// TRUST: this method is available to a verified non-admin user for their
+	// own session. The block therefore renders in a distinct escaped
+	// `<user_personalization>` section, never in operator-trusted
+	// `<additional_guidance>`. Prompt framing is not an authorization
+	// boundary: runtime tool exposure, identity, governance and policy remain
+	// authoritative. This is NOT the home for recalled conversation memory,
+	// retrieved documents, or any other user-authored text — those belong
+	// in `StartRequest.caller_memory`, whose tier carries the
+	// anti-prompt-injection framing this position deliberately does not.
+	//
+	// It remains structurally separate from tenant-wide extra instructions
+	// and can never clear them. A present-but-empty value is a no-op.
+	//
+	// The value is bounded by the transport's whole-body limit and, late,
+	// by the LLM edge's token-budget guard; there is no per-field byte cap
+	// (`SystemPromptOverride`, unbounded on this same struct, would make
+	// one on the weaker sibling pure ceremony).
+	ExtraInstructions *string `json:"extra_instructions,omitempty"`
 	// Model, when non-nil, overrides the model the next message's run
 	// requests. The runtime rejects a model with no configured
 	// `ModelProfile` with CodeInvalidRequest (fail loud at set time). The

@@ -23,6 +23,8 @@ import (
 // (its paused entry + a "<name>_tool" disabled tool + loading overrides) AND
 // residue belonging to an UNRELATED server, so a test can assert the prune is
 // surgical.
+//
+//nolint:unparam // test helper — the server name is a fixed fixture across the cases, kept as a param for call-site readability.
 func seedConnRevision(t *testing.T, ctx context.Context, reg agentcfg.Registry, name string) {
 	t.Helper()
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
@@ -39,7 +41,7 @@ func seedConnRevision(t *testing.T, ctx context.Context, reg agentcfg.Registry, 
 		},
 		Hooks: &agentcfg.HooksSection{RunCompletion: &agentcfg.RunCompletionHook{Tool: "sink", TimeoutMS: 1000}},
 	}
-	if _, err := reg.SetRevision(ctx, q, "agent-remove", agentcfg.ConfigScopeAgent, payload); err != nil {
+	if _, err := reg.SetRevision(ctx, q, "agent-remove", agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed revision: %v", err)
 	}
 }
@@ -140,7 +142,7 @@ func TestRemoveMCPConnection_SiblingPrefixServer_DisableSurvives(t *testing.T) {
 			ToolLoadingModes: map[string]string{"git_clone": "deferred", "git_hub_clone": "deferred"},
 		},
 	}
-	if _, serr := reg.SetRevision(ctx, q, "agent-remove", agentcfg.ConfigScopeAgent, payload); serr != nil {
+	if _, serr := reg.SetRevision(ctx, q, "agent-remove", agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{}); serr != nil {
 		t.Fatalf("seed: %v", serr)
 	}
 

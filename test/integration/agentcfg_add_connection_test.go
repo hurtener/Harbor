@@ -184,7 +184,7 @@ func TestE2E_AgentConfig_AddConnection(t *testing.T) {
 	if len(diff.Connections.Added) != 1 || diff.Connections.Added[0] != "mcptest2" {
 		t.Errorf("diff connections added = %+v, want [mcptest2]", diff.Connections.Added)
 	}
-	if _, rerr := h.registry.Rollback(context.Background(), addcQuad(), addcAgent, firstRev, agentcfg.ConfigScopeAgent); rerr != nil {
+	if _, rerr := h.registry.Rollback(context.Background(), addcQuad(), addcAgent, firstRev, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); rerr != nil {
 		t.Fatalf("Rollback: %v", rerr)
 	}
 	active, _, _ := h.registry.Active(context.Background(), addcQuad(), addcAgent, agentcfg.ConfigScopeAgent)

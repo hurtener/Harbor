@@ -76,6 +76,13 @@ func (m *mutableDetacher) markAttached(name string) {
 	m.attached[name] = struct{}{}
 }
 
+func (m *mutableDetacher) isAttached(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.attached[name]
+	return ok
+}
+
 func (m *mutableDetacher) callLog() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -104,21 +111,27 @@ func newFakeReattacher(live *mutableDetacher) *fakeReattacher {
 	return &fakeReattacher{live: live, seen: map[string]int{}, failFor: map[string]error{}}
 }
 
-func (f *fakeReattacher) Reattach(_ context.Context, owner auth.Owner, id identity.Quadruple, desc agentcfg.MCPConnectionDescriptor) error {
+func (f *fakeReattacher) Reattach(_ context.Context, owner auth.Owner, id identity.Quadruple, desc agentcfg.MCPConnectionDescriptor) (bool, error) {
+	alreadyLive := f.live != nil && f.live.isAttached(desc.Name)
 	f.mu.Lock()
-	f.seen[desc.Name]++
-	f.owners = append(f.owners, owner)
-	f.ids = append(f.ids, id)
-	f.descs = append(f.descs, desc)
 	err := f.failFor[desc.Name]
+	if !alreadyLive {
+		f.seen[desc.Name]++
+		f.owners = append(f.owners, owner)
+		f.ids = append(f.ids, id)
+		f.descs = append(f.descs, desc)
+	}
 	f.mu.Unlock()
 	if err != nil {
-		return err
+		return false, err
+	}
+	if alreadyLive {
+		return false, nil
 	}
 	if f.live != nil {
 		f.live.markAttached(desc.Name)
 	}
-	return nil
+	return true, nil
 }
 
 func (f *fakeReattacher) attachedNames() []string {
@@ -256,15 +269,16 @@ func TestReconcileConnections_DetachRunsBeforeAttach(t *testing.T) {
 	if detachIdx > attachIdx {
 		t.Fatalf("detach ran AFTER attach (log=%v); detach must run first", log)
 	}
-	// And the attach pass re-read the view after the detach pass (two reads).
+	// The descriptor-aware Reattach owns the exact live comparison, so the
+	// projection takes one owner-scoped snapshot for the detach pass.
 	views := 0
 	for _, c := range log {
 		if len(c) >= 5 && c[:5] == "view:" {
 			views++
 		}
 	}
-	if views != 2 {
-		t.Fatalf("AttachedSources called %d times, want 2 (the attach pass re-reads the post-detach view)", views)
+	if views != 1 {
+		t.Fatalf("AttachedSources called %d times, want 1", views)
 	}
 }
 
@@ -341,7 +355,7 @@ func seedConnectionsFor(t *testing.T, reg agentcfg.Registry, agentID string, id 
 		})
 	}
 	payload := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: servers}}
-	if _, err := reg.SetRevision(context.Background(), id, agentID, agentcfg.ConfigScopeAgent, payload); err != nil {
+	if _, err := reg.SetRevision(context.Background(), id, agentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed connections for %q: %v", agentID, err)
 	}
 }
@@ -398,7 +412,7 @@ type cancellingReattacher struct {
 	seen   []string
 }
 
-func (c *cancellingReattacher) Reattach(_ context.Context, _ auth.Owner, _ identity.Quadruple, desc agentcfg.MCPConnectionDescriptor) error {
+func (c *cancellingReattacher) Reattach(_ context.Context, _ auth.Owner, _ identity.Quadruple, desc agentcfg.MCPConnectionDescriptor) (bool, error) {
 	c.mu.Lock()
 	c.seen = append(c.seen, desc.Name)
 	first := len(c.seen) == 1
@@ -406,7 +420,7 @@ func (c *cancellingReattacher) Reattach(_ context.Context, _ auth.Owner, _ ident
 	if first {
 		c.cancel()
 	}
-	return nil
+	return true, nil
 }
 
 func (c *cancellingReattacher) names() []string {

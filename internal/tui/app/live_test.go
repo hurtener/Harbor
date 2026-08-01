@@ -479,6 +479,48 @@ func TestRuntimeModel_RuntimeRoutesActionMatrixAndDestructiveConfirmation(t *tes
 	}
 }
 
+func TestRuntimeModel_StaleSameScopeInspectionPreservesNewActionModal(t *testing.T) {
+	m, _, _ := operationalModel(t)
+	m.inspectEpoch = 2
+	m = drive(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyF9}))
+
+	updated, _ := m.Update(inspectMsg{data: conversation.RuntimeData{
+		Identity:     m.identity,
+		Generation:   m.generation,
+		RequestEpoch: 1,
+		Stale:        true,
+	}})
+	m = updated.(RuntimeModel)
+	modal, ok := m.shell.focus.Top()
+	if !ok || modal.Title != "Runtime actions" {
+		t.Fatalf("same-scope stale inspection closed current modal: %#v", modal)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		identity   types.IdentityScope
+		generation uint64
+	}{
+		{name: "cross-generation", identity: m.identity, generation: m.generation + 1},
+		{name: "cross-identity", identity: types.IdentityScope{Tenant: m.identity.Tenant, User: m.identity.User, Session: "other"}, generation: m.generation},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate, _, _ := operationalModel(t)
+			candidate.inspectEpoch = 2
+			candidate = drive(t, candidate, tea.KeyPressMsg(tea.Key{Code: tea.KeyF9}))
+			updated, _ := candidate.Update(inspectMsg{data: conversation.RuntimeData{
+				Identity:     tc.identity,
+				Generation:   tc.generation,
+				RequestEpoch: candidate.inspectEpoch,
+			}})
+			candidate = updated.(RuntimeModel)
+			if _, open := candidate.shell.focus.Top(); open {
+				t.Fatal("stale inspection left invalid modal open")
+			}
+		})
+	}
+}
+
 func TestRuntimeModel_AllRuntimeRouteDerivationsAndActionExecutors(t *testing.T) {
 	m, controller, _ := operationalModel(t)
 	m.runtime.Tasks = tuitasks.Derive(types.TaskListResponse{Rows: []types.TaskRow{{ID: "run-1", Status: types.TaskStatusRunning}}}, nil)
@@ -788,6 +830,21 @@ func TestRuntimeModel_FailedFollowUpRetryAndDiscardResumeOrder(t *testing.T) {
 	entries := m.followups.Entries()
 	if len(entries) != 1 || entries[0].Text != "second" || entries[0].State != "dispatching" {
 		t.Fatalf("retry did not advance to second intent: calls=%v queue=%#v", controller.calls, entries)
+	}
+	// A second chord during the in-flight retry is rejected locally: it must
+	// neither dispatch another Start nor mutate the pending canonical retry.
+	// The PTY workflow issues exactly one retry and waits for its acknowledgement.
+	callsBeforeSecondChord := append([]string(nil), controller.calls...)
+	m = leader(t, m, 'j')
+	if !slices.Equal(controller.calls, callsBeforeSecondChord) {
+		t.Fatalf("second retry chord dispatched Start: before=%v after=%v", callsBeforeSecondChord, controller.calls)
+	}
+	entries = m.followups.Entries()
+	if len(entries) != 1 || entries[0].Text != "second" || entries[0].State != "dispatching" {
+		t.Fatalf("second retry chord mutated in-flight intent: %#v", entries)
+	}
+	if !m.shell.state.ToastOpen || m.shell.state.Toast != "no failed follow-up to retry" {
+		t.Fatalf("second retry chord feedback = open:%v toast:%q, want local rejected error", m.shell.state.ToastOpen, m.shell.state.Toast)
 	}
 	_, _ = controller.Start(t.Context(), entries[0].Text, entries[0].ArtifactIDs, entries[0].Dispositions)
 	m = drive(t, m, followupMsg{id: entries[0].ID})

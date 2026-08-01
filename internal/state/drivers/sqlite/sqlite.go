@@ -641,6 +641,41 @@ func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix
 	return out, nil
 }
 
+// ListKindForIdentity implements StateStore's identity-scoped enumeration.
+func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple, kindPrefix string) ([]state.StateRecord, error) {
+	if d.closed.Load() {
+		return nil, fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateListKindForIdentity(id, kindPrefix); err != nil {
+		return nil, err
+	}
+	const sel = `
+        SELECT tenant, user, session, run, kind, event_id, version, bytes, updated_at
+        FROM state_records
+        WHERE tenant = ? AND user = ? AND session = ? AND run = ?
+          AND kind LIKE ? ESCAPE '\'`
+	rows, err := d.db.QueryContext(ctx, sel, id.TenantID, id.UserID, id.SessionID, id.RunID, escapeLikePrefix(kindPrefix)+"%")
+	if err != nil {
+		return nil, fmt.Errorf("state/sqlite: list kind for identity: %w", err)
+	}
+	defer rows.Close()
+	var out []state.StateRecord
+	for rows.Next() {
+		var tenant, user, session, run, kind, eventID string
+		var version int
+		var data []byte
+		var updatedAt time.Time
+		if err := rows.Scan(&tenant, &user, &session, &run, &kind, &eventID, &version, &data, &updatedAt); err != nil {
+			return nil, fmt.Errorf("state/sqlite: list kind for identity scan: %w", err)
+		}
+		out = append(out, state.StateRecord{ID: state.EventID(eventID), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: user, SessionID: session}, RunID: run}, Kind: kind, Version: version, Bytes: data, UpdatedAt: updatedAt})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state/sqlite: list kind for identity rows: %w", err)
+	}
+	return out, nil
+}
+
 // escapeLikePrefix escapes the SQL LIKE metacharacters (`%`, `_`, and
 // the escape character itself) so a caller-supplied kind prefix
 // matches literally under `LIKE ? ESCAPE '\'`.

@@ -97,7 +97,7 @@ func newSearchStack(t *testing.T, allowAdmin bool) *searchStack {
 
 	admin := allowAdmin
 	checker := func(_ context.Context) bool { return admin }
-	deps := search.Deps{Redactor: red, AdminScope: checker}
+	deps := search.Deps{Redactor: red, AdminScope: checker, Audit: bus.Publish}
 
 	ss, err := sessionsearch.New(sreg, deps)
 	if err != nil {

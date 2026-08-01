@@ -2,6 +2,7 @@ package react
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -13,6 +14,15 @@ import (
 // sanitizeStubCatalog is a minimal planner.ToolCatalogView for the
 // name-sanitization tests.
 type sanitizeStubCatalog struct{ list []tools.Tool }
+
+func mustResolveDeclaredToolName(t *testing.T, rc *planner.RunContext, name string) string {
+	t.Helper()
+	got, ok := resolveDeclaredToolName(rc, name)
+	if !ok {
+		t.Fatalf("resolveDeclaredToolName(%q) rejected a declared name", name)
+	}
+	return got
+}
 
 func (c *sanitizeStubCatalog) Resolve(name string) (tools.Tool, bool) {
 	for _, t := range c.list {
@@ -49,10 +59,21 @@ func TestSanitizeToolName(t *testing.T) {
 			t.Errorf("sanitizeToolName(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
-	// 64-char cap.
+	// Over-budget names are shortened to exactly maxToolNameBytes. The
+	// budget is deliberately BELOW the provider's 64-byte ceiling: a tool
+	// name is paid on every turn, twice per tool, so the model-visible form
+	// is bounded independently of how long the catalog key is.
 	long := strings.Repeat("a", 100)
-	if got := sanitizeToolName(long); len(got) != 64 {
-		t.Errorf("sanitizeToolName(len=100) len = %d, want 64", len(got))
+	if got := sanitizeToolName(long); len(got) != maxToolNameBytes {
+		t.Errorf("sanitizeToolName(len=100) len = %d, want %d", len(got), maxToolNameBytes)
+	}
+	if maxToolNameBytes > 64 {
+		t.Fatalf("maxToolNameBytes = %d exceeds the provider ceiling of 64", maxToolNameBytes)
+	}
+	// Shortening retains the TAIL, not the head: sibling tools of one
+	// source share a long prefix, so the tail is what distinguishes them.
+	if got := sanitizeToolName(strings.Repeat("x", 80) + "_verb"); !strings.Contains(got, "_verb_") {
+		t.Errorf("sanitizeToolName dropped the tail: got %q, want it to retain %q", got, "_verb")
 	}
 }
 
@@ -112,8 +133,39 @@ func TestProjectResponse_ResolvesSanitizedNameToCatalog(t *testing.T) {
 	}
 }
 
-// TestResolveDeclaredToolName covers the resolution branches: exact catalog
-// match, sanitize-match, and unknown passthrough (fail-loud downstream).
+func TestProjectResponse_RejectsRawCatalogKeyBeforeDispatch(t *testing.T) {
+	rc := &planner.RunContext{
+		Catalog: &sanitizeStubCatalog{list: []tools.Tool{{Name: "clock.now"}}},
+	}
+
+	declared := llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{{
+		ID: "declared", Name: "clock_now", Args: json.RawMessage(`{}`),
+	}}}
+	dec, err := projectResponse(declared, rc, true)
+	if err != nil {
+		t.Fatalf("declared name rejected: %v", err)
+	}
+	call, ok := dec.(planner.CallTool)
+	if !ok || call.Tool != "clock.now" {
+		t.Fatalf("declared name projected to %#v, want CallTool{Tool:clock.now}", dec)
+	}
+
+	// Positive precondition for the adversarial shape: the raw key really is
+	// present in the catalog and would dispatch if it escaped the projector.
+	if _, ok := rc.Catalog.Resolve("clock.now"); !ok {
+		t.Fatal("fixture catalog does not resolve raw key clock.now")
+	}
+	raw := llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{{
+		ID: "raw", Name: "clock.now", Args: json.RawMessage(`{}`),
+	}}}
+	if dec, err := projectResponse(raw, rc, true); dec != nil || !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Fatalf("raw catalog key projected to (%#v, %v), want nil + ErrInvalidDecision", dec, err)
+	}
+}
+
+// TestResolveDeclaredToolName covers the strict namespace boundary: declared
+// names resolve, while raw catalog keys and unknown names are refused before
+// they can reach catalog dispatch.
 func TestResolveDeclaredToolName(t *testing.T) {
 	rc := &planner.RunContext{
 		Catalog: &sanitizeStubCatalog{list: []tools.Tool{
@@ -124,12 +176,15 @@ func TestResolveDeclaredToolName(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"clock_now", "clock.now"},       // sanitize-match → dotted real
 		{"mcptest_echo", "mcptest_echo"}, // exact match
-		{"clock.now", "clock.now"},       // exact match on the dotted name
-		{"unknown_tool", "unknown_tool"}, // passthrough (executor fails loud)
 	}
 	for _, c := range cases {
-		if got := resolveDeclaredToolName(rc, c.in); got != c.want {
+		if got := mustResolveDeclaredToolName(t, rc, c.in); got != c.want {
 			t.Errorf("resolveDeclaredToolName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	for _, refused := range []string{"clock.now", "unknown_tool"} {
+		if got, ok := resolveDeclaredToolName(rc, refused); ok {
+			t.Errorf("resolveDeclaredToolName(%q) = %q, true; raw or unknown model vocabulary must be refused", refused, got)
 		}
 	}
 }

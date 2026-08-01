@@ -46,12 +46,51 @@ const EventTypeMemoryItemPut events.EventType = "memory.item_put"
 // hashed key only, never any record value bytes.
 const EventTypeMemoryItemDeleted events.EventType = "memory.item_deleted"
 
+// EventTypeMemoryCallerBlockAdmitted is emitted once per run that admits
+// caller-supplied content into its read-only external-memory tier. A
+// Console that cannot tell caller-asserted memory from runtime-retrieved
+// memory can audit neither, so the admission is announced over the
+// Protocol.
+//
+// It carries a SIZE and never CONTENT — see
+// [CallerBlockAdmittedPayload].
+//
+// It fires at admission, which happens before planning, so the event
+// lands whether or not the run subsequently succeeds.
+const EventTypeMemoryCallerBlockAdmitted events.EventType = "memory.caller_block_admitted"
+
 func init() {
 	events.RegisterEventType(EventTypeMemoryIdentityRejected)
 	events.RegisterEventType(EventTypeMemoryHealthChanged)
 	events.RegisterEventType(EventTypeMemoryRecoveryDropped)
 	events.RegisterEventType(EventTypeMemoryItemPut)
 	events.RegisterEventType(EventTypeMemoryItemDeleted)
+	events.RegisterEventType(EventTypeMemoryCallerBlockAdmitted)
+}
+
+// CallerBlockAdmittedPayload is the audit payload for
+// [EventTypeMemoryCallerBlockAdmitted]. SafePayload BY CONSTRUCTION, and
+// the construction is the point: the only caller-derived quantity on it
+// is a byte COUNT. `Tier` and `Key` are runtime-owned constants, not
+// caller input — the caller names no key.
+//
+// No fragment of the admitted content appears here, and none may ever be
+// added: the payload is caller-controlled bytes that would require
+// redaction, and the audit trail records THAT an admission happened and
+// how large it was, never what it said (CLAUDE.md §7 rules 6-7).
+type CallerBlockAdmittedPayload struct {
+	events.SafeSealed `json:"-"`
+
+	// Bytes is the size of the admitted document as it arrived on the
+	// wire. It is the only caller-influenced value on the payload.
+	Bytes int `json:"bytes"`
+	// Tier is the prompt tier the content was admitted into — the
+	// runtime-owned wrapper name, always the read-only external-memory
+	// tier.
+	Tier string `json:"tier"`
+	// Key is the fixed runtime-owned map key the content was composed
+	// under within that tier.
+	Key string `json:"key"`
 }
 
 // MemoryMutationPayload is the audit payload for the `memory.item_put` /

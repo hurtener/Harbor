@@ -66,6 +66,14 @@ func rcSeed(t *testing.T) agentcfg.ConfigPayload {
 		Naming: &agentcfg.NamingSection{
 			Auto: true, AfterTurns: 2, RepeatEvery: 3, MaxRepetitions: 5, MaxTitleLen: 100, Model: "seed-model",
 		},
+		// TWO blocks in a deliberate order: rcAssertSiblingsSurvive's
+		// reflect.DeepEqual is ORDER-SENSITIVE on a slice, so a setter that
+		// carried the section forward through a map (or sorted it) fails
+		// here as loudly as one that dropped it.
+		ExtraSystemBlocks: &agentcfg.ExtraSystemBlocks{Blocks: []agentcfg.NamedBlock{
+			{Name: "seed-alpha", Body: "seed block alpha"},
+			{Name: "seed-beta", Body: "seed block beta"},
+		}},
 	}
 	rcAssertSeedComplete(t, seed)
 	return seed
@@ -94,7 +102,7 @@ func rcAssertSeedComplete(t *testing.T, p agentcfg.ConfigPayload) {
 			t.Fatalf("rebuild-completeness guard: ConfigPayload.%s is nil in the seed — a new section was "+
 				"added to agentcfg.ConfigPayload without extending rcSeed (rebuild_completeness_test.go). "+
 				"Populate it in rcSeed AND add its carry-forward to all seven section-scoped setters "+
-				"(mcppolicy.go, addconnection.go, removeconnection.go, setdiscoveryorigins.go, skills.go, promptlayers.go, llmparams.go) — see D-283.",
+				"(mcppolicy.go, addconnection.go, removeconnection.go, setdiscoveryorigins.go, skills.go, promptlayers.go, llmparams.go, extrasystemblocks.go) — see D-283.",
 				field.Name)
 		}
 	}
@@ -130,7 +138,7 @@ func rcAssertSiblingsSurvive(t *testing.T, verb, owned string, seed, got agentcf
 // so every subtest starts from the identical fully-populated baseline.
 func rcSeedActive(t *testing.T, ctx context.Context, reg agentcfg.Registry, seed agentcfg.ConfigPayload) {
 	t.Helper()
-	if _, err := reg.SetRevision(ctx, rcQuad(), rcAgent, agentcfg.ConfigScopeAgent, seed); err != nil {
+	if _, err := reg.SetRevision(ctx, rcQuad(), rcAgent, agentcfg.ConfigScopeAgent, seed, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed active revision: %v", err)
 	}
 }
@@ -234,6 +242,24 @@ func TestRebuildCompleteness_EverySetter_PreservesEverySibling(t *testing.T) {
 					PromptLayers: prototypes.AgentConfigPromptLayers{Base: strPtr("edited-base")},
 				}); err != nil {
 					t.Fatalf("set_prompt_layers: %v", err)
+				}
+			},
+		},
+		{
+			// set_extra_system_blocks is the OTHER direction of the same
+			// invariant: the new section's own setter must carry every
+			// sibling forward. A section that only one direction preserves
+			// is the classic drop (D-283).
+			name:  "set_extra_system_blocks",
+			owned: "ExtraSystemBlocks",
+			invoke: func(t *testing.T, ctx context.Context, s *agentcfgprotocol.Service) {
+				if _, err := s.SetExtraSystemBlocks(ctx, prototypes.AgentConfigSetExtraSystemBlocksRequest{
+					Identity: scope(), AgentID: rcAgent,
+					ExtraSystemBlocks: prototypes.AgentConfigExtraSystemBlocks{
+						Blocks: []prototypes.AgentConfigNamedBlock{{Name: "edited-block", Body: "edited body"}},
+					},
+				}); err != nil {
+					t.Fatalf("set_extra_system_blocks: %v", err)
 				}
 			},
 		},

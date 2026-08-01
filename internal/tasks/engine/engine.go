@@ -20,7 +20,10 @@
 //
 //   - A primary `map[TaskID]*Task` holds the live task state.
 //   - A secondary `map[idempotencyKey]idempotencyRecord` resolves
-//     `(SessionID, IdempotencyKey)` lookups for `Spawn` dedup.
+//     `(TenantID, UserID, SessionID, IdempotencyKey)` lookups for
+//     `Spawn` dedup. The index is derived state, rebuilt from the
+//     persisted records at [Backend.Hydrate]; it is never itself
+//     persisted, so its key shape is a process-local concern.
 //   - A children index `map[TaskID][]TaskID` powers cascade-cancel
 //     BFS without scanning the primary map.
 //   - A single `sync.RWMutex` guards every map.
@@ -96,12 +99,40 @@ func New(bus events.EventBus, redactor audit.Redactor, backend Backend) (*Engine
 	return e, nil
 }
 
-// idempotencyKey scopes IdempotencyKey by SessionID. Spec'd by the
-// plan: same key across different sessions creates two distinct
-// tasks (the key is namespaced by SessionID).
+// idempotencyKey scopes IdempotencyKey by the FULL identity triple.
+// Same key under a different tenant, user, or session creates a
+// distinct task: dedup never reaches across an isolation boundary.
+//
+// The triple is spelled out field-by-field rather than embedding
+// identity.Quadruple so the key can never widen to include RunID —
+// a run-scoped idempotency key would defeat dedup across the retries
+// it exists to collapse (each retry is a new run).
+//
+// Every isolation component is structural, not incidental. Session
+// IDs are high-entropy, so a cross-tenant collision is not reachable
+// by guessing — but an isolation boundary is held by the shape of the
+// key, not by the entropy of one of its components (CLAUDE.md §6
+// rule 2: every identity-scoped lookup carries the full triple).
 type idempotencyKey struct {
+	TenantID  string
+	UserID    string
 	SessionID string
 	Key       string
+}
+
+// idemKeyFor builds the idempotency index key for an identity and a
+// caller-supplied key. It is the ONLY construction site for
+// idempotencyKey — Spawn's probe, Spawn's insert, Spawn's
+// compensation delete, the hydration rebuild, and the content-hash
+// lookup all route through it, so the key's shape cannot drift
+// between a write and the read that must match it.
+func idemKeyFor(id identity.Identity, key string) idempotencyKey {
+	return idempotencyKey{
+		TenantID:  id.TenantID,
+		UserID:    id.UserID,
+		SessionID: id.SessionID,
+		Key:       key,
+	}
 }
 
 // idempotencyRecord captures the bookkeeping required to detect a
@@ -160,12 +191,12 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// Idempotency check: same (SessionID, IdempotencyKey) seen?
-	// Empty IdempotencyKey disables dedup (every Spawn yields a fresh
-	// handle).
+	// Idempotency check: same (tenant, user, session, IdempotencyKey)
+	// seen? Empty IdempotencyKey disables dedup (every Spawn yields a
+	// fresh handle).
 	contentHash := spawnRequestContentHash(req)
 	if req.IdempotencyKey != "" {
-		idemK := idempotencyKey{SessionID: req.Identity.SessionID, Key: req.IdempotencyKey}
+		idemK := idemKeyFor(req.Identity.Identity, req.IdempotencyKey)
 		if existing, ok := e.idemIdx[idemK]; ok {
 			stored := e.tasks[existing.TaskID]
 			if stored == nil {
@@ -220,6 +251,32 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	if len(req.OutputSchema) > 0 {
 		outputSchema = append([]byte(nil), req.OutputSchema...)
 	}
+	// The caller-supplied memory block goes through the SAME audit redactor
+	// its siblings do. It is caller-controlled content that the whole-record
+	// marshal persists into the StateStore, so leaving it raw while
+	// Description and Query were redacted stored secrets at rest and — worse
+	// — did it inconsistently, so an operator seeing `query` redacted would
+	// reasonably infer the same of `caller_memory`.
+	//
+	// It is structured JSON rather than a string, which is why it routes
+	// through redactRawJSON (the path MarkComplete's result value already
+	// takes) instead of redactSpawnFields: the redactor walks the decoded
+	// value, so objects, arrays, numbers, booleans and null survive
+	// structurally intact and only secret-shaped keys and inline
+	// `Bearer …` / `Basic …` values are replaced. A redactor error fails the
+	// spawn loudly rather than persisting an unredacted record.
+	//
+	// The idempotency identity is unaffected: spawnRequestContentHash folds
+	// the PRE-redaction bytes, exactly as it does for Description and Query.
+	// Redacting also means what reaches the prompt is the redacted form,
+	// which is already true of `Query` — the run loop reads the stored task.
+	// Nil stays nil so a task that carried no caller memory round-trips as
+	// nil through the `omitempty` marshal, and the returned slice is freshly
+	// marshalled so the stored task never aliases the caller's request.
+	callerMemory, err := e.redactCallerMemory(ctx, req.CallerMemory)
+	if err != nil {
+		return tasks.TaskHandle{}, err
+	}
 	t := &tasks.Task{
 		ID:                id,
 		Identity:          req.Identity,
@@ -242,6 +299,9 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		// the caller-named agent (edge-validated; "" = the runtime's
 		// configured default).
 		AgentID: req.AgentID,
+		// the caller-supplied memory block (edge-validated; nil = none).
+		CallerMemory:          callerMemory,
+		CallerMemoryWireBytes: len(req.CallerMemory),
 	}
 	// Validate the requested group BEFORE persisting anything. A
 	// missing / cross-session / sealed group must fail the spawn
@@ -266,7 +326,7 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	}
 	e.tasks[id] = t
 	if req.IdempotencyKey != "" {
-		e.idemIdx[idempotencyKey{SessionID: req.Identity.SessionID, Key: req.IdempotencyKey}] = idempotencyRecord{
+		e.idemIdx[idemKeyFor(req.Identity.Identity, req.IdempotencyKey)] = idempotencyRecord{
 			TaskID:      id,
 			ContentHash: contentHash,
 		}
@@ -293,7 +353,7 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 			}
 			delete(e.tasks, id)
 			if req.IdempotencyKey != "" {
-				delete(e.idemIdx, idempotencyKey{SessionID: req.Identity.SessionID, Key: req.IdempotencyKey})
+				delete(e.idemIdx, idemKeyFor(req.Identity.Identity, req.IdempotencyKey))
 			}
 			if req.ParentTaskID != nil && *req.ParentTaskID != "" {
 				e.detachChildLocked(*req.ParentTaskID, id)
@@ -986,7 +1046,7 @@ func (e *Engine) contentHashLocked(t *tasks.Task) [32]byte {
 	if t.IdempotencyKey == "" {
 		return [32]byte{}
 	}
-	if rec, ok := e.idemIdx[idempotencyKey{SessionID: t.Identity.SessionID, Key: t.IdempotencyKey}]; ok {
+	if rec, ok := e.idemIdx[idemKeyFor(t.Identity.Identity, t.IdempotencyKey)]; ok {
 		return rec.ContentHash
 	}
 	return [32]byte{}
@@ -1044,6 +1104,38 @@ func (e *Engine) redactString(ctx context.Context, s string) (string, error) {
 		return fmt.Sprintf("%v", m["v"]), nil
 	}
 	return v, nil
+}
+
+// redactCallerMemory redacts the caller-supplied memory block on the Spawn
+// path. It is a THIN, strict wrapper around [Engine.redactRawJSON] and exists
+// for one reason: redactRawJSON is deliberately TOLERANT of non-JSON bytes
+// (it falls through to the string redactor and re-quotes), which is right for
+// a tool result that may legitimately carry raw text, and wrong here.
+//
+// Caller memory that is not valid JSON must fail the spawn LOUDLY and persist
+// nothing. Before caller memory was redacted at all, that happened by accident
+// — the task record's whole-record marshal could not encode a malformed
+// json.RawMessage, so Spawn failed with a serialization refusal. Routing the
+// field through a tolerant redactor would have turned that malformed document
+// into a valid quoted STRING, the marshal would then have succeeded, and an
+// unusable row would have persisted with the failure silently relocated to
+// whatever reads it later. So the check is made explicit and moved EARLIER
+// than the marshal, where it can name the field.
+//
+// Empty / nil short-circuits to nil (a task that carried no caller memory
+// round-trips as nil through the `omitempty` marshal).
+func (e *Engine) redactCallerMemory(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("%w: caller_memory is not serializable as JSON", tasks.ErrInvalidRequest)
+	}
+	out, err := e.redactRawJSON(ctx, raw)
+	if err != nil {
+		return nil, fmt.Errorf("tasks/engine: redact caller memory: %w", err)
+	}
+	return out, nil
 }
 
 // redactRawJSON runs a JSON-encoded value through the Redactor by
@@ -1149,6 +1241,17 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if existing.AgentID != req.AgentID {
 		return false
 	}
+	// The caller-supplied memory block is part of the task's content
+	// identity — a reused idempotency key carrying DIFFERENT caller memory
+	// must surface as a loud conflict, never silently run with the first
+	// payload while reporting success for the second. It is compared through
+	// `existingHash != reqHash` above (spawnRequestContentHash folds it in),
+	// NOT by a direct byte compare against the stored field: the stored field
+	// is post-redaction, exactly like Description and Query, so comparing it
+	// to a raw request would raise a false conflict on an honest retry of a
+	// payload that contained anything secret-shaped. The pre-redaction hash
+	// is also strictly stronger — it still separates two payloads whose
+	// redacted forms collide.
 	return true
 }
 
@@ -1226,6 +1329,15 @@ func spawnRequestContentHash(req tasks.SpawnRequest) [32]byte {
 	if req.AgentID != "" {
 		h.Write([]byte{0x1F})
 		h.Write([]byte(req.AgentID))
+	}
+	// fold the caller-supplied memory block in so "same key, different
+	// caller_memory" surfaces as ErrIdempotencyConflict rather than a
+	// silent adoption of the first payload. Gated on non-empty so a spawn
+	// carrying no caller memory hashes byte-identically to one made before
+	// the field existed.
+	if len(req.CallerMemory) > 0 {
+		h.Write([]byte{0x1F})
+		h.Write(req.CallerMemory)
 	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))

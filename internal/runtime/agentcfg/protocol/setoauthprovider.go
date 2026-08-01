@@ -154,7 +154,8 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 	var rev agentcfg.Revision
 	applyErr, emitErr := adminwrite.Apply(
 		func() (revert func() error, err error) {
-			written, recErr := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)
+			written, recErr := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,
+				agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 			if recErr != nil {
 				return nil, recErr
 			}
@@ -164,7 +165,7 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 				// owner collision) — roll the just-written revision back so the call
 				// has NO observable effect, then return the install error loud.
 				if hasActive {
-					if _, rbErr := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent); rbErr != nil {
+					if _, rbErr := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent, compensatingWrite()); rbErr != nil {
 						return nil, fmt.Errorf("provider install failed AND revision rollback failed (state may be inconsistent): %w", errors.Join(instErr, rbErr))
 					}
 				}
@@ -176,7 +177,7 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 					errs = append(errs, e)
 				}
 				if hasActive {
-					if _, e := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent); e != nil {
+					if _, e := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent, compensatingWrite()); e != nil {
 						errs = append(errs, e)
 					}
 				} else {
@@ -185,7 +186,7 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 					// empty revision so the active config carries no installed
 					// provider — the pre-write "no config" state, restored (there is
 					// no revision-delete; a forward empty write is the neutralisation).
-					if _, e := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}); e != nil {
+					if _, e := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, compensatingWrite()); e != nil {
 						errs = append(errs, e)
 					}
 				}
@@ -321,6 +322,9 @@ func carrySiblingsForward(active agentcfg.Revision, hasActive bool) agentcfg.Con
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
+		// The ordered additive prompt blocks are a sibling section like any
+		// other: this verb replaces only its own, so the blocks survive.
+		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 	}
 	return payload
 }

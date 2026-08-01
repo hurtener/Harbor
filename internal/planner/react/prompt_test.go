@@ -872,7 +872,7 @@ func TestBuildSystemContent_HeavyResultsCarriesThePagingRuleAndTheBinaryCaveat(t
 //
 // This budget exists because that cost was learned the expensive way: a
 // 765-byte prose addition to `<heavy_results>` moved
-// BenchmarkReActPlanner_NextStep by +19% sec/op and +19% B/op with
+// BenchmarkReActPlanner_NextStep_DeclaredTool by +19% sec/op and +19% B/op with
 // allocs/op UNCHANGED at 16 — the same allocations, each bigger — and
 // tripped the CI perf gate. A package-level test is the cheaper place to
 // find that than a benchmark gate on a pull request.

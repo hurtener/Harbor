@@ -68,6 +68,7 @@ func TestEventsSearcher_RejectsMissingIdentity(t *testing.T) {
 	s, err := eventsearch.New(replayer, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("eventsearch.New: %v", err)
@@ -94,6 +95,7 @@ func TestEventsSearcher_ScopesToCallerSession(t *testing.T) {
 	s, err := eventsearch.New(replayer, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("eventsearch.New: %v", err)
@@ -121,6 +123,7 @@ func TestEventsSearcher_RejectsCrossTenantWithoutAdmin(t *testing.T) {
 	s, err := eventsearch.New(replayer, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("eventsearch.New: %v", err)
@@ -159,6 +162,7 @@ func TestEventsSearcher_FacetType(t *testing.T) {
 	s, err := eventsearch.New(replayer, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("eventsearch.New: %v", err)
@@ -195,6 +199,7 @@ func TestEventsSearcher_Concurrent_NoCrossTalk(t *testing.T) {
 	s, err := eventsearch.New(replayer, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("eventsearch.New: %v", err)

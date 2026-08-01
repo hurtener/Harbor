@@ -42,6 +42,7 @@ func userAxisSurface(t *testing.T) *protocol.SearchSurface {
 	es, err := eventsearch.New(replayer, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testSearchAudit,
 	})
 	if err != nil {
 		t.Fatalf("events searcher: %v", err)

@@ -49,19 +49,11 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 	if err := search.ValidateRequest(callerID, req); err != nil {
 		return types.SearchResponse{}, err
 	}
-	// The identity-axis gate, read once for all three axes.
-	elevated := s.deps.AdminScope(ctx)
-	if !elevated {
-		if search.CrossTenantRequested(callerID.TenantID, req) {
-			return types.SearchResponse{}, search.ErrCrossTenantRequiresAdmin
-		}
-		if search.CrossUserRequested(callerID.UserID, req) {
-			return types.SearchResponse{}, search.ErrCrossUserRequiresAdmin
-		}
-		if search.CrossSessionFanInRequested(req) {
-			return types.SearchResponse{}, search.ErrCrossSessionRequiresAdmin
-		}
+	decision, err := s.deps.AuthorizeScope(ctx, s.Index(), callerID, req)
+	if err != nil {
+		return types.SearchResponse{}, err
 	}
+	elevated := decision.Elevated
 
 	tenants := search.EffectiveTenantSet(callerID.TenantID, req)
 	// The user axis FOLDS for an unwidened caller. The store's `List`

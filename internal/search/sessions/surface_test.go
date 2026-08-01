@@ -12,10 +12,12 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
+	eventsubsys "github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/search"
 	sessionsearch "github.com/hurtener/Harbor/internal/search/sessions"
+	sessionsubsys "github.com/hurtener/Harbor/internal/sessions"
 )
 
 func TestSessionsSearcher_New_RejectsMissingDeps(t *testing.T) {
@@ -24,17 +26,22 @@ func TestSessionsSearcher_New_RejectsMissingDeps(t *testing.T) {
 	defer h.cleanup()
 
 	if _, err := sessionsearch.New(nil, search.Deps{
-		Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false },
+		Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false }, Audit: testAudit,
 	}); !errors.Is(err, search.ErrInvalidRequest) {
 		t.Errorf("nil lister: got %v, want ErrInvalidRequest", err)
 	}
 	if _, err := sessionsearch.New(h.registry, search.Deps{
-		AdminScope: func(context.Context) bool { return false },
+		AdminScope: func(context.Context) bool { return false }, Audit: testAudit,
 	}); !errors.Is(err, search.ErrInvalidRequest) {
 		t.Errorf("nil redactor: got %v, want ErrInvalidRequest", err)
 	}
-	if _, err := sessionsearch.New(h.registry, search.Deps{Redactor: patterns.New()}); !errors.Is(err, search.ErrInvalidRequest) {
+	if _, err := sessionsearch.New(h.registry, search.Deps{Redactor: patterns.New(), Audit: testAudit}); !errors.Is(err, search.ErrInvalidRequest) {
 		t.Errorf("nil AdminScope: got %v, want ErrInvalidRequest", err)
+	}
+	if _, err := sessionsearch.New(h.registry, search.Deps{
+		Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false },
+	}); !errors.Is(err, search.ErrInvalidRequest) {
+		t.Errorf("nil Audit: got %v, want ErrInvalidRequest", err)
 	}
 }
 
@@ -161,6 +168,35 @@ func TestSessionsSearcher_ListerFailurePropagates(t *testing.T) {
 	}
 	if _, err := s.Search(attackerCtx(t), types.SearchRequest{}); err == nil {
 		t.Fatal("a closed registry must not degrade to an empty page")
+	}
+}
+
+type calledLister struct{ called bool }
+
+func (l *calledLister) ListSnapshots(context.Context, sessionsubsys.SessionListFilter) ([]sessionsubsys.SessionSnapshot, error) {
+	l.called = true
+	return nil, nil
+}
+
+func TestSessionsSearcher_AuditFailureStopsBeforeStorage(t *testing.T) {
+	t.Parallel()
+	lister := &calledLister{}
+	sinkErr := errors.New("audit sink unavailable")
+	s, err := sessionsearch.New(lister, search.Deps{
+		Redactor: patterns.New(), AdminScope: func(context.Context) bool { return true },
+		Audit: func(context.Context, eventsubsys.Event) error { return sinkErr },
+	})
+	if err != nil {
+		t.Fatalf("sessionsearch.New: %v", err)
+	}
+	caller := identity.Identity{TenantID: "tenant-own", UserID: "user-own", SessionID: "session-own"}
+	ctx := callerCtx(t, caller)
+	_, err = s.Search(ctx, types.SearchRequest{Filter: types.SearchFilter{UserIDs: []string{"user-target"}}})
+	if !errors.Is(err, search.ErrAuditFailed) || !errors.Is(err, sinkErr) {
+		t.Fatalf("Search error = %v, want ErrAuditFailed wrapping sink error", err)
+	}
+	if lister.called {
+		t.Fatal("SessionLister was called after mandatory audit emission failed")
 	}
 }
 

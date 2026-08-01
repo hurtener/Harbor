@@ -2,9 +2,6 @@ package serve
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -85,6 +82,9 @@ var ErrReattachSuppressed = errors.New("serve: run-start mcp re-attach suppresse
 // Publish under the lock would let a slow subscriber stall every other owner's
 // re-attach).
 type reattachOutcome struct {
+	// changed reports that this call published a missing or changed descriptor.
+	// False is the exact owner+fingerprint no-op.
+	changed bool
 	// emit reports whether a lifecycle event should be published.
 	emit bool
 	// eventType is the canonical event to publish when emit is set.
@@ -119,22 +119,22 @@ type reattachOutcome struct {
 //
 // Never fatal: the returned error is for the caller's loud log and its joined
 // sweep error. The caller does not fail the run on it.
-func (a *MCPConnectionAttacher) Reattach(ctx context.Context, owner toolauth.Owner, id identity.Quadruple, desc agentcfg.MCPConnectionDescriptor) error {
+func (a *MCPConnectionAttacher) Reattach(ctx context.Context, owner toolauth.Owner, id identity.Quadruple, desc agentcfg.MCPConnectionDescriptor) (bool, error) {
 	// Fail CLOSED on an incomplete owner, exactly like the add path: a
 	// runtime-added registration with no owner tag would be an unreconcilable
 	// orphan. The reconcile derives the owner from the run's verified tenant plus
 	// the resolved agent, so this cannot fire from the shipped call site; it is
 	// the guard that keeps that true for any future caller.
 	if owner.Tenant == "" || owner.Agent == "" {
-		return fmt.Errorf("%w: run-start re-attach of connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
+		return false, fmt.Errorf("%w: run-start re-attach of connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
 			ErrRuntimeAddOwnerMissing, desc.Name, owner.Tenant, owner.Agent)
 	}
 	if a.registry == nil || a.catalog == nil {
-		return fmt.Errorf("serve: mcp attacher has no catalog/registry wired for the run-start re-attach of %q", desc.Name)
+		return false, fmt.Errorf("serve: mcp attacher has no catalog/registry wired for the run-start re-attach of %q", desc.Name)
 	}
 
 	key := reattachKey{tenant: owner.Tenant, agent: owner.Agent, name: desc.Name}
-	fingerprint := reattachFingerprint(desc)
+	fingerprint := agentcfg.MCPConnectionFingerprint(desc)
 
 	// The gate pass is PURE and runs before the lock and before any dial: a
 	// refused descriptor never reaches a transport.
@@ -157,7 +157,7 @@ func (a *MCPConnectionAttacher) Reattach(ctx context.Context, owner toolauth.Own
 	if out.emit {
 		a.emitReattachLifecycle(ctx, id, owner, desc, out)
 	}
-	return out.err
+	return out.changed, out.err
 }
 
 // gateReattach re-applies the CURRENT boot policy gates to a declared
@@ -213,19 +213,24 @@ func (a *MCPConnectionAttacher) reattachLocked(ctx context.Context, owner toolau
 	// start for the SAME owner may have attached the name in between. Re-reading
 	// here — inside the lock that serialises the whole attach — makes the pair
 	// (check, attach) atomic, so two concurrent run starts dial exactly once.
-	if priorOwner, exists := a.registry.OwnerOf(desc.Name); exists {
+	if priorOwner, liveFingerprint, exists := a.registry.RegistrationIdentity(desc.Name); exists {
 		if priorOwner == owner {
-			// Already live under the reconciling owner: nothing to re-establish,
-			// and deliberately NO re-dial — re-attaching would tear the live
-			// transport down and rebuild it (transport churn) for no gain.
-			delete(a.reattachBackoff, key)
-			return reattachOutcome{}
+			if liveFingerprint == fingerprint {
+				// Exact canonical descriptor already live: no transport churn.
+				delete(a.reattachBackoff, key)
+				return reattachOutcome{}
+			}
+			// Same owner/name with a different descriptor is a replacement. The
+			// prepared attach keeps the healthy old catalog/provider callable until
+			// the catalog publication linearization point.
 		}
-		// A DIFFERENT owner holds this name. Refuse loud with the shipped
-		// sentinel, exactly as the add door does: never evict another owner's
-		// live tools and transport, never rename, never shadow.
-		return a.recordReattachFailureLocked(key, fingerprint, desc,
-			fmt.Errorf("%w: a connection named %q is already registered to a different owner", mcpdrv.ErrConnectionNameOwnerConflict, desc.Name))
+		if priorOwner != owner {
+			// A DIFFERENT owner holds this name. Refuse loud with the shipped
+			// sentinel, exactly as the add door does: never evict another owner's
+			// live tools and transport, never rename, never shadow.
+			return a.recordReattachFailureLocked(key, fingerprint, desc,
+				fmt.Errorf("%w: a connection named %q is already registered to a different owner", mcpdrv.ErrConnectionNameOwnerConflict, desc.Name))
+		}
 	}
 
 	ms := reattachServerConfig(desc)
@@ -238,7 +243,9 @@ func (a *MCPConnectionAttacher) reattachLocked(ctx context.Context, owner toolau
 	defer cancel()
 
 	var local []func(context.Context) error
-	err := mcpdrv.Attach(actx, ms, a.reattachAttachDeps(owner, &local))
+	deps := a.reattachAttachDeps(owner, &local)
+	deps.DescriptorFingerprint = fingerprint
+	err := mcpdrv.Attach(actx, ms, deps)
 	// Merge whatever closers Attach appended even on failure (a successful
 	// Connect appends the provider's Close before a later step can fail — drain
 	// it on teardown).
@@ -248,6 +255,7 @@ func (a *MCPConnectionAttacher) reattachLocked(ctx context.Context, owner toolau
 	}
 	delete(a.reattachBackoff, key)
 	return reattachOutcome{
+		changed:   true,
 		emit:      true,
 		eventType: agentcfg.EventTypeMCPConnectionReattached,
 		state:     string(agentcfgprotocol.ConnectionStateOnline),
@@ -418,25 +426,6 @@ func reattachBackoffDelay(failures int) time.Duration {
 		return reattachBackoffMax
 	}
 	return d
-}
-
-// reattachFingerprint is a stable digest of the descriptor the retry window was
-// opened against, so an operator's EDIT resets the window immediately instead of
-// serving out a delay computed for the old shape. It is a content digest of
-// NON-SECRET fields only (the descriptor carries no secret by construction) and
-// is never emitted — it exists solely to detect change.
-func reattachFingerprint(desc agentcfg.MCPConnectionDescriptor) string {
-	// encoding/json emits map keys in sorted order, so the digest is stable
-	// across runs for an unchanged descriptor.
-	b, err := json.Marshal(desc)
-	if err != nil {
-		// A descriptor that cannot marshal has no stable identity; treat every
-		// attempt as a fresh shape (retry now) rather than reusing a window that
-		// may belong to a different descriptor. Never silently reuse.
-		return "unfingerprintable:" + desc.Name
-	}
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
 }
 
 // emitReattachLifecycle publishes one run-start re-attach lifecycle event. A nil

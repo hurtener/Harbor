@@ -23,16 +23,14 @@ const (
 	// "tools.auth.token.<scope>.<subject_id>.<source>".
 	tokenKindPrefix = "tools.auth.token." //nolint:gosec // G101 false positive: this is a StateStore Kind namespace prefix, not a credential
 
-	// accessTokenKindPrefix is the "tools.auth.access." namespace for
-	// the access-token-only record. Access and refresh tokens are
-	// persisted under separate Kind prefixes so a (post-V1) caller
-	// that wants to read access-token TTL without unsealing the
-	// refresh-token half can — and so a compromise of the
-	// access-token cache does not yield refresh capability (a
-	// §"Encryption at rest").
+	// accessTokenKindPrefix is the "tools.auth.access." namespace for the
+	// atomic credential envelope. Access and refresh credentials remain sealed
+	// independently inside that one StateRecord, so Put cannot report failure
+	// after publishing only half of the credential pair.
 	accessTokenKindPrefix = "tools.auth.access." //nolint:gosec // G101 false positive: this is a StateStore Kind namespace prefix, not a credential
 
-	// refreshTokenKindPrefix mirrors accessTokenKindPrefix.
+	// refreshTokenKindPrefix is retained only so Delete and ownership scans can
+	// clean up records written by older releases. New writes are single-record.
 	refreshTokenKindPrefix = "tools.auth.refresh." //nolint:gosec // G101 false positive: this is a StateStore Kind namespace prefix, not a credential
 )
 
@@ -80,8 +78,8 @@ func NewTokenStore(store state.StateStore, sealer Sealer) (TokenStore, error) {
 }
 
 // tokenEnvelope is the JSON-shaped record stored in the StateStore.
-// AccessTokenCipher / RefreshTokenCipher hold the AES-GCM-sealed
-// blobs; the rest is plaintext metadata safe for at-rest exposure
+// AccessTokenCipher / RefreshTokenCipher hold independently AES-GCM-sealed
+// blobs in one atomically saved StateRecord; the rest is plaintext metadata safe for at-rest exposure
 // (TenantID / UserID / AgentID are the identity scope the record
 // belongs to — not secret).
 type tokenEnvelope struct {
@@ -96,6 +94,7 @@ type tokenEnvelope struct {
 	ExpiresAt          time.Time `json:"expires_at,omitempty"`
 	Scopes             []string  `json:"scopes,omitempty"`
 	LastRefreshedAt    time.Time `json:"last_refreshed_at,omitempty"`
+	FlowStateCipher    []byte    `json:"flow_state_cipher,omitempty"`
 }
 
 // Get returns the Token at (ctx identity, scope, subject, source).
@@ -145,19 +144,27 @@ func (s *stateStoreTokenStore) Get(ctx context.Context, scope BindingScope, subj
 			return Token{}, false, err
 		}
 	}
+	var completedFlowState []byte
+	if len(env.FlowStateCipher) > 0 {
+		completedFlowState, err = s.sealer.Open(env.FlowStateCipher)
+		if err != nil {
+			return Token{}, false, err
+		}
+	}
 
 	tok := Token{
-		Source:          tools.ToolSourceID(env.Source),
-		BindingScope:    BindingScope(env.BindingScope),
-		TenantID:        env.TenantID,
-		UserID:          env.UserID,
-		AgentID:         env.AgentID,
-		AccessToken:     string(access),
-		RefreshToken:    string(refresh),
-		TokenType:       env.TokenType,
-		ExpiresAt:       env.ExpiresAt,
-		Scopes:          append([]string(nil), env.Scopes...),
-		LastRefreshedAt: env.LastRefreshedAt,
+		Source:             tools.ToolSourceID(env.Source),
+		BindingScope:       BindingScope(env.BindingScope),
+		TenantID:           env.TenantID,
+		UserID:             env.UserID,
+		AgentID:            env.AgentID,
+		AccessToken:        string(access),
+		RefreshToken:       string(refresh),
+		TokenType:          env.TokenType,
+		ExpiresAt:          env.ExpiresAt,
+		Scopes:             append([]string(nil), env.Scopes...),
+		LastRefreshedAt:    env.LastRefreshedAt,
+		completedFlowState: string(completedFlowState),
 	}
 	return tok, true, nil
 }
@@ -209,6 +216,13 @@ func (s *stateStoreTokenStore) Put(ctx context.Context, t Token) error {
 			return fmt.Errorf("auth: seal refresh: %w", err)
 		}
 	}
+	var flowStateCipher []byte
+	if t.completedFlowState != "" {
+		flowStateCipher, err = s.sealer.Seal([]byte(t.completedFlowState))
+		if err != nil {
+			return fmt.Errorf("auth: seal OAuth flow state: %w", err)
+		}
+	}
 
 	env := tokenEnvelope{
 		Source:             string(t.Source),
@@ -222,6 +236,7 @@ func (s *stateStoreTokenStore) Put(ctx context.Context, t Token) error {
 		ExpiresAt:          t.ExpiresAt,
 		Scopes:             append([]string(nil), t.Scopes...),
 		LastRefreshedAt:    t.LastRefreshedAt,
+		FlowStateCipher:    flowStateCipher,
 	}
 	bytes, err := json.Marshal(env)
 	if err != nil {
@@ -238,25 +253,6 @@ func (s *stateStoreTokenStore) Put(ctx context.Context, t Token) error {
 	}
 	if err := s.store.Save(ctx, rec); err != nil {
 		return fmt.Errorf("auth: Put save: %w", err)
-	}
-
-	// Refresh-token sibling record under a parallel Kind so a
-	// post-V1 reader that only needs the access-token TTL does not
-	// pay the refresh-decode cost. Same composite-key suffix; the
-	// Bytes are the AES-GCM-sealed refresh-token plaintext (no
-	// envelope around it — the access-token envelope already records
-	// the metadata).
-	if len(refreshCipher) > 0 {
-		refreshRec := state.StateRecord{
-			ID:        state.NewEventID(),
-			Identity:  q,
-			Kind:      refreshKind(t.BindingScope, subj, t.Source),
-			Bytes:     refreshCipher,
-			UpdatedAt: s.now(),
-		}
-		if err := s.store.Save(ctx, refreshRec); err != nil {
-			return fmt.Errorf("auth: Put save (refresh sibling): %w", err)
-		}
 	}
 
 	return nil

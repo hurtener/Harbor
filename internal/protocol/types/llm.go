@@ -19,15 +19,12 @@ package types
 // forbidden-practice violation — the wire flag is the structural signal
 // the Console must render verbatim.
 
-// LLMPostureRequest is the `llm.posture` request body. The TenantID
-// field has the same forward-looking cross-tenant semantics as
-// GovernancePostureRequest.TenantID — empty reads the caller's own
-// tenant; a non-empty different value requires `auth.ScopeAdmin`.
-type LLMPostureRequest struct {
-	// TenantID — empty = the caller's own tenant; non-empty + different
-	// from the caller's resolved tenant = requires auth.ScopeAdmin.
-	TenantID string `json:"tenant_id,omitempty"`
-}
+// `llm.posture` takes the shared posture request envelope,
+// RuntimeInfoRequest — not a type of its own, and the cross-tenant
+// selector is `identity.tenant`. An `LLMPostureRequest` carrying a
+// `tenant_id` field used to be declared here and was never decoded; it
+// was removed rather than implemented, for the reasons recorded on the
+// `governance.posture` sibling in governance.go.
 
 // LLMPostureResponse is the `llm.posture` response body — the read-only
 // projection of the runtime's bound LLM provider.

@@ -169,24 +169,31 @@ TOTAL_FAIL=0
 #
 # The Status read is deliberately fail-LOUD in the direction that matters:
 # a row that cannot be parsed is treated as Shipped, so a master-plan
-# reformat cannot silently disable this gate. Set
-# HARBOR_PREFLIGHT_ALLOW_INERT=1 to downgrade every case to a report — for
-# an emergency only, and it must be justified in the PR exactly as
-# HARBOR_PREFLIGHT_SKIP is (§4.1).
+# reformat cannot silently disable this gate. That strictness is preserved,
+# but its SILENCE is not: a phase classified off a row this harness could not
+# read is now named in the summary (UNRESOLVED_PHASE_ROWS). The old behaviour
+# put the FAIL on the script while the broken thing was the row — which is
+# how thirteen NOT-shipped phases were parked in the baseline as shipped-phase
+# debt without anyone noticing. Set HARBOR_PREFLIGHT_ALLOW_INERT=1 to
+# downgrade every inert case to a report — for an emergency only, and it must
+# be justified in the PR exactly as HARBOR_PREFLIGHT_SKIP is (§4.1).
 #
-# THE BASELINE. When this gate was first switched on, 24 shipped-phase
-# scripts already violated it — measured, not estimated. Failing all 24 on
-# day one would have got the gate disabled within a week, so they are listed
-# in `scripts/smoke/inert-baseline.txt` as KNOWN DEBT. A script NOT in that
-# file that goes all-SKIP is a NEW regression and fails; a script IN it that
-# starts asserting something is reported as a stale entry to delete. The
-# rationale for each direction is in the file's own header.
+# THE BASELINE IS EMPTY, AND EMPTY IS ITS STEADY STATE. When this gate was
+# first switched on, 24 scripts violated it and were listed in
+# `scripts/smoke/inert-baseline.txt` as KNOWN DEBT. All 24 have been drained:
+# thirteen were misclassifications of this function (see phase_row_status /
+# phase_status_arm below) and eleven were given real, mutation-verified
+# assertions. `scripts/smoke/phase-223.sh` asserts the file stays drained.
+# A script NOT in that file that goes all-SKIP is a NEW regression and fails;
+# a script IN it that starts asserting something is reported as a stale entry
+# to delete. The rationale for each direction is in the file's own header.
 # ----------------------------------------------------------------------
 INERT_BASELINE_FILE='scripts/smoke/inert-baseline.txt'
 INERT_SHIPPED=()          # inert, shipped, NOT baselined -> FAIL
 INERT_BASELINED=()        # inert, shipped, baselined     -> reported as debt
 INERT_PENDING=()          # inert, not shipped            -> expected
 INERT_SEEN_BASELINED=''   # newline-joined; used to find stale baseline entries
+UNRESOLVED_PHASE_ROWS=()  # classified-but-unreadable master-plan rows -> reported
 
 # is_baselined <smoke-path>
 is_baselined() {
@@ -196,40 +203,117 @@ is_baselined() {
         | grep -qxF -- "$1"
 }
 
+# phase_row_status <phase-token>   e.g. 213, 83w, 113a
+# Echoes the phase's master-plan Status cell, or the empty string when the
+# phase has no row at all.
+#
+# THE ROW REGEX IS `*\|`, NOT `+\|`. The master plan writes the phase cell
+# BOTH ways — `| 104 |` (padded) and `| 85a|` (no trailing space) — and a
+# `+` there made 106 of 339 phase rows invisible. An invisible row fell into
+# the "no row" arm below and was treated as Shipped, which is how thirteen
+# NOT-shipped phases were parked in the inert baseline as shipped-phase debt.
+phase_row_status() {
+    local n="$1" row
+    row="$(grep -m1 -E "^\| *${n} *\|" docs/plans/README.md 2>/dev/null || true)"
+    [ -n "${row}" ] || return 0
+    # Last non-empty pipe-delimited field.
+    printf '%s' "${row}" | sed -E 's/[[:space:]]*\|[[:space:]]*$//; s/.*\|[[:space:]]*//'
+}
+
+# phase_status_arm <status-cell>
+# Echoes `shipped`, `not-shipped`, or `unknown`. Statuses in the master plan
+# are `Shipped`, `Shipped* `, `Shipped (v1.23)`, `Pending (V1.5.x)`,
+# `Post-V1`, `Cut — RC redesigns Tasks`, `Ready now (slim)`,
+# `Revisit after SDK-RC`, `Superseded by 107c (not shipped)`, `Reverted (#346
+# …)`, `Deprecated → superseded by …` — so the arms match on the LEADING word.
+#
+# The previous vocabulary named only Pending / Post-V1 / Deferred and defaulted
+# everything else to Shipped, so six live not-shipped words (Cut, Ready,
+# Revisit, Superseded, Reverted, Deprecated — 13 rows) classified as shipped.
+# `Deferred` appears zero times today and is kept because it is the master
+# plan's documented word for the state.
+#
+# `unknown` still resolves to the STRICT arm in phase_is_shipped (a new status
+# word cannot quietly disable the gate) — it is separated out only so the
+# silence can be reported. See UNRESOLVED_PHASE_ROWS.
+phase_status_arm() {
+    case "$1" in
+        Shipped*|shipped*)                          printf 'shipped' ;;
+        Pending*|pending*)                          printf 'not-shipped' ;;
+        Post-V1*|Post-v1*|post-v1*)                 printf 'not-shipped' ;;
+        Deferred*|deferred*)                        printf 'not-shipped' ;;
+        Cut*|cut*)                                  printf 'not-shipped' ;;
+        Ready*|ready*)                              printf 'not-shipped' ;;
+        Revisit*|revisit*)                          printf 'not-shipped' ;;
+        Superseded*|superseded*)                    printf 'not-shipped' ;;
+        Reverted*|reverted*)                        printf 'not-shipped' ;;
+        Deprecated*|deprecated*)                    printf 'not-shipped' ;;
+        *)                                          printf 'unknown' ;;
+    esac
+}
+
 # phase_is_shipped <phase-token>   e.g. 213, 83w, 113a
-# Echoes "yes" unless the master-plan row for the phase exists AND its
-# final column says something other than Shipped.
+# Echoes "yes" unless the master-plan row for the phase exists AND its final
+# column carries a status word this harness knows to mean not-shipped.
+#
+# Both failure modes — no row, unrecognised word — resolve to "yes", the
+# STRICT arm. That is what makes correcting this function safe: a correction
+# can only move a script from INERT_SHIPPED/INERT_BASELINED toward
+# INERT_PENDING, never the reverse, so nothing that passes today can start
+# failing because the classifier got better.
 phase_is_shipped() {
-    local n="$1" row status
-    row="$(grep -m1 -E "^\| *${n} +\|" docs/plans/README.md 2>/dev/null || true)"
-    if [ -z "${row}" ]; then
+    local status
+    status="$(phase_row_status "$1")"
+    if [ -z "${status}" ]; then
         # No row at all: cannot prove it is unshipped, so treat as shipped.
         printf 'yes'
         return 0
     fi
-    # Last non-empty pipe-delimited field.
-    status="$(printf '%s' "${row}" | sed -E 's/[[:space:]]*\|[[:space:]]*$//; s/.*\|[[:space:]]*//')"
-    # Statuses in the master plan are `Shipped`, `Shipped (v1.23)`,
-    # `Pending`, `Pending (V1.5.x)`, `Post-V1`, ... — match on the prefix,
-    # and default anything unrecognised to Shipped so a new status word
-    # cannot quietly disable the gate.
-    case "${status}" in
-        Pending*|pending*|Post-V1*|Post-v1*|Deferred*|deferred*) printf 'no' ;;
-        *)                                                       printf 'yes' ;;
+    case "$(phase_status_arm "${status}")" in
+        not-shipped) printf 'no' ;;
+        *)           printf 'yes' ;;
     esac
 }
 
-# assess_smoke_output <smoke-path> <captured-output-path>
+# note_unreadable_phase_row <smoke-path> <phase-token>
+# Records — never fatally — that the inert gate classified this phase off a
+# master-plan row it could not read. The strict default (unknown => Shipped)
+# is preserved; only its SILENCE is removed. Without this, the operator sees a
+# FAIL on the SCRIPT while the thing that is actually wrong is the ROW, which
+# is exactly how thirteen misclassified entries entered the baseline unnoticed.
+note_unreadable_phase_row() {
+    local smoke="$1" n="$2" status
+    status="$(phase_row_status "${n}")"
+    if [ -z "${status}" ]; then
+        UNRESOLVED_PHASE_ROWS+=("${smoke}: phase '${n}' has NO row in docs/plans/README.md — classified Shipped by default")
+    elif [ "$(phase_status_arm "${status}")" = 'unknown' ]; then
+        UNRESOLVED_PHASE_ROWS+=("${smoke}: phase '${n}' status '${status}' is in neither vocabulary — classified Shipped by default; teach phase_status_arm the word")
+    fi
+}
+
+# assess_smoke_output <smoke-path> <captured-output-path> <exit-code>
 assess_smoke_output() {
-    local smoke="$1" out_path="$2" ok_n fail_n n
+    local smoke="$1" out_path="$2" rc="${3:-0}" ok_n fail_n n
     [ -f "${out_path}" ] || return 0
     ok_n="$(grep -m1 -E '^OK:[[:space:]]+[0-9]+' "${out_path}" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
     fail_n="$(grep -m1 -E '^FAIL:[[:space:]]+[0-9]+' "${out_path}" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
-    # No summary block at all (the script died before smoke_summary): the
-    # non-zero exit path already accounts for that. Nothing to add.
-    [ -n "${ok_n}" ] && [ -n "${fail_n}" ] || return 0
+    if [ -z "${ok_n}" ] || [ -z "${fail_n}" ]; then
+        # No summary block at all. A script that DIED mid-run is already
+        # counted by the non-zero-exit path — but one that exits 0 without
+        # ever calling smoke_summary is invisible to BOTH gates: no counters
+        # for the inert detector to read, no non-zero rc for TOTAL_FAIL.
+        # Probed, not assumed: such a script recorded nothing anywhere and
+        # preflight said PASS. Nothing in this harness REQUIRES a smoke to
+        # print a summary; this is that requirement.
+        if [ "${rc}" -eq 0 ]; then
+            echo "preflight: ${smoke} exited 0 but printed no OK:/FAIL: summary — it did not call smoke_summary, so neither the inert gate nor the exit-code gate can see what it asserted. Every smoke must end with smoke_summary."
+            TOTAL_FAIL=$((TOTAL_FAIL + 1))
+        fi
+        return 0
+    fi
     [ "${ok_n}" = "0" ] && [ "${fail_n}" = "0" ] || return 0
     n="$(basename "${smoke}" | sed 's/^phase-//; s/\.sh$//')"
+    note_unreadable_phase_row "${smoke}" "${n}"
     if [ "$(phase_is_shipped "${n}")" != "yes" ]; then
         INERT_PENDING+=("${smoke}")
     elif is_baselined "${smoke}"; then
@@ -347,7 +431,7 @@ run_parallel_batch() {
             echo "preflight: ${s_name} reported failures (rc=${rc_code})"
             batch_fail=$((batch_fail + 1))
         fi
-        assess_smoke_output "${s_name}" "${out_path}"
+        assess_smoke_output "${s_name}" "${out_path}" "${rc_code}"
     done < <(sort "${rc_file}")
 
     TOTAL_FAIL=$((TOTAL_FAIL + batch_fail))
@@ -519,12 +603,25 @@ for smoke in ${LIVE_SERVER[@]+"${LIVE_SERVER[@]}"}; do
         echo "preflight: ${smoke} reported failures"
         TOTAL_FAIL=$((TOTAL_FAIL + 1))
     fi
-    assess_smoke_output "${smoke}" "${live_out}"
+    assess_smoke_output "${smoke}" "${live_out}" "${smoke_rc}"
 done
 rm -rf "${LIVE_OUT_DIR}"
 
 echo ""
 echo "=== preflight summary ==="
+
+# The inert gate classified at least one phase off a master-plan row it could
+# not read. Reported, never fatal — the strict "unknown => Shipped" default is
+# unchanged. The point is that the operator sees the ROW named, not only the
+# script it made look broken.
+if [ "${#UNRESOLVED_PHASE_ROWS[@]}" -gt 0 ]; then
+    echo ""
+    echo "preflight: ${#UNRESOLVED_PHASE_ROWS[@]} phase(s) were classified off an UNREADABLE master-plan row."
+    echo "  The strict default still applies (unknown => Shipped), so this is a report, not a"
+    echo "  failure — but if one of these also shows up below as an inert SHIPPED script, fix"
+    echo "  the row in docs/plans/README.md before touching the smoke:"
+    for r in "${UNRESOLVED_PHASE_ROWS[@]}"; do echo "    ${r}"; done
+fi
 
 if [ "${#INERT_PENDING[@]}" -gt 0 ]; then
     echo ""

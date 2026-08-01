@@ -572,7 +572,11 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	}
 
 	if in.Sessions != nil && in.Tasks != nil && in.Artifacts != nil {
-		searchDeps := search.Deps{Redactor: red, AdminScope: server.SearchAdminScopeFromAuth}
+		searchDeps := search.Deps{
+			Redactor:   red,
+			AdminScope: server.SearchAdminScopeFromAuth,
+			Audit:      bus.Publish,
+		}
 		searchSessions, seErr := searchsessions.New(in.Sessions, searchDeps)
 		if seErr != nil {
 			return nil, wrapErr("search sessions", seErr)
@@ -665,12 +669,23 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithAllowWireInjection(in.AllowWireInjection),
 		}
 		if in.MCPAttacher != nil {
-			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(in.MCPAttacher))
+			if preparer, ok := in.MCPAttacher.(agentcfgprotocol.ConnectionPreparer); ok {
+				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionPreparer(preparer))
+			} else {
+				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(in.MCPAttacher))
+			}
 			// The production attacher concrete also applies the OAuth-discovery
 			// allow-list live (the set_mcp_discovery_origins write path); wire it as
 			// the applier when the attacher satisfies the seam.
 			if applier, ok := in.MCPAttacher.(agentcfgprotocol.DiscoveryOriginApplier); ok {
 				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithDiscoveryOriginApplier(applier))
+			}
+			// The same concrete also tears a just-attached server back down when
+			// the add's revision write fails after it (the expected-revision
+			// conflict). Binding the compensation to the object that attached
+			// guarantees it detaches through the same registry + catalog.
+			if detacher, ok := in.MCPAttacher.(agentcfgprotocol.ConnectionDetacher); ok {
+				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionDetacher(detacher))
 			}
 		}
 		if in.OAuthProviderInstaller != nil {

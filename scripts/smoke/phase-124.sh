@@ -28,6 +28,13 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
+# The dev bearer is resolved through common.sh's `dev_bearer`, never by a raw
+# ${HARBOR_DEV_TOKEN} read: the raw read is EMPTY outside preflight, so every
+# live leg below degrades to a SKIP while the script still exits 0 — "a SKIP
+# that should be an OK is a bug" (AGENTS.md §4.2 item 5, issue #624).
+# dev_bearer prefers the exported value and falls back to the dev server log.
+HARBOR_DEV_TOKEN="$(dev_bearer)"
+
 # 1. Surface probe — is the SSE resume route present at all? When absent
 # the rest SKIPs gracefully.
 if ! skip_if_404 "$(api_url /v1/events)" \
@@ -46,7 +53,7 @@ assert_status 401 "$(api_url /v1/events)" \
 # exercises the resume path the rehydration fix repairs at the driver
 # layer: a client reconnecting at a high cursor must still be served.
 if [ -n "${HARBOR_DATA_DIR:-}" ] && [ -f "${HARBOR_DATA_DIR}/server.log" ]; then
-  DEV_TOKEN="$(grep -m1 '^HARBOR_DEV_TOKEN=' "${HARBOR_DATA_DIR}/server.log" 2>/dev/null | sed 's/^HARBOR_DEV_TOKEN=//' || true)"
+  DEV_TOKEN="$(dev_bearer)"
   if [ -n "${DEV_TOKEN}" ]; then
     # SSE streams stay open until the client disconnects; cap the request
     # short and tolerate the timeout — %{http_code} is written before the

@@ -64,10 +64,14 @@ func (s *Service) SetPromptLayers(ctx context.Context, req prototypes.AgentConfi
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
+		// The ordered additive prompt blocks are a sibling section like any
+		// other: this verb replaces only its own, so the blocks survive.
+		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		payload.OAuthProviders = active.Payload.OAuthProviders
 	}
 
-	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)
+	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,
+		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigSetPromptLayersResponse{}, err
 	}

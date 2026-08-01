@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -130,7 +131,7 @@ func TestProvider_DuplicateConfig_FailLoud(t *testing.T) {
 	h := newProviderHarness(t)
 	dup := h.userCfg // same Source as already configured
 	_, err := NewProvider([]OAuthConfig{h.userCfg, dup}, ProviderDeps{
-		Store: h.store, Bus: h.bus, Redactor: h.redactor, Coordinator: h.coordinator,
+		Store: h.store, Flows: h.flows, Bus: h.bus, Redactor: h.redactor, Coordinator: h.coordinator,
 	})
 	if err == nil {
 		t.Fatal("duplicate OAuthConfig should fail loud at construction")
@@ -200,15 +201,22 @@ func TestProvider_CompleteFlow_ExpiredFlow_FailLoud(t *testing.T) {
 	if !errors.As(err, &authErr) {
 		t.Fatal("Token did not return ErrAuthRequired")
 	}
-	// Force-expire the flow by mutating the flow record.
-	h.provider.flowsMu.Lock()
-	rec, ok := h.provider.flows[authErr.State]
+	// Force-expire the durable flow record through its persistence seam.
+	rec, ok, err := h.flows.Get(ctx, authErr.State)
+	if err != nil {
+		t.Fatalf("Get flow: %v", err)
+	}
 	if !ok {
-		h.provider.flowsMu.Unlock()
 		t.Fatal("flow not registered")
 	}
 	rec.ExpiresAt = time.Now().Add(-time.Hour)
-	h.provider.flowsMu.Unlock()
+	fs := h.flows.(*stateStoreFlowStore)
+	if err := fs.store.Delete(ctx, identity.Quadruple{Identity: rec.Identity}, flowKindPrefix+rec.State); err != nil {
+		t.Fatalf("Delete flow: %v", err)
+	}
+	if err := h.flows.Put(ctx, rec); err != nil {
+		t.Fatalf("Put expired flow: %v", err)
+	}
 
 	code, _, err := h.server.VisitAuthorizeURL(authErr.AuthorizeURL)
 	if err != nil {
@@ -281,22 +289,6 @@ func TestNonEmpty(t *testing.T) {
 	}
 	if nonEmpty("", "") != "" {
 		t.Fatal("both empty stays empty")
-	}
-}
-
-func TestSummary(t *testing.T) {
-	t.Parallel()
-	short := []byte("ok")
-	if summary(short) != "ok" {
-		t.Fatal("short summary mismatch")
-	}
-	long := make([]byte, 500)
-	for i := range long {
-		long[i] = 'a'
-	}
-	got := summary(long)
-	if len(got) != 200+len("…") {
-		t.Fatalf("long summary length: got %d", len(got))
 	}
 }
 

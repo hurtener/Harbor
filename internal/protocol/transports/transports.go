@@ -784,8 +784,9 @@ func WithEventsList(arts artifacts.ArtifactStore) Option {
 // handler inherits `ControlSurface.Dispatch`'s identity-from-body
 // gate, the SSE handler resolves identity from the `X-Harbor-*`
 // carrier headers via `resolveIdentity`). It is used by the
-// own package tests + `test/integration/phase60_wire_transport_test.go`
-// to assert the pre-auth transport surface still works.
+// own package tests + the wire-transport integration suite under
+// `test/integration/` to assert the pre-auth transport surface still
+// works.
 //
 // PRODUCTION CODE MUST NEVER USE THIS OPTION. A Runtime that boots
 // with `WithoutValidator` exposes an unauthenticated Protocol surface,

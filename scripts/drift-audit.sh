@@ -38,6 +38,70 @@ for f in RFC-001-Harbor.md AGENTS.md CLAUDE.md README.md LICENSE \
     fi
 done
 
+# 2b. POPULATION CENSUS — every corpus the guards below scan must be
+# NON-EMPTY.
+#
+# Almost every guard in this file is a scan: walk a population, report what is
+# wrong, print OK when nothing is. That shape has one failure mode it cannot
+# distinguish on its own — an EMPTY population and a CLEAN one produce the
+# identical OK. A wrong `cd`, a renamed directory, a glob that stopped matching
+# and a corpus someone deleted all read as "no violations found". This is the
+# same defect the D-374 guards fail loudly on ("parsed ZERO rows … this check
+# has gone inert") and the same one the smoke corpus produced roughly a dozen
+# times across two waves.
+#
+# It is deliberately EARLY: it must fire before the guards that would otherwise
+# print a vacuous OK, so an operator reads the cause rather than a page of
+# meaningless passes.
+#
+# WHAT THIS DOES NOT COVER, stated rather than implied: a population that
+# exists but that a guard STOPPED READING — the godoc scan narrowed from
+# `internal/ cmd/ sdk/` to `internal/`, say. No census of the corpus can see
+# that, because the corpus is fine; it is the guard's argument list that
+# shrank. That class is covered from the other side, by the per-population
+# mutation cases in scripts/smoke/phase-224.sh, which plant a violation in EACH
+# directory a guard claims to scan. The two mechanisms are complementary and
+# neither substitutes for the other.
+#
+# `find` is used rather than a glob so this check does not depend on a shell
+# option some earlier check happened to set (the `nullglob` incident that made
+# the brief-reference guard unable to fail).
+census_failed=0
+census_expect_nonempty() {
+    local label="$1" count="$2"
+    if [ "${count}" -eq 0 ]; then
+        fail "population census: the ${label} population is EMPTY. Every guard that scans it would print OK without having examined anything, so this is reported instead of passed."
+        census_failed=$((census_failed + 1))
+    fi
+}
+count_files() {
+    # <dir> <name-pattern> [maxdepth]
+    local dir="$1" pat="$2" depth="${3:-}"
+    if [ ! -d "${dir}" ]; then
+        printf '0'
+        return
+    fi
+    if [ -n "${depth}" ]; then
+        find "${dir}" -maxdepth "${depth}" -type f -name "${pat}" 2>/dev/null | wc -l | tr -d ' '
+    else
+        find "${dir}" -type f -name "${pat}" 2>/dev/null | wc -l | tr -d ' '
+    fi
+}
+
+census_expect_nonempty 'phase plan (docs/plans/phase-*.md)'          "$(count_files docs/plans 'phase-*.md' 1)"
+census_expect_nonempty 'phase smoke (scripts/smoke/phase-*.sh)'      "$(count_files scripts/smoke 'phase-*.sh' 1)"
+census_expect_nonempty 'research brief (docs/research/*.md)'         "$(count_files docs/research '*.md' 1)"
+census_expect_nonempty 'operator skill (docs/skills/*/SKILL.md)'     "$(count_files docs/skills 'SKILL.md')"
+census_expect_nonempty 'Go source under internal/'                   "$(count_files internal '*.go')"
+census_expect_nonempty 'Go source under cmd/'                        "$(count_files cmd '*.go')"
+census_expect_nonempty 'Go source under sdk/ (the D-282 scan extension)' "$(count_files sdk '*.go')"
+census_expect_nonempty 'shell script under scripts/'                 "$(count_files scripts '*.sh')"
+census_expect_nonempty 'Console playground route'                    "$(count_files 'web/console/src/routes/(console)/playground' '*.svelte')"
+
+if [ "${census_failed}" -eq 0 ]; then
+    ok 'population census: every scanned corpus is non-empty (an empty corpus and a clean one print the same OK, so emptiness is refused here)'
+fi
+
 # 3. Every phase plan has a matching smoke script
 shopt -s nullglob
 for plan in docs/plans/phase-*.md; do
@@ -116,6 +180,30 @@ for plan in docs/plans/phase-*.md; do
 done
 
 # 6. Cross-reference resolution: every `brief NN` in phase plans must resolve to a real file.
+#
+# brief_exists is a LOOP, not `ls docs/research/${num}-*.md`, and the difference
+# is the whole guard. Check 3 above turns on `nullglob` and does not turn it off
+# until check 9, so by the time this check runs an UNMATCHED glob expands to
+# NOTHING — which turned `ls "docs/research/99-"*.md` into a bare `ls` of the
+# current directory. That always succeeds, so EVERY `brief NN` reference
+# resolved and this guard could not fail. Found by phase 224's mutation harness
+# (`scripts/smoke/phase-224.sh`), which planted `brief 99` in a fixture plan and
+# watched the audit report OK; the shell-level probe confirms `shopt -s
+# nullglob` flips the same test from "stale detected" to "resolves".
+#
+# The loop below is correct with nullglob EITHER WAY: on, the body never runs;
+# off, `$f` is the literal unmatched pattern and `[ -f ]` rejects it. That
+# independence is deliberate — a guard must not be a function of a shell option
+# some earlier check happened to set.
+brief_exists() {
+    local num="$1" f
+    for f in docs/research/"${num}"-*.md; do
+        if [ -f "$f" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
 for plan in docs/plans/phase-*.md; do
     # -a: see the note on the RFC check above — same silent-skip hazard.
     refs=$(grep -a -oE '\bbrief [0-9]{2}\b' "$plan" | sort -u || true)
@@ -125,7 +213,7 @@ for plan in docs/plans/phase-*.md; do
     bad=0
     while IFS= read -r ref; do
         num=$(printf '%s' "$ref" | sed 's/^brief //')
-        if ! ls "docs/research/${num}-"*.md >/dev/null 2>&1; then
+        if ! brief_exists "${num}"; then
             fail "${plan}: stale reference '${ref}' (no matching docs/research/${num}-*.md)"
             bad=$((bad + 1))
         fi
@@ -161,6 +249,12 @@ done
 # Extend the scan to shipped Go source so a stray comment can't sneak
 # the predecessor's name into a release binary. find used over a glob
 # so we pick up new packages automatically.
+#
+# The two `-d` tests below only avoid a `find` error on a missing directory;
+# they are NOT the guard against the directory disappearing. Both populations
+# are asserted non-empty by the population census (check 2b), because an absent
+# internal/ or cmd/ would otherwise narrow this scan silently and it would
+# still print its OK.
 if [ -d internal ]; then
     while IFS= read -r f; do
         files_to_scan+=("$f")
@@ -203,10 +297,20 @@ fi
 classify_drift_count=0
 shopt -s nullglob
 for smoke in scripts/smoke/phase-*.sh; do
+    # `|| true` is load-bearing, not defensive noise. This script runs under
+    # `set -euo pipefail`: when a smoke carries NO header, grep exits 1, pipefail
+    # propagates that through the pipeline, and the failing command substitution
+    # made `set -e` KILL THE WHOLE AUDIT right here — exit 1 with no diagnostic
+    # naming the file, and every check below this point (godoc hygiene, the
+    # scaffold pin, the release ledger, both portability guards, markdownlint)
+    # silently never ran. So the single defect this guard exists to report was
+    # instead masking six other guards. Found by phase 224's mutation harness,
+    # which asserts on each guard's OWN message rather than on the exit code —
+    # an exit-code-only check would have read the abort as "caught!".
     header=$(grep -E '^[[:space:]]*#[[:space:]]*PREFLIGHT_REQUIRES:' "$smoke" \
         | head -1 \
         | sed -E 's/^[[:space:]]*#[[:space:]]*PREFLIGHT_REQUIRES:[[:space:]]*//' \
-        | tr -d '[:space:]')
+        | tr -d '[:space:]' || true)
     case "$header" in
         live-server|static-only|unit-tests)
             : # ok
@@ -235,10 +339,46 @@ fi
 # the gate. The helper is extracted to its own script so phase-85k.sh's smoke
 # can re-run the same check on the live build.
 # -----------------------------------------------------------------------------
+#
+# The `else` arm is LOAD-BEARING, not defensive noise. `if [ -x helper ]` with
+# no else is a guard that VANISHES: a lost executable bit (a `cp` that does not
+# preserve mode, a checkout on a filesystem without the bit, a rename) removes
+# the whole check with no failure, no skip and no output — indistinguishable
+# from a clean run. That is the same shape as every inert guard this harness
+# exists to drain, one level up in the delegation. The helper is an
+# unconditional repository fixture, so its absence is a defect in its own
+# right.
 if [ -x scripts/skills/check-frontmatter.sh ]; then
     if ! scripts/skills/check-frontmatter.sh; then
         fail 'one or more docs/skills/<slug>/SKILL.md files have malformed frontmatter — see §18 of CLAUDE.md'
     fi
+else
+    fail 'delegated guard unavailable: scripts/skills/check-frontmatter.sh is missing or not executable, so the operator-skill frontmatter audit did not run. A guard that cannot run must not read as a guard that passed (§4.2 item 5).'
+fi
+
+# -----------------------------------------------------------------------------
+# Smoke-corpus body-identity guard (D-374). A Protocol request type with no
+# `identity` field is not scoped by one; the control transport decodes
+# strictly, so a smoke body carrying an `identity` member for such a method is
+# a 400 at runtime. The Console half of this rule lives in the TS lockstep
+# scan (`npm run lint`); this is the shell half. The corpus has produced two
+# separate instances of the bug, so it does not stay unguarded.
+# -----------------------------------------------------------------------------
+#
+# Same load-bearing `else` as the frontmatter delegation above, and this is the
+# guard the shape was found on: it shipped with no else, so a lost executable
+# bit made it disappear silently — and because it emits no `ok` of its own, the
+# mutation harness's coverage census could not see it either. A guard that
+# vanishes twice over is worse than one that was never written, because the
+# audit's summary still reads green.
+if [ -x scripts/check-smoke-body-identity.sh ]; then
+    if scripts/check-smoke-body-identity.sh; then
+        :   # the helper prints its own [OK] line
+    else
+        fail 'a smoke body sends `identity` to a Protocol method whose request type has no such field — see the guard output above and D-374'
+    fi
+else
+    fail 'delegated guard unavailable: scripts/check-smoke-body-identity.sh is missing or not executable, so the D-374 smoke body-identity guard did not run. A guard that cannot run must not read as a guard that passed (§4.2 item 5).'
 fi
 
 # -----------------------------------------------------------------------------
@@ -259,11 +399,23 @@ fi
 # drift on a rule like MD029 (a v0.33-vs-v0.40 ordered-list gap bit the v1.2.0
 # PR). A clone without npx (node) skips it — CI still enforces the gate.
 # -----------------------------------------------------------------------------
+#
+# The output path is mktemp'd, NOT a fixed `/tmp/harbor-markdownlint.out`.
+# `make preflight` runs this audit internally and sibling worktrees run
+# preflight concurrently, so a fixed path means two audits clobber each
+# other's diagnostic and the operator reads someone else's violations. The
+# verdict was never wrong (it is the exit code), but the file the failure
+# message points at was.
 if command -v npx >/dev/null 2>&1; then
-    if make -s markdownlint >/tmp/harbor-markdownlint.out 2>&1; then
+    # The explicit `${TMPDIR:-/tmp}` path form, NOT `mktemp -t`: GNU coreutils
+    # documents `-t` as deprecated, and phase-220.sh:304 already says so where
+    # it makes the same call. The trailing X's are mandatory for GNU mktemp.
+    MDLINT_OUT="$(mktemp "${TMPDIR:-/tmp}/harbor-markdownlint-XXXXXX")"
+    if make -s markdownlint >"${MDLINT_OUT}" 2>&1; then
         ok 'markdownlint (pinned cli2, CI-parity globs) clean'
+        rm -f "${MDLINT_OUT}"
     else
-        fail "markdownlint found violations — see /tmp/harbor-markdownlint.out (run \`make markdownlint\`)"
+        fail "markdownlint found violations — see ${MDLINT_OUT} (run \`make markdownlint\`)"
     fi
 else
     warn 'npx not installed; skipped markdownlint parity (CI still enforces it)'
@@ -279,6 +431,13 @@ fi
 # internal and exempt. The sibling public test kit harbortest/ is a DELIBERATE
 # carve-out (D-282): its ~150 D-094-mirror annotations are load-bearing
 # twin-lockstep maintenance markers, so harbortest/ stays out of the scan set.
+#
+# The exemption is ANCHORED ON THE PATH FIELD (`^[^:]*_test\.go:`), never on the
+# line body. A bare `grep -v '_test\.go'` discards any VIOLATING line that merely
+# MENTIONS a _test.go filename — and a production comment citing an integration
+# test by its `phaseNN_*_test.go` name is exactly that shape, so the unanchored
+# form was blind to 26 real hits (v1.25 checkpoint F5).
+#
 # The patterns are intentionally narrow (numbering forms only) so legitimate
 # runtime vocabulary — e.g. "three phases: pending, running, completed" —
 # never trips the scan.
@@ -296,7 +455,7 @@ godoc_jargon_patterns=(
     '\bwave-[0-9]+'
 )
 for pat in "${godoc_jargon_patterns[@]}"; do
-    hits=$(grep -rE "$pat" --include='*.go' internal/ cmd/ sdk/ 2>/dev/null | grep -v '_test\.go' || true)
+    hits=$(grep -rE "$pat" --include='*.go' internal/ cmd/ sdk/ 2>/dev/null | grep -vE '^[^:]*_test\.go:' || true)
     if [ -n "$hits" ]; then
         fail "godoc hygiene: pattern '${pat}' found in non-test Go source (phase 102):"
         printf '%s\n' "$hits" | head -10 | sed 's/^/       /'
@@ -421,26 +580,207 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Smoke regex portability — `\t` and `\d` inside a grep -E pattern are matched
-# by BSD grep (macOS, where contributors run preflight) and NOT by GNU grep
-# (Linux, where CI runs it). A guard written with either one passes locally and
-# is dead in CI, which is the failure mode this whole gate exists to prevent:
-# it does not error, it silently never matches.
+# Smoke regex portability — `\t`, `\d` and `\n` inside a grep -E pattern are
+# matched by BSD grep (macOS, where contributors run preflight) and NOT by GNU
+# grep (Linux, where CI runs it). A guard written with any of them passes
+# locally and is dead in CI, which is the failure mode this whole gate exists
+# to prevent: it does not error, it silently never matches.
 #
 # `\s`, `\w` and `\b` are supported by BOTH and are deliberately NOT flagged.
 #
-# Use a POSIX class instead: `[[:space:]]` for `\t`, `[[:digit:]]` for `\d`.
-# Shell contexts (printf '%s\t', IFS=$'\t') are unaffected — this scans only
-# quoted patterns handed to an assert_grep_* helper or a `grep -E` call.
+# `\n` joined the scan after the v1.25 checkpoint found `[^\n]` in
+# scripts/smoke/phase-222.sh used as "any character". An ERE bracket expression
+# has NO C escapes, so `[^\n]` is the class "neither a backslash nor the letter
+# n" — a violating declaration containing an `n` between the anchors slips past
+# on CI while the local run catches it, the same divergence class as `\t`/`\d`
+# and with the same silent-never-matches signature. grep is line-oriented, so a
+# pattern never needs to exclude a newline: `.` already cannot cross one.
+#
+# Use a POSIX class instead: `[[:space:]]` for `\t`, `[[:digit:]]` for `\d`,
+# and plain `.` where `[^\n]` was meant. Shell contexts (printf '%s\t',
+# IFS=$'\t') are unaffected — this scans only quoted patterns handed to an
+# assert_grep_* helper or a `grep -E` call.
+#
+# BACKSLASH CONTINUATIONS ARE JOINED FIRST. The scan used to be a single
+# `grep -rnE`, which requires the helper name and its quoted pattern on ONE
+# line — and the house style for these helpers puts the pattern on the NEXT
+# line:
+#
+#     assert_not_grep "${WIRE_GO}" \
+#         'ExtraSystemBlocks[^\n]*map\[' \
+#         'desc'
+#
+# so the guard could not see the very shape that motivated widening it to
+# `\n`. Mutation-verified: with the one-line scan, re-introducing that exact
+# `[^\n]` left this check reporting OK. The awk below rebuilds each LOGICAL
+# line (joining trailing-backslash continuations, the way the shell does) and
+# reports the line the logical line STARTED on, so multi-line calls are in
+# scope. A guard that cannot see the corpus's dominant call shape is the
+# §4.2-item-5 problem wearing a different hat.
 # -----------------------------------------------------------------------------
-bad_escapes=$(grep -rnE "(assert_grep[a-z_]*|grep [^|;]*-[a-zA-Z]*E[^|;]*)[[:space:]]+'[^']*\\\\[td]" \
-    scripts/smoke/*.sh scripts/*.sh 2>/dev/null | grep -vE ":[0-9]+:[[:space:]]*#" || true)
+bad_escapes=$(awk '
+    BEGIN {
+        q = sprintf("%c", 39)   # a single quote, unquotable inside this program
+        # The ORIGINAL single-line pattern, with two changes: `\n` joins the
+        # flagged set, and the backslash must be UNESCAPED. The parity guard
+        # `([^q]*[^q\\])?` is what keeps `"\\n\\n"` — an ERE escape for a
+        # LITERAL backslash followed by the letter n, which is exactly how
+        # scripts/smoke/phase-220.sh greps the Go source text `"\n\n"` — from
+        # being reported. Without it the widened set turns correct code red,
+        # and a guard that cries wolf gets deleted.
+        #
+        # The helper alternation is `(assert|soft)_[a-z_]*grep[a-z_]*`, not
+        # `assert_grep[a-z_]*`. The narrower form named only five of the eight
+        # grep-shaped helpers the corpus defines — it could not see
+        # `assert_not_grep`, `assert_not_grep_or_fail`, `assert_not_grep_or_skip`,
+        # `assert_block_grep` or `soft_grep`, and `assert_not_grep` is exactly
+        # where the `[^\n]` that motivated widening this guard lived.
+        #
+        # `[^q]*` — not `[[:space:]]+` — between the helper and the pattern.
+        # The pattern is the FIRST single-quoted argument AFTER the helper
+        # token, which is not always the adjacent one: `assert_grep_present`
+        # takes the pattern first, but `assert_grep` / `assert_not_grep` /
+        # `assert_block_grep` take the FILE first. Requiring adjacency made the
+        # guard blind to every file-first helper. Anchoring on "first quoted
+        # arg after the helper" (rather than "any quoted arg on the line") is
+        # what keeps `printf '%s\n' "${out}" | grep -qE '...'` from being a
+        # false positive: the printf'"'"'s escape sits BEFORE the grep token.
+        re = "((assert|soft)_[a-z_]*grep[a-z_]*|grep [^|;]*-[a-zA-Z]*E[^|;]*)[^" q "]*" \
+             q "([^" q "]*[^" q "\\\\])?\\\\[tdn]"
+    }
+    FNR == 1 { buf = ""; start = 0 }
+    {
+        line = $0
+        if (buf == "") { start = FNR }
+        # Strip the continuation backslash and keep accumulating.
+        if (line ~ /\\$/) {
+            sub(/\\$/, "", line)
+            buf = buf line
+            next
+        }
+        buf = buf line
+        logical = buf
+        buf = ""
+        stripped = logical
+        sub(/^[[:space:]]+/, "", stripped)
+        if (substr(stripped, 1, 1) == "#") next   # whole-line comment
+        if (logical ~ re) printf "%s:%s\n", FILENAME, start
+    }
+' scripts/smoke/*.sh scripts/*.sh 2>/dev/null || true)
 if [ -n "${bad_escapes}" ]; then
     while IFS= read -r line; do
-        [ -n "${line}" ] && fail "smoke regex portability: non-portable '\\t'/'\\d' in a grep -E pattern (GNU grep will never match it; use [[:space:]] / [[:digit:]]) — ${line%%:*}:$(printf '%s' "${line}" | cut -d: -f2)"
+        [ -n "${line}" ] && fail "smoke regex portability: non-portable '\\t'/'\\d'/'\\n' in a grep -E pattern (GNU grep will never match it; use [[:space:]] / [[:digit:]] / plain .) — ${line}"
     done <<< "${bad_escapes}"
 else
-    ok 'smoke regex portability: no non-portable \t/\d escapes in grep -E patterns (BSD matches them, GNU does not)'
+    ok 'smoke regex portability: no non-portable \t/\d/\n escapes in grep -E patterns (BSD matches them, GNU does not)'
+fi
+
+# -----------------------------------------------------------------------------
+# mktemp template portability — the SAME macOS/Linux divergence class as the
+# grep-escape guard above, and the second one to reach CI unnoticed.
+#
+# GNU mktemp (Linux, where CI runs preflight) REJECTS a template with fewer
+# than three trailing `X`s outright: `mktemp: too few X's in template`, exit
+# non-zero. BSD mktemp (macOS, where contributors run preflight) accepts it and
+# invents a suffix. So a template without them passes every local run and kills
+# the script in CI — after every assertion has already reported OK, which is
+# what makes it expensive to read.
+#
+# A `mktemp` with NO template (`mktemp`, `mktemp -d`) is portable by
+# construction and is deliberately not flagged; only an invocation that PASSES
+# a template is checked, and the requirement is exactly the GNU one: the
+# template ends in `XXX` or longer.
+#
+# Redirects (`mktemp -d 2>/dev/null`) are stripped before the scan — they are
+# not template arguments, and treating one as a template is how a guard of this
+# shape acquires false positives and then gets deleted.
+#
+# The scan splits each line into command segments on the shell operators and
+# only considers a segment whose COMMAND WORD is `mktemp`. That is what keeps
+# this guard from tripping on its own source: the word appears here in prose, in
+# a grep pattern and inside awk regexes, none of which are command position.
+# This file is deliberately still IN scope — it runs its own `mktemp` at the
+# markdownlint output path, and a guard that exempts its own file cannot see it.
+#
+# "Command word" is NOT "first word". The first cut tested `^mktemp`, which is
+# only true when the invocation LEADS its segment, and a measured probe found
+# five shapes it silently walked past: after `if`, after `then`, behind a
+# one-shot env assignment (`TMPDIR=/x mktemp …`), behind `!`, and behind
+# `command`. So the leading shell keywords, one-shot env assignments, `!` and
+# `command` are stripped FIRST, repeatedly, and the command-word test runs on
+# what is left. A guard that only sees the easy shape is worth about as much as
+# no guard, and reads as though it covers the corpus.
+#
+# The same probe found the opposite defect: `mktemp -p /tmp name.XXXXXX` was
+# FLAGGED, because `-p`'s directory argument was mistaken for the template. A
+# guard that cries wolf gets deleted, which is strictly worse than not having
+# one, so option arguments are consumed: `-p`, `--tmpdir` and `--suffix`.
+# (Residual, named rather than hidden: GNU's `--tmpdir` takes an OPTIONAL
+# ATTACHED argument, so a bare `--tmpdir /dir tmpl.XX` really does treat `/dir`
+# as the template and this guard would consume it and miss the bad template.
+# The corpus has no such invocation, and erring toward a false negative is the
+# right trade for a guard whose failure mode is deletion. `-t` is deliberately
+# NOT in the consuming set: `mktemp -t TEMPLATE` takes a real template, which
+# must carry the X's like any other.)
+# -----------------------------------------------------------------------------
+bad_mktemp=$(grep -rn 'mktemp' scripts --include='*.sh' 2>/dev/null \
+    | grep -vE ':[0-9]+:[[:space:]]*#' \
+    | awk -F: '
+        {
+            path = $1; lineno = $2
+            body = $0
+            sub(/^[^:]*:[^:]*:/, "", body)
+            # Split on the shell operators ONLY. `$` and `{` are deliberately
+            # NOT separators: `${TMPDIR:-/tmp}/name.XXXXXX` is one argument,
+            # and splitting it truncates the template before its X'"'"'s.
+            nseg = split(body, seg, /[`|;&(]+/)
+            for (s = 1; s <= nseg; s++) {
+                inv = seg[s]
+                # Peel everything that can legally PRECEDE a command word:
+                # shell keywords, `!`, `command`, and one-shot env
+                # assignments. Repeatedly, because they compose
+                # (`if ! TMPDIR=/x command mktemp …`).
+                while (1) {
+                    sub(/^[[:space:]]+/, "", inv)
+                    if (sub(/^(!|if|then|elif|else|while|until|do|command|time|exec|nohup|builtin)[[:space:]]+/, "", inv)) continue
+                    if (sub(/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/, "", inv)) continue
+                    break
+                }
+                if (inv !~ /^mktemp([[:space:]]|$)/) continue  # not command position
+                sub(/^mktemp/, "", inv)
+                # The invocation ends at a shell terminator. `.` is NOT one —
+                # it is the conventional separator before the X'"'"'s
+                # (`name.XXXXXX`), and treating it as a terminator hid every
+                # dotted template'"'"'s suffix.
+                sub(/[);|&].*$/, "", inv)
+                gsub(/[0-9]*[<>]+[^[:space:]]+/, " ", inv)  # drop redirects
+                ntok = split(inv, tok, /[[:space:]]+/)
+                template = ""
+                eat_next = 0
+                for (i = 1; i <= ntok; i++) {
+                    if (tok[i] == "") continue
+                    if (eat_next) { eat_next = 0; continue }   # option ARGUMENT
+                    if (substr(tok[i], 1, 1) == "-") {
+                        # Flags whose argument is a DIRECTORY or a SUFFIX, not
+                        # a template. `--flag=value` carries its own argument.
+                        if (tok[i] ~ /^(-p|--tmpdir|--suffix)$/) eat_next = 1
+                        continue
+                    }
+                    template = tok[i]
+                    break
+                }
+                gsub(/["'"'"'`]/, "", template)             # strip shell quoting FIRST
+                if (template == "") continue                # no template: portable
+                if (template !~ /XXX$/)
+                    printf "%s:%s: %s\n", path, lineno, template
+            }
+        }' || true)
+if [ -n "${bad_mktemp}" ]; then
+    while IFS= read -r line; do
+        [ -n "${line}" ] && fail "mktemp template portability: template without trailing X's (GNU mktemp rejects it outright; BSD accepts it — use e.g. \"\${TMPDIR:-/tmp}/name.XXXXXX\") — ${line}"
+    done <<< "${bad_mktemp}"
+else
+    ok 'mktemp template portability: every mktemp template carries trailing X'"'"'s (GNU rejects fewer than three; BSD does not)'
 fi
 
 # Summary

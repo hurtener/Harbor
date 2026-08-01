@@ -26,11 +26,15 @@
 // the driver — the runtime engine knows whether a transition is
 // real before calling).
 //
-// Idempotency. `Spawn` keys on `(SessionID, IdempotencyKey)`:
+// Idempotency. `Spawn` keys on the full identity triple plus the
+// caller's key — `(TenantID, UserID, SessionID, IdempotencyKey)`:
 // same key → returns the existing `TaskHandle` with `Reused: true`;
 // divergent `SpawnRequest` under the same key returns
 // `ErrIdempotencyConflict`. Empty `IdempotencyKey` disables dedup
-// entirely (each Spawn yields a fresh handle, no collisions).
+// entirely (each Spawn yields a fresh handle, no collisions). Dedup
+// never reaches across an isolation boundary: two tenants (or two
+// users) presenting the SAME session id and the SAME key get two
+// distinct tasks, never a reused handle and never a conflict.
 //
 // Cancellation propagation. `Cancel` walks the children index per
 // `Task.PropagateOnCancel`:
@@ -223,11 +227,62 @@ type Task struct {
 	// provenance and its RFC 8693 acting principal stay boot-derived and
 	// are never read from here.
 	AgentID string `json:",omitempty"`
+	// CallerMemory is the caller-supplied content this task's run admits
+	// into its `<read_only_external_memory>` tier under the fixed
+	// runtime-owned `caller_supplied` map key. Empty means the caller
+	// supplied none — the pre-field behaviour and the value on every
+	// historical row.
+	//
+	// Bounded and validated at the Protocol edge before the spawn (32 KiB,
+	// non-null, valid JSON); persisted via the whole-record marshal, so no
+	// migration is required on any driver.
+	//
+	// It is stored REDACTED. Spawn runs it through the same audit redactor
+	// Description and Query take — the field is caller-controlled content
+	// that the whole-record marshal writes to the StateStore on disk, and
+	// leaving one of three sibling caller-controlled fields raw while the
+	// other two were redacted stored secrets at rest AND misled anyone who
+	// inferred the fields behaved alike. Being structured JSON, it goes
+	// through the redactor's value walk rather than the string path:
+	// objects, arrays, numbers, booleans and null survive structurally
+	// intact and only secret-shaped keys and inline `Bearer …` / `Basic …`
+	// values are replaced. The redacted form is also what reaches the
+	// prompt, which is already true of Query.
+	//
+	// RESIDUAL RISK, stated rather than implied: that redactor is a
+	// PATTERN redactor, not a sanitiser. It replaces secret-shaped KEYS
+	// (api_key / password / secret / token / cookie / authorization) and
+	// inline `Bearer …` / `Basic …` VALUES anywhere in the document, and it
+	// does nothing else — it does not detect PII, it does not detect a
+	// credential that looks like ordinary prose, and it cannot make hostile
+	// text safe. The untrusted prompt framing remains the mitigation for
+	// prompt injection. An operator who pipes third-party content through
+	// `caller_memory` still has a data-leakage path no prompt wrapper and
+	// no pattern redactor closes.
+	//
+	// The redaction does NOT weaken idempotency: the task's content hash
+	// folds the PRE-redaction bytes.
+	//
+	// The `omitempty` tag is load-bearing for the same reason it is on
+	// OutputSchema: a nil json.RawMessage marshals to the JSON literal
+	// `null` and UNMARSHALS BACK to the 4-byte RawMessage("null"), NOT
+	// nil — so without omitempty a durable-backed task that carried no
+	// caller memory would hydrate with a non-empty CallerMemory and the
+	// run loop would compose a `caller_supplied` key holding JSON null.
+	CallerMemory json.RawMessage `json:",omitempty"`
+	// CallerMemoryWireBytes is the exact pre-redaction byte length admitted at
+	// Spawn. It contains no caller content and exists because redaction may
+	// change the persisted document's length; admission telemetry reports the
+	// wire resource cost, not the post-redaction representation. Zero means no
+	// caller memory and is omitted from historical rows.
+	CallerMemoryWireBytes int `json:",omitempty"`
 }
 
 // SpawnRequest is the input shape for `Spawn`. Identity is mandatory.
-// `IdempotencyKey` is namespaced by `Identity.SessionID`: same key
-// across different sessions creates two distinct tasks.
+// `IdempotencyKey` is namespaced by the FULL identity triple: the same
+// key under a different tenant, user, or session creates a distinct
+// task. The key identifies a RETRY BY ONE CALLER, and a caller is the
+// triple — so every component of the triple namespaces it.
 //
 // `PropagateOnCancel` defaults to "cascade" when empty; "isolate"
 // is opt-in for tasks that must survive a parent's cancellation.
@@ -279,6 +334,31 @@ type SpawnRequest struct {
 	// identity so a reused idempotency key naming a DIFFERENT agent is a
 	// loud conflict rather than a silent adoption of the original agent.
 	AgentID string
+	// CallerMemory is the caller-supplied memory block, already bounded
+	// and validated at the Protocol edge before the spawn — the registry
+	// does not re-validate it. Nil means the caller supplied none, which
+	// is the pre-field behaviour on every path.
+	//
+	// Persisted onto `Task.CallerMemory` AFTER the audit redactor runs over
+	// it (see that field); consumed by the run loop's External-tier
+	// composition. Folded into the task's content identity — from the
+	// PRE-redaction bytes — so a reused idempotency key carrying DIFFERENT
+	// caller memory is a loud conflict rather than a silent adoption of the
+	// original payload. An in-process caller that bypasses the Protocol edge
+	// and supplies bytes that are not valid JSON is refused loud at Spawn;
+	// nothing persists.
+	//
+	// RESIDUAL RISK, stated rather than implied: that redactor is a
+	// PATTERN redactor, not a sanitiser. It replaces secret-shaped KEYS
+	// (api_key / password / secret / token / cookie / authorization) and
+	// inline `Bearer …` / `Basic …` VALUES anywhere in the document, and it
+	// does nothing else — it does not detect PII, it does not detect a
+	// credential that looks like ordinary prose, and it cannot make hostile
+	// text safe. The untrusted prompt framing remains the mitigation for
+	// prompt injection. An operator who pipes third-party content through
+	// `caller_memory` still has a data-leakage path no prompt wrapper and
+	// no pattern redactor closes.
+	CallerMemory json.RawMessage
 }
 
 // SpawnToolRequest is the input shape for `SpawnTool`. The shape

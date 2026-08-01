@@ -36,6 +36,13 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
+# The dev bearer is resolved through common.sh's `dev_bearer`, never by a raw
+# ${HARBOR_DEV_TOKEN} read: the raw read is EMPTY outside preflight, so every
+# live leg below degrades to a SKIP while the script still exits 0 — "a SKIP
+# that should be an OK is a bug" (AGENTS.md §4.2 item 5, issue #624).
+# dev_bearer prefers the exported value and falls back to the dev server log.
+HARBOR_DEV_TOKEN="$(dev_bearer)"
+
 PROTOCOL_PKG="internal/protocol"
 TYPES_PKG="${PROTOCOL_PKG}/types"
 METHODS_PKG="${PROTOCOL_PKG}/methods"
@@ -185,7 +192,7 @@ fi
 # absent (operator ran the smoke standalone) HARBOR_DEV_TOKEN from env is
 # honoured as a fallback.
 if [[ -z "${HARBOR_DEV_TOKEN:-}" ]] && [[ -n "${HARBOR_DATA_DIR:-}" ]] && [[ -f "${HARBOR_DATA_DIR}/server.log" ]]; then
-    HARBOR_DEV_TOKEN="$(grep -m1 '^HARBOR_DEV_TOKEN=' "${HARBOR_DATA_DIR}/server.log" 2>/dev/null | sed 's/^HARBOR_DEV_TOKEN=//' || true)"
+    HARBOR_DEV_TOKEN="$(dev_bearer)"
 fi
 
 # An empty JSON body — the merged Phase 72f/72g posture handler backfills

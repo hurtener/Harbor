@@ -129,7 +129,7 @@ func (a *account) GetKeysForProvider(_ context.Context, providerKey bfschemas.Mo
 		{
 			ID:     "harbor-embeddings",
 			Name:   "harbor-embeddings",
-			Value:  bfschemas.EnvVar{Val: a.apiKey},
+			Value:  bfschemas.SecretVar{Val: a.apiKey},
 			Models: []string{"*"},
 			Weight: 1.0,
 		},

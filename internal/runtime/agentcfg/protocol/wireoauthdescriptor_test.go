@@ -57,6 +57,13 @@ func (c *capturingInstaller) InstallProvider(_ context.Context, _, _ string, des
 	return nil
 }
 
+func (c *capturingInstaller) PrepareProvider(_ context.Context, tenant, agentID string, desc agentcfg.OAuthProviderDescriptor) (agentcfgprotocol.PreparedOAuthProvider, error) {
+	return &testPreparedOAuthProvider{
+		publish:  func(ctx context.Context) error { return c.InstallProvider(ctx, tenant, agentID, desc) },
+		rollback: func(ctx context.Context) error { return c.UninstallProvider(ctx, tenant, agentID, desc.Name) },
+	}, nil
+}
+
 func (c *capturingInstaller) UninstallProvider(_ context.Context, _, _, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -70,12 +77,6 @@ func (c *capturingInstaller) get(name string) (agentcfg.OAuthProviderDescriptor,
 	defer c.mu.Unlock()
 	d, ok := c.installed[name]
 	return d, ok
-}
-
-func (c *capturingInstaller) uninstalledNames() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]string(nil), c.uninstalled...)
 }
 
 // wireHarness wires a Service with a capturing installer + fake attacher + a real
@@ -266,15 +267,10 @@ func TestWireOAuthDescriptor_OptInOn_FailedAttach_RollsBackInlineProvider(t *tes
 	if resp.State != "failed" {
 		t.Fatalf("want failed, got %q", resp.State)
 	}
-	// The newly-installed inline provider must be rolled back (no orphan).
-	found := false
-	for _, n := range h.inst.uninstalledNames() {
-		if n == "srv-oauth" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("a failed attach must uninstall the newly-installed inline wire provider; uninstalled=%v", h.inst.uninstalledNames())
+	// Preparation failed before desired state landed, so the private provider
+	// was never published to the shared set (there is nothing to uninstall).
+	if _, found := h.inst.get("srv-oauth"); found {
+		t.Fatal("a failed attach published an inline wire provider orphan")
 	}
 }
 

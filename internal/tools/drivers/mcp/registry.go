@@ -257,6 +257,10 @@ type serverEntry struct {
 	// read-only thereafter. It is a reconcile-view filter, NOT an isolation
 	// key — resolution and dispatch stay bare-name and process-global.
 	owner auth.Owner
+	// descriptorFingerprint identifies the complete canonical NON-SECRET
+	// runtime-added descriptor that produced this registration. Empty for
+	// boot-declared registrations. Read-only after registration.
+	descriptorFingerprint string
 
 	// stats is the mutable per-server runtime state. Guarded by the
 	// Registry's mu (RWMutex). Documented invariants: every field is
@@ -297,6 +301,11 @@ type serverStats struct {
 type Registry struct {
 	mu      sync.RWMutex
 	servers map[string]*serverEntry
+	// pending reserves names for reversible registrations without exposing the
+	// staged provider to ordinary reads. A receipt remains here until Commit or
+	// Rollback, so no concurrent register/deregister can invalidate the exact
+	// prior entry captured by the transaction.
+	pending map[string]*RegistrationSwap
 	clock   func() time.Time
 }
 
@@ -317,6 +326,7 @@ func WithRegistryClock(now func() time.Time) RegistryOption {
 func NewRegistry(opts ...RegistryOption) *Registry {
 	r := &Registry{
 		servers: map[string]*serverEntry{},
+		pending: map[string]*RegistrationSwap{},
 		clock:   time.Now,
 	}
 	for _, opt := range opts {
@@ -355,6 +365,9 @@ type ServerRegistration struct {
 	// either component is missing); nothing about resolution or dispatch reads
 	// it (those stay bare-name and process-global).
 	Owner auth.Owner
+	// DescriptorFingerprint is the canonical digest of the complete
+	// NON-SECRET runtime-added descriptor. Empty for boot registrations.
+	DescriptorFingerprint string
 }
 
 // CheckServerIDUnambiguous reports whether registering `name` would leave the
@@ -450,15 +463,26 @@ func ambiguousAgainst(servers map[string]*serverEntry, name string) error {
 // instance (an idempotent re-register of the live one), the close is
 // skipped so the just-registered transport is not torn down.
 func (r *Registry) Register(ctx context.Context, reg ServerRegistration) error {
+	swap, err := r.StageRegistration(reg, nil)
+	if err != nil {
+		return err
+	}
+	if err := swap.Commit(ctx); err != nil {
+		return fmt.Errorf("mcp: Register: %w", err)
+	}
+	return nil
+}
+
+func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now time.Time) (*serverEntry, string, error) {
 	if reg.Provider == nil {
-		return fmt.Errorf("mcp: Register requires a non-nil Provider")
+		return nil, "", fmt.Errorf("mcp: Register requires a non-nil Provider")
 	}
 	name := string(reg.Provider.SourceID())
 	if name == "" {
-		return fmt.Errorf("mcp: Register requires a non-empty provider source id")
+		return nil, "", fmt.Errorf("mcp: Register requires a non-empty provider source id")
 	}
 	if reg.Transport == "" {
-		return fmt.Errorf("mcp: Register requires a non-empty Transport")
+		return nil, "", fmt.Errorf("mcp: Register requires a non-empty Transport")
 	}
 	policy := reg.Policy
 	if isZeroPolicy(policy) {
@@ -468,16 +492,8 @@ func (r *Registry) Register(ctx context.Context, reg ServerRegistration) error {
 	if st == "" {
 		st = ServerStateOffline
 	}
-	r.mu.Lock()
-	// Separator safety, checked under the SAME write lock that installs the
-	// entry, so two concurrent registrations of an ambiguous pair cannot both
-	// observe an empty map and both succeed.
-	if err := ambiguousAgainst(r.servers, name); err != nil {
-		r.mu.Unlock()
-		return err
-	}
-	prior := r.servers[name]
-	r.servers[name] = &serverEntry{
+	tc, rc, pc := classifyDescriptors(descs, name)
+	entry := &serverEntry{
 		provider:     reg.Provider,
 		transport:    reg.Transport,
 		urlOrCommand: reg.URLOrCommand,
@@ -486,25 +502,138 @@ func (r *Registry) Register(ctx context.Context, reg ServerRegistration) error {
 		// configured `tools.mcp_app_host.display_modes`, not a value scraped
 		// off the server (display modes are not a spec capability field;
 		// they ride the `ui/initialize` host-context the host dictates).
-		displayModes:        reg.Provider.DisplayModes(),
-		contentShape:        append([]string(nil), reg.ContentShapes...),
-		oauthAllowedOrigins: append([]string(nil), reg.OAuthDiscoveryAllowedOrigins...),
-		owner:               reg.Owner,
+		displayModes:          reg.Provider.DisplayModes(),
+		contentShape:          append([]string(nil), reg.ContentShapes...),
+		oauthAllowedOrigins:   append([]string(nil), reg.OAuthDiscoveryAllowedOrigins...),
+		owner:                 reg.Owner,
+		descriptorFingerprint: reg.DescriptorFingerprint,
 		stats: serverStats{
 			state:             st,
 			oauthBindingCount: reg.OAuthBindingCount,
+			toolCount:         tc,
+			resourceCount:     rc,
+			promptCount:       pc,
 		},
 	}
-	r.mu.Unlock()
-	// Close the DISPLACED provider's transport outside the lock so a same-name
-	// replacement drains the old session instead of leaking it. Skip when the
-	// prior entry held the exact same provider (a no-op re-register must not
-	// close the transport we just re-registered).
-	if prior != nil && prior.provider != nil && prior.provider != reg.Provider {
-		if err := prior.provider.Close(ctx); err != nil {
-			return fmt.Errorf("mcp: Register %q: close replaced transport: %w", name, err)
+	if descs != nil {
+		entry.stats.lastDiscoveryAt = now
+	}
+	return entry, name, nil
+
+}
+
+// RegistrationSwap is a reversible live-registry publication. Commit makes
+// the staged entry final and drains the exact displaced provider. Rollback
+// restores the exact prior entry only while this staged entry is still current.
+type RegistrationSwap struct {
+	mu       sync.Mutex
+	registry *Registry
+	name     string
+	prior    *serverEntry
+	staged   *serverEntry
+	done     bool
+}
+
+// RecordAuthChallenge records on this receipt's exact staged entry, never on a
+// same-name healthy prior registration while preparation is unpublished.
+func (s *RegistrationSwap) RecordAuthChallenge(ch AuthChallenge) {
+	s.registry.mu.Lock()
+	defer s.registry.mu.Unlock()
+	captured := ch
+	s.staged.stats.oauthChallenge = &captured
+}
+
+// RecordScopeShortfall records a defensive copy on the exact staged entry.
+func (s *RegistrationSwap) RecordScopeShortfall(sf ScopeShortfall) {
+	s.registry.mu.Lock()
+	defer s.registry.mu.Unlock()
+	captured := sf
+	captured.RequiredScopes = append([]string(nil), sf.RequiredScopes...)
+	captured.GrantedScopes = append([]string(nil), sf.GrantedScopes...)
+	s.staged.stats.scopeShortfall = &captured
+}
+
+// StageRegistration privately reserves one registry entry and returns an
+// exact publication/rollback receipt. The staged provider is deliberately not
+// inserted into servers: direct registry reads must keep reaching the exact
+// prior provider until the catalog's dispatch publication has succeeded.
+func (r *Registry) StageRegistration(reg ServerRegistration, descs []tools.ToolDescriptor) (*RegistrationSwap, error) {
+	entry, name, err := registrationEntry(reg, descs, r.clock())
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	if err := ambiguousAgainst(r.servers, name); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
+	for pendingName := range r.pending {
+		if pendingName == name {
+			r.mu.Unlock()
+			return nil, fmt.Errorf("mcp: registration for %q is already staged", name)
+		}
+		if strings.HasPrefix(name, pendingName+"_") || strings.HasPrefix(pendingName, name+"_") {
+			r.mu.Unlock()
+			return nil, fmt.Errorf("%w: server id %q is separator-ambiguous with a staged server id", ErrAmbiguousServerID, name)
 		}
 	}
+	prior := r.servers[name]
+	if prior != nil && prior.owner != reg.Owner {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("%w: a connection named %q is already registered to a different owner", ErrConnectionNameOwnerConflict, name)
+	}
+	swap := &RegistrationSwap{registry: r, name: name, prior: prior, staged: entry}
+	r.pending[name] = swap
+	r.mu.Unlock()
+	return swap, nil
+}
+
+// Commit finalizes a staged registration. A displaced provider close error is
+// cleanup failure after publication; callers must log it but must not roll the
+// already-committed state back.
+func (s *RegistrationSwap) Commit(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return nil
+	}
+	s.registry.mu.Lock()
+	if s.registry.pending[s.name] != s {
+		s.registry.mu.Unlock()
+		return fmt.Errorf("mcp: registration commit refused for %q: private stage is no longer current", s.name)
+	}
+	if s.registry.servers[s.name] != s.prior {
+		s.registry.mu.Unlock()
+		return fmt.Errorf("mcp: registration commit refused for %q: prior entry changed while staged", s.name)
+	}
+	s.registry.servers[s.name] = s.staged
+	delete(s.registry.pending, s.name)
+	s.registry.mu.Unlock()
+	s.done = true
+	if s.prior != nil && s.prior.provider != nil && s.prior.provider != s.staged.provider {
+		if err := s.prior.provider.Close(ctx); err != nil {
+			return fmt.Errorf("close replaced transport %q: %w", s.name, err)
+		}
+	}
+	return nil
+}
+
+// Rollback drops the private reservation iff it is still current. Ordinary
+// reads never stopped seeing the prior entry, and the staged provider is closed
+// later through PreparedAttachment.Close.
+func (s *RegistrationSwap) Rollback() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return nil
+	}
+	s.registry.mu.Lock()
+	defer s.registry.mu.Unlock()
+	if s.registry.pending[s.name] != s {
+		return fmt.Errorf("mcp: registration rollback refused for %q: private stage is no longer current", s.name)
+	}
+	delete(s.registry.pending, s.name)
+	s.done = true
 	return nil
 }
 
@@ -546,6 +675,10 @@ func (r *Registry) Register(ctx context.Context, reg ServerRegistration) error {
 // which the reconcile caller treats as already-detached.
 func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner) error {
 	r.mu.Lock()
+	if _, staged := r.pending[name]; staged {
+		r.mu.Unlock()
+		return fmt.Errorf("mcp: deregister %q refused while an exact replacement is staged", name)
+	}
 	e, ok := r.servers[name]
 	if ok && e.owner != owner {
 		ok = false // another owner's registration — answer as if absent.
@@ -572,13 +705,23 @@ func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner
 // live tools/transport. A boot-declared server carries the zero owner. The
 // returned owner is a value copy, safe to read without the registry lock.
 func (r *Registry) OwnerOf(name string) (auth.Owner, bool) {
+	owner, _, ok := r.RegistrationIdentity(name)
+	return owner, ok
+}
+
+// RegistrationIdentity atomically returns the reconcile owner and canonical
+// descriptor fingerprint of one live registration. The pair must be read under
+// one lock: separate owner/fingerprint reads could compare fields from two
+// same-name replacements and incorrectly classify a stale registration as
+// current.
+func (r *Registry) RegistrationIdentity(name string) (auth.Owner, string, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	e, ok := r.servers[name]
 	if !ok {
-		return auth.Owner{}, false
+		return auth.Owner{}, "", false
 	}
-	return e.owner, true
+	return e.owner, e.descriptorFingerprint, true
 }
 
 // SourceIDs returns the source ids of every currently-registered server —

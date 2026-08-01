@@ -86,7 +86,7 @@ func (d *rlDetacher) SetOAuthDiscoveryOrigins(_ context.Context, _ auth.Owner, _
 
 type rlReattacher struct{ rec *rlLegRecorder }
 
-func (r *rlReattacher) Reattach(_ context.Context, owner auth.Owner, id identity.Quadruple, _ agentcfg.MCPConnectionDescriptor) error {
+func (r *rlReattacher) Reattach(_ context.Context, owner auth.Owner, id identity.Quadruple, _ agentcfg.MCPConnectionDescriptor) (bool, error) {
 	r.rec.mu.Lock()
 	r.rec.order = append(r.rec.order, "connections.reattach")
 	r.rec.reattachOwners = append(r.rec.reattachOwners, owner)
@@ -94,11 +94,11 @@ func (r *rlReattacher) Reattach(_ context.Context, owner auth.Owner, id identity
 	err := r.rec.reattachErr
 	r.rec.mu.Unlock()
 	if err != nil {
-		return err
+		return false, err
 	}
 	// A successful re-attach makes the connection live, so the allowance leg's
 	// view carries it in the same run start.
-	return nil
+	return true, nil
 }
 
 type rlProviderReconciler struct {
@@ -149,7 +149,7 @@ func rlRegistryDeclaring(t *testing.T, q identity.Quadruple) agentcfg.Registry {
 			Name:             "declared-provider",
 			CredentialBroker: "some-broker",
 		}}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("seed revision: %v", err)
 	}
 	return reg
@@ -327,15 +327,16 @@ func TestRunLoopDriver_Reattach_FailureIsLoudButNeverFailsTheRun(t *testing.T) {
 	if !sawAttach {
 		t.Fatalf("the attach pass never ran: legs=%v", order)
 	}
-	// Three owner-view reads means all three passes ran: detach, attach, and the
-	// discovery-allowance re-apply. The allowance leg reaching its view AFTER a
+	// Two owner-view reads mean the detach and discovery-allowance passes ran;
+	// descriptor-aware Reattach owns the attach leg's exact live comparison.
+	// The allowance leg reaching its view AFTER a
 	// failed re-attach is the property under test — one refused third party must
 	// not stop every connection's allowance re-apply. (The apply itself does not
 	// fire here because this fixture's live view is empty by construction; the
 	// leg running at all is what a re-attach failure could have prevented.)
-	if views != 3 {
-		t.Fatalf("owner-view reads = %d after a failed re-attach (legs=%v), want 3 "+
-			"(detach + attach + allowance); a missing third read means one unreachable "+
+	if views != 2 {
+		t.Fatalf("owner-view reads = %d after a failed re-attach (legs=%v), want 2 "+
+			"(detach + allowance); a missing second read means one unreachable "+
 			"server stranded the sibling leg", views, order)
 	}
 }

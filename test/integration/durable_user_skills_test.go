@@ -141,7 +141,7 @@ func TestE2E_DurableUserSkills(t *testing.T) {
 	}
 	if _, err := reg.SetRevision(ctxA, aliceQ, dusAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"admin-a"}},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("admin membership pin: %v", err)
 	}
 

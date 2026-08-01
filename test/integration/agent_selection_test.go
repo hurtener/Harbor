@@ -232,7 +232,7 @@ func (r *selRig) selWriteAgent(t *testing.T, id identity.Identity, agentID, base
 		agentcfg.ConfigPayload{
 			PromptLayers: &agentcfg.PromptLayers{Base: &b},
 			LLMParams:    &agentcfg.LLMParams{Model: &m},
-		}); err != nil {
+		}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("SetRevision(%s/%s): %v", id.TenantID, agentID, err)
 	}
 }
@@ -350,7 +350,7 @@ func TestE2E_AgentSelection_UserLayerComposesUnderTheNamedAgent(t *testing.T) {
 	userLayer := "USER-LAYER"
 	if _, err := rig.cfg.SetRevision(context.Background(),
 		identity.Quadruple{Identity: id}, selAlpha, agentcfg.ConfigScopeUser,
-		agentcfg.ConfigPayload{PromptLayers: &agentcfg.PromptLayers{User: &userLayer}}); err != nil {
+		agentcfg.ConfigPayload{PromptLayers: &agentcfg.PromptLayers{User: &userLayer}}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("SetRevision(user): %v", err)
 	}
 
@@ -616,6 +616,10 @@ func TestE2E_AgentSelection_CredentialPlaneStaysBootDerived(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token store: %v", err)
 	}
+	flows, err := auth.NewFlowStore(rawState, sealer)
+	if err != nil {
+		t.Fatalf("flow store: %v", err)
+	}
 	prov, err := tokenexchange.New(auth.ProviderConfig{
 		Name:                   "sel-broker",
 		CredentialSource:       credsource.Static("dummy-client-id-not-a-secret", "dummy-client-secret-not-a-secret"),
@@ -624,7 +628,7 @@ func TestE2E_AgentSelection_CredentialPlaneStaysBootDerived(t *testing.T) {
 		AllowedDownstreamHosts: []string{mcpSrv.URL},
 		IncludeActorToken:      true,
 	}, auth.FactoryDeps{
-		Store: tokStore, Bus: rig.bus, Redactor: red,
+		Store: tokStore, Flows: flows, Bus: rig.bus, Redactor: red,
 		Coordinator: pauseresume.New(),
 		HTTPClient:  &http.Client{Timeout: 5 * time.Second},
 	})

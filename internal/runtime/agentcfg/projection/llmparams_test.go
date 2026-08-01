@@ -25,7 +25,7 @@ func TestActiveLLMOverrides_ResolvesPinnedSection(t *testing.T) {
 			MaxTokens:       ip(2048),
 			ReasoningEffort: sp("high"),
 		},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("SetRevision: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestActiveLLMOverrides_PartialSection(t *testing.T) {
 	ctx := context.Background()
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		LLMParams: &agentcfg.LLMParams{Temperature: fp(0.7)},
-	}); err != nil {
+	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("SetRevision: %v", err)
 	}
 	got, err := projection.ActiveLLMOverrides(ctx, reg, projAgent, projID())
@@ -109,7 +109,7 @@ func TestActiveLLMOverrides_NoOverridePaths(t *testing.T) {
 		reg := newRegistry(t)
 		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 			Skills: &agentcfg.SkillsSelection{Names: []string{"a"}},
-		}); err != nil {
+		}, agentcfg.SetOptions{}); err != nil {
 			t.Fatalf("SetRevision: %v", err)
 		}
 		got, err := projection.ActiveLLMOverrides(ctx, reg, projAgent, projID())

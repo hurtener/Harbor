@@ -58,21 +58,13 @@ func (s *Searcher) Search(ctx context.Context, req types.SearchRequest) (types.S
 	if err := search.ValidateRequest(callerID, req); err != nil {
 		return types.SearchResponse{}, err
 	}
-	// The identity-axis gate, read once for all three axes.
-	elevated := s.deps.AdminScope(ctx)
-	crossTenant := search.CrossTenantRequested(callerID.TenantID, req)
-	crossUser := search.CrossUserRequested(callerID.UserID, req)
-	if !elevated {
-		if crossTenant {
-			return types.SearchResponse{}, search.ErrCrossTenantRequiresAdmin
-		}
-		if crossUser {
-			return types.SearchResponse{}, search.ErrCrossUserRequiresAdmin
-		}
-		if search.CrossSessionFanInRequested(req) {
-			return types.SearchResponse{}, search.ErrCrossSessionRequiresAdmin
-		}
+	decision, err := s.deps.AuthorizeScope(ctx, s.Index(), callerID, req)
+	if err != nil {
+		return types.SearchResponse{}, err
 	}
+	elevated := decision.Elevated
+	crossTenant := decision.CrossTenant
+	crossUser := decision.CrossUser
 
 	// Identity scope for the Replay filter. When the caller scopes
 	// the search to a specific session, we pass that triple; the

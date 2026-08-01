@@ -11,7 +11,9 @@
 #
 # Asserts:
 #   - static: the user-axis helpers + sentinel exist beside their tenant twins.
-#   - static: all four searchers AND the aggregate dispatcher call them.
+#   - static: every canonical searcher enters the shared gate/audit boundary,
+#     and the aggregate dispatcher enters the same pure scope decision before
+#     fan-out.
 #   - static (the regression trip-wire): no `req.Filter.UserIDs` survives in any
 #     searcher — the raw-filter read IS the bug's fingerprint, so a
 #     re-introduction fails preflight instead of waiting for a reviewer.
@@ -68,10 +70,10 @@ cd "${ROOT}"
 source "scripts/smoke/common.sh"
 
 SEARCH_GO='internal/search/search.go'
+SEARCH_TYPES_GO='internal/protocol/types/search.go'
+SCOPE_AUTH_GO='internal/search/scope_authorization.go'
 AGGREGATE_GO='internal/search/aggregate.go'
 ARTIFACTS_GO='internal/search/artifacts/index.go'
-EVENTS_GO='internal/search/events/index.go'
-SESSIONS_GO='internal/search/sessions/index.go'
 TASKS_GO='internal/search/tasks/index.go'
 PROTOCOL_GO='internal/protocol/search.go'
 
@@ -122,6 +124,45 @@ run_filtered_tests() {
     fail "${desc}: go test exited ${rc}"
 }
 
+# Derive the searcher-file population from the closed Protocol declaration,
+# never from the directories or spellings this guard expects to find. A newly
+# canonical index therefore enters every per-index guard automatically, and an
+# empty/unresolvable population fails instead of making the loops vacuously pass.
+CANONICAL_INDEX_CONSTANTS="$(awk '
+    /^func CanonicalSearchIndexes\(\) \[\]SearchIndex \{/ { in_function = 1; next }
+    in_function && /^}/ { exit }
+    in_function {
+        line = $0
+        gsub(/[[:space:],]/, "", line)
+        if (line ~ /^SearchIndex[A-Za-z0-9_]+$/) print line
+    }
+' "${SEARCH_TYPES_GO}")"
+CANONICAL_INDEX_FILES=()
+if [ -z "${CANONICAL_INDEX_CONSTANTS}" ]; then
+    fail "phase 218: canonical search-index population is empty in ${SEARCH_TYPES_GO}"
+else
+    while IFS= read -r constant; do
+        if [ -z "${constant}" ]; then
+            continue
+        fi
+        index_name="$(awk -v constant="${constant}" '
+            $1 == constant && $3 == "=" {
+                value = $4
+                gsub(/"/, "", value)
+                print value
+                exit
+            }
+        ' "${SEARCH_TYPES_GO}")"
+        if [ -z "${index_name}" ]; then
+            fail "phase 218: ${constant} from CanonicalSearchIndexes has no declared wire value"
+            continue
+        fi
+        CANONICAL_INDEX_FILES+=("internal/search/${index_name}/index.go")
+    done <<EOF
+${CANONICAL_INDEX_CONSTANTS}
+EOF
+fi
+
 # ----------------------------------------------------------------------------
 # Static guards — the user axis exists, and it is wired at every call site.
 # ----------------------------------------------------------------------------
@@ -143,20 +184,32 @@ assert_grep "${SEARCH_GO}" \
     'ErrCrossUserRequiresAdmin[[:space:]]*=[[:space:]]*errors\.New' \
     'phase 218: the cross-user refusal sentinel is declared'
 
-# Every enforcement site. Iterating the five files rather than one tree-wide
-# grep is load-bearing: a tree-wide match would still pass with four of the five
-# sites reverted, which is exactly the shape of gap this phase exists to close
-# (72c gated one axis where it was looking and never enumerated the rest).
-for f in "${AGGREGATE_GO}" "${ARTIFACTS_GO}" "${EVENTS_GO}" "${SESSIONS_GO}" "${TASKS_GO}"; do
+# The shared decision owns the user-axis predicate. Per-index searchers enter it
+# through AuthorizeScope so permission and accountability remain inseparable;
+# the aggregate uses EvaluateScope before fan-out and leaves audit ownership to
+# the selected indexes. Requiring CrossUserRequested at every leaf would reject
+# this intended centralisation and encourage duplicated authorization logic.
+assert_grep "${SCOPE_AUTH_GO}" \
+    'CrossUser:[[:space:]]*CrossUserRequested\(' \
+    'phase 218: the shared scope decision evaluates the user axis'
+
+assert_grep "${AGGREGATE_GO}" \
+    'EvaluateScope\(ctx,[[:space:]]*adminScope,[[:space:]]*callerID,[[:space:]]*req\)' \
+    'phase 218: the aggregate gates scope before fan-out'
+
+# Enumerating the Protocol's closed population is load-bearing: a tree-wide
+# match would still pass with one index bypassing the shared boundary, while a
+# hard-coded file list would silently omit the next canonical index.
+for f in "${CANONICAL_INDEX_FILES[@]}"; do
     assert_grep "${f}" \
-        'CrossUserRequested\(' \
-        "phase 218: ${f} gates the user axis"
+        's\.deps\.AuthorizeScope\(ctx,[[:space:]]*s\.Index\(\),[[:space:]]*callerID,[[:space:]]*req\)' \
+        "phase 218: ${f} enters the shared scope gate/audit boundary"
 done
 
 # The fold reaches storage in each of the four searchers. The aggregate
 # dispatcher does not compute a set (it rewrites the sub-request and delegates),
 # so it is deliberately absent from this loop.
-for f in "${ARTIFACTS_GO}" "${EVENTS_GO}" "${SESSIONS_GO}" "${TASKS_GO}"; do
+for f in "${CANONICAL_INDEX_FILES[@]}"; do
     assert_grep "${f}" \
         'EffectiveUserSet\(' \
         "phase 218: ${f} scopes storage to the effective user set"
@@ -166,7 +219,7 @@ done
 # the defect: the effective-set helper must be the only reader. Scoped to the
 # four index.go files rather than the package, because search.go's own helper
 # legitimately reads the field.
-for f in "${ARTIFACTS_GO}" "${EVENTS_GO}" "${SESSIONS_GO}" "${TASKS_GO}"; do
+for f in "${CANONICAL_INDEX_FILES[@]}"; do
     assert_grep_absent 'req\.Filter\.UserIDs' "${f}" \
         "phase 218: ${f} no longer reads the raw user filter"
 done
@@ -245,7 +298,12 @@ else
         P218_CODE=$(printf '%s' "${P218_BODY}" | jq -r '.code // .error.code // ""' 2>/dev/null || echo "")
     }
 
-    ID='{"tenant":"dev","user":"dev","session":"dev"}'
+    # The bodies below carry NO `identity` member. `SearchRequest` scopes
+    # through `filter` and declares no `identity` field, so the control
+    # transport's strict decode (D-374) refuses one with `unknown field
+    # "identity"` (400) — which is what these legs hit. Identity comes from the
+    # bearer; the search handler does its own defaulting and cross-tenant
+    # gating on `filter`, which is exactly what this phase exists to test.
 
     # (1) THE NON-REGRESSION. The five methods must still answer for an ordinary
     # own-scope caller. D-352 named this exact failure mode for the sibling fix:
@@ -268,7 +326,7 @@ else
     else
     for m in search.query search.sessions search.tasks search.events search.artifacts; do
         p218_post "$(api_url "/v1/control/${m}")" \
-            "{\"identity\":${ID},\"query\":\"\",\"page_size\":5}"
+            "{\"query\":\"\",\"page_size\":5}"
         case "${P218_STATUS}" in
             404|405|501|000)
                 skip "phase 218: ${m} absent from this build (${P218_STATUS})"
@@ -307,7 +365,7 @@ else
     # five methods through the Protocol dispatcher and compares the wire code
     # exactly. Those legs run below and FAIL loud.
     p218_post "$(api_url /v1/control/search.query)" \
-        "{\"identity\":${ID},\"query\":\"\",\"page_size\":5,\"filter\":{\"user_ids\":[\"phase218-not-the-caller\"]}}"
+        "{\"query\":\"\",\"page_size\":5,\"filter\":{\"user_ids\":[\"phase218-not-the-caller\"]}}"
     case "${P218_STATUS}" in
         404|405|501|000)
             skip "phase 218: search.query absent from this build (${P218_STATUS})"
@@ -334,7 +392,7 @@ else
     if command -v curl >/dev/null 2>&1; then
         P218_ANON=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
             -H 'Content-Type: application/json' -X POST \
-            -d "{\"identity\":${ID},\"query\":\"\",\"page_size\":5,\"filter\":{\"user_ids\":[\"phase218-not-the-caller\"]}}" \
+            -d "{\"query\":\"\",\"page_size\":5,\"filter\":{\"user_ids\":[\"phase218-not-the-caller\"]}}" \
             "$(api_url /v1/control/search.query)" 2>/dev/null || true)
         case "${P218_ANON:-000}" in
             401|403)

@@ -86,6 +86,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
@@ -146,6 +147,9 @@ var (
 	// redaction. Per the CLAUDE.md §7 rule, the request fails loud
 	// rather than emitting un-redacted bytes.
 	ErrRedactionFailed = errors.New("search: redaction failed")
+	// ErrAuditFailed — a granted identity-scope widening could not emit its
+	// mandatory audit.admin_scope_used record. The read fails closed.
+	ErrAuditFailed = errors.New("search: admin-scope audit emit failed")
 	// ErrUnknownIndex — an `Indexes` entry on a `SearchRequest` for
 	// `search.query` is not one of the four canonical runtime-side
 	// indexes. Distinct from ErrInvalidRequest so callers can branch.
@@ -193,6 +197,11 @@ type Searcher interface {
 // the auth context attached by the middleware.
 type ScopeChecker func(ctx context.Context) bool
 
+// AuditSink is the mandatory, narrow event sink used to publish the canonical
+// audit.admin_scope_used event before a granted search widening reaches
+// storage. An events.EventBus satisfies this seam via its Publish method.
+type AuditSink func(ctx context.Context, ev events.Event) error
+
 // Deps bundles the construction-time dependencies every per-index
 // searcher needs. Fields documented per searcher; missing required
 // dependencies fail loud at construction (CLAUDE.md §5).
@@ -203,6 +212,10 @@ type Deps struct {
 	// AdminScope is the predicate the searcher consults to gate
 	// cross-tenant requests. Required.
 	AdminScope ScopeChecker
+	// Audit is the mandatory sink for granted tenant/user widening. The
+	// events index retains its existing Replayer-owned emit and therefore
+	// does not publish a second notice through this sink.
+	Audit AuditSink
 }
 
 // Validate returns wrapped ErrInvalidRequest when a required Dep is
@@ -213,6 +226,9 @@ func (d Deps) Validate() error {
 	}
 	if d.AdminScope == nil {
 		return fmt.Errorf("%w: search.Deps.AdminScope is nil", ErrInvalidRequest)
+	}
+	if d.Audit == nil {
+		return fmt.Errorf("%w: search.Deps.Audit is nil", ErrInvalidRequest)
 	}
 	return nil
 }

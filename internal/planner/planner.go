@@ -399,9 +399,10 @@ type RunContext struct {
 //     set time against the configured `ModelProfiles`).
 //   - Temperature / MaxTokens / ReasoningEffort override the corresponding
 //     `llm.CompleteRequest` fields.
-//   - ExtraInstructions is ADDITIVE: it is appended to the agent's system
-//     prompt (rendered into the `<additional_guidance>` section), never a
-//     replacement of the base prompt.
+//   - ExtraInstructions is trusted, tenant-level additive guidance rendered
+//     into `<additional_guidance>`; UserPersonalization is the one-run,
+//     non-admin contribution rendered separately with structural escaping in
+//     `<user_personalization>`. Neither replaces the base prompt.
 //   - SystemPromptOverride is a full REPLACE of the agent's base system
 //     prompt (the session layer's affordance, distinct from the additive
 //     ExtraInstructions). When both are set, the base prompt is replaced
@@ -418,15 +419,45 @@ type RunContext struct {
 //     — it can extend the operator's guidance but never precede, replace,
 //     or weaken the base. A session SystemPromptOverride replaces the whole
 //     base+user spine for its single message.
+//   - ExtraSystemBlocks are the durable, operator-authored NAMED blocks
+//     resolved from the agent's active config at run start. They render
+//     VERBATIM, in declared order, into the operator-trusted additive
+//     position, each behind a plain-text `[name]` label, and they survive a
+//     SystemPromptOverride. Nil or empty renders nothing (no empty
+//     wrapper). Order is SEMANTIC — it is the render order.
 type LLMOverrides struct {
 	Model                *string
 	Temperature          *float64
 	MaxTokens            *int
 	ReasoningEffort      *string
 	ExtraInstructions    *string
+	UserPersonalization  *string
 	SystemPromptOverride *string
 	BasePromptLayer      *string
 	UserPromptLayer      *string
+	ExtraSystemBlocks    []NamedBlock
+}
+
+// NamedBlock is one named unit of additive, operator-authored prompt text
+// carried on [LLMOverrides.ExtraSystemBlocks]. It exists so N independent
+// capability sources can each contribute — and later remove — exactly
+// their own text, addressed by name.
+//
+// The Body renders VERBATIM (unescaped) in the operator-trusted additive
+// guidance position. That trust comes from the WRITE DOOR — the durable
+// section behind it is admin-only, the same tier that writes the whole
+// prompt spine — not from any escaping here. A block must therefore never
+// carry user-authored or model-authored text; recalled content belongs in
+// the UNTRUSTED-framed [MemoryBlocks] tiers.
+//
+// The Name is a plain-text label for a human reading a transcript. It is
+// never emitted as an XML tag, so the prompt's structural taxonomy is
+// never a function of config data. It is NOT a security boundary: to the
+// model, two blocks from two capabilities are one contiguous run of
+// trusted guidance.
+type NamedBlock struct {
+	Name string
+	Body string
 }
 
 // ToolCallDeferred is a pending native tool-call the planner will
@@ -460,10 +491,23 @@ const (
 // [ErrMemoryBlockUnserializable] rather than degrading to an empty
 // wrapper.
 //
-// Identity contract: the Runtime MUST have already filtered each blob
-// to the run's `(tenant, user, session)` scope before populating this
-// struct. The prompt builder never re-applies identity filtering — it
-// renders exactly what it is handed (RFC §6.6, CLAUDE.md §6).
+// Identity contract, stated PER PROVENANCE because the tiers have more
+// than one producer:
+//
+//   - STORE-DERIVED content — anything read out of a MemoryStore, a
+//     StateStore or any other identity-scoped substrate — MUST have
+//     already been filtered to the run's `(tenant, user, session)` scope
+//     before it is placed here. The prompt builder never re-applies
+//     identity filtering; it renders exactly what it is handed
+//     (RFC §6.6, CLAUDE.md §6).
+//   - CALLER-SUPPLIED content is not store-derived, so there is no
+//     filtering to perform. It arrives in a request body under the
+//     caller's own verified triple and is admitted only into the run
+//     minted for that same triple. The contract above governs store
+//     READS; this path performs none, and content flows in, never out.
+//
+// This is a sharpening, not a relaxation: nothing that was filtered
+// before stops being filtered.
 type MemoryBlocks struct {
 	// External is the long-term / retrieved memory tier. Rendered into
 	// the `<read_only_external_memory>` prompt section. Nil to omit.

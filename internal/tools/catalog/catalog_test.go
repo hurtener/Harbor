@@ -61,8 +61,8 @@ func (s *stubOAuthProvider) CompleteFlow(_ context.Context, _, _ string) (auth.T
 	return auth.Token{}, nil
 }
 
-func (s *stubOAuthProvider) PendingFlow(_ string) (auth.PendingFlowInfo, bool) {
-	return auth.PendingFlowInfo{}, false
+func (s *stubOAuthProvider) PendingFlow(context.Context, string) (auth.PendingFlowInfo, bool, error) {
+	return auth.PendingFlowInfo{}, false, nil
 }
 
 func (s *stubOAuthProvider) DenyFlow(_ context.Context, _, _ string) error { return nil }

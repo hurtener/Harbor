@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,9 @@ type coordinator struct {
 	// pauses never expire — today's pre-111c behaviour. Set once at
 	// construction.
 	maxPark time.Duration
+	// continuations is the construction-time handler registry. It shares mu
+	// with pauses; handlers are looked up under the lock and invoked outside it.
+	continuations map[string]ContinuationHandler
 
 	// mu guards pauses. The map is the coordinator's only mutable
 	// state and is documented internally-synchronised per the concurrent-reuse
@@ -91,6 +95,9 @@ type pauseEntry struct {
 	// retryPendingDeletes pass re-attempts the delete (and the skipped
 	// pause.resumed emit) until it lands, then clears this flag.
 	deletePending bool
+	continuation  *Continuation
+	resuming      bool
+	resumeDone    chan struct{}
 }
 
 // Option configures a coordinator at construction. Options are applied
@@ -168,14 +175,32 @@ func WithMaxParkDuration(d time.Duration) Option {
 // process-local handle registry, no event bus, time.Now as the clock.
 func New(opts ...Option) Coordinator {
 	c := &coordinator{
-		registry: trajectory.NewProcessLocalRegistry(),
-		now:      time.Now,
-		pauses:   make(map[Token]*pauseEntry),
+		registry:      trajectory.NewProcessLocalRegistry(),
+		now:           time.Now,
+		pauses:        make(map[Token]*pauseEntry),
+		continuations: make(map[string]ContinuationHandler),
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
 	return c
+}
+
+// RegisterContinuation registers one construction-time continuation handler.
+// Duplicate kinds fail loudly; handlers are never replaced beneath live pause
+// records.
+func (c *coordinator) RegisterContinuation(kind string, handler ContinuationHandler) error {
+	kind = strings.TrimSpace(kind)
+	if kind == "" || handler == nil {
+		return fmt.Errorf("%w: kind=%q", ErrInvalidContinuation, kind)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.continuations[kind]; exists {
+		return fmt.Errorf("%w: %q", ErrContinuationKindRegistered, kind)
+	}
+	c.continuations[kind] = handler
+	return nil
 }
 
 // newToken mints a fresh opaque Token. ULID-shaped: monotonic-ish,
@@ -198,6 +223,23 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 	}
 	if !IsValidReason(req.Reason) {
 		return Pause{}, fmt.Errorf("%w: %q", ErrInvalidReason, req.Reason)
+	}
+	continuation := req.Continuation
+	if continuation == nil {
+		continuation = continuationFromContext(ctx)
+	}
+	if err := validateContinuation(continuation); err != nil {
+		return Pause{}, err
+	}
+	if continuation != nil {
+		c.mu.Lock()
+		_, registered := c.continuations[continuation.Kind]
+		c.mu.Unlock()
+		if !registered {
+			return Pause{}, fmt.Errorf("%w: %q", ErrContinuationHandlerMissing, continuation.Kind)
+		}
+		cloned := cloneContinuation(*continuation)
+		continuation = &cloned
 	}
 
 	// Fail-loudly serialise contract: the pause
@@ -227,14 +269,15 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 	pausedAt := c.now()
 
 	entry := &pauseEntry{
-		token:      token,
-		reason:     req.Reason,
-		state:      StatusPaused,
-		identity:   req.Identity,
-		runID:      runIDFromContext(ctx),
-		payload:    cloneStringMap(req.Payload),
-		pausedAt:   pausedAt,
-		trajectory: req.Trajectory,
+		token:        token,
+		reason:       req.Reason,
+		state:        StatusPaused,
+		identity:     req.Identity,
+		runID:        runIDFromContext(ctx),
+		payload:      cloneStringMap(req.Payload),
+		pausedAt:     pausedAt,
+		trajectory:   req.Trajectory,
+		continuation: continuation,
 	}
 	// Max-park expiry: derived from PausedAt + the
 	// construction-time knob. Zero maxPark ⇒ zero expiresAt ⇒ the pause
@@ -290,8 +333,8 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 // This is intentional: a resumed pause is terminal, and keeping a
 // resumed checkpoint around would be an unbounded store leak with no
 // consumer. Do not "fix" the missing post-resume-across-restart
-// Status — checkpoint_test.go / phase50_durability_test.go assert
-// this behaviour.
+// Status — the package's checkpoint tests and the pause-durability
+// integration suite assert this behaviour.
 func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision, payload map[string]any) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("pauseresume: resume cancelled: %w", err)
@@ -342,6 +385,24 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		c.mu.Unlock()
 		return fmt.Errorf("%w: token %q", ErrScopeMismatch, token)
 	}
+	// An accepted decision may be running durable continuation work outside
+	// c.mu. Its claim wins against every later decision, including terminal
+	// reject/timeout decisions that do not themselves invoke a continuation.
+	// Wait for the winner to finish so callers never observe or overwrite
+	// half-applied effects, then report that this concurrent decision lost the
+	// arbitration. If the winner's continuation fails, the pause remains
+	// retryable by a future call; this already-waiting call still does not
+	// become an implicit retry with potentially different decision semantics.
+	if entry.resuming {
+		done := entry.resumeDone
+		c.mu.Unlock()
+		select {
+		case <-done:
+			return fmt.Errorf("%w: token %q", ErrAlreadyResumed, token)
+		case <-ctx.Done():
+			return fmt.Errorf("pauseresume: wait for concurrent resume: %w", ctx.Err())
+		}
+	}
 
 	// Re-attach the non-serialisable half of ToolContext. A lost
 	// handle fails loud with trajectory.ErrToolContextLost — the run
@@ -366,9 +427,47 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		}
 	}
 
+	// Accepted resumes execute durable continuation work BEFORE the terminal
+	// state flip and checkpoint delete. Claim the token under c.mu, then release
+	// the global coordinator lock before any handler I/O. A failure or
+	// cancellation clears the claim but leaves the entry paused and checkpoint
+	// intact, so the same token is retryable. Reject/timeout are terminal
+	// decisions and intentionally do not run continuation work.
+	if entry.continuation != nil && (decision == DecisionResume || decision == DecisionApprove) {
+		handler, registered := c.continuations[entry.continuation.Kind]
+		if !registered {
+			c.mu.Unlock()
+			return fmt.Errorf("%w: %q", ErrContinuationHandlerMissing, entry.continuation.Kind)
+		}
+		entry.resuming = true
+		entry.resumeDone = make(chan struct{})
+		invocation := ContinuationInvocation{
+			Token:         token,
+			Identity:      entry.identity,
+			RunID:         entry.runID,
+			Continuation:  cloneContinuation(*entry.continuation),
+			Decision:      decision,
+			ResumePayload: cloneStringMap(payload),
+		}
+		c.mu.Unlock()
+		handlerErr := handler(ctx, invocation)
+		c.mu.Lock()
+		entry.resuming = false
+		if handlerErr != nil {
+			close(entry.resumeDone)
+			entry.resumeDone = nil
+			c.mu.Unlock()
+			return fmt.Errorf("pauseresume: continuation %q for token %q: %w", entry.continuation.Kind, token, handlerErr)
+		}
+	}
+
 	entry.state = StatusResumed
 	entry.resumedAt = c.now()
 	entry.decision = decision
+	if entry.resumeDone != nil {
+		close(entry.resumeDone)
+		entry.resumeDone = nil
+	}
 	// Merge the resume payload into the entry payload so a subsequent
 	// Status reflects what the resume supplied.
 	mergeStringMap(&entry.payload, payload)
@@ -534,6 +633,7 @@ func (e *pauseEntry) toCheckpoint() (checkpointRecord, error) {
 		Identity:      e.identity,
 		RunID:         e.runID,
 		Payload:       e.payload,
+		Continuation:  e.continuation,
 		PausedAt:      e.pausedAt,
 		ResumedAt:     e.resumedAt,
 	}
@@ -552,15 +652,24 @@ func (e *pauseEntry) toCheckpoint() (checkpointRecord, error) {
 // persisted checkpoint envelope. Deserialises the trajectory bytes
 // when present; a corrupt trajectory surfaces ErrCheckpointCorrupt.
 func entryFromCheckpoint(rec checkpointRecord) (*pauseEntry, error) {
+	if err := validateContinuation(rec.Continuation); err != nil {
+		return nil, fmt.Errorf("%w: token %q continuation: %w", ErrCheckpointCorrupt, rec.Token, err)
+	}
+	var continuation *Continuation
+	if rec.Continuation != nil {
+		cloned := cloneContinuation(*rec.Continuation)
+		continuation = &cloned
+	}
 	entry := &pauseEntry{
-		token:     rec.Token,
-		reason:    rec.Reason,
-		state:     rec.State,
-		identity:  rec.Identity,
-		runID:     rec.RunID,
-		payload:   rec.Payload,
-		pausedAt:  rec.PausedAt,
-		resumedAt: rec.ResumedAt,
+		token:        rec.Token,
+		reason:       rec.Reason,
+		state:        rec.State,
+		identity:     rec.Identity,
+		runID:        rec.RunID,
+		payload:      rec.Payload,
+		pausedAt:     rec.PausedAt,
+		resumedAt:    rec.ResumedAt,
+		continuation: continuation,
 	}
 	if len(rec.TrajectoryBytes) > 0 {
 		tr, err := trajectory.Deserialize(rec.TrajectoryBytes)
