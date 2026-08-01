@@ -11882,3 +11882,39 @@ If the one-time code is spent but credential persistence fails, FlowStore record
 When an auth-required revision write reports failure but an exact reread proves the descriptor and provider landed, the operation converges as successful `auth_required`: Harbor publishes the exact provider, retains the producer-owned pause, emits the reread revision and pause token, and returns that token to the caller. A lost storage acknowledgement alone never rejects a durable continuation or hides its resume handle.
 
 **Cross-references.** D-301, D-370, D-380, D-390. RFC §3.3, §6.4, §6.11, §6.16.
+
+---
+
+## D-397 — Agent reach is bounded signed authority enforced after one effective-target resolution
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 232.
+
+**Decision.** A bearer carries `agent_reach` as a strict bounded set of agent registration IDs. One shared gate resolves the effective target and checks membership before side effects on `control.start`, every `agent_config.session.*` and `agent_config.user.*` method, and an explicitly agent-projected `tools.describe`. An omitted start target resolves to the configured default and is checked; an omitted tools target retains its distinct boot-effective projection. Missing/empty reach denies these calls, malformed reach rejects authentication, and bearer-less carrier identity has no agent authority. Tenant-local config is selection evidence only. `agent_id` remains metadata, never an isolation axis.
+
+**Cross-references.** D-059, D-066, D-220, D-299, D-349, D-360. RFC §5.5, §6.16.
+
+---
+
+## D-398 — StateStore conditional save compares exact identity-scoped slots across the driver triad
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 233; closes the cross-process residual named by D-366.
+
+**Decision.** Every StateStore driver implements one mandatory `SaveIf` operation. A non-empty unique set of identity-and-kind slot expectations compares each current event ID exactly, with an empty expectation meaning absence, and atomically saves one next record only when all expectations match. The next record's slot must be one of the conditions. A mismatch returns one typed condition failure and persists nothing; ordinary event-ID idempotency cannot bypass the comparison. Agent-tier config writes condition their active slot, while user-tier writes additionally condition the agent lifecycle slot so retirement and user mutation have one winner. In-memory, SQLite, and Postgres implement the same semantics and pass one conformance suite; no driver-specific optional capability exists.
+
+**Cross-references.** D-027, D-025, D-366, D-380, D-392. RFC §6.11, §6.16, §9.
+
+---
+
+## D-399 — Agent-config retirement is a terminal CAS tombstone with same-operation cleanup replay
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 234.
+
+**Decision.** Retirement CAS-replaces the agent active slot with a backward-compatible lifecycle tombstone carrying operation ID, retirement time, prior revision ID/hash, a fixed cleanup manifest, and durable step progress. The tombstone wins before cleanup and remains the replay oracle: the same operation resumes, a different one conflicts, and no later durable config write, user variant, or rollback can resurrect the agent. Process-local session overlay writes use before/after lifecycle reads and exact local compensation if retirement wins between them; an overlay completed before retirement may remain resident in another process but is inaccessible thereafter. Explicit and defaulted new-run selection refuse the tombstone; already-acquired run snapshots remain immutable. Cleanup touches only durably attributable `(tenant, agent_id)` resources, retains immutable agent/user revision history, and never sweeps boot/global or unattributable credentials. `agent_config.retire` is admin control-plane lifecycle and intentionally does not consume data-plane `agent_reach`. Recreate mints a new ID. `agents.deregister` remains fleet-record deletion only.
+
+**Cross-references.** D-059, D-301, D-312, D-366, D-394, D-398. RFC §5.5, §6.11, §6.13, §6.16.

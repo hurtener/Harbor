@@ -247,6 +247,23 @@ Phase 60 (Protocol wire transport) is no longer a decision gate; it is a normal 
 
 JWT, asymmetric algorithms only (RS256/RS384/RS512/ES256/ES384/ES512). The triple `(tenant, user, session)` is in the JWT claims; the Protocol rejects any request without an identity scope. (Settled — `AGENTS.md` §7.) Extended scopes (`admin`, `console:fleet`) gate cross-session and cross-tenant subscriptions.
 
+**Agent reach is signed resource authority, not isolation (D-397).** Every
+bearer used on an agent-addressed data-plane operation carries a bounded,
+non-empty `agent_reach` claim naming the registration IDs it may address. The
+claim is parsed strictly at authentication: malformed, duplicate, blank, or
+over-limit entries reject the bearer; an absent or empty claim authenticates
+for unrelated surfaces but authorizes no agent-addressed data-plane call. One
+shared effective-agent gate enforces the claim before side effects on
+`control.start`, all `agent_config.session.*` and `agent_config.user.*`
+methods, and an explicitly agent-projected `tools.describe`. Omitted
+`control.start.agent_id` resolves to the configured default before the gate;
+an omitted `tools.describe.agent_id` retains its distinct boot-effective
+projection and is not an agent choice. Tenant-local configuration proves only
+that an agent can be selected; it never grants reach. Bearer-less carrier
+identity supplies no signed reach and therefore cannot use these methods.
+`agent_id` remains registration metadata under §6.16 and does not join the
+isolation tuple.
+
 ### 5.6 External Protocol serving (Settled — D-291)
 
 An external binary — a scaffolded agent with compiled in-process Go tools, a headless embedder that also wants a network surface — may **serve the Protocol** at parity with the stock `harbor serve`. This is a **decided contract**, superseding the earlier deliberate omission where the serve composition lived only inside `cmd/harbor` (package `main`, unreachable to any importer). It rests on two pieces:
@@ -1065,19 +1082,44 @@ type StateRecord struct {
     UpdatedAt  time.Time
 }
 
+// SlotExpectation compares the current record in one identity-and-kind slot.
+// An empty EventID requires the slot to be absent.
+type SlotExpectation struct {
+    Identity identity.Quadruple
+    Kind     string
+    EventID  EventID
+}
+
 type StateStore interface {
     Save(ctx context.Context, r StateRecord) error                                    // idempotent on EventID; ErrIdempotencyConflict on same-ID-different-bytes
+    SaveIf(ctx context.Context, expectations []SlotExpectation, next StateRecord) error // atomically compare every slot, then save one record; ErrConditionFailed on mismatch
     Load(ctx context.Context, id identity.Quadruple, kind string) (StateRecord, error)
     LoadByEventID(ctx context.Context, eventID EventID) (StateRecord, error)
     Delete(ctx context.Context, id identity.Quadruple, kind string) error
+    DeleteScope(ctx context.Context, id identity.Identity) (int, error)
     ListKind(ctx context.Context, scope ListScope, kindPrefix string) ([]StateRecord, error) // the ONE maintenance scan; explicit elevation claim (D-207)
+    ListKindForIdentity(ctx context.Context, id identity.Quadruple, kindPrefix string) ([]StateRecord, error)
     Close(ctx context.Context) error
 }
 ```
 
+**Conditional save (D-398).** `SaveIf` is mandatory on the full driver triad,
+not an optional durable-driver capability. Its expectation list is non-empty,
+unique by `(Identity, Kind)`, and must include the target slot of `next`
+exactly once. Every expectation compares the slot's exact current `EventID`;
+an empty expected ID means the slot must be absent. The driver atomically
+checks every condition and saves the single `next` record, or returns
+`ErrConditionFailed` with no partial write. Ordinary `Save` idempotency on
+`next.ID` is evaluated only after the conditions match and cannot turn a stale
+condition into success. In-memory holds one mutex across compare/write;
+SQLite uses one write transaction; Postgres locks/predicates both present and
+absent slots so two independent clients have one winner. The shared StateStore
+conformance suite pins matching, stale, absent, multi-slot, identity,
+cancellation, close, and concurrent-reuse behavior on every driver.
+
 **Settled (revised — D-027):**
 
-- **Generic key-value-of-typed-bytes surface.** `StateStore` is a five-method interface keyed on `(identity.Quadruple, Kind string, Bytes []byte)` with idempotency on a caller-provided `EventID` (ULID). Consuming subsystems (sessions, tasks, planner checkpoints, memory snapshots, steering events, distributed bindings, trajectories) land their **typed wrappers at their own layer** atop this surface — not inside `internal/state`. Example: `SessionRegistry.Save(s Session)` reduces to `StateStore.Save(StateRecord{Identity: s.Identity, Kind: "session.lifecycle", Bytes: marshal(s)})`. This keeps `internal/state` a leaf with no upstream Harbor deps beyond `internal/identity` and `internal/config`.
+- **Generic key-value-of-typed-bytes surface.** `StateStore` is one mandatory interface keyed on `(identity.Quadruple, Kind string, Bytes []byte)`, with idempotency on a caller-provided `EventID` (ULID) and conditional save on exact current slot event IDs. Consuming subsystems (sessions, tasks, planner checkpoints, memory snapshots, steering events, distributed bindings, trajectories) land their **typed wrappers at their own layer** atop this surface — not inside `internal/state`. Example: `SessionRegistry.Save(s Session)` reduces to `StateStore.Save(StateRecord{Identity: s.Identity, Kind: "session.lifecycle", Bytes: marshal(s)})`. This keeps `internal/state` a leaf with no upstream Harbor deps beyond `internal/identity` and `internal/config`.
 - One mandatory interface, three V1 drivers (in-memory, SQLite, Postgres), one conformance suite. The predecessor's eight optional `Supports*` capability protocols + `hasattr` duck-typing are explicitly rejected — if all V1 drivers implement everything, optional capabilities are ceremony.
 - Forward-only migrations, per-driver migration directories. Each migration ends with `INSERT OR IGNORE INTO schema_migrations(version) VALUES (N);` (or driver equivalent).
 - WAL journal mode for SQLite.
@@ -1317,6 +1359,38 @@ A plain restart yields the same `agent_id` + same `version_hash` + a new `incarn
 **Two creation cases.** *Locally-hosted agent* — the runtime instance is running the agent; it mints a local `agent_id`. *Connect-to-remote agent* — the agent runs in another Harbor instance (or is any A2A-speaking peer); the local runtime assigns a **handle** (an `agent_id` local to this instance), and the canonical identity of the remote agent is its A2A AgentCard (§6.12), owned by the remote operator. This mirrors a DNS resolver's relationship to a remote host: the local entry is a handle, the authoritative record lives elsewhere. (Settled — D-060.)
 
 **`restart` rehydrates; `restart ≠ recreate`.** With a durable StateStore driver, a process restart rehydrates the registry and an agent returns with the *same* `agent_id` — a stable fleet view depends on this. The in-memory driver loses the registry on restart and is documented as dev-only. Teardown-and-recreate is distinct: recreate genuinely mints a fresh `agent_id` because it is a new logical entity; restart keeps the StateStore record.
+
+**Agent-config retirement is terminal and replayable (D-398/D-399).** A
+retirement operation atomically replaces the mutable agent-config active slot
+with a durable tombstone by comparing the exact current StateStore event ID.
+The tombstone records a caller-supplied operation ID, retirement time, the
+pre-retirement revision ID and content hash, a fixed cleanup manifest, and the
+durable progress of each cleanup action. Immutable revision history is never
+rewritten or deleted. The same operation ID resumes incomplete cleanup after a
+timeout, lost acknowledgement, or process restart; a different operation ID
+conflicts and cannot replace the replay identity. All agent- and user-tier
+config mutations and rollbacks fail closed once the tombstone wins.
+Process-local session-overlay mutators read the lifecycle both before and
+after their local write: if retirement wins between those reads, the exact
+local mutation is compensated before the call returns. An overlay write that
+completed before retirement may remain resident in another process, but the
+tombstone makes it inaccessible on every later read and write. Re-creation
+mints a fresh `agent_id`; there is no implicit unretire.
+
+Retirement makes the agent unresolvable for every new run, including explicit
+and omitted selection of a configured default. A start that acquired its
+immutable run snapshot before the tombstone may finish; retirement never
+rewrites an in-flight run's projection. Cleanup is limited to live resources
+whose durable owner is the retired `(tenant, agent_id)` and whose identity is
+captured in the tombstone manifest. Boot-declared/global resources and
+identity-scoped credentials without an agent ownership record are not swept.
+User-tier revisions remain immutable history; inaccessible session overlays
+are removed from the retiring process only through identity-scoped
+enumeration. `agent_config.retire` is an admin control-plane lifecycle verb,
+not a data-plane bearer operation, so admin scope is its authority and it does
+not consume `agent_reach`. `agents.deregister`
+continues to remove only the fleet registry record and neither creates nor
+removes the agent-config tombstone.
 
 **Events.** The registry emits `agent.registered`, `agent.restarted`, `agent.health`, `agent.drained`, `agent.deregistered` on the typed event bus (§6.13), carrying the registration `agent_id`. The Console Agents page (§7) is a lens over these events plus a registry state snapshot — the Console never holds the agent list itself (D-061).
 
