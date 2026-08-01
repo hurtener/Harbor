@@ -195,8 +195,9 @@ func init() {
 //
 // Documented behavior (DSN format, RFC §10 stack-decisions): bare
 // file paths and the `:memory:` sentinel are the V1 supported inputs.
-// Operators who want richer URI forms can supply them directly; we
-// only add to whatever query string is present.
+// Operators who want richer URI forms can supply them directly. A supplied
+// `_txlock` must still be `immediate` or `exclusive`: a deferred transaction
+// can read a stale predicate before it tries to become the writer.
 func augmentDSNForPragmas(dsn string) (string, error) {
 	// Translate bare `:memory:` to a per-Open uniquely named
 	// shared-cache memory URI: shared across the pool, isolated
@@ -228,7 +229,10 @@ func augmentDSNForPragmas(dsn string) (string, error) {
 		for _, p := range pragmas {
 			q.Add("_pragma", p)
 		}
-		if q.Get("_txlock") == "" {
+		if err := validateTxlock(q["_txlock"]); err != nil {
+			return "", err
+		}
+		if len(q["_txlock"]) == 0 {
 			q.Set("_txlock", "immediate")
 		}
 		u.RawQuery = q.Encode()
@@ -236,18 +240,45 @@ func augmentDSNForPragmas(dsn string) (string, error) {
 	}
 
 	// Bare file path. We don't expect a `?` in a normal POSIX path,
-	// but we tolerate it: the substring after the first `?` is
-	// treated as an existing query string.
-	sep := "?"
-	if idx := strings.IndexByte(dsn, '?'); idx >= 0 {
-		sep = "&"
+	// but preserve the historic treatment of a suffix as query
+	// parameters so `_txlock` receives the same validation as URI DSNs.
+	base, rawQuery, hasQuery := strings.Cut(dsn, "?")
+	q := make(url.Values)
+	if hasQuery {
+		var err error
+		q, err = url.ParseQuery(rawQuery)
+		if err != nil {
+			return "", fmt.Errorf("parse path query: %w", err)
+		}
 	}
-	parts := make([]string, 0, len(pragmas)+1)
+	if err := validateTxlock(q["_txlock"]); err != nil {
+		return "", err
+	}
 	for _, p := range pragmas {
-		parts = append(parts, "_pragma="+url.QueryEscape(p))
+		q.Add("_pragma", p)
 	}
-	parts = append(parts, "_txlock=immediate")
-	return dsn + sep + strings.Join(parts, "&"), nil
+	if len(q["_txlock"]) == 0 {
+		q.Set("_txlock", "immediate")
+	}
+	return base + "?" + q.Encode(), nil
+}
+
+// validateTxlock preserves only transaction modes that acquire a write lock
+// before a conditional predicate is read. Multiple values are refused because
+// driver-specific precedence would make the conditional-write guarantee vague.
+func validateTxlock(values []string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	if len(values) != 1 {
+		return errors.New("multiple _txlock values are unsafe; expected immediate or exclusive")
+	}
+	switch strings.ToLower(values[0]) {
+	case "immediate", "exclusive":
+		return nil
+	default:
+		return fmt.Errorf("_txlock=%q is unsafe; expected immediate or exclusive", values[0])
+	}
 }
 
 // uniqueMemoryDSN mints a per-Open named in-memory database URI.
@@ -421,6 +452,78 @@ func (d *driver) Save(ctx context.Context, r state.StateRecord) error {
 		return fmt.Errorf("state/sqlite: commit: %w", err)
 	}
 	rolled = true
+	return nil
+}
+
+// SaveIf implements the mandatory multi-slot conditional save. SQLite permits
+// one writer at a time; the transaction keeps the predicate reads and next
+// write in that same serialized writer transaction.
+func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if d.closed.Load() {
+		return fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateSaveIf(expectations, next); err != nil {
+		return err
+	}
+	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return fmt.Errorf("state/sqlite: begin conditional tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback() //nolint:errcheck // the caller receives the original error
+		}
+	}()
+	for _, expectation := range expectations {
+		var actual string
+		err := tx.QueryRowContext(ctx, `SELECT event_id FROM state_records WHERE tenant=? AND user=? AND session=? AND run=? AND kind=?`,
+			expectation.Identity.TenantID, expectation.Identity.UserID, expectation.Identity.SessionID, expectation.Identity.RunID, expectation.Kind).Scan(&actual)
+		if expectation.ExpectedEventID == "" {
+			if err == nil {
+				return fmt.Errorf("state/sqlite: %w: expected absent slot is present", state.ErrConditionFailed)
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("state/sqlite: conditional read: %w", err)
+			}
+			continue
+		}
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && actual != string(expectation.ExpectedEventID)) {
+			return fmt.Errorf("state/sqlite: %w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+		}
+		if err != nil {
+			return fmt.Errorf("state/sqlite: conditional read: %w", err)
+		}
+	}
+	prevSlot, prevBytes, prevVersion, prevExists, err := lookupByEventID(ctx, tx, next.ID)
+	if err != nil {
+		return err
+	}
+	nextSlot := slotKey{Tenant: next.Identity.TenantID, User: next.Identity.UserID, Session: next.Identity.SessionID, Run: next.Identity.RunID, Kind: next.Kind}
+	if prevExists {
+		if prevSlot != nextSlot || !bytes.Equal(prevBytes, next.Bytes) || prevVersion != next.Version {
+			return fmt.Errorf("state/sqlite: %w: next EventID %q conflicts", state.ErrIdempotencyConflict, next.ID)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("state/sqlite: commit conditional idempotent no-op: %w", err)
+		}
+		committed = true
+		return nil
+	}
+	updatedAt := next.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	const upsert = `INSERT INTO state_records (tenant, user, session, run, kind, event_id, version, bytes, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tenant, user, session, run, kind) DO UPDATE SET event_id=excluded.event_id, version=excluded.version, bytes=excluded.bytes, updated_at=excluded.updated_at`
+	if _, err := tx.ExecContext(ctx, upsert, next.Identity.TenantID, next.Identity.UserID, next.Identity.SessionID, next.Identity.RunID, next.Kind, string(next.ID), next.Version, next.Bytes, updatedAt); err != nil {
+		return fmt.Errorf("state/sqlite: conditional upsert: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("state/sqlite: commit conditional save: %w", err)
+	}
+	committed = true
 	return nil
 }
 

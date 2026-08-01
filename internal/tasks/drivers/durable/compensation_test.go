@@ -28,6 +28,13 @@ func (s *toggleGroupFailStore) Save(ctx context.Context, rec state.StateRecord) 
 	return s.StateStore.Save(ctx, rec)
 }
 
+func (s *toggleGroupFailStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if s.failGroups.Load() && strings.HasPrefix(next.Kind, "task.durable.group/") {
+		return errors.New("group disk full")
+	}
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
 // TestDurable_GroupPersistFailure_CompensatesTaskRecord exercises the
 // real durable DeleteTask: a spawn whose group persist fails AFTER the
 // task was persisted must compensate the task slot, so a restart does

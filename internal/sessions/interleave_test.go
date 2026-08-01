@@ -189,6 +189,10 @@ func (g *catalogSaveGate) Save(ctx context.Context, r state.StateRecord) error {
 	return g.StateStore.Save(ctx, r)
 }
 
+func (g *catalogSaveGate) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	return g.StateStore.SaveIf(ctx, expectations, next)
+}
+
 // TestRegistry_Interleave_EraseVsOpen_NoResurrection pins the catalog
 // lost-update fix DETERMINISTICALLY: the per-(tenant, user) discovery
 // catalog's read-modify-write must serialize an Open's add against an

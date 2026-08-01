@@ -35,7 +35,7 @@ var errorTable = map[protoerrors.Code]errorEntry{
 	},
 	protoerrors.CodeRevisionConflict: {
 		When: "An `agent_config.*` write declared an `expected_content_hash` and the agent's active revision no longer carries it — another writer moved the base between the caller's read and its write — or the agent has no active revision at all. The request was well-formed and authorised; nothing was persisted (no revision, no active-pointer move, no `agent.config.revised` event). " +
-			"The refusal is exact within ONE Runtime process: atomicity comes from the agent-config service's per-owner write lock, not from the StateStore, which enforces no compare-and-swap. Two Runtime processes sharing one store CAN STILL LOSE AN UPDATE, and this code does not claim otherwise. Omitting `expected_content_hash` keeps the unconditional last-writer-wins behaviour.",
+			"The refusal is exact across Runtime processes sharing a shipped StateStore: publication rechecks the active-pointer EventID through `StateStore.SaveIf`; the per-owner lock only reduces local contention. Omitting `expected_content_hash` keeps the unconditional last-writer-wins behaviour.",
 		Retry: "Yes, after re-reading — call `agent_config.get` (or `agent_config.user.get` if the door you are retrying is a `user.*` twin; they are separate revision spines and a hash from the wrong one never matches) for the current `revision_id` and `content_hash`, re-apply your edit on top (`agent_config.diff` compares what you read against what it is now), and resubmit with the fresh hash.",
 	},
 	protoerrors.CodeIdentityRequired: {

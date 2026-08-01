@@ -772,6 +772,16 @@ func (s *flakyLedgerStore) Save(ctx context.Context, r state.StateRecord) error 
 	return s.StateStore.Save(ctx, r)
 }
 
+func (s *flakyLedgerStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if s.saveFail != nil && s.saveFail.Load() && strings.HasPrefix(next.Kind, erasureLedgerTestKindPrefix) {
+		if s.saveSkip != nil && s.saveSkip.Add(-1) >= 0 {
+			return s.StateStore.SaveIf(ctx, expectations, next)
+		}
+		return errors.New("flaky state store: forced ledger conditional-save failure")
+	}
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
 func (s *flakyLedgerStore) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
 	if s.loadFail != nil && s.loadFail.Load() && strings.HasPrefix(kind, erasureLedgerTestKindPrefix) {
 		return state.StateRecord{}, errors.New("flaky state store: forced ledger load failure")

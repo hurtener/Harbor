@@ -227,3 +227,7 @@ type saveFailingStore struct {
 func (s *saveFailingStore) Save(_ context.Context, _ state.StateRecord) error {
 	return errors.New("io: simulated save failure")
 }
+
+func (s *saveFailingStore) SaveIf(_ context.Context, _ []state.SlotExpectation, _ state.StateRecord) error {
+	return errors.New("io: simulated save failure")
+}

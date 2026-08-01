@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -77,9 +79,30 @@ func newRegistryOnBus(t *testing.T, bus events.EventBus) agentcfg.Registry {
 	return reg
 }
 
-// newSharedStore builds a REAL file-backed SQLite StateStore in t.TempDir().
-// The cross-process residual is about two Runtimes sharing one durable store,
-// so the test uses the durable driver rather than a map.
+// newSharedStores builds two independent SQLite driver handles over one file.
+// Separate handles (and therefore separate database/sql pools) model the
+// persistence boundary two Runtime processes actually cross.
+func newSharedStores(t *testing.T) (state.StateStore, state.StateStore) {
+	t.Helper()
+	dsn := filepath.Join(t.TempDir(), "agentcfg-shared.db")
+	left, err := statesqlite.New(config.StateConfig{
+		Driver: "sqlite",
+		DSN:    dsn,
+	})
+	if err != nil {
+		t.Fatalf("open left state sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = left.Close(context.Background()) })
+	right, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatalf("open right state sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = right.Close(context.Background()) })
+	return left, right
+}
+
+// newSharedStore remains the single-handle fixture for fault-injection tests
+// that do not model an inter-process boundary.
 func newSharedStore(t *testing.T) state.StateStore {
 	t.Helper()
 	st, err := statesqlite.New(config.StateConfig{
@@ -615,35 +638,22 @@ func TestConditionalWrite_ConcurrentReuse_NoCrossOwnerBleed(t *testing.T) {
 	}
 }
 
-// TestConditionalWrite_CrossProcessBoundIsDocumented — THE RESIDUAL, PINNED AS
-// ABSENT.
-//
-// The precondition's atomicity comes from the agent-config service's per-owner
-// write lock, which is a PROCESS-LOCAL mutex. Two independently-constructed
-// registries over ONE shared StateStore are the cross-process shape, and the
-// lost update STILL OCCURS there: each registry reads the active revision,
-// both see the expected hash, and both write — the second overwriting the
-// first, because the StateStore has no compare-and-swap and `saveActive` mints
-// a fresh event id on every write.
-//
-// This test asserts the failure, not the fix. It exists so the gap is a
-// recorded property with a guard on it rather than something a later reader
-// assumes was handled: if a future change ever DID make the write
-// cross-process safe, this test fails and must be replaced by its positive
-// twin. The real fix is a conditional-write primitive on the StateStore
-// interface across the persistence triad — a separate change with its own
-// conformance rows.
-func TestConditionalWrite_CrossProcessBoundIsDocumented(t *testing.T) {
+// TestConditionalWrite_SharedSQLiteTwoRegistries_OneWinner proves the durable
+// StateStore predicate rather than the process-local protocol lock decides the
+// race. The two registries use independent SQLite driver handles and model
+// independent Runtime processes.
+func TestConditionalWrite_SharedSQLiteTwoRegistries_OneWinner(t *testing.T) {
 	ctx := context.Background()
 	q := agentQuad(condAgent)
 
-	// One REAL StateStore, wrapped in a gate that can suspend ONE writer
+	// Separate REAL StateStore handles. The gate wraps B's handle and can suspend ONE writer
 	// between its precondition read and its save. The gate adds no behaviour —
 	// every call is delegated to the real driver — it only chooses when a call
 	// returns, which is what makes the interleaving deterministic instead of
 	// hoping the scheduler produces it.
-	gate := newSaveGate(newSharedStore(t))
-	regA := newRegistryOnStore(t, gate)
+	left, right := newSharedStores(t)
+	regA := newRegistryOnStore(t, left)
+	gate := newSaveGate(right)
 	regB := newRegistryOnStore(t, gate)
 
 	base, err := regA.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("base"), agentcfg.SetOptions{})
@@ -682,40 +692,27 @@ func TestConditionalWrite_CrossProcessBoundIsDocumented(t *testing.T) {
 		t.Fatalf("writer A must be accepted (its base had not moved): %v", err)
 	}
 
-	// Release B. Its precondition was validated against a base that A has
-	// since replaced, but the check already happened: there is no lock
-	// spanning the two registries and no store-level CAS to catch it.
+	// Release B. Its original content-hash check passed, but SaveIf checks the
+	// exact active-pointer generation again at the durable linearization point.
 	gate.release()
-	var revB agentcfg.Revision
 	select {
-	case revB = <-bDone:
+	case revB := <-bDone:
+		t.Fatalf("writer B unexpectedly succeeded with revision %q", revB.RevisionID)
 	case err := <-bErr:
-		t.Fatalf("writer B was refused (%v) — a cross-process guarantee now exists that "+
-			"agentcfg.SetOptions, the generated Protocol reference and the operator skill all "+
-			"state is ABSENT. Update those texts and replace this test with its positive twin.", err)
+		if !errors.Is(err, agentcfg.ErrRevisionConflict) {
+			t.Fatalf("writer B error = %v, want ErrRevisionConflict", err)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("writer B never completed")
 	}
 
-	// THE LOST UPDATE, OBSERVED. Both writers were told they succeeded, and
-	// exactly one of the two revisions is active — A's write was silently
-	// discarded with no error to anyone.
+	// A remains active and B's rejected candidate was never published.
 	active, ok, err := regA.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent)
 	if err != nil || !ok {
 		t.Fatalf("Active: ok=%v err=%v", ok, err)
 	}
-	if active.RevisionID != revB.RevisionID {
-		t.Fatalf("expected writer B's revision %q to be active (A's update lost); got %q",
-			revB.RevisionID, active.RevisionID)
-	}
-	if active.RevisionID == revA.RevisionID {
-		t.Fatalf("writer A's revision survived — the cross-process lost update no longer reproduces")
-	}
-	// Both writes carried the SAME expected base, and both were accepted. That
-	// is the definition of the guarantee being absent across processes.
-	if revA.ParentRevisionID != base.RevisionID || revB.ParentRevisionID != base.RevisionID {
-		t.Fatalf("both writers should have descended from the same base %q: A=%q B=%q",
-			base.RevisionID, revA.ParentRevisionID, revB.ParentRevisionID)
+	if active.RevisionID != revA.RevisionID {
+		t.Fatalf("active revision = %q, want winning writer A %q", active.RevisionID, revA.RevisionID)
 	}
 }
 
@@ -738,6 +735,135 @@ func newSaveGate(inner state.StateStore) *saveGate {
 	}
 }
 
+type saveIfFaultStore struct {
+	state.StateStore
+	saveIfErr error
+	deleteErr error
+}
+
+func (s *saveIfFaultStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
+	return s.saveIfErr
+}
+
+func (s *saveIfFaultStore) Delete(ctx context.Context, q identity.Quadruple, kind string) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	return s.StateStore.Delete(ctx, q, kind)
+}
+
+type expectationRecordingStore struct {
+	state.StateStore
+	expectationCounts []int
+}
+
+type loadFaultStore struct {
+	state.StateStore
+	err error
+}
+
+func (s *loadFaultStore) Load(context.Context, identity.Quadruple, string) (state.StateRecord, error) {
+	return state.StateRecord{}, s.err
+}
+
+func (s *expectationRecordingStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	s.expectationCounts = append(s.expectationCounts, len(expectations))
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
+func TestSetRevision_SaveIfConditionFailureRemovesCandidate(t *testing.T) {
+	ctx := context.Background()
+	base := newSharedStore(t)
+	store := &saveIfFaultStore{StateStore: base, saveIfErr: state.ErrConditionFailed}
+	reg := newRegistryOnStore(t, store)
+	q := agentQuad(condAgent)
+
+	_, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("candidate"), agentcfg.SetOptions{})
+	if !errors.Is(err, agentcfg.ErrRevisionConflict) {
+		t.Fatalf("SetRevision = %v, want ErrRevisionConflict", err)
+	}
+	revs, err := reg.ListRevisions(ctx, q, condAgent, agentcfg.ConfigScopeAgent, 0)
+	if err != nil {
+		t.Fatalf("ListRevisions: %v", err)
+	}
+	if len(revs) != 0 {
+		t.Fatalf("condition failure retained candidate revisions: %+v", revs)
+	}
+}
+
+func TestSetRevision_SaveIfConditionFailureReportsCleanupFailure(t *testing.T) {
+	ctx := context.Background()
+	base := newSharedStore(t)
+	store := &saveIfFaultStore{StateStore: base, saveIfErr: state.ErrConditionFailed, deleteErr: errors.New("delete unavailable")}
+	reg := newRegistryOnStore(t, store)
+	q := agentQuad(condAgent)
+
+	_, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("candidate"), agentcfg.SetOptions{})
+	if !errors.Is(err, agentcfg.ErrRevisionConflict) || !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("SetRevision = %v, want revision conflict with cleanup failure", err)
+	}
+}
+
+func TestSetRevision_SaveIfStorageFailureIsStateUnavailable(t *testing.T) {
+	ctx := context.Background()
+	base := newSharedStore(t)
+	store := &saveIfFaultStore{StateStore: base, saveIfErr: errors.New("conditional write unavailable")}
+	reg := newRegistryOnStore(t, store)
+	q := agentQuad(condAgent)
+
+	_, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("candidate"), agentcfg.SetOptions{})
+	if !errors.Is(err, agentcfg.ErrStateUnavailable) {
+		t.Fatalf("SetRevision = %v, want ErrStateUnavailable", err)
+	}
+}
+
+func TestSetRevision_ActiveExpectationLoadFailureIsStateUnavailable(t *testing.T) {
+	ctx := context.Background()
+	base := newSharedStore(t)
+	reg := newRegistryOnStore(t, &loadFaultStore{StateStore: base, err: errors.New("state read unavailable")})
+	q := agentQuad(condAgent)
+
+	_, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("candidate"), agentcfg.SetOptions{})
+	if !errors.Is(err, agentcfg.ErrStateUnavailable) {
+		t.Fatalf("SetRevision = %v, want ErrStateUnavailable", err)
+	}
+}
+
+func TestRollback_SaveIfConditionFailureIsRevisionConflict(t *testing.T) {
+	ctx := context.Background()
+	base := newSharedStore(t)
+	regular := newRegistryOnStore(t, base)
+	q := agentQuad(condAgent)
+	first, err := regular.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("one"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := regular.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("two"), agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	faulted := newRegistryOnStore(t, &saveIfFaultStore{StateStore: base, saveIfErr: state.ErrConditionFailed})
+	if _, err := faulted.Rollback(ctx, q, condAgent, first.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrRevisionConflict) {
+		t.Fatalf("Rollback = %v, want ErrRevisionConflict", err)
+	}
+}
+
+func TestSetRevision_UserScopeConditionsBothPointers(t *testing.T) {
+	ctx := context.Background()
+	base := newSharedStore(t)
+	store := &expectationRecordingStore{StateStore: base}
+	reg := newRegistryOnStore(t, store)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-user-conditions", UserID: "user-conditions", SessionID: "session-conditions"}}
+	if _, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("agent"), agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("agent SetRevision: %v", err)
+	}
+	if _, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeUser, condPayload("user"), agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("user SetRevision: %v", err)
+	}
+	if got, want := store.expectationCounts, []int{1, 2}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("SaveIf expectation counts = %v, want %v", got, want)
+	}
+}
+
 // arm makes the NEXT Save block until release is called.
 func (g *saveGate) arm() { g.armed <- struct{}{} }
 
@@ -752,4 +878,14 @@ func (g *saveGate) Save(ctx context.Context, r state.StateRecord) error {
 	default:
 	}
 	return g.StateStore.Save(ctx, r)
+}
+
+func (g *saveGate) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	select {
+	case <-g.armed:
+		g.suspended <- struct{}{}
+		<-g.proceed
+	default:
+	}
+	return g.StateStore.SaveIf(ctx, expectations, next)
 }

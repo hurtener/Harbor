@@ -75,6 +75,56 @@ func TestValidateRecord_Cases(t *testing.T) {
 	}
 }
 
+func TestValidateSaveIf_Cases(t *testing.T) {
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}}
+	next := state.StateRecord{ID: "01HABXXX", Identity: q, Kind: "next", Bytes: []byte("x")}
+	if err := state.ValidateSaveIf([]state.SlotExpectation{{Identity: q, Kind: next.Kind}}, next); err != nil {
+		t.Fatalf("matching expected-absence predicate: %v", err)
+	}
+	cases := []struct {
+		name         string
+		expectations []state.SlotExpectation
+		record       state.StateRecord
+	}{
+		{name: "invalid next", expectations: []state.SlotExpectation{{Identity: q, Kind: next.Kind}}, record: state.StateRecord{Identity: q, Kind: next.Kind}},
+		{name: "empty predicates", record: next},
+		{name: "incomplete expected identity", expectations: []state.SlotExpectation{{Kind: next.Kind}}, record: next},
+		{name: "empty expected kind", expectations: []state.SlotExpectation{{Identity: q}}, record: next},
+		{name: "duplicate slot", expectations: []state.SlotExpectation{{Identity: q, Kind: next.Kind}, {Identity: q, Kind: next.Kind}}, record: next},
+		{name: "next slot not conditioned", expectations: []state.SlotExpectation{{Identity: q, Kind: "other"}}, record: next},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := state.ValidateSaveIf(tc.expectations, tc.record); !errors.Is(err, state.ErrInvalidRecord) && !errors.Is(err, state.ErrIdentityRequired) {
+				t.Fatalf("ValidateSaveIf = %v, want validation sentinel", err)
+			}
+		})
+	}
+}
+
+func TestValidateListScopes_Cases(t *testing.T) {
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}}
+	validScope := state.ListScope{MaintenanceScoped: true}
+	if err := state.ValidateListKind(validScope, "prefix"); err != nil {
+		t.Fatalf("ValidateListKind valid: %v", err)
+	}
+	if err := state.ValidateListKind(state.ListScope{}, "prefix"); !errors.Is(err, state.ErrMaintenanceScopeRequired) {
+		t.Fatalf("ValidateListKind missing scope = %v", err)
+	}
+	if err := state.ValidateListKind(validScope, ""); !errors.Is(err, state.ErrInvalidRecord) {
+		t.Fatalf("ValidateListKind empty prefix = %v", err)
+	}
+	if err := state.ValidateListKindForIdentity(q, "prefix"); err != nil {
+		t.Fatalf("ValidateListKindForIdentity valid: %v", err)
+	}
+	if err := state.ValidateListKindForIdentity(identity.Quadruple{}, "prefix"); !errors.Is(err, state.ErrIdentityRequired) {
+		t.Fatalf("ValidateListKindForIdentity missing identity = %v", err)
+	}
+	if err := state.ValidateListKindForIdentity(q, ""); !errors.Is(err, state.ErrInvalidRecord) {
+		t.Fatalf("ValidateListKindForIdentity empty prefix = %v", err)
+	}
+}
+
 func TestRegister_DuplicatePanics(t *testing.T) {
 	defer func() {
 		r := recover()

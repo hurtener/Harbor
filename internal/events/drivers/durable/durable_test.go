@@ -322,6 +322,9 @@ func TestDurable_NoStateStore_DegradesLoudly(t *testing.T) {
 type failingStore struct{ saveErr error }
 
 func (f *failingStore) Save(context.Context, state.StateRecord) error { return f.saveErr }
+func (f *failingStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
+	return f.saveErr
+}
 func (f *failingStore) Load(context.Context, identity.Quadruple, string) (state.StateRecord, error) {
 	return state.StateRecord{}, state.ErrNotFound
 }

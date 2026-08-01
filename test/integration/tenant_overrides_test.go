@@ -252,6 +252,10 @@ func (f failOnLoadState) Load(context.Context, identity.Quadruple, string) (stat
 	return state.StateRecord{}, errors.New("simulated state read failure")
 }
 
+func (f failOnLoadState) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	return f.StateStore.SaveIf(ctx, expectations, next)
+}
+
 // TestE2E_TenantOverrides_StateFailure_FailsLoud proves a resolution-time
 // state read error surfaces rather than silently dropping the override
 // (CLAUDE.md §13). The run loop turns this into a failed run.

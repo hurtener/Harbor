@@ -49,6 +49,8 @@ type Factory func() (state.StateStore, func())
 //   - Save_Idempotent_SameIDDifferentBytes
 //   - Save_Idempotent_SameIDDifferentKey
 //   - Save_OverwritesSlotWithDifferentEventID
+//   - SaveIf_MatchingStaleAbsentAndMultiSlot
+//   - SaveIf_ConcurrentOneWinner
 //   - Load_NotFound
 //   - LoadByEventID_RoundTrip
 //   - LoadByEventID_NotFound
@@ -75,6 +77,85 @@ type Factory func() (state.StateStore, func())
 //   - GoroutineLeak_AfterClose
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
+
+	t.Run("SaveIf_MatchingStaleAbsentAndMultiSlot", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		first := state.StateRecord{ID: "01HABXXX00000000CS", Identity: tripleA(), Kind: "conditional.a", Bytes: []byte("a")}
+		if err := s.SaveIf(ctx, []state.SlotExpectation{{Identity: first.Identity, Kind: first.Kind}}, first); err != nil {
+			t.Fatalf("SaveIf expected absent: %v", err)
+		}
+		if err := s.SaveIf(ctx, []state.SlotExpectation{{Identity: first.Identity, Kind: first.Kind}}, state.StateRecord{ID: "01HABXXX00000000CT", Identity: first.Identity, Kind: first.Kind, Bytes: []byte("b")}); !errors.Is(err, state.ErrConditionFailed) {
+			t.Fatalf("SaveIf stale absence = %v, want ErrConditionFailed", err)
+		}
+		second := state.StateRecord{ID: "01HABXXX00000000CU", Identity: first.Identity, Kind: first.Kind, Bytes: []byte("b")}
+		other := state.StateRecord{ID: "01HABXXX00000000CV", Identity: tripleA(), Kind: "conditional.b", Bytes: []byte("other")}
+		if err := s.Save(ctx, other); err != nil {
+			t.Fatalf("seed second condition: %v", err)
+		}
+		if err := s.SaveIf(ctx, []state.SlotExpectation{{Identity: first.Identity, Kind: first.Kind, ExpectedEventID: first.ID}, {Identity: other.Identity, Kind: other.Kind, ExpectedEventID: other.ID}}, second); err != nil {
+			t.Fatalf("SaveIf matching multi-slot: %v", err)
+		}
+		got, err := s.Load(ctx, first.Identity, first.Kind)
+		if err != nil || got.ID != second.ID {
+			t.Fatalf("Load after SaveIf = %+v, %v; want event %q", got, err, second.ID)
+		}
+	})
+
+	t.Run("SaveIf_ConcurrentOneWinner", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		base := state.StateRecord{ID: "01HABXXX00000000CW", Identity: tripleA(), Kind: "conditional.race", Bytes: []byte("base")}
+		if err := s.Save(ctx, base); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		const workers = 128
+		var winners atomic.Int64
+		errCh := make(chan error, workers)
+		var wg sync.WaitGroup
+		for i := range workers {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				next := state.StateRecord{ID: state.EventID(fmt.Sprintf("01HABXXX%018d", i+100)), Identity: base.Identity, Kind: base.Kind, Bytes: []byte(fmt.Sprintf("winner-%d", i))}
+				err := s.SaveIf(ctx, []state.SlotExpectation{{Identity: base.Identity, Kind: base.Kind, ExpectedEventID: base.ID}}, next)
+				if err == nil {
+					winners.Add(1)
+					return
+				}
+				if !errors.Is(err, state.ErrConditionFailed) {
+					errCh <- err
+				}
+			}(i)
+		}
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			t.Fatalf("SaveIf race returned non-condition error: %v", err)
+		}
+		if got := winners.Load(); got != 1 {
+			t.Fatalf("SaveIf winners = %d, want exactly 1", got)
+		}
+	})
+
+	t.Run("SaveIf_CancelledAndClosedFailLoud", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		next := state.StateRecord{ID: "01HABXXX00000000CX", Identity: tripleA(), Kind: "conditional.cancel", Bytes: []byte("x")}
+		if err := s.SaveIf(ctx, []state.SlotExpectation{{Identity: next.Identity, Kind: next.Kind}}, next); !errors.Is(err, context.Canceled) {
+			t.Fatalf("SaveIf cancelled = %v, want context.Canceled", err)
+		}
+		if err := s.Close(context.Background()); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if err := s.SaveIf(context.Background(), []state.SlotExpectation{{Identity: next.Identity, Kind: next.Kind}}, next); !errors.Is(err, state.ErrStoreClosed) {
+			t.Fatalf("SaveIf after Close = %v, want ErrStoreClosed", err)
+		}
+	})
 
 	t.Run("Save_Load_RoundTrip", func(t *testing.T) {
 		s, cleanup := factory()

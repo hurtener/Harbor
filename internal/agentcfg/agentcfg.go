@@ -138,29 +138,12 @@ type SetOptions struct {
 	// conflict on the restore path. The guarded quantity is a value, so
 	// the token is a value.
 	//
-	// # The bound on the guarantee — read this before relying on it
-	//
-	// The comparison is atomic against every other spine writer IN THIS
-	// PROCESS, via the agent-config service's per-owner striped write
-	// lock, which is held across each door's whole read-modify-write.
-	//
-	// It is NOT atomic across Runtime processes sharing one StateStore.
-	// The StateStore has no compare-and-swap primitive — its own
-	// interface godoc says it does not enforce CAS — and the active
-	// pointer is written with a fresh event id on every save, so the slot
-	// is overwritten unconditionally. Two Runtime processes sharing one
-	// Postgres or SQLite store CAN STILL LOSE AN UPDATE, and this option
-	// does not claim otherwise. Closing that gap needs a conditional-write
-	// primitive on the StateStore interface across the persistence triad;
-	// it is a separate change and is not pretended here.
-	//
-	// What the bounded guarantee is still worth: the window it closes is
-	// the READ-TO-WRITE window — seconds to minutes for a human editing a
-	// config in the Console, and however long an agent takes to compose
-	// one. The window it cannot close cross-process is the driver's own
-	// read-modify-write, on the order of microseconds. Single-process the
-	// guard is exact; multi-process it is a large reduction in loss
-	// probability and not an elimination.
+	// The Registry rechecks the active-pointer EventID through the mandatory
+	// StateStore.SaveIf primitive when it publishes the new pointer. The
+	// comparison is therefore exact across independent Runtime processes that
+	// share any shipped StateStore driver, not merely the service's local write
+	// lock. The lock remains a contention optimisation; the durable predicate is
+	// the authority. A mismatched generation returns ErrRevisionConflict.
 	//
 	// # It constrains only the writer that supplies it
 	//

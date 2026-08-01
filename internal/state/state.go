@@ -68,8 +68,8 @@ func NewEventID() EventID {
 //
 // `Version` is a hint for optimistic-concurrency at the typed-wrapper
 // layer (e.g. `SessionRegistry` MAY refuse to apply an update whose
-// Version is stale). The StateStore itself does NOT enforce CAS — it
-// stores and returns the int.
+// Version is stale). It is not a StateStore compare-and-swap token:
+// callers that need durable compare-and-swap use SaveIf with EventIDs.
 //
 // `UpdatedAt` is set by the store at `Save` time when zero; callers
 // MAY override (useful for tests with controllable clocks).
@@ -80,6 +80,17 @@ type StateRecord struct {
 	Version   int
 	Bytes     []byte
 	UpdatedAt time.Time
+}
+
+// SlotExpectation is one exact generation predicate for SaveIf. The complete
+// identity plus Kind names a single StateStore slot. ExpectedEventID == ""
+// means the slot must be absent; any other value must equal the current
+// record's EventID exactly. Event IDs, rather than Version, are used because
+// Save replaces a slot's EventID on every successful generation.
+type SlotExpectation struct {
+	Identity        identity.Quadruple
+	Kind            string
+	ExpectedEventID EventID
 }
 
 // StateStore is Harbor's persistence interface — single mandatory
@@ -100,6 +111,13 @@ type StateStore interface {
 	// the active one for that slot; the previous EventID is no
 	// longer LoadByEventID-resolvable).
 	Save(ctx context.Context, r StateRecord) error
+
+	// SaveIf atomically verifies every expectation and persists next. The
+	// expectation set is non-empty, has no duplicate slots, and must include
+	// next's slot. A mismatch returns ErrConditionFailed and leaves every slot
+	// unchanged. Save's EventID idempotency contract applies to next only after
+	// all predicates match; it never bypasses a failed predicate.
+	SaveIf(ctx context.Context, expectations []SlotExpectation, next StateRecord) error
 
 	// Load returns the record at (id, kind). Returns ErrNotFound
 	// (wrapped) when no record exists for that key.
@@ -193,6 +211,9 @@ var (
 	// but different Bytes (or routed to a different key). Tells the
 	// caller a retry policy bug exists upstream.
 	ErrIdempotencyConflict = errors.New("state: idempotency conflict")
+	// ErrConditionFailed — SaveIf observed a slot whose EventID did not match
+	// its exact expectation. No SaveIf write was applied.
+	ErrConditionFailed = errors.New("state: condition failed")
 	// ErrIdentityRequired — Save / Load / Delete called with a
 	// Quadruple missing one of (tenant, user, session). Empty RunID
 	// is allowed for session-scoped state.
@@ -232,6 +253,46 @@ func ValidateRecord(r StateRecord) error {
 		return ErrInvalidRecord
 	}
 	if r.Kind == "" {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
+// ValidateSaveIf validates the common conditional-save invariants before a
+// driver touches storage. Every expected slot is identity scoped, unique, and
+// the next slot is one of the predicates so SaveIf cannot become an
+// unconstrained conditional write.
+func ValidateSaveIf(expectations []SlotExpectation, next StateRecord) error {
+	if err := ValidateRecord(next); err != nil {
+		return err
+	}
+	if len(expectations) == 0 {
+		return ErrInvalidRecord
+	}
+	type slot struct {
+		q    identity.Quadruple
+		kind string
+	}
+	seen := make(map[slot]struct{}, len(expectations))
+	nextSlot := slot{q: next.Identity, kind: next.Kind}
+	foundNext := false
+	for _, expectation := range expectations {
+		if err := ValidateIdentity(expectation.Identity); err != nil {
+			return err
+		}
+		if expectation.Kind == "" {
+			return ErrInvalidRecord
+		}
+		s := slot{q: expectation.Identity, kind: expectation.Kind}
+		if _, ok := seen[s]; ok {
+			return ErrInvalidRecord
+		}
+		seen[s] = struct{}{}
+		if s == nextSlot {
+			foundNext = true
+		}
+	}
+	if !foundNext {
 		return ErrInvalidRecord
 	}
 	return nil

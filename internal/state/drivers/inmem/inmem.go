@@ -138,6 +138,64 @@ func (d *driver) Save(_ context.Context, r state.StateRecord) error {
 	return nil
 }
 
+// SaveIf implements StateStore's multi-slot atomic compare-and-save. The
+// reference driver's one mutex guards both the predicates and the write.
+func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if d.closed.Load() {
+		return state.ErrStoreClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := state.ValidateSaveIf(expectations, next); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, expectation := range expectations {
+		rec, ok := d.records[keyFor(expectation.Identity, expectation.Kind)]
+		if expectation.ExpectedEventID == "" {
+			if ok {
+				return fmt.Errorf("%w: slot is present", state.ErrConditionFailed)
+			}
+			continue
+		}
+		if !ok || rec.ID != expectation.ExpectedEventID {
+			return fmt.Errorf("%w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+		}
+	}
+	return d.saveLocked(next)
+}
+
+// saveLocked implements Save after the caller has acquired d.mu.
+func (d *driver) saveLocked(r state.StateRecord) error {
+	key := keyFor(r.Identity, r.Kind)
+	if prevKey, seen := d.eventIdx[r.ID]; seen {
+		prev := d.records[prevKey]
+		if prevKey != key {
+			return fmt.Errorf("%w: EventID %q already routes to a different (Quadruple, Kind)", state.ErrIdempotencyConflict, r.ID)
+		}
+		if !bytes.Equal(prev.Bytes, r.Bytes) || prev.Version != r.Version {
+			return fmt.Errorf("%w: EventID %q already saved with different content", state.ErrIdempotencyConflict, r.ID)
+		}
+		return nil
+	}
+	if existing, ok := d.records[key]; ok && existing.ID != r.ID {
+		delete(d.eventIdx, existing.ID)
+	}
+	stored := r
+	stored.Bytes = cloneBytes(r.Bytes)
+	if stored.UpdatedAt.IsZero() {
+		stored.UpdatedAt = time.Now()
+	}
+	d.records[key] = stored
+	d.eventIdx[r.ID] = key
+	return nil
+}
+
 // Load implements state.StateStore.
 func (d *driver) Load(_ context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
 	if d.closed.Load() {

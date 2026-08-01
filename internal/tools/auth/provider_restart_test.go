@@ -151,6 +151,10 @@ type pendingDeleteFailOnceStateStore struct {
 	failed atomic.Bool
 }
 
+func (s *pendingDeleteFailOnceStateStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
 func (s *pendingDeleteFailOnceStateStore) Delete(ctx context.Context, id identity.Quadruple, kind string) error {
 	isPending := strings.HasPrefix(kind, flowKindPrefix) &&
 		!strings.HasPrefix(kind, flowClaimKindPrefix) &&

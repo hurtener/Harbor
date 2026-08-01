@@ -22,6 +22,10 @@ type failingSaveStore struct {
 
 func (f failingSaveStore) Save(context.Context, state.StateRecord) error { return f.err }
 
+func (f failingSaveStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
+	return f.err
+}
+
 // TestDurable_PublishCtxCancelled asserts a cancelled context fails the
 // publish loudly (honours ctx.Err() up front).
 func TestDurable_PublishCtxCancelled(t *testing.T) {

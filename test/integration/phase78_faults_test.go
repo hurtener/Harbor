@@ -96,6 +96,13 @@ func (f *faultyStateStore) Save(ctx context.Context, r state.StateRecord) error 
 	return f.inner.Save(ctx, r)
 }
 
+func (f *faultyStateStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if f.faulted() {
+		return errStateDisconnected
+	}
+	return f.inner.SaveIf(ctx, expectations, next)
+}
+
 func (f *faultyStateStore) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
 	if f.faulted() {
 		return state.StateRecord{}, errStateDisconnected

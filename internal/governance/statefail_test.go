@@ -29,6 +29,10 @@ func (failingStateStore) Save(_ context.Context, _ state.StateRecord) error {
 	return errStateProbe
 }
 
+func (failingStateStore) SaveIf(_ context.Context, _ []state.SlotExpectation, _ state.StateRecord) error {
+	return errStateProbe
+}
+
 func (failingStateStore) Load(_ context.Context, _ identity.Quadruple, _ string) (state.StateRecord, error) {
 	return state.StateRecord{}, errStateProbe
 }

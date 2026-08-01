@@ -34,6 +34,13 @@ func (f *failingStateStore) Save(ctx context.Context, rec state.StateRecord) err
 	return f.inner.Save(ctx, rec)
 }
 
+func (f *failingStateStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, rec state.StateRecord) error {
+	if f.saveErr != nil && (f.failOnKind == "" || rec.Kind == f.failOnKind) {
+		return f.saveErr
+	}
+	return f.inner.SaveIf(ctx, expectations, rec)
+}
+
 func (f *failingStateStore) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
 	return f.inner.Load(ctx, id, kind)
 }

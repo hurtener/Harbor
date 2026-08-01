@@ -343,6 +343,9 @@ func (e errSentinel) Error() string { return string(e) }
 type listFailingStore struct{ listErr error }
 
 func (s *listFailingStore) Save(context.Context, state.StateRecord) error { return nil }
+func (s *listFailingStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
+	return nil
+}
 func (s *listFailingStore) Load(context.Context, identity.Quadruple, string) (state.StateRecord, error) {
 	return state.StateRecord{}, state.ErrNotFound
 }
@@ -368,6 +371,9 @@ func (s *listFailingStore) Close(context.Context) error { return nil }
 type scopeRecordingStore struct{ sawMaintenanceScope bool }
 
 func (s *scopeRecordingStore) Save(context.Context, state.StateRecord) error { return nil }
+func (s *scopeRecordingStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
+	return nil
+}
 func (s *scopeRecordingStore) Load(context.Context, identity.Quadruple, string) (state.StateRecord, error) {
 	return state.StateRecord{}, state.ErrNotFound
 }

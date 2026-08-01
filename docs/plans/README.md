@@ -373,7 +373,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |230 | Scoped state and audit convergence (D-392): mandatory identity-and-kind StateStore enumeration, four-index widening-audit parity, and retry-safe stale-erasure-ledger convergence (#396, #612, #462) | state drivers + agentcfg + search + sessions | §6.9, §6.11, §6.13, §9 | 130, 205, 218, 221 | measured floors | Shipped (v1.25) |
 |231 | Deterministic reliability closure (D-393): explicit barriers and liveness signals replace scheduler counters, redundant resume, raw cell-diff string oracles, legacy function-key injection, transient-toast waits, and same-scope stale inspections closing current action modals | auth + TUI app + dispatch tests + integration TUI/OAuth | §5.4, §6.4 | 223, 229 | measured floors | Shipped (v1.25) |
 |232 | Signed agent reach (D-397): strict bounded `agent_reach` bearer authority enforced by one effective-agent gate on start, all session/user agent-config data-plane methods, and explicit `tools.describe` agent projection; default start is checked and config existence never grants authority | protocol auth/control/stream + runtime serve + token/devstack | §5.5, §6.16 | 151, 205, 221, 228 | §4.3: v1.25 package-baseline non-regression + 100% new authority paths | Shipped (v1.26) |
-|233 | StateStore conditional save (D-398): mandatory atomic multi-slot `SaveIf` plus deterministic tenant-bounded paged maintenance scan across inmem/SQLite/Postgres, with exact event-ID/absence expectations and agent/user config consumers closing D-366's cross-process residual | state triad + conformance + agentcfg statestore | §6.11, §6.16, §9 | 130, 221, 230 | 85–90% | Pending (v1.26) |
+|233 | StateStore conditional save (D-398): mandatory atomic multi-slot `SaveIf` plus deterministic tenant-bounded paged maintenance scan across inmem/SQLite/Postgres, with exact event-ID/absence expectations and agent/user config consumers closing D-366's cross-process residual | state triad + conformance + agentcfg statestore | §6.11, §6.16, §9 | 130, 221, 230 | state 96.3%, inmem 88.0%, SQLite 87.1%; agentcfg 83.8% proposed §4.3 deviation | Pending (v1.26) |
 |233a | Durable session overlay and personal-skill correction (D-400): four-slot lifecycle/erasure/record CAS, agent-owned StateStore personal bodies, admitted-tenant verified cutover, composite resolver, canonical 409 pending error, and ledgered exact legacy sweep | sessionoverlay + skills + sessions + agentcfg runtime + Protocol | §6.7, §6.9, §6.11, §6.13, §6.16 | 130, 221, 230, 233 | 85–90% | Pending (v1.26) |
 |233b | Signed OAuth MCP capability registration (HA-50, D-401): production-safe boot-authorized closed descriptor registration with durable tenant-scoped JTI and paired-removal recovery, pair-owned provider/catalog-only dispatch, a committed agent activation fence, and canonical HTTPS URL bytes/sink | agentcfg + Protocol + tools/auth + MCP serve + config | §4, §5.5, §6.4, §6.11, §6.16 | 233 | 85–90% | Pending (v1.26) |
 |234 | Agent-config retirement (D-399/D-400/D-401): terminal CAS tombstone, immutable history, exact pre-retirement hash and operation identity, deterministic paged owner-scoped cleanup after tombstone, four-slot session-write freeze, signed OAuth pair cleanup, and explicit/default new-run refusal; `agents.deregister` remains fleet-only | agentcfg + runtime projection/serve + Protocol/Console lockstep | §5.5, §6.11, §6.13, §6.16 | 232, 233, 233a, 233b | 85–90% | Pending (v1.26) |
@@ -410,6 +410,20 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 - **Ordering:** 233a and 233b are independent after 233; both gate 234. Phase
   235 gates release completion after 232, 233, 233a, 233b, and 234.
 - **Decision:** D-401. **Status:** Pending (v1.26).
+
+### 233 — StateStore conditional save (D-398)
+
+**Proposed §4.3 deviation for draft review.** Direct package coverage meets the stated
+floor for `internal/state` (96.3%), in-memory (88.0%), and SQLite (87.1%).
+`internal/agentcfg/drivers/statestore` is 83.8%, below its 90% target because
+53 uncovered statements are pre-existing error/list/event-emission paths
+outside conditional save. This phase adds focused evidence for the changed
+surface instead: `SetRevision` 95.7%, `activeExpectations` 88.9%,
+`slotExpectation` 100.0%, and `saveActiveIf` 88.9%, including conflict,
+candidate cleanup, cleanup failure, storage failure, expectation-read failure,
+rollback, and the user two-slot predicate. Postgres coverage remains CI-only:
+the `state-postgres` Postgres-16 job supplies `HARBOR_PG_DSN` and executes the
+real two-client race under `-race`.
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 
