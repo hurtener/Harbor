@@ -1361,7 +1361,7 @@ Additions to this set are RFC PRs.
 
 **Subscription (events)** — the typed handle returned by `EventBus.Subscribe`. Owns one bounded buffer per subscriber, drops the oldest event on saturation (emitting `bus.dropped` once per `DropWindow` with the dropped sequence range), and is reaped after `IdleTimeout` of un-drained backlog when the buffer is non-empty (a quiet bus does not trigger reaping; the reaper observes saturation, not silence). `Cancel()` is idempotent. RFC §6.13, brief 06 §4.
 
-**StateRecord** — the unit of persistence on `StateStore`. Carries `(EventID, Quadruple, Kind, Version, Bytes, UpdatedAt)`. `Bytes` is opaque to the store — callers serialize their domain types and run them through audit redaction upstream of `Save`. `Version` is a hint for typed wrappers' optimistic-concurrency checks; the store does not enforce CAS. RFC §6.11, D-027.
+**StateRecord** — the unit of persistence on `StateStore`. Carries `(EventID, Quadruple, Kind, Version, Bytes, UpdatedAt)`. `Bytes` is opaque to the store — callers serialize their domain types and run them through audit redaction upstream of `Save`. `Version` remains only a typed-wrapper hint and is not the store's CAS token; `SaveIf` enforces store-level conditional writes by exact slot `EventID`. RFC §6.11, D-027, D-398.
 
 **Agent reach** — the bounded set of agent registration IDs carried as signed bearer authority in the `agent_reach` claim. It authorizes an already-verified caller to address those runtime entities on agent-addressed data-plane methods; it is not an isolation component, storage filter, or proof that an agent exists. Missing/empty reach grants none; malformed reach rejects authentication. Phase 232, D-397.
 
