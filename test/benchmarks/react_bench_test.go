@@ -10,6 +10,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // benchScriptedClient is a minimal, allocation-free llm.LLMClient for
@@ -46,6 +47,22 @@ func BenchmarkReActPlanner_NextStep(b *testing.B) {
 		},
 	}
 	p := react.New(client)
+	// Build the same catalog/view seam a run receives. The model can only
+	// return a declared provider-visible name; keeping this setup outside the
+	// timed loop preserves the benchmark's focus on Planner.Next.
+	catalog := tools.NewCatalog()
+	if err := catalog.Register(tools.ToolDescriptor{
+		Tool: tools.Tool{
+			Name:        "search_docs",
+			Description: "benchmark search fixture",
+			Loading:     tools.LoadingAlways,
+		},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{}, nil
+		},
+	}); err != nil {
+		b.Fatalf("register benchmark tool: %v", err)
+	}
 
 	// Documented dummy identity quadruple — no secrets (CLAUDE.md §13).
 	q := identity.Quadruple{
@@ -59,6 +76,7 @@ func BenchmarkReActPlanner_NextStep(b *testing.B) {
 	rc := planner.RunContext{
 		Quadruple: q,
 		Goal:      "answer the benchmark query",
+		Catalog:   tools.NewPlannerView(catalog, tools.CatalogFilter{}),
 		Emit:      func(events.Event) {},
 	}
 

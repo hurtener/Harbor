@@ -687,10 +687,10 @@ func Run(t *testing.T, factory Factory) {
 			targets[i] = target
 			seeds := []state.StateRecord{
 				{ID: state.EventID(fmt.Sprintf("scoped-target-%03d", i)), Identity: target, Kind: kindPrefix + "target", Bytes: []byte(fmt.Sprintf("target-%03d", i))},
-				{ID: state.EventID(fmt.Sprintf("scoped-tenant-decoy-%03d", i)), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: fmt.Sprintf("decoy-tenant-%03d", i), UserID: target.UserID, SessionID: target.SessionID}, RunID: target.RunID}, Kind: kindPrefix + "tenant-decoy"},
-				{ID: state.EventID(fmt.Sprintf("scoped-user-decoy-%03d", i)), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: target.TenantID, UserID: fmt.Sprintf("decoy-user-%03d", i), SessionID: target.SessionID}, RunID: target.RunID}, Kind: kindPrefix + "user-decoy"},
-				{ID: state.EventID(fmt.Sprintf("scoped-session-decoy-%03d", i)), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: target.TenantID, UserID: target.UserID, SessionID: fmt.Sprintf("decoy-session-%03d", i)}, RunID: target.RunID}, Kind: kindPrefix + "session-decoy"},
-				{ID: state.EventID(fmt.Sprintf("scoped-run-decoy-%03d", i)), Identity: identity.Quadruple{Identity: target.Identity, RunID: fmt.Sprintf("decoy-run-%03d", i)}, Kind: kindPrefix + "run-decoy"},
+				{ID: state.EventID(fmt.Sprintf("scoped-tenant-decoy-%03d", i)), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: fmt.Sprintf("decoy-tenant-%03d", i), UserID: target.UserID, SessionID: target.SessionID}, RunID: target.RunID}, Kind: kindPrefix + "tenant-decoy", Bytes: []byte("tenant-decoy")},
+				{ID: state.EventID(fmt.Sprintf("scoped-user-decoy-%03d", i)), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: target.TenantID, UserID: fmt.Sprintf("decoy-user-%03d", i), SessionID: target.SessionID}, RunID: target.RunID}, Kind: kindPrefix + "user-decoy", Bytes: []byte("user-decoy")},
+				{ID: state.EventID(fmt.Sprintf("scoped-session-decoy-%03d", i)), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: target.TenantID, UserID: target.UserID, SessionID: fmt.Sprintf("decoy-session-%03d", i)}, RunID: target.RunID}, Kind: kindPrefix + "session-decoy", Bytes: []byte("session-decoy")},
+				{ID: state.EventID(fmt.Sprintf("scoped-run-decoy-%03d", i)), Identity: identity.Quadruple{Identity: target.Identity, RunID: fmt.Sprintf("decoy-run-%03d", i)}, Kind: kindPrefix + "run-decoy", Bytes: []byte("run-decoy")},
 			}
 			for _, rec := range seeds {
 				if err := s.Save(ctx, rec); err != nil {
