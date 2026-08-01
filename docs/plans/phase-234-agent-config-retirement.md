@@ -32,7 +32,7 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 ## Goals
 
 - Install a terminal lifecycle tombstone by exact StateStore compare-and-swap.
-- Freeze every agent-, user-, and session-tier config mutation after retirement.
+- Freeze every agent- and user-tier durable mutation after retirement and make every session overlay inaccessible, compensating a local write when retirement wins concurrently.
 - Deny explicit and defaulted new-run selection while preserving already-acquired run snapshots.
 - Resume a fixed, idempotent, owner-scoped cleanup manifest for the same operation only.
 
@@ -41,16 +41,18 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 - No unretire, agent-ID reuse, broad credential sweep, or deletion of immutable revision history.
 - No change to `agents.deregister`; fleet registration and config lifecycle stay orthogonal.
 - No teardown of boot/global resources or live-only resources lacking durable agent ownership.
+- No `agent_reach` requirement on the admin control-plane retirement verb; reach remains data-plane authority.
 
 ## Acceptance criteria
 
 - [ ] `agent_config.retire` requires admin scope, exact identity, non-empty bounded operation ID, and expected active content hash (or `ExpectNoActiveRevision`).
 - [ ] The agent active slot becomes a backward-compatible lifecycle envelope; a tombstone contains prior revision ID/hash, operation/time, fixed cleanup manifest, and per-step progress.
 - [ ] Initial retirement and every progress update use `SaveIf`; a stale writer, rollback, or user-tier writer cannot resurrect or mutate the tombstoned agent.
+- [ ] Each process-local session mutator reads the lifecycle before and after its local write, compensates the exact write when retirement wins between them, and every later overlay read/write refuses the tombstone; an already-completed remote-process overlay is inaccessible rather than falsely claimed erased.
 - [ ] Same-operation retries resume; different operation IDs return a typed conflict; landed-but-unacknowledged writes converge by exact reread.
 - [ ] `Active` and every mutation return `ErrAgentRetired`; historical Get/List/Diff remain available to authorized admin/audit callers.
 - [ ] Both explicit and omitted/default `control.start` fail before new work; a run whose immutable start snapshot predates the tombstone may finish unchanged.
-- [ ] Cleanup detaches only manifest-listed runtime-added MCP connections and uninstalls only durably owner-scoped providers; it removes session overlays through identity-scoped enumeration, retains user and agent revision history, and never touches boot/global or unattributable credentials.
+- [ ] Cleanup detaches only manifest-listed runtime-added MCP connections and uninstalls only durably owner-scoped providers; it removes local session overlays through identity-scoped enumeration, retains user and agent revision history, and never touches boot/global, remote-process memory, or unattributable credentials.
 - [ ] Tombstone and progress survive restart on SQLite/Postgres; fault injection after every side effect/progress boundary converges on same-operation retry.
 - [ ] `agents.deregister` neither installs nor deletes a tombstone, and retirement does not remove the fleet record.
 
@@ -76,7 +78,7 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 - **Unit:** lifecycle decoding, CAS install, operation replay/conflict, freeze matrix, resolver/default behavior, manifest construction, and typed Protocol mapping.
 - **Integration:** real StateStore registry + runtime projection + mux, restart durability, explicit/default start refusal, history preservation, and `agents.deregister` independence.
 - **Conformance:** all agentcfg drivers implement terminal lifecycle and same-operation replay; the 17 spine writes plus five session writes are held in a closed refusal census.
-- **Concurrency / leak:** stale writer/rollback/user writer versus retirement, two retirees, N≥100 reads/retries, cancellation, restart, and goroutine baseline under `-race`.
+- **Concurrency / leak:** stale writer/rollback/user/session-overlay writer versus retirement, including after-write/before-recheck compensation; two retirees; N≥100 reads/retries; cancellation, restart, and goroutine baseline under `-race`.
 
 ## Smoke script additions
 

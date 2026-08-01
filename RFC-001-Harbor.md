@@ -1082,15 +1082,40 @@ type StateRecord struct {
     UpdatedAt  time.Time
 }
 
+// SlotExpectation compares the current record in one identity-and-kind slot.
+// An empty EventID requires the slot to be absent.
+type SlotExpectation struct {
+    Identity identity.Quadruple
+    Kind     string
+    EventID  EventID
+}
+
 type StateStore interface {
     Save(ctx context.Context, r StateRecord) error                                    // idempotent on EventID; ErrIdempotencyConflict on same-ID-different-bytes
+    SaveIf(ctx context.Context, expectations []SlotExpectation, next StateRecord) error // atomically compare every slot, then save one record; ErrConditionFailed on mismatch
     Load(ctx context.Context, id identity.Quadruple, kind string) (StateRecord, error)
     LoadByEventID(ctx context.Context, eventID EventID) (StateRecord, error)
     Delete(ctx context.Context, id identity.Quadruple, kind string) error
+    DeleteScope(ctx context.Context, id identity.Identity) (int, error)
     ListKind(ctx context.Context, scope ListScope, kindPrefix string) ([]StateRecord, error) // the ONE maintenance scan; explicit elevation claim (D-207)
+    ListKindForIdentity(ctx context.Context, id identity.Quadruple, kindPrefix string) ([]StateRecord, error)
     Close(ctx context.Context) error
 }
 ```
+
+**Conditional save (D-398).** `SaveIf` is mandatory on the full driver triad,
+not an optional durable-driver capability. Its expectation list is non-empty,
+unique by `(Identity, Kind)`, and must include the target slot of `next`
+exactly once. Every expectation compares the slot's exact current `EventID`;
+an empty expected ID means the slot must be absent. The driver atomically
+checks every condition and saves the single `next` record, or returns
+`ErrConditionFailed` with no partial write. Ordinary `Save` idempotency on
+`next.ID` is evaluated only after the conditions match and cannot turn a stale
+condition into success. In-memory holds one mutex across compare/write;
+SQLite uses one write transaction; Postgres locks/predicates both present and
+absent slots so two independent clients have one winner. The shared StateStore
+conformance suite pins matching, stale, absent, multi-slot, identity,
+cancellation, close, and concurrent-reuse behavior on every driver.
 
 **Settled (revised — D-027):**
 
@@ -1344,9 +1369,13 @@ durable progress of each cleanup action. Immutable revision history is never
 rewritten or deleted. The same operation ID resumes incomplete cleanup after a
 timeout, lost acknowledgement, or process restart; a different operation ID
 conflicts and cannot replace the replay identity. All agent- and user-tier
-config mutations, rollbacks, and session overlays fail closed once the
-tombstone wins. Re-creation mints a fresh `agent_id`; there is no implicit
-unretire.
+config mutations and rollbacks fail closed once the tombstone wins.
+Process-local session-overlay mutators read the lifecycle both before and
+after their local write: if retirement wins between those reads, the exact
+local mutation is compensated before the call returns. An overlay write that
+completed before retirement may remain resident in another process, but the
+tombstone makes it inaccessible on every later read and write. Re-creation
+mints a fresh `agent_id`; there is no implicit unretire.
 
 Retirement makes the agent unresolvable for every new run, including explicit
 and omitted selection of a configured default. A start that acquired its
@@ -1356,7 +1385,10 @@ whose durable owner is the retired `(tenant, agent_id)` and whose identity is
 captured in the tombstone manifest. Boot-declared/global resources and
 identity-scoped credentials without an agent ownership record are not swept.
 User-tier revisions remain immutable history; inaccessible session overlays
-are removed only through identity-scoped enumeration. `agents.deregister`
+are removed from the retiring process only through identity-scoped
+enumeration. `agent_config.retire` is an admin control-plane lifecycle verb,
+not a data-plane bearer operation, so admin scope is its authority and it does
+not consume `agent_reach`. `agents.deregister`
 continues to remove only the fleet registry record and neither creates nor
 removes the agent-config tombstone.
 

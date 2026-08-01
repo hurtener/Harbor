@@ -35,6 +35,7 @@ Add one mandatory multi-slot conditional-save primitive to the StateStore interf
 
 - No general SQL transaction callback, distributed lock service, or optional driver capability.
 - No mutation of applied `0001` migrations.
+- No attempt to include process-local session overlays in a StateStore transaction; Phase 234 fences those mutators with before/after lifecycle reads and exact local compensation.
 
 ## Acceptance criteria
 

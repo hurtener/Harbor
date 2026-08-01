@@ -48,6 +48,7 @@ Compose signed reach, triad-wide conditional save, and agent-config retirement t
 - [ ] Generated Protocol docs/Console manifest, operator skills, config examples, glossary, plans, and CHANGELOG are current.
 - [ ] A separate read-only reviewer audits phases 232–235 against RFC/plans/code/tests; the coordinator fixes and re-verifies every release-blocking finding.
 - [ ] Full preflight, release dry run, Linux release build, and GitHub checks pass before tagging `v1.26.0` from `main`.
+- [ ] After the tag publishes, a separate `chore(release)` commit bumps `cmd/harbor/scaffold.FallbackModuleVersion` to `v1.26.0`, regenerates scaffold goldens, and passes its targeted/cloud validation.
 
 ## Files added or changed
 
