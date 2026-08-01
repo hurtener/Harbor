@@ -6,6 +6,14 @@ Closes the accepted test-flake backlog without retries, longer sleeps, or weaker
 
 The final corrective tree passed 100 race-instrumented repetitions of the full authenticated PTY workflow in a two-CPU Go 1.26 Linux container (`ok`, 381.857s). Its predecessor had independently passed 100 repetitions (`ok`, 392.617s), after a 20-repetition constrained calibration and 10 local race repetitions; the repeated final-tree gate confirms the added rename-result barrier rather than relying on that earlier evidence.
 
+Release-assembly confirmation on 2026-08-01 reran every remaining named
+regression with `-race -count=100`: auth refresh singleflight, in-process
+tool concurrent reuse, Protocol-client cancellation isolation, parallel
+executor cancellation, owner-scoped provider uninstall, the full OAuth
+choreography, and the group-cancelled conversational mirror all passed. Those
+exact repetitions, the PTY result above (covering both PTY reports), and the
+green full-suite CI run together satisfy the stale-issue evidence criterion.
+
 ## RFC anchor
 
 - RFC §5.4.
@@ -47,7 +55,7 @@ The final corrective tree passed 100 race-instrumented repetitions of the full a
 - [x] A focused real-PTY decoder test covers F1–F9 and fails when the Kitty wire translation is removed; the unquarantined workflow then passes at least 100 two-CPU Linux `-race` repetitions.
 - [x] A superseded inspection in the current identity/generation cannot close a newer action modal; a cross-generation or cross-identity result still invalidates it.
 - [x] A persisted session rename is followed by the terminal's rename-result acknowledgement before the next shortcut, so input cannot be consumed by the closing modal.
-- [ ] Stale issues have exact targeted `-race -count=100` and CI/full-suite evidence.
+- [x] Stale issues have exact targeted `-race -count=100` and CI/full-suite evidence.
 
 ## Files added or changed
 
@@ -89,4 +97,4 @@ The final corrective tree passed 100 race-instrumented repetitions of the full a
 
 ## Pre-merge checklist
 
-- [ ] Drift, mirror, CI preflight, exact repetitions, Linux stress, integration, and leak gates pass
+- [x] Drift, mirror, CI preflight, exact repetitions, Linux stress, integration, and leak gates pass

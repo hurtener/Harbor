@@ -83,4 +83,4 @@ Closes #654 by giving every model-authored tool name one shared declaration proj
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit`, mirror, CI preflight, coverage, integration, and concurrent-reuse gates pass
+- [x] `make drift-audit`, mirror, CI preflight, coverage, integration, and concurrent-reuse gates pass

@@ -84,6 +84,6 @@ Supersedes the affected semantics of phases 219, 220, and 222: run requests are 
 ## Pre-merge checklist
 
 - [x] `make drift-audit` passes
-- [ ] CI preflight passes (local preflight prohibited for this review/remediation mandate)
+- [x] CI preflight passes (local preflight prohibited for this review/remediation mandate)
 - [x] `make check-mirror` passes
 - [x] All cross-references resolve; coverage, isolation, concurrent-reuse, integration, and glossary gates pass

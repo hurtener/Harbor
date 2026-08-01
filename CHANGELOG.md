@@ -17,7 +17,7 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-## [1.25.0]
+## [1.25.0] — 2026-08-01
 
 One release-closure slice: the original **prompt-composition surface**, the
 transaction and declared-tool corrections found by adversarial review, and the
@@ -4171,5 +4171,7 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.25.0...HEAD
+[1.25.0]: https://github.com/hurtener/Harbor/compare/v1.24.0...v1.25.0
 [1.10.0]: https://github.com/hurtener/Harbor/releases/tag/v1.10.0
 [1.0.0]: https://github.com/hurtener/Harbor/releases/tag/v1.0.0
