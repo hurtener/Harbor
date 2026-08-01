@@ -450,15 +450,26 @@ func ambiguousAgainst(servers map[string]*serverEntry, name string) error {
 // instance (an idempotent re-register of the live one), the close is
 // skipped so the just-registered transport is not torn down.
 func (r *Registry) Register(ctx context.Context, reg ServerRegistration) error {
+	swap, err := r.StageRegistration(reg, nil)
+	if err != nil {
+		return err
+	}
+	if err := swap.Commit(ctx); err != nil {
+		return fmt.Errorf("mcp: Register: %w", err)
+	}
+	return nil
+}
+
+func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now time.Time) (*serverEntry, string, error) {
 	if reg.Provider == nil {
-		return fmt.Errorf("mcp: Register requires a non-nil Provider")
+		return nil, "", fmt.Errorf("mcp: Register requires a non-nil Provider")
 	}
 	name := string(reg.Provider.SourceID())
 	if name == "" {
-		return fmt.Errorf("mcp: Register requires a non-empty provider source id")
+		return nil, "", fmt.Errorf("mcp: Register requires a non-empty provider source id")
 	}
 	if reg.Transport == "" {
-		return fmt.Errorf("mcp: Register requires a non-empty Transport")
+		return nil, "", fmt.Errorf("mcp: Register requires a non-empty Transport")
 	}
 	policy := reg.Policy
 	if isZeroPolicy(policy) {
@@ -468,16 +479,8 @@ func (r *Registry) Register(ctx context.Context, reg ServerRegistration) error {
 	if st == "" {
 		st = ServerStateOffline
 	}
-	r.mu.Lock()
-	// Separator safety, checked under the SAME write lock that installs the
-	// entry, so two concurrent registrations of an ambiguous pair cannot both
-	// observe an empty map and both succeed.
-	if err := ambiguousAgainst(r.servers, name); err != nil {
-		r.mu.Unlock()
-		return err
-	}
-	prior := r.servers[name]
-	r.servers[name] = &serverEntry{
+	tc, rc, pc := classifyDescriptors(descs, name)
+	entry := &serverEntry{
 		provider:     reg.Provider,
 		transport:    reg.Transport,
 		urlOrCommand: reg.URLOrCommand,
@@ -493,18 +496,91 @@ func (r *Registry) Register(ctx context.Context, reg ServerRegistration) error {
 		stats: serverStats{
 			state:             st,
 			oauthBindingCount: reg.OAuthBindingCount,
+			toolCount:         tc,
+			resourceCount:     rc,
+			promptCount:       pc,
 		},
 	}
+	if descs != nil {
+		entry.stats.lastDiscoveryAt = now
+	}
+	return entry, name, nil
+
+}
+
+// RegistrationSwap is a reversible live-registry publication. Commit makes
+// the staged entry final and drains the exact displaced provider. Rollback
+// restores the exact prior entry only while this staged entry is still current.
+type RegistrationSwap struct {
+	mu       sync.Mutex
+	registry *Registry
+	name     string
+	prior    *serverEntry
+	staged   *serverEntry
+	done     bool
+}
+
+// StageRegistration replaces one registry entry without closing the prior
+// provider and returns an exact rollback receipt. All validation precedes the
+// map mutation.
+func (r *Registry) StageRegistration(reg ServerRegistration, descs []tools.ToolDescriptor) (*RegistrationSwap, error) {
+	entry, name, err := registrationEntry(reg, descs, r.clock())
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	if err := ambiguousAgainst(r.servers, name); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
+	prior := r.servers[name]
+	if prior != nil && prior.owner != reg.Owner {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("%w: a connection named %q is already registered to a different owner", ErrConnectionNameOwnerConflict, name)
+	}
+	r.servers[name] = entry
 	r.mu.Unlock()
-	// Close the DISPLACED provider's transport outside the lock so a same-name
-	// replacement drains the old session instead of leaking it. Skip when the
-	// prior entry held the exact same provider (a no-op re-register must not
-	// close the transport we just re-registered).
-	if prior != nil && prior.provider != nil && prior.provider != reg.Provider {
-		if err := prior.provider.Close(ctx); err != nil {
-			return fmt.Errorf("mcp: Register %q: close replaced transport: %w", name, err)
+	return &RegistrationSwap{registry: r, name: name, prior: prior, staged: entry}, nil
+}
+
+// Commit finalizes a staged registration. A displaced provider close error is
+// cleanup failure after publication; callers must log it but must not roll the
+// already-committed state back.
+func (s *RegistrationSwap) Commit(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return nil
+	}
+	s.done = true
+	if s.prior != nil && s.prior.provider != nil && s.prior.provider != s.staged.provider {
+		if err := s.prior.provider.Close(ctx); err != nil {
+			return fmt.Errorf("close replaced transport %q: %w", s.name, err)
 		}
 	}
+	return nil
+}
+
+// Rollback restores the exact displaced registry entry iff the staged entry is
+// still current. It never closes the displaced provider; it closes the staged
+// provider later through PreparedAttachment.Close.
+func (s *RegistrationSwap) Rollback() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return nil
+	}
+	s.registry.mu.Lock()
+	defer s.registry.mu.Unlock()
+	if s.registry.servers[s.name] != s.staged {
+		return fmt.Errorf("mcp: registration rollback refused for %q: staged entry is no longer current", s.name)
+	}
+	if s.prior == nil {
+		delete(s.registry.servers, s.name)
+	} else {
+		s.registry.servers[s.name] = s.prior
+	}
+	s.done = true
 	return nil
 }
 

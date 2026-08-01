@@ -9,6 +9,7 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // setoauthprovider_test.go — unit coverage for
@@ -46,6 +47,40 @@ func (f *fakeInstaller) InstallProvider(_ context.Context, _, _ string, desc age
 	f.installed[desc.Name] = struct{}{}
 	return nil
 }
+
+func (f *fakeInstaller) PrepareProvider(_ context.Context, tenant, agentID string, desc agentcfg.OAuthProviderDescriptor) (agentcfgprotocol.PreparedOAuthProvider, error) {
+	return &testPreparedOAuthProvider{
+		publish:  func(ctx context.Context) error { return f.InstallProvider(ctx, tenant, agentID, desc) },
+		rollback: func(ctx context.Context) error { return f.UninstallProvider(ctx, tenant, agentID, desc.Name) },
+	}, nil
+}
+
+type testPreparedOAuthProvider struct {
+	publish   func(context.Context) error
+	rollback  func(context.Context) error
+	published bool
+}
+
+func (*testPreparedOAuthProvider) Binding() toolauth.OAuthProvider { return nil }
+func (p *testPreparedOAuthProvider) Publish(ctx context.Context) error {
+	if p.published {
+		return nil
+	}
+	if err := p.publish(ctx); err != nil {
+		return err
+	}
+	p.published = true
+	return nil
+}
+func (*testPreparedOAuthProvider) Commit(context.Context) {}
+func (p *testPreparedOAuthProvider) Rollback(ctx context.Context) error {
+	if !p.published {
+		return nil
+	}
+	p.published = false
+	return p.rollback(ctx)
+}
+func (p *testPreparedOAuthProvider) Close(ctx context.Context) error { return p.Rollback(ctx) }
 
 func (f *fakeInstaller) UninstallProvider(_ context.Context, tenant, agentID, name string) error {
 	f.mu.Lock()

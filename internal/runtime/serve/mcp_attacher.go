@@ -250,6 +250,7 @@ func WithArtifactEgressMaxBytes(n int) MCPAttacherOption {
 // compile time so the drift is a build failure instead.
 var (
 	_ agentcfgprotocol.ConnectionAttacher     = (*MCPConnectionAttacher)(nil)
+	_ agentcfgprotocol.ConnectionPreparer     = (*MCPConnectionAttacher)(nil)
 	_ agentcfgprotocol.DiscoveryOriginApplier = (*MCPConnectionAttacher)(nil)
 	_ agentcfgprotocol.ConnectionDetacher     = (*MCPConnectionAttacher)(nil)
 	_ projection.ConnectionReattacher         = (*MCPConnectionAttacher)(nil)
@@ -298,6 +299,22 @@ func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Regist
 // agentcfgprotocol.ErrAuthRequired so the service parks on the unified
 // pause/resume primitive.
 func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol.AttachRequest) error {
+	prepared, err := a.PrepareConnection(ctx, req)
+	if err != nil {
+		return err
+	}
+	if err := prepared.Activate(ctx); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		_ = prepared.Close(cleanupCtx)
+		cancel()
+		return err
+	}
+	return nil
+}
+
+// PrepareConnection dials and discovers against a private attachment. The
+// shared catalog and registry remain unchanged until Activate.
+func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agentcfgprotocol.AttachRequest) (agentcfgprotocol.PreparedConnection, error) {
 	// Stamp the (tenant, agent) reconcile-view owner tag from the verified
 	// caller identity + the target agent. Fail CLOSED when either component is
 	// missing: a runtime-added connection with no owner would be an
@@ -306,7 +323,7 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 	// process-global sweep). Never a silent untagged attach (CLAUDE.md §13).
 	owner := toolauth.Owner{Tenant: req.Identity.TenantID, Agent: req.AgentID}
 	if owner.IsZero() || owner.Tenant == "" || owner.Agent == "" {
-		return fmt.Errorf("%w: runtime-added connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
+		return nil, fmt.Errorf("%w: runtime-added connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
 			ErrRuntimeAddOwnerMissing, req.Name, owner.Tenant, owner.Agent)
 	}
 
@@ -346,18 +363,18 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 	// concurrent adds of the same name from racing in the catalog / registry.
 	// Adds are infrequent admin actions, so the coarse lock is acceptable.
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	var local []func(context.Context) error
-	err := mcpdrv.Attach(ctx, ms, mcpdrv.AttachDeps{
-		Catalog:          a.catalog,
-		Registry:         a.registry,
-		Bus:              a.bus,
-		Logger:           a.logger,
-		DefaultIdentity:  a.defaultIdentity,
-		Closers:          &local,
-		OAuthProviders:   a.oauthProviders,
-		OAuthProviderSet: a.oauthProviderSet,
+	prepared, err := mcpdrv.Prepare(ctx, ms, mcpdrv.AttachDeps{
+		Catalog:               a.catalog,
+		Registry:              a.registry,
+		Bus:                   a.bus,
+		Logger:                a.logger,
+		DefaultIdentity:       a.defaultIdentity,
+		Closers:               &local,
+		OAuthProviders:        a.oauthProviders,
+		OAuthProviderSet:      a.oauthProviderSet,
+		OAuthProviderOverride: req.OAuthProviderOverride,
 		// Capture app tool contexts on this connection exactly as the
 		// boot-config attach path does, so a `ui://` app declared by a tool on
 		// a runtime-added server renders with its real data instead of an
@@ -369,10 +386,8 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 		// unbounded one.
 		ArtifactEgressMaxBytes: a.artifactEgressMaxBytes,
 	})
-	// Merge whatever closers Attach appended (a successful Connect appends the
-	// provider's Close even if a later step failed — drain it on teardown).
-	a.closers = append(a.closers, local...)
 	if err != nil {
+		a.mu.Unlock()
 		// A binding/config error (unknown provider, missing or mismatched
 		// downstream allow-list, stdio/no-url, static-Authorization conflict)
 		// is a fail-loud operator misconfiguration, never a transient
@@ -382,14 +397,37 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 		// diagnostic. Check the typed sentinel first so the operator sees the
 		// actual cause (e.g. "unknown provider" / "host not in allow-list").
 		if errors.Is(err, mcpdrv.ErrOAuthBinding) {
-			return err
+			return nil, err
 		}
 		if looksLikeAuthRequired(err) {
-			return fmt.Errorf("%w: %w", agentcfgprotocol.ErrAuthRequired, err)
+			return nil, fmt.Errorf("%w: %w", agentcfgprotocol.ErrAuthRequired, err)
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	return &preparedMCPConnection{owner: a, inner: prepared}, nil
+}
+
+type preparedMCPConnection struct {
+	owner   *MCPConnectionAttacher
+	inner   *mcpdrv.PreparedAttachment
+	release sync.Once
+}
+
+func (p *preparedMCPConnection) unlock() { p.release.Do(p.owner.mu.Unlock) }
+
+func (p *preparedMCPConnection) Activate(ctx context.Context) error {
+	err := p.inner.Activate(ctx)
+	if err == nil {
+		p.owner.closers = append(p.owner.closers, p.inner.Close)
+	}
+	p.unlock()
+	return err
+}
+
+func (p *preparedMCPConnection) Close(ctx context.Context) error {
+	err := p.inner.Close(ctx)
+	p.unlock()
+	return err
 }
 
 // SetOAuthDiscoveryOrigins applies a runtime-added connection's

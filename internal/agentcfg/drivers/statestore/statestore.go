@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -267,7 +268,7 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	// base had in fact moved. That is silent degradation. A conflict costs
 	// one re-read on a rare path and never lies.
 	if opts.ExpectedContentHash != "" {
-		if err := checkExpectation(opts, active, hasActive); err != nil {
+		if err := agentcfg.CheckExpectedRevision(opts, active, hasActive); err != nil {
 			return agentcfg.Revision{}, err
 		}
 	}
@@ -294,7 +295,7 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 		Payload:          norm,
 	}
 	if err := r.saveRevision(ctx, q, keys.revPfx, rec); err != nil {
-		return agentcfg.Revision{}, err
+		return agentcfg.Revision{}, r.compensateFailedRevisionSave(ctx, q, keys.revPfx, rec, err)
 	}
 	if err := r.saveActive(ctx, q, keys.activeKind, revID, now); err != nil {
 		// The revision record landed and the pointer that would have named
@@ -324,50 +325,6 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	rev := rec.toRevision()
 	r.emitRevised(ctx, agentID, rev)
 	return rev, nil
-}
-
-// checkExpectation evaluates the caller's expected-revision precondition
-// against the active revision the caller's own read-modify-write just loaded.
-// It is the ONE comparison both spine-writing doors (SetRevision's content
-// write and Rollback's pointer move) share, so the two can never disagree on
-// what a token means.
-//
-// Three arms:
-//
-//   - empty token ⇒ unconditional (byte-for-byte the pre-precondition
-//     behaviour);
-//   - agentcfg.ExpectNoActiveRevision ⇒ succeeds ONLY when the agent has no
-//     active revision. This is the base case of the read-modify-write
-//     composition protocol: a caller whose read answered "no config" has no
-//     hash to echo, and before the sentinel existed its only expressible
-//     token was the empty one — i.e. it could not opt out of last-writer-wins
-//     on the one write where two contributors are most likely to collide;
-//   - any other token ⇒ the active revision must exist and carry exactly it.
-//
-// The sentinel cannot collide with a real expectation: a content hash is
-// sha256 hex, so it is always 64 lowercase hex characters and never "-".
-func checkExpectation(opts agentcfg.SetOptions, active agentcfg.Revision, hasActive bool) error {
-	switch {
-	case opts.ExpectedContentHash == "":
-		return nil
-	case opts.ExpectedContentHash == agentcfg.ExpectNoActiveRevision:
-		if hasActive {
-			return fmt.Errorf(
-				"%w: expected no active revision, but revision %s is active carrying %q",
-				agentcfg.ErrRevisionConflict, active.RevisionID, active.ContentHash)
-		}
-		return nil
-	case !hasActive:
-		return fmt.Errorf(
-			"%w: expected content hash %q but the agent has no active revision (send %q to require that there be none)",
-			agentcfg.ErrRevisionConflict, opts.ExpectedContentHash, agentcfg.ExpectNoActiveRevision)
-	case active.ContentHash != opts.ExpectedContentHash:
-		return fmt.Errorf(
-			"%w: expected content hash %q, active revision %s carries %q",
-			agentcfg.ErrRevisionConflict, opts.ExpectedContentHash, active.RevisionID, active.ContentHash)
-	default:
-		return nil
-	}
 }
 
 func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
@@ -505,7 +462,7 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 		if aerr != nil {
 			return agentcfg.Revision{}, aerr
 		}
-		if err := checkExpectation(opts, active, hasActive); err != nil {
+		if err := agentcfg.CheckExpectedRevision(opts, active, hasActive); err != nil {
 			return agentcfg.Revision{}, err
 		}
 	}
@@ -683,6 +640,34 @@ func (r *registry) saveActive(ctx context.Context, q identity.Quadruple, activeK
 // compensation's sake: the caller's own write has already failed, and the
 // error it is owed must not wait on a best-effort cleanup.
 const compensationTimeout = 5 * time.Second
+
+// compensateFailedRevisionSave resolves the first Save's ambiguous outcome.
+// The active pointer has not been attempted, so an exact candidate record is
+// necessarily unreferenced and may be deleted. An absent record needs no
+// cleanup. A mismatched or unreadable point-read is retained and reported;
+// deleting on a cannot-tell could remove data this call did not create.
+func (r *registry) compensateFailedRevisionSave(ctx context.Context, q identity.Quadruple, revPfx string, expected revisionRecord, cause error) error {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensationTimeout)
+	defer cancel()
+	actual, err := r.loadRevision(cctx, q, revPfx, expected.RevisionID)
+	if errors.Is(err, agentcfg.ErrRevisionNotFound) {
+		return cause
+	}
+	if err != nil {
+		r.logger.ErrorContext(ctx, "agentcfg/statestore: revision save failed and its exact record could not be re-read; retained rather than deleting on an unknown answer",
+			slog.String("revision_id", expected.RevisionID), slog.String("error", err.Error()), slog.String("cause", cause.Error()))
+		return fmt.Errorf("%w; revision %s outcome is unknown and was retained: %w", cause, expected.RevisionID, err)
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		r.logger.ErrorContext(ctx, "agentcfg/statestore: revision save failed but the point-read returned different bytes; retained because it is not this call's record",
+			slog.String("revision_id", expected.RevisionID), slog.String("cause", cause.Error()))
+		return fmt.Errorf("%w; revision id %s resolves to different content and was retained", cause, expected.RevisionID)
+	}
+	if err := r.state.Delete(cctx, q, revPfx+expected.RevisionID); err != nil {
+		return fmt.Errorf("%w; exact unreferenced revision %s could not be removed: %w", cause, expected.RevisionID, err)
+	}
+	return cause
+}
 
 // compensateOrphanRevision removes a revision record whose active-pointer
 // write then failed, and returns the error the caller receives.

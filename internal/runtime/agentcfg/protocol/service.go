@@ -171,12 +171,12 @@ type Service struct {
 	logger   *slog.Logger
 	now      Clock
 
-	// attacher drives the real MCP attach lifecycle for add_mcp_connection.
+	// preparer drives the unpublished MCP prepare/persist/activate lifecycle.
 	// Optional — nil ⇒ add_mcp_connection returns ErrConnectionAttachUnavailable
 	// (→ 501 at the wire edge). The concrete that calls the MCP driver is
 	// injected at the cmd/harbor + devstack boundary (the §4.4 boundary keeps
 	// the concrete MCP driver out of this package).
-	attacher ConnectionAttacher
+	preparer ConnectionPreparer
 	// detacher tears a just-attached MCP server back down when the add's
 	// revision write then fails (the expected-revision precondition being the
 	// reachable case). Optional — nil ⇒ the compensation logs the residual live
@@ -204,6 +204,7 @@ type Service struct {
 	// on the interface. Owner-tagged for reconcile scoping; resolution stays
 	// process-global bare-name.
 	providerInstaller ProviderInstaller
+	providerPreparer  ProviderPreparer
 	// llmProviderInstaller installs / uninstalls a Protocol-installed, zero-URL
 	// broker-pull INFERENCE provider binding live into the owner-tagged provider
 	// set for `agent_config.set_llm_provider`. Optional — nil ⇒ the verb returns
@@ -428,15 +429,28 @@ func WithBus(b events.EventBus) Option {
 	}
 }
 
-// WithConnectionAttacher wires the concrete that drives the real MCP attach
-// lifecycle for `agent_config.add_mcp_connection`. A nil attacher leaves the
-// method returning ErrConnectionAttachUnavailable (→ 501 at the wire edge).
-// The concrete (which imports the MCP driver) is injected at the cmd/harbor +
-// devstack boundary; this package depends only on the interface.
+// WithConnectionAttacher is a compatibility option for older deterministic
+// embedders. Harbor production wiring uses [WithConnectionPreparer]; when the
+// supplied concrete also implements [ConnectionPreparer], that stronger seam
+// is selected automatically.
 func WithConnectionAttacher(a ConnectionAttacher) Option {
 	return func(s *Service) {
 		if a != nil {
-			s.attacher = a
+			if p, ok := a.(ConnectionPreparer); ok {
+				s.preparer = p
+			} else {
+				s.preparer = legacyConnectionPreparer{attacher: a}
+			}
+		}
+	}
+}
+
+// WithConnectionPreparer wires the unpublished prepare/persist/activate MCP
+// transaction seam. Harbor's production assembler uses this option.
+func WithConnectionPreparer(p ConnectionPreparer) Option {
+	return func(s *Service) {
+		if p != nil {
+			s.preparer = p
 		}
 	}
 }
@@ -481,6 +495,9 @@ func WithProviderInstaller(a ProviderInstaller) Option {
 	return func(s *Service) {
 		if a != nil {
 			s.providerInstaller = a
+			if p, ok := a.(ProviderPreparer); ok {
+				s.providerPreparer = p
+			}
 		}
 	}
 }

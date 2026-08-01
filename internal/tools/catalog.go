@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
@@ -16,8 +17,9 @@ import (
 // immutable after Register so List can return Tool *values*
 // (copies) without locking the underlying descriptor.
 type catalog struct {
-	mu     sync.RWMutex
-	byName map[string]ToolDescriptor
+	mu                sync.RWMutex
+	byName            map[string]ToolDescriptor
+	sourceGenerations map[ToolSourceID]uint64
 
 	// searchCache is the optional FTS5-backed
 	// search index. nil means Search returns empty (honest "discovery
@@ -87,9 +89,10 @@ func NewCatalog(opts ...CatalogOption) ToolCatalog {
 		opt(&cfg)
 	}
 	return &catalog{
-		byName:      make(map[string]ToolDescriptor),
-		searchCache: cfg.searchCache,
-		bus:         cfg.bus,
+		byName:            make(map[string]ToolDescriptor),
+		sourceGenerations: make(map[ToolSourceID]uint64),
+		searchCache:       cfg.searchCache,
+		bus:               cfg.bus,
 	}
 }
 
@@ -122,6 +125,7 @@ func (c *catalog) Register(d ToolDescriptor) error {
 		return wrap(ErrToolDuplicateName, "name=%q", d.Tool.Name)
 	}
 	c.byName[d.Tool.Name] = d
+	c.sourceGenerations[d.Tool.Source]++
 	sc := c.searchCache
 	c.mu.Unlock()
 
@@ -193,7 +197,12 @@ func (c *catalog) Replace(wrapped []ToolDescriptor) error {
 		}
 	}
 	for _, d := range wrapped {
+		prior := c.byName[d.Tool.Name]
 		c.byName[d.Tool.Name] = d
+		c.sourceGenerations[prior.Tool.Source]++
+		if d.Tool.Source != prior.Tool.Source {
+			c.sourceGenerations[d.Tool.Source]++
+		}
 	}
 	return nil
 }
@@ -225,7 +234,123 @@ func (c *catalog) DeregisterSource(source ToolSourceID) int {
 			removed++
 		}
 	}
+	if removed > 0 {
+		c.sourceGenerations[source]++
+	}
 	return removed
+}
+
+// StageSource implements ToolCatalog. Validation and collision checks happen
+// before the catalog map is changed, and the complete source set is swapped
+// under one write lock. Its receipt can restore the exact prior set while this
+// publication remains current.
+func (c *catalog) StageSource(source ToolSourceID, replacements []ToolDescriptor, replaceExisting bool) (CatalogSourceSwap, error) {
+	if source == "" {
+		return nil, wrap(ErrToolNotFound, "StageSource: source is empty")
+	}
+	staged := make([]ToolDescriptor, len(replacements))
+	for i, d := range replacements {
+		if d.Tool.Name == "" || d.Invoke == nil || d.Tool.Source != source {
+			return nil, wrap(ErrToolNotFound, "StageSource: invalid descriptor %q for source %q", d.Tool.Name, source)
+		}
+		if err := validateExamples(d.Tool); err != nil {
+			return nil, err
+		}
+		staged[i] = wrapDescriptorLifecycle(c.bus, d)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	seen := make(map[string]struct{}, len(staged))
+	if !replaceExisting {
+		for _, prior := range c.byName {
+			if prior.Tool.Source == source {
+				return nil, wrap(ErrToolDuplicateName, "StageSource: source %q is already registered", source)
+			}
+		}
+	}
+	for _, d := range staged {
+		if d.Tool.Name == "" || d.Invoke == nil || d.Tool.Source != source {
+			return nil, wrap(ErrToolNotFound, "StageSource: invalid descriptor %q for source %q", d.Tool.Name, source)
+		}
+		if _, duplicate := seen[d.Tool.Name]; duplicate {
+			return nil, wrap(ErrToolDuplicateName, "StageSource: duplicate replacement %q", d.Tool.Name)
+		}
+		seen[d.Tool.Name] = struct{}{}
+		if prior, exists := c.byName[d.Tool.Name]; exists && prior.Tool.Source != source {
+			return nil, wrap(ErrToolDuplicateName, "StageSource: tool %q belongs to source %q", d.Tool.Name, prior.Tool.Source)
+		}
+	}
+	priorSet := make([]ToolDescriptor, 0)
+	for name, prior := range c.byName {
+		if prior.Tool.Source == source {
+			priorSet = append(priorSet, prior)
+			delete(c.byName, name)
+		}
+	}
+	for _, d := range staged {
+		c.byName[d.Tool.Name] = d
+	}
+	c.sourceGenerations[source]++
+	return &catalogSourceSwap{catalog: c, source: source, prior: priorSet, replacements: staged, generation: c.sourceGenerations[source]}, nil
+}
+
+type catalogSourceSwap struct {
+	mu           sync.Mutex
+	catalog      *catalog
+	source       ToolSourceID
+	prior        []ToolDescriptor
+	replacements []ToolDescriptor
+	generation   uint64
+	done         bool
+}
+
+func (s *catalogSourceSwap) Commit() {
+	s.mu.Lock()
+	if s.done {
+		s.mu.Unlock()
+		return
+	}
+	s.done = true
+	replacements := append([]ToolDescriptor(nil), s.replacements...)
+	sc := s.catalog.searchCache
+	s.mu.Unlock()
+	if sc == nil || len(replacements) == 0 {
+		return
+	}
+	views := make([]Tool, 0, len(replacements))
+	for _, d := range replacements {
+		views = append(views, d.Tool)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := sc.Sync(ctx, views); err != nil {
+		slog.Warn("tools/catalog: searchCache.Sync failed after source publication",
+			slog.String("source", string(s.source)), slog.String("err", err.Error()))
+	}
+}
+
+func (s *catalogSourceSwap) Rollback() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return nil
+	}
+	s.catalog.mu.Lock()
+	defer s.catalog.mu.Unlock()
+	if s.catalog.sourceGenerations[s.source] != s.generation {
+		return fmt.Errorf("tools: StageSource rollback refused for source %q: staged generation is no longer current", s.source)
+	}
+	for name, d := range s.catalog.byName {
+		if d.Tool.Source == s.source {
+			delete(s.catalog.byName, name)
+		}
+	}
+	for _, d := range s.prior {
+		s.catalog.byName[d.Tool.Name] = d
+	}
+	s.catalog.sourceGenerations[s.source]++
+	s.done = true
+	return nil
 }
 
 // Search implements ToolCatalog. Delegates to
