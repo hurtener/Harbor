@@ -400,7 +400,14 @@ func waveV115StartPTYCommand(t *testing.T, binary string, args []string, workdir
 		t.Fatal(err)
 	}
 	_ = slave.Close()
-	s := &ptySession{cmd: cmd, master: master, changed: make(chan struct{}, 1), done: make(chan error, 1), exited: make(chan struct{})}
+	s := &ptySession{
+		cmd:        cmd,
+		master:     master,
+		changed:    make(chan struct{}, 1),
+		done:       make(chan error, 1),
+		exited:     make(chan struct{}),
+		readerDone: make(chan struct{}),
+	}
 	t.Cleanup(func() {
 		select {
 		case <-s.exited:
@@ -410,7 +417,13 @@ func waveV115StartPTYCommand(t *testing.T, binary string, args []string, workdir
 		_ = master.Close()
 	})
 	go readPTY(s)
-	go func() { s.done <- cmd.Wait(); close(s.exited); _ = master.Close() }()
+	go func() {
+		err := cmd.Wait()
+		s.exitErr = err
+		s.done <- err
+		close(s.exited)
+		_ = master.Close()
+	}()
 	return s
 }
 

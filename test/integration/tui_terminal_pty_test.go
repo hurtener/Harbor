@@ -756,7 +756,14 @@ func startPTYCommand(t *testing.T, binary string, args []string, workdir string,
 		t.Fatal(err)
 	}
 	_ = slave.Close()
-	s := &ptySession{cmd: cmd, master: master, changed: make(chan struct{}, 1), done: make(chan error, 1), exited: make(chan struct{})}
+	s := &ptySession{
+		cmd:        cmd,
+		master:     master,
+		changed:    make(chan struct{}, 1),
+		done:       make(chan error, 1),
+		exited:     make(chan struct{}),
+		readerDone: make(chan struct{}),
+	}
 	t.Cleanup(func() {
 		select {
 		case <-s.exited:
