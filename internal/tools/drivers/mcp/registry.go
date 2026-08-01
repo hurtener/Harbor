@@ -257,6 +257,10 @@ type serverEntry struct {
 	// read-only thereafter. It is a reconcile-view filter, NOT an isolation
 	// key — resolution and dispatch stay bare-name and process-global.
 	owner auth.Owner
+	// descriptorFingerprint identifies the complete canonical NON-SECRET
+	// runtime-added descriptor that produced this registration. Empty for
+	// boot-declared registrations. Read-only after registration.
+	descriptorFingerprint string
 
 	// stats is the mutable per-server runtime state. Guarded by the
 	// Registry's mu (RWMutex). Documented invariants: every field is
@@ -355,6 +359,9 @@ type ServerRegistration struct {
 	// either component is missing); nothing about resolution or dispatch reads
 	// it (those stay bare-name and process-global).
 	Owner auth.Owner
+	// DescriptorFingerprint is the canonical digest of the complete
+	// NON-SECRET runtime-added descriptor. Empty for boot registrations.
+	DescriptorFingerprint string
 }
 
 // CheckServerIDUnambiguous reports whether registering `name` would leave the
@@ -489,10 +496,11 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 		// configured `tools.mcp_app_host.display_modes`, not a value scraped
 		// off the server (display modes are not a spec capability field;
 		// they ride the `ui/initialize` host-context the host dictates).
-		displayModes:        reg.Provider.DisplayModes(),
-		contentShape:        append([]string(nil), reg.ContentShapes...),
-		oauthAllowedOrigins: append([]string(nil), reg.OAuthDiscoveryAllowedOrigins...),
-		owner:               reg.Owner,
+		displayModes:          reg.Provider.DisplayModes(),
+		contentShape:          append([]string(nil), reg.ContentShapes...),
+		oauthAllowedOrigins:   append([]string(nil), reg.OAuthDiscoveryAllowedOrigins...),
+		owner:                 reg.Owner,
+		descriptorFingerprint: reg.DescriptorFingerprint,
 		stats: serverStats{
 			state:             st,
 			oauthBindingCount: reg.OAuthBindingCount,
@@ -518,6 +526,25 @@ type RegistrationSwap struct {
 	prior    *serverEntry
 	staged   *serverEntry
 	done     bool
+}
+
+// RecordAuthChallenge records on this receipt's exact staged entry, never on a
+// same-name healthy prior registration while preparation is unpublished.
+func (s *RegistrationSwap) RecordAuthChallenge(ch AuthChallenge) {
+	s.registry.mu.Lock()
+	defer s.registry.mu.Unlock()
+	captured := ch
+	s.staged.stats.oauthChallenge = &captured
+}
+
+// RecordScopeShortfall records a defensive copy on the exact staged entry.
+func (s *RegistrationSwap) RecordScopeShortfall(sf ScopeShortfall) {
+	s.registry.mu.Lock()
+	defer s.registry.mu.Unlock()
+	captured := sf
+	captured.RequiredScopes = append([]string(nil), sf.RequiredScopes...)
+	captured.GrantedScopes = append([]string(nil), sf.GrantedScopes...)
+	s.staged.stats.scopeShortfall = &captured
 }
 
 // StageRegistration replaces one registry entry without closing the prior
@@ -648,13 +675,23 @@ func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner
 // live tools/transport. A boot-declared server carries the zero owner. The
 // returned owner is a value copy, safe to read without the registry lock.
 func (r *Registry) OwnerOf(name string) (auth.Owner, bool) {
+	owner, _, ok := r.RegistrationIdentity(name)
+	return owner, ok
+}
+
+// RegistrationIdentity atomically returns the reconcile owner and canonical
+// descriptor fingerprint of one live registration. The pair must be read under
+// one lock: separate owner/fingerprint reads could compare fields from two
+// same-name replacements and incorrectly classify a stale registration as
+// current.
+func (r *Registry) RegistrationIdentity(name string) (auth.Owner, string, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	e, ok := r.servers[name]
 	if !ok {
-		return auth.Owner{}, false
+		return auth.Owner{}, "", false
 	}
-	return e.owner, true
+	return e.owner, e.descriptorFingerprint, true
 }
 
 // SourceIDs returns the source ids of every currently-registered server —

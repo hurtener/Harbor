@@ -470,6 +470,7 @@ func (p *Provider) buildAuthRequired(ctx context.Context, cfg OAuthConfig, id id
 		BindingScope: cfg.BindingScope,
 		AuthorizeURL: authorize,
 		State:        state,
+		PauseToken:   string(pause.Token),
 		Scopes:       append([]string(nil), cfg.Scopes...),
 		Message:      "tool requires OAuth authorization",
 	}

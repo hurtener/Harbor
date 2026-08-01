@@ -80,6 +80,11 @@ type AttachDeps struct {
 	// view scopes to it. It is a reconcile-view filter, never a dispatch or
 	// isolation key.
 	Owner auth.Owner
+	// DescriptorFingerprint is the canonical digest of the NON-SECRET
+	// runtime-added descriptor. It is retained on the live registration so
+	// run-start reconciliation can distinguish an exact no-op from a same-name
+	// descriptor replacement. Boot-declared attachments leave it empty.
+	DescriptorFingerprint string
 	// OAuthProviders is the declared OAuth-provider registry (keyed by the
 	// non-secret provider NAME) Attach resolves a connection's
 	// `oauth_provider` binding against. Populated by the runtime assembler
@@ -109,6 +114,84 @@ type AttachDeps struct {
 	// an embedder that does not set it still gets a real ceiling rather
 	// than an unbounded one. Optional.
 	ArtifactEgressMaxBytes int
+}
+
+// ErrPreparationAuthRequired marks a private MCP prepare that observed a
+// structured HTTP authentication challenge before discovery could complete.
+var ErrPreparationAuthRequired = errors.New("mcp: preparation requires authorization")
+
+// PreparationAuthRequiredError carries the parsed, defensive challenge without
+// exposing it through Error text or relying on transport error strings.
+type PreparationAuthRequiredError struct{ Challenge AuthChallenge }
+
+func (e *PreparationAuthRequiredError) Error() string { return ErrPreparationAuthRequired.Error() }
+
+func (e *PreparationAuthRequiredError) Is(target error) bool {
+	return target == ErrPreparationAuthRequired
+}
+
+type preparationObservations struct {
+	mu        sync.Mutex
+	challenge *AuthChallenge
+	shortfall *ScopeShortfall
+	sink      *RegistrationSwap
+}
+
+func (o *preparationObservations) recordChallenge(ch AuthChallenge) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.sink != nil {
+		o.sink.RecordAuthChallenge(ch)
+		return
+	}
+	captured := ch
+	o.challenge = &captured
+}
+
+func (o *preparationObservations) recordShortfall(sf ScopeShortfall) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.sink != nil {
+		o.sink.RecordScopeShortfall(sf)
+		return
+	}
+	captured := sf
+	captured.RequiredScopes = append([]string(nil), sf.RequiredScopes...)
+	captured.GrantedScopes = append([]string(nil), sf.GrantedScopes...)
+	o.shortfall = &captured
+}
+
+func (o *preparationObservations) authRequired() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.challenge == nil {
+		return nil
+	}
+	return &PreparationAuthRequiredError{Challenge: defensiveAuthChallenge(*o.challenge)}
+}
+
+func defensiveAuthChallenge(ch AuthChallenge) AuthChallenge {
+	// Raw is deliberately omitted: a hostile downstream controls the complete
+	// header and may place credential-like bytes in extensions. Parsed fields
+	// are the bounded, protocol-relevant challenge surfaced to callers.
+	return AuthChallenge{
+		Scheme: ch.Scheme, ResourceMetadataURL: ch.ResourceMetadataURL,
+		Realm: ch.Realm, Error: ch.Error, Scope: ch.Scope, CapturedAt: ch.CapturedAt,
+	}
+}
+
+func (o *preparationObservations) transfer(sink *RegistrationSwap) {
+	o.mu.Lock()
+	o.sink = sink
+	challenge, shortfall := o.challenge, o.shortfall
+	o.challenge, o.shortfall = nil, nil
+	o.mu.Unlock()
+	if challenge != nil {
+		sink.RecordAuthChallenge(*challenge)
+	}
+	if shortfall != nil {
+		sink.RecordScopeShortfall(*shortfall)
+	}
 }
 
 // OAuthProviderResolver is the narrow bare-name resolution seam Attach uses to
@@ -176,7 +259,9 @@ type PreparedAttachment struct {
 	mode          MCPTransportMode
 	defaultPolicy tools.ToolPolicy
 	provider      *Provider
+	closeFn       func(context.Context) error
 	descriptors   []tools.ToolDescriptor
+	observations  *preparationObservations
 	activated     bool
 	closed        bool
 }
@@ -191,10 +276,7 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	}
 	if err := prepared.Activate(ctx); err != nil {
 		*deps.Closers = append(*deps.Closers, prepared.Close)
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_ = prepared.Close(cleanupCtx)
-		cancel()
-		return err
+		return closePreparedAfterFailure(ctx, prepared, err)
 	}
 	*deps.Closers = append(*deps.Closers, prepared.Close)
 	return nil
@@ -289,6 +371,7 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 	if egressMaxBytes <= 0 {
 		egressMaxBytes = config.DefaultMCPArtifactEgressMaxBytes
 	}
+	observations := &preparationObservations{}
 	provider, err := New(Config{
 		Name:               ms.Name,
 		TransportMode:      mode,
@@ -316,13 +399,13 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 		// registry state so an operator can inspect the advertised requirement
 		// Best-effort observability — never alters the call.
 		OnAuthChallenge: func(ch AuthChallenge) {
-			deps.Registry.RecordAuthChallenge(ms.Name, ch)
+			observations.recordChallenge(ch)
 		},
 		// Record any downstream insufficient-scope step-up on the registry
 		// state (mirrors OnAuthChallenge for the 403 path). Best-effort
 		// observability — never alters the call.
 		OnScopeShortfall: func(sf ScopeShortfall) {
-			deps.Registry.RecordScopeShortfall(ms.Name, sf)
+			observations.recordShortfall(sf)
 		},
 	})
 	if err != nil {
@@ -330,20 +413,20 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 	}
 	if connectErr := provider.Connect(ctx); connectErr != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_ = provider.Close(cleanupCtx)
+		cleanupErr := provider.Close(cleanupCtx)
 		cancel()
-		return nil, fmt.Errorf("provider.Connect: %w", connectErr)
+		return nil, errors.Join(fmt.Errorf("provider.Connect: %w", connectErr), observations.authRequired(), cleanupErr)
 	}
 	descriptors, discoverErr := provider.Discover(ctx)
 	if discoverErr != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_ = provider.Close(cleanupCtx)
+		cleanupErr := provider.Close(cleanupCtx)
 		cancel()
-		return nil, fmt.Errorf("provider.Discover: %w", discoverErr)
+		return nil, errors.Join(fmt.Errorf("provider.Discover: %w", discoverErr), observations.authRequired(), cleanupErr)
 	}
 	return &PreparedAttachment{
 		ms: ms, deps: deps, mode: mode, defaultPolicy: defaultPolicy,
-		provider: provider, descriptors: descriptors,
+		provider: provider, closeFn: provider.Close, descriptors: descriptors, observations: observations,
 	}, nil
 }
 
@@ -376,10 +459,12 @@ func (p *PreparedAttachment) Activate(ctx context.Context) error {
 		InitialState: ServerStateOnline, Policy: p.defaultPolicy,
 		OAuthDiscoveryAllowedOrigins: append([]string(nil), p.ms.OAuthDiscoveryAllowedOrigins...),
 		Owner:                        p.deps.Owner,
+		DescriptorFingerprint:        p.deps.DescriptorFingerprint,
 	}, p.descriptors)
 	if err != nil {
 		return fmt.Errorf("registry.StageRegistration: %w", err)
 	}
+	p.observations.transfer(registrySwap)
 	catalogSwap, err := p.deps.Catalog.StageSource(tools.ToolSourceID(p.ms.Name), p.descriptors, priorExists)
 	if err != nil {
 		rollbackErr := registrySwap.Rollback()
@@ -413,7 +498,13 @@ func (p *PreparedAttachment) Close(ctx context.Context) error {
 		return nil
 	}
 	p.closed = true
-	return p.provider.Close(ctx)
+	return p.closeFn(ctx)
+}
+
+func closePreparedAfterFailure(ctx context.Context, prepared *PreparedAttachment, cause error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return errors.Join(cause, prepared.Close(cleanupCtx))
 }
 
 // ProjectToolPolicies converts an MCPServerConfig's operator-facing

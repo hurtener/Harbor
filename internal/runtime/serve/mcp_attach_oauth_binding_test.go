@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -21,10 +23,7 @@ import (
 // oauth_provider does not resolve (unknown provider, missing/mismatched
 // downstream allow-list, stdio/no-url, static-Authorization conflict) is a
 // fail-loud CONFIG error — it must NOT be misclassified as auth-required and
-// parked. The binding-error message carries "oauth_provider", which the
-// looksLikeAuthRequired string heuristic matches on the "oauth" marker; the
-// typed-sentinel guard must take precedence so the operator sees the real
-// diagnostic (e.g. "unknown provider") instead of a silent auth_required park.
+// parked. Only typed provider/challenge errors take the auth-required path.
 func TestMCPConnectionAttacher_OAuthBindingError_FailsLoudNotParked(t *testing.T) {
 	bus := mkDriverTestBus(t, auditpatterns.New())
 	// No OAuth providers registered → the named provider is unknown, so
@@ -52,5 +51,32 @@ func TestMCPConnectionAttacher_OAuthBindingError_FailsLoudNotParked(t *testing.T
 	}
 	if errors.Is(err, agentcfgprotocol.ErrAuthRequired) {
 		t.Fatalf("a binding/config error must NOT be misclassified as auth-required (silent park): %v", err)
+	}
+}
+
+func TestMCPConnectionAttacher_PreparationChallengeIsTypedAuthRequired(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="https://auth.example.test/.well-known/oauth-protected-resource"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	bus := mkDriverTestBus(t, auditpatterns.New())
+	reg := mcpdrv.NewRegistry()
+	a := NewMCPConnectionAttacher(tools.NewCatalog(), reg, bus,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, nil, nil, nil)
+	_, err := a.PrepareConnection(context.Background(), agentcfgprotocol.AttachRequest{
+		Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"},
+		AgentID:  "agent-1", Name: "challenged", Transport: agentcfg.MCPTransportHTTP, URL: server.URL,
+	})
+	if !errors.Is(err, agentcfgprotocol.ErrAuthRequired) {
+		t.Fatalf("PrepareConnection = %v, want ErrAuthRequired", err)
+	}
+	var typed *mcpdrv.PreparationAuthRequiredError
+	if !errors.As(err, &typed) || typed.Challenge.ResourceMetadataURL == "" {
+		t.Fatalf("PrepareConnection did not retain typed defensive challenge: %#v", err)
+	}
+	if _, _, ok := reg.RegistrationIdentity("challenged"); ok {
+		t.Fatal("auth-required private preparation published a registry entry")
 	}
 }

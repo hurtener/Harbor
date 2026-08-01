@@ -88,6 +88,20 @@ type ConnectionPreparer interface {
 	PrepareConnection(ctx context.Context, req AttachRequest) (PreparedConnection, error)
 }
 
+type connectionMatcher interface {
+	ConnectionMatches(owner toolauth.Owner, name, descriptorFingerprint string) bool
+}
+
+const mcpAddContinuationKind = "agentcfg.mcp.add_connection"
+
+func mcpAddContinuation(agentID string, desc agentcfg.MCPConnectionDescriptor) pauseresume.Continuation {
+	return pauseresume.Continuation{Kind: mcpAddContinuationKind, Data: map[string]string{
+		"agent_id":               agentID,
+		"server":                 desc.Name,
+		"descriptor_fingerprint": agentcfg.MCPConnectionFingerprint(desc),
+	}}
+}
+
 // PreparedConnection owns one connected, discovered, unpublished MCP
 // connection. Activate publishes it once; Close drains it on refusal.
 type PreparedConnection interface {
@@ -234,11 +248,8 @@ const (
 	// no half-attached server registered.
 	ConnectionStateFailed ConnectionState = "failed"
 	// ConnectionStateAuthRequired — the attach parked on the unified
-	// pause/resume primitive awaiting authorization. NOTE: the resume
-	// continuation that re-drives the attach to online is not yet
-	// implemented — resume currently only releases the pause (tracked in
-	// issue #375). The descriptor revision is recorded; the server comes
-	// online on a subsequent (authorized) add.
+	// pause/resume primitive awaiting authorization. An accepted resume re-reads
+	// the exact durable descriptor, privately prepares it, then activates it.
 	ConnectionStateAuthRequired ConnectionState = "auth_required"
 )
 
@@ -342,7 +353,9 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 
 	// Connect and discover privately. The headers flow to the transport ONLY;
 	// a successful preparation has not changed the shared catalog or registry.
-	prepared, prepareErr := s.preparer.PrepareConnection(ctx, AttachRequest{
+	continuation := mcpAddContinuation(req.AgentID, desc)
+	prepareCtx := pauseresume.WithContinuation(ctx, continuation)
+	prepared, prepareErr := s.preparer.PrepareConnection(prepareCtx, AttachRequest{
 		Identity:                     id,
 		AgentID:                      req.AgentID,
 		Name:                         desc.Name,
@@ -392,29 +405,38 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		if s.coordinator == nil {
 			return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(ErrCoordinatorUnavailable, rollbackPreparedProvider(ctx, preparedProvider))
 		}
+		var providerAuth *toolauth.ErrAuthRequired
+		_ = errors.As(prepareErr, &providerAuth)
 		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider, opts)
 		if recErr != nil {
 			_, connExact, providerExact, readErr := s.activeMatches(ctx, q, req.AgentID, desc, wireProvider)
 			if readErr == nil && connExact && providerExact {
 				if preparedProvider != nil {
 					if publishErr := preparedProvider.Publish(ctx); publishErr != nil {
-						return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(recErr, publishErr, rollbackPreparedProvider(ctx, preparedProvider))
+						return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(recErr, publishErr, rollbackPreparedProvider(ctx, preparedProvider), s.rejectProducerPause(ctx, providerAuth))
 					}
 					preparedProvider.Commit(ctx)
 				}
 				s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateFailed, "", "", safeReason(recErr))
-				return prototypes.AgentConfigAddMCPConnectionResponse{}, recErr
+				return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(recErr, s.rejectProducerPause(ctx, providerAuth))
 			}
 			providerErr := rollbackPreparedProvider(ctx, preparedProvider)
-			return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(recErr, readErr, providerErr)
+			pauseErr := s.rejectProducerPause(ctx, providerAuth)
+			return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(recErr, readErr, providerErr, pauseErr)
 		}
 		if preparedProvider != nil {
 			if publishErr := preparedProvider.Publish(ctx); publishErr != nil {
-				return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(publishErr, rollbackPreparedProvider(ctx, preparedProvider), s.rollbackRevision(ctx, q, req.AgentID, rev))
+				return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(publishErr, rollbackPreparedProvider(ctx, preparedProvider), s.rollbackRevision(ctx, q, req.AgentID, rev), s.rejectProducerPause(ctx, providerAuth))
 			}
 			preparedProvider.Commit(ctx)
 		}
-		token, parkErr := s.parkForAuth(ctx, id, req.AgentID, desc)
+		var token pauseresume.Token
+		var parkErr error
+		if providerAuth != nil && providerAuth.PauseToken != "" {
+			token = pauseresume.Token(providerAuth.PauseToken)
+		} else {
+			token, parkErr = s.parkForAuth(ctx, id, req.AgentID, desc)
+		}
 		if parkErr != nil {
 			// The revision IS recorded (so the connection is nameable and
 			// removable) but no terminal lifecycle event has fired — leaving a
@@ -654,8 +676,13 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 			MetaAnnotations: cloneAnnotations(c.MetaAnnotations),
 		}, nil, nil, nil
 	case agentcfg.MCPTransportHTTP:
-		if strings.TrimSpace(c.URL) == "" {
+		rawURL := strings.TrimSpace(c.URL)
+		if rawURL == "" {
 			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: http transport requires a url", ErrInvalidConnection)
+		}
+		normalizedURL, uerr := config.NormalizeMCPHTTPURL(rawURL)
+		if uerr != nil {
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: http transport url: %v", ErrInvalidConnection, uerr)
 		}
 		if len(c.Command) > 0 {
 			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: http transport must not carry a command", ErrInvalidConnection)
@@ -671,7 +698,7 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 		return agentcfg.MCPConnectionDescriptor{
 			Name:                         name,
 			Transport:                    transport,
-			URL:                          strings.TrimSpace(c.URL),
+			URL:                          normalizedURL,
 			OAuthProvider:                strings.TrimSpace(c.OAuthProvider),
 			MetaAnnotations:              cloneAnnotations(c.MetaAnnotations),
 			OAuthDiscoveryAllowedOrigins: origins,
@@ -1094,13 +1121,14 @@ func (s *Service) prepareWireOAuthBinding(ctx context.Context, id identity.Ident
 // auth-required MCP attach. The pause Payload carries ONLY non-secret
 // metadata (agent id, server name, the OAuth reason marker) — never a
 // credential or auth code. The agent-bound token keys by the agent's
-// registration identity. NOTE: the resume continuation that re-drives the
-// attach to online is not yet implemented — resume currently only releases
-// the pause (tracked in issue #375).
+// registration identity. The continuation carries only agent/server identity
+// and the canonical non-secret descriptor fingerprint.
 func (s *Service) parkForAuth(ctx context.Context, id identity.Identity, agentID string, desc agentcfg.MCPConnectionDescriptor) (pauseresume.Token, error) {
+	continuation := mcpAddContinuation(agentID, desc)
 	pause, err := s.coordinator.Request(ctx, pauseresume.PauseRequest{
-		Identity: id,
-		Reason:   pauseresume.ReasonExternalEvent, // tool-side OAuth completion
+		Identity:     id,
+		Reason:       pauseresume.ReasonExternalEvent, // tool-side OAuth completion
+		Continuation: &continuation,
 		Payload: map[string]any{
 			"kind":     "mcp_oauth",
 			"agent_id": agentID,
@@ -1111,6 +1139,18 @@ func (s *Service) parkForAuth(ctx context.Context, id identity.Identity, agentID
 		return "", fmt.Errorf("agentcfg/protocol: park mcp oauth pause: %w", err)
 	}
 	return pause.Token, nil
+}
+
+func (s *Service) rejectProducerPause(ctx context.Context, authErr *toolauth.ErrAuthRequired) error {
+	if authErr == nil || authErr.PauseToken == "" || s.coordinator == nil {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := s.coordinator.Resume(cleanupCtx, pauseresume.Token(authErr.PauseToken), pauseresume.DecisionReject, nil); err != nil {
+		return fmt.Errorf("reject producer oauth pause: %w", err)
+	}
+	return nil
 }
 
 // emitConnectionLifecycle publishes one runtime MCP-attach lifecycle event.

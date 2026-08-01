@@ -794,6 +794,15 @@ func NewService(registry agentcfg.Registry, opts ...Option) (*Service, error) {
 	for _, opt := range opts {
 		opt(s)
 	}
+	if s.coordinator != nil {
+		registrar, ok := s.coordinator.(pauseresume.ContinuationRegistrar)
+		if !ok {
+			return nil, fmt.Errorf("%w: coordinator does not support durable continuations", ErrMisconfigured)
+		}
+		if err := registrar.RegisterContinuation(mcpAddContinuationKind, s.resumeMCPConnection); err != nil {
+			return nil, fmt.Errorf("%w: register mcp continuation: %v", ErrMisconfigured, err)
+		}
+	}
 	return s, nil
 }
 

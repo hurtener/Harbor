@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -305,9 +303,9 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 	}
 	if err := prepared.Activate(ctx); err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_ = prepared.Close(cleanupCtx)
+		cleanupErr := prepared.Close(cleanupCtx)
 		cancel()
-		return err
+		return errors.Join(err, cleanupErr)
 	}
 	return nil
 }
@@ -381,6 +379,18 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 		// empty shell.
 		ToolContext: a.toolContext,
 		Owner:       owner,
+		DescriptorFingerprint: agentcfg.MCPConnectionFingerprint(agentcfg.MCPConnectionDescriptor{
+			Name:                         req.Name,
+			Transport:                    req.Transport,
+			Command:                      append([]string(nil), req.Command...),
+			URL:                          req.URL,
+			OAuthProvider:                req.OAuthProvider,
+			MetaAnnotations:              cloneAnnotationsForReattach(req.MetaAnnotations),
+			OAuthDiscoveryAllowedOrigins: append([]string(nil), req.OAuthDiscoveryAllowedOrigins...),
+			Injection:                    req.Injection.Clone(),
+			ArtifactByteEligible:         req.ArtifactByteEligible,
+			ArtifactParams:               cloneArtifactParams(req.ArtifactParams),
+		}),
 		// The deployment's egress ceiling. Zero leaves mcpdrv.Attach on
 		// config.DefaultMCPArtifactEgressMaxBytes — a real ceiling, never an
 		// unbounded one.
@@ -388,23 +398,22 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 	})
 	if err != nil {
 		a.mu.Unlock()
-		// A binding/config error (unknown provider, missing or mismatched
-		// downstream allow-list, stdio/no-url, static-Authorization conflict)
-		// is a fail-loud operator misconfiguration, never a transient
-		// auth-required. Its message carries "oauth_provider", which the string
-		// heuristic below would otherwise match on "oauth" and misclassify as
-		// auth-required — silently parking the connection and hiding the real
-		// diagnostic. Check the typed sentinel first so the operator sees the
-		// actual cause (e.g. "unknown provider" / "host not in allow-list").
-		if errors.Is(err, mcpdrv.ErrOAuthBinding) {
-			return nil, err
-		}
-		if looksLikeAuthRequired(err) {
+		var providerAuth *toolauth.ErrAuthRequired
+		var challengeAuth *mcpdrv.PreparationAuthRequiredError
+		if errors.As(err, &providerAuth) || errors.As(err, &challengeAuth) {
 			return nil, fmt.Errorf("%w: %w", agentcfgprotocol.ErrAuthRequired, err)
 		}
 		return nil, err
 	}
 	return &preparedMCPConnection{owner: a, inner: prepared}, nil
+}
+
+// ConnectionMatches reports whether the exact desired descriptor is already
+// live for this owner. It is the resume idempotency check after a crash between
+// activation and checkpoint deletion.
+func (a *MCPConnectionAttacher) ConnectionMatches(owner toolauth.Owner, name, fingerprint string) bool {
+	liveOwner, liveFingerprint, ok := a.registry.RegistrationIdentity(name)
+	return ok && liveOwner == owner && liveFingerprint == fingerprint
 }
 
 type preparedMCPConnection struct {
@@ -582,36 +591,3 @@ func transportModeForAdd(t agentcfg.MCPTransport) string {
 		return string(mcpdrv.TransportAuto)
 	}
 }
-
-// looksLikeAuthRequired reports whether an attach error indicates the MCP
-// server requires authorization, so the service routes it onto the unified
-// pause/resume primitive. The MCP driver does not yet surface a TYPED auth
-// error, so this is a documented best-effort string heuristic over the
-// transport's HTTP-status / OAuth markers; it is conservative (a false
-// negative surfaces as a loud `failed`, never a silent drop, and a false
-// positive only parks an operator-cancellable connection — no security
-// bypass either way). When the driver gains a typed auth sentinel this
-// heuristic is replaced by errors.Is — tracked as a follow-up alongside the
-// MCP-SDK typed-error work.
-func looksLikeAuthRequired(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	// The numeric 401 is matched on a word boundary so it does not trip on
-	// an unrelated number (a latency, a byte count, a port). The remaining
-	// markers are auth-specific phrases.
-	if status401Pattern.MatchString(msg) {
-		return true
-	}
-	for _, marker := range []string{"unauthorized", "www-authenticate", "oauth", "invalid_token", "authentication required", "authorization required"} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// status401Pattern matches an HTTP 401 status code on a word boundary so a
-// bare "401" inside an unrelated number does not false-positive.
-var status401Pattern = regexp.MustCompile(`\b401\b`)

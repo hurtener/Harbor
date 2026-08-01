@@ -1051,6 +1051,7 @@ func (p *provider) buildConsentRequired(ctx context.Context, id identity.Identit
 		BindingScope: auth.ScopeUser,
 		AuthorizeURL: ce.consentURL,
 		State:        string(pause.Token),
+		PauseToken:   string(pause.Token),
 		Scopes:       append([]string(nil), p.scopes...),
 		Message:      fmt.Sprintf("credential broker %s requires consent", p.brokerHost),
 	}

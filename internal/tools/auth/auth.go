@@ -339,6 +339,10 @@ type ErrAuthRequired struct {
 	// (it's a one-time-use nonce); safe to surface in events for
 	// callback correlation.
 	State string
+	// PauseToken names the unified pause allocated by the provider. Consumers
+	// must resume this token rather than creating a second pause for one auth
+	// requirement.
+	PauseToken string
 	// Scopes is the scope list requested.
 	Scopes []string
 	// Message is human-readable advisory text. Never includes raw

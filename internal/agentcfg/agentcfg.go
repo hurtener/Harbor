@@ -498,6 +498,23 @@ func (d MCPConnectionDescriptor) CloneArtifactParams() map[string][]string {
 	return out
 }
 
+// MCPConnectionFingerprint returns the stable SHA-256 digest of one
+// connection descriptor's canonical, NON-SECRET representation. It uses the
+// same normalizer as persisted ConfigPayload values, so semantically identical
+// descriptors compare equal across control writes, restart reconciliation and
+// live registry publication.
+func MCPConnectionFingerprint(d MCPConnectionDescriptor) string {
+	normalized := normalizeConnections([]MCPConnectionDescriptor{d})
+	b, err := json.Marshal(normalized)
+	if err != nil {
+		// MCPConnectionDescriptor contains only JSON-native fields. Keep this
+		// fail-loud marker distinct should a future field violate that invariant.
+		return "unfingerprintable:" + strings.TrimSpace(d.Name)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
 // MCPCredentialInjectionDescriptor is the NON-SECRET per-connection mapping that
 // binds a runtime-added receiver-style MCP server to per-user credential
 // injection, recorded in a config revision as part of the agent's versioned

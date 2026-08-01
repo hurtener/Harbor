@@ -16,6 +16,7 @@ type recordingPrepared struct {
 	activations int
 	closes      int
 	activateErr error
+	closeErr    error
 }
 
 func (p *recordingPrepared) Activate(context.Context) error {
@@ -29,7 +30,7 @@ func (p *recordingPrepared) Close(context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.closes++
-	return nil
+	return p.closeErr
 }
 
 func (p *recordingPrepared) counts() (int, int) {
