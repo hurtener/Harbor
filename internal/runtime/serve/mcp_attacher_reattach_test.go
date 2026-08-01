@@ -175,7 +175,7 @@ func TestMCPConnectionAttacher_Reattach_StdioReGatedAgainstCurrentAllowlist(t *t
 		a, cat, reg, bus := reAttacherFor(t, WithReattachGates([]string{"/usr/bin/some-other-server"}, false))
 		evs := newREvents(t, bus, reQuad())
 
-		err := a.Reattach(context.Background(), reOwner(), reQuad(), desc)
+		_, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc)
 		if !errors.Is(err, ErrReattachStdioNotAllowed) {
 			t.Fatalf("err = %v, want ErrReattachStdioNotAllowed", err)
 		}
@@ -198,7 +198,7 @@ func TestMCPConnectionAttacher_Reattach_StdioReGatedAgainstCurrentAllowlist(t *t
 	t.Run("empty allowlist refuses every stdio re-attach", func(t *testing.T) {
 		// No gates threaded at all — the fail-closed default.
 		a, _, reg, _ := reAttacherFor(t)
-		if err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); !errors.Is(err, ErrReattachStdioNotAllowed) {
+		if _, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); !errors.Is(err, ErrReattachStdioNotAllowed) {
 			t.Fatalf("err = %v, want ErrReattachStdioNotAllowed on an empty allowlist (fail-closed)", err)
 		}
 		if _, exists := reg.OwnerOf(desc.Name); exists {
@@ -213,7 +213,7 @@ func TestMCPConnectionAttacher_Reattach_StdioReGatedAgainstCurrentAllowlist(t *t
 		a, _, _, _ := reAttacherFor(t,
 			WithReattachGates([]string{"/usr/bin/definitely-not-allowlisted"}, false),
 			WithReattachTimeout(3*time.Second))
-		err := a.Reattach(context.Background(), reOwner(), reQuad(), desc)
+		_, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc)
 		if errors.Is(err, ErrReattachStdioNotAllowed) {
 			t.Fatalf("an allowlisted command must pass the stdio gate, got: %v", err)
 		}
@@ -234,7 +234,7 @@ func TestMCPConnectionAttacher_Reattach_InjectionKillSwitch(t *testing.T) {
 	t.Run("opt-in OFF refuses", func(t *testing.T) {
 		a, _, reg, bus := reAttacherFor(t, WithReattachGates(nil, false))
 		evs := newREvents(t, bus, reQuad())
-		err := a.Reattach(context.Background(), reOwner(), reQuad(), desc)
+		_, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc)
 		if !errors.Is(err, ErrReattachInjectionDisabled) {
 			t.Fatalf("err = %v, want ErrReattachInjectionDisabled", err)
 		}
@@ -251,7 +251,7 @@ func TestMCPConnectionAttacher_Reattach_InjectionKillSwitch(t *testing.T) {
 
 	t.Run("opt-in ON gets past the kill-switch", func(t *testing.T) {
 		a, _, _, _ := reAttacherFor(t, WithReattachGates(nil, true))
-		err := a.Reattach(context.Background(), reOwner(), reQuad(), desc)
+		_, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc)
 		// The mapping now reaches the shared injection engine, which refuses it
 		// for its OWN reason (the named broker is not a declared provider) — a
 		// binding class, not the kill-switch.
@@ -300,9 +300,9 @@ func (p *recordingProvider) CompleteFlow(context.Context, string, string) (toola
 	return toolauth.Token{}, errors.New("recordingProvider: CompleteFlow must never be called by the re-attach")
 }
 
-func (p *recordingProvider) PendingFlow(string) (toolauth.PendingFlowInfo, bool) {
+func (p *recordingProvider) PendingFlow(context.Context, string) (toolauth.PendingFlowInfo, bool, error) {
 	p.pendingCalls.Add(1)
-	return toolauth.PendingFlowInfo{}, false
+	return toolauth.PendingFlowInfo{}, false, nil
 }
 
 func (p *recordingProvider) DenyFlow(context.Context, string, string) error { return nil }
@@ -375,7 +375,7 @@ func TestMCPConnectionAttacher_Reattach_OAuthProviderBindingResolves(t *testing.
 			a, _, reg, _ := reAttacherForWithProviders(t, mapResolver{"p": prov})
 			desc := reHTTPDesc("bound-ok", fixture.URL)
 			desc.OAuthProvider = "p"
-			if err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil {
+			if _, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil {
 				t.Fatalf("a name binding whose host is allow-listed must re-attach: %v", err)
 			}
 			if _, exists := reg.OwnerOf("bound-ok"); !exists {
@@ -398,7 +398,7 @@ func TestMCPConnectionAttacher_Reattach_OAuthProviderBindingResolves(t *testing.
 			evs := newREvents(t, bus, reQuad())
 			desc := reHTTPDesc("bound-refused", fixture.URL)
 			desc.OAuthProvider = "p"
-			err := a.Reattach(context.Background(), reOwner(), reQuad(), desc)
+			_, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc)
 			if !errors.Is(err, mcpdrv.ErrOAuthBinding) {
 				t.Fatalf("err = %v, want ErrOAuthBinding (host absent from the boot allow-list)", err)
 			}
@@ -421,7 +421,7 @@ func TestMCPConnectionAttacher_Reattach_OAuthProviderBindingResolves(t *testing.
 			a, _, _, _ := reAttacherForWithProviders(t, mapResolver{"p": prov})
 			desc := reHTTPDesc("bound-unknown", fixture.URL)
 			desc.OAuthProvider = "no-such-provider"
-			if err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); !errors.Is(err, mcpdrv.ErrOAuthBinding) {
+			if _, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); !errors.Is(err, mcpdrv.ErrOAuthBinding) {
 				t.Fatalf("err = %v, want ErrOAuthBinding for an unknown provider name", err)
 			}
 		})
@@ -479,7 +479,7 @@ func TestMCPConnectionAttacher_Reattach_IsCredentialNeutral(t *testing.T) {
 
 			desc := reHTTPDesc("creditless", fixture.URL)
 			desc.OAuthProvider = "p"
-			if err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil {
+			if _, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil {
 				t.Fatalf("a credential-less re-attach must SUCCEED (the attach has no token step): %v", err)
 			}
 			if _, exists := reg.OwnerOf("creditless"); !exists {
@@ -528,7 +528,7 @@ func TestMCPConnectionAttacher_Reattach_ShortfallSurfacesOnFirstCallNotOnAttach(
 
 	desc := reHTTPDesc("shortfall", fixture.URL)
 	desc.OAuthProvider = "p"
-	if err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil {
+	if _, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil {
 		t.Fatalf("re-attach: %v", err)
 	}
 	if prov.tokenCalls.Load() != 0 {
@@ -573,7 +573,7 @@ func TestReattach_FailureClassesAreDistinctAndAllReported(t *testing.T) {
 		dead := deadHTTPURL(t)
 		a, _, _, bus := reAttacherFor(t, WithReattachTimeout(3*time.Second))
 		evs := newREvents(t, bus, reQuad())
-		if err := a.Reattach(context.Background(), reOwner(), reQuad(), reHTTPDesc("dead", dead)); err == nil {
+		if _, err := a.Reattach(context.Background(), reOwner(), reQuad(), reHTTPDesc("dead", dead)); err == nil {
 			t.Fatal("an unreachable server must fail loud")
 		}
 		assertClass(t, evs, agentcfg.MCPReattachClassTransportFailed)
@@ -584,7 +584,7 @@ func TestReattach_FailureClassesAreDistinctAndAllReported(t *testing.T) {
 	t.Run(agentcfg.MCPReattachClassStdioNotAllowed, func(t *testing.T) {
 		a, _, _, bus := reAttacherFor(t)
 		evs := newREvents(t, bus, reQuad())
-		_ = a.Reattach(context.Background(), reOwner(), reQuad(), agentcfg.MCPConnectionDescriptor{
+		_, _ = a.Reattach(context.Background(), reOwner(), reQuad(), agentcfg.MCPConnectionDescriptor{
 			Name: "s", Transport: agentcfg.MCPTransportStdio, Command: []string{"/bin/nope"},
 		})
 		assertClass(t, evs, agentcfg.MCPReattachClassStdioNotAllowed)
@@ -597,7 +597,7 @@ func TestReattach_FailureClassesAreDistinctAndAllReported(t *testing.T) {
 		evs := newREvents(t, bus, reQuad())
 		d := reHTTPDesc("inj", "https://example.invalid/mcp")
 		d.Injection = &agentcfg.MCPCredentialInjectionDescriptor{Provider: "b", Form: "header", Header: "x-api-key"}
-		_ = a.Reattach(context.Background(), reOwner(), reQuad(), d)
+		_, _ = a.Reattach(context.Background(), reOwner(), reQuad(), d)
 		assertClass(t, evs, agentcfg.MCPReattachClassInjectionDisabled)
 		seen[agentcfg.MCPReattachClassInjectionDisabled] = true
 	})
@@ -608,7 +608,7 @@ func TestReattach_FailureClassesAreDistinctAndAllReported(t *testing.T) {
 		evs := newREvents(t, bus, reQuad())
 		d := reHTTPDesc("bind", "https://example.invalid/mcp")
 		d.OAuthProvider = "unknown"
-		_ = a.Reattach(context.Background(), reOwner(), reQuad(), d)
+		_, _ = a.Reattach(context.Background(), reOwner(), reQuad(), d)
 		assertClass(t, evs, agentcfg.MCPReattachClassOAuthBinding)
 		seen[agentcfg.MCPReattachClassOAuthBinding] = true
 	})
@@ -624,7 +624,7 @@ func TestReattach_FailureClassesAreDistinctAndAllReported(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("pre-seed the other owner's registration: %v", err)
 		}
-		err := a.Reattach(context.Background(), reOwner(), reQuad(), reHTTPDesc("shared-name", "https://example.invalid/mcp"))
+		_, err := a.Reattach(context.Background(), reOwner(), reQuad(), reHTTPDesc("shared-name", "https://example.invalid/mcp"))
 		if !errors.Is(err, mcpdrv.ErrConnectionNameOwnerConflict) {
 			t.Fatalf("err = %v, want the inherited ErrConnectionNameOwnerConflict", err)
 		}
@@ -651,7 +651,7 @@ func TestReattach_FailureClassesAreDistinctAndAllReported(t *testing.T) {
 			t.Fatalf("pre-seed: %v", err)
 		}
 		// "srv_extra" is an underscore-extension of the registered "srv".
-		err := a.Reattach(context.Background(), reOwner(), reQuad(), reHTTPDesc("srv_extra", "https://example.invalid/mcp"))
+		_, err := a.Reattach(context.Background(), reOwner(), reQuad(), reHTTPDesc("srv_extra", "https://example.invalid/mcp"))
 		if !errors.Is(err, mcpdrv.ErrAmbiguousServerID) {
 			t.Fatalf("err = %v, want ErrAmbiguousServerID", err)
 		}
@@ -718,7 +718,7 @@ func TestMCPConnectionAttacher_Reattach_HeaderAuthenticatedServerFailsLoud(t *te
 	a, cat, reg, bus := reAttacherFor(t, WithReattachTimeout(10*time.Second))
 	evs := newREvents(t, bus, reQuad())
 
-	err := a.Reattach(context.Background(), reOwner(), reQuad(), reHTTPDesc("header-auth", gated.URL))
+	_, err := a.Reattach(context.Background(), reOwner(), reQuad(), reHTTPDesc("header-auth", gated.URL))
 	if err == nil {
 		t.Fatal("a header-authenticated server must NOT silently re-attach without its header")
 	}
@@ -747,8 +747,10 @@ func TestMCPConnectionAttacher_Reattach_AlreadyRegisteredUnderOwnerIsNoOp(t *tes
 	evs := newREvents(t, bus, reQuad())
 
 	desc := reHTTPDesc("noop", fixture.URL)
-	if err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil {
+	if changed, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil {
 		t.Fatalf("first re-attach: %v", err)
+	} else if !changed {
+		t.Fatal("first re-attach reported no change")
 	}
 	before, err := reg.GetServer(reattachIDCtx(t), "noop")
 	if err != nil {
@@ -756,8 +758,10 @@ func TestMCPConnectionAttacher_Reattach_AlreadyRegisteredUnderOwnerIsNoOp(t *tes
 	}
 
 	// A second reconcile for the SAME owner (the raced-view case).
-	if err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil {
+	if changed, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil {
 		t.Fatalf("second re-attach must be a clean no-op: %v", err)
+	} else if changed {
+		t.Fatal("exact descriptor re-attach reported a replacement")
 	}
 	after, err := reg.GetServer(reattachIDCtx(t), "noop")
 	if err != nil {
@@ -773,6 +777,31 @@ func TestMCPConnectionAttacher_Reattach_AlreadyRegisteredUnderOwnerIsNoOp(t *tes
 	})
 	if n := countType(seen, agentcfg.EventTypeMCPConnectionReattached); n != 1 {
 		t.Fatalf("reattached events = %d, want exactly 1 (the no-op must not re-report)", n)
+	}
+}
+
+func TestMCPConnectionAttacher_Reattach_SameOwnerChangedDescriptorReplaces(t *testing.T) {
+	fixture := reattachFixtureServer(t)
+	a, _, reg, _ := reAttacherFor(t, WithReattachTimeout(15*time.Second))
+	desc := reHTTPDesc("replace", fixture.URL)
+	if changed, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil || !changed {
+		t.Fatalf("first Reattach changed=%t err=%v", changed, err)
+	}
+	_, beforeFingerprint, ok := reg.RegistrationIdentity(desc.Name)
+	if !ok {
+		t.Fatal("first descriptor not registered")
+	}
+	edited := desc
+	edited.MetaAnnotations = map[string]string{"deployment.generation": "2"}
+	if changed, err := a.Reattach(context.Background(), reOwner(), reQuad(), edited); err != nil || !changed {
+		t.Fatalf("changed Reattach changed=%t err=%v", changed, err)
+	}
+	owner, afterFingerprint, ok := reg.RegistrationIdentity(desc.Name)
+	if !ok || owner != reOwner() {
+		t.Fatalf("replacement registration owner=%+v ok=%t", owner, ok)
+	}
+	if beforeFingerprint == afterFingerprint || afterFingerprint != agentcfg.MCPConnectionFingerprint(edited) {
+		t.Fatalf("replacement fingerprint before=%q after=%q", beforeFingerprint, afterFingerprint)
 	}
 }
 
@@ -802,7 +831,7 @@ func TestMCPConnectionAttacher_Reattach_BoundedContext(t *testing.T) {
 	// The CALLER's ctx is generous: only the driver's own bounds can end this.
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	err := a.Reattach(ctx, reOwner(), reQuad(), reHTTPDesc("hung", hung.URL))
+	_, err := a.Reattach(ctx, reOwner(), reQuad(), reHTTPDesc("hung", hung.URL))
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -848,7 +877,7 @@ func TestMCPConnectionAttacher_Reattach_BackoffBoundsRetries(t *testing.T) {
 	desc := reHTTPDesc("flaky", dead)
 
 	// Run start #1: dials, fails, emits, opens the window.
-	if err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err == nil {
+	if _, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err == nil {
 		t.Fatal("want a failure")
 	} else if errors.Is(err, ErrReattachSuppressed) {
 		t.Fatal("the FIRST failure must never be suppressed — it is the loud one")
@@ -858,7 +887,7 @@ func TestMCPConnectionAttacher_Reattach_BackoffBoundsRetries(t *testing.T) {
 	// Run starts #2..#11: suppressed by the window, counted, NOT re-dialled.
 	const suppressedRuns = 10
 	for range suppressedRuns {
-		err := a.Reattach(context.Background(), reOwner(), reQuad(), desc)
+		_, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc)
 		if !errors.Is(err, ErrReattachSuppressed) {
 			t.Fatalf("err = %v, want ErrReattachSuppressed inside the retry window", err)
 		}
@@ -874,7 +903,7 @@ func TestMCPConnectionAttacher_Reattach_BackoffBoundsRetries(t *testing.T) {
 	// Advance past the window: the next run start dials again, fails again, and
 	// its event CARRIES the suppressed count — bounded, never silent.
 	advance(reattachBackoffMax + time.Minute)
-	if err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); errors.Is(err, ErrReattachSuppressed) {
+	if _, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); errors.Is(err, ErrReattachSuppressed) {
 		t.Fatal("the window elapsed — the next run start must retry")
 	}
 	seen = evs.waitFor(t, "the second failure event", func(e []events.Event) bool {
@@ -891,7 +920,7 @@ func TestMCPConnectionAttacher_Reattach_BackoffBoundsRetries(t *testing.T) {
 	// waiting, even though the window has not elapsed.
 	edited := desc
 	edited.URL = deadHTTPURL(t)
-	if err := a.Reattach(context.Background(), reOwner(), reQuad(), edited); errors.Is(err, ErrReattachSuppressed) {
+	if _, err := a.Reattach(context.Background(), reOwner(), reQuad(), edited); errors.Is(err, ErrReattachSuppressed) {
 		t.Fatal("an edited descriptor must retry immediately, not serve out the old window")
 	}
 }
@@ -906,7 +935,7 @@ func TestMCPConnectionAttacher_Reattach_TerminalClassReportsOnce(t *testing.T) {
 	d.OAuthProvider = "unknown-provider"
 
 	for i := range 8 {
-		err := a.Reattach(context.Background(), reOwner(), reQuad(), d)
+		_, err := a.Reattach(context.Background(), reOwner(), reQuad(), d)
 		switch {
 		case i == 0 && !errors.Is(err, mcpdrv.ErrOAuthBinding):
 			t.Fatalf("first attempt = %v, want the loud binding error", err)
@@ -932,7 +961,7 @@ func TestMCPConnectionAttacher_Reattach_OwnerMandatory(t *testing.T) {
 		{Tenant: reTenant},
 		{Agent: reAgent},
 	} {
-		err := a.Reattach(context.Background(), owner, reQuad(), reHTTPDesc("orphan", "https://example.invalid/mcp"))
+		_, err := a.Reattach(context.Background(), owner, reQuad(), reHTTPDesc("orphan", "https://example.invalid/mcp"))
 		if !errors.Is(err, ErrRuntimeAddOwnerMissing) {
 			t.Fatalf("owner %+v: err = %v, want ErrRuntimeAddOwnerMissing", owner, err)
 		}
@@ -963,7 +992,7 @@ func TestReattach_EventPayloadsAreSafeAndScrubbed(t *testing.T) {
 
 	a, _, _, bus := reAttacherFor(t, WithReattachTimeout(3*time.Second))
 	evs := newREvents(t, bus, reQuad())
-	if err := a.Reattach(context.Background(), reOwner(), reQuad(), reHTTPDesc("scrub", withUserinfo)); err == nil {
+	if _, err := a.Reattach(context.Background(), reOwner(), reQuad(), reHTTPDesc("scrub", withUserinfo)); err == nil {
 		t.Fatal("want a transport failure")
 	}
 	seen := evs.waitFor(t, "the reattach_failed event", func(e []events.Event) bool {
@@ -1030,11 +1059,11 @@ func TestMCPConnectionAttacher_Reattach_ConcurrentOwners(t *testing.T) {
 			}
 			// A's outcome is deliberately unasserted: half its runs race a
 			// cancellation. What matters is that it never races B.
-			_ = a.Reattach(ctxA, ownerA, quadA, descA)
+			_, _ = a.Reattach(ctxA, ownerA, quadA, descA)
 		}()
 		go func() {
 			defer wg.Done()
-			if err := a.Reattach(context.Background(), ownerB, quadB, descB); err != nil {
+			if _, err := a.Reattach(context.Background(), ownerB, quadB, descB); err != nil {
 				errsB <- err
 			}
 		}()

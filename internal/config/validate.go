@@ -1375,6 +1375,9 @@ func (c *Config) validateTools() error {
 				return fieldError(prefix+".url",
 					fmt.Sprintf("must be set when transport_mode=%q", mode))
 			}
+			if _, err := NormalizeMCPHTTPURL(s.URL); err != nil {
+				return fieldError(prefix+".url", err.Error())
+			}
 		case "stdio":
 			if len(s.Command) == 0 {
 				return fieldError(prefix+".command",
@@ -1388,6 +1391,11 @@ func (c *Config) validateTools() error {
 			if s.URL == "" && len(s.Command) == 0 {
 				return fieldError(prefix,
 					"auto mode requires url or command")
+			}
+			if s.URL != "" {
+				if _, err := NormalizeMCPHTTPURL(s.URL); err != nil {
+					return fieldError(prefix+".url", err.Error())
+				}
 			}
 		}
 		if s.KeepAlive < 0 {

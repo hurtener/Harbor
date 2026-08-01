@@ -57,6 +57,44 @@ type errorModel struct{ app.Model }
 type startupFaultModel struct{ app.Model }
 type suspendModel struct{ app.Model }
 
+type functionKeyModel struct {
+	next int
+}
+
+func (functionKeyModel) Init() tea.Cmd { return nil }
+
+func (m functionKeyModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := message.(tea.KeyPressMsg)
+	if !ok {
+		return m, nil
+	}
+	functionKeys := [...]rune{tea.KeyF1, tea.KeyF2, tea.KeyF3, tea.KeyF4, tea.KeyF5, tea.KeyF6, tea.KeyF7, tea.KeyF8, tea.KeyF9}
+	if m.next == len(functionKeys) {
+		if key.Key().Code == 'c' {
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+	if key.Key().Code < tea.KeyF1 || key.Key().Code > tea.KeyF12 {
+		// Bubble Tea's terminal capability probes may also arrive as key
+		// messages. They are host negotiation, not operator input.
+		return m, nil
+	}
+	want := functionKeys[m.next]
+	if key.Key().Code != want {
+		return m, tea.Interrupt
+	}
+	m.next++
+	return m, nil
+}
+
+func (m functionKeyModel) View() tea.View {
+	if m.next == 9 {
+		return tea.NewView("all function keys decoded")
+	}
+	return tea.NewView(fmt.Sprintf("function keys ready: %d/9", m.next))
+}
+
 func (m suspendModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := message.(tea.KeyPressMsg); ok && key.String() == "x" {
 		return m, tea.Suspend
@@ -109,6 +147,8 @@ func TestE2E_TUITerminalHelper(t *testing.T) {
 		candidate = startupFaultModel{Model: model}
 	case "suspend":
 		candidate = suspendModel{Model: model}
+	case "function-keys":
+		candidate = functionKeyModel{}
 	}
 	if err := app.Run(context.Background(), os.Stdin, os.Stdout, candidate); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "HOST_ERROR:%v\n", err)
@@ -124,26 +164,14 @@ func terminalFoundationProjection() projection.Projection {
 }
 
 func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
-	// STILL QUARANTINED, but for a DIFFERENT defect than before —
-	// https://github.com/hurtener/Harbor/issues/604.
-	//
-	// The failure this test was originally quarantined for (#598, "timeout
-	// waiting for PTY canonical session erase") is FIXED: the shell handed
-	// host-owned commands to its host through a tea.Cmd, so a keystroke
-	// already queued behind a chord was applied before the command committed
-	// and the confirmation dialog opened behind the enter meant for it. That
-	// defect is now covered by a deterministic unit gate in internal/tui/app
-	// (TestRuntimeModel_ChordCommandCommitsBeforeTheNextQueuedKey) which runs
-	// unconditionally and fails without the fix — not an 80-second E2E.
-	//
-	// What remains is an undiagnosed stall on an F-key route/actions wait, at
-	// ~5% on a 2-CPU Linux runner BOTH before and after that fix (measured:
-	// 3 erase + 1 stall in 20 pre-fix runs, 0 erase + 2 stalls in 36 post-fix
-	// runs). The cause is NOT known; #604 records the evidence and what was
-	// ruled out. Do NOT close #604 by raising ptyWaitTimeout.
-	if os.Getenv("HARBOR_RUN_QUARANTINED") == "" {
-		t.Skip("quarantined: undiagnosed F-key render stall on Linux CI, see https://github.com/hurtener/Harbor/issues/604")
-	}
+	// This is an unconditionally-run release gate. #598's erase ordering defect
+	// and the duplicate failed-follow-up command in this workflow both have
+	// deterministic app-level regressions. The #604 recurrence exposed
+	// protocol-inaccurate function-key input, cell-diff/transient-output oracles,
+	// and a same-scope stale-inspection response that could close a newer action
+	// modal; each now has a focused regression. Keep the failure-only PTY liveness
+	// and SIGQUIT diagnostics below rather than restoring a permanent quarantine
+	// or increasing its timeout.
 	stack := devstack.Assemble(t, runtimePostureConfig(t), devstack.AssembleOpts{})
 	defer stack.Close()
 	var failNextStart atomic.Bool
@@ -193,13 +221,20 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session := startPTYCommand(t, binary, []string{"tui", "--attach", server.URL, "--token-file", tokenPath, "--state-file", statePath, "--session", first.Session}, temp, 80, 24)
 	session.waitContains(t, "live")
 	session.text(t, "hello")
-	session.waitContains(t, "hello")
+	awaitPTYDraftPersisted(t, statePath, first, "hello")
+	// The renderer emits cell diffs, so five typed characters need not be one
+	// contiguous byte substring (observed as "hel" and "lo" around cursor
+	// movement). Persistence acknowledges that all five keys reached the model;
+	// a resize then asks for a stable full visual frame before editing continues.
+	mark := len(session.snapshot())
+	session.resize(t, 81, 24)
+	session.waitContainsAfter(t, mark, "hello")
 	session.write(t, "\x1b[1;2D")
 	session.key(t, 'o', 1)
 	session.key(t, '!', 1)
 	session.key(t, '_', 5)
 	session.key(t, '_', 3)
-	mark := len(session.snapshot())
+	mark = len(session.snapshot())
 	session.key(t, 'x', 5)
 	session.waitContainsAfter(t, mark, "Toggle runtime context")
 	session.key(t, 'b', 1)
@@ -245,8 +280,14 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	}
 	session.command(t, 'u')
 	session.waitContains(t, "attachment · missing.txt")
+	mark = len(session.snapshot())
 	session.command(t, 'e')
-	session.waitContains(t, "Attachment removed locally")
+	// A one-cell suffix update can encode this toast as "Attachment removed
+	// locall" plus a separately positioned "y". Force a full frame after the
+	// command so the assertion observes the terminal's text rather than requiring
+	// one incidental byte boundary from the cell-diff renderer.
+	session.resize(t, 99, 30)
+	session.waitContainsAfter(t, mark, "Attachment removed locally")
 	mark = len(session.snapshot())
 	session.command(t, 'a')
 	session.waitContainsAfter(t, mark, "File path|disposition")
@@ -275,6 +316,12 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 		response, inspectErr := secondClient.SessionsInspect(t.Context(), types.SessionsInspectRequest{SessionID: second.Session})
 		return inspectErr == nil && response.Row.Title == "renamed"
 	}, "PTY canonical session rename")
+	// SessionsInspect confirms that the server accepted the title before the
+	// Bubble Tea command result has necessarily been delivered back to the
+	// terminal event loop. Do not send the next shortcut until that result has
+	// closed the rename dialog; otherwise its key bytes can be consumed by the
+	// still-open title input on a busy runner.
+	session.waitContainsAfter(t, mark, "Session renamed: renamed")
 
 	expiredReplacement := mintExpiredToken(t, stack, second.Session)
 	mark = len(session.snapshot())
@@ -303,33 +350,36 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.waitContainsAfter(t, mark, "reconnecting")
 	session.waitContainsAfter(t, mark, "live")
 
-	for _, route := range []struct{ key, label string }{
-		{"\x1bOQ", "TREE / PROGRESS"},
-		{"\x1bOR", "transport / OAuth"},
-		{"\x1bOS", "metadata only"},
-		{"\x1b[15~", "filter / raw safe payload"},
-		{"\x1b[17~", "Capabilities:"},
-		{"\x1b[18~", "retained by PauseToken"},
-		{"\x1b[19~", "retention / capability"},
+	for _, route := range []struct {
+		key   rune
+		label string
+	}{
+		{tea.KeyF2, "TREE / PROGRESS"},
+		{tea.KeyF3, "transport / OAuth"},
+		{tea.KeyF4, "metadata only"},
+		{tea.KeyF5, "filter / raw safe payload"},
+		{tea.KeyF6, "Capabilities:"},
+		{tea.KeyF7, "retained by PauseToken"},
+		{tea.KeyF8, "retention / capability"},
 	} {
 		mark = len(session.snapshot())
-		session.write(t, route.key)
+		session.functionKey(t, route.key)
 		session.waitContainsAfter(t, mark, route.label)
 	}
 	mark = len(session.snapshot())
-	session.write(t, "\x1b[20~")
+	session.functionKey(t, tea.KeyF9)
 	session.waitContainsAfter(t, mark, "Runtime actions")
 	session.key(t, '\r', 1)
 	session.waitContains(t, "Unavailable: no artifact selected")
 	session.key(t, 27, 1)
-	session.write(t, "\x1b[20~")
+	session.functionKey(t, tea.KeyF9)
 	session.text(t, "Delete session")
 	session.key(t, '\r', 1)
 	session.waitContains(t, "Confirm Runtime action")
 	session.key(t, 27, 1)
 	session.key(t, 27, 1)
 	mark = len(session.snapshot())
-	session.write(t, "\x1bOP")
+	session.functionKey(t, tea.KeyF1)
 	// F1 returns to the inline conversation surface: leaving the alternate
 	// screen repaints the whole managed region, identity row included.
 	session.waitContainsAfter(t, mark, "/"+second.Session)
@@ -357,7 +407,6 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 		return true
 	}, "PTY submitted turn terminal before export")
 	quad := identity.Quadruple{Identity: runtimeIdentity}
-	mark = len(session.snapshot())
 	holdTask, spawnErr := stack.Tasks.Spawn(runtimeCtx, tasks.SpawnRequest{Identity: quad, Kind: tasks.KindForeground, Description: "PTY follow-up hold", Query: "hold active work", IdempotencyKey: "pty-followup-hold"})
 	if spawnErr != nil {
 		t.Fatal(spawnErr)
@@ -365,8 +414,30 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	if runningErr := stack.Tasks.MarkRunning(runtimeCtx, holdTask.ID); runningErr != nil {
 		t.Fatal(runningErr)
 	}
-	// The in-flight verb varies per run; the interrupt affordance is the
-	// stable marker of the working line.
+	await(t, func() bool {
+		inspected, inspectErr := secondClient.SessionsInspect(t.Context(), types.SessionsInspectRequest{SessionID: second.Session})
+		if inspectErr != nil || inspected.Row.Status != types.SessionStatusRunning {
+			return false
+		}
+		response, listErr := secondClient.TasksList(t.Context(), types.TaskListRequest{})
+		if listErr != nil {
+			return false
+		}
+		for _, row := range response.Rows {
+			if row.ID == string(holdTask.ID) {
+				return row.Status == types.TaskStatusRunning
+			}
+		}
+		return false
+	}, "PTY reopened session and hold task canonical running state")
+	// A running-to-running projection can leave the interrupt hint in unchanged
+	// terminal cells; subsequent spinner ticks then emit only the glyph diff. Ask
+	// Bubble Tea for a full frame after the canonical running acknowledgement so
+	// this visual assertion observes the screen content, not an incidental byte
+	// boundary in the diff stream. The in-flight verb varies per run; the
+	// interrupt affordance is the stable marker of the working line.
+	mark = len(session.snapshot())
+	session.resize(t, 101, 30)
 	session.waitContainsAfter(t, mark, "esc to interrupt")
 	session.text(t, "recover queued follow-up")
 	session.key(t, '\r', 1)
@@ -377,7 +448,10 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	}
 	session.waitContains(t, "HTTP 503")
 	session.command(t, 'j')
-	session.command(t, 'j')
+	// One retry transitions the failed entry into an in-flight canonical Start.
+	// Sending the chord again while that request is outstanding is not a second
+	// retry: it targets no failed entry and only introduces an unrelated local
+	// command error into this delivery assertion.
 	await(t, func() bool {
 		response, listErr := secondClient.TasksList(t.Context(), types.TaskListRequest{})
 		if listErr != nil {
@@ -443,6 +517,49 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	restoredPTY.key(t, 'c', 5)
 	restoredPTY.waitExit(t, 0)
 	restoredPTY.assertOperationalRestored(t)
+}
+
+// TestE2E_TUIFunctionKeys_KittyCSIU exercises the real PTY decoder after the
+// host has negotiated Kitty keyboard mode. The full workflow relies on these
+// exact F1-F9 inputs for route changes; legacy SS3/CSI-tilde encodings are not
+// a truthful terminal oracle once CSI-u is active.
+func TestE2E_TUIFunctionKeys_KittyCSIU(t *testing.T) {
+	session := startPTY(t, "function-keys", 80, 24)
+	session.waitContains(t, "function keys ready")
+	for _, key := range [...]rune{tea.KeyF1, tea.KeyF2, tea.KeyF3, tea.KeyF4, tea.KeyF5, tea.KeyF6, tea.KeyF7, tea.KeyF8, tea.KeyF9} {
+		session.functionKey(t, key)
+	}
+	session.waitContains(t, "all function keys decoded")
+	session.key(t, 'c', 1)
+	session.waitExit(t, 0)
+	// This decoder fixture mounts app.Run directly, not the CLI's RunTerminal
+	// wrapper, so it asserts restoration only for modes the fixture enabled.
+	session.assertEnabledModesRestored(t)
+}
+
+func awaitPTYDraftPersisted(t *testing.T, path string, scope types.IdentityScope, want string) {
+	t.Helper()
+	await(t, func() bool {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+		var file struct {
+			Entries map[string]struct {
+				Identity types.IdentityScope `json:"identity"`
+				Draft    string              `json:"draft"`
+			} `json:"entries"`
+		}
+		if json.Unmarshal(body, &file) != nil {
+			return false
+		}
+		for _, entry := range file.Entries {
+			if entry.Identity == scope && entry.Draft == want {
+				return true
+			}
+		}
+		return false
+	}, "PTY draft persistence acknowledgement")
 }
 
 func TestE2E_TUIRuntimeControlPTY_MultiplePauseTokensAndReconciliation(t *testing.T) {
@@ -658,6 +775,12 @@ type ptySession struct {
 	changed chan struct{}
 	done    chan error
 	exited  chan struct{}
+	// readerDone closes only after the master reader has appended the final
+	// PTY frame; process exit can happen before that read completes.
+	readerDone chan struct{}
+	// exitErr is written before exited closes, so readers that observe exited
+	// can report it without consuming done (waitExit owns that channel).
+	exitErr error
 }
 
 func startPTY(t *testing.T, mode string, width, height int) *ptySession {
@@ -685,7 +808,7 @@ func startPTYEnv(t *testing.T, mode string, width, height int, extraEnv []string
 		t.Fatal(err)
 	}
 	_ = slave.Close()
-	s := &ptySession{cmd: cmd, master: master, changed: make(chan struct{}, 1), done: make(chan error, 1), exited: make(chan struct{})}
+	s := &ptySession{cmd: cmd, master: master, changed: make(chan struct{}, 1), done: make(chan error, 1), exited: make(chan struct{}), readerDone: make(chan struct{})}
 	t.Cleanup(func() {
 		select {
 		case <-s.exited:
@@ -760,7 +883,14 @@ func startPTYCommand(t *testing.T, binary string, args []string, workdir string,
 		t.Fatal(err)
 	}
 	_ = slave.Close()
-	s := &ptySession{cmd: cmd, master: master, changed: make(chan struct{}, 1), done: make(chan error, 1), exited: make(chan struct{})}
+	s := &ptySession{
+		cmd:        cmd,
+		master:     master,
+		changed:    make(chan struct{}, 1),
+		done:       make(chan error, 1),
+		exited:     make(chan struct{}),
+		readerDone: make(chan struct{}),
+	}
 	t.Cleanup(func() {
 		select {
 		case <-s.exited:
@@ -770,11 +900,18 @@ func startPTYCommand(t *testing.T, binary string, args []string, workdir string,
 		_ = master.Close()
 	})
 	go readPTY(s)
-	go func() { s.done <- cmd.Wait(); close(s.exited); _ = master.Close() }()
+	go func() {
+		err := cmd.Wait()
+		s.exitErr = err
+		s.done <- err
+		close(s.exited)
+		_ = master.Close()
+	}()
 	return s
 }
 
 func readPTY(s *ptySession) {
+	defer close(s.readerDone)
 	buffer := make([]byte, 4096)
 	for {
 		n, readErr := s.master.Read(buffer)
@@ -839,6 +976,20 @@ func (s *ptySession) key(t *testing.T, code rune, modifier int) {
 	}
 	s.write(t, fmt.Sprintf("\x1b[%d;%du", code, modifier))
 }
+
+func (s *ptySession) functionKey(t *testing.T, code rune) {
+	t.Helper()
+	if code < tea.KeyF1 || code > tea.KeyF12 {
+		t.Fatalf("function key code %d is outside F1-F12", code)
+	}
+	// tea.KeyF* values are Bubble Tea's internal key enum. Kitty CSI-u does
+	// not put that enum on the wire: the protocol assigns F1 the Unicode
+	// functional-key codepoint 57364 and the remaining function keys follow
+	// contiguously. Sending the internal enum produces an unrelated control
+	// code that the decoder may surface as U+FFFD instead of a function key.
+	const kittyF1 = 57364
+	s.key(t, kittyF1+(code-tea.KeyF1), 1)
+}
 func (s *ptySession) text(t *testing.T, value string) {
 	t.Helper()
 	s.write(t, value)
@@ -865,8 +1016,6 @@ func (s *ptySession) waitContains(t *testing.T, needle string) {
 	t.Helper()
 	timer := time.NewTimer(ptyWaitTimeout)
 	defer timer.Stop()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
 	for {
 		output := s.snapshot()
 		if strings.Contains(output, needle) || strings.Contains(normalizePTY(output), needle) {
@@ -874,8 +1023,15 @@ func (s *ptySession) waitContains(t *testing.T, needle string) {
 		}
 		select {
 		case <-timer.C:
-			t.Fatalf("timeout waiting for PTY output %q; output=%q", needle, ansi.Strip(output))
-		case <-ticker.C:
+			s.failWait(t, needle, output, false)
+		case <-s.changed:
+		case <-s.exited:
+			s.awaitReaderDrain()
+			output = s.snapshot()
+			if strings.Contains(output, needle) || strings.Contains(normalizePTY(output), needle) {
+				return
+			}
+			s.failWait(t, needle, output, false)
 		}
 	}
 }
@@ -883,8 +1039,6 @@ func (s *ptySession) waitContainsAfter(t *testing.T, offset int, needle string) 
 	t.Helper()
 	timer := time.NewTimer(ptyWaitTimeout)
 	defer timer.Stop()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
 	for {
 		output := s.snapshot()
 		if offset > len(output) {
@@ -896,10 +1050,84 @@ func (s *ptySession) waitContainsAfter(t *testing.T, offset int, needle string) 
 		}
 		select {
 		case <-timer.C:
-			t.Fatalf("timeout waiting for new PTY output %q; recent=%q", needle, ansi.Strip(recent))
-		case <-ticker.C:
+			s.failWait(t, needle, recent, true)
+		case <-s.changed:
+		case <-s.exited:
+			s.awaitReaderDrain()
+			output = s.snapshot()
+			if offset > len(output) {
+				offset = 0
+			}
+			recent = output[offset:]
+			if strings.Contains(recent, needle) || strings.Contains(normalizePTY(recent), needle) {
+				return
+			}
+			s.failWait(t, needle, recent, true)
 		}
 	}
+}
+
+// awaitReaderDrain gives the PTY reader one bounded chance to append the
+// child's final frame after cmd.Wait reports exit. PTYs can report process
+// exit before their master has yielded the final bytes; failing immediately
+// would turn that ordering into a false test failure. This drains once only —
+// it is not a retry or a longer assertion timeout.
+func (s *ptySession) awaitReaderDrain() {
+	select {
+	case <-s.readerDone:
+	case <-time.After(250 * time.Millisecond):
+	}
+}
+
+// failWait turns the previously opaque PTY timeout into a liveness diagnosis.
+// If the child is still alive, SIGQUIT asks the Go runtime for every goroutine
+// stack before the test fails; if it already exited, the exit result and PTY
+// tail distinguish a dead child from a stalled renderer. This is failure-only
+// instrumentation, never a retry or a larger timeout.
+func (s *ptySession) failWait(t *testing.T, needle, observed string, recent bool) {
+	t.Helper()
+	live := true
+	select {
+	case <-s.exited:
+		live = false
+	default:
+	}
+	diagnosticOffset := len(s.snapshot())
+	if live && s.cmd.Process != nil {
+		_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGQUIT)
+		select {
+		case <-s.changed:
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	select {
+	case <-s.exited:
+		s.awaitReaderDrain()
+		live = false
+	default:
+	}
+	output := s.snapshot()
+	diagnostic := ""
+	if diagnosticOffset < len(output) {
+		diagnostic = output[diagnosticOffset:]
+		const diagnosticBytes = 65536
+		if len(diagnostic) > diagnosticBytes {
+			diagnostic = diagnostic[:diagnosticBytes]
+		}
+	}
+	tail := output
+	const tailBytes = 8192
+	if len(tail) > tailBytes {
+		tail = tail[len(tail)-tailBytes:]
+	}
+	exit := "still-running"
+	if !live {
+		exit = fmt.Sprintf("exited: %v", s.exitErr)
+	}
+	if recent {
+		t.Fatalf("timeout waiting for new PTY output %q; child=%s total_bytes=%d observed=%q tail=%q sigquit=%q", needle, exit, len(output), ansi.Strip(observed), ansi.Strip(tail), ansi.Strip(diagnostic))
+	}
+	t.Fatalf("timeout waiting for PTY output %q; child=%s total_bytes=%d tail=%q sigquit=%q", needle, exit, len(output), ansi.Strip(tail), ansi.Strip(diagnostic))
 }
 func (s *ptySession) waitExit(t *testing.T, want int) {
 	t.Helper()

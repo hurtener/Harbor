@@ -336,12 +336,22 @@ func testCancellation(t *testing.T, newCatalog CatalogFactory) {
 func testConcurrentReuse(t *testing.T, newCatalog CatalogFactory) {
 	const n = 100
 	cat := newCatalog()
-	var counter atomic.Int64
+	// Each invocation has a unique input N. Keep retry state keyed by that
+	// invocation rather than deciding failures from one shared global counter:
+	// scheduler interleaving must not decide whether a particular caller gets
+	// enough retries.
+	var attempts sync.Map // map[int]*atomic.Int64
 	err := inproc.RegisterFunc[flakyArgs, flakyOut](cat, "concurrent", func(ctx context.Context, in flakyArgs) (flakyOut, error) {
-		c := counter.Add(1)
-		if c%3 == 0 {
+		entry, _ := attempts.LoadOrStore(in.N, &atomic.Int64{})
+		counter, ok := entry.(*atomic.Int64)
+		if !ok {
+			return flakyOut{}, fmt.Errorf("concurrent retry counter has unexpected type %T", entry)
+		}
+		attempt := counter.Add(1)
+		if in.N%3 == 0 && attempt == 1 {
 			return flakyOut{}, fmt.Errorf("transient: simulated")
 		}
+		attempts.Delete(in.N)
 		return flakyOut{Attempts: int64(in.N)}, nil
 	}, tools.WithPolicy(tools.ToolPolicy{
 		MaxRetries:  5,

@@ -22,7 +22,7 @@ func TestTasksSearcher_New_RejectsMissingDeps(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	defer h.cleanup()
-	deps := search.Deps{Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false }}
+	deps := search.Deps{Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false }, Audit: testAudit}
 
 	if _, err := tasksearch.New(nil, h.tasks, deps); !errors.Is(err, search.ErrInvalidRequest) {
 		t.Errorf("nil lister: got %v, want ErrInvalidRequest", err)
@@ -31,12 +31,17 @@ func TestTasksSearcher_New_RejectsMissingDeps(t *testing.T) {
 		t.Errorf("nil task registry: got %v, want ErrInvalidRequest", err)
 	}
 	if _, err := tasksearch.New(h.sessions, h.tasks, search.Deps{
-		AdminScope: func(context.Context) bool { return false },
+		AdminScope: func(context.Context) bool { return false }, Audit: testAudit,
 	}); !errors.Is(err, search.ErrInvalidRequest) {
 		t.Errorf("nil redactor: got %v, want ErrInvalidRequest", err)
 	}
-	if _, err := tasksearch.New(h.sessions, h.tasks, search.Deps{Redactor: patterns.New()}); !errors.Is(err, search.ErrInvalidRequest) {
+	if _, err := tasksearch.New(h.sessions, h.tasks, search.Deps{Redactor: patterns.New(), Audit: testAudit}); !errors.Is(err, search.ErrInvalidRequest) {
 		t.Errorf("nil AdminScope: got %v, want ErrInvalidRequest", err)
+	}
+	if _, err := tasksearch.New(h.sessions, h.tasks, search.Deps{
+		Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false },
+	}); !errors.Is(err, search.ErrInvalidRequest) {
+		t.Errorf("nil Audit: got %v, want ErrInvalidRequest", err)
 	}
 }
 
@@ -151,6 +156,7 @@ func TestTasksSearcher_RedactorFailureRefusesTheRow(t *testing.T) {
 	s, err := tasksearch.New(h.sessions, h.tasks, search.Deps{
 		Redactor:   failingRedactor{},
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("tasksearch.New: %v", err)

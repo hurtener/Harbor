@@ -389,22 +389,14 @@ func wv125Leg220(t *testing.T) {
 	if composed == nil || composed.ExtraInstructions == nil {
 		t.Fatalf("the composition dropped the tenant value entirely: %+v", composed)
 	}
-	// THE PRIVILEGE INVARIANT, asserted separately from the exact shape
-	// below so its failure message names the SECURITY property rather than
-	// a byte mismatch: the composed value must still CONTAIN the admin-set
-	// tenant block. FALSE exactly when the composition is per-field
-	// last-writer-wins, which is the privilege inversion the wave forbids.
-	if !strings.Contains(*composed.ExtraInstructions, tenantVal) {
-		t.Fatalf("the run-level additive instruction CLEARED the admin-set tenant block: %q — `runs.set_overrides` is not admin-gated, so per-field last-writer-wins is a privilege inversion",
-			*composed.ExtraInstructions)
+	// The privilege invariant is represented by separate authority slots:
+	// tenant guidance remains byte-exact operator guidance while the normal
+	// user's one-run value is contained as personalization.
+	if *composed.ExtraInstructions != tenantVal {
+		t.Fatalf("tenant guidance = %q, want byte-exact %q", *composed.ExtraInstructions, tenantVal)
 	}
-
-	// THE EXACT COMPOSITION. Unconditional — no probe, no arming. Tenant
-	// first, run value below it, blank-line joined.
-	want := tenantVal + "\n\n" + runVal
-	if *composed.ExtraInstructions != want {
-		t.Fatalf("composed = %q, want %q (tenant first, run below, blank-line joined)",
-			*composed.ExtraInstructions, want)
+	if composed.UserPersonalization == nil || *composed.UserPersonalization != runVal {
+		t.Fatalf("user personalization = %v, want %q", composed.UserPersonalization, runVal)
 	}
 
 	// FAILURE MODE: a cross-session override is refused. The session id in the

@@ -857,13 +857,6 @@ func TestBootDeclaredMCPServerNames_NilConfig(t *testing.T) {
 	}
 }
 
-// TestLooksLikeAuthRequired_Nil covers the nil-error guard.
-func TestLooksLikeAuthRequired_Nil(t *testing.T) {
-	if looksLikeAuthRequired(nil) {
-		t.Error("looksLikeAuthRequired(nil) must be false")
-	}
-}
-
 // TestSessionEnsurerAdapter_SessionIDReuse covers the session-id-reuse
 // sentinel translation: the same session id under a DIFFERENT (tenant,user)
 // maps onto the protocol-side reuse sentinel.

@@ -44,7 +44,7 @@
 // Identity propagation is asserted on the tool.auth_required /
 // pause.resumed payloads and on the minted token's binding; the
 // failure modes cover the expired flow (410 + pause still parked)
-// and the replayed callback (404 by consumption).
+// and the replayed callback (200 without a second token exchange).
 package integration
 
 import (
@@ -87,6 +87,15 @@ var phase111bID = identity.Identity{
 	TenantID:  "tenant-phase111b",
 	UserID:    "user-phase111b",
 	SessionID: "session-phase111b",
+}
+
+func mustPhase111bFlowStore(t *testing.T, store state.StateStore, sealer toolauth.Sealer) toolauth.FlowStore {
+	t.Helper()
+	flows, err := toolauth.NewFlowStore(store, sealer)
+	if err != nil {
+		t.Fatalf("NewFlowStore: %v", err)
+	}
+	return flows
 }
 
 const (
@@ -176,7 +185,7 @@ func buildPhase111bEnv(t *testing.T) *phase111bEnv {
 		Scopes:       []string{"repo"},
 	}
 	prov, err := toolauth.NewProvider([]toolauth.OAuthConfig{oauthCfg}, toolauth.ProviderDeps{
-		Store: tokenStore, Bus: bus, Redactor: red, Coordinator: coord,
+		Store: tokenStore, Flows: mustPhase111bFlowStore(t, stateStore, sealer), Bus: bus, Redactor: red, Coordinator: coord,
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
 	if err != nil {
@@ -436,9 +445,33 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 	if authReq.Source != string(env.source) || authReq.AuthorizeURL == "" || authReq.State == "" {
 		t.Fatalf("tool.auth_required payload incomplete: %+v", authReq)
 	}
-	pauseReqEv := phase111bWait(t, pauseReqSub, "pause.requested (the OAuth pause)")
-	if pauseReqEv.Identity.Identity != id {
-		t.Fatalf("pause.requested identity = %+v, want %+v", pauseReqEv.Identity.Identity, id)
+	oauthPauseReqEv := phase111bWait(t, pauseReqSub, "pause.requested (the OAuth pause)")
+	if oauthPauseReqEv.Identity.Identity != id {
+		t.Fatalf("OAuth pause.requested identity = %+v, want %+v", oauthPauseReqEv.Identity.Identity, id)
+	}
+	oauthPause, ok := oauthPauseReqEv.Payload.(pauseresume.PauseRequestedPayload)
+	if !ok {
+		t.Fatalf("OAuth pause.requested payload type = %T", oauthPauseReqEv.Payload)
+	}
+	if oauthPause.Token != authReq.PauseToken {
+		t.Fatalf("OAuth pause.requested token %q != tool.auth_required pause token %q", oauthPause.Token, authReq.PauseToken)
+	}
+
+	// Token returns ErrAuthRequired after creating its own pause, so the
+	// RunLoop records the failed tool step and then installs a SECOND pause for
+	// the planner's ExternalEvent decision. Wait for that run-level token before
+	// completing OAuth: otherwise a fast callback can be followed by RESUME
+	// while the RunLoop has not yet installed its outstanding pause.
+	runPauseReqEv := phase111bWait(t, pauseReqSub, "pause.requested (the planner run pause)")
+	if runPauseReqEv.Identity != q {
+		t.Fatalf("planner pause.requested identity = %+v, want %+v", runPauseReqEv.Identity, q)
+	}
+	runPause, ok := runPauseReqEv.Payload.(pauseresume.PauseRequestedPayload)
+	if !ok {
+		t.Fatalf("planner pause.requested payload type = %T", runPauseReqEv.Payload)
+	}
+	if runPause.Token == "" || runPause.Token == oauthPause.Token {
+		t.Fatalf("planner pause token %q, OAuth pause token %q: want distinct non-empty tokens", runPause.Token, oauthPause.Token)
 	}
 
 	// The tool body never ran pre-callback.
@@ -481,11 +514,11 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 		t.Fatalf("pause.resumed token %q != tool.auth_completed pause token %q", resPayload.Token, done.PauseToken)
 	}
 
-	// 4. Resume the RUN — the steering RESUME, the same inbox path the
-	//    Protocol edge's `resume` method drives (the Console operator
-	//    flow; the recipe documents this leg). The INJECT_CONTEXT note
-	//    is the operator's "OAuth completed" annotation the planner
-	//    observes via RunContext.Control.
+	// 4. CompleteFlow resumed the OAuth pause (oauthPause.Token), not the
+	//    planner run pause (runPause.Token). The two pauses are deliberately
+	//    distinct coordination layers. With the run pause already installed
+	//    above, this explicit control event releases exactly the RunLoop's
+	//    outstanding ExternalEvent park after the token is durably persisted.
 	inbox, err := env.steerReg.Lookup(q)
 	if err != nil {
 		t.Fatalf("steering.Registry.Lookup: %v", err)
@@ -508,7 +541,6 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Enqueue(RESUME): %v", err)
 	}
-
 	// 5. The run re-enters and finishes: the re-dispatched tool
 	//    invocation succeeded USING the minted token.
 	select {
@@ -553,10 +585,10 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 	}
 }
 
-// TestE2E_Phase111b_ReplayedCallback_NotFound — idempotency by
-// consumption at the HTTP edge: replaying the redirect after a
-// successful completion is 404 flow_not_found.
-func TestE2E_Phase111b_ReplayedCallback_NotFound(t *testing.T) {
+// TestE2E_Phase111b_ReplayedCallback_IdempotentSuccess verifies that an
+// ambiguous browser retry receives success from the bounded completion
+// tombstone without re-exchanging the one-time authorization code.
+func TestE2E_Phase111b_ReplayedCallback_IdempotentSuccess(t *testing.T) {
 	env := buildPhase111bEnv(t)
 	ctx := phase111bCtx(t, phase111bID)
 
@@ -569,10 +601,16 @@ func TestE2E_Phase111b_ReplayedCallback_NotFound(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("first callback status = %d, want 200", status)
 	}
+	if got := env.authSrv.TokenExchangeCount(); got != 1 {
+		t.Fatalf("token exchanges after first callback = %d, want 1", got)
+	}
 	// Replay the EXACT redirect target the browser landed on.
 	replayStatus, _ := phase111bBrowse(t, landedOn.String())
-	if replayStatus != http.StatusNotFound {
-		t.Fatalf("replayed callback status = %d, want 404", replayStatus)
+	if replayStatus != http.StatusOK {
+		t.Fatalf("replayed callback status = %d, want 200", replayStatus)
+	}
+	if got := env.authSrv.TokenExchangeCount(); got != 1 {
+		t.Fatalf("token exchanges after replay = %d, want 1", got)
 	}
 }
 
@@ -628,7 +666,7 @@ func TestE2E_Phase111b_ExpiredFlow_Gone_PauseStillParked(t *testing.T) {
 		ServerURL:    authSrv.BaseURL(),
 		RedirectURI:  cbSrv.URL + toolauth.CallbackPath,
 	}}, toolauth.ProviderDeps{
-		Store: tokenStore, Bus: bus, Redactor: red, Coordinator: coord,
+		Store: tokenStore, Flows: mustPhase111bFlowStore(t, stateStore, sealer), Bus: bus, Redactor: red, Coordinator: coord,
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 		Clock:      clock,
 		FlowTTL:    time.Minute,
@@ -694,7 +732,8 @@ type phase111bAuthServer struct {
 		state     string
 		challenge string
 	}
-	lastAccess string
+	lastAccess     string
+	tokenExchanges int
 }
 
 func newPhase111bAuthServer(t *testing.T) *phase111bAuthServer {
@@ -723,6 +762,15 @@ func (f *phase111bAuthServer) LastIssuedAccessToken() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastAccess
+}
+
+// TokenExchangeCount returns the number of calls that reached the token
+// endpoint, including rejected calls. A replay handled by Harbor's completion
+// tombstone must leave this unchanged.
+func (f *phase111bAuthServer) TokenExchangeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tokenExchanges
 }
 
 func (f *phase111bAuthServer) discovery(w http.ResponseWriter, _ *http.Request) {
@@ -767,6 +815,9 @@ func (f *phase111bAuthServer) authorize(w http.ResponseWriter, r *http.Request) 
 }
 
 func (f *phase111bAuthServer) token(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.tokenExchanges++
+	f.mu.Unlock()
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "parse", http.StatusBadRequest)
 		return

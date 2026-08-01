@@ -42,8 +42,8 @@ func (identityBearerProvider) InitiateFlow(context.Context, tools.ToolSourceID) 
 func (identityBearerProvider) CompleteFlow(context.Context, string, string) (auth.Token, error) {
 	return auth.Token{}, nil
 }
-func (identityBearerProvider) PendingFlow(string) (auth.PendingFlowInfo, bool) {
-	return auth.PendingFlowInfo{}, false
+func (identityBearerProvider) PendingFlow(context.Context, string) (auth.PendingFlowInfo, bool, error) {
+	return auth.PendingFlowInfo{}, false, nil
 }
 func (identityBearerProvider) DenyFlow(context.Context, string, string) error   { return nil }
 func (identityBearerProvider) Revoke(context.Context, tools.ToolSourceID) error { return nil }

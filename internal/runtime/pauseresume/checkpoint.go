@@ -56,6 +56,8 @@ type checkpointRecord struct {
 	RunID string `json:"run_id,omitempty"`
 	// Payload is the sanitised, bounded pause payload.
 	Payload map[string]any `json:"payload,omitempty"`
+	// Continuation is the optional non-secret durable work identity.
+	Continuation *Continuation `json:"continuation,omitempty"`
 	// PausedAt is the wall-clock time the pause was recorded.
 	PausedAt time.Time `json:"paused_at"`
 	// ResumedAt is the wall-clock time Resume was called; zero unless

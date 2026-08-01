@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
@@ -46,6 +48,8 @@ type OAuthProviderInstaller struct {
 	// flip-off) loud — never a silent drop.
 	logger *slog.Logger
 }
+
+var _ agentcfgprotocol.ProviderPreparer = (*OAuthProviderInstaller)(nil)
 
 // NewOAuthProviderInstaller builds the production installer. Both the builder
 // and the set are mandatory; a nil either returns a nil installer so the caller
@@ -102,6 +106,99 @@ func (i *OAuthProviderInstaller) InstallProvider(ctx context.Context, tenant, ag
 		return fmt.Errorf("%w: %w", agentcfgprotocol.ErrInvalidProvider, err)
 	}
 	return nil
+}
+
+// PrepareProvider builds a provider without publishing it to the shared set.
+// The returned binding can be threaded directly into private MCP preparation;
+// publication is a separate reversible step after desired state persists.
+func (i *OAuthProviderInstaller) PrepareProvider(ctx context.Context, tenant, agentID string, desc agentcfg.OAuthProviderDescriptor) (agentcfgprotocol.PreparedOAuthProvider, error) {
+	owner := toolauth.Owner{Tenant: tenant, Agent: agentID}
+	if owner.Tenant == "" || owner.Agent == "" {
+		return nil, fmt.Errorf("%w: prepare requires a (tenant, agent) owner (tenant=%q agent=%q)", agentcfgprotocol.ErrInvalidProvider, tenant, agentID)
+	}
+	prov, err := i.build(ctx, desc)
+	if err != nil {
+		if errors.Is(err, toolauth.ErrUnknownBroker) || errors.Is(err, toolauth.ErrBrokerMissingCredentialURL) {
+			return nil, fmt.Errorf("%w: %w", agentcfgprotocol.ErrProviderBrokerUnknown, err)
+		}
+		return nil, fmt.Errorf("%w: %w", agentcfgprotocol.ErrInvalidProvider, err)
+	}
+	return &preparedOAuthProvider{installer: i, owner: owner, name: desc.Name, provider: prov}, nil
+}
+
+type preparedOAuthProvider struct {
+	mu        sync.Mutex
+	installer *OAuthProviderInstaller
+	owner     toolauth.Owner
+	name      string
+	provider  toolauth.OAuthProvider
+	swap      toolauth.ProviderSwap
+	committed bool
+	closed    bool
+}
+
+func (p *preparedOAuthProvider) Binding() toolauth.OAuthProvider { return p.provider }
+
+func (p *preparedOAuthProvider) Publish(_ context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return fmt.Errorf("oauth provider %q: prepared binding is closed", p.name)
+	}
+	if p.swap != nil {
+		return nil
+	}
+	swap, err := p.installer.set.Stage(p.owner, p.name, p.provider)
+	if err != nil {
+		return fmt.Errorf("%w: %w", agentcfgprotocol.ErrInvalidProvider, err)
+	}
+	p.swap = swap
+	return nil
+}
+
+func (p *preparedOAuthProvider) Commit(ctx context.Context) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.committed || p.swap == nil {
+		return
+	}
+	p.committed = true
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := p.swap.Commit(cleanupCtx); err != nil {
+		p.installer.logger.WarnContext(cleanupCtx, "oauth provider published but displaced provider cleanup failed", "provider", p.name, "error", err.Error())
+	}
+}
+
+func (p *preparedOAuthProvider) Rollback(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.committed {
+		return fmt.Errorf("oauth provider %q: committed publication cannot be rolled back", p.name)
+	}
+	if p.closed {
+		return nil
+	}
+	if p.swap != nil {
+		if err := p.swap.Rollback(); err != nil {
+			return err
+		}
+	}
+	p.closed = true
+	return p.provider.Close(ctx)
+}
+
+func (p *preparedOAuthProvider) Close(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	if p.swap != nil {
+		return fmt.Errorf("oauth provider %q: published binding requires Rollback or Commit", p.name)
+	}
+	p.closed = true
+	return p.provider.Close(ctx)
 }
 
 // ErrWireDescriptorDisabled — a wire-carried provider (TokenURL set) was

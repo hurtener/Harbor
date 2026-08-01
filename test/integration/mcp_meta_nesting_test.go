@@ -163,6 +163,10 @@ func metaNestInjectionProvider(t *testing.T, broker *p142Broker, bus events.Even
 	if err != nil {
 		t.Fatalf("token store: %v", err)
 	}
+	flows, err := auth.NewFlowStore(rawState, sealer)
+	if err != nil {
+		t.Fatalf("flow store: %v", err)
+	}
 	prov, err := tokenexchange.New(auth.ProviderConfig{
 		Name:                   p142Provider,
 		CredentialSource:       credsource.Static(p142BrokerClient, p142BrokerSecret),
@@ -172,6 +176,7 @@ func metaNestInjectionProvider(t *testing.T, broker *p142Broker, bus events.Even
 		AllowedDownstreamHosts: []string{host},
 	}, auth.FactoryDeps{
 		Store:       store,
+		Flows:       flows,
 		Bus:         bus,
 		Redactor:    red,
 		Coordinator: pauseresume.New(pauseresume.WithBus(bus)),

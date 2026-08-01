@@ -173,6 +173,34 @@ type SetOptions struct {
 	ExpectedContentHash string
 }
 
+// CheckExpectedRevision evaluates opts against an active-revision snapshot.
+// Persistence drivers use it at the authoritative write boundary. Protocol
+// services also use it before a non-transactional side effect; that earlier
+// check is an ordering guard and never replaces the driver's second check.
+func CheckExpectedRevision(opts SetOptions, active Revision, hasActive bool) error {
+	switch {
+	case opts.ExpectedContentHash == "":
+		return nil
+	case opts.ExpectedContentHash == ExpectNoActiveRevision:
+		if hasActive {
+			return fmt.Errorf(
+				"%w: expected no active revision, but revision %s is active carrying %q",
+				ErrRevisionConflict, active.RevisionID, active.ContentHash)
+		}
+		return nil
+	case !hasActive:
+		return fmt.Errorf(
+			"%w: expected content hash %q but the agent has no active revision (send %q to require that there be none)",
+			ErrRevisionConflict, opts.ExpectedContentHash, ExpectNoActiveRevision)
+	case active.ContentHash != opts.ExpectedContentHash:
+		return fmt.Errorf(
+			"%w: expected content hash %q, active revision %s carries %q",
+			ErrRevisionConflict, opts.ExpectedContentHash, active.RevisionID, active.ContentHash)
+	default:
+		return nil
+	}
+}
+
 // ConfigScope is the durable-config ownership discriminator. One Registry
 // implementation serves two keyings: the admin/tenant durable config (keyed
 // under a synthetic per-agent slot) and the per-user durable config variant
@@ -468,6 +496,23 @@ func (d MCPConnectionDescriptor) CloneArtifactParams() map[string][]string {
 		out[tool] = append([]string(nil), params...)
 	}
 	return out
+}
+
+// MCPConnectionFingerprint returns the stable SHA-256 digest of one
+// connection descriptor's canonical, NON-SECRET representation. It uses the
+// same normalizer as persisted ConfigPayload values, so semantically identical
+// descriptors compare equal across control writes, restart reconciliation and
+// live registry publication.
+func MCPConnectionFingerprint(d MCPConnectionDescriptor) string {
+	normalized := normalizeConnections([]MCPConnectionDescriptor{d})
+	b, err := json.Marshal(normalized)
+	if err != nil {
+		// MCPConnectionDescriptor contains only JSON-native fields. Keep this
+		// fail-loud marker distinct should a future field violate that invariant.
+		return "unfingerprintable:" + strings.TrimSpace(d.Name)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // MCPCredentialInjectionDescriptor is the NON-SECRET per-connection mapping that

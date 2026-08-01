@@ -27,7 +27,9 @@ func (p *fakeProvider) InitiateFlow(context.Context, tools.ToolSourceID) (FlowIn
 func (p *fakeProvider) CompleteFlow(context.Context, string, string) (Token, error) {
 	return Token{}, nil
 }
-func (p *fakeProvider) PendingFlow(string) (PendingFlowInfo, bool) { return PendingFlowInfo{}, false }
+func (p *fakeProvider) PendingFlow(context.Context, string) (PendingFlowInfo, bool, error) {
+	return PendingFlowInfo{}, false, nil
+}
 func (p *fakeProvider) DenyFlow(context.Context, string, string) error {
 	return nil
 }
@@ -180,8 +182,8 @@ func (c *closableTokenProvider) InitiateFlow(context.Context, tools.ToolSourceID
 func (c *closableTokenProvider) CompleteFlow(context.Context, string, string) (Token, error) {
 	return Token{}, nil
 }
-func (c *closableTokenProvider) PendingFlow(string) (PendingFlowInfo, bool) {
-	return PendingFlowInfo{}, false
+func (c *closableTokenProvider) PendingFlow(context.Context, string) (PendingFlowInfo, bool, error) {
+	return PendingFlowInfo{}, false, nil
 }
 func (c *closableTokenProvider) DenyFlow(context.Context, string, string) error   { return nil }
 func (c *closableTokenProvider) Revoke(context.Context, tools.ToolSourceID) error { return nil }

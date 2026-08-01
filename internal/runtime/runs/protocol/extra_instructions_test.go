@@ -1,10 +1,4 @@
-// The additive-guidance two-producer join (D-365).
-//
-// `ExtraInstructions` is the ONE field ComposeLLMOverrides JOINS instead of
-// resolving last-writer-wins. The tenant-wide block is admin-set; the session
-// block is not. Replacement would hand a non-admin caller a silent delete on
-// an admin-set compliance block, so the run-level value composes BELOW the
-// tenant value and there is no run-level clear.
+// The additive-guidance two-producer authority split.
 //
 // Sibling of overrides_test.go (same `protocol_test` package — the helpers
 // newService / wireReq / strPtr / f64Ptr / newTestBus / testTenant... are
@@ -34,17 +28,15 @@ const (
 	sessionAdditive = "SESSION-ADDITIVE: answer in the imperative mood."
 )
 
-// TestComposeLLMOverrides_ExtraInstructionsJoinTable is the four-cell
-// {tenant set, unset} × {session set, unset} table. The "both set" cell is the
-// precedence decision: tenant FIRST, blank-line separated. Turning the join
-// into `out.ExtraInstructions = session.ExtraInstructions` fails the "both
-// set" cell; swapping the order fails it on ordering.
-func TestComposeLLMOverrides_ExtraInstructionsJoinTable(t *testing.T) {
+// TestComposeLLMOverrides_ExtraInstructionsAuthorityTable is the four-cell
+// {tenant set, unset} × {session set, unset} table. The both-set cell pins
+// separate trusted guidance and user-personalization carriers.
+func TestComposeLLMOverrides_ExtraInstructionsAuthorityTable(t *testing.T) {
 	t.Run("neither set: nil", func(t *testing.T) {
 		got := runsprotocol.ComposeLLMOverrides(
 			&runsprotocol.PendingOverride{Model: strPtr("m")}, nil, &planner.LLMOverrides{})
-		if got.ExtraInstructions != nil {
-			t.Fatalf("ExtraInstructions = %q, want nil", *got.ExtraInstructions)
+		if got.ExtraInstructions != nil || got.UserPersonalization != nil {
+			t.Fatalf("trusted=%v personalization=%v, want both nil", got.ExtraInstructions, got.UserPersonalization)
 		}
 	})
 
@@ -63,7 +55,7 @@ func TestComposeLLMOverrides_ExtraInstructionsJoinTable(t *testing.T) {
 				t.Fatalf("%s: ExtraInstructions = %v, want the tenant block verbatim", name, got.ExtraInstructions)
 			}
 			// Byte-identical is stricter than equal: the tenant's own string
-			// must be passed through, not re-derived by a join that happens to
+			// must be passed through, not re-derived by composition that happens to
 			// produce the same bytes today.
 			if got.ExtraInstructions != tenant.ExtraInstructions {
 				t.Errorf("%s: the tenant pointer was replaced; an absent session contribution must leave the tenant value untouched", name)
@@ -74,28 +66,38 @@ func TestComposeLLMOverrides_ExtraInstructionsJoinTable(t *testing.T) {
 	t.Run("session only: the session block verbatim", func(t *testing.T) {
 		got := runsprotocol.ComposeLLMOverrides(
 			&runsprotocol.PendingOverride{ExtraInstructions: strPtr(sessionAdditive)}, nil, nil)
-		if got.ExtraInstructions == nil || *got.ExtraInstructions != sessionAdditive {
-			t.Fatalf("ExtraInstructions = %v, want the session block verbatim", got.ExtraInstructions)
+		if got.ExtraInstructions != nil {
+			t.Fatalf("session contribution entered trusted ExtraInstructions: %q", *got.ExtraInstructions)
+		}
+		if got.UserPersonalization == nil || *got.UserPersonalization != sessionAdditive {
+			t.Fatalf("UserPersonalization = %v, want the session block verbatim", got.UserPersonalization)
 		}
 	})
 
-	t.Run("both set: tenant FIRST, blank-line joined", func(t *testing.T) {
+	t.Run("both set: authority remains structurally separate", func(t *testing.T) {
 		tenant := &planner.LLMOverrides{ExtraInstructions: strPtr(tenantAdditive)}
 		got := runsprotocol.ComposeLLMOverrides(
 			&runsprotocol.PendingOverride{ExtraInstructions: strPtr(sessionAdditive)}, nil, tenant)
-		want := tenantAdditive + "\n\n" + sessionAdditive
-		if got.ExtraInstructions == nil {
-			t.Fatal("ExtraInstructions = nil; want the two blocks joined")
+		if got.ExtraInstructions == nil || *got.ExtraInstructions != tenantAdditive {
+			t.Fatalf("trusted ExtraInstructions = %v, want tenant only", got.ExtraInstructions)
 		}
-		if *got.ExtraInstructions != want {
-			t.Fatalf("ExtraInstructions =\n%q\nwant\n%q", *got.ExtraInstructions, want)
+		if got.UserPersonalization == nil || *got.UserPersonalization != sessionAdditive {
+			t.Fatalf("UserPersonalization = %v, want session only", got.UserPersonalization)
 		}
-		// The tenant's OWN string must be untouched — a join that appended in
-		// place would corrupt the record every other run reads.
+		// The tenant's OWN string must be untouched.
 		if *tenant.ExtraInstructions != tenantAdditive {
 			t.Errorf("the tenant record was mutated in place: %q", *tenant.ExtraInstructions)
 		}
 	})
+}
+
+func TestComposeLLMOverrides_UserPersonalizationHasOnlySessionProducer(t *testing.T) {
+	poison := "tenant must not populate the untrusted session carrier"
+	tenant := &planner.LLMOverrides{UserPersonalization: &poison}
+	got := runsprotocol.ComposeLLMOverrides(nil, nil, tenant)
+	if got.UserPersonalization != nil {
+		t.Fatalf("tenant populated UserPersonalization: %q", *got.UserPersonalization)
+	}
 }
 
 // TestComposeLLMOverrides_ExtraInstructionsNoRunLevelClear is the no-clear
@@ -117,8 +119,11 @@ func TestComposeLLMOverrides_ExtraInstructionsNoRunLevelClear(t *testing.T) {
 			if got.ExtraInstructions == nil {
 				t.Fatal("the admin-set tenant block was CLEARED by a session-level set")
 			}
-			if !strings.Contains(*got.ExtraInstructions, tenantAdditive) {
+			if *got.ExtraInstructions != tenantAdditive {
 				t.Fatalf("the admin-set tenant block is gone: %q", *got.ExtraInstructions)
+			}
+			if strings.TrimSpace(*attempt) == "" && got.UserPersonalization != nil {
+				t.Fatalf("blank personalization survived as %q", *got.UserPersonalization)
 			}
 		})
 	}
@@ -136,17 +141,16 @@ func TestComposeLLMOverrides_ExtraInstructionsNoRunLevelClear(t *testing.T) {
 // TestComposeLLMOverrides_ConcurrentReuse_NoCrossTalk runs N=128 goroutines
 // against ONE shared Service + Store, each in its own session with its own
 // distinguishable block, all reading ONE shared tenant record.
-// ComposeLLMOverrides is a pure function over its arguments; the test's value
-// is proving the join allocates a FRESH string per call and never appends into
-// a caller's *planner.LLMOverrides in place — the D-025 failure that would
-// corrupt a shared tenant record across runs (CLAUDE.md §5).
+// ComposeLLMOverrides is a pure function over its arguments; the test proves
+// each run receives its own personalization pointer and never mutates the
+// shared tenant record (CLAUDE.md §5).
 func TestComposeLLMOverrides_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	const n = 128
 	baseline := runtime.NumGoroutine()
 
 	svc, store := newService(t)
 	// ONE shared tenant record, read by every goroutine — the object a
-	// mutating join would corrupt.
+	// mutating composition would corrupt.
 	shared := &planner.LLMOverrides{ExtraInstructions: strPtr(tenantAdditive)}
 
 	var wg sync.WaitGroup
@@ -154,7 +158,7 @@ func TestComposeLLMOverrides_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	for i := range n {
 		go func() {
 			defer wg.Done()
-			session := fmt.Sprintf("session-join-%04d", i)
+			session := fmt.Sprintf("session-personalize-%04d", i)
 			mine := fmt.Sprintf("SESSION-BLOCK-%04d", i)
 			req := prototypes.RunSetOverridesRequest{
 				Identity: prototypes.IdentityScope{
@@ -176,9 +180,12 @@ func TestComposeLLMOverrides_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 				return
 			}
 			got := runsprotocol.ComposeLLMOverrides(&po, nil, shared)
-			want := tenantAdditive + "\n\n" + mine
-			if got.ExtraInstructions == nil || *got.ExtraInstructions != want {
-				t.Errorf("%s: composed = %v, want exactly its own two segments", session, got.ExtraInstructions)
+			if got.ExtraInstructions == nil || *got.ExtraInstructions != tenantAdditive {
+				t.Errorf("%s: trusted guidance = %v, want tenant only", session, got.ExtraInstructions)
+				return
+			}
+			if got.UserPersonalization == nil || *got.UserPersonalization != mine {
+				t.Errorf("%s: personalization = %v, want exactly its own segment", session, got.UserPersonalization)
 				return
 			}
 			// No OTHER goroutine's block may appear in this result.
@@ -186,7 +193,7 @@ func TestComposeLLMOverrides_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 				if other == i {
 					continue
 				}
-				if strings.Contains(*got.ExtraInstructions, fmt.Sprintf("SESSION-BLOCK-%04d", other)) {
+				if strings.Contains(*got.UserPersonalization, fmt.Sprintf("SESSION-BLOCK-%04d", other)) {
 					t.Errorf("%s: cross-talk — another goroutine's block leaked in", session)
 				}
 			}
@@ -194,11 +201,11 @@ func TestComposeLLMOverrides_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	}
 	wg.Wait()
 
-	// The shared tenant record is byte-unchanged after 128 joins.
+	// The shared tenant record is byte-unchanged after 128 compositions.
 	if *shared.ExtraInstructions != tenantAdditive {
-		t.Errorf("the shared tenant record was mutated by the join: %q", *shared.ExtraInstructions)
+		t.Errorf("the shared tenant record was mutated by composition: %q", *shared.ExtraInstructions)
 	}
-	// No goroutine leak: the join starts none, so the baseline holds.
+	// No goroutine leak: composition starts none, so the baseline holds.
 	deadline := time.Now().Add(2 * time.Second)
 	for runtime.NumGoroutine() > baseline+2 && time.Now().Before(deadline) {
 		runtime.Gosched()

@@ -114,7 +114,7 @@ func TestTasksSearcher_RejectsMissingIdentity(t *testing.T) {
 	h := newHarness(t)
 	defer h.cleanup()
 	s, err := tasksearch.New(h.sessions, h.tasks, search.Deps{
-		Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false },
+		Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false }, Audit: testAudit,
 	})
 	if err != nil {
 		t.Fatalf("tasksearch.New: %v", err)
@@ -140,6 +140,7 @@ func TestTasksSearcher_CrossTenantIsolation(t *testing.T) {
 	s, err := tasksearch.New(h.sessions, h.tasks, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("tasksearch.New: %v", err)
@@ -180,6 +181,7 @@ func TestTasksSearcher_QueryAndFacets(t *testing.T) {
 	s, err := tasksearch.New(h.sessions, h.tasks, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("tasksearch.New: %v", err)
@@ -224,6 +226,7 @@ func TestTasksSearcher_Concurrent_NoCrossTalk(t *testing.T) {
 	s, err := tasksearch.New(h.sessions, h.tasks, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("tasksearch.New: %v", err)

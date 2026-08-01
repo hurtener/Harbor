@@ -129,8 +129,8 @@ func (s *phase64aStubProvider) InitiateFlow(_ context.Context, _ tools.ToolSourc
 func (s *phase64aStubProvider) CompleteFlow(_ context.Context, _, _ string) (auth.Token, error) {
 	return auth.Token{}, nil
 }
-func (s *phase64aStubProvider) PendingFlow(_ string) (auth.PendingFlowInfo, bool) {
-	return auth.PendingFlowInfo{}, false
+func (s *phase64aStubProvider) PendingFlow(context.Context, string) (auth.PendingFlowInfo, bool, error) {
+	return auth.PendingFlowInfo{}, false, nil
 }
 func (s *phase64aStubProvider) DenyFlow(_ context.Context, _, _ string) error        { return nil }
 func (s *phase64aStubProvider) Revoke(_ context.Context, _ tools.ToolSourceID) error { return nil }

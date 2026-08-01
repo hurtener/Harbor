@@ -17,11 +17,11 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-## [1.25.0] — 2026-07-31
+## [1.25.0]
 
-Six phases (219–224), one coherent slice: **the prompt-composition surface** —
-how a Protocol client contributes to what the model sees — plus two
-tooling-integrity phases that repair the instruments measuring the rest. No
+One release-closure slice: the original **prompt-composition surface**, the
+transaction and declared-tool corrections found by adversarial review, and the
+external-oracle/reliability gates needed to trust the candidate. No
 Protocol wire-version change (`ProtocolVersion` stays `0.1.0`) and no
 migration. Every wire *addition* is an optional field or an additive error
 code; **two changes are nonetheless breaking for a deployed client**, and they
@@ -62,9 +62,9 @@ form, and neither is optional reading.
 
 **Three further changes need a decision from you, not a code change** — the
 conditional-write guarantee is exact within one Runtime process and **absent
-across processes**; `extra_instructions` renders **verbatim and unescaped** in
-an operator-trusted position that any `runs.set_overrides` caller can now
-write; and **every model-visible tool name longer than 44 bytes is now
+across processes**; `extra_instructions` remains available to ordinary users
+for same-session personalization but is now escaped and structurally separated
+from operator guidance; and **every model-visible tool name longer than 44 bytes is now
 rewritten** (D-377), so anything that string-matches tool names outside a live
 run — stored transcripts, eval fixtures, dashboards — sees new strings.
 
@@ -188,7 +188,9 @@ below).
 
 - **`memory.caller_block_admitted` — a new canonical event recording the FACT
   of an admission, never the content.** It carries `bytes`, `tier` and `key`
-  and no fragment of the payload. It fires at admission, which precedes
+  and no fragment of the payload. `bytes` is the exact pre-redaction wire
+  length, even when the persisted redacted representation has a different
+  size. It fires at admission, which precedes
   planning, so it lands whether or not the run subsequently succeeds. A Console
   that cannot tell caller-asserted memory from runtime-retrieved memory can
   audit neither.
@@ -218,52 +220,43 @@ below).
   or volume accounting on admitted caller memory — spend is metered at the LLM
   edge, admission is not.
 
-### Added — `extra_instructions` on run overrides, composing BELOW the tenant value
+### Added — `extra_instructions` on run overrides, contained as normal-user personalization
 
 - **`runs.set_overrides` takes an optional `extra_instructions`.** The
-  underlying field is not new: `planner.LLMOverrides.ExtraInstructions` has
-  been additive since the tenant-override completion, renders verbatim into
-  `<additional_guidance>`, and survives a `system_prompt_override` in the same
-  request. What was missing is reach — `RunOverrides` exposed `session_id`,
+  product capability is not admin-only: a verified non-admin user can
+  personalize the next run in their own session. What was missing is reach —
+  `RunOverrides` exposed `session_id`,
   `reasoning_effort`, `temperature`, `max_tokens`, `system_prompt_override` and
   `model`, and no additive field, so the only producer was the admin-gated
-  tenant-override record. This ships one optional wire field with **zero new
-  prompt semantics**: no new section, no new error code, no version move.
+  tenant-override record. The wire addition needs no new error code or Protocol
+  version move.
 
-- **The run-level value COMPOSES BELOW the tenant value — tenant first, joined
-  by a blank line — and can NEVER clear it.** This is an authorization
-  decision, not a style choice. `governance.set_tenant_overrides` is
-  admin-scope-gated; `runs.set_overrides` requires only a verified identity
-  triple targeting the caller's own session. Today a tenant's additive block is
-  unremovable by any session-level caller — a session `system_prompt_override`
-  replaces the base spine but leaves `<additional_guidance>` intact. Per-field
-  last-writer-wins would hand a **non-admin caller a silent delete on an
-  admin-set compliance block**. Composition preserves the property, and the
-  order continues the existing trust ordering in that section (operator-baked →
-  additive → per-turn repair).
+- **The run-level value is structurally separate from the tenant value and can
+  NEVER clear or impersonate it.** The admin-owned tenant contribution remains
+  in `<additional_guidance>`; the session contribution lands in the escaped,
+  runtime-labelled `<user_personalization>` tier. Prompt ordering is not an
+  authorization boundary: tool exposure, identity, governance, and policy
+  checks remain authoritative. The personalization tier survives a
+  `system_prompt_override` without being promoted into the replacement spine.
 
 - **There is no run-level clear, and an empty value is accepted rather than
   refused.** An empty or whitespace-only run-level value contributes nothing
-  and returns the tenant value untouched — the exact pointer, so a run with no
-  session contribution resolves byte-identically to before. That is what stops
-  "clear" being reachable by the back door of "set it to empty". The join emits
-  no dangling separator and allocates a fresh string, so the shared tenant
-  record every other concurrent run reads is never mutated.
+  and returns the tenant value untouched, so a run with no session contribution
+  resolves byte-identically to before. That is what stops "clear" being
+  reachable by the back door of "set it to empty".
 
-- **Consequence stated rather than hidden:** the two contributions are **not**
-  distinguishable to the model. Both sit in one trusted block. Per-source
-  attribution is the durable per-agent surface's job — see the next section.
+- **The two contributions remain distinguishable.** Runtime-owned section
+  framing makes their provenance explicit while the durable per-agent surface
+  below provides name-addressed attribution for admin-owned blocks.
 
 - **The event carries a FLAG, never the text.**
   `events.RunOverridesSetPayload` gains `SetExtraInstructions bool`. The value
   is caller-supplied free text and never rides the bus.
 
-- **Binding non-goal — this is NOT the home for recalled memory or any
-  user-authored text.** `<additional_guidance>` is joined RAW, in deliberate
-  contrast to `<user_instructions>`, which is escaped and carries an explicit
-  subordinate framing. Recalled or retrieved content belongs in
-  `start.caller_memory` above. The field's own godoc names it, and a smoke
-  guard keeps the pointer there.
+- **Binding non-goal — this is NOT the home for recalled memory.** The field is
+  for user-authored preferences that personalize a response. Recalled or
+  retrieved content belongs in `start.caller_memory`, with its stronger
+  read-only external-memory framing.
 
 ### Added — ordered, named prompt blocks on the agent-config payload
 
@@ -297,6 +290,11 @@ below).
   write → normalize → hash → project → render path sorts it. (Local `seen` maps
   do exist on that path, for duplicate-name detection; they are membership sets
   over an already-ordered slice and determine nothing about order.)
+
+- **Admitted block bodies are byte-faithful.** Blank detection may inspect a
+  trimmed view, but normalization, hashing, persistence, projection, and prompt
+  rendering preserve every byte of a nonblank body, including surrounding
+  whitespace. This matters for operator-authored structured prompt fragments.
 
 - **Rendered VERBATIM, in declared order, each behind a plain-text `[name]`
   label**, into the same `<additional_guidance>` position — after the binary's
@@ -404,7 +402,7 @@ below).
   A real token is 64 lowercase hex characters, so `"-"` can never collide with
   one — asserted by a conformance row rather than argued. Three conformance
   rows carry it (one of which reproduces the lost update and then shows it
-  closed), and `scripts/smoke/phase-221.sh`'s exact-count guards moved 4 → 7
+  closed), and the conditional-write smoke's exact-count guards moved 4 → 7
   with them.
 
 - **What the token still does not do, named rather than discovered later.** An
@@ -415,16 +413,16 @@ below).
 
 - **`scripts/smoke/inert-baseline.txt` drains to zero, and thirteen of its
   twenty-four entries were the measuring instrument's own false positives.**
-  The v1.24 release switched on a gate: a smoke belonging to a **shipped** phase
+  The v1.24 release switched on a gate: a smoke belonging to a **shipped** surface
   that reports `OK: 0` and `FAIL: 0` asserted nothing. Twenty-four scripts
   violated it and were parked as declared debt. Measurement showed the count
   itself was wrong — the shipped/not-shipped classifier failed two independent
-  ways, and **thirteen of the twenty-four were not shipped phases at all.** Its
+  ways, and **thirteen of the twenty-four did not belong to shipped surfaces.** Its
   row regex could see 233 of 339 master-plan rows and treated the other 106 as
   shipped; its status vocabulary named two of the eight not-shipped words in
   use and defaulted the rest to shipped. **The correction can only relax, never
   tighten**, and that is verified rather than argued: both classifiers were run
-  over all 360 phase tokens — 345 unchanged, 15 relaxed, 0 tightened.
+  over all 360 plan entries — 345 unchanged, 15 relaxed, 0 tightened.
 
 - **The eleven genuinely-inert smokes got real assertions**, and the helper
   they use closes a trap. `go test -run NoSuchTest ./pkg` prints "no tests to
@@ -451,21 +449,21 @@ below).
   read someone else's violations. The verdict was never wrong — it comes from
   the exit code — but the file the failure message *named* was.
 
-- **The drift-audit's own guards are now mutation-verified** (D-376, phase
-  224). `scripts/drift-audit.sh` is the mechanical instrument behind the
+- **The drift-audit's own guards are now mutation-verified** (D-376).
+  `scripts/drift-audit.sh` is the mechanical instrument behind the
   contributor workflow and half the rejection-on-sight list, and **nothing
   verified the instrument** — its guards had been mutation-verified by hand,
   with the results recorded in code comments that no automated check re-ran. A
   guard that cannot fire is indistinguishable from a corpus with no violations.
-  `scripts/smoke/phase-224.sh` now builds a throwaway corpus per guard, applies
-  the defect that guard names, runs the **real** audit against it, and asserts
+  The mutation harness now builds a throwaway corpus per guard, applies the
+  defect that guard names, runs the **real** audit against it, and asserts
   **that guard's own** FAIL line — never merely the exit code, which would
   report "caught" when a *different* guard fired. 18 guard units, 18 covered,
   22 mutations, and a census that fails when a new guard ships with no case.
 
   It found two live defects on its first run, both fixed here: **`brief NN`
   reference resolution could not fail** (an unmatched glob under `nullglob`
-  degenerated to a bare `ls`, exit 0 — every brief citation in every phase plan
+  degenerated to a bare `ls`, exit 0 — every brief citation in every implementation plan
   had been unverified), and **a smoke with no `PREFLIGHT_REQUIRES` header
   aborted the whole audit** under `set -euo pipefail`, silently skipping six
   later guards.
@@ -518,9 +516,11 @@ below).
   **every turn, twice per tool** (the `req.Tools[]` declaration and the
   `<available_tools>` prompt section). Over-budget names now render as
   `<retained tail>_<8-hex digest of the full sanitized name>`. The catalog key
-  does not move, no isolation property changes, and `resolveDeclaredToolName`
-  still maps whatever the model returns back to the real key by recomputing the
-  forward transform — a **pure** function of its argument, which is why a short
+  does not move and no isolation property changes. Each run constructs one
+  immutable projection table from the declarations it actually exposed;
+  reverse resolution accepts only a declared winner and never treats model
+  input as a raw catalog key. The projection is a **pure** function of the
+  declared catalog snapshot, which is why a short
   per-source alias was rejected (an alias assigned from catalog composition
   shifts when the catalog grows mid-run, and the catalog grows mid-run by
   design).
@@ -543,6 +543,15 @@ below).
   key while `req.Tools[]` declared the sanitized form (`clock.now` listed,
   `clock_now` declared). Both surfaces now go through one transform.
 
+- **Builtin discovery, lookup, and declarative dispatch use that same
+  projection.** `tool_search`, `tool_get`, and `declarative_action` no longer
+  resolve a model-authored name as a raw catalog key. Reserved planner controls
+  claim the namespace first, collision losers are neither advertised nor
+  callable, and authorization scopes are applied before the projection is
+  built. An unknown or raw alias fails before dispatch; a rejected serialized
+  batch leaves no partial pending-call state. This closes #654 without renaming
+  the internal catalog.
+
 - **`planner.tool_declaration_collision` — a new canonical event** (D-378).
   Two catalog tools that collapse onto one model-visible name are ambiguous to
   provider-side dispatch, so one declaration is dropped. The drop was correct;
@@ -562,49 +571,64 @@ below).
   construction (`clock.now` and `clock/now` both sanitize to `clock_now` at any
   length), which is why the diagnostic is load-bearing rather than theatre.
 
-### Fixed — three half-applied writes, each compensated rather than left behind
+### Fixed — agent-config mutations preserve one coherent visible state
 
-- **A `409` on `agent_config.add_mcp_connection` left a live, unremovable MCP
-  server** (D-370). This is the ONE spine-writing door whose live side effect
-  must run BEFORE its conditional write — whether the server answers is the
-  input to what gets written — so the write could fail with the server already
-  up, and both failure arms bare-returned. The result: a dialed, handshaken,
-  registered server exposing tools that **no revision named**, so
-  `remove_mcp_connection` answered `ErrConnectionNotFound` and it could not be
-  removed; the Console showed the connection parked on the transient `pending`
-  forever; and an inline wire-OAuth provider installed for the binding stayed
-  installed. The wire godoc asserted the opposite ("nothing is persisted").
+- **Runtime-added MCP connections now prepare, persist, then activate**
+  (D-390, closing #653). Dial, authentication, handshake, and discovery happen
+  privately; no provider, catalog entry, live registration, or `online` state
+  is published before desired state is durable. Activation holds a private,
+  reversible registry reservation while direct reads continue reaching the
+  prior provider, then uses the catalog swap as the dispatch linearization
+  point. A collision restores the exact prior registry and catalog; displaced
+  resources close only after successful publication.
 
-  The live half is now undone rather than reordered — reordering would mint an
-  orphan revision in `list_revisions` for every failed dial. `compensateAttach`
-  detaches (idempotently, owner-scoped), uninstalls a **newly**-installed inline
-  provider (one that pre-existed the call outlives it), and emits the terminal
-  `ConnectionStateFailed`. The caller still receives the original error; a
-  compensation is how the runtime keeps its own promise, not a second outcome to
-  branch on. **The other sixteen doors were checked mechanically for the same
-  shape and none has it.**
+  A write error no longer triggers unconditional detach. An exact active-pointer
+  read distinguishes confirmed landing, confirmed absence, and an unreadable
+  answer. Confirmed landing activates while returning the storage error loud;
+  absence closes only unpublished resources; unreadable state preserves the
+  existing live connection and reports the ambiguity. An exactly landed
+  auth-required write returns `auth_required` with the reread revision and the
+  producer-owned pause token rather than rejecting a durable continuation over
+  a lost acknowledgement. Inline OAuth is likewise private until activation
+  and carries an exact install receipt for rollback.
 
-- **A failed active-pointer write left an orphan revision** (D-373). The
-  agent-config registry driver persists a revision and then moves the active
-  pointer as two ordinary `StateStore.Save` calls; a store error between them
-  left a revision that exists and that nothing references. Bounded but real:
-  the orphan is invisible to `Active` and was never applied to any run, but
-  `ListRevisions` enumerates by record kind, so it appeared in history belonging
-  to no chain — which reads exactly like a lost write. The driver now deletes
-  the revision it just wrote and returns the store's own error.
+  Auth-required preparation is restart-safe through the production callback,
+  not only through a fake continuation. A mandatory typed `FlowStore` seals the
+  pending PKCE verifier, client material, identity, expiry, and pause token over
+  the existing StateStore/KEK seam. Reconstructed providers claim the
+  high-entropy state exactly once, validate its identity and provider owner,
+  and resume the same durable pause without a second exchange. Retryable
+  failures release the claim; a spent code whose token cannot be persisted
+  records a durable terminal-rejection stage and rejects the pause through
+  bounded uncancelled cleanup. A transient rejection failure retains a retry
+  path without re-exchanging the spent code. The access token, refresh token,
+  and encrypted exact flow marker persist in one atomic StateStore record.
+  Before pause resume or destructive cleanup, a second sealed record keyed by
+  the exact OAuth state preserves the original identity, source, subject, pause,
+  expected decision, and retry horizon. Callback retry therefore remains exact
+  even after a later flow replaces the current credential or a cleanup delete
+  lands without its acknowledgement. Partial cleanup reclaims residual PKCE and
+  claim records; later flows prune only expired tombstones for their exact
+  identity, with the tombstone deleted last. Already-resumed cleanup verifies
+  the exact terminal decision. Upstream OAuth response bodies and redirect
+  error text never enter callback logs, HTTP detail, pause records, or canonical
+  events: seven standard denial codes are accepted and every other value becomes
+  static `authorization_denied`. Mixed resume decisions share one first-winner
+  gate, so reject/timeout cannot overtake accepted continuation work.
 
-  **The compensation runs on an un-cancellable context, and that is the subtle
-  part**: the likeliest reason for the pointer write to fail is the caller's
-  context being cancelled, so a compensation issued on that same context would
-  fail on exactly the occasions it exists for. **What is NOT claimed:** this is
-  compensation, not atomicity. A process that dies between the two writes still
-  leaves an orphan, and a store that refuses the delete as well is *reported* —
-  the error wraps both causes and names the record as unreferenced.
+- **Conditional skill mutations coordinate their body and revision effects**
+  (D-388). The expected-content check runs under the owner lock before all four
+  admin/user SkillStore doors. A later revision failure restores the exact prior
+  body or deletes only a body created by that call; a stale expectation changes
+  no body, revision, pointer, or success event.
 
-- **A failed `parkForAuth` left the connection lifecycle on `pending` forever**
-  (D-370). The revision was recorded and no terminal event followed, so the
-  connection was nameable and removable but the Console reader was stranded. A
-  terminal `failed` is now emitted first.
+- **Ambiguous revision saves clean only proven orphans** (D-388, superseding
+  the affected D-373/D-380 behavior). When a revision-record save reports an
+  error, an exact scoped point-read may delete only a byte-identical,
+  unreferenced candidate. A missing record needs no cleanup; a mismatched or
+  unreadable answer is retained and reported. Compensation uses a bounded
+  uncancelled context and preserves both the original and cleanup errors. This
+  is coordinated compensation, not cross-store ACID or cross-process CAS.
 
 ### Fixed — caller memory is redacted at rest, like its siblings
 
@@ -704,6 +728,58 @@ below).
   cross-owner connection-name uniqueness must address this first; it is filed as
   issue #638 rather than fixed in a test-only change.
 
+### Fixed — release oracles and scoped convergence
+
+- **Canonical event names now have a handwritten external oracle.** The oracle
+  is bidirectional over the entire canonical registry; it is not generated from
+  the emitter constants it checks. Adding, removing, or renaming an event
+  requires an explicit reviewable oracle edit. The current registry contains
+  143 canonical names.
+
+- **A shipped smoke that exits zero without a canonical summary is red in a
+  black-box fixture.** The mutation harness derives its declared
+  cases and guard signatures from one registry, so deleting a whole registered
+  case leaves either an unexecuted declaration or an unclaimed audit guard.
+
+- **Docs PR validation no longer competes in the global Pages concurrency
+  group.** Validation supersedes only an older run for the same workflow/ref;
+  the main-only deploy job alone owns the global `pages` singleton.
+
+- **Agent-config revision enumeration is identity-scoped inside every
+  StateStore driver.** The mandatory `ListKindForIdentity` interface method is
+  implemented by in-memory, SQLite, and Postgres drivers; `ListRevisions` no
+  longer performs a maintenance-wide scan followed by Go-side filtering.
+
+- **A stale erasure ledger converges before it is discarded.** The older
+  lifecycle's completion is published before checkpoint deletion;
+  publish/delete failures retain retryable state and never touch the current
+  lifecycle. Retried delivery is best-effort deduplicated from retained
+  history, with duplicates preferred to lost compliance records when that
+  oracle cannot verify.
+
+### Fixed — deterministic reliability gates
+
+- Tool conformance failure decisions are per invocation rather than derived
+  from a scheduler-shared counter; OAuth refresh callers synchronize behind one
+  observable single flight; parallel-cancel start signals are buffered; and
+  cancelled Protocol-client calls cannot race a successful server response.
+
+- The OAuth choreography now distinguishes the tool OAuth pause from the
+  planner's run pause and waits until both tokens exist before completing the
+  callback. Callback completion resumes the tool pause after durable token
+  persistence; one steering `RESUME` then releases the distinct run pause. This
+  removes the fast-callback race without sleeps or retries.
+
+- The authenticated PTY workflow is unquarantined. It sends real Kitty CSI-u
+  function-key codepoints, establishes persisted or canonical state before a
+  full visual repaint, and keeps a newer action modal open when an older
+  same-scope inspection completes. It also sends one failed-followup retry
+  command; a duplicate while dispatch is in flight cannot start again or mutate
+  queued intent. Failure diagnostics report child liveness and capture SIGQUIT
+  goroutine stacks. The frozen correction passed 10 local race repetitions, a
+  20-run two-CPU Linux calibration, and then 100/100 race-instrumented workflows
+  in the same Go 1.26 Linux profile (`ok`, 392.617s).
+
 ### Changed — dependencies
 
 - **`github.com/maximhq/bifrost/core` `v1.5.21` → `v1.7.4`**, tracking the
@@ -779,30 +855,13 @@ for a decision, not a code change.
   writers *within* a process and not as a distributed lock. Single-process
   deployments get the full guarantee.
 
-- **`extra_instructions` renders verbatim and unescaped in an operator-trusted
-  position, and any caller of `runs.set_overrides` can now write there.**
-  `<additional_guidance>` is joined RAW — no escaping, in deliberate contrast
-  to `<user_instructions>`. Before this release the only producer of that text
-  was the **admin-gated** tenant-override record. After it, any caller who can
-  reach `runs.set_overrides` for their own session can write into it. That is a
-  real widening and it is recorded in the field's godoc, the Protocol reference
-  and the operator skill in those words.
-
-  **It grants no authority CLASS that surface does not already grant.**
-  `system_prompt_override` sits on the same struct, is reachable by the same
-  caller, and is strictly more powerful — it replaces the entire base spine,
-  verbatim and unescaped. A deployment that trusts a session caller with
-  `system_prompt_override` already trusts them with strictly less. Gating the
-  weaker capability behind admin while leaving the stronger one ungated on the
-  same method would be incoherent, so no per-field gate was added.
-
-  **The open question is the METHOD's authorization tier, and it is carried
-  forward rather than resolved.** If your deployment wants operator-only prompt
-  authorship, the gate belongs on `runs.set_overrides` itself, covering both
-  prompt-text fields — a separate decision about an already-shipped surface.
-  **What to do today:** audit who holds a token that can reach
-  `runs.set_overrides` for a session, and treat that as prompt-authorship
-  authority.
+- **`extra_instructions` remains a normal-user personalization capability.**
+  Any verified caller of `runs.set_overrides` can personalize its own session;
+  no admin-only gate was added. The runtime now escapes that prose inside a
+  dedicated `<user_personalization>` section and keeps the admin-owned tenant
+  guidance in `<additional_guidance>`. A user cannot clear the tenant tier or
+  forge its structural boundary. **What to do today:** treat the field as
+  preferences, not recalled data; use `caller_memory` for retrieved content.
 
 - **Model-visible tool names longer than 44 bytes are rewritten** (D-377). A
   live run is unaffected — every surface re-derives the declared name from the

@@ -170,6 +170,11 @@ func mapSearchError(method string, err error) error {
 		// rule 6). The wire-mapped 500 surfaces it as a runtime error.
 		return protoerrors.Newf(protoerrors.CodeRuntimeError,
 			"method %q: redaction failed", method)
+	case stderrors.Is(err, search.ErrAuditFailed):
+		// The widened read failed closed before storage. Keep sink details
+		// (transport addresses, driver errors) out of the wire response.
+		return protoerrors.Newf(protoerrors.CodeRuntimeError,
+			"method %q: mandatory audit emit failed", method)
 	default:
 		return protoerrors.Newf(protoerrors.CodeRuntimeError,
 			"method %q: search failed: %v", method, err)

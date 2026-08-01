@@ -1,12 +1,12 @@
-// Package integration_test — cross-subsystem E2E for the additive-guidance
-// two-producer seam (D-365): `RunOverrides.extra_instructions` reaching a real
-// ReAct system prompt alongside an admin-set tenant-wide block.
+// Package integration_test — cross-subsystem E2E for the authority-separated
+// prompt seam (D-387): `RunOverrides.extra_instructions` reaches a real ReAct
+// user-personalization section alongside admin-set tenant-wide guidance.
 //
 // Real drivers on every seam: a real inmem StateStore + inmem EventBus with
 // the real patterns redactor back the real governance.TenantOverridePolicy; a
 // real runs/protocol Service + Store records the run-level value through the
 // same identity-checked entry point the wire handler calls; the PRODUCTION
-// runsprotocol.ComposeLLMOverrides performs the join (the same function
+// runsprotocol.ComposeLLMOverrides performs the authority split (the same function
 // cmd/harbor's run loop reaches through resolveLLMOverrides — no
 // re-implemented copy, CLAUDE.md §17.4); a real react planner renders the
 // composed bundle into a real llm.CompleteRequest.
@@ -100,7 +100,7 @@ func runIdentity(tenant string) identity.Identity {
 // admin sets a tenant-wide additive block through the real governance policy;
 // a session caller sets a run-level one through the real `runs.set_overrides`
 // Service; the run's resolved bundle carries BOTH in order and the real ReAct
-// system prompt renders them inside ONE `<additional_guidance>` block.
+// system prompt renders them in distinct operator and personalization sections.
 func TestE2E_RunExtraInstructions_TwoProducerSeam(t *testing.T) {
 	const (
 		tenantBlock  = "TENANT-COMPLIANCE-SENTINEL: cite every source."
@@ -122,15 +122,17 @@ func TestE2E_RunExtraInstructions_TwoProducerSeam(t *testing.T) {
 	// Run start: resolve the tenant layer, Consume the session slot, compose.
 	tenant := resolveOverrides(t, st.policy, "t1")
 	composed := runsprotocol.ComposeLLMOverrides(consumeSession(store, id), nil, tenant)
-	if composed == nil || composed.ExtraInstructions == nil {
-		t.Fatal("no additive guidance resolved at run start")
+	if composed == nil || composed.ExtraInstructions == nil || composed.UserPersonalization == nil {
+		t.Fatal("operator guidance or user personalization missing at run start")
 	}
-	want := tenantBlock + "\n\n" + sessionBlock
-	if *composed.ExtraInstructions != want {
-		t.Fatalf("resolved guidance =\n%q\nwant\n%q", *composed.ExtraInstructions, want)
+	if *composed.ExtraInstructions != tenantBlock {
+		t.Fatalf("operator guidance = %q, want %q", *composed.ExtraInstructions, tenantBlock)
+	}
+	if *composed.UserPersonalization != sessionBlock {
+		t.Fatalf("user personalization = %q, want %q", *composed.UserPersonalization, sessionBlock)
 	}
 
-	// The real planner renders both, in order, in ONE guidance block.
+	// The real planner renders both, in order, in distinct authority sections.
 	req := runWithOverrides(t, &capturingLLM{}, "t1", composed)
 	if !reqBodyContains(req.Messages, tenantBlock) {
 		t.Error("the tenant block never reached the system prompt")
@@ -140,10 +142,13 @@ func TestE2E_RunExtraInstructions_TwoProducerSeam(t *testing.T) {
 	}
 	body := guidanceSystemText(t, req.Messages)
 	if got := strings.Count(body, "<additional_guidance>"); got != 1 {
-		t.Fatalf("the two producers must share ONE guidance block (found %d). Body: %s", got, body)
+		t.Fatalf("operator guidance section count = %d, want 1. Body: %s", got, body)
 	}
-	if strings.Index(body, tenantBlock) >= strings.Index(body, sessionBlock) {
-		t.Fatalf("tenant block must render ABOVE the run-level block. Body: %s", body)
+	if got := strings.Count(body, "<user_personalization>"); got != 1 {
+		t.Fatalf("user personalization section count = %d, want 1. Body: %s", got, body)
+	}
+	if strings.Index(body, tenantBlock) == strings.Index(body, sessionBlock) {
+		t.Fatalf("authority-separated contributions collapsed to one position. Body: %s", body)
 	}
 }
 
@@ -271,15 +276,15 @@ func TestE2E_RunExtraInstructions_FailureModes(t *testing.T) {
 // multi-isolation stress: N tenants, each with its own tenant block and its
 // own run-level block, resolved and rendered CONCURRENTLY through one shared
 // policy + one shared runs Service + one shared Store. Every run must see
-// exactly its own two segments and no other tenant's bytes.
+// exactly its own two authority-separated segments and no other tenant's bytes.
 func TestE2E_RunExtraInstructions_IdentityIsolationUnderConcurrency(t *testing.T) {
-	const n = 12
+	const n = 128
 	st := newTenantOverrideStack(t, nil)
 	svc, store := runsService(t, st.bus)
 
-	tenantOf := func(i int) string { return fmt.Sprintf("tenant-%02d", i) }
-	tenantBlockOf := func(i int) string { return fmt.Sprintf("TENANT-BLOCK-%02d", i) }
-	runBlockOf := func(i int) string { return fmt.Sprintf("RUN-BLOCK-%02d", i) }
+	tenantOf := func(i int) string { return fmt.Sprintf("tenant-%03d", i) }
+	tenantBlockOf := func(i int) string { return fmt.Sprintf("TENANT-BLOCK-%03d-END", i) }
+	runBlockOf := func(i int) string { return fmt.Sprintf("RUN-BLOCK-%03d-END", i) }
 
 	for i := range n {
 		if err := st.policy.Set(context.Background(), ovActor(tenantOf(i)), tenantOf(i),

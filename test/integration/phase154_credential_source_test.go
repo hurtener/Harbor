@@ -241,6 +241,10 @@ func newP154Env(t *testing.T) *p154Env {
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
+	flows, err := auth.NewFlowStore(raw, sealer)
+	if err != nil {
+		t.Fatalf("NewFlowStore: %v", err)
+	}
 
 	clock := &p154Clock{t: time.Now()}
 
@@ -272,6 +276,7 @@ func newP154Env(t *testing.T) *p154Env {
 		Extra:            map[string]string{"audience": p154Audience, "cache_ttl_cap": "45s"},
 	}, auth.FactoryDeps{
 		Store:       store,
+		Flows:       flows,
 		Bus:         bus,
 		Redactor:    red,
 		Coordinator: coord,

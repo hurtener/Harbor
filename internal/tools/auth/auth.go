@@ -239,6 +239,12 @@ type Token struct {
 	// LastRefreshedAt is the wall-clock time of the most recent
 	// successful refresh; zero on first issuance.
 	LastRefreshedAt time.Time
+	// completedFlowState is the exact OAuth state whose authorization-code
+	// exchange produced this token. It is persisted encrypted with the token and
+	// is used only to make callback cleanup retries idempotent after a restart.
+	// Keeping it unexported prevents tool drivers from treating correlation
+	// metadata as part of the credential surface.
+	completedFlowState string
 }
 
 // SubjectID returns the principal-side half of the persistence
@@ -263,9 +269,9 @@ type FlowInitiation struct {
 	// AuthorizeURL is the URL the user / admin visits to grant
 	// access. Includes the PKCE code_challenge query parameter.
 	AuthorizeURL string
-	// State is the CSRF token. The provider persists
-	// (state → flow record) at InitiateFlow time and consults the
-	// map at CompleteFlow time.
+	// State is the CSRF token. The provider durably persists the sealed
+	// (state → flow record) at InitiateFlow time and consumes it through
+	// FlowStore at CompleteFlow time.
 	State string
 	// PauseToken is the unified pause/resume primitive's opaque Token
 	// for the run that called InitiateFlow. The runtime uses this on
@@ -339,6 +345,10 @@ type ErrAuthRequired struct {
 	// (it's a one-time-use nonce); safe to surface in events for
 	// callback correlation.
 	State string
+	// PauseToken names the unified pause allocated by the provider. Consumers
+	// must resume this token rather than creating a second pause for one auth
+	// requirement.
+	PauseToken string
 	// Scopes is the scope list requested.
 	Scopes []string
 	// Message is human-readable advisory text. Never includes raw
@@ -402,6 +412,11 @@ var (
 	// ErrFlowNotFound — CompleteFlow called with a State that has no
 	// initiating record (or was already completed).
 	ErrFlowNotFound = errors.New("auth: oauth flow not found for state")
+
+	// ErrFlowInProgress — another callback owns the one-time durable claim
+	// for this flow. The caller may retry; Harbor never performs a duplicate
+	// authorization-code exchange concurrently.
+	ErrFlowInProgress = errors.New("auth: oauth flow completion already in progress")
 
 	// ErrFlowExpired — CompleteFlow called after the initiating
 	// record's ExpiresAt. The pause record is also cleaned up.
@@ -562,7 +577,7 @@ type OAuthProvider interface {
 	// provider map and to rebuild the completing ctx's identity from
 	// the record (the single source of truth for the binding). The
 	// lookup does NOT consume the record — completion / denial does.
-	PendingFlow(state string) (PendingFlowInfo, bool)
+	PendingFlow(ctx context.Context, state string) (PendingFlowInfo, bool, error)
 
 	// DenyFlow consumes the in-flight flow record for `state` and
 	// resumes the associated pause record with the typed

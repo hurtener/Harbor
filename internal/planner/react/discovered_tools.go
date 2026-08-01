@@ -229,70 +229,90 @@ func mergeDiscovered(existing, derived []string) []string {
 // the prompt and can emit a tool-free response (the projector then
 // produces Finish{Goal} or Finish{NoPath}).
 func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.ToolDeclaration {
+	decls, _ := buildToolDeclarationProjection(rc, discovered)
+	return decls
+}
+
+// buildToolDeclarationProjection returns both surfaces created by the same
+// catalog snapshot: the declarations sent to the provider and the immutable
+// declared-name-to-catalog-key projection used to interpret that provider's
+// response. The caller must retain the projection across Complete; rebuilding
+// it afterward could let a concurrent catalog publication retarget a name the
+// model saw under a different schema.
+func buildToolDeclarationProjection(rc planner.RunContext, discovered []string) ([]llm.ToolDeclaration, tools.ModelToolNameProjection) {
 	if rc.Catalog == nil {
-		return nil
+		return nil, tools.NewModelToolNameProjectionWithReservedControls(nil)
 	}
-	always := rc.Catalog.List()
-	if len(always) == 0 && len(discovered) == 0 {
+	projected, projection := projectModelTools(rc, discovered)
+	return buildToolDeclarationsFromProjection(rc, projected, projection)
+}
+
+// buildToolDeclarationsFromProjection materializes provider declarations from
+// the exact immutable turn snapshot retained for response resolution. Keeping
+// this worker separate lets Next share one catalog read with the default
+// prompt's quick-reference instead of independently rebuilding the mapping.
+func buildToolDeclarationsFromProjection(rc planner.RunContext, projected []tools.Tool, projection tools.ModelToolNameProjection) ([]llm.ToolDeclaration, tools.ModelToolNameProjection) {
+	if rc.Catalog == nil {
+		return nil, projection
+	}
+	collisions := projection.Collisions()
+	if len(projected) == 0 && len(collisions) == 0 {
 		// Even an empty catalog still gets the planner-reserved
 		// controls — they're how the LLM signals "spawn a side task"
 		// or "await a previously-spawned task" under native tool-calling.
-		return reservedPlannerControlDeclarations()
+		return reservedPlannerControlDeclarations(), projection
 	}
 	reserved := reservedPlannerControlDeclarations()
-	decls := make([]llm.ToolDeclaration, 0, len(reserved)+len(always)+len(discovered))
-	// Dedup on the SANITIZED name — that is the function name the LLM
-	// sees, so two catalog names that map onto the same string cannot both
-	// be declared: the model's returned name would resolve to whichever
-	// tool matched first, making provider-side dispatch ambiguous. The
-	// collider is dropped for the turn.
-	//
-	// `seen` maps the provider-safe name to the REAL catalog name that
-	// claimed it. Keeping the real name (rather than a bare set membership)
-	// is what lets the drop distinguish its two cases:
-	//
-	//   - Same real name → a benign re-encounter. Discovery routinely
-	//     re-surfaces an already-loaded tool; skipping it is the intended
-	//     behaviour and needs no announcement.
-	//   - Different real names → a genuine collision. The model is offered
-	//     a strictly smaller surface than the catalog holds, so the drop is
-	//     announced on the event bus. Degrading here in silence is the
-	//     forbidden pattern (§13): nothing downstream can otherwise tell
-	//     that a tool the operator registered never reached the model.
-	seen := make(map[string]string, len(reserved)+len(always)+len(discovered))
-	for _, r := range reserved {
-		seen[sanitizeToolName(r.Name)] = r.Name
-		decls = append(decls, r)
-	}
-	for _, t := range always {
-		if t.Name == "" {
-			continue
-		}
-		key := sanitizeToolName(t.Name)
-		if owner, dup := seen[key]; dup {
-			emitToolDeclarationCollision(rc, key, owner, t.Name)
-			continue
-		}
-		seen[key] = t.Name
+	decls := make([]llm.ToolDeclaration, 0, len(reserved)+len(projected))
+	decls = append(decls, reserved...)
+	for _, t := range projected {
 		decls = append(decls, toolToDeclaration(t))
 	}
+	for _, collision := range collisions {
+		emitToolDeclarationCollision(rc, collision.DeclaredName, collision.DeclaredTool, collision.DroppedTool)
+	}
+	return decls, projection
+}
+
+// projectModelTools is the ONE ReAct projection of catalog candidates onto
+// the model-visible namespace. Declarations and the prompt quick-reference
+// call it; Next retains its returned immutable projection across Complete for
+// provider-returned-name resolution, so collision winner and ordering cannot
+// drift within a turn.
+func projectModelTools(rc planner.RunContext, discovered []string) ([]tools.Tool, tools.ModelToolNameProjection) {
+	if rc.Catalog == nil {
+		return nil, tools.NewModelToolNameProjection(nil, nil)
+	}
+	candidates := rc.Catalog.List()
 	for _, name := range discovered {
 		if name == "" {
 			continue
 		}
-		key := sanitizeToolName(name)
-		if owner, dup := seen[key]; dup {
-			emitToolDeclarationCollision(rc, key, owner, name)
-			continue
+		if tool, ok := rc.Catalog.Resolve(name); ok {
+			candidates = append(candidates, tool)
 		}
-		t, ok := rc.Catalog.Resolve(name)
-		if !ok {
-			continue
-		}
-		seen[key] = name
-		decls = append(decls, toolToDeclaration(t))
 	}
-	return decls
+	names := make([]string, 0, len(candidates))
+	for _, tool := range candidates {
+		names = append(names, tool.Name)
+	}
+	projection := tools.NewModelToolNameProjectionWithReservedControls(names)
+	entries := projection.Entries()
+	projected := make([]tools.Tool, 0, len(entries))
+	// Entries preserve first-winner encounter order. Walk the candidate
+	// snapshot once in that same order, skipping residual collisions and
+	// benign rediscovery duplicates without building a second name map.
+	next := 0
+	for _, candidate := range candidates {
+		if next == len(entries) {
+			break
+		}
+		if candidate.Name == entries[next].CatalogName {
+			projected = append(projected, candidate)
+			next++
+		}
+	}
+	return projected, projection
 }
 
 // emitToolDeclarationCollision announces a tool that could not be declared

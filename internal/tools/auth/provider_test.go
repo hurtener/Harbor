@@ -62,7 +62,10 @@ func TestProvider_FullPauseResumeCycle_UserBound(t *testing.T) {
 	// Verify pause record exists and is in StatusPaused.
 	// We don't have the pause token directly (it's internal),
 	// but we can assert PendingFlow returns the flow's projection.
-	info, ok := h.provider.PendingFlow(state)
+	info, ok, err := h.provider.PendingFlow(ctx, state)
+	if err != nil {
+		t.Fatalf("PendingFlow(%q): %v", state, err)
+	}
 	if !ok {
 		t.Fatalf("PendingFlow(%q) = false", state)
 	}
@@ -299,7 +302,7 @@ func TestProvider_NewProvider_InvalidConfig_FailLoud(t *testing.T) {
 		RedirectURI:  "http://x",
 	}
 	_, err := NewProvider([]OAuthConfig{bad}, ProviderDeps{
-		Store: h.store, Bus: h.bus, Redactor: h.redactor, Coordinator: h.coordinator,
+		Store: h.store, Flows: h.flows, Bus: h.bus, Redactor: h.redactor, Coordinator: h.coordinator,
 	})
 	if err == nil {
 		t.Fatalf("ScopeAgent without AgentID should fail at construction")
@@ -347,6 +350,11 @@ func TestProvider_CompleteFlow_StateMismatch_FailLoud(t *testing.T) {
 	_, err = h.provider.CompleteFlow(ctxB, authErr.State, code)
 	if !errors.Is(err, ErrStateMismatch) {
 		t.Fatalf("CompleteFlow cross-identity: want ErrStateMismatch, got %v", err)
+	}
+	// A hostile identity cannot consume the durable one-time record. The
+	// initiating identity still completes the same PKCE code successfully.
+	if _, err := h.provider.CompleteFlow(ctxA, authErr.State, code); err != nil {
+		t.Fatalf("CompleteFlow initiating identity after mismatch: %v", err)
 	}
 }
 

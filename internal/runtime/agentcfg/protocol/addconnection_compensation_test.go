@@ -3,7 +3,6 @@ package protocol_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -132,17 +131,6 @@ func (a *registeringAttacher) callCount() int {
 	return a.calls
 }
 
-// attachOwner returns the owner the LAST attach stamped on its registration.
-func (a *registeringAttacher) attachOwner(t *testing.T) liveOwner {
-	t.Helper()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(a.owners) == 0 {
-		t.Fatal("attacher was never called")
-	}
-	return a.owners[len(a.owners)-1]
-}
-
 // DetachConnection satisfies agentcfgprotocol.ConnectionDetacher — the
 // compensating teardown.
 //
@@ -200,11 +188,11 @@ func (i *recordingInstaller) InstallProvider(_ context.Context, _, _ string, des
 	return nil
 }
 
-// setOnInstall arms the one-shot interleaving hook.
-func (i *recordingInstaller) setOnInstall(f func()) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	i.onInstall = f
+func (i *recordingInstaller) PrepareProvider(_ context.Context, tenant, agentID string, desc agentcfg.OAuthProviderDescriptor) (agentcfgprotocol.PreparedOAuthProvider, error) {
+	return &testPreparedOAuthProvider{
+		publish:  func(ctx context.Context) error { return i.InstallProvider(ctx, tenant, agentID, desc) },
+		rollback: func(ctx context.Context) error { return i.UninstallProvider(ctx, tenant, agentID, desc.Name) },
+	}, nil
 }
 
 func (i *recordingInstaller) UninstallProvider(_ context.Context, _, _, name string) error {
@@ -337,8 +325,8 @@ func TestAddMCPConnection_RevisionConflict_CompensatesTheAttach(t *testing.T) {
 	if !errors.Is(addErr, agentcfg.ErrRevisionConflict) {
 		t.Fatalf("add with a stale token = %v, want ErrRevisionConflict", addErr)
 	}
-	if h.attacher.callCount() != 1 {
-		t.Fatalf("attacher called %d times, want 1 (the live half of the add DID run — that is the premise)", h.attacher.callCount())
+	if h.attacher.callCount() != 0 {
+		t.Fatalf("stale request reached preparation: calls=%d, want 0", h.attacher.callCount())
 	}
 
 	// (2) the spine half.
@@ -359,18 +347,15 @@ func TestAddMCPConnection_RevisionConflict_CompensatesTheAttach(t *testing.T) {
 	if h.live.isLive("leaky") {
 		t.Fatal("the refused add left the server LIVE in the registry: no revision names it, so remove_mcp_connection answers not-found and it can never be removed")
 	}
-	if h.live.detaches() != 1 {
-		t.Fatalf("compensating detach ran %d times, want exactly 1", h.live.detaches())
+	if h.live.detaches() != 0 {
+		t.Fatalf("stale request required a detach: %d", h.live.detaches())
 	}
 
 	// (4) the observability half.
 	select {
 	case ev := <-failed:
-		if ev.Type != agentcfg.EventTypeMCPConnectionFailed {
-			t.Fatalf("terminal event type = %q", ev.Type)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no terminal lifecycle event after the refused add — the last event is `pending`, so a Console reader is parked on the transient state forever")
+		t.Fatalf("stale refusal emitted lifecycle event %q before preparation", ev.Type)
+	default:
 	}
 
 	// (5) and the connection really is unnameable-and-therefore-unremovable
@@ -440,8 +425,8 @@ func TestAddMCPConnection_AuthRequiredConflict_CompensatesTheAttach(t *testing.T
 	if h.live.isLive("needs-auth") {
 		t.Fatal("the refused auth-required add left the server live in the registry")
 	}
-	if h.live.detaches() != 1 {
-		t.Fatalf("compensating detach ran %d times, want exactly 1", h.live.detaches())
+	if h.live.detaches() != 0 || h.attacher.callCount() != 0 {
+		t.Fatalf("stale auth request reached live lifecycle: attaches=%d detaches=%d", h.attacher.callCount(), h.live.detaches())
 	}
 }
 
@@ -527,9 +512,9 @@ func TestAddMCPConnection_ConflictWithNoDetacherFailsLoud(t *testing.T) {
 		t.Fatalf("detach ran %d times with no detacher wired", h.live.detaches())
 	}
 	select {
-	case <-failed:
-	case <-time.After(2 * time.Second):
-		t.Fatal("no terminal lifecycle event on the nil-detacher arm — the leak would be silent AND invisible")
+	case ev := <-failed:
+		t.Fatalf("stale precondition emitted lifecycle event %q", ev.Type)
+	default:
 	}
 }
 
@@ -549,8 +534,8 @@ func TestAddMCPConnection_CompensatingDetachFailureIsNotSwallowed(t *testing.T) 
 	if !errors.Is(addErr, agentcfg.ErrRevisionConflict) {
 		t.Fatalf("add = %v, want the ORIGINAL ErrRevisionConflict (a failed compensation must not become the caller's error)", addErr)
 	}
-	if h.live.detaches() != 1 {
-		t.Fatalf("compensating detach attempted %d times, want 1", h.live.detaches())
+	if h.live.detaches() != 0 || h.attacher.callCount() != 0 {
+		t.Fatalf("stale request reached live lifecycle: attaches=%d detaches=%d", h.attacher.callCount(), h.live.detaches())
 	}
 }
 
@@ -750,7 +735,7 @@ func TestAddMCPConnection_RevisionConflict_KeepsAStillDeclaredWireProvider(t *te
 //
 // Mutation: drop `&& !providerDeclared` from the compensation's uninstall call
 // and this fails.
-func TestAddMCPConnection_RevisionConflict_KeepsAProviderASiblingDeclared(t *testing.T) {
+func TestAddMCPConnection_RevisionConflict_DoesNotPrepareProviderOrConnection(t *testing.T) {
 	ctx := context.Background()
 	h := newCompHarness(t, nil, true)
 
@@ -766,18 +751,6 @@ func TestAddMCPConnection_RevisionConflict_KeepsAProviderASiblingDeclared(t *tes
 
 	stale := staleTokenFor(t, h.reg, agentcfg.ConfigScopeAgent)
 
-	// The racing sibling: a DIFFERENT connection binding the SAME provider,
-	// written in the window between this add's declaration read and its
-	// compensation. A different connection name isolates the provider guard from
-	// the connection guard.
-	h.installer.setOnInstall(func() {
-		mirror := httpConnNamed("github-mirror")
-		mirror.OAuth = inline()
-		if _, err := h.svc.AddMCPConnection(ctx, addReq(mirror, nil)); err != nil {
-			t.Errorf("sibling add: %v", err)
-		}
-	})
-
 	conn := httpConnNamed("github")
 	conn.OAuth = inline()
 	req := addReq(conn, nil)
@@ -786,24 +759,17 @@ func TestAddMCPConnection_RevisionConflict_KeepsAProviderASiblingDeclared(t *tes
 		t.Fatalf("add with a stale token = %v, want ErrRevisionConflict", addErr)
 	}
 
-	if !activeDeclaresProvider(t, h, "shared-idp") {
-		t.Fatal("the sibling write did not land — the interleaving this test needs did not happen")
+	if activeDeclaresProvider(t, h, "shared-idp") || activeDeclaresConn(t, h, "github") {
+		t.Fatal("a stale expected revision changed durable desired state")
 	}
-	if activeDeclaresConn(t, h, "github") {
-		t.Fatal("the refused add's own connection ended up declared — this test no longer isolates the provider guard")
-	}
-	// The connection guard correctly does NOT fire (nothing declares `github`),
-	// so the server is torn down — the D-370 behaviour, unchanged.
 	if h.live.isLive("github") {
-		t.Fatal("the refused add left an UNDECLARED server live — the leak the compensation exists to close")
+		t.Fatal("a stale expected revision prepared or published a connection")
 	}
-	// The provider guard DOES fire: the sibling's still-declared `github-mirror`
-	// binds it.
-	if !h.installer.isInstalled("shared-idp") {
-		t.Fatal("COLLATERAL: the refused add uninstalled a provider a racing sibling's WINNING revision declares — the sibling's still-declared connection loses southbound bearer injection")
+	if h.installer.isInstalled("shared-idp") {
+		t.Fatal("a stale expected revision published an inline OAuth provider")
 	}
-	if !h.live.isLive("github-mirror") {
-		t.Fatal("the refused add tore down the sibling's connection")
+	if h.attacher.callCount() != 0 {
+		t.Fatalf("attacher called %d times on an early revision refusal, want 0", h.attacher.callCount())
 	}
 }
 
@@ -875,7 +841,7 @@ func TestAddMCPConnection_FailedAttach_KeepsAStillDeclaredWireProvider(t *testin
 //
 // Mutation: drop the retained-reason prefix and this fails while the
 // event-fired assertion stays green.
-func TestAddMCPConnection_RevisionConflict_RetainedReasonNamesTheUntouchedServer(t *testing.T) {
+func TestAddMCPConnection_RevisionConflict_EmitsNoLifecycleForUnstartedAttempt(t *testing.T) {
 	ctx := context.Background()
 	h := newCompHarness(t, nil, true)
 
@@ -900,6 +866,7 @@ func TestAddMCPConnection_RevisionConflict_RetainedReasonNamesTheUntouchedServer
 	if _, err := h.svc.AddMCPConnection(ctx, addReq(httpConnNamed("other"), nil)); err != nil {
 		t.Fatalf("sibling add: %v", err)
 	}
+	before := h.attacher.callCount()
 
 	req := addReq(httpConnNamed("github"), nil)
 	req.ExpectedContentHash = stale
@@ -909,18 +876,11 @@ func TestAddMCPConnection_RevisionConflict_RetainedReasonNamesTheUntouchedServer
 
 	select {
 	case ev := <-failed:
-		payload, ok := ev.Payload.(agentcfg.MCPConnectionLifecyclePayload)
-		if !ok {
-			t.Fatalf("terminal event payload type = %T", ev.Payload)
-		}
-		if payload.ServerID != "github" {
-			t.Fatalf("terminal event server_id = %q, want github", payload.ServerID)
-		}
-		if !strings.Contains(payload.Reason, "NOT torn down") {
-			t.Fatalf("terminal reason = %q — it does not say the pre-existing connection was left in place, so a reader sees a bare `failed` for a healthy, still-declared, still-serving connection", payload.Reason)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no terminal lifecycle event on the retained path — a Console reader is parked on the transient `pending` forever")
+		t.Fatalf("stale expected revision emitted a lifecycle event for an attempt that never started: %+v", ev)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := h.attacher.callCount(); got != before {
+		t.Fatalf("stale expected revision called attacher: before=%d after=%d", before, got)
 	}
 }
 
@@ -1110,23 +1070,14 @@ func TestAddMCPConnection_RecordLandedPointerStuck_DetachesAndIsCorrect(t *testi
 	}
 }
 
-// TestAddMCPConnection_WriteLandedButPointerUnreadable_FallsBackLoudly is the
-// UNKNOWN-answer arm, and the one place this door still tears down a landed
-// write. It is pinned rather than left as a maybe.
+// TestAddMCPConnection_WriteLandedButPointerUnreadable_RetainsLoudly pins the
+// legacy adapter's UNKNOWN-answer arm: a refused read is not proof of absence
+// and therefore cannot authorize a destructive detach (#653).
 //
 // The write lands, the store reports it failed, and the re-read that would
-// scope the compensation is itself refused. "The pointer does not name it" and
-// "I cannot tell" are then indistinguishable, so the door falls back to the
-// unrefined compensation and says so at ERROR.
-//
-// The fallback direction is deliberately the OPPOSITE of the driver's, and the
-// asymmetry is the point: down there an unknown-answer delete strands a
-// dangling pointer no later write can repair, so it retains. Here BOTH
-// outcomes self-heal at the next run-start reconcile — a declared-but-dark
-// connection is re-attached by the attach pass, an undeclared-but-live one is
-// torn down by the detach pass — so the door keeps the guarantee it was given
-// and reports the residual instead of guessing.
-func TestAddMCPConnection_WriteLandedButPointerUnreadable_FallsBackLoudly(t *testing.T) {
+// scope the compensation is itself refused. The live state is retained and the
+// ambiguity logged; the next owner-scoped reconcile can converge it safely.
+func TestAddMCPConnection_WriteLandedButPointerUnreadable_RetainsLoudly(t *testing.T) {
 	ctx := context.Background()
 	boom := errors.New("state store unavailable: save active pointer: injected")
 	h := newCompHarnessWrapped(t, nil, true, func(r agentcfg.Registry) agentcfg.Registry {
@@ -1145,12 +1096,11 @@ func TestAddMCPConnection_WriteLandedButPointerUnreadable_FallsBackLoudly(t *tes
 	if !activeDeclaresConn(t, h, "github") {
 		t.Fatal("the write did not land — this row no longer models the unknown answer over a landed write")
 	}
-	// The documented fallback: unconditional compensation, loud.
-	if h.live.detaches() != 1 {
-		t.Fatalf("the unknown-answer arm ran %d detaches, want 1 — the fallback is the unrefined compensation, stated in the godoc and reported at ERROR", h.live.detaches())
+	if h.live.detaches() != 0 {
+		t.Fatalf("the unknown-answer arm ran %d destructive detaches, want 0", h.live.detaches())
 	}
-	if h.live.isLive("github") {
-		t.Fatal("the unknown-answer arm neither scoped nor compensated — it must do one or the other, never neither")
+	if !h.live.isLive("github") {
+		t.Fatal("the unknown-answer arm tore down a connection the durable active revision names")
 	}
 }
 
@@ -1170,7 +1120,7 @@ func TestAddMCPConnection_WriteLandedButPointerUnreadable_FallsBackLoudly(t *tes
 // own liveness assertion. This test adds the precise diagnosis on top: the
 // owner the detach was called with must be the owner the attach was stamped
 // with.
-func TestAddMCPConnection_CompensatingDetach_IsOwnerScoped(t *testing.T) {
+func TestAddMCPConnection_StaleExpectation_NeverNeedsCompensatingDetach(t *testing.T) {
 	ctx := context.Background()
 	h := newCompHarness(t, nil, true)
 
@@ -1181,18 +1131,11 @@ func TestAddMCPConnection_CompensatingDetach_IsOwnerScoped(t *testing.T) {
 		t.Fatalf("add with a stale token = %v, want ErrRevisionConflict", addErr)
 	}
 
-	want := liveOwner{tenant: scope().Tenant, agent: testAgentID}
 	got := h.live.detachOwners()
-	if len(got) != 1 {
-		t.Fatalf("compensating detach called %d times, want exactly 1", len(got))
+	if len(got) != 0 {
+		t.Fatalf("stale expected revision ran %d compensating detaches, want 0", len(got))
 	}
-	if got[0] != want {
-		t.Fatalf("compensating detach owner = %+v, want %+v — a foreign owner is a SILENT no-op in production (Deregister answers ErrServerNotFound, detachSource swallows it as idempotent), so the leak returns invisibly", got[0], want)
-	}
-	if attached := h.attacher.attachOwner(t); got[0] != attached {
-		t.Fatalf("compensating detach owner %+v != the owner the ATTACH stamped %+v — attach and compensating detach must address the same registration", got[0], attached)
-	}
-	if h.live.isLive("scoped") {
-		t.Fatal("the compensating detach did not remove the registration — it addressed a different owner")
+	if h.attacher.callCount() != 0 {
+		t.Fatalf("stale expected revision called attacher %d times, want 0", h.attacher.callCount())
 	}
 }

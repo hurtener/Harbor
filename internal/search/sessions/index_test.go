@@ -89,6 +89,7 @@ func TestSessionsSearcher_RejectsMissingIdentity(t *testing.T) {
 	s, err := sessionsearch.New(h.registry, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("sessionsearch.New: %v", err)
@@ -109,6 +110,7 @@ func TestSessionsSearcher_RejectsCrossTenantWithoutAdmin(t *testing.T) {
 	s, err := sessionsearch.New(h.registry, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("sessionsearch.New: %v", err)
@@ -135,6 +137,7 @@ func TestSessionsSearcher_ScopesToCallerTenant_AndMatchesQuery(t *testing.T) {
 	s, err := sessionsearch.New(h.registry, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("sessionsearch.New: %v", err)
@@ -181,6 +184,7 @@ func TestSessionsSearcher_PaginationMath(t *testing.T) {
 	s, err := sessionsearch.New(h.registry, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("sessionsearch.New: %v", err)
@@ -215,6 +219,7 @@ func TestSessionsSearcher_AdminCrossTenant_Allows(t *testing.T) {
 	s, err := sessionsearch.New(h.registry, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return true },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("sessionsearch.New: %v", err)
@@ -239,6 +244,7 @@ func TestSessionsSearcher_PageSizeOverMax_Rejected(t *testing.T) {
 	s, err := sessionsearch.New(h.registry, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("sessionsearch.New: %v", err)
@@ -268,6 +274,7 @@ func TestSessionsSearcher_Concurrent_NoCrossTalk(t *testing.T) {
 	s, err := sessionsearch.New(h.registry, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("sessionsearch.New: %v", err)

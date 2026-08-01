@@ -335,6 +335,9 @@ func (f *failingStore) DeleteScope(context.Context, identity.Identity) (int, err
 func (f *failingStore) ListKind(context.Context, state.ListScope, string) ([]state.StateRecord, error) {
 	return nil, nil
 }
+func (f *failingStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
+	return nil, nil
+}
 func (f *failingStore) Close(context.Context) error { return nil }
 
 func TestDurable_PersistFailure_SurfacesLoudly(t *testing.T) {

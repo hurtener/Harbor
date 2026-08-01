@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/config"
@@ -14,38 +16,39 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // addconnection.go — the admin-scoped `agent_config.add_mcp_connection`
 // control method: the separable hard piece of the agent-config control
 // plane. Unlike pause/resume (a projection-time flag on an already-attached
 // server), adding a genuinely NEW MCP connection drives an async dial + the
-// MCP `initialize` handshake + discover + register, with possible OAuth.
+// MCP `initialize` handshake + discover, durable desired-state write, then
+// atomic live activation, with possible OAuth.
 //
 // # The lifecycle (fail loud)
 //
 // The add models an explicit lifecycle pending → online | failed |
 // auth_required. The runtime emits `mcp.connection.pending` at the start,
-// then exactly one terminal lifecycle event. A failure at any attach step
-// records NO revision and registers NO server (a half-attached server is
-// never registered — CLAUDE.md §13). A successful attach records the
+// then exactly one terminal lifecycle event. Connect and discovery happen on
+// an unpublished prepared transport. A successful preparation records the
 // NON-SECRET descriptor as a config revision (preserving the skills /
 // tool-exposure / prompt-layer / llm-params / hooks sections — the
-// bidirectional section-merge invariant). An auth-required attach parks on
-// the unified pause/resume primitive (the tool-side OAuth lineage — NOT a
-// new auth dance).
+// bidirectional section-merge invariant), then publishes the catalog and
+// registry. A failed preparation records NO revision and publishes NO server;
+// a failed activation compensates the landed revision and restores the exact
+// prior live state. An auth-required attach parks on the unified pause/resume
+// primitive (the tool-side OAuth lineage — NOT a new auth dance).
 //
-// # The one door whose live effect precedes its write — and compensates
+// # Ambiguous persistence outcomes converge by exact descriptor
 //
-// This is the only agent-config write verb that cannot order its live effect
-// AFTER its revision write, because whether the server answers is the input to
-// what gets written. So the write can fail with the server already up — the
-// reachable case being an expected-revision precondition whose base moved. On
-// that path the add COMPENSATES rather than merely refusing: it detaches the
-// server, uninstalls a wire-OAuth provider it newly installed, and emits the
-// terminal `failed` lifecycle. Without that, a refused write left a live
-// server no revision named — one `remove_mcp_connection` answers not-found
-// for, and a lifecycle stuck on `pending`. See [Service.compensateAttach].
+// A revision driver may report an error after the exact desired state landed.
+// The service point-reads the active revision and activates only when both the
+// normalized connection and inline OAuth descriptors match exactly. A
+// same-name sibling is not proof. Unknown or non-matching outcomes close the
+// unpublished transport. Compatibility callers that only implement the older
+// live-first [ConnectionAttacher] seam retain scoped compensation; production
+// wiring implements [ConnectionPreparer].
 //
 // # Secret hygiene (CLAUDE.md §7, load-bearing)
 //
@@ -61,7 +64,7 @@ import (
 // in the operator-declared allowlist. An empty allowlist rejects every stdio
 // add. argv-form only — the descriptor is never passed to a shell.
 
-// ConnectionAttacher drives the real MCP attach lifecycle for a runtime add:
+// ConnectionAttacher is the compatibility seam for live-first runtime adds:
 // dial → `initialize` handshake → discover → register, fail-loud per step.
 // It is the seam that keeps the concrete MCP driver out of this package (the
 // §4.4 boundary): the cmd/harbor + devstack boundary injects a concrete that
@@ -78,9 +81,67 @@ type ConnectionAttacher interface {
 	Attach(ctx context.Context, req AttachRequest) error
 }
 
-// ConnectionDetacher is the compensating twin of [ConnectionAttacher]: the
-// seam the add door uses to TEAR DOWN a server it successfully attached when
-// the revision write that would have named it then failed.
+// ConnectionPreparer performs the network-dependent half of an MCP attach
+// without publishing tools or a registry entry. The service persists desired
+// state between PrepareConnection and PreparedConnection.Activate.
+type ConnectionPreparer interface {
+	PrepareConnection(ctx context.Context, req AttachRequest) (PreparedConnection, error)
+}
+
+type connectionMatcher interface {
+	ConnectionMatches(owner toolauth.Owner, name, descriptorFingerprint string) bool
+}
+
+const mcpAddContinuationKind = "agentcfg.mcp.add_connection"
+
+func mcpAddContinuation(agentID string, desc agentcfg.MCPConnectionDescriptor) pauseresume.Continuation {
+	return pauseresume.Continuation{Kind: mcpAddContinuationKind, Data: map[string]string{
+		"agent_id":               agentID,
+		"server":                 desc.Name,
+		"descriptor_fingerprint": agentcfg.MCPConnectionFingerprint(desc),
+	}}
+}
+
+// PreparedConnection owns one connected, discovered, unpublished MCP
+// connection. Activate publishes it once; Close drains it on refusal.
+type PreparedConnection interface {
+	Activate(ctx context.Context) error
+	Close(ctx context.Context) error
+}
+
+// ProviderPreparer builds an unpublished OAuth provider for an MCP prepare.
+// The provider can be used privately during dial/discovery, then published
+// reversibly after the durable revision lands.
+type ProviderPreparer interface {
+	PrepareProvider(ctx context.Context, tenant, agentID string, desc agentcfg.OAuthProviderDescriptor) (PreparedOAuthProvider, error)
+}
+
+// PreparedOAuthProvider owns one unpublished provider instance.
+type PreparedOAuthProvider interface {
+	Binding() toolauth.OAuthProvider
+	Publish(ctx context.Context) error
+	Commit(ctx context.Context)
+	Rollback(ctx context.Context) error
+	Close(ctx context.Context) error
+}
+
+type legacyConnectionPreparer struct{ attacher ConnectionAttacher }
+
+func (p legacyConnectionPreparer) PrepareConnection(ctx context.Context, req AttachRequest) (PreparedConnection, error) {
+	if err := p.attacher.Attach(ctx, req); err != nil {
+		return nil, err
+	}
+	return legacyPreparedConnection{}, nil
+}
+
+type legacyPreparedConnection struct{}
+
+func (legacyPreparedConnection) Activate(context.Context) error { return nil }
+func (legacyPreparedConnection) Close(context.Context) error    { return nil }
+
+// ConnectionDetacher is the compensating twin of the compatibility
+// [ConnectionAttacher] seam: it tears down a server that older live-first
+// callers attached before a revision write failed.
 //
 // It exists because the add door's two side effects are not one transaction.
 // The attach is live and irreversible-by-itself; the revision write can be
@@ -134,6 +195,10 @@ type AttachRequest struct {
 	// southbound bearer injection (empty leaves the connection on its static
 	// Headers). The attacher resolves it against the declared registry.
 	OAuthProvider string
+	// OAuthProviderOverride is an unpublished provider instance used only by
+	// this private preparation. It never enters the shared provider set until
+	// the durable desired state has landed.
+	OAuthProviderOverride toolauth.OAuthProvider
 	// MetaAnnotations is the non-secret operator `_meta` annotation set the
 	// attacher carries onto the live connection's per-call `_meta`.
 	MetaAnnotations map[string]string
@@ -183,11 +248,8 @@ const (
 	// no half-attached server registered.
 	ConnectionStateFailed ConnectionState = "failed"
 	// ConnectionStateAuthRequired — the attach parked on the unified
-	// pause/resume primitive awaiting authorization. NOTE: the resume
-	// continuation that re-drives the attach to online is not yet
-	// implemented — resume currently only releases the pause (tracked in
-	// issue #375). The descriptor revision is recorded; the server comes
-	// online on a subsequent (authorized) add.
+	// pause/resume primitive awaiting authorization. An accepted resume re-reads
+	// the exact durable descriptor, privately prepares it, then activates it.
 	ConnectionStateAuthRequired ConnectionState = "auth_required"
 )
 
@@ -257,20 +319,30 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		}
 	}
 
-	if s.attacher == nil {
+	if s.preparer == nil {
 		return prototypes.AgentConfigAddMCPConnectionResponse{}, ErrConnectionAttachUnavailable
 	}
 
-	// Dev-gated wire-carried OAuth binding. An inline wire descriptor installs a
-	// NEW provider whose downstream sink is DERIVED from this connection's own URL
+	// One owner lock spans expectation validation, preparation, persistence and
+	// activation. No same-owner writer can move the base between the early
+	// side-effect guard and the driver's authoritative write check.
+	release := s.lockAgent(id.TenantID, req.AgentID)
+	defer release()
+	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
+	if err := s.precheckExpectedRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, opts); err != nil {
+		return prototypes.AgentConfigAddMCPConnectionResponse{}, err
+	}
+
+	// Dev-gated wire-carried OAuth binding. An inline wire descriptor privately
+	// prepares a NEW provider whose downstream sink is DERIVED from this connection's own URL
 	// (never a wire field); a NAME binding to an already-installed WIRE provider
 	// (e.g. from a prior set_oauth_provider) re-derives that provider's sink from
 	// this connection's URL. Both fail-closed behind the opt-in (the gate is
-	// inside gateAndValidateOAuthProviderDescriptor). The live install happens
-	// BEFORE the attach so the binding resolves; a wire provider newly installed
-	// here is rolled back if the attach fails (no orphan). Returns the domain
-	// descriptor to persist alongside the connection revision.
-	wireProvider, wireProviderIsNew, err := s.prepareWireOAuthBinding(ctx, id, req.AgentID, &desc, inlineOAuth)
+	// inside gateAndValidateOAuthProviderDescriptor). The private instance is
+	// threaded directly into MCP preparation and enters the shared provider set
+	// only after the revision lands; its receipt restores the exact prior binding
+	// if MCP publication then fails.
+	wireProvider, wireProviderIsNew, preparedProvider, err := s.prepareWireOAuthBinding(ctx, id, req.AgentID, &desc, inlineOAuth)
 	if err != nil {
 		return prototypes.AgentConfigAddMCPConnectionResponse{}, err
 	}
@@ -279,9 +351,11 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 	// observability — never a secret).
 	s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStatePending, "", "", "")
 
-	// Drive the real attach. The headers flow to the transport ONLY — they
-	// are NOT carried into the revision / diff / events below.
-	attachErr := s.attacher.Attach(ctx, AttachRequest{
+	// Connect and discover privately. The headers flow to the transport ONLY;
+	// a successful preparation has not changed the shared catalog or registry.
+	continuation := mcpAddContinuation(req.AgentID, desc)
+	prepareCtx := pauseresume.WithContinuation(ctx, continuation)
+	prepared, prepareErr := s.preparer.PrepareConnection(prepareCtx, AttachRequest{
 		Identity:                     id,
 		AgentID:                      req.AgentID,
 		Name:                         desc.Name,
@@ -290,6 +364,7 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		URL:                          desc.URL,
 		Headers:                      req.Headers,
 		OAuthProvider:                desc.OAuthProvider,
+		OAuthProviderOverride:        preparedProviderBinding(preparedProvider),
 		MetaAnnotations:              cloneAnnotations(desc.MetaAnnotations),
 		OAuthDiscoveryAllowedOrigins: append([]string(nil), desc.OAuthDiscoveryAllowedOrigins...),
 		Injection:                    desc.Injection.Clone(),
@@ -298,17 +373,21 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 	})
 
 	switch {
-	case attachErr == nil:
-		// Online — record the non-secret descriptor as a revision (preserving
-		// the other sections; upserting the wire provider when one was installed)
-		// and emit the terminal `added` event.
-		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
+	case prepareErr == nil:
+		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider, opts)
 		if recErr != nil {
-			// The attach SUCCEEDED and the write did not. Compensate — see
-			// [Service.compensateAttach] for why a bare return here left a live,
-			// unremovable server behind.
-			s.compensateAttach(ctx, q, id, req.AgentID, desc, wireProvider, wireProviderIsNew, recErr)
-			return prototypes.AgentConfigAddMCPConnectionResponse{}, recErr
+			return prototypes.AgentConfigAddMCPConnectionResponse{}, s.handlePreparedRecordFailure(ctx, q, id, req.AgentID, desc, wireProvider, wireProviderIsNew, preparedProvider, prepared, recErr)
+		}
+		if preparedProvider != nil {
+			if publishErr := preparedProvider.Publish(ctx); publishErr != nil {
+				return prototypes.AgentConfigAddMCPConnectionResponse{}, s.rollbackFailedActivation(ctx, q, req.AgentID, desc, preparedProvider, prepared, rev, publishErr)
+			}
+		}
+		if activateErr := prepared.Activate(ctx); activateErr != nil {
+			return prototypes.AgentConfigAddMCPConnectionResponse{}, s.rollbackFailedActivation(ctx, q, req.AgentID, desc, preparedProvider, prepared, rev, activateErr)
+		}
+		if preparedProvider != nil {
+			preparedProvider.Commit(ctx)
 		}
 		s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateOnline, rev.RevisionID, "", "")
 		view := revisionToWire(rev)
@@ -319,25 +398,69 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 			ProtocolVersion: prototypes.ProtocolVersion,
 		}, nil
 
-	case errors.Is(attachErr, ErrAuthRequired):
+	case errors.Is(prepareErr, ErrAuthRequired):
 		// The server needs authorization — park on the unified pause/resume
 		// primitive (NOT a new auth dance). Fail loud if no coordinator is
 		// wired rather than dropping the auth requirement.
 		if s.coordinator == nil {
-			return prototypes.AgentConfigAddMCPConnectionResponse{}, ErrCoordinatorUnavailable
+			return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(ErrCoordinatorUnavailable, rollbackPreparedProvider(ctx, preparedProvider))
 		}
-		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
+		var providerAuth *toolauth.ErrAuthRequired
+		_ = errors.As(prepareErr, &providerAuth)
+		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider, opts)
 		if recErr != nil {
-			// Same shape as the online branch: the live half of the add ran and
-			// the write did not. The attach did not bring the server online, but
-			// it may have registered before the authorization requirement
-			// surfaced, and an inline wire provider was certainly installed — so
-			// the compensation runs here too. DetachConnection is idempotent, so
-			// a connection that never registered costs a no-op.
-			s.compensateAttach(ctx, q, id, req.AgentID, desc, wireProvider, wireProviderIsNew, recErr)
-			return prototypes.AgentConfigAddMCPConnectionResponse{}, recErr
+			landedRevision, connExact, providerExact, readErr := s.activeMatches(ctx, q, req.AgentID, desc, wireProvider)
+			if readErr == nil && connExact && providerExact {
+				// The persistence acknowledgement is ambiguous, but the active
+				// pointer proves this exact descriptor/provider pair landed. The
+				// producer-owned pause is already the continuation rendezvous: do
+				// not reject it or turn a durable auth-required add into a failed
+				// response merely because the write acknowledgement was lost.
+				rev = landedRevision
+				if preparedProvider != nil {
+					if publishErr := preparedProvider.Publish(ctx); publishErr != nil {
+						return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(recErr, publishErr, rollbackPreparedProvider(ctx, preparedProvider), s.rejectProducerPause(ctx, providerAuth))
+					}
+					preparedProvider.Commit(ctx)
+				}
+				var token pauseresume.Token
+				var parkErr error
+				if providerAuth != nil && providerAuth.PauseToken != "" {
+					token = pauseresume.Token(providerAuth.PauseToken)
+				} else {
+					token, parkErr = s.parkForAuth(ctx, id, req.AgentID, desc)
+				}
+				if parkErr != nil {
+					s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateFailed, rev.RevisionID, "", safeReason(parkErr))
+					return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(recErr, parkErr)
+				}
+				s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateAuthRequired, rev.RevisionID, string(token), "")
+				view := revisionToWire(rev)
+				return prototypes.AgentConfigAddMCPConnectionResponse{
+					Revision:        &view,
+					Connection:      descriptorToWire(desc),
+					State:           string(ConnectionStateAuthRequired),
+					PauseToken:      string(token),
+					ProtocolVersion: prototypes.ProtocolVersion,
+				}, nil
+			}
+			providerErr := rollbackPreparedProvider(ctx, preparedProvider)
+			pauseErr := s.rejectProducerPause(ctx, providerAuth)
+			return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(recErr, readErr, providerErr, pauseErr)
 		}
-		token, parkErr := s.parkForAuth(ctx, id, req.AgentID, desc)
+		if preparedProvider != nil {
+			if publishErr := preparedProvider.Publish(ctx); publishErr != nil {
+				return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(publishErr, rollbackPreparedProvider(ctx, preparedProvider), s.rollbackRevision(ctx, q, req.AgentID, rev), s.rejectProducerPause(ctx, providerAuth))
+			}
+			preparedProvider.Commit(ctx)
+		}
+		var token pauseresume.Token
+		var parkErr error
+		if providerAuth != nil && providerAuth.PauseToken != "" {
+			token = pauseresume.Token(providerAuth.PauseToken)
+		} else {
+			token, parkErr = s.parkForAuth(ctx, id, req.AgentID, desc)
+		}
 		if parkErr != nil {
 			// The revision IS recorded (so the connection is nameable and
 			// removable) but no terminal lifecycle event has fired — leaving a
@@ -369,8 +492,11 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		// (nothing was persisted; the live install must not linger). A re-derived
 		// pre-existing provider (bind-by-name) is left in place — it was installed
 		// by its own set_oauth_provider and survives this failed attach.
-		s.uninstallWireProvider(ctx, id, req.AgentID, wireProvider, wireProviderIsNew, "failed attach")
-		reason := safeReason(attachErr)
+		if providerErr := rollbackPreparedProvider(ctx, preparedProvider); providerErr != nil {
+			s.logger.ErrorContext(ctx, "agent-config: private inline oauth provider cleanup failed after MCP preparation failure",
+				"agent_id", req.AgentID, "server_id", desc.Name, "error", providerErr.Error())
+		}
+		reason := safeReason(prepareErr)
 		s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateFailed, "", "", reason)
 		return prototypes.AgentConfigAddMCPConnectionResponse{
 			Connection:      descriptorToWire(desc),
@@ -379,6 +505,125 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 			ProtocolVersion: prototypes.ProtocolVersion,
 		}, nil
 	}
+}
+
+func (s *Service) handlePreparedRecordFailure(ctx context.Context, q identity.Quadruple, id identity.Identity, agentID string, desc agentcfg.MCPConnectionDescriptor, wireProvider *agentcfg.OAuthProviderDescriptor, wireProviderIsNew bool, preparedProvider PreparedOAuthProvider, prepared PreparedConnection, cause error) error {
+	// Compatibility adapters are live-first; retain the old scoped compensation
+	// only for those non-production callers.
+	if _, legacy := prepared.(legacyPreparedConnection); legacy {
+		s.compensateAttach(ctx, q, id, agentID, desc, wireProvider, wireProviderIsNew, cause)
+		return cause
+	}
+	landedRevision, connDeclared, providerDeclared, readErr := s.activeMatches(ctx, q, agentID, desc, wireProvider)
+	if readErr != nil {
+		closeErr := closePreparedConnection(ctx, prepared)
+		providerErr := rollbackPreparedProvider(ctx, preparedProvider)
+		s.emitConnectionLifecycle(ctx, q, agentID, desc, ConnectionStateFailed, "", "", safeReason(cause))
+		return errors.Join(cause, readErr, closeErr, providerErr)
+	}
+	if connDeclared && providerDeclared {
+		if preparedProvider != nil {
+			if publishErr := preparedProvider.Publish(ctx); publishErr != nil {
+				return s.rollbackFailedActivation(ctx, q, agentID, desc, preparedProvider, prepared, landedRevision, errors.Join(cause, publishErr))
+			}
+		}
+		activateErr := prepared.Activate(ctx)
+		if activateErr != nil {
+			return s.rollbackFailedActivation(ctx, q, agentID, desc, preparedProvider, prepared, landedRevision, errors.Join(cause, activateErr))
+		}
+		if preparedProvider != nil {
+			preparedProvider.Commit(ctx)
+		}
+		s.emitConnectionLifecycle(ctx, q, agentID, desc, ConnectionStateOnline, "", "", "")
+		return cause
+	}
+	closeErr := closePreparedConnection(ctx, prepared)
+	providerErr := rollbackPreparedProvider(ctx, preparedProvider)
+	s.emitConnectionLifecycle(ctx, q, agentID, desc, ConnectionStateFailed, "", "", safeReason(cause))
+	return errors.Join(cause, closeErr, providerErr)
+}
+
+// activeMatches confirms that the ambiguous write landed THIS operation's
+// exact normalized descriptors. A same-name sibling is not proof: activating
+// this prepared transport for a different winning descriptor would make live
+// state disagree with the durable revision.
+func (s *Service) activeMatches(ctx context.Context, q identity.Quadruple, agentID string, conn agentcfg.MCPConnectionDescriptor, provider *agentcfg.OAuthProviderDescriptor) (active agentcfg.Revision, connExact, providerExact bool, err error) {
+	active, hasActive, err := s.registry.Active(ctx, identity.Quadruple{Identity: q.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !hasActive {
+		return agentcfg.Revision{}, false, false, err
+	}
+	wantPayload := agentcfg.NormalizePayload(agentcfg.ConfigPayload{
+		Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{conn}},
+	})
+	wantConnections := wantPayload.ConnectionDescriptors()
+	if len(wantConnections) == 1 {
+		for _, got := range active.Payload.ConnectionDescriptors() {
+			if got.Name == conn.Name {
+				connExact = reflect.DeepEqual(got, wantConnections[0])
+				break
+			}
+		}
+	}
+	if provider == nil {
+		return active, connExact, true, nil
+	}
+	wantPayload = agentcfg.NormalizePayload(agentcfg.ConfigPayload{
+		OAuthProviders: &agentcfg.OAuthProvidersSection{Providers: []agentcfg.OAuthProviderDescriptor{*provider}},
+	})
+	wantProviders := wantPayload.OAuthProviderDescriptors()
+	if len(wantProviders) == 1 {
+		for _, got := range active.Payload.OAuthProviderDescriptors() {
+			if got.Name == provider.Name {
+				providerExact = reflect.DeepEqual(got, wantProviders[0])
+				break
+			}
+		}
+	}
+	return active, connExact, providerExact, nil
+}
+
+func (s *Service) rollbackFailedActivation(ctx context.Context, q identity.Quadruple, agentID string, desc agentcfg.MCPConnectionDescriptor, preparedProvider PreparedOAuthProvider, prepared PreparedConnection, rev agentcfg.Revision, cause error) error {
+	rollbackErr := s.rollbackRevision(ctx, q, agentID, rev)
+	closeErr := closePreparedConnection(ctx, prepared)
+	providerErr := rollbackPreparedProvider(ctx, preparedProvider)
+	s.emitConnectionLifecycle(ctx, q, agentID, desc, ConnectionStateFailed, rev.RevisionID, "", safeReason(cause))
+	return errors.Join(cause, rollbackErr, closeErr, providerErr)
+}
+
+func (s *Service) rollbackRevision(ctx context.Context, q identity.Quadruple, agentID string, rev agentcfg.Revision) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if rev.ParentRevisionID != "" {
+		_, err := s.registry.Rollback(cleanupCtx, q, agentID, rev.ParentRevisionID, agentcfg.ConfigScopeAgent, compensatingWrite())
+		return err
+	}
+	_, err := s.registry.SetRevision(cleanupCtx, q, agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, compensatingWrite())
+	return err
+}
+
+func preparedProviderBinding(p PreparedOAuthProvider) toolauth.OAuthProvider {
+	if p == nil {
+		return nil
+	}
+	return p.Binding()
+}
+
+func rollbackPreparedProvider(ctx context.Context, p PreparedOAuthProvider) error {
+	if p == nil {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return p.Rollback(cleanupCtx)
+}
+
+func closePreparedConnection(ctx context.Context, p PreparedConnection) error {
+	if p == nil {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return p.Close(cleanupCtx)
 }
 
 // validateConnection validates + normalises the wire descriptor, failing
@@ -455,8 +700,13 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 			MetaAnnotations: cloneAnnotations(c.MetaAnnotations),
 		}, nil, nil, nil
 	case agentcfg.MCPTransportHTTP:
-		if strings.TrimSpace(c.URL) == "" {
+		rawURL := strings.TrimSpace(c.URL)
+		if rawURL == "" {
 			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: http transport requires a url", ErrInvalidConnection)
+		}
+		normalizedURL, uerr := config.NormalizeMCPHTTPURL(rawURL)
+		if uerr != nil {
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: http transport url: %w", ErrInvalidConnection, uerr)
 		}
 		if len(c.Command) > 0 {
 			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: http transport must not carry a command", ErrInvalidConnection)
@@ -472,7 +722,7 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 		return agentcfg.MCPConnectionDescriptor{
 			Name:                         name,
 			Transport:                    transport,
-			URL:                          strings.TrimSpace(c.URL),
+			URL:                          normalizedURL,
 			OAuthProvider:                strings.TrimSpace(c.OAuthProvider),
 			MetaAnnotations:              cloneAnnotations(c.MetaAnnotations),
 			OAuthDiscoveryAllowedOrigins: origins,
@@ -565,9 +815,6 @@ func (s *Service) gateStdioConnectionCommands(descs []agentcfg.MCPConnectionDesc
 // bidirectional section-merge invariant). The descriptor is NON-SECRET — no
 // header / token is ever part of the persisted payload.
 func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadruple, agentID string, desc agentcfg.MCPConnectionDescriptor, wireProvider *agentcfg.OAuthProviderDescriptor, opts agentcfg.SetOptions) (agentcfg.Revision, error) {
-	// Serialise the registry read-modify-write per agent (NOT the preceding
-	// dial/handshake, which must not block a quick concurrent edit).
-	defer s.lockAgent(q.TenantID, agentID)()
 	active, hasActive, err := s.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return agentcfg.Revision{}, err
@@ -623,12 +870,10 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 //
 // # Why this exists (the defect it closes)
 //
-// The add door's two effects are ordered live-first: the attach dials,
-// handshakes, discovers and REGISTERS the server, and only then is the
-// descriptor written onto the revision spine. Every OTHER door with a live
-// side effect orders them the other way (write, then apply, then roll the
-// write back if the apply failed) — this one cannot, because "did the server
-// answer?" is the input to what gets written.
+// A compatibility [ConnectionAttacher] caller's two effects are ordered
+// live-first: the attach dials, handshakes, discovers and REGISTERS the server,
+// and only then is the descriptor written onto the revision spine. Production
+// wiring uses [ConnectionPreparer] and does not enter this path.
 //
 // So the write can fail AFTER the server is live. The reachable case is the
 // expected-revision precondition: a caller whose base moved between its read
@@ -691,13 +936,12 @@ func (s *Service) compensateAttach(ctx context.Context, q identity.Quadruple, id
 	}
 	connDeclared, providerDeclared, rErr := s.activeDeclarations(ctx, q, agentID, desc.Name, providerName)
 	if rErr != nil {
-		// Fail loud and say which way the ambiguity was resolved. The refinement
-		// below cannot be evaluated, so the unrefined compensation stands: it
-		// keeps the "no live server no revision names" guarantee, at the risk of
-		// tearing down a connection that IS still declared. Both outcomes heal at
-		// the next run-start reconcile; only one of them is silent, and this is
-		// not it.
-		s.logger.ErrorContext(ctx, "agent-config: could not read the active revision to scope the compensating teardown — compensating UNCONDITIONALLY, which may tear down a connection the active revision still declares",
+		// Unknown is not absent. A refused pointer re-read cannot distinguish an
+		// unnamed new attach from a same-name replacement that the winning active
+		// revision still declares. Retain both live objects and report the residue;
+		// unconditional teardown is destructive in the latter case and was #653.
+		connDeclared, providerDeclared = true, true
+		s.logger.ErrorContext(ctx, "agent-config: could not read the active revision to scope legacy attach compensation — retained the live connection and provider because an unknown pointer outcome is not authorization to detach",
 			"agent_id", agentID, "server_id", desc.Name, "error", rErr.Error(), "cause", cause.Error())
 	}
 
@@ -760,13 +1004,11 @@ const retainedConnectionReasonPrefix = "add refused; the pre-existing connection
 // same question the run-start reconcile asks before it decides to keep a live
 // server attached, so answering it from the same place keeps a refused write
 // and a reconcile sweep from contradicting each other. The read takes the
-// per-agent write lock so a concurrent edit cannot be observed half-applied,
-// exactly as the wire-OAuth name binding's read does. A read error is returned
-// to the caller (never swallowed into a false).
+// caller-held per-agent write lock so a concurrent edit cannot be observed
+// half-applied. A read error is returned to the caller (never swallowed into a
+// false).
 func (s *Service) activeDeclarations(ctx context.Context, q identity.Quadruple, agentID, connName, providerName string) (connDeclared, providerDeclared bool, err error) {
-	release := s.lockAgent(q.TenantID, agentID)
 	active, hasActive, aErr := s.registry.Active(ctx, identity.Quadruple{Identity: q.Identity}, agentID, agentcfg.ConfigScopeAgent)
-	release()
 	if aErr != nil {
 		return false, false, aErr
 	}
@@ -802,56 +1044,52 @@ func (s *Service) uninstallWireProvider(ctx context.Context, id identity.Identit
 	if !wireProviderIsNew || wireProvider == nil || s.providerInstaller == nil {
 		return
 	}
-	if uErr := s.providerInstaller.UninstallProvider(ctx, id.TenantID, agentID, wireProvider.Name); uErr != nil {
-		s.logger.WarnContext(ctx, "agent-config: rollback of inline wire oauth provider failed",
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if uErr := s.providerInstaller.UninstallProvider(cleanupCtx, id.TenantID, agentID, wireProvider.Name); uErr != nil {
+		s.logger.WarnContext(cleanupCtx, "agent-config: rollback of inline wire oauth provider failed",
 			"agent_id", agentID, "provider", wireProvider.Name, "phase", phase, "error", uErr.Error())
 	}
 }
 
-// prepareWireOAuthBinding resolves a connection's dev-gated wire OAuth binding
-// BEFORE the attach, so the live binding resolves during attach. It returns the
-// domain provider descriptor to persist (or nil when the connection carries no
-// wire binding), and whether that provider was NEWLY installed by this call (so
-// a failed attach can roll it back).
+// prepareWireOAuthBinding builds a connection's dev-gated wire OAuth binding
+// privately before MCP preparation. It returns the descriptor to persist, a
+// compatibility "new declaration" bit used only by the legacy live-first
+// adapter, and a reversible unpublished provider. Nothing enters the shared
+// provider set here.
 //
 //   - Inline binding (`connection.oauth`): gate + validate the wire descriptor,
 //     DERIVE the downstream sink from the connection's own URL (never a wire
-//     field), install the provider owner-tagged, and rewrite the connection's
-//     OAuthProvider to the installed name. NEW only when the active revision does
-//     not already name a provider by that name — an inline install is an UPSERT,
-//     so re-adding a connection with the same inline binding re-installs a
-//     provider that already existed, and reporting THAT as "new" would let a
-//     failed attach or a refused write uninstall a provider other still-declared
-//     connections bind. Newly installed ⇒ rolled back on a failed attach.
+//     field), prepare the provider, and rewrite the connection's OAuthProvider
+//     to its eventual shared-set name.
 //   - Name binding (`oauth_provider`) to an already-installed WIRE provider (e.g.
 //     from a prior set_oauth_provider, whose downstream sink was deferred): re-derive
-//     that provider's sink from THIS connection's URL and re-install (upsert). Not
-//     "new" (it pre-existed) ⇒ left in place on a failed attach.
+//     that provider's sink from THIS connection's URL and prepare its replacement.
 //
 // A plain name binding to a non-wire (broker-pull or interactive) provider is a
 // no-op here (nil, false) — the existing resolution path handles it.
-func (s *Service) prepareWireOAuthBinding(ctx context.Context, id identity.Identity, agentID string, desc *agentcfg.MCPConnectionDescriptor, inline *prototypes.AgentConfigOAuthProviderDescriptor) (*agentcfg.OAuthProviderDescriptor, bool, error) {
+func (s *Service) prepareWireOAuthBinding(ctx context.Context, id identity.Identity, agentID string, desc *agentcfg.MCPConnectionDescriptor, inline *prototypes.AgentConfigOAuthProviderDescriptor) (*agentcfg.OAuthProviderDescriptor, bool, PreparedOAuthProvider, error) {
 	if inline != nil {
 		pdesc, err := s.gateAndValidateOAuthProviderDescriptor(*inline)
 		if err != nil {
-			return nil, false, err
+			return nil, false, nil, err
 		}
 		if pdesc.TokenURL == "" {
 			// A name-only descriptor inline is pointless (it references a boot
 			// broker but installs nothing derivable) — direct the operator to the
 			// name binding instead. Fail loud rather than silently install.
-			return nil, false, fmt.Errorf("%w: inline oauth binding must carry a wire descriptor (token_url); bind an already-installed provider with oauth_provider (name) instead", ErrInvalidConnection)
+			return nil, false, nil, fmt.Errorf("%w: inline oauth binding must carry a wire descriptor (token_url); bind an already-installed provider with oauth_provider (name) instead", ErrInvalidConnection)
 		}
 		host := config.NormalizeDownstreamHost(desc.URL)
 		if host == "" {
-			return nil, false, fmt.Errorf("%w: cannot derive a downstream host from the connection url %q", ErrInvalidConnection, desc.URL)
+			return nil, false, nil, fmt.Errorf("%w: cannot derive a downstream host from the connection url %q", ErrInvalidConnection, desc.URL)
 		}
 		pdesc.AllowedDownstreamHosts = []string{host}
 		if _, boot := s.bootDeclaredOAuthProviders[pdesc.Name]; boot {
-			return nil, false, fmt.Errorf("%w: %q", ErrBootDeclaredProvider, pdesc.Name)
+			return nil, false, nil, fmt.Errorf("%w: %q", ErrBootDeclaredProvider, pdesc.Name)
 		}
-		if s.providerInstaller == nil {
-			return nil, false, ErrProviderInstallUnavailable
+		if s.providerPreparer == nil {
+			return nil, false, nil, ErrProviderInstallUnavailable
 		}
 		// Does the active revision ALREADY name a provider by this name? If it
 		// does, this install is an upsert over a provider that outlives this add,
@@ -859,30 +1097,28 @@ func (s *Service) prepareWireOAuthBinding(ctx context.Context, id identity.Ident
 		// live has happened yet, so a read error is a plain refusal).
 		_, alreadyDeclared, dErr := s.activeDeclarations(ctx, identity.Quadruple{Identity: id}, agentID, "", pdesc.Name)
 		if dErr != nil {
-			return nil, false, dErr
+			return nil, false, nil, dErr
 		}
-		if err := s.providerInstaller.InstallProvider(ctx, id.TenantID, agentID, pdesc); err != nil {
-			return nil, false, err
+		prepared, err := s.providerPreparer.PrepareProvider(ctx, id.TenantID, agentID, pdesc)
+		if err != nil {
+			return nil, false, nil, err
 		}
 		desc.OAuthProvider = pdesc.Name
-		return &pdesc, !alreadyDeclared, nil
+		return &pdesc, !alreadyDeclared, prepared, nil
 	}
 	if strings.TrimSpace(desc.OAuthProvider) == "" {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 	// Name binding: re-derive iff the named provider is a wire provider whose
-	// downstream sink was deferred at install (set_oauth_provider). Read the
-	// active revision under the per-agent lock so a concurrent edit does not race
-	// the read.
+	// downstream sink was deferred at install (set_oauth_provider). The caller
+	// holds the per-owner transaction lock across this read and activation.
 	q := identity.Quadruple{Identity: id}
-	release := s.lockAgent(id.TenantID, agentID)
 	active, hasActive, err := s.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent)
-	release()
 	if err != nil {
-		return nil, false, err
+		return nil, false, nil, err
 	}
 	if !hasActive {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 	for _, p := range active.Payload.OAuthProviderDescriptors() {
 		if p.Name != desc.OAuthProvider || p.TokenURL == "" {
@@ -890,31 +1126,33 @@ func (s *Service) prepareWireOAuthBinding(ctx context.Context, id identity.Ident
 		}
 		host := config.NormalizeDownstreamHost(desc.URL)
 		if host == "" {
-			return nil, false, fmt.Errorf("%w: cannot derive a downstream host from the connection url %q", ErrInvalidConnection, desc.URL)
+			return nil, false, nil, fmt.Errorf("%w: cannot derive a downstream host from the connection url %q", ErrInvalidConnection, desc.URL)
 		}
 		p.AllowedDownstreamHosts = []string{host}
-		if s.providerInstaller == nil {
-			return nil, false, ErrProviderInstallUnavailable
+		if s.providerPreparer == nil {
+			return nil, false, nil, ErrProviderInstallUnavailable
 		}
-		if err := s.providerInstaller.InstallProvider(ctx, id.TenantID, agentID, p); err != nil {
-			return nil, false, err
+		prepared, err := s.providerPreparer.PrepareProvider(ctx, id.TenantID, agentID, p)
+		if err != nil {
+			return nil, false, nil, err
 		}
-		return &p, false, nil
+		return &p, false, prepared, nil
 	}
-	return nil, false, nil
+	return nil, false, nil, nil
 }
 
 // parkForAuth records a pause on the unified pause/resume primitive for an
 // auth-required MCP attach. The pause Payload carries ONLY non-secret
 // metadata (agent id, server name, the OAuth reason marker) — never a
 // credential or auth code. The agent-bound token keys by the agent's
-// registration identity. NOTE: the resume continuation that re-drives the
-// attach to online is not yet implemented — resume currently only releases
-// the pause (tracked in issue #375).
+// registration identity. The continuation carries only agent/server identity
+// and the canonical non-secret descriptor fingerprint.
 func (s *Service) parkForAuth(ctx context.Context, id identity.Identity, agentID string, desc agentcfg.MCPConnectionDescriptor) (pauseresume.Token, error) {
+	continuation := mcpAddContinuation(agentID, desc)
 	pause, err := s.coordinator.Request(ctx, pauseresume.PauseRequest{
-		Identity: id,
-		Reason:   pauseresume.ReasonExternalEvent, // tool-side OAuth completion
+		Identity:     id,
+		Reason:       pauseresume.ReasonExternalEvent, // tool-side OAuth completion
+		Continuation: &continuation,
 		Payload: map[string]any{
 			"kind":     "mcp_oauth",
 			"agent_id": agentID,
@@ -925,6 +1163,18 @@ func (s *Service) parkForAuth(ctx context.Context, id identity.Identity, agentID
 		return "", fmt.Errorf("agentcfg/protocol: park mcp oauth pause: %w", err)
 	}
 	return pause.Token, nil
+}
+
+func (s *Service) rejectProducerPause(ctx context.Context, authErr *toolauth.ErrAuthRequired) error {
+	if authErr == nil || authErr.PauseToken == "" || s.coordinator == nil {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := s.coordinator.Resume(cleanupCtx, pauseresume.Token(authErr.PauseToken), pauseresume.DecisionReject, nil); err != nil {
+		return fmt.Errorf("reject producer oauth pause: %w", err)
+	}
+	return nil
 }
 
 // emitConnectionLifecycle publishes one runtime MCP-attach lifecycle event.

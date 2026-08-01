@@ -65,21 +65,18 @@ type RunOverrides struct {
 	// set in the same request (the two are not mutually exclusive: the
 	// base spine is replaced AND this block still appends).
 	//
-	// TRUST: the block renders VERBATIM and UNESCAPED into the
-	// operator-trusted `<additional_guidance>` position. Whoever may set
-	// overrides for a session may therefore write text the model reads as
-	// operator guidance. This is the same authority `SystemPromptOverride`
-	// on this struct already carries, and it is strictly less powerful.
-	// It is therefore NOT the home for recalled conversation memory,
+	// TRUST: this method is available to a verified non-admin user for their
+	// own session. The block therefore renders in a distinct escaped
+	// `<user_personalization>` section, never in operator-trusted
+	// `<additional_guidance>`. Prompt framing is not an authorization
+	// boundary: runtime tool exposure, identity, governance and policy remain
+	// authoritative. This is NOT the home for recalled conversation memory,
 	// retrieved documents, or any other user-authored text — those belong
 	// in `StartRequest.caller_memory`, whose tier carries the
 	// anti-prompt-injection framing this position deliberately does not.
 	//
-	// It composes BELOW any tenant-wide extra instructions (tenant text
-	// first, separated by a blank line) and can never clear them: there is
-	// no run-level clear, and a present-but-empty value is accepted as a
-	// no-op rather than as a deletion. The tenant block is admin-set; a
-	// run-level erase would be a privilege inversion.
+	// It remains structurally separate from tenant-wide extra instructions
+	// and can never clear them. A present-but-empty value is a no-op.
 	//
 	// The value is bounded by the transport's whole-body limit and, late,
 	// by the LLM edge's token-budget guard; there is no per-field byte cap

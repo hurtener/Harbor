@@ -268,6 +268,28 @@ func mkSpyStore(t *testing.T) auth.TokenStore {
 	return &putSpyStore{t: t, inner: inner}
 }
 
+func mkFlowStore(t *testing.T) auth.FlowStore {
+	t.Helper()
+	raw, err := stateInmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatalf("state inmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = raw.Close(context.Background()) })
+	kek := make([]byte, auth.KEKSizeBytes)
+	for i := range kek {
+		kek[i] = byte(i*13 + 5)
+	}
+	sealer, err := auth.NewAESGCMSealer(kek)
+	if err != nil {
+		t.Fatalf("NewAESGCMSealer: %v", err)
+	}
+	flows, err := auth.NewFlowStore(raw, sealer)
+	if err != nil {
+		t.Fatalf("NewFlowStore: %v", err)
+	}
+	return flows
+}
+
 func mkDeps(t *testing.T) (auth.FactoryDeps, pauseresume.Coordinator, events.EventBus) {
 	t.Helper()
 	red := mkRedactor()
@@ -275,6 +297,7 @@ func mkDeps(t *testing.T) (auth.FactoryDeps, pauseresume.Coordinator, events.Eve
 	coord := pauseresume.New()
 	return auth.FactoryDeps{
 		Store:       mkSpyStore(t),
+		Flows:       mkFlowStore(t),
 		Bus:         bus,
 		Redactor:    red,
 		Coordinator: coord,
@@ -615,7 +638,10 @@ func TestInteractiveMethods_ReturnNonInteractive(t *testing.T) {
 	if err := prov.DenyFlow(ctx, "state", "reason"); !errors.Is(err, auth.ErrNonInteractive) {
 		t.Fatalf("DenyFlow: want ErrNonInteractive, got %v", err)
 	}
-	if _, ok := prov.PendingFlow("state"); ok {
+	if _, ok, err := prov.PendingFlow(ctx, "state"); err != nil || ok {
+		if err != nil {
+			t.Fatalf("PendingFlow: %v", err)
+		}
 		t.Fatalf("PendingFlow must report no flow")
 	}
 }

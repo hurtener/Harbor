@@ -13,7 +13,23 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/tools"
 )
+
+type structuralRepairCatalogView struct{ list []tools.Tool }
+
+func (c structuralRepairCatalogView) Resolve(name string) (tools.Tool, bool) {
+	for _, tool := range c.list {
+		if tool.Name == name {
+			return tool, true
+		}
+	}
+	return tools.Tool{}, false
+}
+
+func (c structuralRepairCatalogView) List() []tools.Tool {
+	return append([]tools.Tool(nil), c.list...)
+}
 
 // TestE2E_ReactNativeStructuralRepair proves the F1 fix end-to-end across
 // the planner→runtime seam: when a REAL react.ReActPlanner rejects a
@@ -88,8 +104,15 @@ func TestE2E_ReactNativeStructuralRepair(t *testing.T) {
 			tr := &planner.Trajectory{}
 
 			fin, err := deps.runLoop.Run(ctx, steering.RunSpec{
-				Planner:  p,
-				Base:     planner.RunContext{Quadruple: q, Goal: "reach the goal", Trajectory: tr},
+				Planner: p,
+				Base: planner.RunContext{
+					Quadruple:  q,
+					Goal:       "reach the goal",
+					Trajectory: tr,
+					Catalog: structuralRepairCatalogView{list: []tools.Tool{{
+						Name: "alpha", Description: "structural-repair fixture tool",
+					}}},
+				},
 				MaxSteps: 16,
 			})
 			if err != nil {

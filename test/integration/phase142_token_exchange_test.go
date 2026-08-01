@@ -198,6 +198,10 @@ func newP142Env(t *testing.T) *p142Env {
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
+	flows, err := auth.NewFlowStore(raw, sealer)
+	if err != nil {
+		t.Fatalf("NewFlowStore: %v", err)
+	}
 	store := &p142SpyStore{t: t, inner: innerStore}
 
 	prov, err := tokenexchange.New(auth.ProviderConfig{
@@ -207,7 +211,7 @@ func newP142Env(t *testing.T) *p142Env {
 		TokenURL:         broker.tokenURL(),
 		Extra:            map[string]string{"audience": p142Audience},
 	}, auth.FactoryDeps{
-		Store: store, Bus: bus, Redactor: red, Coordinator: coord,
+		Store: store, Flows: flows, Bus: bus, Redactor: red, Coordinator: coord,
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
 	if err != nil {

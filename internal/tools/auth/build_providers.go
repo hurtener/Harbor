@@ -76,8 +76,13 @@ func BuildProviders(ctx context.Context, cfg config.ToolsConfig, deps BuildDeps)
 	if err != nil {
 		return nil, fmt.Errorf("tools/oauth: token store: %w", err)
 	}
+	flowStore, err := NewFlowStore(deps.State, sealer)
+	if err != nil {
+		return nil, fmt.Errorf("tools/oauth: pending flow store: %w", err)
+	}
 	factoryDeps := FactoryDeps{
 		Store:       tokenStore,
+		Flows:       flowStore,
 		Bus:         deps.Bus,
 		Redactor:    deps.Redactor,
 		Coordinator: deps.Coordinator,
@@ -180,8 +185,13 @@ func NewProviderBuilder(ctx context.Context, cfg config.ToolsConfig, deps BuildD
 	if err != nil {
 		return nil, fmt.Errorf("tools/oauth: broker provider builder: token store: %w", err)
 	}
+	flowStore, err := NewFlowStore(deps.State, sealer)
+	if err != nil {
+		return nil, fmt.Errorf("tools/oauth: broker provider builder: pending flow store: %w", err)
+	}
 	pb.factoryDeps = FactoryDeps{
 		Store:       tokenStore,
+		Flows:       flowStore,
 		Bus:         deps.Bus,
 		Redactor:    deps.Redactor,
 		Coordinator: deps.Coordinator,
