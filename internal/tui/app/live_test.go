@@ -789,6 +789,21 @@ func TestRuntimeModel_FailedFollowUpRetryAndDiscardResumeOrder(t *testing.T) {
 	if len(entries) != 1 || entries[0].Text != "second" || entries[0].State != "dispatching" {
 		t.Fatalf("retry did not advance to second intent: calls=%v queue=%#v", controller.calls, entries)
 	}
+	// A second chord during the in-flight retry is rejected locally: it must
+	// neither dispatch another Start nor mutate the pending canonical retry.
+	// The PTY workflow issues exactly one retry and waits for its acknowledgement.
+	callsBeforeSecondChord := append([]string(nil), controller.calls...)
+	m = leader(t, m, 'j')
+	if !slices.Equal(controller.calls, callsBeforeSecondChord) {
+		t.Fatalf("second retry chord dispatched Start: before=%v after=%v", callsBeforeSecondChord, controller.calls)
+	}
+	entries = m.followups.Entries()
+	if len(entries) != 1 || entries[0].Text != "second" || entries[0].State != "dispatching" {
+		t.Fatalf("second retry chord mutated in-flight intent: %#v", entries)
+	}
+	if !m.shell.state.ToastOpen || m.shell.state.Toast != "no failed follow-up to retry" {
+		t.Fatalf("second retry chord feedback = open:%v toast:%q, want local rejected error", m.shell.state.ToastOpen, m.shell.state.Toast)
+	}
 	_, _ = controller.Start(t.Context(), entries[0].Text, entries[0].ArtifactIDs, entries[0].Dispositions)
 	m = drive(t, m, followupMsg{id: entries[0].ID})
 	if len(m.followups.Entries()) != 0 || !containsPrefix(controller.calls, "start:first") || !containsPrefix(controller.calls, "start:second") {

@@ -124,26 +124,12 @@ func terminalFoundationProjection() projection.Projection {
 }
 
 func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
-	// STILL QUARANTINED, but for a DIFFERENT defect than before —
-	// https://github.com/hurtener/Harbor/issues/604.
-	//
-	// The failure this test was originally quarantined for (#598, "timeout
-	// waiting for PTY canonical session erase") is FIXED: the shell handed
-	// host-owned commands to its host through a tea.Cmd, so a keystroke
-	// already queued behind a chord was applied before the command committed
-	// and the confirmation dialog opened behind the enter meant for it. That
-	// defect is now covered by a deterministic unit gate in internal/tui/app
-	// (TestRuntimeModel_ChordCommandCommitsBeforeTheNextQueuedKey) which runs
-	// unconditionally and fails without the fix — not an 80-second E2E.
-	//
-	// What remains is an undiagnosed stall on an F-key route/actions wait, at
-	// ~5% on a 2-CPU Linux runner BOTH before and after that fix (measured:
-	// 3 erase + 1 stall in 20 pre-fix runs, 0 erase + 2 stalls in 36 post-fix
-	// runs). The cause is NOT known; #604 records the evidence and what was
-	// ruled out. Do NOT close #604 by raising ptyWaitTimeout.
-	if os.Getenv("HARBOR_RUN_QUARANTINED") == "" {
-		t.Skip("quarantined: undiagnosed F-key render stall on Linux CI, see https://github.com/hurtener/Harbor/issues/604")
-	}
+	// This is an unconditionally-run release gate. #598's erase ordering defect
+	// and the duplicate failed-follow-up command in this workflow both have
+	// deterministic app-level regressions; the earlier #604 F-key stall was not
+	// reproduced by the constrained Linux race sweep. Keep the failure-only PTY
+	// liveness and SIGQUIT diagnostics below for any future recurrence rather
+	// than restoring a permanent quarantine or increasing its timeout.
 	stack := devstack.Assemble(t, runtimePostureConfig(t), devstack.AssembleOpts{})
 	defer stack.Close()
 	var failNextStart atomic.Bool
