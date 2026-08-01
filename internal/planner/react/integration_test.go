@@ -283,7 +283,7 @@ func TestE2E_React_FullThreeStepLoopOnRealBus(t *testing.T) {
 	traj := &planner.Trajectory{}
 
 	// --- Step 1 ---
-	rc := integrationRC(bus, q, "find and summarise foo")
+	rc := withDeclaredTools(integrationRC(bus, q, "find and summarise foo"), "search", "summarize")
 	rc.Trajectory = traj
 	dec, err := p.Next(ctx, rc)
 	if err != nil {
@@ -844,7 +844,7 @@ func TestE2E_React_RepairGuidanceEscalatesAcrossSteps(t *testing.T) {
 	// would have produced.
 	declObservation := declarativeArgsRepairObservation()
 	for step := 1; step <= 4; step++ {
-		rc := integrationRC(bus, q, "escalation goal")
+		rc := withDeclaredTools(integrationRC(bus, q, "escalation goal"), "declarative_action")
 		rc.Trajectory = traj
 		rc.RepairCounters = counters
 		dec, nerr := p.Next(ctx, rc)
@@ -1092,7 +1092,7 @@ func TestE2E_React_RepairGuidanceCrossRunIsolation(t *testing.T) {
 		traj := &planner.Trajectory{}
 		countersA := &planner.RepairCounters{}
 		for range steps {
-			rc := integrationRC(bus, q, "noisy run A")
+			rc := withDeclaredTools(integrationRC(bus, q, "noisy run A"), "declarative_action")
 			rc.Trajectory = traj
 			rc.RepairCounters = countersA
 			dec, nerr := shared.Next(ctx, rc)
@@ -1134,7 +1134,7 @@ func TestE2E_React_RepairGuidanceCrossRunIsolation(t *testing.T) {
 		traj := &planner.Trajectory{}
 		countersB := &planner.RepairCounters{} // always clean
 		for range steps {
-			rc := integrationRC(bus, q, "clean run B")
+			rc := withDeclaredTools(integrationRC(bus, q, "clean run B"), "search")
 			rc.Trajectory = traj
 			rc.RepairCounters = countersB
 			dec, nerr := shared.Next(ctx, rc)

@@ -300,7 +300,8 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		// configured default).
 		AgentID: req.AgentID,
 		// the caller-supplied memory block (edge-validated; nil = none).
-		CallerMemory: callerMemory,
+		CallerMemory:          callerMemory,
+		CallerMemoryWireBytes: len(req.CallerMemory),
 	}
 	// Validate the requested group BEFORE persisting anything. A
 	// missing / cross-session / sealed group must fail the spawn

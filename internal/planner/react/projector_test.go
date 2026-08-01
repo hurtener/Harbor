@@ -9,19 +9,37 @@ import (
 
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/tools"
 )
+
+func runContextForToolCalls(calls []llm.ToolCallStructured) *planner.RunContext {
+	seen := make(map[string]struct{}, len(calls))
+	visible := make([]tools.Tool, 0, len(calls))
+	for _, call := range calls {
+		if isReservedControlName(call.Name) {
+			continue
+		}
+		if _, ok := seen[call.Name]; ok {
+			continue
+		}
+		seen[call.Name] = struct{}{}
+		visible = append(visible, tools.Tool{Name: call.Name})
+	}
+	return &planner.RunContext{Catalog: &sanitizeStubCatalog{list: visible}}
+}
 
 // TestProjectResponse_SingleToolCallMapsToCallTool — AC-19 first
 // branch: `len(resp.ToolCalls) == 1` produces a `CallTool` carrying
 // the native ID + Name + Args verbatim. `PendingToolCalls` stays empty.
 func TestProjectResponse_SingleToolCallMapsToCallTool(t *testing.T) {
 	t.Parallel()
-	rc := &planner.RunContext{}
+	calls := []llm.ToolCallStructured{
+		{ID: "call_123", Name: "foo", Args: json.RawMessage(`{"x":1}`)},
+	}
+	rc := runContextForToolCalls(calls)
 	dec, err := projectResponse(llm.CompleteResponse{
-		Content: "preamble that should not become Finish",
-		ToolCalls: []llm.ToolCallStructured{
-			{ID: "call_123", Name: "foo", Args: json.RawMessage(`{"x":1}`)},
-		},
+		Content:   "preamble that should not become Finish",
+		ToolCalls: calls,
 	}, rc, true)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -43,13 +61,14 @@ func TestProjectResponse_SingleToolCallMapsToCallTool(t *testing.T) {
 // accumulate on `rc.PendingToolCalls` for subsequent steps to drain.
 func TestProjectResponse_MultiToolCallSerializes(t *testing.T) {
 	t.Parallel()
-	rc := &planner.RunContext{}
+	calls := []llm.ToolCallStructured{
+		{ID: "a", Name: "first", Args: json.RawMessage(`{"a":1}`)},
+		{ID: "b", Name: "second", Args: json.RawMessage(`{"b":2}`)},
+		{ID: "c", Name: "third", Args: json.RawMessage(`{"c":3}`)},
+	}
+	rc := runContextForToolCalls(calls)
 	dec, err := projectResponse(llm.CompleteResponse{
-		ToolCalls: []llm.ToolCallStructured{
-			{ID: "a", Name: "first", Args: json.RawMessage(`{"a":1}`)},
-			{ID: "b", Name: "second", Args: json.RawMessage(`{"b":2}`)},
-			{ID: "c", Name: "third", Args: json.RawMessage(`{"c":3}`)},
-		},
+		ToolCalls: calls,
 	}, rc, false)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -66,6 +85,25 @@ func TestProjectResponse_MultiToolCallSerializes(t *testing.T) {
 	}
 	if rc.PendingToolCalls[1].Name != "third" || rc.PendingToolCalls[1].CallID != "c" {
 		t.Fatalf("pending[1] mismatch: %#v", rc.PendingToolCalls[1])
+	}
+}
+
+func TestProjectResponse_SerializationRejectsUndeclaredNameAtomically(t *testing.T) {
+	t.Parallel()
+	calls := []llm.ToolCallStructured{
+		{ID: "a", Name: "first", Args: json.RawMessage(`{}`)},
+		{ID: "b", Name: "second", Args: json.RawMessage(`{}`)},
+		{ID: "c", Name: "undeclared", Args: json.RawMessage(`{}`)},
+	}
+	rc := runContextForToolCalls(calls[:2])
+	rc.PendingToolCalls = []planner.ToolCallDeferred{{Name: "already_pending", CallID: "existing"}}
+
+	dec, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, rc, false)
+	if dec != nil || !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Fatalf("projectResponse = (%#v, %v), want nil + ErrInvalidDecision", dec, err)
+	}
+	if len(rc.PendingToolCalls) != 1 || rc.PendingToolCalls[0].Name != "already_pending" {
+		t.Fatalf("PendingToolCalls mutated on rejected batch: %+v", rc.PendingToolCalls)
 	}
 }
 
@@ -176,13 +214,14 @@ func TestProjectResponse_ReservedFinishToolNameProducesFinish(t *testing.T) {
 // stays empty (no serialization).
 func TestProjectResponse_MultiToolCallNativeParallel(t *testing.T) {
 	t.Parallel()
-	rc := &planner.RunContext{}
+	calls := []llm.ToolCallStructured{
+		{ID: "a", Name: "first", Args: json.RawMessage(`{"a":1}`)},
+		{ID: "b", Name: "second", Args: json.RawMessage(`{"b":2}`)},
+		{ID: "c", Name: "third", Args: json.RawMessage(`{"c":3}`)},
+	}
+	rc := runContextForToolCalls(calls)
 	dec, err := projectResponse(llm.CompleteResponse{
-		ToolCalls: []llm.ToolCallStructured{
-			{ID: "a", Name: "first", Args: json.RawMessage(`{"a":1}`)},
-			{ID: "b", Name: "second", Args: json.RawMessage(`{"b":2}`)},
-			{ID: "c", Name: "third", Args: json.RawMessage(`{"c":3}`)},
-		},
+		ToolCalls: calls,
 	}, rc, true)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -389,7 +428,7 @@ func TestProjectResponse_PartitionTable(t *testing.T) {
 				for i := range tc.spawns {
 					calls = append(calls, spawnCall(fmt.Sprintf("s%d", i), fmt.Sprintf("q%d", i)))
 				}
-				dec, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, &planner.RunContext{}, parallelOn)
+				dec, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, runContextForToolCalls(calls), parallelOn)
 				if err != nil {
 					t.Fatalf("projectResponse err: %v", err)
 				}
@@ -449,7 +488,7 @@ func TestProjectBatch_StampsSpawnCallIDs(t *testing.T) {
 		spawnCall("call_spawn_1", "dig-a"),
 		spawnCall("call_spawn_2", "dig-b"),
 	}
-	dec, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, &planner.RunContext{}, true)
+	dec, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, runContextForToolCalls(calls), true)
 	if err != nil {
 		t.Fatalf("projectResponse err: %v", err)
 	}
@@ -479,7 +518,7 @@ func TestProjectBatch_MalformedSpawnArgsRejected(t *testing.T) {
 		toolCall("t1", "search"),
 		{ID: "s1", Name: SpawnTaskToolName, Args: json.RawMessage(`{"kind":"nonsense"}`)},
 	}
-	_, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, &planner.RunContext{}, true)
+	_, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, runContextForToolCalls(calls), true)
 	if !errors.Is(err, planner.ErrInvalidDecision) {
 		t.Fatalf("malformed spawn in batch err = %v, want ErrInvalidDecision", err)
 	}
@@ -495,7 +534,7 @@ func TestProjectBatch_RetainTurnSpawnRejected(t *testing.T) {
 		toolCall("t1", "search"),
 		{ID: "s1", Name: SpawnTaskToolName, Args: json.RawMessage(`{"spec":{"query":"q","retain_turn":true}}`)},
 	}
-	_, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, &planner.RunContext{}, true)
+	_, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, runContextForToolCalls(calls), true)
 	if !errors.Is(err, planner.ErrInvalidDecision) {
 		t.Fatalf("retain-turn spawn in batch err = %v, want ErrInvalidDecision", err)
 	}
@@ -525,9 +564,8 @@ func TestProjectBatch_NeverDegenerate(t *testing.T) {
 		t.Fatalf("lone spawn = %T, want SpawnTask", dec)
 	}
 	// Spawn-free multi-call → CallParallel, never a Batch.
-	dec, err = projectResponse(llm.CompleteResponse{
-		ToolCalls: []llm.ToolCallStructured{toolCall("t1", "a"), toolCall("t2", "b")},
-	}, &planner.RunContext{}, true)
+	calls := []llm.ToolCallStructured{toolCall("t1", "a"), toolCall("t2", "b")}
+	dec, err = projectResponse(llm.CompleteResponse{ToolCalls: calls}, runContextForToolCalls(calls), true)
 	if err != nil {
 		t.Fatalf("spawn-free multi err: %v", err)
 	}

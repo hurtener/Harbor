@@ -1228,7 +1228,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			Identity:   q,
 			OccurredAt: time.Now(),
 			Payload: memory.CallerBlockAdmittedPayload{
-				Bytes: len(task.CallerMemory),
+				Bytes: task.CallerMemoryWireBytes,
 				Tier:  runctx.ExternalTierName,
 				Key:   runctx.CallerSuppliedKey,
 			},

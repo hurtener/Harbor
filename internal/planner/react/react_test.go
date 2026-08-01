@@ -16,7 +16,32 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
+	"github.com/hurtener/Harbor/internal/tools"
 )
+
+type declaredToolCatalog struct{ visible []tools.Tool }
+
+func (c *declaredToolCatalog) Resolve(name string) (tools.Tool, bool) {
+	for _, tool := range c.visible {
+		if tool.Name == name {
+			return tool, true
+		}
+	}
+	return tools.Tool{}, false
+}
+
+func (c *declaredToolCatalog) List() []tools.Tool {
+	return append([]tools.Tool(nil), c.visible...)
+}
+
+func withDeclaredTools(rc planner.RunContext, names ...string) planner.RunContext {
+	visible := make([]tools.Tool, 0, len(names))
+	for _, name := range names {
+		visible = append(visible, tools.Tool{Name: name})
+	}
+	rc.Catalog = &declaredToolCatalog{visible: visible}
+	return rc
+}
 
 // scriptedClient is a programmable llm.LLMClient for the react tests.
 // Each Complete call returns the next scripted response; once the
@@ -320,7 +345,7 @@ func TestNext_MultiToolCallSerializesViaPending(t *testing.T) {
 	}
 	p := react.New(client, react.WithParallelToolCalls(false))
 	q := fixedQuadruple(t, "r-par")
-	dec, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil))
+	dec, err := p.Next(ctxWith(t, q), withDeclaredTools(rcWith(q, "g", nil), "alpha", "beta", "gamma"))
 	if err != nil {
 		t.Fatalf("Next: %v", err)
 	}
@@ -385,7 +410,7 @@ func TestNext_MultiToolCallNativeParallel(t *testing.T) {
 	}
 	p := react.New(client) // default: parallel ON
 	q := fixedQuadruple(t, "r-par-native")
-	dec, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil))
+	dec, err := p.Next(ctxWith(t, q), withDeclaredTools(rcWith(q, "g", nil), "alpha", "beta"))
 	if err != nil {
 		t.Fatalf("Next: %v", err)
 	}
@@ -605,7 +630,7 @@ func TestReact_ThreeStepScenario(t *testing.T) {
 	traj := &planner.Trajectory{Steps: nil}
 
 	// --- Step 1 ---
-	rc1 := rcWith(q, "find and summarise foo", nil)
+	rc1 := withDeclaredTools(rcWith(q, "find and summarise foo", nil), "search", "summarize")
 	rc1.Trajectory = traj
 	dec1, err := p.Next(ctx, rc1)
 	if err != nil {
@@ -627,7 +652,7 @@ func TestReact_ThreeStepScenario(t *testing.T) {
 	})
 
 	// --- Step 2 ---
-	rc2 := rcWith(q, "find and summarise foo", nil)
+	rc2 := withDeclaredTools(rcWith(q, "find and summarise foo", nil), "search", "summarize")
 	rc2.Trajectory = traj
 	dec2, err := p.Next(ctx, rc2)
 	if err != nil {
@@ -647,7 +672,7 @@ func TestReact_ThreeStepScenario(t *testing.T) {
 	})
 
 	// --- Step 3 ---
-	rc3 := rcWith(q, "find and summarise foo", nil)
+	rc3 := withDeclaredTools(rcWith(q, "find and summarise foo", nil), "search", "summarize")
 	rc3.Trajectory = traj
 	dec3, err := p.Next(ctx, rc3)
 	if err != nil {
@@ -760,7 +785,7 @@ func TestStepsTaken_TracksSuccessfulNextCalls(t *testing.T) {
 	p := react.New(client)
 	q := fixedQuadruple(t, "r-counter")
 	for i := range 2 {
-		if _, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil)); err != nil {
+		if _, err := p.Next(ctxWith(t, q), withDeclaredTools(rcWith(q, "g", nil), "alpha")); err != nil {
 			t.Fatalf("Next #%d: %v", i+1, err)
 		}
 	}

@@ -135,8 +135,12 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 	// Single regular tool-call. Resolve the provider-returned name back
 	// to the real catalog name (declarations are sent sanitized).
 	if len(resp.ToolCalls) == 1 {
+		catalogName, ok := resolveDeclaredToolName(rc, first.Name)
+		if !ok {
+			return nil, undeclaredModelToolNameError(first.Name)
+		}
 		return planner.CallTool{
-			Tool:   resolveDeclaredToolName(rc, first.Name),
+			Tool:   catalogName,
 			Args:   first.Args,
 			CallID: first.ID,
 		}, nil
@@ -149,8 +153,12 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 		// executor's normaliseJoin collapses it to JoinAll (AC-5).
 		branches := make([]planner.CallTool, len(resp.ToolCalls))
 		for i, tc := range resp.ToolCalls {
+			catalogName, ok := resolveDeclaredToolName(rc, tc.Name)
+			if !ok {
+				return nil, undeclaredModelToolNameError(tc.Name)
+			}
 			branches[i] = planner.CallTool{
-				Tool:   resolveDeclaredToolName(rc, tc.Name),
+				Tool:   catalogName,
 				Args:   tc.Args,
 				CallID: tc.ID,
 			}
@@ -160,19 +168,33 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 
 	// Serialization fallback (parallel_tool_calls: false):
 	// dispatch the head, queue the tail on rc.PendingToolCalls.
+	firstCatalogName, ok := resolveDeclaredToolName(rc, first.Name)
+	if !ok {
+		return nil, undeclaredModelToolNameError(first.Name)
+	}
 	call := planner.CallTool{
-		Tool:   resolveDeclaredToolName(rc, first.Name),
+		Tool:   firstCatalogName,
 		Args:   first.Args,
 		CallID: first.ID,
 	}
+	pending := make([]planner.ToolCallDeferred, 0, len(resp.ToolCalls)-1)
 	for _, tc := range resp.ToolCalls[1:] {
-		rc.PendingToolCalls = append(rc.PendingToolCalls, planner.ToolCallDeferred{
-			Name:   resolveDeclaredToolName(rc, tc.Name),
+		catalogName, ok := resolveDeclaredToolName(rc, tc.Name)
+		if !ok {
+			return nil, undeclaredModelToolNameError(tc.Name)
+		}
+		pending = append(pending, planner.ToolCallDeferred{
+			Name:   catalogName,
 			Args:   tc.Args,
 			CallID: tc.ID,
 		})
 	}
+	rc.PendingToolCalls = append(rc.PendingToolCalls, pending...)
 	return call, nil
+}
+
+func undeclaredModelToolNameError(name string) error {
+	return fmt.Errorf("%w: model-authored tool name %q was not declared for this run", planner.ErrInvalidDecision, name)
 }
 
 // isStandaloneControlName reports whether name is a reserved
@@ -243,8 +265,12 @@ func projectBatch(resp llm.CompleteResponse, rc *planner.RunContext) (planner.De
 			spawns = append(spawns, sp)
 			continue
 		}
+		catalogName, ok := resolveDeclaredToolName(rc, tc.Name)
+		if !ok {
+			return nil, undeclaredModelToolNameError(tc.Name)
+		}
 		tools = append(tools, planner.CallTool{
-			Tool:   resolveDeclaredToolName(rc, tc.Name),
+			Tool:   catalogName,
 			Args:   tc.Args,
 			CallID: tc.ID,
 		})

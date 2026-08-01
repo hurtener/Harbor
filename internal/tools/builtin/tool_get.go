@@ -8,11 +8,12 @@ import (
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
 )
 
-func registerToolGet(cat tools.ToolCatalog) error {
+func registerToolGet(rc RegistryContext) error {
+	grantedScopes := append([]string(nil), rc.GrantedScopes...)
 	return inproc.RegisterFunc[ToolGetArgs, ToolGetOut](
-		cat, "tool_get",
+		rc.Catalog, "tool_get",
 		func(ctx context.Context, args ToolGetArgs) (ToolGetOut, error) {
-			return toolGet(ctx, cat, args)
+			return toolGetWithScopes(ctx, rc.Catalog, args, grantedScopes)
 		},
 		tools.WithDescription("Fetch the full description + args schema for a named tool."),
 		tools.WithSideEffect(tools.SideEffectPure),
@@ -34,15 +35,24 @@ type ToolGetOut struct {
 }
 
 func toolGet(ctx context.Context, cat tools.ToolCatalog, args ToolGetArgs) (ToolGetOut, error) {
-	if _, err := requireIdentity(ctx); err != nil {
+	return toolGetWithScopes(ctx, cat, args, nil)
+}
+
+func toolGetWithScopes(ctx context.Context, cat tools.ToolCatalog, args ToolGetArgs, grantedScopes []string) (ToolGetOut, error) {
+	q, err := requireIdentity(ctx)
+	if err != nil {
 		return ToolGetOut{}, err
 	}
-	d, ok := cat.Resolve(args.Name)
+	catalogName, ok := modelToolNames(cat, q, grantedScopes).ResolveDeclared(args.Name)
+	if !ok {
+		return ToolGetOut{Name: args.Name, Found: false, Error: fmt.Sprintf("tool %q not found", args.Name)}, nil
+	}
+	d, ok := cat.Resolve(catalogName)
 	if !ok {
 		return ToolGetOut{Name: args.Name, Found: false, Error: fmt.Sprintf("tool %q not found", args.Name)}, nil
 	}
 	return ToolGetOut{
-		Name:        d.Tool.Name,
+		Name:        args.Name,
 		Description: d.Tool.Description,
 		ArgsSchema:  string(d.Tool.ArgsSchema),
 		Found:       true,

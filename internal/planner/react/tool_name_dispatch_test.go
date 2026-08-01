@@ -121,7 +121,7 @@ func TestResolveDeclaredToolName_DroppedColliderIsNeverDispatched(t *testing.T) 
 	}
 
 	// The defect: the model returns the only name it was given.
-	if got := resolveDeclaredToolName(rc, "clock_now"); got != "clock.now" {
+	if got := mustResolveDeclaredToolName(t, rc, "clock_now"); got != "clock.now" {
 		t.Errorf("resolveDeclaredToolName(%q) = %q, want %q — the DROPPED tool is being dispatched "+
 			"under the DECLARED tool's schema", "clock_now", got, "clock.now")
 	}
@@ -167,12 +167,12 @@ func TestResolveDeclaredToolName_OrderIndependent(t *testing.T) {
 		}
 		// The declaration's description names its owning catalog tool.
 		want := decl.Description
-		if got := resolveDeclaredToolName(rc, "clock_now"); got != want {
+		if got := mustResolveDeclaredToolName(t, rc, "clock_now"); got != want {
 			t.Errorf("dottedFirst=%v: resolveDeclaredToolName(%q) = %q, want %q (the declared tool)",
 				dottedFirst, "clock_now", got, want)
 		}
 		// And the announced DroppedTool is never reachable under it.
-		if got := resolveDeclaredToolName(rc, "clock_now"); got == (*collisions)[0].DroppedTool {
+		if got := mustResolveDeclaredToolName(t, rc, "clock_now"); got == (*collisions)[0].DroppedTool {
 			t.Errorf("dottedFirst=%v: the announced dropped tool %q is what dispatches",
 				dottedFirst, got)
 		}
@@ -227,14 +227,14 @@ func TestResolveDeclaredToolName_MirrorsEveryDeclaration(t *testing.T) {
 		if _, isReserved := reserved[d.Name]; isReserved {
 			// A reserved control name must never resolve to a catalog tool:
 			// the operator tool that collided with it was DROPPED.
-			if got := resolveDeclaredToolName(rc, d.Name); got != d.Name {
-				t.Errorf("resolveDeclaredToolName(%q) = %q — a reserved planner control resolved to a catalog tool",
+			if got, ok := resolveDeclaredToolName(rc, d.Name); ok {
+				t.Errorf("resolveDeclaredToolName(%q) = %q, true — a reserved planner control resolved to a catalog tool",
 					d.Name, got)
 			}
 			continue
 		}
 		checked++
-		if got := resolveDeclaredToolName(rc, d.Name); got != d.Description {
+		if got := mustResolveDeclaredToolName(t, rc, d.Name); got != d.Description {
 			t.Errorf("resolveDeclaredToolName(%q) = %q, want %q — resolution disagrees with the declaration",
 				d.Name, got, d.Description)
 		}
@@ -287,8 +287,25 @@ func TestResolveDeclaredToolName_ReservedControlNeverResolvesToCatalogTool(t *te
 		SpawnTaskToolName, AwaitTaskToolName, FinishToolName, TaskStatusToolName,
 		CancelTaskToolName, SteerTaskToolName, PauseTaskToolName, ResumeTaskToolName,
 	} {
-		if got := resolveDeclaredToolName(rc, name); got != name {
-			t.Errorf("resolveDeclaredToolName(%q) = %q — a reserved planner control resolved to a catalog tool", name, got)
+		if got, ok := resolveDeclaredToolName(rc, name); ok {
+			t.Errorf("resolveDeclaredToolName(%q) = %q, true — a reserved planner control resolved to a catalog tool", name, got)
+		}
+	}
+}
+
+func TestReservedPlannerControls_MatchSharedModelNamespace(t *testing.T) {
+	want := tools.ReservedModelToolNames()
+	declarations := reservedPlannerControlDeclarations()
+	actual := []string{FinishToolName} // intercepted but intentionally not declared
+	for _, declaration := range declarations {
+		actual = append(actual, declaration.Name)
+	}
+	if len(actual) != len(want) {
+		t.Fatalf("reserved controls = %d, shared namespace = %d", len(actual), len(want))
+	}
+	for i, name := range actual {
+		if name != want[i] {
+			t.Errorf("reserved control[%d] = %q, shared namespace = %q", i, name, want[i])
 		}
 	}
 }
@@ -327,17 +344,17 @@ func TestResolveDeclaredToolName_DiscoveredToolIsDispatchable(t *testing.T) {
 		if _, ok := declarationNamed(decls, declared); !ok {
 			t.Fatalf("no declaration named %q — the fixture stopped exercising the discovered arm", declared)
 		}
-		if got := resolveDeclaredToolName(rc, declared); got != want.Name {
+		if got := mustResolveDeclaredToolName(t, rc, declared); got != want.Name {
 			t.Errorf("resolveDeclaredToolName(%q) = %q, want %q — a DISCOVERED tool is declared but undispatchable",
 				declared, got, want.Name)
 		}
 	}
 
-	// A discovered name the catalog no longer resolves must NOT be invented:
-	// passthrough is what lets the executor fail loud on an unknown tool.
+	// A discovered name the catalog no longer resolves must NOT be invented or
+	// passed through as an alternate raw vocabulary.
 	rc.DiscoveredTools = append(rc.DiscoveredTools, "ghost.tool")
-	if got := resolveDeclaredToolName(rc, "ghost_tool"); got != "ghost_tool" {
-		t.Errorf("resolveDeclaredToolName(%q) = %q, want the verbatim passthrough", "ghost_tool", got)
+	if got, ok := resolveDeclaredToolName(rc, "ghost_tool"); ok {
+		t.Errorf("resolveDeclaredToolName(%q) = %q, true; want refusal", "ghost_tool", got)
 	}
 }
 
@@ -361,11 +378,11 @@ func TestResolveDeclaredToolName_ConcurrentReuse(t *testing.T) {
 			// Each goroutine gets its OWN RunContext over the shared view —
 			// the per-run scope the contract requires.
 			rc := &planner.RunContext{Catalog: shared}
-			if got := resolveDeclaredToolName(rc, "clock_now"); got != "clock.now" {
+			if got := mustResolveDeclaredToolName(t, rc, "clock_now"); got != "clock.now" {
 				errs <- "goroutine " + strconv.Itoa(i) + ": clock_now resolved to " + got
 			}
 			tool := catalog[2+(i%len(githubVerbs))]
-			if got := resolveDeclaredToolName(rc, sanitizeToolName(tool.Name)); got != tool.Name {
+			if got := mustResolveDeclaredToolName(t, rc, sanitizeToolName(tool.Name)); got != tool.Name {
 				errs <- "goroutine " + strconv.Itoa(i) + ": " + tool.Name + " resolved to " + got
 			}
 		}(i)
@@ -554,7 +571,7 @@ func TestResolveDeclaredToolName_AdversarialRoundTrip(t *testing.T) {
 		if len(d.Name) > 64 {
 			t.Errorf("declaration %q is %d bytes — a provider rejects >64", d.Name, len(d.Name))
 		}
-		if got := resolveDeclaredToolName(rc, d.Name); got != d.Description {
+		if got := mustResolveDeclaredToolName(t, rc, d.Name); got != d.Description {
 			t.Errorf("resolveDeclaredToolName(%q) = %q, want %q", d.Name, got, d.Description)
 		}
 	}
@@ -566,7 +583,7 @@ func TestResolveDeclaredToolName_AdversarialRoundTrip(t *testing.T) {
 		t.Fatalf("collision events = %d, want 3 — the corpus stopped colliding", len(*collisions))
 	}
 	for _, c := range *collisions {
-		if got := resolveDeclaredToolName(rc, c.DeclaredName); got == c.DroppedTool {
+		if got, ok := resolveDeclaredToolName(rc, c.DeclaredName); ok && got == c.DroppedTool {
 			t.Errorf("declared name %q dispatches the announced dropped tool %q", c.DeclaredName, got)
 		}
 	}
@@ -597,7 +614,7 @@ func TestSanitizeToolNameTo_TotalOverEveryBudget(t *testing.T) {
 				t.Errorf("sanitizeToolNameTo(%q, %d) = %q (%d bytes) — over budget", in, budget, got, len(got))
 			}
 			for _, r := range got {
-				if !isToolNameRune(r) {
+				if !tools.IsModelToolNameRune(r) {
 					t.Errorf("sanitizeToolNameTo(%q, %d) = %q — contains a provider-rejected rune %q",
 						in, budget, got, r)
 				}

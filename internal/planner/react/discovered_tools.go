@@ -232,67 +232,56 @@ func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.Too
 	if rc.Catalog == nil {
 		return nil
 	}
-	always := rc.Catalog.List()
-	if len(always) == 0 && len(discovered) == 0 {
+	projected, projection := projectModelTools(rc, discovered)
+	if len(projected) == 0 && len(projection.Collisions()) == 0 {
 		// Even an empty catalog still gets the planner-reserved
 		// controls — they're how the LLM signals "spawn a side task"
 		// or "await a previously-spawned task" under native tool-calling.
 		return reservedPlannerControlDeclarations()
 	}
 	reserved := reservedPlannerControlDeclarations()
-	decls := make([]llm.ToolDeclaration, 0, len(reserved)+len(always)+len(discovered))
-	// Dedup on the SANITIZED name — that is the function name the LLM
-	// sees, so two catalog names that map onto the same string cannot both
-	// be declared: the model's returned name would resolve to whichever
-	// tool matched first, making provider-side dispatch ambiguous. The
-	// collider is dropped for the turn.
-	//
-	// `seen` maps the provider-safe name to the REAL catalog name that
-	// claimed it. Keeping the real name (rather than a bare set membership)
-	// is what lets the drop distinguish its two cases:
-	//
-	//   - Same real name → a benign re-encounter. Discovery routinely
-	//     re-surfaces an already-loaded tool; skipping it is the intended
-	//     behaviour and needs no announcement.
-	//   - Different real names → a genuine collision. The model is offered
-	//     a strictly smaller surface than the catalog holds, so the drop is
-	//     announced on the event bus. Degrading here in silence is the
-	//     forbidden pattern (§13): nothing downstream can otherwise tell
-	//     that a tool the operator registered never reached the model.
-	seen := make(map[string]string, len(reserved)+len(always)+len(discovered))
-	for _, r := range reserved {
-		seen[sanitizeToolName(r.Name)] = r.Name
-		decls = append(decls, r)
-	}
-	for _, t := range always {
-		if t.Name == "" {
-			continue
-		}
-		key := sanitizeToolName(t.Name)
-		if owner, dup := seen[key]; dup {
-			emitToolDeclarationCollision(rc, key, owner, t.Name)
-			continue
-		}
-		seen[key] = t.Name
+	decls := make([]llm.ToolDeclaration, 0, len(reserved)+len(projected))
+	decls = append(decls, reserved...)
+	for _, t := range projected {
 		decls = append(decls, toolToDeclaration(t))
 	}
+	for _, collision := range projection.Collisions() {
+		emitToolDeclarationCollision(rc, collision.DeclaredName, collision.DeclaredTool, collision.DroppedTool)
+	}
+	return decls
+}
+
+// projectModelTools is the ONE ReAct projection of catalog candidates onto
+// the model-visible namespace. Declarations, prompt quick-reference and
+// provider-returned-name resolution all call it, so their collision winner
+// and ordering cannot drift.
+func projectModelTools(rc planner.RunContext, discovered []string) ([]tools.Tool, tools.ModelToolNameProjection) {
+	if rc.Catalog == nil {
+		return nil, tools.NewModelToolNameProjection(nil, nil)
+	}
+	candidates := append([]tools.Tool(nil), rc.Catalog.List()...)
 	for _, name := range discovered {
 		if name == "" {
 			continue
 		}
-		key := sanitizeToolName(name)
-		if owner, dup := seen[key]; dup {
-			emitToolDeclarationCollision(rc, key, owner, name)
-			continue
+		if tool, ok := rc.Catalog.Resolve(name); ok {
+			candidates = append(candidates, tool)
 		}
-		t, ok := rc.Catalog.Resolve(name)
-		if !ok {
-			continue
-		}
-		seen[key] = name
-		decls = append(decls, toolToDeclaration(t))
 	}
-	return decls
+	names := make([]string, 0, len(candidates))
+	byName := make(map[string]tools.Tool, len(candidates))
+	for _, tool := range candidates {
+		names = append(names, tool.Name)
+		if _, exists := byName[tool.Name]; !exists {
+			byName[tool.Name] = tool
+		}
+	}
+	projection := tools.NewModelToolNameProjection(names, tools.ReservedModelToolNames())
+	projected := make([]tools.Tool, 0, len(projection.Entries()))
+	for _, entry := range projection.Entries() {
+		projected = append(projected, byName[entry.CatalogName])
+	}
+	return projected, projection
 }
 
 // emitToolDeclarationCollision announces a tool that could not be declared

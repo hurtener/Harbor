@@ -149,8 +149,19 @@ func TestRunOne_CallerMemory_AdmittedAndAnnounced(t *testing.T) {
 		})
 	})
 
-	raw := json.RawMessage(`{"note":"` + marker + `"}`)
-	spawnWithCallerMemory(t, env.reg, raw)
+	raw := json.RawMessage(`{"note":"` + marker + `","api_key":"sk-abcdefghijklmnopqrstuvwxyz0123456789-extra-wire-bytes"}`)
+	h := spawnWithCallerMemory(t, env.reg, raw)
+	ctx, ctxErr := identity.With(context.Background(), runLoopDriverTestID)
+	if ctxErr != nil {
+		t.Fatalf("identity.With: %v", ctxErr)
+	}
+	persisted, getErr := env.reg.Get(ctx, h.ID)
+	if getErr != nil {
+		t.Fatalf("Get spawned task: %v", getErr)
+	}
+	if len(persisted.CallerMemory) == len(raw) {
+		t.Fatalf("fixture did not make redaction change length: persisted=%d wire=%d", len(persisted.CallerMemory), len(raw))
+	}
 
 	select {
 	case mb := <-seen:

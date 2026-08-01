@@ -270,6 +270,12 @@ type Task struct {
 	// caller memory would hydrate with a non-empty CallerMemory and the
 	// run loop would compose a `caller_supplied` key holding JSON null.
 	CallerMemory json.RawMessage `json:",omitempty"`
+	// CallerMemoryWireBytes is the exact pre-redaction byte length admitted at
+	// Spawn. It contains no caller content and exists because redaction may
+	// change the persisted document's length; admission telemetry reports the
+	// wire resource cost, not the post-redaction representation. Zero means no
+	// caller memory and is omitted from historical rows.
+	CallerMemoryWireBytes int `json:",omitempty"`
 }
 
 // SpawnRequest is the input shape for `Spawn`. Identity is mandatory.
