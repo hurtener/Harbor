@@ -42,14 +42,14 @@ Bind each authenticated data-plane bearer to a bounded signed set of agent regis
 
 ## Acceptance criteria
 
-- [ ] `agent_reach` is a unique nonblank JSON string array, bounded to 128 IDs of at most 128 bytes; malformed claims reject authentication, while absent/empty reach authorizes no agent-addressed data-plane call.
-- [ ] One shared gate is constructed once by production/devstack assembly and used by every enumerated call site.
-- [ ] Explicit and omitted/defaulted `control.start` targets require reach before creating a session or task; configured existence remains only a resolvability check.
-- [ ] All five session methods and all eight user methods, including the three currently claim-free user-skill routes, require reach before service invocation.
-- [ ] `tools.describe` with `agent_id` requires reach; omission remains byte-compatible boot-effective behavior.
-- [ ] Carrier-identity and direct in-process calls without signed verified reach fail closed.
-- [ ] Dev/token minting can issue bounded reach and the default dev bearer reaches only the boot agent.
-- [ ] A table-driven live matrix pins permitted, excluded, missing, empty, malformed, cross-tenant, and no-side-effect behavior for every covered method; N≥100 concurrent calls show no reach bleed.
+- [x] `agent_reach` is a unique nonblank JSON string array, bounded to 128 IDs of at most 128 bytes; malformed claims reject authentication, while absent/empty reach authorizes no agent-addressed data-plane call.
+- [x] One shared gate is constructed once by production/devstack assembly and used by every enumerated call site.
+- [x] Explicit and omitted/defaulted `control.start` targets require reach before creating a session or task; configured existence remains only a resolvability check.
+- [x] All five session methods and all eight user methods, including the three currently claim-free user-skill routes, require reach before service invocation.
+- [x] `tools.describe` with `agent_id` requires reach; omission remains byte-compatible boot-effective behavior.
+- [x] Carrier-identity and direct in-process calls without signed verified reach fail closed.
+- [x] Dev/token minting can issue bounded reach and the default dev bearer reaches only the boot agent.
+- [x] A table-driven live matrix pins permitted, excluded, missing, empty, malformed, cross-tenant, and no-side-effect behavior for every covered method; N≥100 concurrent calls show no reach bleed.
 
 ## Files added or changed
 
@@ -111,6 +111,29 @@ new-path evidence; it may not represent the original aggregate floors as met.
   acceptance evidence without weakening the production token surface merely
   to manufacture live test credentials.
 
+## Verification evidence
+
+- Exact targeted race sweep:
+  `go test -race -count=1 ./cmd/harbor ./harbortest/devstack
+  ./internal/protocol ./internal/protocol/auth
+  ./internal/protocol/conformance ./internal/protocol/transports
+  ./internal/protocol/transports/stream ./internal/runtime/serve
+  ./test/integration ./examples/protocol-clients/conformance-fork` — all
+  packages passed; the full integration leg completed in 255.181 seconds.
+- Live smoke compatibility against one built server: phase 151
+  `OK=20 SKIP=1 FAIL=0`; phase 202 `OK=17 SKIP=1 FAIL=0`; phase 215
+  `OK=12 SKIP=0 FAIL=0`; phase 232 `OK=20 SKIP=0 FAIL=0`.
+- `make lint` passed with zero issues; `make drift-audit`,
+  `make check-mirror`, and `git diff --check` passed.
+- The accepted §4.3 coverage deviation above is met: auth 86.7% (85.7%
+  baseline), protocol 78.7% (non-regressed), stream 69.7% (67.1%
+  baseline), with 100% function coverage on the new authority gate and
+  race-enabled closed-census coverage.
+- Per the maintainer process, full local `make preflight` was intentionally
+  skipped. The GitHub Actions cloud preflight is authoritative and passed on
+  the shipped commit, together with Linux/macOS Go, lint, conformance,
+  isolation, leak, performance, frontend, and Playwright gates.
+
 ## Dependencies
 
 - 151, 205, 221, 228.
@@ -127,13 +150,13 @@ new-path evidence; it may not represent the original aggregate floors as met.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] Concurrent-reuse N≥100 test passes with no race, bleed, cancellation cross-talk, or leak
-- [ ] Cross-subsystem real-mux integration test covers identity and at least one refusal
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] `make drift-audit` passes
+- [x] Authoritative cloud `make preflight` passes; full local preflight was skipped per maintainer process
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages meets the accepted §4.3 target
+- [x] If multi-isolation paths changed: cross-session isolation test passes
+- [x] Concurrent-reuse N≥100 test passes with no race, bleed, cancellation cross-talk, or leak
+- [x] Cross-subsystem real-mux integration test covers identity and at least one refusal
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed
