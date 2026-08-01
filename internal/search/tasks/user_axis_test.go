@@ -114,7 +114,6 @@ func TestTasksSearcher_GrantedWideningsEmitCanonicalAuditBeforeRead(t *testing.T
 		}}},
 		{name: "user axis", req: types.SearchRequest{Filter: types.SearchFilter{UserIDs: []string{victim}}}},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			h := newHarness(t)

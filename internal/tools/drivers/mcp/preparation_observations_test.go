@@ -46,8 +46,8 @@ func TestPreparationObservations_DoNotContaminatePriorAndTransferToExactStage(t 
 	}
 	observations.transfer(swap)
 	during, _, _, err := reg.OAuthDiscoveryTarget("same")
-	if err != nil || during == nil || during.ResourceMetadataURL != newChallenge.ResourceMetadataURL {
-		t.Fatalf("observation not transferred to staged entry: challenge=%+v err=%v", during, err)
+	if err != nil || during == nil || during.ResourceMetadataURL != oldChallenge.ResourceMetadataURL {
+		t.Fatalf("private staged observation leaked through prior live entry: challenge=%+v err=%v", during, err)
 	}
 	if err := swap.Rollback(); err != nil {
 		t.Fatalf("Rollback: %v", err)

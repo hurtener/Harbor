@@ -300,9 +300,9 @@ func (p *recordingProvider) CompleteFlow(context.Context, string, string) (toola
 	return toolauth.Token{}, errors.New("recordingProvider: CompleteFlow must never be called by the re-attach")
 }
 
-func (p *recordingProvider) PendingFlow(string) (toolauth.PendingFlowInfo, bool) {
+func (p *recordingProvider) PendingFlow(context.Context, string) (toolauth.PendingFlowInfo, bool, error) {
 	p.pendingCalls.Add(1)
-	return toolauth.PendingFlowInfo{}, false
+	return toolauth.PendingFlowInfo{}, false, nil
 }
 
 func (p *recordingProvider) DenyFlow(context.Context, string, string) error { return nil }

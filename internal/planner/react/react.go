@@ -127,6 +127,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm/output"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/repair"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // FinishToolName is the reserved tool name the LLM emits to signal
@@ -679,7 +680,8 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// LoadingAlways flow through this path naturally. Per-run
 	// discovered tools (AC-18) are resolved by name and appended
 	// without duplication.
-	req.Tools = buildToolDeclarations(rc, rc.DiscoveredTools)
+	var declaredToolProjection tools.ModelToolNameProjection
+	req.Tools, declaredToolProjection = buildToolDeclarationProjection(rc, rc.DiscoveredTools)
 	// the provider-side parallel hint tracks the
 	// `parallel_tool_calls` knob. When ON (the default), the projector
 	// maps an N>1-ToolCall response to a native [planner.CallParallel]
@@ -716,7 +718,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		return nil, err
 	}
 
-	final, projErr := projectResponse(resp, &rc, p.parallelToolCalls)
+	final, projErr := projectResponse(resp, &rc, p.parallelToolCalls, declaredToolProjection)
 	if projErr != nil {
 		return nil, projErr
 	}

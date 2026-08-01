@@ -800,7 +800,7 @@ func NewService(registry agentcfg.Registry, opts ...Option) (*Service, error) {
 			return nil, fmt.Errorf("%w: coordinator does not support durable continuations", ErrMisconfigured)
 		}
 		if err := registrar.RegisterContinuation(mcpAddContinuationKind, s.resumeMCPConnection); err != nil {
-			return nil, fmt.Errorf("%w: register mcp continuation: %v", ErrMisconfigured, err)
+			return nil, fmt.Errorf("%w: register mcp continuation: %w", ErrMisconfigured, err)
 		}
 	}
 	return s, nil

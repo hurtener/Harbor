@@ -68,6 +68,20 @@ func mkTokenStore(t *testing.T) TokenStore {
 	return ts
 }
 
+func mkFlowStore(t *testing.T) FlowStore {
+	t.Helper()
+	store := mkStore(t)
+	sealer, err := NewAESGCMSealer(fixedKEK(t))
+	if err != nil {
+		t.Fatalf("NewAESGCMSealer: %v", err)
+	}
+	flows, err := NewFlowStore(store, sealer)
+	if err != nil {
+		t.Fatalf("NewFlowStore: %v", err)
+	}
+	return flows
+}
+
 func TestTokenStore_PutGet_RoundTrip_UserBound(t *testing.T) {
 	t.Parallel()
 	ts := mkTokenStore(t)
@@ -382,13 +396,10 @@ func TestTokenStore_EncryptionAtRest_CiphertextNotPlaintext(t *testing.T) {
 		t.Fatalf("envelope not JSON-shaped; got prefix %q", string(rec.Bytes[:min(16, len(rec.Bytes))]))
 	}
 
-	// Refresh sibling record — same check on the refresh-only blob.
-	refRec, err := store.Load(ctx, q, refreshKind(ScopeUser, id.UserID, tDummySource))
-	if err != nil {
-		t.Fatalf("raw Load refresh: %v", err)
-	}
-	if bytes.Contains(refRec.Bytes, []byte(verySensitiveRefresh)) {
-		t.Fatalf("AT-REST LEAK: refresh sibling contains refresh plaintext.")
+	// The credential pair is one atomic record. A second save used to permit
+	// access publication followed by refresh-save failure.
+	if _, err := store.Load(ctx, q, refreshKind(ScopeUser, id.UserID, tDummySource)); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("legacy refresh sibling unexpectedly written: %v", err)
 	}
 }
 

@@ -114,3 +114,26 @@ Carried from prior waves:
   until you have watched it fail.
 - **Verify what executed, not the exit code.** A green run that skipped everything looks
   identical to one that passed.
+
+## Corrective closure addendum
+
+The independent release-candidate review found material defects in both the
+v1.25 implementation and its measuring instruments. Shipped phase plans are
+historical, so phases 225–231 supersede only the affected behavior instead of
+rewriting phases 219–224:
+
+| Phase | Correction | Decision |
+|---|---|---|
+| 225 | Run and prompt fidelity | D-387 |
+| 226 | Agent-config transaction integrity | D-388 |
+| 227 | Declared tool-name resolution | D-389 |
+| 228 | Prepared MCP activation | D-390 |
+| 229 | External release oracles | D-391 |
+| 230 | Scoped state and audit convergence | D-392 |
+| 231 | Deterministic reliability closure | D-393 |
+
+The correction train is one staged PR into `dev-experimental`, with coherent
+phase commits and a frozen-head independent review before promotion. Normal
+users retain `extra_instructions` for personalization. The OAuth ScopeUser
+agent-key question remains deferred while D-379's same-name cross-owner gates
+remain mandatory and mutation-verified.

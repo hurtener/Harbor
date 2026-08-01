@@ -385,6 +385,24 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		c.mu.Unlock()
 		return fmt.Errorf("%w: token %q", ErrScopeMismatch, token)
 	}
+	// An accepted decision may be running durable continuation work outside
+	// c.mu. Its claim wins against every later decision, including terminal
+	// reject/timeout decisions that do not themselves invoke a continuation.
+	// Wait for the winner to finish so callers never observe or overwrite
+	// half-applied effects, then report that this concurrent decision lost the
+	// arbitration. If the winner's continuation fails, the pause remains
+	// retryable by a future call; this already-waiting call still does not
+	// become an implicit retry with potentially different decision semantics.
+	if entry.resuming {
+		done := entry.resumeDone
+		c.mu.Unlock()
+		select {
+		case <-done:
+			return fmt.Errorf("%w: token %q", ErrAlreadyResumed, token)
+		case <-ctx.Done():
+			return fmt.Errorf("pauseresume: wait for concurrent resume: %w", ctx.Err())
+		}
+	}
 
 	// Re-attach the non-serialisable half of ToolContext. A lost
 	// handle fails loud with trajectory.ErrToolContextLost — the run
@@ -416,16 +434,6 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 	// intact, so the same token is retryable. Reject/timeout are terminal
 	// decisions and intentionally do not run continuation work.
 	if entry.continuation != nil && (decision == DecisionResume || decision == DecisionApprove) {
-		if entry.resuming {
-			done := entry.resumeDone
-			c.mu.Unlock()
-			select {
-			case <-done:
-				return c.Resume(ctx, token, decision, payload)
-			case <-ctx.Done():
-				return fmt.Errorf("pauseresume: wait for concurrent resume: %w", ctx.Err())
-			}
-		}
 		handler, registered := c.continuations[entry.continuation.Kind]
 		if !registered {
 			c.mu.Unlock()
@@ -645,7 +653,7 @@ func (e *pauseEntry) toCheckpoint() (checkpointRecord, error) {
 // when present; a corrupt trajectory surfaces ErrCheckpointCorrupt.
 func entryFromCheckpoint(rec checkpointRecord) (*pauseEntry, error) {
 	if err := validateContinuation(rec.Continuation); err != nil {
-		return nil, fmt.Errorf("%w: token %q continuation: %v", ErrCheckpointCorrupt, rec.Token, err)
+		return nil, fmt.Errorf("%w: token %q continuation: %w", ErrCheckpointCorrupt, rec.Token, err)
 	}
 	var continuation *Continuation
 	if rec.Continuation != nil {

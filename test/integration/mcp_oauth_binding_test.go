@@ -68,8 +68,8 @@ func (c *closableBearerProvider) InitiateFlow(context.Context, tools.ToolSourceI
 func (c *closableBearerProvider) CompleteFlow(context.Context, string, string) (auth.Token, error) {
 	return auth.Token{}, nil
 }
-func (c *closableBearerProvider) PendingFlow(string) (auth.PendingFlowInfo, bool) {
-	return auth.PendingFlowInfo{}, false
+func (c *closableBearerProvider) PendingFlow(context.Context, string) (auth.PendingFlowInfo, bool, error) {
+	return auth.PendingFlowInfo{}, false, nil
 }
 func (c *closableBearerProvider) DenyFlow(context.Context, string, string) error   { return nil }
 func (c *closableBearerProvider) Revoke(context.Context, tools.ToolSourceID) error { return nil }

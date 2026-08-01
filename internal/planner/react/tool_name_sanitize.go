@@ -112,39 +112,13 @@ func sanitizeToolNameTo(name string, budget int) string {
 	return tools.ModelVisibleToolNameTo(name, budget)
 }
 
-// minDigestBudget is the smallest budget at which the full
-// `<tail>_<digest>` shape fits — one separator plus the whole digest, with
-// a zero-width tail at the boundary. Below it only a digest PREFIX fits.
-//
-// Production never reaches the sub-budget arm ([maxToolNameBytes] is 44),
-// but the budget is a PARAMETER of [sanitizeToolNameTo], and a parameter
-// nobody validated is not the "impossible by construction" carve-out a
-// panic needs (CLAUDE.md §5). The arm makes the function TOTAL instead:
-// the retained-tail width used to go negative below this boundary and
-// panic on a slice bound.
-const minDigestBudget = toolNameDigestBytes + 1
-
-// shortenToolName reduces an over-budget provider-safe name to exactly
-// `budget` bytes by retaining its tail and appending a digest of the whole
-// string. See sanitizeToolName's godoc for why the tail is the half worth
-// keeping.
-//
-// At or above [minDigestBudget] the result is `<retained tail>_<8-hex
-// digest>`. Below it no tail survives and the result is a PREFIX of the
-// digest — still deterministic, still a pure function of the input, and
-// still discriminating for as long as the width allows. A non-positive
-// budget cannot represent any name at all and yields the empty string.
-func shortenToolName(s string, budget int) string {
-	return tools.ModelVisibleToolNameTo(s, budget)
-}
-
 // resolveDeclaredToolName maps a provider-returned tool-call name back to
 // the real catalog tool name. Declarations are sent to the LLM under their
 // sanitized names, so a returned name may differ from the catalog name
 // (e.g. "inventory_check" → "inventory.check"). The bool is false unless
 // name was actually present in this run's declared catalog projection.
 //
-// # It re-derives the FORWARD transform, in the declaration's own precedence
+// # Compatibility projection for direct projector callers
 //
 // Resolution walks the same candidates buildToolDeclarations walks, in the
 // same order, and returns the first whose sanitized name equals the
@@ -169,19 +143,11 @@ func shortenToolName(s string, budget int) string {
 // falls through to the verbatim passthrough that returns the same value the
 // exact branch did.
 //
-// Scanning rather than consulting a recorded declared→catalog map is the
-// deliberate choice: a map is per-projection state that would have to be
-// carried on the RunContext (the planner artifact may not hold it — the
-// concurrent-reuse contract), and any path that reached the projector
-// WITHOUT it — a resumed run, a replayed trajectory, a caller that projects
-// a response it did not declare for — would fall back to exactly the branch
-// this defect lived in, silently. The scan is O(catalog) per tool call
-// against an LLM round trip; the forward path already pays the same cost
-// twice per turn.
-//
-// The precedence is stable under the one way the catalog moves mid-run:
-// discovered tools are APPENDED, so a later arrival can never displace an
-// earlier claimant of a provider-safe name.
+// ReActPlanner.Next does not use this reconstruction after Complete. It keeps
+// the immutable ModelToolNameProjection built alongside req.Tools and passes
+// that exact snapshot into projectResponse, so a concurrent catalog change
+// cannot retarget the provider's response. This helper remains for direct
+// projector tests and compatibility callers that have no in-flight request.
 //
 // An unmatched name is rejected at the planner boundary. It is never treated
 // as a raw catalog key: catalog keys and model-visible declared names are two

@@ -333,8 +333,8 @@ func (prefixBearerProvider) InitiateFlow(context.Context, tools.ToolSourceID) (a
 func (prefixBearerProvider) CompleteFlow(context.Context, string, string) (auth.Token, error) {
 	return auth.Token{}, nil
 }
-func (prefixBearerProvider) PendingFlow(string) (auth.PendingFlowInfo, bool) {
-	return auth.PendingFlowInfo{}, false
+func (prefixBearerProvider) PendingFlow(context.Context, string) (auth.PendingFlowInfo, bool, error) {
+	return auth.PendingFlowInfo{}, false, nil
 }
 func (prefixBearerProvider) DenyFlow(context.Context, string, string) error   { return nil }
 func (prefixBearerProvider) Revoke(context.Context, tools.ToolSourceID) error { return nil }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
@@ -140,6 +141,71 @@ func TestAddMCPConnection_UsesProviderOwnedPauseWithoutDuplicate(t *testing.T) {
 	activated, _ := preparer.prepared.counts()
 	if activated != 1 {
 		t.Fatalf("activation count = %d, want 1", activated)
+	}
+}
+
+func TestAddMCPConnection_AuthRequiredWriteLandedThenErroredRetainsProducerPause(t *testing.T) {
+	base := newRegistry(t)
+	writeErr := errors.New("commit acknowledgement lost")
+	reg := &landedThenErroredRegistry{Registry: base, err: writeErr}
+	bus := newCollectingBus(t)
+	coord := pauseresume.New(pauseresume.WithBus(bus))
+	preparer := &producerPausePreparer{coord: coord}
+	installer := newRecordingInstaller()
+	svc, err := agentcfgprotocol.NewService(reg,
+		agentcfgprotocol.WithConnectionPreparer(preparer),
+		agentcfgprotocol.WithCoordinator(coord),
+		agentcfgprotocol.WithBus(bus),
+		agentcfgprotocol.WithProviderInstaller(installer),
+		agentcfgprotocol.WithAllowWireOAuthDescriptor(true),
+	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	conn := httpConnNamed("landed-auth")
+	conn.OAuth = &prototypes.AgentConfigOAuthProviderDescriptor{
+		Name:             "landed-auth-provider",
+		Driver:           "tokenexchange",
+		CredentialSource: "remote",
+		CredentialBroker: "broker",
+		TokenURL:         "https://idp.example.test/token",
+	}
+	ctx := identityContext(t, context.Background())
+	resp, err := svc.AddMCPConnection(ctx, addReq(conn, nil))
+	if err != nil {
+		t.Fatalf("confirmed landed auth-required add returned lost acknowledgement: %v", err)
+	}
+	if resp.State != string(agentcfgprotocol.ConnectionStateAuthRequired) || resp.Revision == nil {
+		t.Fatalf("response = %+v, want durable auth_required revision", resp)
+	}
+	if resp.PauseToken == "" || resp.PauseToken != string(preparer.token) {
+		t.Fatalf("response pause token=%q producer token=%q", resp.PauseToken, preparer.token)
+	}
+	authEvents := bus.eventsOfType(agentcfg.EventTypeMCPConnectionAuthRequired)
+	if len(authEvents) != 1 {
+		t.Fatalf("auth_required lifecycle events=%d, want 1", len(authEvents))
+	}
+	payload, ok := authEvents[0].Payload.(agentcfg.MCPConnectionLifecyclePayload)
+	if !ok || payload.RevisionID != resp.Revision.RevisionID || payload.PauseToken != resp.PauseToken {
+		t.Fatalf("auth_required lifecycle payload=%#v response=%+v", authEvents[0].Payload, resp)
+	}
+	if !installer.isInstalled("landed-auth-provider") {
+		t.Fatal("exact landed provider descriptor was not published")
+	}
+	active, set, err := base.Active(ctx, qScope(), testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.RevisionID != resp.Revision.RevisionID {
+		t.Fatalf("active landed revision: set=%v id=%q response=%q err=%v", set, active.RevisionID, resp.Revision.RevisionID, err)
+	}
+	status, err := coord.Status(ctx, preparer.token)
+	if err != nil || status.State != pauseresume.StatusPaused {
+		t.Fatalf("producer pause was rejected or hidden: state=%q err=%v", status.State, err)
+	}
+	if err := coord.Resume(ctx, preparer.token, pauseresume.DecisionApprove, nil); err != nil {
+		t.Fatalf("Resume retained producer pause: %v", err)
+	}
+	activated, closed := preparer.prepared.counts()
+	if activated != 1 || closed != 0 {
+		t.Fatalf("retained continuation lifecycle = activate:%d close:%d", activated, closed)
 	}
 }
 

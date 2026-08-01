@@ -430,10 +430,11 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 	}, nil
 }
 
-// Activate stages the reversible registry replacement first, then swaps the
-// catalog source as the dispatch linearization point. The old same-owner
-// provider remains callable through the old catalog descriptors until that
-// point and is closed only after both shared structures publish successfully.
+// Activate privately reserves the reversible registry replacement first, then
+// swaps the catalog source as the dispatch linearization point. The old
+// same-owner provider remains callable through both the old catalog descriptors
+// and direct registry reads until that point and is closed only after both
+// shared structures publish successfully.
 func (p *PreparedAttachment) Activate(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -470,12 +471,12 @@ func (p *PreparedAttachment) Activate(ctx context.Context) error {
 		rollbackErr := registrySwap.Rollback()
 		return errors.Join(fmt.Errorf("catalog.Register source %q: %w", p.ms.Name, err), rollbackErr)
 	}
-	// The registry receipt is reversible until the catalog swap succeeds. At
-	// this point both shared structures hold the new state and neither remaining
-	// step can reject publication. Commit the catalog receipt, mark the
-	// attachment live, then drain the displaced transport as post-commit
-	// cleanup. A close failure is loud but cannot turn a successful publication
-	// into an error.
+	// StageSource is the dispatch linearization point. Once it succeeds, Commit
+	// has no rejecting path and merely makes that publication irrevocable plus
+	// syncs the optional search cache. Only then may the private registry stage
+	// become visible to direct reads. The name reservation makes that registry
+	// publication non-conflicting; its only expected error is displaced-provider
+	// cleanup after publication, which is logged rather than changing success.
 	catalogSwap.Commit()
 	p.activated = true
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)

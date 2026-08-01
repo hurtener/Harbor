@@ -2,6 +2,21 @@
 
 ## Summary
 
+Phase 225 and D-387 permanently supersede Phase 220's original prompt-seat decision while preserving its product surface: a verified non-admin user can still set `extra_instructions` for their own session, but the value now lands in the escaped `<user_personalization>` tier. The admin-owned tenant value remains in `LLMOverrides.ExtraInstructions` and renders in `<additional_guidance>` unchanged. The two values are structurally separate, so a session value cannot overwrite, clear, or impersonate tenant guidance. `SystemPromptOverride` remains independent, and personalization survives it.
+
+## Acceptance criteria
+
+- [x] `RunOverrides.ExtraInstructions` remains available through the existing verified-identity, same-session method; it is not admin-only.
+- [x] `ComposeLLMOverrides` preserves tenant `ExtraInstructions` and copies a nonblank session value into `UserPersonalization`, with no second producer for that field.
+- [x] The prompt renderer escapes personalization delimiters and gives the tier a runtime-owned label; runtime tool, identity, governance, and policy checks remain authoritative.
+- [x] Empty session text is a no-op, never a tenant clear; both contributions survive `SystemPromptOverride`.
+- [x] Audit emits only the presence flag, never the text; one-shot, identity, copy-by-value, and concurrent-reuse properties remain intact.
+- [x] Phase 225's smoke runs the corrected authority, containment, strict-decoding, and wire-byte tests with real PASS markers.
+
+The remaining sections are the historical Phase 220 design record. Statements that place a normal user's value verbatim in `<additional_guidance>`, join it into the tenant string, or call it operator-trusted are explicitly superseded by the current-status section above, D-387, and Phase 225; they do not describe the candidate implementation.
+
+## Original summary (superseded prompt-seat semantics)
+
 `planner.LLMOverrides.ExtraInstructions` already exists, is already additive, already renders verbatim into `<additional_guidance>`, and already survives a `SystemPromptOverride` — but it has exactly one producer, the admin-scoped governance tenant-override record, and it is not reachable over the Harbor Protocol at all. This phase adds ONE optional wire field, `extra_instructions`, to `RunOverrides`, carries it through the existing `runs.set_overrides` validate → store → consume → compose path, and pins the two-producer question with a decision rather than a default: the run-level value **composes below** the tenant value, it never replaces it. Zero new prompt semantics, zero new section, zero new error code, no `ProtocolVersion` bump.
 
 ## RFC anchor
@@ -48,7 +63,7 @@ The upstream ask stated that Harbor offers "no additive sibling" to whole-spine 
 - **No new error code.** The field validates through the existing `ErrInvalidRequest` → `invalid_request` path or not at all (see Acceptance criteria).
 - **No Console page change.** The typed client mirrors the field (§4.5 item 5); wiring a Playground control to it is the consuming page's work.
 
-## Acceptance criteria
+## Original acceptance criteria (historical; prompt-seat items superseded by Phase 225)
 
 - [x] `RunOverrides` carries `ExtraInstructions *string` with JSON key `extra_instructions,omitempty`, and the field is godoc'd as ADDITIVE, verbatim-rendered, and operator-trusted — including the plain statement of who may write it.
 - [x] `runs/protocol.PendingOverride` carries the validated value; `Service.validate` copies it by value (no aliasing of the caller's string header).

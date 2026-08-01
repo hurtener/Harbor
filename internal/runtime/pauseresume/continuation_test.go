@@ -114,6 +114,60 @@ func TestContinuation_ConcurrentResumeInvokesHandlerOnce(t *testing.T) {
 	}
 }
 
+func TestContinuation_ConcurrentMixedDecisionWaitsForAcceptedWinner(t *testing.T) {
+	ctx := runCtx(t, testID, "run-mixed-decision")
+	c := pauseresume.New()
+	handlerEntered := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	registerContinuation(t, c, "test.mixed-decision", func(context.Context, pauseresume.ContinuationInvocation) error {
+		close(handlerEntered)
+		<-releaseHandler
+		return nil
+	})
+	p, err := c.Request(ctx, pauseresume.PauseRequest{
+		Identity: testID,
+		Reason:   pauseresume.ReasonExternalEvent,
+		Continuation: &pauseresume.Continuation{
+			Kind: "test.mixed-decision",
+			Data: map[string]string{"id": "x"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+
+	approveErr := make(chan error, 1)
+	go func() {
+		approveErr <- c.Resume(ctx, p.Token, pauseresume.DecisionApprove, map[string]any{"winner": "approve"})
+	}()
+	<-handlerEntered
+
+	rejectErr := make(chan error, 1)
+	go func() {
+		rejectErr <- c.Resume(ctx, p.Token, pauseresume.DecisionReject, map[string]any{"winner": "reject"})
+	}()
+	select {
+	case err := <-rejectErr:
+		t.Fatalf("reject returned while accepted continuation was in flight: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	close(releaseHandler)
+	if err := <-approveErr; err != nil {
+		t.Fatalf("approve winner: %v", err)
+	}
+	if err := <-rejectErr; !errors.Is(err, pauseresume.ErrAlreadyResumed) {
+		t.Fatalf("reject loser: err=%v, want ErrAlreadyResumed", err)
+	}
+	st, err := c.Status(ctx, p.Token)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.State != pauseresume.StatusResumed || st.Decision != pauseresume.DecisionApprove {
+		t.Fatalf("terminal status = {state:%q decision:%q}, want approve winner", st.State, st.Decision)
+	}
+}
+
 func TestContinuation_RejectSkipsHandler(t *testing.T) {
 	ctx := runCtx(t, testID, "run-reject")
 	c := pauseresume.New()

@@ -229,15 +229,26 @@ func mergeDiscovered(existing, derived []string) []string {
 // the prompt and can emit a tool-free response (the projector then
 // produces Finish{Goal} or Finish{NoPath}).
 func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.ToolDeclaration {
+	decls, _ := buildToolDeclarationProjection(rc, discovered)
+	return decls
+}
+
+// buildToolDeclarationProjection returns both surfaces created by the same
+// catalog snapshot: the declarations sent to the provider and the immutable
+// declared-name-to-catalog-key projection used to interpret that provider's
+// response. The caller must retain the projection across Complete; rebuilding
+// it afterward could let a concurrent catalog publication retarget a name the
+// model saw under a different schema.
+func buildToolDeclarationProjection(rc planner.RunContext, discovered []string) ([]llm.ToolDeclaration, tools.ModelToolNameProjection) {
 	if rc.Catalog == nil {
-		return nil
+		return nil, tools.NewModelToolNameProjection(nil, tools.ReservedModelToolNames())
 	}
 	projected, projection := projectModelTools(rc, discovered)
 	if len(projected) == 0 && len(projection.Collisions()) == 0 {
 		// Even an empty catalog still gets the planner-reserved
 		// controls — they're how the LLM signals "spawn a side task"
 		// or "await a previously-spawned task" under native tool-calling.
-		return reservedPlannerControlDeclarations()
+		return reservedPlannerControlDeclarations(), projection
 	}
 	reserved := reservedPlannerControlDeclarations()
 	decls := make([]llm.ToolDeclaration, 0, len(reserved)+len(projected))
@@ -248,13 +259,14 @@ func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.Too
 	for _, collision := range projection.Collisions() {
 		emitToolDeclarationCollision(rc, collision.DeclaredName, collision.DeclaredTool, collision.DroppedTool)
 	}
-	return decls
+	return decls, projection
 }
 
 // projectModelTools is the ONE ReAct projection of catalog candidates onto
-// the model-visible namespace. Declarations, prompt quick-reference and
-// provider-returned-name resolution all call it, so their collision winner
-// and ordering cannot drift.
+// the model-visible namespace. Declarations and the prompt quick-reference
+// call it; Next retains its returned immutable projection across Complete for
+// provider-returned-name resolution, so collision winner and ordering cannot
+// drift within a turn.
 func projectModelTools(rc planner.RunContext, discovered []string) ([]tools.Tool, tools.ModelToolNameProjection) {
 	if rc.Catalog == nil {
 		return nil, tools.NewModelToolNameProjection(nil, nil)

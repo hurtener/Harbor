@@ -50,8 +50,8 @@ func (p *identityCredProvider) InitiateFlow(context.Context, tools.ToolSourceID)
 func (p *identityCredProvider) CompleteFlow(context.Context, string, string) (auth.Token, error) {
 	return auth.Token{}, errors.New("not implemented")
 }
-func (p *identityCredProvider) PendingFlow(string) (auth.PendingFlowInfo, bool) {
-	return auth.PendingFlowInfo{}, false
+func (p *identityCredProvider) PendingFlow(context.Context, string) (auth.PendingFlowInfo, bool, error) {
+	return auth.PendingFlowInfo{}, false, nil
 }
 func (p *identityCredProvider) DenyFlow(context.Context, string, string) error   { return nil }
 func (p *identityCredProvider) Revoke(context.Context, tools.ToolSourceID) error { return nil }

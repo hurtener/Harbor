@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -108,7 +109,10 @@ func TestCallbackHandler_MissingCode_BadRequest(t *testing.T) {
 		t.Fatalf("error code = %q, want invalid_request", code)
 	}
 	// The flow record is NOT consumed by a missing-code request.
-	if _, ok := har.provider.PendingFlow(authErr.State); !ok {
+	if _, ok, err := har.provider.PendingFlow(context.Background(), authErr.State); err != nil || !ok {
+		if err != nil {
+			t.Fatalf("PendingFlow: %v", err)
+		}
 		t.Fatal("flow record consumed by a missing-code request")
 	}
 }
@@ -215,9 +219,10 @@ func TestCallbackHandler_Success_CompletesFlow_ResumesPause_NoSecrets(t *testing
 	}
 }
 
-// TestCallbackHandler_Replay_NotFound — idempotency by consumption: a
-// second GET with the same (state, code) is flow_not_found.
-func TestCallbackHandler_Replay_NotFound(t *testing.T) {
+// TestCallbackHandler_ReplayWithinRetryHorizon_IdempotentSuccess verifies that
+// an ambiguous client response can be retried while the exact-state tombstone
+// remains live, without a second authorization-code exchange.
+func TestCallbackHandler_ReplayWithinRetryHorizon_IdempotentSuccess(t *testing.T) {
 	t.Parallel()
 	har := newProviderHarness(t)
 	ctx := mkCtx(t, mkIdentity(t))
@@ -237,11 +242,11 @@ func TestCallbackHandler_Replay_NotFound(t *testing.T) {
 		t.Fatalf("first GET status = %d, want 200", rec.Code)
 	}
 	rec := cbGet(t, h, target)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("replayed GET status = %d, want 404", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("replayed GET status = %d, want 200", rec.Code)
 	}
-	if code, _ := cbErrorBody(t, rec); code != "flow_not_found" {
-		t.Fatalf("replayed error code = %q, want flow_not_found", code)
+	if got := har.server.TokenCalls(); got != 1 {
+		t.Fatalf("token exchanges after replay = %d, want 1", got)
 	}
 }
 
@@ -324,7 +329,10 @@ func TestCallbackHandler_UpstreamDenial_RejectsPause(t *testing.T) {
 		t.Fatalf("body = (%q, %q), want (authorization_denied, access_denied)", code, detail)
 	}
 	// The flow is consumed (replay → 404)…
-	if _, ok := har.provider.PendingFlow(authErr.State); ok {
+	if _, ok, err := har.provider.PendingFlow(context.Background(), authErr.State); err != nil || ok {
+		if err != nil {
+			t.Fatalf("PendingFlow: %v", err)
+		}
 		t.Fatal("denied flow record not consumed")
 	}
 	// …and the pause resumed (with reject — the resume-with-rejection
@@ -335,6 +343,105 @@ func TestCallbackHandler_UpstreamDenial_RejectsPause(t *testing.T) {
 	}
 	if st.State != pauseresume.StatusResumed {
 		t.Fatalf("denied pause state = %q, want resumed (DecisionReject)", st.State)
+	}
+}
+
+func TestCallbackHandler_UnknownDenialCannotCrossContainmentBoundary(t *testing.T) {
+	const malicious = "access_denied bearer=secret-like-credential-DO-NOT-PERSIST"
+	har := newProviderHarness(t)
+	coord := pauseresume.New(pauseresume.WithBus(har.bus))
+	provider, err := NewProvider([]OAuthConfig{har.userCfg, har.agentCfg}, ProviderDeps{
+		Store: har.store, Flows: har.flows, Bus: har.bus, Redactor: har.redactor,
+		Coordinator: coord, HTTPClient: &http.Client{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := mkIdentity(t)
+	ctx := mkCtx(t, id)
+	sub, err := har.bus.Subscribe(ctx, events.Filter{
+		Tenant: id.TenantID, User: id.UserID, Session: id.SessionID,
+		Types: []events.EventType{pauseresume.EventTypePauseResumed},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Cancel()
+
+	_, tokenErr := provider.Token(ctx, har.userCfg.Source)
+	var required *ErrAuthRequired
+	if !errors.As(tokenErr, &required) {
+		t.Fatalf("Token: want ErrAuthRequired, got %v", tokenErr)
+	}
+	var logs strings.Builder
+	handler := CallbackHandler(map[string]OAuthProvider{"provider": provider},
+		WithCallbackLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	query := url.Values{
+		"state":             []string{required.State},
+		"error":             []string{malicious},
+		"error_description": []string{malicious},
+	}
+	rec := cbGet(t, handler, CallbackPath+"?"+query.Encode())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want=400 body=%s", rec.Code, rec.Body.String())
+	}
+	code, detail := cbErrorBody(t, rec)
+	if code != "authorization_denied" || detail != string(denialAuthorizationDeniedLocal) {
+		t.Fatalf("body=(%q,%q) want=(authorization_denied,%q)", code, detail, denialAuthorizationDeniedLocal)
+	}
+
+	var resumed events.Event
+	select {
+	case resumed = <-sub.Events():
+	case <-time.After(5 * time.Second):
+		t.Fatal("pause.resumed event not emitted")
+	}
+	status, err := coord.Status(ctx, pauseresume.Token(required.PauseToken))
+	if err != nil || status.State != pauseresume.StatusResumed || status.Decision != pauseresume.DecisionReject {
+		t.Fatalf("denied pause status=%+v err=%v", status, err)
+	}
+	listed, err := coord.List(ctx, pauseresume.ListRequest{
+		Identity: id,
+		Filter:   pauseresume.ListFilter{States: []pauseresume.State{pauseresume.StatusResumed}},
+		Page:     1,
+		PageSize: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var storedPayload map[string]any
+	for _, pause := range listed.Snapshots {
+		if pause.Token == pauseresume.Token(required.PauseToken) {
+			storedPayload = pause.Payload
+			break
+		}
+	}
+	if storedPayload == nil {
+		t.Fatalf("resumed pause %q missing from canonical List snapshot", required.PauseToken)
+	}
+	if got := storedPayload["denied_reason"]; got != string(denialAuthorizationDeniedLocal) {
+		t.Fatalf("stored denied_reason=%v want=%q", got, denialAuthorizationDeniedLocal)
+	}
+	storedJSON, err := json.Marshal(storedPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventJSON, err := json.Marshal(resumed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, blob := range map[string]string{
+		"callback log": logs.String(),
+		"HTTP body":    rec.Body.String(),
+		"pause record": string(storedJSON),
+		"resume event": string(eventJSON),
+	} {
+		if strings.Contains(blob, malicious) || strings.Contains(blob, "secret-like-credential") {
+			t.Fatalf("%s leaked malicious OAuth denial: %s", name, blob)
+		}
+	}
+	if _, ok, err := provider.PendingFlow(context.Background(), required.State); err != nil || ok {
+		t.Fatalf("denied flow cleanup = ok:%v err:%v", ok, err)
 	}
 }
 
@@ -364,7 +471,7 @@ func TestCallbackHandler_ExpiredFlow_Gone_PauseStillParked(t *testing.T) {
 		RedirectURI:  "http://localhost" + CallbackPath,
 	}
 	prov, err := NewProvider([]OAuthConfig{cfg}, ProviderDeps{
-		Store: store, Bus: bus, Redactor: red, Coordinator: coord,
+		Store: store, Flows: mkFlowStore(t), Bus: bus, Redactor: red, Coordinator: coord,
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 		Clock:      clock,
 		FlowTTL:    time.Minute,
@@ -433,6 +540,7 @@ func TestCallbackHandler_ExpiredFlow_Gone_PauseStillParked(t *testing.T) {
 type cbStubProvider struct {
 	completeErr error
 	denyErr     error
+	pendingErr  error
 	info        PendingFlowInfo
 }
 
@@ -445,7 +553,9 @@ func (s *cbStubProvider) InitiateFlow(context.Context, tools.ToolSourceID) (Flow
 func (s *cbStubProvider) CompleteFlow(context.Context, string, string) (Token, error) {
 	return Token{}, s.completeErr
 }
-func (s *cbStubProvider) PendingFlow(string) (PendingFlowInfo, bool) { return s.info, true }
+func (s *cbStubProvider) PendingFlow(context.Context, string) (PendingFlowInfo, bool, error) {
+	return s.info, s.pendingErr == nil, s.pendingErr
+}
 func (s *cbStubProvider) DenyFlow(context.Context, string, string) error {
 	return s.denyErr
 }
@@ -460,6 +570,20 @@ func cbStubInfo(t *testing.T) PendingFlowInfo {
 		BindingScope: ScopeUser,
 		Identity:     mkIdentity(t),
 		ExpiresAt:    time.Now().Add(time.Minute),
+	}
+}
+
+func TestCallbackHandler_PendingFlowError_FailsLoud(t *testing.T) {
+	t.Parallel()
+	stub := &cbStubProvider{pendingErr: errors.New("durable flow lookup failed")}
+	h := CallbackHandler(map[string]OAuthProvider{"stub": stub},
+		WithCallbackLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	rec := cbGet(t, h, CallbackPath+"?state=s&code=c")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if code, _ := cbErrorBody(t, rec); code != "internal_error" {
+		t.Fatalf("error code = %q, want internal_error", code)
 	}
 }
 
@@ -500,6 +624,24 @@ func TestCallbackHandler_ErrorMapping_Table(t *testing.T) {
 				t.Fatalf("error code = %q, want %q", code, tc.wantCode)
 			}
 		})
+	}
+}
+
+func TestCallbackHandler_CompletionErrorNeverLogsUntrustedSecret(t *testing.T) {
+	const secret = "upstream-reflected-access-token-SECRET"
+	var logs strings.Builder
+	stub := &cbStubProvider{
+		completeErr: fmt.Errorf("%w: status 400 body %q", ErrExchangeFailed, secret),
+		info:        cbStubInfo(t),
+	}
+	h := CallbackHandler(map[string]OAuthProvider{"stub": stub},
+		WithCallbackLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	rec := cbGet(t, h, CallbackPath+"?state=s&code=c")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want=%d", rec.Code, http.StatusBadGateway)
+	}
+	if strings.Contains(logs.String(), secret) {
+		t.Fatalf("callback log leaked untrusted upstream secret: %s", logs.String())
 	}
 }
 
@@ -569,7 +711,10 @@ func TestProvider_DenyFlow_Sentinels(t *testing.T) {
 	if err := har.provider.DenyFlow(ctx, authErr.State, "access_denied"); err != nil {
 		t.Fatalf("DenyFlow: %v", err)
 	}
-	if _, ok := har.provider.PendingFlow(authErr.State); ok {
+	if _, ok, err := har.provider.PendingFlow(context.Background(), authErr.State); err != nil || ok {
+		if err != nil {
+			t.Fatalf("PendingFlow: %v", err)
+		}
 		t.Fatal("denied flow record not consumed")
 	}
 }

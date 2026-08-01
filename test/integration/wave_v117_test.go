@@ -234,8 +234,8 @@ func (p *stubOAuthProvider) InitiateFlow(context.Context, tools.ToolSourceID) (a
 func (p *stubOAuthProvider) CompleteFlow(context.Context, string, string) (auth.Token, error) {
 	return auth.Token{}, nil
 }
-func (p *stubOAuthProvider) PendingFlow(string) (auth.PendingFlowInfo, bool) {
-	return auth.PendingFlowInfo{}, false
+func (p *stubOAuthProvider) PendingFlow(context.Context, string) (auth.PendingFlowInfo, bool, error) {
+	return auth.PendingFlowInfo{}, false, nil
 }
 func (p *stubOAuthProvider) DenyFlow(context.Context, string, string) error { return nil }
 func (p *stubOAuthProvider) Revoke(context.Context, tools.ToolSourceID) error {

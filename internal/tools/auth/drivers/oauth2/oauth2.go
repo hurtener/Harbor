@@ -175,6 +175,7 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 
 	inner, err := auth.NewProvider([]auth.OAuthConfig{oauthCfg}, auth.ProviderDeps{
 		Store:       deps.Store,
+		Flows:       deps.Flows,
 		Bus:         deps.Bus,
 		Redactor:    deps.Redactor,
 		Coordinator: deps.Coordinator,
@@ -249,8 +250,8 @@ func (p *provider) CompleteFlow(ctx context.Context, state, code string) (auth.T
 
 // PendingFlow implements OAuthProvider.PendingFlow. State-keyed like
 // CompleteFlow — passed through verbatim.
-func (p *provider) PendingFlow(state string) (auth.PendingFlowInfo, bool) {
-	return p.inner.PendingFlow(state)
+func (p *provider) PendingFlow(ctx context.Context, state string) (auth.PendingFlowInfo, bool, error) {
+	return p.inner.PendingFlow(ctx, state)
 }
 
 // DenyFlow implements OAuthProvider.DenyFlow. State-keyed like

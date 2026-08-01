@@ -379,7 +379,7 @@ func (c Config) validate() error {
 			return fmt.Errorf("%w: %s transport requires URL", ErrInvalidConfig, mode)
 		}
 		if _, err := config.NormalizeMCPHTTPURL(c.URL); err != nil {
-			return fmt.Errorf("%w: %s transport URL: %v", ErrInvalidConfig, mode, err)
+			return fmt.Errorf("%w: %s transport URL: %w", ErrInvalidConfig, mode, err)
 		}
 	case TransportStdio:
 		if len(c.Command) == 0 {
@@ -394,7 +394,7 @@ func (c Config) validate() error {
 		}
 		if c.URL != "" {
 			if _, err := config.NormalizeMCPHTTPURL(c.URL); err != nil {
-				return fmt.Errorf("%w: auto transport URL: %v", ErrInvalidConfig, err)
+				return fmt.Errorf("%w: auto transport URL: %w", ErrInvalidConfig, err)
 			}
 		}
 	}

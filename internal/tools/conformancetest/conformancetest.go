@@ -343,7 +343,11 @@ func testConcurrentReuse(t *testing.T, newCatalog CatalogFactory) {
 	var attempts sync.Map // map[int]*atomic.Int64
 	err := inproc.RegisterFunc[flakyArgs, flakyOut](cat, "concurrent", func(ctx context.Context, in flakyArgs) (flakyOut, error) {
 		entry, _ := attempts.LoadOrStore(in.N, &atomic.Int64{})
-		attempt := entry.(*atomic.Int64).Add(1)
+		counter, ok := entry.(*atomic.Int64)
+		if !ok {
+			return flakyOut{}, fmt.Errorf("concurrent retry counter has unexpected type %T", entry)
+		}
+		attempt := counter.Add(1)
 		if in.N%3 == 0 && attempt == 1 {
 			return flakyOut{}, fmt.Errorf("transient: simulated")
 		}

@@ -44,7 +44,7 @@
 // Identity propagation is asserted on the tool.auth_required /
 // pause.resumed payloads and on the minted token's binding; the
 // failure modes cover the expired flow (410 + pause still parked)
-// and the replayed callback (404 by consumption).
+// and the replayed callback (200 without a second token exchange).
 package integration
 
 import (
@@ -87,6 +87,15 @@ var phase111bID = identity.Identity{
 	TenantID:  "tenant-phase111b",
 	UserID:    "user-phase111b",
 	SessionID: "session-phase111b",
+}
+
+func mustPhase111bFlowStore(t *testing.T, store state.StateStore, sealer toolauth.Sealer) toolauth.FlowStore {
+	t.Helper()
+	flows, err := toolauth.NewFlowStore(store, sealer)
+	if err != nil {
+		t.Fatalf("NewFlowStore: %v", err)
+	}
+	return flows
 }
 
 const (
@@ -176,7 +185,7 @@ func buildPhase111bEnv(t *testing.T) *phase111bEnv {
 		Scopes:       []string{"repo"},
 	}
 	prov, err := toolauth.NewProvider([]toolauth.OAuthConfig{oauthCfg}, toolauth.ProviderDeps{
-		Store: tokenStore, Bus: bus, Redactor: red, Coordinator: coord,
+		Store: tokenStore, Flows: mustPhase111bFlowStore(t, stateStore, sealer), Bus: bus, Redactor: red, Coordinator: coord,
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
 	if err != nil {
@@ -576,10 +585,10 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 	}
 }
 
-// TestE2E_Phase111b_ReplayedCallback_NotFound — idempotency by
-// consumption at the HTTP edge: replaying the redirect after a
-// successful completion is 404 flow_not_found.
-func TestE2E_Phase111b_ReplayedCallback_NotFound(t *testing.T) {
+// TestE2E_Phase111b_ReplayedCallback_IdempotentSuccess verifies that an
+// ambiguous browser retry receives success from the bounded completion
+// tombstone without re-exchanging the one-time authorization code.
+func TestE2E_Phase111b_ReplayedCallback_IdempotentSuccess(t *testing.T) {
 	env := buildPhase111bEnv(t)
 	ctx := phase111bCtx(t, phase111bID)
 
@@ -592,10 +601,16 @@ func TestE2E_Phase111b_ReplayedCallback_NotFound(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("first callback status = %d, want 200", status)
 	}
+	if got := env.authSrv.TokenExchangeCount(); got != 1 {
+		t.Fatalf("token exchanges after first callback = %d, want 1", got)
+	}
 	// Replay the EXACT redirect target the browser landed on.
 	replayStatus, _ := phase111bBrowse(t, landedOn.String())
-	if replayStatus != http.StatusNotFound {
-		t.Fatalf("replayed callback status = %d, want 404", replayStatus)
+	if replayStatus != http.StatusOK {
+		t.Fatalf("replayed callback status = %d, want 200", replayStatus)
+	}
+	if got := env.authSrv.TokenExchangeCount(); got != 1 {
+		t.Fatalf("token exchanges after replay = %d, want 1", got)
 	}
 }
 
@@ -651,7 +666,7 @@ func TestE2E_Phase111b_ExpiredFlow_Gone_PauseStillParked(t *testing.T) {
 		ServerURL:    authSrv.BaseURL(),
 		RedirectURI:  cbSrv.URL + toolauth.CallbackPath,
 	}}, toolauth.ProviderDeps{
-		Store: tokenStore, Bus: bus, Redactor: red, Coordinator: coord,
+		Store: tokenStore, Flows: mustPhase111bFlowStore(t, stateStore, sealer), Bus: bus, Redactor: red, Coordinator: coord,
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 		Clock:      clock,
 		FlowTTL:    time.Minute,
@@ -717,7 +732,8 @@ type phase111bAuthServer struct {
 		state     string
 		challenge string
 	}
-	lastAccess string
+	lastAccess     string
+	tokenExchanges int
 }
 
 func newPhase111bAuthServer(t *testing.T) *phase111bAuthServer {
@@ -746,6 +762,15 @@ func (f *phase111bAuthServer) LastIssuedAccessToken() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastAccess
+}
+
+// TokenExchangeCount returns the number of calls that reached the token
+// endpoint, including rejected calls. A replay handled by Harbor's completion
+// tombstone must leave this unchanged.
+func (f *phase111bAuthServer) TokenExchangeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tokenExchanges
 }
 
 func (f *phase111bAuthServer) discovery(w http.ResponseWriter, _ *http.Request) {
@@ -790,6 +815,9 @@ func (f *phase111bAuthServer) authorize(w http.ResponseWriter, r *http.Request) 
 }
 
 func (f *phase111bAuthServer) token(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.tokenExchanges++
+	f.mu.Unlock()
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "parse", http.StatusBadRequest)
 		return

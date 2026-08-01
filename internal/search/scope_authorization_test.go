@@ -77,9 +77,7 @@ func TestAuthorizeScope_CanonicalIndexesAuditBothWideningAxes(t *testing.T) {
 		t.Fatalf("canonical index population = %v, want 4 members", indexes)
 	}
 	for _, axis := range axes {
-		axis := axis
 		for _, index := range indexes {
-			index := index
 			t.Run(axis.name+"/"+string(index), func(t *testing.T) {
 				t.Parallel()
 				rec := &auditRecorder{}
@@ -126,7 +124,6 @@ func TestAuthorizeScope_NoWidenAndRefusalNeverEmit(t *testing.T) {
 	t.Parallel()
 	caller := identity.Identity{TenantID: "tenant-own", UserID: "user-own", SessionID: "session-own"}
 	for _, index := range types.CanonicalSearchIndexes() {
-		index := index
 		t.Run(string(index), func(t *testing.T) {
 			t.Parallel()
 			t.Run("elevated own scope", func(t *testing.T) {
@@ -150,7 +147,6 @@ func TestAuthorizeScope_NoWidenAndRefusalNeverEmit(t *testing.T) {
 				{name: "tenant", req: types.SearchRequest{Filter: types.SearchFilter{TenantIDs: []string{"tenant-other"}}}, want: search.ErrCrossTenantRequiresAdmin},
 				{name: "user", req: types.SearchRequest{Filter: types.SearchFilter{UserIDs: []string{"user-other"}}}, want: search.ErrCrossUserRequiresAdmin},
 			} {
-				axis := axis
 				t.Run("refused "+axis.name, func(t *testing.T) {
 					rec := &auditRecorder{}
 					deps := search.Deps{
@@ -283,8 +279,7 @@ func TestAuthorizeScope_ConcurrentReuseKeepsAuditIdentityIsolated(t *testing.T) 
 	var wantMu sync.Mutex
 	var wg sync.WaitGroup
 	errCh := make(chan error, n)
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

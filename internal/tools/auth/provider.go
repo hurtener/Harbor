@@ -29,6 +29,10 @@ type ProviderDeps struct {
 	// Store is the TokenStore the provider reads / writes tokens
 	// through. Mandatory.
 	Store TokenStore
+	// Flows is the durable, sealed pending authorization-flow store.
+	// Mandatory: token persistence alone cannot recover PKCE/state/pause
+	// correlation after a Runtime restart.
+	Flows FlowStore
 	// Bus is the event bus the provider emits tool.auth_required /
 	// tool.auth_completed events on. Mandatory.
 	Bus events.EventBus
@@ -58,6 +62,7 @@ type ProviderDeps struct {
 // construction (deps + immutable maps protected by mu).
 type Provider struct {
 	store       TokenStore
+	flows       FlowStore
 	bus         events.EventBus
 	redactor    audit.Redactor
 	coordinator pauseresume.Coordinator
@@ -69,11 +74,9 @@ type Provider struct {
 	// by Source. Set once at construction; read-only after.
 	configs map[tools.ToolSourceID]OAuthConfig
 
-	// flowsMu guards `flows` and `discoveries`. RWMutex justified by
-	// the read-heavy CompleteFlow path (one lookup per callback).
+	// flowsMu guards endpoint/client caches. Pending authorization flows are
+	// owned by the durable FlowStore, not process-local provider state.
 	flowsMu sync.RWMutex
-	// flows tracks in-flight authorization-code flows keyed by state.
-	flows map[string]*flowRecord
 	// discoveries caches OAuth metadata-discovery results keyed by
 	// ServerURL. Lifetime is the Provider lifetime; the cache is
 	// small (one entry per configured Source) and the TTL is the
@@ -91,20 +94,6 @@ type Provider struct {
 	refreshFlight map[string]*refreshCall
 
 	closed atomic.Bool
-}
-
-// flowRecord captures a single in-flight authorization-code flow. The
-// caller's identity + source + PKCE verifier are pinned at
-// InitiateFlow time and consulted on CompleteFlow.
-type flowRecord struct {
-	State        string
-	Source       tools.ToolSourceID
-	BindingScope BindingScope
-	SubjectID    string
-	Identity     identity.Identity
-	Verifier     string // PKCE code_verifier
-	ExpiresAt    time.Time
-	PauseToken   pauseresume.Token
 }
 
 // discoveredMetadata caches the subset of an OAuth-authorization-server
@@ -154,6 +143,9 @@ func NewProvider(configs []OAuthConfig, deps ProviderDeps) (*Provider, error) {
 	if deps.Store == nil {
 		return nil, errors.New("auth: NewProvider: TokenStore required")
 	}
+	if deps.Flows == nil {
+		return nil, errors.New("auth: NewProvider: FlowStore required")
+	}
 	if deps.Bus == nil {
 		return nil, errors.New("auth: NewProvider: events.EventBus required")
 	}
@@ -189,6 +181,7 @@ func NewProvider(configs []OAuthConfig, deps ProviderDeps) (*Provider, error) {
 
 	return &Provider{
 		store:         deps.Store,
+		flows:         deps.Flows,
 		bus:           deps.Bus,
 		redactor:      deps.Redactor,
 		coordinator:   deps.Coordinator,
@@ -196,7 +189,6 @@ func NewProvider(configs []OAuthConfig, deps ProviderDeps) (*Provider, error) {
 		now:           clock,
 		flowTTL:       flowTTL,
 		configs:       cfgMap,
-		flows:         make(map[string]*flowRecord),
 		discoveries:   make(map[string]discoveredMetadata),
 		registrations: make(map[string]registrationResult),
 		refreshFlight: make(map[string]*refreshCall),
@@ -359,17 +351,18 @@ func (p *Provider) runRefresh(callerCtx context.Context, cfg OAuthConfig, curren
 	}
 
 	t := Token{
-		Source:          cfg.Source,
-		BindingScope:    cfg.BindingScope,
-		TenantID:        current.TenantID,
-		UserID:          current.UserID,
-		AgentID:         current.AgentID,
-		AccessToken:     resp.AccessToken,
-		RefreshToken:    refreshTokenOrCurrent(resp.RefreshToken, current.RefreshToken),
-		TokenType:       resp.TokenType,
-		ExpiresAt:       resp.expiresAt(p.now()),
-		Scopes:          splitScopes(resp.Scope),
-		LastRefreshedAt: p.now(),
+		Source:             cfg.Source,
+		BindingScope:       cfg.BindingScope,
+		TenantID:           current.TenantID,
+		UserID:             current.UserID,
+		AgentID:            current.AgentID,
+		AccessToken:        resp.AccessToken,
+		RefreshToken:       refreshTokenOrCurrent(resp.RefreshToken, current.RefreshToken),
+		TokenType:          resp.TokenType,
+		ExpiresAt:          resp.expiresAt(p.now()),
+		Scopes:             splitScopes(resp.Scope),
+		LastRefreshedAt:    p.now(),
+		completedFlowState: current.completedFlowState,
 	}
 	if err := p.store.Put(ctx, t); err != nil {
 		call.err = err
@@ -408,8 +401,6 @@ func (p *Provider) buildAuthRequired(ctx context.Context, cfg OAuthConfig, id id
 	if err != nil {
 		return err
 	}
-	_ = tokenURL // resolveEndpoints touched it; persisted in flow record indirectly via cfg
-
 	authorize := buildAuthorizeURL(authzURL, clientID, cfg.RedirectURI, cfg.Scopes, state, verifier)
 
 	// Allocate a pause record. Reason = ExternalEvent — OAuth out-of-band
@@ -428,25 +419,29 @@ func (p *Provider) buildAuthRequired(ctx context.Context, cfg OAuthConfig, id id
 		return fmt.Errorf("auth: coordinator.Request: %w", err)
 	}
 
-	rec := &flowRecord{
+	rec := PendingFlowRecord{
 		State:        state,
 		Source:       cfg.Source,
 		BindingScope: cfg.BindingScope,
 		SubjectID:    subj,
 		Identity:     id,
 		Verifier:     verifier,
+		CreatedAt:    p.now(),
 		ExpiresAt:    p.now().Add(p.flowTTL),
 		PauseToken:   pause.Token,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		TokenURL:     tokenURL,
+		RedirectURI:  cfg.RedirectURI,
 	}
-	// Stash client material on the flow record indirectly via the
-	// configs map; the resolved (clientID, clientSecret) is cached
-	// in p.registrations keyed by ServerURL/RegistrationURL.
-	_ = clientID
-	_ = clientSecret
-
-	p.flowsMu.Lock()
-	p.flows[state] = rec
-	p.flowsMu.Unlock()
+	if err := p.flows.Put(ctx, rec); err != nil {
+		cleanupCtx, cancelCleanup := oauthCleanupContext(ctx)
+		defer cancelCleanup()
+		resumeErr := p.coordinator.Resume(cleanupCtx, pause.Token, pauseresume.DecisionReject, map[string]any{
+			"source": string(cfg.Source), "reason": "oauth_flow_persistence_failed",
+		})
+		return errors.Join(fmt.Errorf("auth: persist pending flow: %w", err), resumeErr)
+	}
 
 	payload := ToolAuthRequiredPayload{
 		Source:       string(cfg.Source),
@@ -514,11 +509,11 @@ func (p *Provider) InitiateFlow(ctx context.Context, source tools.ToolSourceID) 
 	if err != nil {
 		return FlowInitiation{}, err
 	}
-	_, authzURL, regURL, err := p.resolveEndpoints(ctx, cfg)
+	tokenURL, authzURL, regURL, err := p.resolveEndpoints(ctx, cfg)
 	if err != nil {
 		return FlowInitiation{}, err
 	}
-	clientID, _, err := p.ensureClient(ctx, cfg, regURL)
+	clientID, clientSecret, err := p.ensureClient(ctx, cfg, regURL)
 	if err != nil {
 		return FlowInitiation{}, err
 	}
@@ -538,19 +533,29 @@ func (p *Provider) InitiateFlow(ctx context.Context, source tools.ToolSourceID) 
 		return FlowInitiation{}, fmt.Errorf("auth: coordinator.Request: %w", err)
 	}
 
-	rec := &flowRecord{
+	rec := PendingFlowRecord{
 		State:        state,
 		Source:       cfg.Source,
 		BindingScope: cfg.BindingScope,
 		SubjectID:    subj,
 		Identity:     id,
 		Verifier:     verifier,
+		CreatedAt:    p.now(),
 		ExpiresAt:    p.now().Add(p.flowTTL),
 		PauseToken:   pause.Token,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		TokenURL:     tokenURL,
+		RedirectURI:  cfg.RedirectURI,
 	}
-	p.flowsMu.Lock()
-	p.flows[state] = rec
-	p.flowsMu.Unlock()
+	if err := p.flows.Put(ctx, rec); err != nil {
+		cleanupCtx, cancelCleanup := oauthCleanupContext(ctx)
+		defer cancelCleanup()
+		resumeErr := p.coordinator.Resume(cleanupCtx, pause.Token, pauseresume.DecisionReject, map[string]any{
+			"source": string(cfg.Source), "reason": "oauth_flow_persistence_failed",
+		})
+		return FlowInitiation{}, errors.Join(fmt.Errorf("auth: persist pending flow: %w", err), resumeErr)
+	}
 
 	// Emit tool.auth_required so observers see the flow start.
 	payload := ToolAuthRequiredPayload{
@@ -588,7 +593,7 @@ func (p *Provider) InitiateFlow(ctx context.Context, source tools.ToolSourceID) 
 // bare Coordinator.Resume without CompleteFlow re-parks the run
 // immediately (the token is still missing), so this method is the
 // ONLY correct completion path.
-func (p *Provider) CompleteFlow(ctx context.Context, state, code string) (Token, error) {
+func (p *Provider) CompleteFlow(ctx context.Context, state, code string) (_ Token, retErr error) {
 	if p.closed.Load() {
 		return Token{}, ErrProviderClosed
 	}
@@ -602,12 +607,23 @@ func (p *Provider) CompleteFlow(ctx context.Context, state, code string) (Token,
 		return Token{}, wrap(ErrExchangeFailed, "empty code")
 	}
 
-	p.flowsMu.Lock()
-	rec, ok := p.flows[state]
-	if ok {
-		delete(p.flows, state)
+	// A prior attempt may have persisted the token and exact-state completion
+	// tombstone, then failed before or during destructive pending-flow cleanup.
+	// Consult that immutable per-flow oracle before the mutable singleton token
+	// slot: a later flow for the same user/source may legitimately replace the
+	// current credential and its completedFlowState marker.
+	completed, completedOK, err := p.flows.GetCompleted(ctx, state)
+	if err != nil {
+		return Token{}, err
 	}
-	p.flowsMu.Unlock()
+	if completedOK {
+		return p.convergeCompletedFlow(ctx, completed)
+	}
+
+	rec, ok, err := p.flows.Get(ctx, state)
+	if err != nil {
+		return Token{}, err
+	}
 	if !ok {
 		return Token{}, ErrFlowNotFound
 	}
@@ -622,10 +638,8 @@ func (p *Provider) CompleteFlow(ctx context.Context, state, code string) (Token,
 	if cfg.BindingScope == ScopeAgent && !registry.HasControlScope(ctx) {
 		return Token{}, ErrAdminScopeRequired
 	}
-
-	tokenURL, _, _, err := p.resolveEndpoints(ctx, cfg)
-	if err != nil {
-		return Token{}, err
+	if cfg.BindingScope != rec.BindingScope || cfg.SubjectID(rec.Identity) != rec.SubjectID {
+		return Token{}, fmt.Errorf("%w: OAuth binding changed while flow was pending", ErrConfigInvalid)
 	}
 
 	// Cross-check: caller's ctx identity must match the flow's
@@ -638,63 +652,174 @@ func (p *Provider) CompleteFlow(ctx context.Context, state, code string) (Token,
 	if id != rec.Identity {
 		return Token{}, ErrStateMismatch
 	}
-
-	clientID, clientSecret := p.cachedClient(cfg)
-	if clientID == "" {
-		// Re-resolve in case the cache evaporated.
-		_, _, regURL, rerr := p.resolveEndpoints(ctx, cfg)
-		if rerr != nil {
-			return Token{}, rerr
-		}
-		clientID, clientSecret, err = p.ensureClient(ctx, cfg, regURL)
-		if err != nil {
-			return Token{}, err
-		}
-	}
-
-	body := url.Values{}
-	body.Set("grant_type", "authorization_code")
-	body.Set("code", code)
-	body.Set("redirect_uri", cfg.RedirectURI)
-	body.Set("client_id", clientID)
-	if clientSecret != "" {
-		body.Set("client_secret", clientSecret)
-	}
-	body.Set("code_verifier", rec.Verifier)
-
-	resp, err := p.postForm(ctx, tokenURL, body)
+	rec, claim, ok, err := p.flows.Claim(ctx, state)
 	if err != nil {
 		return Token{}, err
 	}
-
-	tok := Token{
-		Source:       cfg.Source,
-		BindingScope: cfg.BindingScope,
-		TenantID:     rec.Identity.TenantID,
-		UserID:       userIfScopeUser(cfg.BindingScope, rec.Identity.UserID),
-		AgentID:      agentIfScopeAgent(cfg.BindingScope, cfg.AgentID),
-		AccessToken:  resp.AccessToken,
-		RefreshToken: resp.RefreshToken,
-		TokenType:    resp.TokenType,
-		ExpiresAt:    resp.expiresAt(p.now()),
-		Scopes:       splitScopes(resp.Scope),
+	if !ok {
+		return Token{}, ErrFlowInProgress
 	}
-	if err := p.store.Put(ctx, tok); err != nil {
+	claimed := true
+	defer func() {
+		if claimed {
+			cleanupCtx, cancelCleanup := oauthCleanupContext(ctx)
+			defer cancelCleanup()
+			retErr = errors.Join(retErr, p.flows.Release(cleanupCtx, claim))
+		}
+	}()
+	if rec.TerminalFailure != "" {
+		cleanupCtx, cancelCleanup := oauthCleanupContext(ctx)
+		defer cancelCleanup()
+		resumeErr := p.coordinator.Resume(cleanupCtx, rec.PauseToken, pauseresume.DecisionReject, map[string]any{
+			"source": string(cfg.Source), "binding": string(cfg.BindingScope), "reason": rec.TerminalFailure,
+		})
+		if resumeErr != nil {
+			if !errors.Is(resumeErr, pauseresume.ErrAlreadyResumed) {
+				return Token{}, fmt.Errorf("auth: retry terminal OAuth rejection: %w", resumeErr)
+			}
+			status, statusErr := p.coordinator.Status(cleanupCtx, rec.PauseToken)
+			if statusErr != nil || status.State != pauseresume.StatusResumed || status.Decision != pauseresume.DecisionReject {
+				return Token{}, errors.Join(
+					fmt.Errorf("auth: terminal OAuth rejection decision mismatch: state=%q decision=%q", status.State, status.Decision),
+					statusErr,
+				)
+			}
+		}
+		if err := p.flows.Finish(cleanupCtx, claim); err != nil {
+			return Token{}, err
+		}
+		claimed = false
+		return Token{}, fmt.Errorf("auth: OAuth flow terminated after token persistence failure: %w", ErrExchangeFailed)
+	}
+
+	tok, persisted, err := p.store.Get(ctx, rec.BindingScope, rec.SubjectID, rec.Source)
+	if err != nil {
 		return Token{}, err
 	}
+	if !persisted || tok.completedFlowState != state {
+		body := url.Values{}
+		body.Set("grant_type", "authorization_code")
+		body.Set("code", code)
+		body.Set("redirect_uri", rec.RedirectURI)
+		body.Set("client_id", rec.ClientID)
+		if rec.ClientSecret != "" {
+			body.Set("client_secret", rec.ClientSecret)
+		}
+		body.Set("code_verifier", rec.Verifier)
+
+		resp, postErr := p.postForm(ctx, rec.TokenURL, body)
+		if postErr != nil {
+			return Token{}, postErr
+		}
+		now := p.now()
+		tok = Token{
+			Source:             cfg.Source,
+			BindingScope:       cfg.BindingScope,
+			TenantID:           rec.Identity.TenantID,
+			UserID:             userIfScopeUser(cfg.BindingScope, rec.Identity.UserID),
+			AgentID:            agentIfScopeAgent(cfg.BindingScope, cfg.AgentID),
+			AccessToken:        resp.AccessToken,
+			RefreshToken:       resp.RefreshToken,
+			TokenType:          resp.TokenType,
+			ExpiresAt:          resp.expiresAt(now),
+			Scopes:             splitScopes(resp.Scope),
+			LastRefreshedAt:    now,
+			completedFlowState: state,
+		}
+		if err := p.store.Put(ctx, tok); err != nil {
+			// The authorization code has been spent but the token is not
+			// durable, so retrying this callback cannot recover. Terminate the
+			// unified pause explicitly and consume the flow instead of leaving a
+			// permanently paused orphan behind an unusable one-time code.
+			cleanupCtx, cancelCleanup := oauthCleanupContext(ctx)
+			defer cancelCleanup()
+			markErr := p.flows.MarkTerminal(cleanupCtx, claim, flowTerminalWriteFailed)
+			resumeErr := p.coordinator.Resume(cleanupCtx, rec.PauseToken, pauseresume.DecisionReject, map[string]any{
+				"source": string(cfg.Source), "binding": string(cfg.BindingScope), "reason": "oauth_token_persistence_failed",
+			})
+			resumeOutcomeErr := resumeErr
+			if errors.Is(resumeErr, pauseresume.ErrAlreadyResumed) {
+				status, statusErr := p.coordinator.Status(cleanupCtx, rec.PauseToken)
+				if statusErr == nil && status.State == pauseresume.StatusResumed && status.Decision == pauseresume.DecisionReject {
+					resumeOutcomeErr = nil
+				} else {
+					resumeOutcomeErr = errors.Join(
+						fmt.Errorf("auth: token-persistence rejection decision mismatch: state=%q decision=%q", status.State, status.Decision),
+						statusErr,
+					)
+				}
+			}
+			var finishErr error
+			if resumeOutcomeErr == nil {
+				finishErr = p.flows.Finish(cleanupCtx, claim)
+				if finishErr == nil {
+					claimed = false
+				}
+			} else if markErr != nil {
+				// The code is spent and neither durable terminal state nor pause
+				// rejection succeeded. Retain the claim so no retry can re-exchange
+				// the one-time code against ambiguous state.
+				claimed = false
+			}
+			return Token{}, errors.Join(fmt.Errorf("auth: persist exchanged token: %w", err), markErr, resumeOutcomeErr, finishErr)
+		}
+	}
+
+	completed = CompletedFlowRecord{
+		State:            state,
+		TokenMarker:      state,
+		Source:           rec.Source,
+		BindingScope:     rec.BindingScope,
+		SubjectID:        rec.SubjectID,
+		Identity:         rec.Identity,
+		PauseToken:       rec.PauseToken,
+		ExpectedDecision: pauseresume.DecisionResume,
+		ExpiresAt:        rec.ExpiresAt,
+	}
+	// Persist the exact-state proof before resuming the pause or deleting any
+	// routing material. If this write cannot be reconciled, retain the pending
+	// record and claim; retry can still use the token's encrypted exact-state
+	// marker to reach this point without another exchange.
+	cleanupCtx, cancelCompletion := oauthCleanupContext(ctx)
+	if err := p.flows.MarkCompleted(cleanupCtx, claim, completed); err != nil {
+		cancelCompletion()
+		return Token{}, err
+	}
+	cancelCompletion()
 
 	// Resume the parked run with a typed `DecisionResume` marker —
 	// this is a generic resume of a non-approval pause (the OAuth flow
 	// completed), distinct from approve / reject / timeout (issue #113).
 	// A failure here is loud — the pause would otherwise
 	// linger as a record nobody can claim.
-	if err := p.coordinator.Resume(ctx, rec.PauseToken, pauseresume.DecisionResume, map[string]any{
+	resumeErr := p.coordinator.Resume(ctx, rec.PauseToken, pauseresume.DecisionResume, map[string]any{
 		"source":       string(cfg.Source),
 		"binding":      string(cfg.BindingScope),
 		"completed_at": p.now().Format(time.RFC3339),
-	}); err != nil {
-		return Token{}, fmt.Errorf("auth: coordinator.Resume: %w", err)
+	})
+	// A prior attempt may have durably stored this flow's token and resumed the
+	// pause, then failed while deleting the flow record. The encrypted exact-state
+	// marker stored atomically with the token proves it belongs to this flow;
+	// AlreadyResumed is therefore a successful cleanup retry, never permission to
+	// skip exchange.
+	if resumeErr != nil {
+		if !errors.Is(resumeErr, pauseresume.ErrAlreadyResumed) {
+			return Token{}, fmt.Errorf("auth: coordinator.Resume: %w", resumeErr)
+		}
+		status, statusErr := p.coordinator.Status(ctx, rec.PauseToken)
+		if statusErr != nil || status.State != pauseresume.StatusResumed || status.Decision != pauseresume.DecisionResume {
+			return Token{}, errors.Join(
+				fmt.Errorf("auth: OAuth pause terminal decision is not resume: state=%q decision=%q", status.State, status.Decision),
+				statusErr,
+			)
+		}
 	}
+	cleanupCtx, cancelCleanup := oauthCleanupContext(ctx)
+	defer cancelCleanup()
+	if err := p.flows.Finish(cleanupCtx, claim); err != nil {
+		return Token{}, err
+	}
+	claimed = false
 
 	payload := ToolAuthCompletedPayload{
 		Source:       string(cfg.Source),
@@ -706,6 +831,88 @@ func (p *Provider) CompleteFlow(ctx context.Context, state, code string) (Token,
 		return Token{}, err
 	}
 
+	return tok, nil
+}
+
+// convergeCompletedFlow resolves an idempotent callback retry from the sealed
+// exact-state tombstone. It deliberately does not require the mutable current
+// token's completedFlowState to equal this flow: a later same-user/source flow
+// may already have replaced that credential. The tombstone's token marker and
+// the exact unified-pause decision are the durable proof for this flow.
+func (p *Provider) convergeCompletedFlow(ctx context.Context, completed CompletedFlowRecord) (Token, error) {
+	cfg, ok := p.configs[completed.Source]
+	if !ok {
+		return Token{}, fmt.Errorf("%w: source %q removed after OAuth completion", ErrConfigInvalid, completed.Source)
+	}
+	if cfg.BindingScope == ScopeAgent && !registry.HasControlScope(ctx) {
+		return Token{}, ErrAdminScopeRequired
+	}
+	if cfg.BindingScope != completed.BindingScope || cfg.SubjectID(completed.Identity) != completed.SubjectID {
+		return Token{}, fmt.Errorf("%w: OAuth binding changed after flow completion", ErrConfigInvalid)
+	}
+	id, err := identityFromCtx(ctx)
+	if err != nil {
+		return Token{}, err
+	}
+	if id != completed.Identity || completed.TokenMarker != completed.State ||
+		completed.ExpectedDecision != pauseresume.DecisionResume {
+		return Token{}, ErrStateMismatch
+	}
+	if p.now().After(completed.ExpiresAt) {
+		cleanupCtx, cancelCleanup := oauthCleanupContext(ctx)
+		defer cancelCleanup()
+		return Token{}, errors.Join(ErrFlowExpired, p.flows.ForgetCompleted(cleanupCtx, completed))
+	}
+
+	// The completion marker proves an exact token Put succeeded. Return the
+	// current credential for the same tuple; it may be a newer completion and is
+	// therefore intentionally not required to carry this older state's marker.
+	tok, persisted, err := p.store.Get(ctx, completed.BindingScope, completed.SubjectID, completed.Source)
+	if err != nil {
+		return Token{}, err
+	}
+	if !persisted {
+		return Token{}, ErrTokenNotFound
+	}
+
+	resumeErr := p.coordinator.Resume(ctx, completed.PauseToken, completed.ExpectedDecision, map[string]any{
+		"source":       string(completed.Source),
+		"binding":      string(completed.BindingScope),
+		"completed_at": p.now().Format(time.RFC3339),
+	})
+	if resumeErr != nil && !errors.Is(resumeErr, pauseresume.ErrAlreadyResumed) {
+		return Token{}, fmt.Errorf("auth: converge completed OAuth pause: %w", resumeErr)
+	}
+	status, statusErr := p.coordinator.Status(ctx, completed.PauseToken)
+	if statusErr != nil || status.State != pauseresume.StatusResumed || status.Decision != completed.ExpectedDecision {
+		return Token{}, errors.Join(
+			fmt.Errorf("auth: completed OAuth pause decision mismatch: state=%q decision=%q", status.State, status.Decision),
+			statusErr,
+		)
+	}
+
+	// A Finish failure that happened before deleting the pending flow leaves
+	// secret-bearing PKCE/client material behind. Converge that cleanup under a
+	// fresh exact claim. If the pending record is already absent, the earlier
+	// Finish landed (possibly with a lost acknowledgement) and no cleanup is
+	// needed. The completed tombstone itself is intentionally retained.
+	if _, pending, err := p.flows.Get(ctx, completed.State); err != nil {
+		return Token{}, err
+	} else if pending {
+		_, claim, claimed, claimErr := p.flows.Claim(ctx, completed.State)
+		if claimErr != nil {
+			return Token{}, claimErr
+		}
+		if !claimed {
+			return Token{}, ErrFlowInProgress
+		}
+		cleanupCtx, cancelCleanup := oauthCleanupContext(ctx)
+		defer cancelCleanup()
+		if err := p.flows.Finish(cleanupCtx, claim); err != nil {
+			releaseErr := p.flows.Release(cleanupCtx, claim)
+			return Token{}, errors.Join(err, releaseErr)
+		}
+	}
 	return tok, nil
 }
 
@@ -766,19 +973,38 @@ func (p *Provider) ConfigFor(source tools.ToolSourceID) (OAuthConfig, bool) {
 // projection. The callback handler (`auth.CallbackHandler`) uses it
 // to locate the owning provider and to rebuild the completing ctx's
 // identity from the record. The lookup does NOT consume the record.
-func (p *Provider) PendingFlow(state string) (PendingFlowInfo, bool) {
-	p.flowsMu.RLock()
-	rec, ok := p.flows[state]
-	p.flowsMu.RUnlock()
+func (p *Provider) PendingFlow(ctx context.Context, state string) (PendingFlowInfo, bool, error) {
+	rec, ok, err := p.flows.Get(ctx, state)
+	if err != nil {
+		return PendingFlowInfo{}, false, fmt.Errorf("auth: PendingFlow: %w", err)
+	}
 	if !ok {
-		return PendingFlowInfo{}, false
+		completed, completedOK, completedErr := p.flows.GetCompleted(ctx, state)
+		if completedErr != nil {
+			return PendingFlowInfo{}, false, fmt.Errorf("auth: PendingFlow completed lookup: %w", completedErr)
+		}
+		if !completedOK {
+			return PendingFlowInfo{}, false, nil
+		}
+		if _, owned := p.configs[completed.Source]; !owned {
+			return PendingFlowInfo{}, false, nil
+		}
+		return PendingFlowInfo{
+			Source:       completed.Source,
+			BindingScope: completed.BindingScope,
+			Identity:     completed.Identity,
+			ExpiresAt:    completed.ExpiresAt,
+		}, true, nil
+	}
+	if _, owned := p.configs[rec.Source]; !owned {
+		return PendingFlowInfo{}, false, nil
 	}
 	return PendingFlowInfo{
 		Source:       rec.Source,
 		BindingScope: rec.BindingScope,
 		Identity:     rec.Identity,
 		ExpiresAt:    rec.ExpiresAt,
-	}, true
+	}, true, nil
 }
 
 // DenyFlow consumes the flow record for `state` and resumes the
@@ -791,7 +1017,7 @@ func (p *Provider) PendingFlow(state string) (PendingFlowInfo, bool) {
 // Identity + admin-scope checks mirror CompleteFlow: the calling ctx
 // must carry the flow's parking identity, and a ScopeAgent flow
 // requires the control scope.
-func (p *Provider) DenyFlow(ctx context.Context, state, reason string) error {
+func (p *Provider) DenyFlow(ctx context.Context, state, reason string) (retErr error) {
 	if p.closed.Load() {
 		return ErrProviderClosed
 	}
@@ -802,12 +1028,10 @@ func (p *Provider) DenyFlow(ctx context.Context, state, reason string) error {
 		return wrap(ErrFlowNotFound, "empty state")
 	}
 
-	p.flowsMu.Lock()
-	rec, ok := p.flows[state]
-	if ok {
-		delete(p.flows, state)
+	rec, ok, err := p.flows.Get(ctx, state)
+	if err != nil {
+		return err
 	}
-	p.flowsMu.Unlock()
 	if !ok {
 		return ErrFlowNotFound
 	}
@@ -822,6 +1046,9 @@ func (p *Provider) DenyFlow(ctx context.Context, state, reason string) error {
 	if cfg.BindingScope == ScopeAgent && !registry.HasControlScope(ctx) {
 		return ErrAdminScopeRequired
 	}
+	if cfg.BindingScope != rec.BindingScope || cfg.SubjectID(rec.Identity) != rec.SubjectID {
+		return fmt.Errorf("%w: OAuth binding changed while flow was pending", ErrConfigInvalid)
+	}
 
 	id, err := identityFromCtx(ctx)
 	if err != nil {
@@ -830,21 +1057,95 @@ func (p *Provider) DenyFlow(ctx context.Context, state, reason string) error {
 	if id != rec.Identity {
 		return ErrStateMismatch
 	}
+	rec, claim, ok, err := p.flows.Claim(ctx, state)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrFlowInProgress
+	}
+	claimed := true
+	defer func() {
+		if claimed {
+			cleanupCtx, cancelCleanup := oauthCleanupContext(ctx)
+			defer cancelCleanup()
+			retErr = errors.Join(retErr, p.flows.Release(cleanupCtx, claim))
+		}
+	}()
 
 	// Resume the pause with DecisionReject so the denial is loud on
 	// the canonical event stream (pause.resumed{Decision: reject})
-	// instead of the pause hanging to TTL. `reason` is the OAuth
-	// `error` code from the redirect — caller-controllable surface,
-	// never token / code material.
-	if err := p.coordinator.Resume(ctx, rec.PauseToken, pauseresume.DecisionReject, map[string]any{
+	// instead of the pause hanging to TTL. Classify `reason` again at this
+	// trust boundary even when CallbackHandler already did so: direct callers
+	// must not persist arbitrary redirect text into the canonical pause record.
+	denialClass := classifyOAuthDenial(reason)
+	resumeErr := p.coordinator.Resume(ctx, rec.PauseToken, pauseresume.DecisionReject, map[string]any{
 		"source":        string(cfg.Source),
 		"binding":       string(cfg.BindingScope),
-		"denied_reason": reason,
+		"denied_reason": string(denialClass),
 		"denied_at":     p.now().Format(time.RFC3339),
-	}); err != nil {
-		return fmt.Errorf("auth: coordinator.Resume (deny): %w", err)
+	})
+	if resumeErr != nil {
+		if !errors.Is(resumeErr, pauseresume.ErrAlreadyResumed) {
+			return fmt.Errorf("auth: coordinator.Resume (deny): %w", resumeErr)
+		}
+		status, statusErr := p.coordinator.Status(ctx, rec.PauseToken)
+		if statusErr != nil || status.State != pauseresume.StatusResumed || status.Decision != pauseresume.DecisionReject {
+			return errors.Join(
+				fmt.Errorf("auth: denied OAuth pause terminal decision mismatch: state=%q decision=%q", status.State, status.Decision),
+				statusErr,
+			)
+		}
 	}
+	cleanupCtx, cancelCleanup := oauthCleanupContext(ctx)
+	defer cancelCleanup()
+	if err := p.flows.Finish(cleanupCtx, claim); err != nil {
+		return err
+	}
+	claimed = false
 	return nil
+}
+
+// oauthDenialClass is the closed, local vocabulary permitted to cross the
+// untrusted OAuth redirect boundary. The seven protocol error codes are from
+// RFC 6749 sections 4.1.2.1 and 4.2.2.1; anything else is deliberately reduced
+// to Harbor's static authorization-denied classification.
+type oauthDenialClass string
+
+const (
+	denialInvalidRequest           oauthDenialClass = "invalid_request"
+	denialUnauthorizedClient       oauthDenialClass = "unauthorized_client"
+	denialAccessDenied             oauthDenialClass = "access_denied"
+	denialUnsupportedResponseType  oauthDenialClass = "unsupported_response_type"
+	denialInvalidScope             oauthDenialClass = "invalid_scope"
+	denialServerError              oauthDenialClass = "server_error"
+	denialTemporarilyUnavailable   oauthDenialClass = "temporarily_unavailable"
+	denialAuthorizationDeniedLocal oauthDenialClass = "authorization_denied"
+)
+
+func classifyOAuthDenial(value string) oauthDenialClass {
+	switch oauthDenialClass(value) {
+	case denialInvalidRequest,
+		denialUnauthorizedClient,
+		denialAccessDenied,
+		denialUnsupportedResponseType,
+		denialInvalidScope,
+		denialServerError,
+		denialTemporarilyUnavailable:
+		return oauthDenialClass(value)
+	default:
+		return denialAuthorizationDeniedLocal
+	}
+}
+
+const oauthCleanupTimeout = 5 * time.Second
+
+// oauthCleanupContext preserves the initiating identity and control-scope
+// values while detaching cleanup from a caller cancellation that may arrive
+// after Harbor has allocated a pause or spent a one-time authorization code.
+// The timeout keeps cleanup bounded and joins/shuts down no background work.
+func oauthCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), oauthCleanupTimeout)
 }
 
 // emitEvent Publishes onto the bus.
@@ -930,9 +1231,7 @@ func (p *Provider) fetchDiscovery(ctx context.Context, serverURL string) (discov
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)) //nolint:errcheck // body read is for the error message only; a partial/empty read is acceptable
-		return discoveredMetadata{}, fmt.Errorf("%w: status %d body %q",
-			ErrDiscoveryFailed, resp.StatusCode, summary(body))
+		return discoveredMetadata{}, fmt.Errorf("%w: status %d", ErrDiscoveryFailed, resp.StatusCode)
 	}
 	var disc discoveredMetadata
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&disc); err != nil {
@@ -969,22 +1268,6 @@ func (p *Provider) ensureClient(ctx context.Context, cfg OAuthConfig, regURL str
 	return reg.ClientID, reg.ClientSecret, nil
 }
 
-// cachedClient returns the cached (clientID, clientSecret) for cfg,
-// or empty strings if not yet resolved.
-func (p *Provider) cachedClient(cfg OAuthConfig) (string, string) {
-	if cfg.ClientID != "" {
-		return cfg.ClientID, cfg.ClientSecret
-	}
-	key := cfg.RegistrationURL + "|" + cfg.ServerURL
-	p.flowsMu.RLock()
-	cached, ok := p.registrations[key]
-	p.flowsMu.RUnlock()
-	if ok {
-		return cached.ClientID, cached.ClientSecret
-	}
-	return "", ""
-}
-
 // dynamicRegister performs a single RFC 7591 client-registration
 // POST.
 func (p *Provider) dynamicRegister(ctx context.Context, regURL string, cfg OAuthConfig) (registrationResult, error) {
@@ -1012,9 +1295,7 @@ func (p *Provider) dynamicRegister(ctx context.Context, regURL string, cfg OAuth
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)) //nolint:errcheck // body read is for the error message only; a partial/empty read is acceptable
-		return registrationResult{}, fmt.Errorf("%w: status %d body %q",
-			ErrRegistrationFailed, resp.StatusCode, summary(raw))
+		return registrationResult{}, fmt.Errorf("%w: status %d", ErrRegistrationFailed, resp.StatusCode)
 	}
 	var out struct {
 		ClientID     string `json:"client_id"`
@@ -1065,9 +1346,7 @@ func (p *Provider) postForm(ctx context.Context, tokenURL string, body url.Value
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)) //nolint:errcheck // body read is for the error message only; a partial/empty read is acceptable
-		return tokenExchangeResponse{}, fmt.Errorf("%w: status %d body %q",
-			ErrExchangeFailed, resp.StatusCode, summary(raw))
+		return tokenExchangeResponse{}, fmt.Errorf("%w: status %d", ErrExchangeFailed, resp.StatusCode)
 	}
 	var out tokenExchangeResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out); err != nil {
@@ -1119,14 +1398,6 @@ func splitScopes(s string) []string {
 // summary for inclusion in error messages. NEVER includes raw
 // authorization-server response bodies in audit-emitted strings —
 // this helper is for error returns only.
-func summary(b []byte) string {
-	const max = 200
-	if len(b) <= max {
-		return string(b)
-	}
-	return string(b[:max]) + "…"
-}
-
 func userIfScopeUser(scope BindingScope, userID string) string {
 	if scope == ScopeUser {
 		return userID

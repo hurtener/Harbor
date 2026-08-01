@@ -311,6 +311,7 @@ func mkCoordinator(t *testing.T) pauseresume.Coordinator {
 type providerHarness struct {
 	server      *fakeAuthServer
 	store       TokenStore
+	flows       FlowStore
 	bus         events.EventBus
 	coordinator pauseresume.Coordinator
 	redactor    audit.Redactor
@@ -324,6 +325,7 @@ func newProviderHarness(t *testing.T) *providerHarness {
 	t.Helper()
 	server := newFakeAuthServer(t)
 	store := mkTokenStore(t)
+	flows := mkFlowStore(t)
 	red := mkRedactor(t)
 	bus := mkBus(t, red)
 	coord := mkCoordinator(t)
@@ -348,6 +350,7 @@ func newProviderHarness(t *testing.T) *providerHarness {
 	}
 	provider, err := NewProvider([]OAuthConfig{userCfg, agentCfg}, ProviderDeps{
 		Store:       store,
+		Flows:       flows,
 		Bus:         bus,
 		Redactor:    red,
 		Coordinator: coord,
@@ -362,6 +365,7 @@ func newProviderHarness(t *testing.T) *providerHarness {
 	return &providerHarness{
 		server:      server,
 		store:       store,
+		flows:       flows,
 		bus:         bus,
 		coordinator: coord,
 		redactor:    red,

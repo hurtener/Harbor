@@ -1,6 +1,7 @@
 package react
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -8,10 +9,99 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/tools"
 )
+
+type mutableProjectionCatalog struct {
+	mu   sync.RWMutex
+	list []tools.Tool
+}
+
+func (c *mutableProjectionCatalog) Replace(list []tools.Tool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.list = append([]tools.Tool(nil), list...)
+}
+
+func (c *mutableProjectionCatalog) Resolve(name string) (tools.Tool, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, tool := range c.list {
+		if tool.Name == name {
+			return tool, true
+		}
+	}
+	return tools.Tool{}, false
+}
+
+func (c *mutableProjectionCatalog) List() []tools.Tool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]tools.Tool(nil), c.list...)
+}
+
+type projectionMutationLLM struct {
+	completeStarted chan struct{}
+	mutationDone    chan struct{}
+	t               *testing.T
+}
+
+func (c *projectionMutationLLM) Complete(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	c.t.Helper()
+	decl, ok := declarationNamed(req.Tools, "clock_now")
+	if !ok || decl.Description != "clock.now" {
+		c.t.Fatalf("request declaration = %#v, want clock_now owned by clock.now", decl)
+	}
+	close(c.completeStarted)
+	<-c.mutationDone
+	return llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{{
+		ID: "call-clock", Name: "clock_now", Args: json.RawMessage(`{}`),
+	}}}, nil
+}
+
+func (*projectionMutationLLM) Close(context.Context) error { return nil }
+
+// TestReActPlanner_TurnProjectionSurvivesConcurrentCatalogMutation proves the
+// model response is interpreted through the exact immutable projection sent
+// in its request. While Complete is in flight, the catalog replaces
+// `clock.now` with the colliding raw key `clock_now`. Rebuilding after
+// Complete would silently retarget the returned declared name to the new tool.
+func TestReActPlanner_TurnProjectionSurvivesConcurrentCatalogMutation(t *testing.T) {
+	initial := tools.Tool{Name: "clock.now", Description: "clock.now", ArgsSchema: json.RawMessage(`{"type":"object"}`)}
+	replacement := tools.Tool{Name: "clock_now", Description: "clock_now", ArgsSchema: json.RawMessage(`{"type":"object"}`)}
+	catalog := &mutableProjectionCatalog{list: []tools.Tool{initial}}
+	started := make(chan struct{})
+	mutated := make(chan struct{})
+	client := &projectionMutationLLM{completeStarted: started, mutationDone: mutated, t: t}
+
+	go func() {
+		<-started
+		catalog.Replace([]tools.Tool{replacement})
+		close(mutated)
+	}()
+
+	decision, err := New(client).Next(context.Background(), planner.RunContext{
+		Quadruple: identity.Quadruple{
+			Identity: identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"},
+			RunID:    "frozen-tool-projection",
+		},
+		Goal:    "read the clock",
+		Catalog: catalog,
+	})
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	call, ok := decision.(planner.CallTool)
+	if !ok {
+		t.Fatalf("decision = %T, want planner.CallTool", decision)
+	}
+	if call.Tool != initial.Name {
+		t.Fatalf("CallTool.Tool = %q, want request-time owner %q; catalog mutation retargeted the declared name", call.Tool, initial.Name)
+	}
+}
 
 // collidingPair is the catalog shape the whole file probes, and it is
 // reachable with HARBOR'S OWN naming conventions rather than a contrived

@@ -479,6 +479,48 @@ func TestRuntimeModel_RuntimeRoutesActionMatrixAndDestructiveConfirmation(t *tes
 	}
 }
 
+func TestRuntimeModel_StaleSameScopeInspectionPreservesNewActionModal(t *testing.T) {
+	m, _, _ := operationalModel(t)
+	m.inspectEpoch = 2
+	m = drive(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyF9}))
+
+	updated, _ := m.Update(inspectMsg{data: conversation.RuntimeData{
+		Identity:     m.identity,
+		Generation:   m.generation,
+		RequestEpoch: 1,
+		Stale:        true,
+	}})
+	m = updated.(RuntimeModel)
+	modal, ok := m.shell.focus.Top()
+	if !ok || modal.Title != "Runtime actions" {
+		t.Fatalf("same-scope stale inspection closed current modal: %#v", modal)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		identity   types.IdentityScope
+		generation uint64
+	}{
+		{name: "cross-generation", identity: m.identity, generation: m.generation + 1},
+		{name: "cross-identity", identity: types.IdentityScope{Tenant: m.identity.Tenant, User: m.identity.User, Session: "other"}, generation: m.generation},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate, _, _ := operationalModel(t)
+			candidate.inspectEpoch = 2
+			candidate = drive(t, candidate, tea.KeyPressMsg(tea.Key{Code: tea.KeyF9}))
+			updated, _ := candidate.Update(inspectMsg{data: conversation.RuntimeData{
+				Identity:     tc.identity,
+				Generation:   tc.generation,
+				RequestEpoch: candidate.inspectEpoch,
+			}})
+			candidate = updated.(RuntimeModel)
+			if _, open := candidate.shell.focus.Top(); open {
+				t.Fatal("stale inspection left invalid modal open")
+			}
+		})
+	}
+}
+
 func TestRuntimeModel_AllRuntimeRouteDerivationsAndActionExecutors(t *testing.T) {
 	m, controller, _ := operationalModel(t)
 	m.runtime.Tasks = tuitasks.Derive(types.TaskListResponse{Rows: []types.TaskRow{{ID: "run-1", Status: types.TaskStatusRunning}}}, nil)

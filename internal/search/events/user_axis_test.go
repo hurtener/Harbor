@@ -233,7 +233,6 @@ func TestEventsSearcher_WideningEmitsExactlyOnceViaReplay(t *testing.T) {
 		{name: "tenant axis", req: types.SearchRequest{Filter: types.SearchFilter{TenantIDs: []string{"tenant-target"}}}},
 		{name: "user axis", req: types.SearchRequest{Filter: types.SearchFilter{UserIDs: []string{victim}}}},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			h := newBusHarness(t)

@@ -218,8 +218,15 @@ func TestE2E_OwnerScopedRegistryWrite_IsTheAuthoritativeEnforcement(t *testing.T
 		t.Fatalf("owning owner at the registry: %v", err)
 	}
 
-	// Re-register the SAME name under owner B — the supersede a classification
-	// read taken a moment earlier would have missed. The write still refuses.
+	// Transfer the SAME name to owner B through the only legal cross-owner
+	// lifecycle: owner A explicitly releases its registration, then owner B
+	// acquires the now-free name. A direct cross-owner re-register is deliberately
+	// refused by the global namespace guard (D-379), so using it as this race
+	// fixture would test an impossible transition. The stale owner-A write still
+	// models a classification read taken before the transfer and must fail closed.
+	if err := h.mcpReg.Deregister(idCtxFor(t, daTenantA), "srv-a", ownerA); err != nil {
+		t.Fatalf("release owner A registration: %v", err)
+	}
 	h.registerServer(t, daTenantB, daAgentB, "srv-a", []string{"https://as-b.example.net"})
 	if _, err := h.mcpReg.SetOAuthDiscoveryOrigins(idCtxFor(t, daTenantA), "srv-a", ownerA, []string{"https://stale-owner.example.net"}); !errors.Is(err, mcpdrv.ErrServerNotFound) {
 		t.Fatalf("write after a cross-owner supersede: err = %v, want ErrServerNotFound (fails closed)", err)

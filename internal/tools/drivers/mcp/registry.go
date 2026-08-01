@@ -301,6 +301,11 @@ type serverStats struct {
 type Registry struct {
 	mu      sync.RWMutex
 	servers map[string]*serverEntry
+	// pending reserves names for reversible registrations without exposing the
+	// staged provider to ordinary reads. A receipt remains here until Commit or
+	// Rollback, so no concurrent register/deregister can invalidate the exact
+	// prior entry captured by the transaction.
+	pending map[string]*RegistrationSwap
 	clock   func() time.Time
 }
 
@@ -321,6 +326,7 @@ func WithRegistryClock(now func() time.Time) RegistryOption {
 func NewRegistry(opts ...RegistryOption) *Registry {
 	r := &Registry{
 		servers: map[string]*serverEntry{},
+		pending: map[string]*RegistrationSwap{},
 		clock:   time.Now,
 	}
 	for _, opt := range opts {
@@ -547,9 +553,10 @@ func (s *RegistrationSwap) RecordScopeShortfall(sf ScopeShortfall) {
 	s.staged.stats.scopeShortfall = &captured
 }
 
-// StageRegistration replaces one registry entry without closing the prior
-// provider and returns an exact rollback receipt. All validation precedes the
-// map mutation.
+// StageRegistration privately reserves one registry entry and returns an
+// exact publication/rollback receipt. The staged provider is deliberately not
+// inserted into servers: direct registry reads must keep reaching the exact
+// prior provider until the catalog's dispatch publication has succeeded.
 func (r *Registry) StageRegistration(reg ServerRegistration, descs []tools.ToolDescriptor) (*RegistrationSwap, error) {
 	entry, name, err := registrationEntry(reg, descs, r.clock())
 	if err != nil {
@@ -560,14 +567,25 @@ func (r *Registry) StageRegistration(reg ServerRegistration, descs []tools.ToolD
 		r.mu.Unlock()
 		return nil, err
 	}
+	for pendingName := range r.pending {
+		if pendingName == name {
+			r.mu.Unlock()
+			return nil, fmt.Errorf("mcp: registration for %q is already staged", name)
+		}
+		if strings.HasPrefix(name, pendingName+"_") || strings.HasPrefix(pendingName, name+"_") {
+			r.mu.Unlock()
+			return nil, fmt.Errorf("%w: server id %q is separator-ambiguous with a staged server id", ErrAmbiguousServerID, name)
+		}
+	}
 	prior := r.servers[name]
 	if prior != nil && prior.owner != reg.Owner {
 		r.mu.Unlock()
 		return nil, fmt.Errorf("%w: a connection named %q is already registered to a different owner", ErrConnectionNameOwnerConflict, name)
 	}
-	r.servers[name] = entry
+	swap := &RegistrationSwap{registry: r, name: name, prior: prior, staged: entry}
+	r.pending[name] = swap
 	r.mu.Unlock()
-	return &RegistrationSwap{registry: r, name: name, prior: prior, staged: entry}, nil
+	return swap, nil
 }
 
 // Commit finalizes a staged registration. A displaced provider close error is
@@ -579,6 +597,18 @@ func (s *RegistrationSwap) Commit(ctx context.Context) error {
 	if s.done {
 		return nil
 	}
+	s.registry.mu.Lock()
+	if s.registry.pending[s.name] != s {
+		s.registry.mu.Unlock()
+		return fmt.Errorf("mcp: registration commit refused for %q: private stage is no longer current", s.name)
+	}
+	if s.registry.servers[s.name] != s.prior {
+		s.registry.mu.Unlock()
+		return fmt.Errorf("mcp: registration commit refused for %q: prior entry changed while staged", s.name)
+	}
+	s.registry.servers[s.name] = s.staged
+	delete(s.registry.pending, s.name)
+	s.registry.mu.Unlock()
 	s.done = true
 	if s.prior != nil && s.prior.provider != nil && s.prior.provider != s.staged.provider {
 		if err := s.prior.provider.Close(ctx); err != nil {
@@ -588,9 +618,9 @@ func (s *RegistrationSwap) Commit(ctx context.Context) error {
 	return nil
 }
 
-// Rollback restores the exact displaced registry entry iff the staged entry is
-// still current. It never closes the displaced provider; it closes the staged
-// provider later through PreparedAttachment.Close.
+// Rollback drops the private reservation iff it is still current. Ordinary
+// reads never stopped seeing the prior entry, and the staged provider is closed
+// later through PreparedAttachment.Close.
 func (s *RegistrationSwap) Rollback() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -599,14 +629,10 @@ func (s *RegistrationSwap) Rollback() error {
 	}
 	s.registry.mu.Lock()
 	defer s.registry.mu.Unlock()
-	if s.registry.servers[s.name] != s.staged {
-		return fmt.Errorf("mcp: registration rollback refused for %q: staged entry is no longer current", s.name)
+	if s.registry.pending[s.name] != s {
+		return fmt.Errorf("mcp: registration rollback refused for %q: private stage is no longer current", s.name)
 	}
-	if s.prior == nil {
-		delete(s.registry.servers, s.name)
-	} else {
-		s.registry.servers[s.name] = s.prior
-	}
+	delete(s.registry.pending, s.name)
 	s.done = true
 	return nil
 }
@@ -649,6 +675,10 @@ func (s *RegistrationSwap) Rollback() error {
 // which the reconcile caller treats as already-detached.
 func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner) error {
 	r.mu.Lock()
+	if _, staged := r.pending[name]; staged {
+		r.mu.Unlock()
+		return fmt.Errorf("mcp: deregister %q refused while an exact replacement is staged", name)
+	}
 	e, ok := r.servers[name]
 	if ok && e.owner != owner {
 		ok = false // another owner's registration — answer as if absent.

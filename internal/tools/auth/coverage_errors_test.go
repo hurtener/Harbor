@@ -201,7 +201,7 @@ func mkProviderDeps(t *testing.T) ProviderDeps {
 	bus := mkBus(t, red)
 	coord := mkCoordinator(t)
 	return ProviderDeps{
-		Store: store, Bus: bus, Redactor: red, Coordinator: coord,
+		Store: store, Flows: mkFlowStore(t), Bus: bus, Redactor: red, Coordinator: coord,
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	}
 }
@@ -316,7 +316,7 @@ func TestProvider_NewProvider_OptionalDeps_Defaults(t *testing.T) {
 	}
 	// Optional fields (HTTPClient, Clock, FlowTTL) → defaults fire.
 	prov, err := NewProvider([]OAuthConfig{cfg}, ProviderDeps{
-		Store: store, Bus: bus, Redactor: red, Coordinator: coord,
+		Store: store, Flows: mkFlowStore(t), Bus: bus, Redactor: red, Coordinator: coord,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider with defaults: %v", err)
@@ -336,7 +336,10 @@ func TestProvider_NewProvider_OptionalDeps_Defaults(t *testing.T) {
 func TestProvider_PendingFlow_UnknownStateFalse(t *testing.T) {
 	t.Parallel()
 	h := newProviderHarness(t)
-	if _, ok := h.provider.PendingFlow("never-issued"); ok {
+	if _, ok, err := h.provider.PendingFlow(context.Background(), "never-issued"); err != nil || ok {
+		if err != nil {
+			t.Fatalf("PendingFlow: %v", err)
+		}
 		t.Fatal("PendingFlow should be false for unknown state")
 	}
 }

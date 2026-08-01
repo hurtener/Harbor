@@ -409,16 +409,40 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		_ = errors.As(prepareErr, &providerAuth)
 		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider, opts)
 		if recErr != nil {
-			_, connExact, providerExact, readErr := s.activeMatches(ctx, q, req.AgentID, desc, wireProvider)
+			landedRevision, connExact, providerExact, readErr := s.activeMatches(ctx, q, req.AgentID, desc, wireProvider)
 			if readErr == nil && connExact && providerExact {
+				// The persistence acknowledgement is ambiguous, but the active
+				// pointer proves this exact descriptor/provider pair landed. The
+				// producer-owned pause is already the continuation rendezvous: do
+				// not reject it or turn a durable auth-required add into a failed
+				// response merely because the write acknowledgement was lost.
+				rev = landedRevision
 				if preparedProvider != nil {
 					if publishErr := preparedProvider.Publish(ctx); publishErr != nil {
 						return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(recErr, publishErr, rollbackPreparedProvider(ctx, preparedProvider), s.rejectProducerPause(ctx, providerAuth))
 					}
 					preparedProvider.Commit(ctx)
 				}
-				s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateFailed, "", "", safeReason(recErr))
-				return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(recErr, s.rejectProducerPause(ctx, providerAuth))
+				var token pauseresume.Token
+				var parkErr error
+				if providerAuth != nil && providerAuth.PauseToken != "" {
+					token = pauseresume.Token(providerAuth.PauseToken)
+				} else {
+					token, parkErr = s.parkForAuth(ctx, id, req.AgentID, desc)
+				}
+				if parkErr != nil {
+					s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateFailed, rev.RevisionID, "", safeReason(parkErr))
+					return prototypes.AgentConfigAddMCPConnectionResponse{}, errors.Join(recErr, parkErr)
+				}
+				s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateAuthRequired, rev.RevisionID, string(token), "")
+				view := revisionToWire(rev)
+				return prototypes.AgentConfigAddMCPConnectionResponse{
+					Revision:        &view,
+					Connection:      descriptorToWire(desc),
+					State:           string(ConnectionStateAuthRequired),
+					PauseToken:      string(token),
+					ProtocolVersion: prototypes.ProtocolVersion,
+				}, nil
 			}
 			providerErr := rollbackPreparedProvider(ctx, preparedProvider)
 			pauseErr := s.rejectProducerPause(ctx, providerAuth)
@@ -682,7 +706,7 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 		}
 		normalizedURL, uerr := config.NormalizeMCPHTTPURL(rawURL)
 		if uerr != nil {
-			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: http transport url: %v", ErrInvalidConnection, uerr)
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: http transport url: %w", ErrInvalidConnection, uerr)
 		}
 		if len(c.Command) > 0 {
 			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: http transport must not carry a command", ErrInvalidConnection)

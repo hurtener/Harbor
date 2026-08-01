@@ -153,7 +153,7 @@ func TestPreparedAttachment_RegistryStagesBeforeCatalogDispatchLinearization(t *
 
 	reg := NewRegistry()
 	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
-	old := &stubProvider{id: "staged"}
+	old := &stubProvider{id: "staged", resourceBody: []byte("old resource"), resourceMime: "text/plain"}
 	oldCalls := 0
 	oldInvoke := func(context.Context, json.RawMessage) (tools.ToolResult, error) {
 		oldCalls++
@@ -176,10 +176,16 @@ func TestPreparedAttachment_RegistryStagesBeforeCatalogDispatchLinearization(t *
 	}
 
 	reg.mu.RLock()
-	stagedProvider := reg.servers["staged"].provider
+	visibleProvider := reg.servers["staged"].provider
+	_, privatelyStaged := reg.pending["staged"]
 	reg.mu.RUnlock()
-	if stagedProvider == old {
-		t.Fatal("catalog staging began before the reversible registry replacement")
+	if visibleProvider != old || !privatelyStaged {
+		t.Fatalf("catalog barrier registry state: visible=%T old=%T privately_staged=%v", visibleProvider, old, privatelyStaged)
+	}
+	readCtx := idCtx(t)
+	body, mime, err := reg.ReadResource(readCtx, "staged", "mem://hello")
+	if err != nil || string(body) != "old resource" || mime != "text/plain" {
+		t.Fatalf("direct registry read crossed private stage: body=%q mime=%q err=%v", body, mime, err)
 	}
 	d, ok := baseCatalog.Resolve("staged_echo")
 	if !ok || d.Tool.Description != "old descriptor" {
@@ -201,6 +207,10 @@ func TestPreparedAttachment_RegistryStagesBeforeCatalogDispatchLinearization(t *
 	release()
 	if err := <-activateDone; err != nil {
 		t.Fatalf("Activate: %v", err)
+	}
+	body, mime, err = reg.ReadResource(readCtx, "staged", "mem://hello")
+	if err != nil || string(body) != "hello world" || mime != "text/plain" {
+		t.Fatalf("direct registry read did not switch after catalog publication: body=%q mime=%q err=%v", body, mime, err)
 	}
 	after, ok := baseCatalog.Resolve("staged_echo")
 	if !ok || after.Tool.Description == "old descriptor" {

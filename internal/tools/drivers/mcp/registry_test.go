@@ -10,6 +10,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // stubProvider is a deterministic serverProvider for the registry unit
@@ -29,6 +30,40 @@ type stubProvider struct {
 	resourceErr  error
 	closed       int
 	closeErr     error
+}
+
+func TestRegistrationSwap_PrivateReservationPreventsCommitInvalidation(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	old := &stubProvider{id: "reserved"}
+	if err := reg.Register(ctx, ServerRegistration{Provider: old, Transport: "http+sse", Owner: owner}); err != nil {
+		t.Fatalf("seed registration: %v", err)
+	}
+	staged := &stubProvider{id: "reserved"}
+	swap, err := reg.StageRegistration(ServerRegistration{Provider: staged, Transport: "http+sse", Owner: owner}, nil)
+	if err != nil {
+		t.Fatalf("StageRegistration: %v", err)
+	}
+	if err := reg.Deregister(ctx, "reserved", owner); err == nil {
+		t.Fatal("Deregister changed the exact prior entry while replacement was reserved")
+	}
+	if err := reg.Register(ctx, ServerRegistration{Provider: &stubProvider{id: "reserved"}, Transport: "http+sse", Owner: owner}); err == nil {
+		t.Fatal("same-name Register displaced a private reservation")
+	}
+	if _, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "reserved_child"}, Transport: "http+sse", Owner: owner}, nil); !errors.Is(err, ErrAmbiguousServerID) {
+		t.Fatalf("separator-ambiguous stage during reservation = %v, want ErrAmbiguousServerID", err)
+	}
+	if err := swap.Commit(ctx); err != nil {
+		t.Fatalf("reserved Commit rejected after all public mutators were refused: %v", err)
+	}
+	reg.mu.RLock()
+	visible := reg.servers["reserved"].provider
+	_, pending := reg.pending["reserved"]
+	reg.mu.RUnlock()
+	if visible != staged || pending {
+		t.Fatalf("committed reservation: visible=%T staged=%T pending=%v", visible, staged, pending)
+	}
 }
 
 func (p *stubProvider) SourceID() tools.ToolSourceID { return p.id }

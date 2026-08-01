@@ -8,6 +8,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm/output"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // projectResponse maps an [llm.CompleteResponse] onto a
@@ -41,7 +42,13 @@ import (
 // The projector never constructs a degenerate one-branch Batch: a
 // lone `_spawn_task` still projects to a plain SpawnTask, and a response
 // with no spawn projects to CallTool / CallParallel exactly as before.
-func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallelEnabled bool) (planner.Decision, error) {
+func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallelEnabled bool, frozen ...tools.ModelToolNameProjection) (planner.Decision, error) {
+	resolve := func(name string) (string, bool) {
+		if len(frozen) != 0 {
+			return frozen[0].ResolveDeclared(name)
+		}
+		return resolveDeclaredToolName(rc, name)
+	}
 	if len(resp.ToolCalls) == 0 {
 		if resp.Content != "" {
 			// Tools-mode unwrap (S1 seam closure): a schema-constrained
@@ -108,7 +115,7 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 	// Batch (a lone `_spawn_task` falls through to the plain SpawnTask
 	// head switch below).
 	if len(resp.ToolCalls) > 1 && responseHasSpawn(resp.ToolCalls) {
-		return projectBatch(resp, rc)
+		return projectBatch(resp, resolve)
 	}
 
 	first := resp.ToolCalls[0]
@@ -135,7 +142,7 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 	// Single regular tool-call. Resolve the provider-returned name back
 	// to the real catalog name (declarations are sent sanitized).
 	if len(resp.ToolCalls) == 1 {
-		catalogName, ok := resolveDeclaredToolName(rc, first.Name)
+		catalogName, ok := resolve(first.Name)
 		if !ok {
 			return nil, undeclaredModelToolNameError(first.Name)
 		}
@@ -153,7 +160,7 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 		// executor's normaliseJoin collapses it to JoinAll (AC-5).
 		branches := make([]planner.CallTool, len(resp.ToolCalls))
 		for i, tc := range resp.ToolCalls {
-			catalogName, ok := resolveDeclaredToolName(rc, tc.Name)
+			catalogName, ok := resolve(tc.Name)
 			if !ok {
 				return nil, undeclaredModelToolNameError(tc.Name)
 			}
@@ -168,7 +175,7 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 
 	// Serialization fallback (parallel_tool_calls: false):
 	// dispatch the head, queue the tail on rc.PendingToolCalls.
-	firstCatalogName, ok := resolveDeclaredToolName(rc, first.Name)
+	firstCatalogName, ok := resolve(first.Name)
 	if !ok {
 		return nil, undeclaredModelToolNameError(first.Name)
 	}
@@ -179,7 +186,7 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 	}
 	pending := make([]planner.ToolCallDeferred, 0, len(resp.ToolCalls)-1)
 	for _, tc := range resp.ToolCalls[1:] {
-		catalogName, ok := resolveDeclaredToolName(rc, tc.Name)
+		catalogName, ok := resolve(tc.Name)
 		if !ok {
 			return nil, undeclaredModelToolNameError(tc.Name)
 		}
@@ -252,7 +259,7 @@ func responseHasSpawn(calls []llm.ToolCallStructured) bool {
 // NewBatch enforces the remaining structural invariants (non-degenerate,
 // non-retain-turn); by construction len(calls) > 1 with ≥1 spawn and no
 // standalone control name, so the combined branch count is always ≥ 2.
-func projectBatch(resp llm.CompleteResponse, rc *planner.RunContext) (planner.Decision, error) {
+func projectBatch(resp llm.CompleteResponse, resolve func(string) (string, bool)) (planner.Decision, error) {
 	var tools []planner.CallTool
 	var spawns []planner.SpawnTask
 	for _, tc := range resp.ToolCalls {
@@ -265,7 +272,7 @@ func projectBatch(resp llm.CompleteResponse, rc *planner.RunContext) (planner.De
 			spawns = append(spawns, sp)
 			continue
 		}
-		catalogName, ok := resolveDeclaredToolName(rc, tc.Name)
+		catalogName, ok := resolve(tc.Name)
 		if !ok {
 			return nil, undeclaredModelToolNameError(tc.Name)
 		}

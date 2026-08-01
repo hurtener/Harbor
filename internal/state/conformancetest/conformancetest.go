@@ -68,6 +68,7 @@ type Factory func() (state.StateStore, func())
 //   - ListKind_MetacharactersMatchLiterally
 //   - ListKind_AfterClose_Errors
 //   - ListKindForIdentity_IsolatedAndFailClosed
+//   - ListKindForIdentity_ConcurrentReuse_NoCrossTalk
 //   - Save_AfterClose_Errors
 //   - Concurrent_SaveLoad_NoRace
 //   - GoroutineLeak_AfterClose
@@ -627,10 +628,15 @@ func Run(t *testing.T, factory Factory) {
 		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
+		want := tripleA()
 		seeds := []state.StateRecord{
 			{ID: "01HABXXX00000005LS", Identity: tripleA(), Kind: "agentcfg.revision.a", Bytes: []byte("a")},
 			{ID: "01HABXXX00000006LS", Identity: tripleA(), Kind: "agentcfg.revision.b", Bytes: []byte("b")},
-			{ID: "01HABXXX00000007LS", Identity: tripleB(), Kind: "agentcfg.revision.a", Bytes: []byte("other")},
+			{ID: "01HABXXX00000007LS", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-B", UserID: want.UserID, SessionID: want.SessionID}, RunID: want.RunID}, Kind: "agentcfg.revision.a", Bytes: []byte("other-tenant")},
+			{ID: "01HABXXX00000008LS", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: want.TenantID, UserID: "user-9", SessionID: want.SessionID}, RunID: want.RunID}, Kind: "agentcfg.revision.a", Bytes: []byte("other-user")},
+			{ID: "01HABXXX00000009LS", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: want.TenantID, UserID: want.UserID, SessionID: "sess-9"}, RunID: want.RunID}, Kind: "agentcfg.revision.a", Bytes: []byte("other-session")},
+			{ID: "01HABXXX00000010LS", Identity: identity.Quadruple{Identity: want.Identity, RunID: "run-9"}, Kind: "agentcfg.revision.a", Bytes: []byte("other-run")},
+			{ID: "01HABXXX00000011LS", Identity: tripleA(), Kind: "other.revision.a", Bytes: []byte("other-kind")},
 		}
 		for _, rec := range seeds {
 			if err := s.Save(ctx, rec); err != nil {
@@ -654,6 +660,80 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if _, err := s.ListKindForIdentity(ctx, tripleA(), ""); !errors.Is(err, state.ErrInvalidRecord) {
 			t.Fatalf("empty prefix err=%v, want ErrInvalidRecord", err)
+		}
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := s.ListKindForIdentity(cancelled, tripleA(), "agentcfg.revision."); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled context err=%v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("ListKindForIdentity_ConcurrentReuse_NoCrossTalk", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		const callers = 128
+		kindPrefix := "agentcfg.revision."
+		targets := make([]identity.Quadruple, callers)
+		for i := range callers {
+			target := identity.Quadruple{
+				Identity: identity.Identity{
+					TenantID:  fmt.Sprintf("target-tenant-%03d", i),
+					UserID:    fmt.Sprintf("target-user-%03d", i),
+					SessionID: fmt.Sprintf("target-session-%03d", i),
+				},
+				RunID: fmt.Sprintf("target-run-%03d", i),
+			}
+			targets[i] = target
+			seeds := []state.StateRecord{
+				{ID: state.EventID(fmt.Sprintf("scoped-target-%03d", i)), Identity: target, Kind: kindPrefix + "target", Bytes: []byte(fmt.Sprintf("target-%03d", i))},
+				{ID: state.EventID(fmt.Sprintf("scoped-tenant-decoy-%03d", i)), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: fmt.Sprintf("decoy-tenant-%03d", i), UserID: target.UserID, SessionID: target.SessionID}, RunID: target.RunID}, Kind: kindPrefix + "tenant-decoy"},
+				{ID: state.EventID(fmt.Sprintf("scoped-user-decoy-%03d", i)), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: target.TenantID, UserID: fmt.Sprintf("decoy-user-%03d", i), SessionID: target.SessionID}, RunID: target.RunID}, Kind: kindPrefix + "user-decoy"},
+				{ID: state.EventID(fmt.Sprintf("scoped-session-decoy-%03d", i)), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: target.TenantID, UserID: target.UserID, SessionID: fmt.Sprintf("decoy-session-%03d", i)}, RunID: target.RunID}, Kind: kindPrefix + "session-decoy"},
+				{ID: state.EventID(fmt.Sprintf("scoped-run-decoy-%03d", i)), Identity: identity.Quadruple{Identity: target.Identity, RunID: fmt.Sprintf("decoy-run-%03d", i)}, Kind: kindPrefix + "run-decoy"},
+			}
+			for _, rec := range seeds {
+				if err := s.Save(ctx, rec); err != nil {
+					t.Fatalf("Save(%s): %v", rec.ID, err)
+				}
+			}
+		}
+
+		start := make(chan struct{})
+		errCh := make(chan error, callers)
+		var wg sync.WaitGroup
+		wg.Add(callers)
+		for i := range callers {
+			go func() {
+				defer wg.Done()
+				<-start
+				callCtx := ctx
+				if i%16 == 0 {
+					cancelled, cancel := context.WithCancel(ctx)
+					cancel()
+					callCtx = cancelled
+				}
+				got, err := s.ListKindForIdentity(callCtx, targets[i], kindPrefix)
+				if i%16 == 0 {
+					if !errors.Is(err, context.Canceled) {
+						errCh <- fmt.Errorf("caller %d: cancelled: %w, want context.Canceled", i, err)
+					}
+					return
+				}
+				if err != nil {
+					errCh <- fmt.Errorf("caller %d: ListKindForIdentity: %w", i, err)
+					return
+				}
+				if len(got) != 1 || got[0].Identity != targets[i] || string(got[0].Bytes) != fmt.Sprintf("target-%03d", i) {
+					errCh <- fmt.Errorf("caller %d: rows=%+v, want one exact target", i, got)
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			t.Error(err)
 		}
 	})
 
