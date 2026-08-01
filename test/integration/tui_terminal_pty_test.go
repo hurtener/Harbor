@@ -658,6 +658,12 @@ type ptySession struct {
 	changed chan struct{}
 	done    chan error
 	exited  chan struct{}
+	// readerDone closes only after the master reader has appended the final
+	// PTY frame; process exit can happen before that read completes.
+	readerDone chan struct{}
+	// exitErr is written before exited closes, so readers that observe exited
+	// can report it without consuming done (waitExit owns that channel).
+	exitErr error
 }
 
 func startPTY(t *testing.T, mode string, width, height int) *ptySession {
@@ -685,7 +691,7 @@ func startPTYEnv(t *testing.T, mode string, width, height int, extraEnv []string
 		t.Fatal(err)
 	}
 	_ = slave.Close()
-	s := &ptySession{cmd: cmd, master: master, changed: make(chan struct{}, 1), done: make(chan error, 1), exited: make(chan struct{})}
+	s := &ptySession{cmd: cmd, master: master, changed: make(chan struct{}, 1), done: make(chan error, 1), exited: make(chan struct{}), readerDone: make(chan struct{})}
 	t.Cleanup(func() {
 		select {
 		case <-s.exited:
@@ -770,11 +776,18 @@ func startPTYCommand(t *testing.T, binary string, args []string, workdir string,
 		_ = master.Close()
 	})
 	go readPTY(s)
-	go func() { s.done <- cmd.Wait(); close(s.exited); _ = master.Close() }()
+	go func() {
+		err := cmd.Wait()
+		s.exitErr = err
+		s.done <- err
+		close(s.exited)
+		_ = master.Close()
+	}()
 	return s
 }
 
 func readPTY(s *ptySession) {
+	defer close(s.readerDone)
 	buffer := make([]byte, 4096)
 	for {
 		n, readErr := s.master.Read(buffer)
@@ -865,8 +878,6 @@ func (s *ptySession) waitContains(t *testing.T, needle string) {
 	t.Helper()
 	timer := time.NewTimer(ptyWaitTimeout)
 	defer timer.Stop()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
 	for {
 		output := s.snapshot()
 		if strings.Contains(output, needle) || strings.Contains(normalizePTY(output), needle) {
@@ -874,8 +885,15 @@ func (s *ptySession) waitContains(t *testing.T, needle string) {
 		}
 		select {
 		case <-timer.C:
-			t.Fatalf("timeout waiting for PTY output %q; output=%q", needle, ansi.Strip(output))
-		case <-ticker.C:
+			s.failWait(t, needle, output, false)
+		case <-s.changed:
+		case <-s.exited:
+			s.awaitReaderDrain()
+			output = s.snapshot()
+			if strings.Contains(output, needle) || strings.Contains(normalizePTY(output), needle) {
+				return
+			}
+			s.failWait(t, needle, output, false)
 		}
 	}
 }
@@ -883,8 +901,6 @@ func (s *ptySession) waitContainsAfter(t *testing.T, offset int, needle string) 
 	t.Helper()
 	timer := time.NewTimer(ptyWaitTimeout)
 	defer timer.Stop()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
 	for {
 		output := s.snapshot()
 		if offset > len(output) {
@@ -896,10 +912,75 @@ func (s *ptySession) waitContainsAfter(t *testing.T, offset int, needle string) 
 		}
 		select {
 		case <-timer.C:
-			t.Fatalf("timeout waiting for new PTY output %q; recent=%q", needle, ansi.Strip(recent))
-		case <-ticker.C:
+			s.failWait(t, needle, recent, true)
+		case <-s.changed:
+		case <-s.exited:
+			s.awaitReaderDrain()
+			output = s.snapshot()
+			if offset > len(output) {
+				offset = 0
+			}
+			recent = output[offset:]
+			if strings.Contains(recent, needle) || strings.Contains(normalizePTY(recent), needle) {
+				return
+			}
+			s.failWait(t, needle, recent, true)
 		}
 	}
+}
+
+// awaitReaderDrain gives the PTY reader one bounded chance to append the
+// child's final frame after cmd.Wait reports exit. PTYs can report process
+// exit before their master has yielded the final bytes; failing immediately
+// would turn that ordering into a false test failure. This drains once only —
+// it is not a retry or a longer assertion timeout.
+func (s *ptySession) awaitReaderDrain() {
+	select {
+	case <-s.readerDone:
+	case <-time.After(250 * time.Millisecond):
+	}
+}
+
+// failWait turns the previously opaque PTY timeout into a liveness diagnosis.
+// If the child is still alive, SIGQUIT asks the Go runtime for every goroutine
+// stack before the test fails; if it already exited, the exit result and PTY
+// tail distinguish a dead child from a stalled renderer. This is failure-only
+// instrumentation, never a retry or a larger timeout.
+func (s *ptySession) failWait(t *testing.T, needle, observed string, recent bool) {
+	t.Helper()
+	live := true
+	select {
+	case <-s.exited:
+		live = false
+	default:
+	}
+	if live && s.cmd.Process != nil {
+		_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGQUIT)
+		select {
+		case <-s.changed:
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	select {
+	case <-s.exited:
+		s.awaitReaderDrain()
+		live = false
+	default:
+	}
+	output := s.snapshot()
+	tail := output
+	const tailBytes = 8192
+	if len(tail) > tailBytes {
+		tail = tail[len(tail)-tailBytes:]
+	}
+	exit := "still-running"
+	if !live {
+		exit = fmt.Sprintf("exited: %v", s.exitErr)
+	}
+	if recent {
+		t.Fatalf("timeout waiting for new PTY output %q; child=%s total_bytes=%d observed=%q tail=%q", needle, exit, len(output), ansi.Strip(observed), ansi.Strip(tail))
+	}
+	t.Fatalf("timeout waiting for PTY output %q; child=%s total_bytes=%d tail=%q", needle, exit, len(output), ansi.Strip(tail))
 }
 func (s *ptySession) waitExit(t *testing.T, want int) {
 	t.Helper()

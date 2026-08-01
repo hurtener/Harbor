@@ -2,12 +2,14 @@ package sessions_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
@@ -25,6 +27,12 @@ import (
 // production constant fails these tests loudly instead of silently
 // matching nothing.
 const erasureLedgerTestKindPrefix = "session.erasure.pending."
+
+// erasureLifecycleExtraKeyForTest mirrors the unexported metadata key that
+// distinguishes records for two lifecycles which happened to share a session
+// id. Keeping this literal here makes a production rename break the stale-
+// ledger tests instead of silently counting the wrong population.
+const erasureLifecycleExtraKeyForTest = "erased_session_opened_at"
 
 // ledgerScopeForTest reconstructs the StateStore identity the erasure
 // ledger checkpoint lives under, mirroring the unexported
@@ -224,6 +232,58 @@ func countSessionErasedEvents(t *testing.T, bus events.EventBus, tenant, user, s
 		}
 	}
 	return count, lastIdentity
+}
+
+// seedStaleLedger writes the old lifecycle checkpoint that an interrupted
+// erasure left behind before an operator (or an older deployment) recreated
+// the same session id. The production code must record this old lifecycle
+// before it can touch the live one.
+func seedStaleLedger(t *testing.T, f erasureFixture, id identity.Identity, stamp int64) {
+	t.Helper()
+	bytes, err := json.Marshal(map[string]any{
+		"artifacts_deleted":     3,
+		"memory_purged":         true,
+		"state_records_deleted": 7,
+		"session_opened_at":     stamp,
+	})
+	if err != nil {
+		t.Fatalf("marshal stale ledger: %v", err)
+	}
+	if err := f.store.Save(context.Background(), state.StateRecord{
+		ID:       state.NewEventID(),
+		Identity: ledgerScopeForTest(id),
+		Kind:     erasureLedgerTestKindPrefix + id.SessionID,
+		Bytes:    bytes,
+	}); err != nil {
+		t.Fatalf("seed stale ledger: %v", err)
+	}
+}
+
+// countSessionErasedLifecycle counts only one erased-session lifecycle. The
+// canonical population is the durable HistoryReplayer window, then its
+// lifecycle extra is checked rather than treating a reused session id as one
+// undifferentiated record.
+func countSessionErasedLifecycle(t *testing.T, bus events.EventBus, id identity.Identity, stamp int64) int {
+	t.Helper()
+	hr, ok := bus.(events.HistoryReplayer)
+	if !ok {
+		t.Fatal("bus must implement events.HistoryReplayer")
+	}
+	evs, err := hr.Window(context.Background(), 0, 1000, events.Filter{
+		Tenant: id.TenantID, User: id.UserID, Session: erasureAuditObservabilitySession,
+		Types: []events.EventType{sessions.EventTypeSessionErased},
+	})
+	if err != nil {
+		t.Fatalf("Window: %v", err)
+	}
+	want := fmt.Sprint(stamp)
+	count := 0
+	for _, ev := range evs {
+		if ev.Extra[erasureLifecycleExtraKeyForTest] == want {
+			count++
+		}
+	}
+	return count
 }
 
 // TestCascadeEraser_FinalEmitPublishFailure_FailsLoud_ReinvokeConverges
@@ -462,15 +522,143 @@ func TestCascadeEraser_ConcurrentSameSession_OneWins_NeverDoubleEvent(t *testing
 	}
 }
 
-// TestCascadeEraser_StaleLedger_SessionIDReuse_CountsOnlyNewLifecycle is
-// the adversarial-review repro for stale-ledger count inflation across
-// session-id reuse: lifecycle 1 completes its destructive steps but
-// fails at the final emit (ErrErasureRecordFailed, never converged — 5
-// artifacts checkpointed in the ledger); the SAME session id is then
-// reopened as a brand-new lifecycle with 2 artifacts and erased cleanly.
-// Without the lifecycle stamp the leftover ledger would accumulate and
-// report ArtifactsDeleted=7; with it, the stale checkpoint is discarded
-// and the clean erasure reports exactly lifecycle 2's own count.
+// TestCascadeEraser_StaleLedger_EmitsOldLifecycleBeforeDeletingCheckpoint
+// pins #462's required ordering. A stale checkpoint is not disposable data:
+// the prior lifecycle's content-free record must land before the checkpoint
+// can be removed, while the newer lifecycle is still intact.
+func TestCascadeEraser_StaleLedger_EmitsOldLifecycleBeforeDeletingCheckpoint(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-stale-order", "u-stale-order", "s-stale-order")
+	live, err := f.reg.Open(ctxFor(id), id.SessionID, id)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	oldStamp := live.OpenedAt.UnixNano() - 1
+	seedStaleLedger(t, f, id, oldStamp)
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	flaky := &flakyLedgerStore{StateStore: f.store, deleteHook: func() {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+	}}
+	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+	})
+	if err != nil {
+		t.Fatalf("NewCascadeEraser: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { _, eraseErr := eraser.Erase(ctx, id); done <- eraseErr }()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale-ledger cleanup was never reached")
+	}
+	if got := countSessionErasedLifecycle(t, f.bus, id, oldStamp); got != 1 {
+		t.Fatalf("old lifecycle records before checkpoint delete = %d, want 1", got)
+	}
+	if _, loadErr := f.store.Load(ctx, ledgerScopeForTest(id), erasureLedgerTestKindPrefix+id.SessionID); loadErr != nil {
+		t.Fatalf("stale ledger disappeared before its old-lifecycle event was observed: %v", loadErr)
+	}
+	close(release)
+	if eraseErr := <-done; eraseErr != nil {
+		t.Fatalf("Erase: %v", eraseErr)
+	}
+	if got := countSessionErasedLifecycle(t, f.bus, id, oldStamp); got != 1 {
+		t.Errorf("old lifecycle records after full erase = %d, want exactly 1", got)
+	}
+}
+
+// TestCascadeEraser_StaleLedger_DeleteFailureRetryDoesNotDuplicateOldRecord
+// pins the post-publish cleanup failure window for a stale checkpoint. The
+// retry must use the lifecycle-aware re-emit guard, not publish the old audit
+// record again before allowing the current lifecycle to proceed.
+func TestCascadeEraser_StaleLedger_DeleteFailureRetryDoesNotDuplicateOldRecord(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-stale-retry", "u-stale-retry", "s-stale-retry")
+	live, err := f.reg.Open(ctxFor(id), id.SessionID, id)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	oldStamp := live.OpenedAt.UnixNano() - 1
+	seedStaleLedger(t, f, id, oldStamp)
+
+	var fail atomic.Bool
+	fail.Store(true)
+	flaky := &flakyLedgerStore{StateStore: f.store, deleteFail: &fail}
+	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+	})
+	if err != nil {
+		t.Fatalf("NewCascadeEraser: %v", err)
+	}
+	if _, eraseErr := eraser.Erase(ctx, id); eraseErr == nil {
+		t.Fatal("stale-ledger delete failure did not fail loud")
+	}
+	if got := countSessionErasedLifecycle(t, f.bus, id, oldStamp); got != 1 {
+		t.Fatalf("old lifecycle records after cleanup failure = %d, want 1", got)
+	}
+	if _, loadErr := f.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); loadErr != nil {
+		t.Fatalf("cleanup failure touched the current lifecycle: %v", loadErr)
+	}
+
+	fail.Store(false)
+	if _, eraseErr := eraser.Erase(ctx, id); eraseErr != nil {
+		t.Fatalf("retry: %v", eraseErr)
+	}
+	if got := countSessionErasedLifecycle(t, f.bus, id, oldStamp); got != 1 {
+		t.Errorf("old lifecycle records after retry = %d, want exactly 1", got)
+	}
+}
+
+// TestCascadeEraser_StaleLedger_EmitFailureRetainsCheckpointAndLiveSession
+// verifies the opposite failure boundary: if recording the stale lifecycle
+// fails, Erase must retain its checkpoint and stop before fencing or clearing
+// the newer lifecycle.
+func TestCascadeEraser_StaleLedger_EmitFailureRetainsCheckpointAndLiveSession(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-stale-emit", "u-stale-emit", "s-stale-emit")
+	live, err := f.reg.Open(ctxFor(id), id.SessionID, id)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	oldStamp := live.OpenedAt.UnixNano() - 1
+	seedStaleLedger(t, f, id, oldStamp)
+
+	realFencer, ok := f.bus.(events.Fencer)
+	if !ok {
+		t.Fatal("fixture bus must implement events.Fencer")
+	}
+	var fail atomic.Bool
+	fail.Store(true)
+	bus := &flakyPublishBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
+	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: bus,
+	})
+	if err != nil {
+		t.Fatalf("NewCascadeEraser: %v", err)
+	}
+	if _, eraseErr := eraser.Erase(ctx, id); !errors.Is(eraseErr, sessions.ErrErasureRecordFailed) {
+		t.Fatalf("erase err=%v, want ErrErasureRecordFailed", eraseErr)
+	}
+	if got := countSessionErasedLifecycle(t, f.bus, id, oldStamp); got != 0 {
+		t.Errorf("old lifecycle records after refused emit = %d, want 0", got)
+	}
+	if _, loadErr := f.store.Load(ctx, ledgerScopeForTest(id), erasureLedgerTestKindPrefix+id.SessionID); loadErr != nil {
+		t.Errorf("stale checkpoint was lost after refused emit: %v", loadErr)
+	}
+	if _, loadErr := f.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); loadErr != nil {
+		t.Errorf("refused stale emit touched the current lifecycle: %v", loadErr)
+	}
+}
+
 // TestCascadeEraser_FailedErase_ReopenBlocked_ReinvokeConverges pins the
 // D-312 interaction with the erasure ledger: after an erasure whose
 // destructive steps succeeded but whose record-of-fact emit FAILED (a pending
@@ -562,6 +750,10 @@ type flakyLedgerStore struct {
 	loadFail        *atomic.Bool
 	deleteFail      *atomic.Bool
 	deleteScopeFail *atomic.Bool
+	// deleteHook runs immediately before a ledger checkpoint delete. It lets
+	// the stale-ledger ordering test observe the just-emitted old lifecycle
+	// while the checkpoint is still durable.
+	deleteHook func()
 	// saveSkip, when non-nil, lets the first saveSkip ledger-kind Saves
 	// through before the saveFail toggle takes effect — used to target a
 	// LATER ledger checkpoint (e.g. the artifacts-step checkpoint) while
@@ -588,6 +780,9 @@ func (s *flakyLedgerStore) Load(ctx context.Context, id identity.Quadruple, kind
 }
 
 func (s *flakyLedgerStore) Delete(ctx context.Context, id identity.Quadruple, kind string) error {
+	if s.deleteHook != nil && strings.HasPrefix(kind, erasureLedgerTestKindPrefix) {
+		s.deleteHook()
+	}
 	if s.deleteFail != nil && s.deleteFail.Load() && strings.HasPrefix(kind, erasureLedgerTestKindPrefix) {
 		return errors.New("flaky state store: forced ledger delete failure")
 	}

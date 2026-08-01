@@ -135,6 +135,10 @@ type refreshCall struct {
 	done  chan struct{}
 	token Token
 	err   error
+	// waiters is protected by Provider.refreshMu. It records how many Token
+	// calls joined this still-live flight, making the single-flight boundary
+	// observable without timing guesses in the concurrent-reuse test.
+	waiters int
 }
 
 // NewProvider constructs a Provider from configs + deps.
@@ -274,6 +278,7 @@ func (p *Provider) refreshLocked(ctx context.Context, cfg OAuthConfig, current T
 		p.refreshFlight[key] = call
 		go p.runRefresh(ctx, cfg, current, key, call)
 	}
+	call.waiters++
 	p.refreshMu.Unlock()
 
 	select {

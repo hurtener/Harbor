@@ -481,11 +481,10 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 		t.Fatalf("pause.resumed token %q != tool.auth_completed pause token %q", resPayload.Token, done.PauseToken)
 	}
 
-	// 4. Resume the RUN — the steering RESUME, the same inbox path the
-	//    Protocol edge's `resume` method drives (the Console operator
-	//    flow; the recipe documents this leg). The INJECT_CONTEXT note
-	//    is the operator's "OAuth completed" annotation the planner
-	//    observes via RunContext.Control.
+	// 4. The callback already resumed the OAuth pause. Add only the
+	//    operator-visible completion note; enqueueing a second steering
+	//    RESUME races that callback-owned transition and can wake a run that
+	//    has already re-entered.
 	inbox, err := env.steerReg.Lookup(q)
 	if err != nil {
 		t.Fatalf("steering.Registry.Lookup: %v", err)
@@ -499,16 +498,6 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Enqueue(INJECT_CONTEXT): %v", err)
 	}
-	if err := inbox.Enqueue(steering.ControlEvent{
-		Type:         steering.ControlResume,
-		Identity:     q,
-		CallerScope:  steering.ScopeOwnerUser,
-		CallerTenant: q.TenantID,
-		Payload:      map[string]any{"reason": "tool-oauth completed"},
-	}); err != nil {
-		t.Fatalf("Enqueue(RESUME): %v", err)
-	}
-
 	// 5. The run re-enters and finishes: the re-dispatched tool
 	//    invocation succeeded USING the minted token.
 	select {
