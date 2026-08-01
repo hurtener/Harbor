@@ -411,21 +411,23 @@ else
         TestAddMCPConnection_ConflictWithNoDetacherFailsLoud \
         TestAddMCPConnection_CompensatingDetachFailureIsNotSwallowed
 
-    # ...and compensates ONLY what THAT CALL created (D-381). The compensation
-    # shipped UNCONDITIONAL, so a refused re-add of an ALREADY-LIVE connection
-    # tore down a server the ACTIVE revision still names — a REFUSED write
-    # turned DESTRUCTIVE, which is the same broken claim in the opposite
-    # direction. These name the tests explicitly because the whole seven-test
-    # guard above stays green through the regression: every one of them uses a
-    # FRESH name.
+    # ...and preserves pre-existing live state across a refused re-add (D-381).
+    # Before the transactional redesign, compensation had to undo only what
+    # THIS call created: an unconditional teardown turned a refused re-add of
+    # an ALREADY-LIVE connection into a destructive operation. The transaction
+    # now refuses a stale request before it prepares or publishes either plane,
+    # so its replacement tests pin that no preparation, lifecycle, or detach
+    # occurs while the existing connection/provider stays live. These names are
+    # explicit because the fresh-name tests above stay green through the
+    # pre-existing-state regression.
     assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/runtime/agentcfg/protocol/' \
-        'phase 221: the compensation undoes only what THIS call created — a still-declared connection/provider survives a refusal' \
+        'phase 221: a stale re-add preserves the existing connection/provider and never prepares a rejected attempt' \
         TestAddMCPConnection_RevisionConflict_KeepsAStillDeclaredConnection \
         TestAddMCPConnection_RevisionConflict_KeepsAStillDeclaredWireProvider \
-        TestAddMCPConnection_RevisionConflict_KeepsAProviderASiblingDeclared \
+        TestAddMCPConnection_RevisionConflict_DoesNotPrepareProviderOrConnection \
         TestAddMCPConnection_FailedAttach_KeepsAStillDeclaredWireProvider \
-        TestAddMCPConnection_RevisionConflict_RetainedReasonNamesTheUntouchedServer \
-        TestAddMCPConnection_CompensatingDetach_IsOwnerScoped
+        TestAddMCPConnection_RevisionConflict_EmitsNoLifecycleForUnstartedAttempt \
+        TestAddMCPConnection_StaleExpectation_NeverNeedsCompensatingDetach
 
     # ...and the THREE disk states one identical error value can hide (D-381
     # closing D-380's finding against this door). "The write failed" is what the
@@ -433,14 +435,14 @@ else
     # that landed, and the pre-D-381 door detached on it, leaving a config entry
     # naming a server nothing serves. The declared-ness re-read answers it with
     # no second mechanism, because "did the write land?" and "does the pointer
-    # name it?" are the same question. The third row pins the UNKNOWN answer —
-    # the one arm that still tears down a landed write — so the residual cannot
-    # change silently.
+    # name it?" are the same question. The third row pins the UNKNOWN answer:
+    # the current transactional path retains and reports it rather than
+    # destructively guessing, so that safety boundary cannot change silently.
     assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/runtime/agentcfg/protocol/' \
         'phase 221: a write REPORTED failed but LANDED keeps its connection; a partial landing is still detached; the unknown answer is loud' \
         TestAddMCPConnection_WriteLandedThenErrored_DoesNotDetach \
         TestAddMCPConnection_RecordLandedPointerStuck_DetachesAndIsCorrect \
-        TestAddMCPConnection_WriteLandedButPointerUnreadable_FallsBackLoudly
+        TestAddMCPConnection_WriteLandedButPointerUnreadable_RetainsLoudly
 fi
 
 # The OWNER-SCOPING guard, asserted on the SOURCE because its consequence is

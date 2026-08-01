@@ -167,6 +167,10 @@ type PauseRequest struct {
 	// — the pause is NOT half-persisted. Optional; may be nil (a pause
 	// with no trajectory is valid — e.g. a pre-run approval gate).
 	Trajectory *trajectory.Trajectory
+	// Continuation is optional durable work that an accepted resume must
+	// complete before the pause becomes terminal. It contains non-secret stable
+	// identity only. When nil, a continuation carried on ctx is inherited.
+	Continuation *Continuation
 }
 
 // Status is the value returned by Coordinator.Status: a read-only

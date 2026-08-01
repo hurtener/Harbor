@@ -470,9 +470,69 @@ ok 'phase 224: the pristine fixture corpus passes drift-audit clean — mutation
 # implying a verification that did not happen.
 # ----------------------------------------------------------------------------
 CASES=0
+SEEN_CASES=''
+# One registry is the denominator for BOTH coverage dimensions below:
+#
+#   guard-id | drift-audit OK signature (or - for FAIL-only/delegated guards)
+#            | ^-separated mutation cases
+#
+# Deriving EXPECTED_CASES and CENSUS_SIGNATURES from this single table avoids
+# the old three-list failure mode where a whole expect_caught block, its case
+# manifest row, or its OK signature could disappear independently and leave a
+# self-consistent but incomplete count. Markdownlint remains registered even
+# when npx is unavailable; its conditional branch records the named SKIP as a
+# seen case, so deleting that entire branch is still red.
+GUARD_REGISTRY='mirror|mirror invariant|mirror invariant
+required-files|required:|required design files
+plan-smoke|plan ↔ smoke pair OK|plan-to-smoke pairing
+plan-headings|all required headings present|required plan headings
+nul-byte|-|NUL byte in a phase plan
+rfc-references|RFC reference(s) resolve|RFC cross-reference resolution
+brief-references|brief reference(s) resolve|brief cross-reference resolution
+population|population census: every scanned corpus is non-empty|population census (a scanned corpus went empty)
+forbidden-name|forbidden-name scan clean|forbidden-name scan (root-docs limb)^forbidden-name scan (phase-plan limb)^forbidden-name scan (research-brief limb)^forbidden-name scan (internal/ limb)^forbidden-name scan (cmd/ limb)
+make-target|Makefile has drift-audit target|Makefile drift-audit target
+preflight-headers|PREFLIGHT_REQUIRES header present|PREFLIGHT_REQUIRES header absent^PREFLIGHT_REQUIRES value unrecognised
+skills-frontmatter|-|operator-skill frontmatter^skills-frontmatter delegation (executable bit lost)
+body-identity|-|body-identity delegation (executable bit lost)^body-identity delegation (helper missing)^body-identity delegation (helper reports a violation)
+playground|no playground placeholder text|playground placeholder regression
+markdownlint|markdownlint (pinned cli2|markdownlint parity wiring
+godoc|godoc hygiene: no internal phase jargon|godoc jargon scan^godoc jargon scan (test-path anchoring)^godoc jargon scan (cmd/ root)^godoc jargon scan (sdk/ root, the D-282 extension)
+scaffold-pin|is a published release|scaffold pin names a phantom release^scaffold pin trails by two releases
+release-ledger|release ledger: CHANGELOG.md carries|release ledger vs CHANGELOG
+smoke-regex|smoke regex portability: no non-portable|smoke regex portability (scripts/smoke/ root)^smoke regex portability (scripts/ root)'
+MKTEMP_GUARD_ID='mk''temp'
+GUARD_REGISTRY="${GUARD_REGISTRY}
+${MKTEMP_GUARD_ID}|every ${MKTEMP_GUARD_ID} template carries trailing X|${MKTEMP_GUARD_ID} template portability (scripts/smoke/ root)^${MKTEMP_GUARD_ID} template portability (scripts/ root)"
+
+EXPECTED_CASES=()
+CENSUS_SIGNATURES=()
+while IFS='|' read -r guard_id signature registered_cases; do
+    [ -n "${guard_id}" ] || continue
+    if [ "${signature}" != '-' ]; then
+        CENSUS_SIGNATURES+=("${signature}")
+    fi
+    old_ifs="${IFS}"
+    IFS='^'
+    # shellcheck disable=SC2206 # intentional delimiter split; labels contain spaces.
+    split_cases=(${registered_cases})
+    IFS="${old_ifs}"
+    for registered_case in "${split_cases[@]}"; do
+        EXPECTED_CASES+=("${registered_case}")
+    done
+done <<EOF
+${GUARD_REGISTRY}
+EOF
+
+note_seen_case() {
+    SEEN_CASES="${SEEN_CASES}
+$1"
+}
+
 expect_caught() {
     local label="$1" sev="$2" ok_marker="$3" bad_marker="$4" mutate="$5"
     CASES=$((CASES + 1))
+    note_seen_case "${label}"
 
     local clean_ok=0 clean_bad=0
     if [ -z "${ok_marker}" ]; then
@@ -800,6 +860,7 @@ if command -v npx >/dev/null 2>&1; then
         'markdownlint found violations' \
         mut_markdownlint
 else
+    note_seen_case 'markdownlint parity wiring'
     skip 'phase 224 [markdownlint parity wiring]: npx is absent, so drift-audit WARN-skips this guard on this host and it cannot be mutation-verified here (CI has node and does verify it)'
 fi
 
@@ -889,25 +950,18 @@ expect_caught 'mktemp template portability (scripts/ root)' FAIL \
 # revisited whenever a delegated or FAIL-only guard is added. That limitation
 # is now stated here rather than implied by a number.
 # ----------------------------------------------------------------------------
-CENSUS_SIGNATURES=(
-    'mirror invariant'
-    'required: '
-    'population census: every scanned corpus is non-empty'
-    'plan ↔ smoke pair OK'
-    'all required headings present'
-    'RFC reference(s) resolve'
-    'brief reference(s) resolve'
-    'forbidden-name scan clean'
-    'Makefile has drift-audit target'
-    'PREFLIGHT_REQUIRES header present'
-    'no playground placeholder text'
-    'markdownlint (pinned cli2'
-    'godoc hygiene: no internal phase jargon'
-    'is a published release'
-    'release ledger: CHANGELOG.md carries'
-    'smoke regex portability: no non-portable'
-    'every mktemp template carries trailing X'
-)
+# The execution manifest is a second, independent denominator. The signature
+# census below cannot see a deleted expect_caught block when its guard still
+# emits an OK line; this check makes that whole-case deletion fail loudly.
+missing_case=''
+for expected_case in "${EXPECTED_CASES[@]}"; do
+    if ! printf '%s\n' "${SEEN_CASES}" | grep -qxF -- "${expected_case}"; then
+        missing_case="${missing_case} '${expected_case}'"
+    fi
+done
+if [ -n "${missing_case}" ]; then
+    fail "phase 224: declared mutation case(s) did not execute —${missing_case}. A whole-case deletion must be red, not disappear from the coverage census."
+fi
 
 # The pattern deliberately carries no quote character: an ERE holding one would
 # put a single quote on this line right after a `grep -…E` token, which is the

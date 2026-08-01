@@ -386,11 +386,22 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 	// verify the ledger's lifecycle discriminator: a leftover ledger
 	// whose stamp mismatches the live session's OpenedAt belongs to an
 	// ABANDONED prior lifecycle of a reused session id and MUST be
-	// discarded, or its stale counts would inflate this lifecycle's
-	// compliance totals (the count-inflation bug on session-id reuse).
+	// converged and removed, or its stale counts would inflate this
+	// lifecycle's compliance totals (the count-inflation bug on
+	// session-id reuse).
 	stamp := sess.OpenedAt.UnixNano()
 	if hasLedger && ledger.SessionOpenedAt != stamp {
-		e.logger.WarnContext(ctx, "sessions: discarding stale erasure-ledger checkpoint from an abandoned prior lifecycle of a reused session id — its never-emitted record-of-fact is forfeited; this lifecycle's counts start from zero",
+		// A stale checkpoint still represents an erasure whose destructive
+		// work may have completed. Converge its record-of-fact before making
+		// room for this lifecycle: discarding it first would permanently lose
+		// the only auditable result of the prior lifecycle. emitErased is
+		// best-effort deduplicated per lifecycle stamp, so retained history
+		// normally suppresses a retry after a delete failure; when the history
+		// oracle cannot verify, a duplicate record is preferred to losing it.
+		if err := e.convergeStaleLedger(ctx, id, ledger); err != nil {
+			return zero, err
+		}
+		e.logger.WarnContext(ctx, "sessions: converged stale erasure-ledger checkpoint from an abandoned prior lifecycle before beginning this lifecycle's erasure",
 			slog.String("session_id", id.SessionID),
 			slog.String("tenant_id", id.TenantID),
 			slog.String("user_id", id.UserID),
@@ -501,6 +512,32 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 	// 6. Complete: registry clear + redacted record-of-fact emit + ledger
 	//    cleanup.
 	return e.completeErasure(ctx, id, ledger)
+}
+
+// convergeStaleLedger durably records the completion data held by a prior
+// lifecycle's ledger, then removes only that checkpoint. It deliberately does
+// not write a tombstone or clear registry state: both belong to the live,
+// newer lifecycle currently being erased.
+func (e *CascadeEraser) convergeStaleLedger(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) error {
+	if ledger.SessionOpenedAt == 0 {
+		return fmt.Errorf("sessions: stale erasure ledger has no lifecycle stamp")
+	}
+	resp := prototypes.SessionsDeleteResponse{
+		SessionID:           id.SessionID,
+		Deleted:             true,
+		StateRecordsDeleted: ledger.StateRecordsDeleted,
+		ArtifactsDeleted:    ledger.ArtifactsDeleted,
+		MemoryPurged:        ledger.MemoryPurged,
+	}
+	if !e.recordAlreadyEmitted(ctx, id, ledger.SessionOpenedAt) {
+		if err := e.emitErased(ctx, id, resp, ledger.SessionOpenedAt); err != nil {
+			return fmt.Errorf("sessions: converge stale erasure ledger record: %w", err)
+		}
+	}
+	if err := e.deleteLedger(ctx, id); err != nil {
+		return fmt.Errorf("sessions: converge stale erasure ledger cleanup: %w", err)
+	}
+	return nil
 }
 
 // completeErasure finishes the cascade's final leg. It (re-)clears the
@@ -705,9 +742,11 @@ type erasureLedgerRecord struct {
 	// SessionOpenedAt is the erased session lifecycle's OpenedAt stamp
 	// (unix nanoseconds) — the lifecycle discriminator. A leftover ledger
 	// whose stamp mismatches the LIVE session's OpenedAt belongs to an
-	// abandoned prior lifecycle of a reused session id and is discarded
-	// rather than accumulated (see Erase), and the same stamp keys the
-	// idempotent re-emit guard (recordAlreadyEmitted).
+	// abandoned prior lifecycle of a reused session id and is converged then
+	// removed rather than accumulated (see Erase), and the same stamp keys the
+	// best-effort re-emit guard (recordAlreadyEmitted). The Clock must give
+	// consecutive lifecycles of one session id distinct OpenedAt stamps; an
+	// embedder-injected coarse clock can alias them and defeat this distinction.
 	SessionOpenedAt int64 `json:"session_opened_at"`
 }
 
@@ -884,7 +923,8 @@ func (r *Registry) isErased(ctx context.Context, ident identity.Identity) (bool,
 // erasureDedupeScanLimit bounds the recordAlreadyEmitted history scan:
 // the record for THIS session+lifecycle, if it exists at all, was
 // published by a recent attempt of this same erasure, so it sits among
-// the actor's most recent observability-scope events. The bound keeps
+// the actor's 512 most recent `session.erased` records in the shared
+// observability session. The bound keeps
 // the guard O(recent-window) instead of O(full-history); a record older
 // than the window is simply not found, and the guard then re-emits — a
 // duplicate compliance record is the acceptable failure direction, a

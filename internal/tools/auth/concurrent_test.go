@@ -162,12 +162,28 @@ func TestProvider_ConcurrentReuse_RefreshSingleFlight(t *testing.T) {
 	}
 
 	const N = 32
+	// Keep the one refresh flight open until every caller has been released
+	// toward Token. This turns the test into a real single-flight assertion
+	// (exactly one exchange), rather than allowing scheduler timing to decide
+	// whether a late caller starts a second, legitimate flight.
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var hookOnce sync.Once
+	h.server.refreshHook = func() {
+		hookOnce.Do(func() { close(started) })
+		<-release
+	}
+	callGate := make(chan struct{})
+	var ready sync.WaitGroup
+	ready.Add(N)
 	var wg sync.WaitGroup
 	var seenFresh atomic.Int32
 	for range N {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			ready.Done()
+			<-callGate
 			tok, err := h.provider.Token(ctx, h.userCfg.Source)
 			if err != nil {
 				t.Errorf("Token: %v", err)
@@ -178,6 +194,36 @@ func TestProvider_ConcurrentReuse_RefreshSingleFlight(t *testing.T) {
 			}
 		}()
 	}
+	ready.Wait()
+	close(callGate)
+	<-started
+	// The HTTP handler cannot complete until this point. Wait until every
+	// caller joined the already-registered flight; no scheduler guess or sleep
+	// is used as synchronization.
+	key := refreshKey(expired)
+	joinDeadline := time.NewTimer(2 * time.Second)
+	defer joinDeadline.Stop()
+	for {
+		h.provider.refreshMu.Lock()
+		call := h.provider.refreshFlight[key]
+		joined := 0
+		if call != nil {
+			joined = call.waiters
+		}
+		h.provider.refreshMu.Unlock()
+		if joined == N {
+			break
+		}
+		select {
+		case <-joinDeadline.C:
+			close(release)
+			wg.Wait()
+			t.Fatalf("refresh callers joined=%d want=%d; flight_present=%t token_calls=%d", joined, N, call != nil, h.server.TokenCalls())
+		default:
+			runtime.Gosched()
+		}
+	}
+	close(release)
 	wg.Wait()
 
 	// All N goroutines should have observed a freshly-refreshed token
@@ -185,16 +231,17 @@ func TestProvider_ConcurrentReuse_RefreshSingleFlight(t *testing.T) {
 	if int(seenFresh.Load()) != N {
 		t.Fatalf("expected all %d goroutines to see refreshed token; got %d", N, seenFresh.Load())
 	}
-	// Single-flight: at most ONE refresh round-trip to the
-	// authorization server. The fake server tracks calls.
+	// Single-flight: precisely ONE refresh round-trip reached the server.
 	tokenCalls := h.server.TokenCalls()
-	if tokenCalls > 4 {
-		// We allow some headroom for genuinely racy single-flight
-		// boundaries (a refresh completing exactly as another caller
-		// arrives may legitimately trigger a second flight). But
-		// N=32 → 32 round-trips is the smell we are watching for.
-		t.Fatalf("refresh storm: %d /token calls for N=%d concurrent Token() callers (expected ≤ 4)",
+	if tokenCalls != 1 {
+		t.Fatalf("refresh storm: %d /token calls for N=%d concurrent Token() callers (want exactly 1)",
 			tokenCalls, N)
+	}
+	h.provider.refreshMu.Lock()
+	remainingFlights := len(h.provider.refreshFlight)
+	h.provider.refreshMu.Unlock()
+	if remainingFlights != 0 {
+		t.Fatalf("refresh-flight map retained %d completed flight(s)", remainingFlights)
 	}
 }
 

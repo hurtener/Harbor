@@ -34,6 +34,11 @@ var errDeleteRefused = errors.New("injected: delete refused")
 // actually landed.
 var errPointerRead = errors.New("injected: active-pointer read failed")
 
+var (
+	errRevisionWrite = errors.New("injected: revision-record write failed")
+	errRevisionRead  = errors.New("injected: revision-record read failed")
+)
+
 // isActivePointerKind reports whether kind is one of the two active-pointer
 // record kinds ("agentcfg.active" / "agentcfg.user.active"). The revision
 // kinds ("agentcfg.revision.<id>" / "agentcfg.user.revision.<id>") never end
@@ -41,6 +46,10 @@ var errPointerRead = errors.New("injected: active-pointer read failed")
 // a revision from the write that PERSISTS it.
 func isActivePointerKind(kind string) bool {
 	return strings.HasSuffix(kind, ".active")
+}
+
+func isRevisionKind(kind string) bool {
+	return strings.Contains(kind, ".revision.")
 }
 
 // faultStore wraps a real StateStore and fails the Save that publishes a
@@ -78,9 +87,25 @@ type faultStore struct {
 	// SetRevision's read-modify-write still succeeds and the fault is confined
 	// to the compensation.
 	pointerFailed atomic.Bool
+	// Revision-record fault modes exercise the FIRST Save, whose return is
+	// equally ambiguous: commit-then-error, no-commit, and unreadable-after-
+	// commit must not be collapsed into one outcome.
+	failRevisionWrite         bool
+	commitRevisionThenFail    bool
+	blindAfterRevisionFailure bool
+	revisionFailed            atomic.Bool
 }
 
 func (f *faultStore) Save(ctx context.Context, r state.StateRecord) error {
+	if isRevisionKind(r.Kind) && (f.failRevisionWrite || f.commitRevisionThenFail) {
+		if f.commitRevisionThenFail {
+			if err := f.StateStore.Save(ctx, r); err != nil {
+				return err
+			}
+		}
+		f.revisionFailed.Store(true)
+		return errRevisionWrite
+	}
 	if isActivePointerKind(r.Kind) {
 		if f.commitPointerThenFail {
 			// Commit first, THEN report failure — the durable state and the
@@ -99,10 +124,75 @@ func (f *faultStore) Save(ctx context.Context, r state.StateRecord) error {
 }
 
 func (f *faultStore) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
+	if f.blindAfterRevisionFailure && isRevisionKind(kind) && f.revisionFailed.Load() {
+		return state.StateRecord{}, errRevisionRead
+	}
 	if f.blindAfterPointerFailure && isActivePointerKind(kind) && f.pointerFailed.Load() {
 		return state.StateRecord{}, errPointerRead
 	}
 	return f.StateStore.Load(ctx, id, kind)
+}
+
+func TestSetRevision_RevisionSaveCommittedThenErrored_DeletesExactUnreferencedRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		make func(*testing.T) state.StateStore
+	}{
+		{name: "inmem", make: newInmemStore},
+		{name: "sqlite", make: newSharedStore},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRegistryOverStore(t, tc.make, func(st state.StateStore) state.StateStore {
+				return &faultStore{StateStore: st, commitRevisionThenFail: true}
+			})
+			id := atomicityID()
+			_, err := r.SetRevision(context.Background(), id, "agent-x", agentcfg.ConfigScopeAgent, skills("s1"), agentcfg.SetOptions{})
+			if !errors.Is(err, errRevisionWrite) {
+				t.Fatalf("SetRevision error = %v, want injected revision-write cause", err)
+			}
+			revs, listErr := r.ListRevisions(context.Background(), id, "agent-x", agentcfg.ConfigScopeAgent, 0)
+			if listErr != nil {
+				t.Fatalf("ListRevisions: %v", listErr)
+			}
+			if len(revs) != 0 {
+				t.Fatalf("commit-then-error left %d unreferenced revision record(s): %+v", len(revs), revs)
+			}
+			if _, ok, activeErr := r.Active(context.Background(), id, "agent-x", agentcfg.ConfigScopeAgent); activeErr != nil || ok {
+				t.Fatalf("first record-save failure changed active state: ok=%v err=%v", ok, activeErr)
+			}
+		})
+	}
+}
+
+func TestSetRevision_RevisionSaveAbsentOrUnreadable_DistinguishesCleanupOutcome(t *testing.T) {
+	t.Run("absent", func(t *testing.T) {
+		r := newRegistryOver(t, func(st state.StateStore) state.StateStore {
+			return &faultStore{StateStore: st, failRevisionWrite: true}
+		})
+		id := atomicityID()
+		_, err := r.SetRevision(context.Background(), id, "agent-x", agentcfg.ConfigScopeAgent, skills("s1"), agentcfg.SetOptions{})
+		if !errors.Is(err, errRevisionWrite) {
+			t.Fatalf("SetRevision error = %v, want injected cause", err)
+		}
+		revs, _ := r.ListRevisions(context.Background(), id, "agent-x", agentcfg.ConfigScopeAgent, 0)
+		if len(revs) != 0 {
+			t.Fatalf("a non-committed write left records: %+v", revs)
+		}
+	})
+	t.Run("unreadable-retained", func(t *testing.T) {
+		r := newRegistryOver(t, func(st state.StateStore) state.StateStore {
+			return &faultStore{StateStore: st, commitRevisionThenFail: true, blindAfterRevisionFailure: true}
+		})
+		id := atomicityID()
+		_, err := r.SetRevision(context.Background(), id, "agent-x", agentcfg.ConfigScopeAgent, skills("s1"), agentcfg.SetOptions{})
+		if !errors.Is(err, errRevisionWrite) || !errors.Is(err, errRevisionRead) || !strings.Contains(err.Error(), "retained") {
+			t.Fatalf("unreadable exact record was not retained and reported: %v", err)
+		}
+		revs, listErr := r.ListRevisions(context.Background(), id, "agent-x", agentcfg.ConfigScopeAgent, 0)
+		if listErr != nil || len(revs) != 1 {
+			t.Fatalf("unreadable record retention: len=%d err=%v", len(revs), listErr)
+		}
+	})
 }
 
 func (f *faultStore) Delete(ctx context.Context, id identity.Quadruple, kind string) error {

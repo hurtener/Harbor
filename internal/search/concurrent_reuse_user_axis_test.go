@@ -79,7 +79,7 @@ func newTwoPrincipalStack(t *testing.T) *twoPrincipalStack {
 	// carrying a task and an artifact. A cross-TENANT assertion would pass
 	// today against code that leaks across users — which is exactly how
 	// this defect survived — so the stress runs inside one tenant.
-	deps := search.Deps{Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false }}
+	deps := search.Deps{Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false }, Audit: testAudit}
 	for _, user := range []string{axisUserA, axisUserB} {
 		for i := range 2 {
 			ident := identity.Identity{

@@ -79,10 +79,13 @@ import (
 )
 
 const (
-	waveV110SinkTool  = "transcript.sink"
-	waveV110WorkTool  = "wave.fetch"
-	waveV110MCPServer = "sinkmcp"
-	waveV110MCPHook   = "sinkmcp_ingest" // <server>_<tool> per the MCP driver's naming
+	waveV110SinkTool = "transcript.sink"
+	waveV110WorkTool = "wave.fetch"
+	// The manifest key remains dotted; the planner may invoke only the
+	// sanitized declaration projected into its request.
+	waveV110WorkDeclaredName = "wave_fetch"
+	waveV110MCPServer        = "sinkmcp"
+	waveV110MCPHook          = "sinkmcp_ingest" // <server>_<tool> per the MCP driver's naming
 
 	waveV110SinkKeyEnv   = "WAVE_V110_SINK_KEY"
 	waveV110SinkKeyValue = "dummy-wave-v110-sink-key-not-a-secret" // §7 rule 2 fixture
@@ -123,7 +126,7 @@ func (d *waveV110Driver) Complete(_ context.Context, req llm.CompleteRequest) (l
 		}
 	case strings.Contains(text, "WAVEV110_CALLTOOL") && !waveV19HasToolResult(req):
 		resp = llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{
-			{ID: "call_fetch", Name: waveV110WorkTool, Args: json.RawMessage(`{}`)},
+			{ID: "call_fetch", Name: waveV110WorkDeclaredName, Args: json.RawMessage(`{}`)},
 		}}
 	default:
 		resp = llm.CompleteResponse{

@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,14 @@ import (
 	"github.com/hurtener/Harbor/internal/search"
 	eventsearch "github.com/hurtener/Harbor/internal/search/events"
 )
+
+type auditFailingSearcher struct{}
+
+func (auditFailingSearcher) Index() types.SearchIndex { return types.SearchIndexSessions }
+
+func (auditFailingSearcher) Search(context.Context, types.SearchRequest) (types.SearchResponse, error) {
+	return types.SearchResponse{}, errors.Join(search.ErrAuditFailed, errors.New("sensitive sink endpoint"))
+}
 
 func TestSearchSurface_RejectsUnknownMethod(t *testing.T) {
 	t.Parallel()
@@ -89,6 +98,7 @@ func TestSearchSurface_CrossTenantWithoutAdmin_MapsTo_CodeScopeMismatch(t *testi
 	es, err := eventsearch.New(replayer, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testSearchAudit,
 	})
 	if err != nil {
 		t.Fatalf("events searcher: %v", err)
@@ -106,6 +116,27 @@ func TestSearchSurface_CrossTenantWithoutAdmin_MapsTo_CodeScopeMismatch(t *testi
 	}
 	if pe.Code != protoerrors.CodeScopeMismatch {
 		t.Fatalf("cross-tenant w/o admin: got code %q, want CodeScopeMismatch", pe.Code)
+	}
+}
+
+func TestSearchSurface_AuditFailureMapsToSanitizedRuntimeError(t *testing.T) {
+	t.Parallel()
+	reg, err := search.NewRegistry(auditFailingSearcher{})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	surf, err := protocol.NewSearchSurface(reg, func(context.Context) bool { return true })
+	if err != nil {
+		t.Fatalf("NewSearchSurface: %v", err)
+	}
+	ctx, _ := identity.WithVerified(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"})
+	_, err = surf.Dispatch(ctx, methods.MethodSearchSessions, &types.SearchRequest{})
+	var pe *protoerrors.Error
+	if !errors.As(err, &pe) || pe.Code != protoerrors.CodeRuntimeError {
+		t.Fatalf("got %v, want CodeRuntimeError", err)
+	}
+	if strings.Contains(err.Error(), "sensitive sink endpoint") {
+		t.Fatalf("wire error leaked audit sink detail: %v", err)
 	}
 }
 
@@ -129,6 +160,7 @@ func TestSearchSurface_QueryDispatch_ConcurrentSafe(t *testing.T) {
 	es, _ := eventsearch.New(replayer, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testSearchAudit,
 	})
 	reg, _ := search.NewRegistry(es)
 	surf, _ := protocol.NewSearchSurface(reg, func(context.Context) bool { return false })

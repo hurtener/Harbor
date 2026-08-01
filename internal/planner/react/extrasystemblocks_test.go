@@ -81,6 +81,18 @@ func TestRenderExtraSystemBlocks_BodyIsVerbatim(t *testing.T) {
 	}
 }
 
+func TestRenderExtraSystemBlocks_PreservesSurroundingWhitespace(t *testing.T) {
+	const raw = "  first line\nsecond line\n  "
+	rc := esbRC(planner.NamedBlock{Name: "fmt", Body: raw})
+	body := systemBody(t, rc, DefaultSystemPrompt)
+	if !strings.Contains(body, "[fmt]\n"+raw) {
+		t.Fatalf("valid block whitespace was trimmed instead of rendered verbatim. Body: %q", body)
+	}
+	if strings.Contains(body, "[fmt]\nfirst line") {
+		t.Fatalf("leading block whitespace was removed. Body: %q", body)
+	}
+}
+
 // TestRenderExtraSystemBlocks_UserLayerStaysEscaped is the contrast half,
 // asserted alongside so the asymmetry is documented by test: the SAME
 // characters in the lower-tier user layer ARE escaped, because a claim-free

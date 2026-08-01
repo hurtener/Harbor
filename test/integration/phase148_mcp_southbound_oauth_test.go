@@ -190,6 +190,10 @@ func newP148ProviderAndBus(t *testing.T, broker *p142Broker, downstreamHosts ...
 	if err != nil {
 		t.Fatalf("token store: %v", err)
 	}
+	flows, err := auth.NewFlowStore(rawState, sealer)
+	if err != nil {
+		t.Fatalf("flow store: %v", err)
+	}
 	coord := pauseresume.New()
 
 	prov, err := tokenexchange.New(auth.ProviderConfig{
@@ -201,6 +205,7 @@ func newP148ProviderAndBus(t *testing.T, broker *p142Broker, downstreamHosts ...
 		AllowedDownstreamHosts: downstreamHosts,
 	}, auth.FactoryDeps{
 		Store:       store,
+		Flows:       flows,
 		Bus:         bus,
 		Redactor:    red,
 		Coordinator: coord,

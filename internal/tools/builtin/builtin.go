@@ -91,12 +91,8 @@ var registry = map[string]registrar{
 		)
 	},
 	// meta-tools for tool + skill discovery.
-	"tool_search": func(rc RegistryContext) error {
-		return registerToolSearch(rc.Catalog)
-	},
-	"tool_get": func(rc RegistryContext) error {
-		return registerToolGet(rc.Catalog)
-	},
+	"tool_search": registerToolSearch,
+	"tool_get":    registerToolGet,
 	// the skill meta-tools are thin delegations
 	// to the `internal/skills/tools` handlers (capability
 	// filter + redaction + budgeter on the production path) and the
@@ -112,10 +108,8 @@ var registry = map[string]registrar{
 	// discovery set it is deliberately absent from every recommended
 	// default: persistence-capable skill authoring is an explicit
 	// operator decision.
-	"skill_propose": registerSkillPropose,
-	"declarative_action": func(rc RegistryContext) error {
-		return registerDeclarativeAction(rc.Catalog)
-	},
+	"skill_propose":      registerSkillPropose,
+	"declarative_action": registerDeclarativeAction,
 	// The escape hatch the LLM uses to pull the full bytes of a
 	// heavy-content artifact ref the prompt builder inlined as a
 	// truncated preview. Always-loaded so the LLM has the recovery

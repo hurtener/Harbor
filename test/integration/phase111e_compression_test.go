@@ -188,7 +188,7 @@ func TestE2E_Phase111e_CompressionFires_PromptShrinks_RunCompletes(t *testing.T)
 		// Request 0 — planner step 1: call text.echo with the inflator
 		// payload (the fact rides at the END, inside the summariser's
 		// per-fragment cap).
-		scriptedToolCallResponse("call_echo", "text.echo", fmt.Sprintf(`{"text":%q}`, echoText)),
+		scriptedToolCallResponse("call_echo", "text_echo", fmt.Sprintf(`{"text":%q}`, echoText)),
 		// Request 1 — the SUMMARISER's structured-output call (fires at
 		// the next step boundary, before planner step 2): the five-field
 		// compaction summary carrying the fact.
@@ -332,7 +332,7 @@ func TestE2E_Phase111e_SummariserFailure_FailsLoud(t *testing.T) {
 	// NOT t.Parallel(): phase111eConfig calls t.Setenv.
 	blob := phase111eBlob()
 	server := newScriptedLLMServer(t,
-		scriptedToolCallResponse("call_echo", "text.echo", fmt.Sprintf(`{"text":%q}`, blob)),
+		scriptedToolCallResponse("call_echo", "text_echo", fmt.Sprintf(`{"text":%q}`, blob)),
 		// The summariser call returns non-JSON garbage — the five-field
 		// parse fails and the error propagates per the runner's contract.
 		scriptedFinishResponse("this is not the five-field JSON object at all"),

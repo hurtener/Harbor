@@ -37,6 +37,9 @@ func (f *fakeStore) DeleteScope(context.Context, identity.Identity) (int, error)
 func (f *fakeStore) ListKind(context.Context, state.ListScope, string) ([]state.StateRecord, error) {
 	return f.listRecs, f.listErr
 }
+func (f *fakeStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
+	return f.listRecs, f.listErr
+}
 func (f *fakeStore) Close(context.Context) error { return nil }
 
 func mkInmemBus(t *testing.T) events.EventBus {

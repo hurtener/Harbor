@@ -76,6 +76,10 @@ func TestE2E_ToolsAnnotator_RealDrivers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
+	flowStore, err := toolauth.NewFlowStore(st, sealer)
+	if err != nil {
+		t.Fatalf("NewFlowStore: %v", err)
+	}
 	const ghSource = tools.ToolSourceID("gh")
 	provider, err := toolauth.NewProvider([]toolauth.OAuthConfig{{
 		Source:       ghSource,
@@ -84,6 +88,7 @@ func TestE2E_ToolsAnnotator_RealDrivers(t *testing.T) {
 		RedirectURI:  "https://app.example.test/callback",
 	}}, toolauth.ProviderDeps{
 		Store:       tokenStore,
+		Flows:       flowStore,
 		Bus:         bus,
 		Redactor:    red,
 		Coordinator: pauseresume.New(),

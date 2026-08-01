@@ -46,6 +46,7 @@ func TestArtifactsSearcher_RejectsMissingIdentity(t *testing.T) {
 	s, err := artifactsearch.New(store, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("artifactsearch.New: %v", err)
@@ -64,6 +65,7 @@ func TestArtifactsSearcher_RejectsCrossTenantWithoutAdmin(t *testing.T) {
 	s, err := artifactsearch.New(store, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("artifactsearch.New: %v", err)
@@ -93,6 +95,7 @@ func TestArtifactsSearcher_ScopesToCallerTenantAndCarriesRef(t *testing.T) {
 	s, err := artifactsearch.New(store, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("artifactsearch.New: %v", err)
@@ -127,6 +130,7 @@ func TestArtifactsSearcher_QueryMatch(t *testing.T) {
 	s, err := artifactsearch.New(store, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("artifactsearch.New: %v", err)
@@ -158,6 +162,7 @@ func TestArtifactsSearcher_Concurrent_NoCrossTalk(t *testing.T) {
 	s, err := artifactsearch.New(store, search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("artifactsearch.New: %v", err)

@@ -572,7 +572,11 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	}
 
 	if in.Sessions != nil && in.Tasks != nil && in.Artifacts != nil {
-		searchDeps := search.Deps{Redactor: red, AdminScope: server.SearchAdminScopeFromAuth}
+		searchDeps := search.Deps{
+			Redactor:   red,
+			AdminScope: server.SearchAdminScopeFromAuth,
+			Audit:      bus.Publish,
+		}
 		searchSessions, seErr := searchsessions.New(in.Sessions, searchDeps)
 		if seErr != nil {
 			return nil, wrapErr("search sessions", seErr)
@@ -665,7 +669,11 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithAllowWireInjection(in.AllowWireInjection),
 		}
 		if in.MCPAttacher != nil {
-			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(in.MCPAttacher))
+			if preparer, ok := in.MCPAttacher.(agentcfgprotocol.ConnectionPreparer); ok {
+				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionPreparer(preparer))
+			} else {
+				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(in.MCPAttacher))
+			}
 			// The production attacher concrete also applies the OAuth-discovery
 			// allow-list live (the set_mcp_discovery_origins write path); wire it as
 			// the applier when the attacher satisfies the seam.

@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -250,6 +248,7 @@ func WithArtifactEgressMaxBytes(n int) MCPAttacherOption {
 // compile time so the drift is a build failure instead.
 var (
 	_ agentcfgprotocol.ConnectionAttacher     = (*MCPConnectionAttacher)(nil)
+	_ agentcfgprotocol.ConnectionPreparer     = (*MCPConnectionAttacher)(nil)
 	_ agentcfgprotocol.DiscoveryOriginApplier = (*MCPConnectionAttacher)(nil)
 	_ agentcfgprotocol.ConnectionDetacher     = (*MCPConnectionAttacher)(nil)
 	_ projection.ConnectionReattacher         = (*MCPConnectionAttacher)(nil)
@@ -298,6 +297,22 @@ func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Regist
 // agentcfgprotocol.ErrAuthRequired so the service parks on the unified
 // pause/resume primitive.
 func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol.AttachRequest) error {
+	prepared, err := a.PrepareConnection(ctx, req)
+	if err != nil {
+		return err
+	}
+	if err := prepared.Activate(ctx); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		cleanupErr := prepared.Close(cleanupCtx)
+		cancel()
+		return errors.Join(err, cleanupErr)
+	}
+	return nil
+}
+
+// PrepareConnection dials and discovers against a private attachment. The
+// shared catalog and registry remain unchanged until Activate.
+func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agentcfgprotocol.AttachRequest) (agentcfgprotocol.PreparedConnection, error) {
 	// Stamp the (tenant, agent) reconcile-view owner tag from the verified
 	// caller identity + the target agent. Fail CLOSED when either component is
 	// missing: a runtime-added connection with no owner would be an
@@ -306,7 +321,7 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 	// process-global sweep). Never a silent untagged attach (CLAUDE.md §13).
 	owner := toolauth.Owner{Tenant: req.Identity.TenantID, Agent: req.AgentID}
 	if owner.IsZero() || owner.Tenant == "" || owner.Agent == "" {
-		return fmt.Errorf("%w: runtime-added connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
+		return nil, fmt.Errorf("%w: runtime-added connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
 			ErrRuntimeAddOwnerMissing, req.Name, owner.Tenant, owner.Agent)
 	}
 
@@ -346,50 +361,82 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 	// concurrent adds of the same name from racing in the catalog / registry.
 	// Adds are infrequent admin actions, so the coarse lock is acceptable.
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	var local []func(context.Context) error
-	err := mcpdrv.Attach(ctx, ms, mcpdrv.AttachDeps{
-		Catalog:          a.catalog,
-		Registry:         a.registry,
-		Bus:              a.bus,
-		Logger:           a.logger,
-		DefaultIdentity:  a.defaultIdentity,
-		Closers:          &local,
-		OAuthProviders:   a.oauthProviders,
-		OAuthProviderSet: a.oauthProviderSet,
+	prepared, err := mcpdrv.Prepare(ctx, ms, mcpdrv.AttachDeps{
+		Catalog:               a.catalog,
+		Registry:              a.registry,
+		Bus:                   a.bus,
+		Logger:                a.logger,
+		DefaultIdentity:       a.defaultIdentity,
+		Closers:               &local,
+		OAuthProviders:        a.oauthProviders,
+		OAuthProviderSet:      a.oauthProviderSet,
+		OAuthProviderOverride: req.OAuthProviderOverride,
 		// Capture app tool contexts on this connection exactly as the
 		// boot-config attach path does, so a `ui://` app declared by a tool on
 		// a runtime-added server renders with its real data instead of an
 		// empty shell.
 		ToolContext: a.toolContext,
 		Owner:       owner,
+		DescriptorFingerprint: agentcfg.MCPConnectionFingerprint(agentcfg.MCPConnectionDescriptor{
+			Name:                         req.Name,
+			Transport:                    req.Transport,
+			Command:                      append([]string(nil), req.Command...),
+			URL:                          req.URL,
+			OAuthProvider:                req.OAuthProvider,
+			MetaAnnotations:              cloneAnnotationsForReattach(req.MetaAnnotations),
+			OAuthDiscoveryAllowedOrigins: append([]string(nil), req.OAuthDiscoveryAllowedOrigins...),
+			Injection:                    req.Injection.Clone(),
+			ArtifactByteEligible:         req.ArtifactByteEligible,
+			ArtifactParams:               cloneArtifactParams(req.ArtifactParams),
+		}),
 		// The deployment's egress ceiling. Zero leaves mcpdrv.Attach on
 		// config.DefaultMCPArtifactEgressMaxBytes — a real ceiling, never an
 		// unbounded one.
 		ArtifactEgressMaxBytes: a.artifactEgressMaxBytes,
 	})
-	// Merge whatever closers Attach appended (a successful Connect appends the
-	// provider's Close even if a later step failed — drain it on teardown).
-	a.closers = append(a.closers, local...)
 	if err != nil {
-		// A binding/config error (unknown provider, missing or mismatched
-		// downstream allow-list, stdio/no-url, static-Authorization conflict)
-		// is a fail-loud operator misconfiguration, never a transient
-		// auth-required. Its message carries "oauth_provider", which the string
-		// heuristic below would otherwise match on "oauth" and misclassify as
-		// auth-required — silently parking the connection and hiding the real
-		// diagnostic. Check the typed sentinel first so the operator sees the
-		// actual cause (e.g. "unknown provider" / "host not in allow-list").
-		if errors.Is(err, mcpdrv.ErrOAuthBinding) {
-			return err
+		a.mu.Unlock()
+		var providerAuth *toolauth.ErrAuthRequired
+		var challengeAuth *mcpdrv.PreparationAuthRequiredError
+		if errors.As(err, &providerAuth) || errors.As(err, &challengeAuth) {
+			return nil, fmt.Errorf("%w: %w", agentcfgprotocol.ErrAuthRequired, err)
 		}
-		if looksLikeAuthRequired(err) {
-			return fmt.Errorf("%w: %w", agentcfgprotocol.ErrAuthRequired, err)
-		}
-		return err
+		return nil, err
 	}
-	return nil
+	return &preparedMCPConnection{owner: a, inner: prepared}, nil
+}
+
+// ConnectionMatches reports whether the exact desired descriptor is already
+// live for this owner. It is the resume idempotency check after a crash between
+// activation and checkpoint deletion.
+func (a *MCPConnectionAttacher) ConnectionMatches(owner toolauth.Owner, name, fingerprint string) bool {
+	liveOwner, liveFingerprint, ok := a.registry.RegistrationIdentity(name)
+	return ok && liveOwner == owner && liveFingerprint == fingerprint
+}
+
+type preparedMCPConnection struct {
+	owner   *MCPConnectionAttacher
+	inner   *mcpdrv.PreparedAttachment
+	release sync.Once
+}
+
+func (p *preparedMCPConnection) unlock() { p.release.Do(p.owner.mu.Unlock) }
+
+func (p *preparedMCPConnection) Activate(ctx context.Context) error {
+	err := p.inner.Activate(ctx)
+	if err == nil {
+		p.owner.closers = append(p.owner.closers, p.inner.Close)
+	}
+	p.unlock()
+	return err
+}
+
+func (p *preparedMCPConnection) Close(ctx context.Context) error {
+	err := p.inner.Close(ctx)
+	p.unlock()
+	return err
 }
 
 // SetOAuthDiscoveryOrigins applies a runtime-added connection's
@@ -544,36 +591,3 @@ func transportModeForAdd(t agentcfg.MCPTransport) string {
 		return string(mcpdrv.TransportAuto)
 	}
 }
-
-// looksLikeAuthRequired reports whether an attach error indicates the MCP
-// server requires authorization, so the service routes it onto the unified
-// pause/resume primitive. The MCP driver does not yet surface a TYPED auth
-// error, so this is a documented best-effort string heuristic over the
-// transport's HTTP-status / OAuth markers; it is conservative (a false
-// negative surfaces as a loud `failed`, never a silent drop, and a false
-// positive only parks an operator-cancellable connection — no security
-// bypass either way). When the driver gains a typed auth sentinel this
-// heuristic is replaced by errors.Is — tracked as a follow-up alongside the
-// MCP-SDK typed-error work.
-func looksLikeAuthRequired(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	// The numeric 401 is matched on a word boundary so it does not trip on
-	// an unrelated number (a latency, a byte count, a port). The remaining
-	// markers are auth-specific phrases.
-	if status401Pattern.MatchString(msg) {
-		return true
-	}
-	for _, marker := range []string{"unauthorized", "www-authenticate", "oauth", "invalid_token", "authentication required", "authorization required"} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// status401Pattern matches an HTTP 401 status code on a word boundary so a
-// bare "401" inside an unrelated number does not false-positive.
-var status401Pattern = regexp.MustCompile(`\b401\b`)

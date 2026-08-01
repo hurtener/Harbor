@@ -92,25 +92,32 @@ func (s *Service) UserSkillsUpsert(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
 	}
 	q := identity.Quadruple{Identity: id}
+	release := s.lockOwner(agentcfg.ConfigScopeUser, q.TenantID, q.UserID, req.AgentID)
+	defer release()
+	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
+	if err := s.precheckExpectedRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeUser, opts); err != nil {
+		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
+	}
 	skill := skillFromInput(req.Skill)
 	// Force user scope: a durable personal skill is keyed (tenant, user) and
 	// stored session-zeroed. It never carries a project/tenant scope id.
 	skill.Scope = skills.ScopeUser
 	skill.ScopeTenantID = ""
 	skill.ScopeProjectID = ""
-	// Body first, then the membership revision (same ordering + self-healing
-	// rationale as the admin SkillsUpsert): a stranded body is inert because
-	// the membership is the projection gate; an idempotent retry self-heals.
+	prior, hadPrior, err := s.skillAtScope(ctx, q, skill.Name, skills.ScopeUser)
+	if err != nil {
+		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
+	}
 	if err := s.skills.Upsert(ctx, q, skill); err != nil {
 		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
 	}
 	stored, err := s.userScopeSkillByName(ctx, q, skill.Name)
 	if err != nil {
-		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
+		return prototypes.AgentConfigUserSkillsUpsertResponse{}, s.compensateSkillUpsert(ctx, q, skill, prior, hadPrior, err)
 	}
-	rev, err := s.recordUserSkillsMembership(ctx, q, req.AgentID, addName, skill.Name, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
+	rev, err := s.recordUserSkillsMembership(ctx, q, req.AgentID, addName, skill.Name, opts)
 	if err != nil {
-		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
+		return prototypes.AgentConfigUserSkillsUpsertResponse{}, s.compensateSkillUpsert(ctx, q, skill, prior, hadPrior, err)
 	}
 	return prototypes.AgentConfigUserSkillsUpsertResponse{
 		Skill:           skillToSummary(stored),
@@ -136,6 +143,16 @@ func (s *Service) UserSkillsDelete(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigUserSkillsDeleteResponse{}, fmt.Errorf("%w: skill name is empty", ErrIdentityRequired)
 	}
 	q := identity.Quadruple{Identity: id}
+	release := s.lockOwner(agentcfg.ConfigScopeUser, q.TenantID, q.UserID, req.AgentID)
+	defer release()
+	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
+	if err := s.precheckExpectedRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeUser, opts); err != nil {
+		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err
+	}
+	prior, hadPrior, err := s.skillAtScope(ctx, q, req.Name, skills.ScopeUser)
+	if err != nil {
+		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err
+	}
 	// RUNG-PRECISE: the durable user verb deletes ONLY the ScopeUser row
 	// (keyed (tenant, user), session-independent — the intended cross-session
 	// durable delete). It must never touch a same-named session-scoped row.
@@ -144,9 +161,9 @@ func (s *Service) UserSkillsDelete(ctx context.Context, req prototypes.AgentConf
 	}
 	// Remove the name from the durable ConfigScopeUser membership so the
 	// revision never lists a name whose body is gone.
-	rev, err := s.recordUserSkillsMembership(ctx, q, req.AgentID, removeName, req.Name, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
+	rev, err := s.recordUserSkillsMembership(ctx, q, req.AgentID, removeName, req.Name, opts)
 	if err != nil {
-		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err
+		return prototypes.AgentConfigUserSkillsDeleteResponse{}, s.compensateSkillDelete(ctx, q, prior, hadPrior, err)
 	}
 	return prototypes.AgentConfigUserSkillsDeleteResponse{
 		Revision:        revisionToWire(rev),
@@ -180,7 +197,6 @@ func (s *Service) userScopeSkillByName(ctx context.Context, q identity.Quadruple
 // per-owner (ConfigScopeUser, tenant, real-user, agent) so distinct users
 // never contend. This is the user-scope analogue of recordSkillsMembership.
 func (s *Service) recordUserSkillsMembership(ctx context.Context, q identity.Quadruple, agentID string, op membershipOp, name string, opts agentcfg.SetOptions) (agentcfg.Revision, error) {
-	defer s.lockOwner(agentcfg.ConfigScopeUser, q.TenantID, q.UserID, agentID)()
 	active, hasActive, err := s.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeUser)
 	if err != nil {
 		return agentcfg.Revision{}, err

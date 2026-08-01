@@ -399,9 +399,10 @@ type RunContext struct {
 //     set time against the configured `ModelProfiles`).
 //   - Temperature / MaxTokens / ReasoningEffort override the corresponding
 //     `llm.CompleteRequest` fields.
-//   - ExtraInstructions is ADDITIVE: it is appended to the agent's system
-//     prompt (rendered into the `<additional_guidance>` section), never a
-//     replacement of the base prompt.
+//   - ExtraInstructions is trusted, tenant-level additive guidance rendered
+//     into `<additional_guidance>`; UserPersonalization is the one-run,
+//     non-admin contribution rendered separately with structural escaping in
+//     `<user_personalization>`. Neither replaces the base prompt.
 //   - SystemPromptOverride is a full REPLACE of the agent's base system
 //     prompt (the session layer's affordance, distinct from the additive
 //     ExtraInstructions). When both are set, the base prompt is replaced
@@ -430,6 +431,7 @@ type LLMOverrides struct {
 	MaxTokens            *int
 	ReasoningEffort      *string
 	ExtraInstructions    *string
+	UserPersonalization  *string
 	SystemPromptOverride *string
 	BasePromptLayer      *string
 	UserPromptLayer      *string

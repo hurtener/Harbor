@@ -49,7 +49,7 @@ func catalogWithEcho(t *testing.T) tools.ToolCatalog {
 func TestDeclarativeAction_MissingIdentityFailsLoud(t *testing.T) {
 	t.Parallel()
 	cat := catalogWithEcho(t)
-	_, err := declarativeAction(context.Background(), cat, DeclarativeActionArgs{Tool: "text.echo"})
+	_, err := declarativeAction(context.Background(), cat, DeclarativeActionArgs{Tool: "text_echo"})
 	if !errors.Is(err, ErrIdentityRequired) {
 		t.Fatalf("want ErrIdentityRequired, got %v", err)
 	}
@@ -63,7 +63,7 @@ func TestDeclarativeAction_DispatchesTypedShape(t *testing.T) {
 	ctx := declarativeTestCtx(t)
 	cat := catalogWithEcho(t)
 	out, err := declarativeAction(ctx, cat, DeclarativeActionArgs{
-		Tool: "text.echo",
+		Tool: "text_echo",
 		Args: json.RawMessage(`{"text":"hello","tag":"alpha"}`),
 	})
 	if err != nil {
@@ -72,8 +72,8 @@ func TestDeclarativeAction_DispatchesTypedShape(t *testing.T) {
 	if !out.Dispatched {
 		t.Fatalf("Dispatched = false, want true; Error=%q", out.Error)
 	}
-	if out.Tool != "text.echo" {
-		t.Errorf("Tool = %q, want text.echo", out.Tool)
+	if out.Tool != "text_echo" {
+		t.Errorf("Tool = %q, want text_echo", out.Tool)
 	}
 	if out.RepairOutcome != nil {
 		t.Errorf("RepairOutcome = %+v, want nil on clean dispatch", out.RepairOutcome)
@@ -96,7 +96,7 @@ func TestDeclarativeAction_DispatchesSalvageShape(t *testing.T) {
 	t.Parallel()
 	ctx := declarativeTestCtx(t)
 	cat := catalogWithEcho(t)
-	body := "```json\n{\"tool\":\"text.echo\",\"args\":{\"text\":\"salvaged\",\"tag\":\"beta\"}}\n```"
+	body := "```json\n{\"tool\":\"text_echo\",\"args\":{\"text\":\"salvaged\",\"tag\":\"beta\"}}\n```"
 	out, err := declarativeAction(ctx, cat, DeclarativeActionArgs{
 		Body: json.RawMessage(body),
 	})
@@ -106,8 +106,8 @@ func TestDeclarativeAction_DispatchesSalvageShape(t *testing.T) {
 	if !out.Dispatched {
 		t.Fatalf("Dispatched = false on salvage, Error=%q", out.Error)
 	}
-	if out.Tool != "text.echo" {
-		t.Errorf("Tool = %q, want text.echo (salvaged)", out.Tool)
+	if out.Tool != "text_echo" {
+		t.Errorf("Tool = %q, want text_echo (salvaged)", out.Tool)
 	}
 }
 
@@ -119,7 +119,7 @@ func TestDeclarativeAction_ArgsValidationFailureSignalsRepair(t *testing.T) {
 	ctx := declarativeTestCtx(t)
 	cat := catalogWithEcho(t)
 	out, err := declarativeAction(ctx, cat, DeclarativeActionArgs{
-		Tool: "text.echo",
+		Tool: "text_echo",
 		// text.echo's args schema requires `text` (string). Passing an
 		// integer fails schema validation.
 		Args: json.RawMessage(`{"text":42}`),
@@ -142,7 +142,7 @@ func TestDeclarativeAction_MultiActionBodySignalsMultiAction(t *testing.T) {
 	t.Parallel()
 	ctx := declarativeTestCtx(t)
 	cat := catalogWithEcho(t)
-	body := `[{"tool":"text.echo","args":{"text":"a"}},{"tool":"text.echo","args":{"text":"b"}}]`
+	body := `[{"tool":"text_echo","args":{"text":"a"}},{"tool":"text_echo","args":{"text":"b"}}]`
 	out, err := declarativeAction(ctx, cat, DeclarativeActionArgs{
 		Body: json.RawMessage(body),
 	})
@@ -289,7 +289,7 @@ func TestDeclarativeAction_DispatchPropagatesIdentity(t *testing.T) {
 	if err := cat.Register(descriptor); err != nil {
 		t.Fatalf("Register id.probe: %v", err)
 	}
-	out, err := declarativeAction(ctx, cat, DeclarativeActionArgs{Tool: "id.probe", Args: json.RawMessage(`{}`)})
+	out, err := declarativeAction(ctx, cat, DeclarativeActionArgs{Tool: "id_probe", Args: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatalf("declarativeAction: %v", err)
 	}

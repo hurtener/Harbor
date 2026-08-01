@@ -734,7 +734,7 @@ func TestE2E_Phase160_ScriptedLLM_DispatchAndApprovalGate(t *testing.T) {
 
 	t.Run("dispatch", func(t *testing.T) {
 		llm := newScriptedLLMServer(t,
-			scriptedToolCallResponse("call_parity", "parity.echo", `{"msg":"round-trip probe"}`),
+			scriptedToolCallResponse("call_parity", "parity_echo", `{"msg":"round-trip probe"}`),
 			scriptedFinishResponse("the compiled tool answered the probe"),
 		)
 		cfg := parityScriptedConfig(t, key, llm.URL(), "")
@@ -783,7 +783,7 @@ func TestE2E_Phase160_ScriptedLLM_DispatchAndApprovalGate(t *testing.T) {
 		// parks the invocation, so no second LLM turn happens before
 		// teardown.
 		llm := newScriptedLLMServer(t,
-			scriptedToolCallResponse("call_parity_gated", "parity.echo", `{"msg":"gated probe"}`),
+			scriptedToolCallResponse("call_parity_gated", "parity_echo", `{"msg":"gated probe"}`),
 		)
 		cfg := parityScriptedConfig(t, key, llm.URL(), parityToolOverlay)
 

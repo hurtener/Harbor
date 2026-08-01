@@ -79,6 +79,10 @@ func p166Provider(t *testing.T, bus events.EventBus, tokenURL string, allowedHos
 	if err != nil {
 		t.Fatalf("token store: %v", err)
 	}
+	flows, err := auth.NewFlowStore(st, sealer)
+	if err != nil {
+		t.Fatalf("flow store: %v", err)
+	}
 	prov, err := tokenexchange.New(auth.ProviderConfig{
 		Name:                   "m365",
 		CredentialSource:       credsource.Static("dummy-client-id-not-a-secret", "dummy-client-secret-not-a-secret"),
@@ -88,6 +92,7 @@ func p166Provider(t *testing.T, bus events.EventBus, tokenURL string, allowedHos
 		AllowedDownstreamHosts: allowedHosts,
 	}, auth.FactoryDeps{
 		Store:       store,
+		Flows:       flows,
 		Bus:         bus,
 		Redactor:    auditpatterns.New(),
 		Coordinator: pauseresume.New(),

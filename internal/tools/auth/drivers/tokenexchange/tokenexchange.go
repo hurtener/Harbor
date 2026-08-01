@@ -268,7 +268,7 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 	if cfg.TokenURL == "" {
 		return nil, fmt.Errorf("%w (provider name=%q)", ErrMissingTokenURL, cfg.Name)
 	}
-	if deps.Store == nil || deps.Bus == nil || deps.Redactor == nil || deps.Coordinator == nil {
+	if deps.Store == nil || deps.Flows == nil || deps.Bus == nil || deps.Redactor == nil || deps.Coordinator == nil {
 		return nil, fmt.Errorf("%w (provider name=%q)", ErrMissingDeps, cfg.Name)
 	}
 
@@ -1051,6 +1051,7 @@ func (p *provider) buildConsentRequired(ctx context.Context, id identity.Identit
 		BindingScope: auth.ScopeUser,
 		AuthorizeURL: ce.consentURL,
 		State:        string(pause.Token),
+		PauseToken:   string(pause.Token),
 		Scopes:       append([]string(nil), p.scopes...),
 		Message:      fmt.Sprintf("credential broker %s requires consent", p.brokerHost),
 	}
@@ -1109,8 +1110,8 @@ func (p *provider) DenyFlow(_ context.Context, _, _ string) error {
 
 // PendingFlow implements auth.OAuthProvider.PendingFlow. A
 // non-interactive driver holds no flow records — always reports none.
-func (p *provider) PendingFlow(_ string) (auth.PendingFlowInfo, bool) {
-	return auth.PendingFlowInfo{}, false
+func (p *provider) PendingFlow(_ context.Context, _ string) (auth.PendingFlowInfo, bool, error) {
+	return auth.PendingFlowInfo{}, false, nil
 }
 
 // Revoke implements auth.OAuthProvider.Revoke by clearing the local

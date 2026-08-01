@@ -1,11 +1,8 @@
 package react
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"strings"
-
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // maxToolNameBytes is the model-visible function-name budget.
@@ -36,7 +33,7 @@ import (
 //
 // Names already within budget are returned unchanged, so a well-named
 // catalog pays nothing for this.
-const maxToolNameBytes = 44
+const maxToolNameBytes = tools.MaxModelToolNameBytes
 
 // toolNameDigestBytes is the width of the hex digest appended when a name
 // has to be shortened. 32 bits of digest over a catalog of a few hundred
@@ -105,90 +102,23 @@ const toolNameDigestBytes = 8
 // name executes. Partial reachability would be worse than the drop: the
 // model would read one tool's schema and invoke another's code.
 func sanitizeToolName(name string) string {
-	return sanitizeToolNameTo(name, maxToolNameBytes)
+	return tools.ModelVisibleToolName(name)
 }
 
 // sanitizeToolNameTo is sanitizeToolName against an explicit byte budget.
 // The budget is a constant in production; taking it as a parameter is what
 // lets the cost measurement sweep it without mutating package state.
 func sanitizeToolNameTo(name string, budget int) string {
-	clean := true
-	for _, r := range name {
-		if !isToolNameRune(r) {
-			clean = false
-			break
-		}
-	}
-	if clean && len(name) <= budget {
-		return name
-	}
-	var b strings.Builder
-	b.Grow(len(name))
-	for _, r := range name {
-		if isToolNameRune(r) {
-			b.WriteRune(r)
-		} else {
-			b.WriteByte('_')
-		}
-	}
-	s := b.String()
-	if len(s) > budget {
-		s = shortenToolName(s, budget)
-	}
-	return s
-}
-
-// minDigestBudget is the smallest budget at which the full
-// `<tail>_<digest>` shape fits — one separator plus the whole digest, with
-// a zero-width tail at the boundary. Below it only a digest PREFIX fits.
-//
-// Production never reaches the sub-budget arm ([maxToolNameBytes] is 44),
-// but the budget is a PARAMETER of [sanitizeToolNameTo], and a parameter
-// nobody validated is not the "impossible by construction" carve-out a
-// panic needs (CLAUDE.md §5). The arm makes the function TOTAL instead:
-// the retained-tail width used to go negative below this boundary and
-// panic on a slice bound.
-const minDigestBudget = toolNameDigestBytes + 1
-
-// shortenToolName reduces an over-budget provider-safe name to exactly
-// `budget` bytes by retaining its tail and appending a digest of the whole
-// string. See sanitizeToolName's godoc for why the tail is the half worth
-// keeping.
-//
-// At or above [minDigestBudget] the result is `<retained tail>_<8-hex
-// digest>`. Below it no tail survives and the result is a PREFIX of the
-// digest — still deterministic, still a pure function of the input, and
-// still discriminating for as long as the width allows. A non-positive
-// budget cannot represent any name at all and yields the empty string.
-func shortenToolName(s string, budget int) string {
-	if budget <= 0 {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(s))
-	digest := hex.EncodeToString(sum[:])[:toolNameDigestBytes]
-	if budget < minDigestBudget {
-		return digest[:budget]
-	}
-	// One separator byte between the retained tail and the digest.
-	keep := budget - toolNameDigestBytes - 1
-	return s[len(s)-keep:] + "_" + digest
-}
-
-func isToolNameRune(r rune) bool {
-	switch {
-	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
-		return true
-	default:
-		return false
-	}
+	return tools.ModelVisibleToolNameTo(name, budget)
 }
 
 // resolveDeclaredToolName maps a provider-returned tool-call name back to
 // the real catalog tool name. Declarations are sent to the LLM under their
 // sanitized names, so a returned name may differ from the catalog name
-// (e.g. "inventory_check" → "inventory.check").
+// (e.g. "inventory_check" → "inventory.check"). The bool is false unless
+// name was actually present in this run's declared catalog projection.
 //
-// # It re-derives the FORWARD transform, in the declaration's own precedence
+// # Compatibility projection for direct projector callers
 //
 // Resolution walks the same candidates buildToolDeclarations walks, in the
 // same order, and returns the first whose sanitized name equals the
@@ -213,25 +143,19 @@ func isToolNameRune(r rune) bool {
 // falls through to the verbatim passthrough that returns the same value the
 // exact branch did.
 //
-// Scanning rather than consulting a recorded declared→catalog map is the
-// deliberate choice: a map is per-projection state that would have to be
-// carried on the RunContext (the planner artifact may not hold it — the
-// concurrent-reuse contract), and any path that reached the projector
-// WITHOUT it — a resumed run, a replayed trajectory, a caller that projects
-// a response it did not declare for — would fall back to exactly the branch
-// this defect lived in, silently. The scan is O(catalog) per tool call
-// against an LLM round trip; the forward path already pays the same cost
-// twice per turn.
+// ReActPlanner.Next does not use this reconstruction after Complete. It keeps
+// the immutable ModelToolNameProjection built alongside req.Tools and passes
+// that exact snapshot into projectResponse, so a concurrent catalog change
+// cannot retarget the provider's response. This helper remains for direct
+// projector tests and compatibility callers that have no in-flight request.
 //
-// The precedence is stable under the one way the catalog moves mid-run:
-// discovered tools are APPENDED, so a later arrival can never displace an
-// earlier claimant of a provider-safe name.
-//
-// An unmatched name is returned verbatim — the executor then fails loud on
-// an unknown tool, exactly as before this sanitization existed.
-func resolveDeclaredToolName(rc *planner.RunContext, name string) string {
+// An unmatched name is rejected at the planner boundary. It is never treated
+// as a raw catalog key: catalog keys and model-visible declared names are two
+// distinct namespaces, and accepting the former would make dropped collision
+// losers callable again.
+func resolveDeclaredToolName(rc *planner.RunContext, name string) (string, bool) {
 	if rc == nil || rc.Catalog == nil {
-		return name
+		return "", false
 	}
 	// Reserved planner controls are declared first and always win their
 	// name, so an operator tool that sanitizes onto one was DROPPED and
@@ -240,26 +164,13 @@ func resolveDeclaredToolName(rc *planner.RunContext, name string) string {
 	// because "unreachable by construction" is the reasoning this function
 	// was wrong about once.
 	if isReservedControlName(name) {
-		return name
+		return "", false
 	}
-	for _, t := range rc.Catalog.List() {
-		if t.Name != "" && sanitizeToolName(t.Name) == name {
-			return t.Name
-		}
+	_, projection := projectModelTools(*rc, rc.DiscoveredTools)
+	if catalogName, ok := projection.ResolveDeclared(name); ok {
+		return catalogName, true
 	}
-	// Discovered tools reach req.Tools through their own arm and are absent
-	// from the always-loaded List() view, so they need their own scan —
-	// without it every discovered tool whose name is dotted or over-budget
-	// is declared to the model and then undispatchable.
-	for _, d := range rc.DiscoveredTools {
-		if d == "" || sanitizeToolName(d) != name {
-			continue
-		}
-		if _, ok := rc.Catalog.Resolve(d); ok {
-			return d
-		}
-	}
-	return name
+	return "", false
 }
 
 // isReservedControlName reports whether name is one of the planner's

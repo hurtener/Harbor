@@ -70,6 +70,17 @@ var (
 	// fails closed rather than silently clamping — a silent clamp would
 	// defeat the per-row identity boundary the snapshot guarantees.
 	ErrInvalidPage = errors.New("pauseresume: invalid pause-list pagination")
+	// ErrInvalidContinuation reports an empty/malformed continuation identity.
+	ErrInvalidContinuation = errors.New("pauseresume: invalid continuation")
+	// ErrContinuationHandlerMissing keeps a durable pause retriable when its
+	// runtime has not registered the handler named by the checkpoint.
+	ErrContinuationHandlerMissing = errors.New("pauseresume: continuation handler missing")
+	// ErrContinuationKindRegistered prevents two consumers from racing to own
+	// one durable continuation kind.
+	ErrContinuationKindRegistered = errors.New("pauseresume: continuation kind already registered")
+	// ErrResumeInProgress reports a concurrent claim of the same token while its
+	// continuation is running. The handler still executes exactly once.
+	ErrResumeInProgress = errors.New("pauseresume: resume already in progress")
 
 	// ErrCrossTenantScope — Coordinator.List was called with a
 	// ListFilter naming a tenant other than the caller's own (or more

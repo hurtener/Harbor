@@ -160,6 +160,11 @@ func (c *injectingCatalog) Search(ctx context.Context, query string, tags []stri
 	return c.inj.inner.Search(ctx, query, tags, limit)
 }
 
+// StageSource forwards reversible source publication to the inner catalog.
+func (c *injectingCatalog) StageSource(source tools.ToolSourceID, replacements []tools.ToolDescriptor, replaceExisting bool) (tools.CatalogSourceSwap, error) {
+	return c.inj.inner.StageSource(source, replacements, replaceExisting)
+}
+
 // ErrSimulatedFailure is the sentinel a SimulateFailure-triggered
 // error wraps. Callers compare via errors.Is to distinguish
 // kit-injected failures from genuine tool errors.

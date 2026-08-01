@@ -11748,3 +11748,137 @@ D-370's own boundary tests are unchanged and still pass: a SUCCESSFUL add detach
 Case 2 is not the same defect wearing a different hat. The pointer is the source of truth and an unreferenced revision is invisible to `Active` and to the run-start projection, so there is nothing declared to protect and a live server no active revision names is precisely what the compensation exists to close. The orphan record itself is D-380's to remove, and its conditional delete fires exactly here (the pointer disowns the revision) — the two fixes compose. Mutation-verified: detaching unconditionally turns case 1 red at `names=true live=false`, which is D-380's predicted shape reproduced, while cases 2 and 3 stay green.
 
 **The one residual: the unknown answer tears down a landed write (case 3), and the fallback direction is deliberately the OPPOSITE of D-380's.** When the store fails the write and then refuses the re-read, "the pointer does not name it" and "I cannot tell" are indistinguishable, so this door falls back to the unrefined compensation and reports it at ERROR. D-380 resolves its own unknown answer the other way — it RETAINS — and the asymmetry is reasoned rather than inconsistent: down there an unknown-answer delete strands a dangling pointer that **no later write can repair**, because every door reads through the pointer. Here both outcomes **self-heal at the next run-start reconcile** — the attach pass re-establishes a declared-but-dark connection, the detach pass tears down an undeclared-but-live one — so the bounded blast radius makes keeping the guarantee this door was given the better trade. The residual is narrow (it needs a store sick enough to fail a write and then a read), bounded, self-healing, and pinned by `TestAddMCPConnection_WriteLandedButPointerUnreadable_FallsBackLoudly` so it cannot change silently. Closing it properly needs the conditional-write primitive D-366 already names as the real fix, not a fourth compensation.
+
+---
+
+## D-387 — Caller instructions are normal-user personalization; prompt position never grants runtime authority
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 225, superseding the affected D-365 prompt-placement claim without removing or admin-gating the wire field.
+
+**Decision.** `RunOverrides.extra_instructions` remains available to a verified normal user and keeps one-run semantics. The runtime renders it in a fixed caller-personalization section distinct from tenant/operator guidance, with delimiter-safe encoding. This is containment and attribution, not an assertion that an LLM cannot follow hostile text. Identity, tool availability, authorization, governance, and trusted configuration are enforced outside prompt prose. Caller-memory admission records the original admitted byte count while carrying no content, strict request decoding requires exactly one JSON document, and valid extra system blocks preserve their bytes after empty detection.
+
+**Cross-references.** D-364, D-365, D-367, D-374, D-375, D-386. RFC §5.2, §6.2, §6.5.
+
+---
+
+## D-388 — Conditional skill writes coordinate body and revision effects; unknown persistence is retained loudly
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 226; supersedes Phase 221's incomplete side-effect-free claim.
+
+**Decision.** The owner lock and expected-content check precede every admin/user SkillStore mutation. A later revision failure restores the exact prior body or removes only a body created by this operation; a conflict performs no compensation because no mutation began. A revision-record save that reports failure is checked with an exact scoped point-read: only a byte-identical record proven unreferenced is deleted. An unreadable or mismatched answer retains the record and returns/logs the ambiguity. This is coordinated compensation, not cross-store ACID or cross-process CAS.
+
+**Cross-references.** D-366, D-370, D-380, D-381. RFC §6.7, §6.11, §6.16, §9.
+
+---
+
+## D-389 — Model-authored tool names resolve only through one shared declaration projection
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 227; closes #654.
+
+**Decision.** The transport-neutral tools layer owns one immutable per-run projection from catalog keys to bounded model-visible declarations and back to the winning catalog entry. Every planner/builtin consumer uses it. Raw catalog keys are not a fallback namespace for model-authored names, and collision losers are announced but never callable through the colliding declaration.
+
+**Cross-references.** D-377, D-378, D-382. RFC §6.2, §6.4.
+
+---
+
+## D-390 — Runtime-added MCP connections prepare, persist, then activate
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 228; supersedes D-381's destructive unreadable-pointer fallback and closes #653.
+
+**Decision.** Preparation may dial, authenticate, initialize, and discover, but it publishes no provider, catalog entry, live registration, or online event. Desired state is persisted before activation: the registry stages a reversible replacement first, then the catalog swap is the dispatch linearization point; a refusal rolls both back to the exact prior state. A failed write closes only unpublished resources unless an exact pointer re-read proves the new descriptor active, in which case activation converges while the storage error remains loud. An unreadable pointer never detaches existing live state. Inline OAuth activation is governed by an exact installation receipt. Authentication-required work parks through the unified pause/resume primitive and recreates preparation on resume. Run-start reconciliation consumes the same lifecycle and compares descriptors, not names alone.
+
+Restart safety includes the production OAuth callback, not only the continuation token. A mandatory `FlowStore` typed wrapper over the existing `StateStore` seam seals the complete pending-flow envelope (PKCE verifier, client material, identity, expiry, and pause token) with the OAuth KEK. The high-entropy OAuth state is the direct callback lookup key; the reconstructed identity triple and provider-owned source are validated before exchange. A durable one-winner claim prevents duplicate exchange across reconstructed providers, retryable failures release the claim, and a spent authorization code whose token cannot be persisted terminates the pause explicitly. All resume decisions observe the same in-flight first-winner claim, so reject/timeout cannot overtake accepted continuation work.
+
+The process-global same-name refusal gates remain mandatory. #638 stays open and must land before those gates can be relaxed; `agent_id` does not join Harbor's isolation tuple.
+
+**Cross-references.** D-301, D-370, D-379, D-380, D-381. RFC §3.3, §6.4, §6.11, §6.16.
+
+---
+
+## D-391 — Release evidence needs external oracles and one executable guard-case registry
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 229; closes #652 and #644 and supersedes affected Phase 223/224 evidence claims.
+
+**Decision.** Canonical event names are compared bidirectionally with a hand-maintained golden that does not import emitter constants. Drift-audit mutation coverage has one registry joining each guard signature to declared and executed cases; deleting a whole case must fail the census. Shipped smoke scripts that omit a summary fail behaviorally. Documentation validation supersedes only an older run on the same ref; Pages deployment alone owns global deployment serialization.
+
+**Cross-references.** D-368, D-374, D-376, D-384. RFC §5.2, §6.13.
+
+---
+
+## D-392 — State enumeration is identity-scoped at storage and every granted search widening is audited
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 230; closes #396, #612, and #462.
+
+**Decision.** Every StateStore driver implements one mandatory identity-and-kind-prefix enumeration operation and filters before returning rows; agent-config history no longer requires maintenance-wide scans. All four search indexes emit one redacted audit fact for an allowed tenant/user widening. A stale erasure ledger first converges the old lifecycle's record before deletion, retaining the ledger on publish or cleanup failure and never mutating the current lifecycle. Delivery is at least once: a bounded `HistoryReplayer` check suppresses observable retries when available, while an unverifiable retry may duplicate rather than lose the compliance record. `agent_id` is metadata, never a storage isolation filter.
+
+**Cross-references.** D-025, D-059, D-218, D-349. RFC §6.9, §6.11, §6.13, §9.
+
+---
+
+## D-393 — Reliability tests synchronize on observable state and protocol-faithful terminal input
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 231.
+
+**Decision.** Scheduler-dependent counters, unsequenced resumes, polling sleeps, timeout inflation, retry-until-green, and permanent quarantine are not fixes. Tests use per-invocation plans, explicit barriers, cancellation/completion acknowledgements, process-exit signals, and joined goroutines. Tool OAuth completion and planner run re-entry are two distinct pauses: the choreography waits for both tokens before the callback and resumes the run token once after durable token persistence. The PTY harness sends one failed-follow-up retry command; a duplicate while dispatch is in flight is a deterministic local error, not another start.
+
+The reproduced PTY failures were four harness-oracle defects, not permission to weaken the workflow. First, the harness sent legacy escape sequences and then briefly sent Bubble Tea's internal `tea.KeyF*` enum after the terminal had negotiated Kitty CSI-u; Kitty assigns F1–F12 the distinct functional-key codepoints beginning at 57364. The focused real-PTY decoder test fails without that translation. Second, Bubble Tea emits cursor-addressed cell diffs, so typed `hello` may appear as separate `hel` and `lo` byte fragments even when the screen is correct; the harness now waits for the persisted draft acknowledgement, forces a full repaint, and retains the visual assertion. Third, the failed-follow-up retry toast can be overwritten before a render; the canonical `tasks.list` row is the stable completion barrier. Fourth, a successful `sessions.inspect` after rename proves the server commit, not delivery of the asynchronous `renamedMsg` back through Bubble Tea: the next shortcut could therefore be consumed by the still-open rename input. The workflow now waits for the terminal's rename-result acknowledgement before sending that shortcut. Failure-only SIGQUIT output is captured separately from the bounded screen tail so stack evidence cannot be displaced by render bytes.
+
+The constrained 100-run PTY gate then exposed a production race rather than another excuse for a retry: a late, superseded inspection response in the same identity/generation closed an action modal opened after the newer route rendered. Same-scope stale responses are now discarded without mutating focus; a response from another identity or generation still closes the modal because its targets are stale. The app regression drives both branches before the PTY stress is repeated.
+
+**Cross-references.** D-025 and the Phase 231 issue set. RFC §5.4, §6.4.
+
+---
+
+## D-394 — OAuth callback convergence uses exact durable stages and one atomic credential record
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 228; supersedes D-083's access/refresh sibling-record write shape.
+
+**Decision.** A successful authorization-code exchange stores the access token, refresh token, and encrypted exact flow-state marker in one StateStore record. The two credentials remain independently sealed, but there is no second save that can fail after publishing a usable access credential. Before pause resume or destructive pending-flow cleanup, FlowStore also writes a sealed completion tombstone keyed by the exact OAuth state and carrying the exact identity, source, subject, pause token, retry expiry, token marker, and expected `DecisionResume`. The tombstone, rather than the replaceable current credential slot, is the durable per-flow idempotency and callback-routing oracle: a later successful flow may replace the current credential without making an older callback spend its code again. A retry additionally requires a current credential at the same scoped key and the coordinator's exact terminal decision.
+
+Completion tombstones survive cleanup only through the original flow's bounded retry horizon. A later flow for the same identity opportunistically enumerates the exact completion Kind prefix through `ListKindForIdentity`, validates every sealed record, and removes expired tombstones only after any residual pending, claim, or terminal records. Other identities and unexpired flows are untouched. Landed-but-unacknowledged completion writes/deletes and partially applied cleanup converge by exact reread.
+
+If the one-time code is spent but credential persistence fails, FlowStore records a durable terminal-rejection stage before releasing its one-winner claim. A transient rejection-resume failure therefore retains a retry path that rejects and cleans up without exchanging the spent code again. Denial and completion retries converge after cleanup failure. Callback logs, responses, pause records, and canonical events never carry untrusted upstream response bodies or redirect error text: seven standard OAuth denial codes form a closed local vocabulary and every other value reduces to static `authorization_denied` before crossing the callback or direct-provider boundary.
+
+**Cross-references.** D-083, D-096, D-199, D-390. RFC §3.3, §6.4, §7, §9.
+
+---
+
+## D-395 — Native tool resolution freezes the exact declaration projection for each provider turn
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 227; tightens D-389.
+
+**Decision.** ReAct snapshots the catalog once per provider turn, builds the prompt quick-reference, `req.Tools`, and its reverse resolver from that same snapshot, and carries the immutable projection through every response branch. It never rebuilds the projection after `Complete`. A catalog mutation during the provider call therefore cannot retarget a model-authored name to a newly arrived collider. Scripted consumers emit the model-visible declaration name and continue asserting dispatch reaches the intended internal catalog key.
+
+**Cross-references.** D-025, D-377, D-378, D-382, D-389. RFC §6.2, §6.4.
+
+---
+
+## D-396 — MCP activation reservations stay private and exact landed auth remains resumable
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 228; tightens D-390.
+
+**Decision.** `Registry.StageRegistration` reserves a same-name replacement without placing the staged provider in the live registry map. Direct resource/prompt/observability reads continue reaching the exact prior provider until the catalog source swap succeeds. The catalog remains the dispatch linearization point; registry Commit then publishes the reserved entry and drains the displaced provider. Register, deregister, and separator-ambiguous staging cannot invalidate a live reservation.
+
+When an auth-required revision write reports failure but an exact reread proves the descriptor and provider landed, the operation converges as successful `auth_required`: Harbor publishes the exact provider, retains the producer-owned pause, emits the reread revision and pause token, and returns that token to the caller. A lost storage acknowledgement alone never rejects a durable continuation or hides its resume handle.
+
+**Cross-references.** D-301, D-370, D-380, D-390. RFC §3.3, §6.4, §6.11, §6.16.

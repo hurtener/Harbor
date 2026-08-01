@@ -187,7 +187,7 @@ func TestE2E_WaveC_ComposedStack_AllFeaturesOn(t *testing.T) {
 	echoText := blob + " " + waveCFact
 	server := newScriptedLLMServer(t,
 		// 1 — planner step 1: tool call inflating the trajectory.
-		scriptedToolCallResponse("call_echo", "text.echo", fmt.Sprintf(`{"text":%q}`, echoText)),
+		scriptedToolCallResponse("call_echo", "text_echo", fmt.Sprintf(`{"text":%q}`, echoText)),
 		// 2 — the summariser's compaction call (governed like any other).
 		scriptedFinishResponse(waveCSummaryJSON()),
 		// 3 — planner step 2: the compacted-prompt finish.

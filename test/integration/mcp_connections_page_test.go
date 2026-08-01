@@ -160,6 +160,10 @@ func buildMCPPageEnv(t *testing.T) *mcpPageEnv {
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
+	flowStore, err := auth.NewFlowStore(store, sealer)
+	if err != nil {
+		t.Fatalf("NewFlowStore: %v", err)
+	}
 	oauthProv, err := auth.NewProvider([]auth.OAuthConfig{{
 		Source:       tools.ToolSourceID(mcpPageServer),
 		SourceName:   "GitHub",
@@ -168,7 +172,7 @@ func buildMCPPageEnv(t *testing.T) *mcpPageEnv {
 		RedirectURI:  "http://localhost/callback",
 		Scopes:       []string{"repo"},
 	}}, auth.ProviderDeps{
-		Store: tokenStore, Bus: bus, Redactor: red, Coordinator: pauseresume.New(),
+		Store: tokenStore, Flows: flowStore, Bus: bus, Redactor: red, Coordinator: pauseresume.New(),
 	})
 	if err != nil {
 		t.Fatalf("auth.NewProvider: %v", err)

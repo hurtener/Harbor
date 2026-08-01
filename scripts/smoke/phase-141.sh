@@ -14,6 +14,7 @@ source "scripts/smoke/common.sh"
 
 SANI="internal/planner/react/tool_name_sanitize.go"
 TST="internal/planner/react/tool_name_sanitize_test.go"
+MODEL_NAMES="internal/tools/model_names.go"
 
 assert_file "${SANI}" "phase 141: tool-name sanitizer source present"
 assert_file "${TST}" "phase 141: tool-name sanitizer round-trip test present"
@@ -33,14 +34,14 @@ DECL="internal/planner/react/discovered_tools.go"
 
 # The budget is deliberately BELOW the provider's 64-byte ceiling: a tool name
 # is paid on every turn, twice per tool. A revert to 64 must not pass silently.
-assert_grep_present "const maxToolNameBytes = 44" "${SANI}" \
+assert_grep_present "const MaxModelToolNameBytes = 44" "${MODEL_NAMES}" \
     "phase 141: the model-visible name budget is bounded below the 64-byte provider ceiling (D-377)"
 # Shortening keeps the TAIL (the verb), not the head (the repeated source id).
 # `s[:keep]` — the head truncation that collapsed a whole server onto one
 # declaration — must never come back.
-assert_grep_present "s\[len\(s\)-keep:\]" "${SANI}" \
+assert_grep_present "s\[len\(s\)-keep:\]" "${MODEL_NAMES}" \
     "phase 141: over-budget names are shortened tail-first (D-377)"
-assert_grep_absent "return s\[:keep\]" "${SANI}" \
+assert_grep_absent "return s\[:keep\]" "${MODEL_NAMES}" \
     "phase 141: head truncation (the silent-collapse cause) is gone (D-378)"
 # Both model-visible surfaces go through ONE transform, or the model is shown
 # a name it cannot call.
@@ -62,18 +63,18 @@ assert_grep_absent "rc\.Catalog\.Resolve\(name\)" "${SANI}" \
     "phase 141: resolution has no exact-match branch — it dispatched the DROPPED collider (D-382)"
 assert_grep_present "isReservedControlName\(name\)" "${SANI}" \
     "phase 141: a reserved planner control never resolves to a catalog tool (D-382)"
-assert_grep_present "range rc\.DiscoveredTools" "${SANI}" \
-    "phase 141: resolution scans the discovered arm — a discovered tool was declared but undispatchable (D-382)"
+assert_grep_present "for _, name := range discovered" "${DECL}" \
+    "phase 141: the immutable projection includes the discovered arm — a discovered tool was declared but undispatchable (D-382)"
 # The two model-visible surfaces must drop the SAME tool, not merely share the
-# transform: the section's dedup key is the sanitized name and it seeds the
-# reserved controls, exactly as buildToolDeclarations does.
-assert_grep_present "key := sanitizeToolName\(t\.Name\)" "internal/planner/react/prompt.go" \
-    "phase 141: <available_tools> dedups on the MODEL-VISIBLE name (D-382)"
-assert_grep_present "range reservedPlannerControlDeclarations\(\)" "internal/planner/react/prompt.go" \
-    "phase 141: <available_tools> reserves the planner-control names, as the declarations do (D-382)"
+# transform: the prompt renders the winners from projectModelTools, whose ONE
+# shared projection seeds reserved controls before it chooses those winners.
+assert_grep_present "renderProjectedToolsSection\(projected" "internal/planner/react/prompt.go" \
+    "phase 141: <available_tools> renders the shared MODEL-VISIBLE winner population (D-382)"
+assert_grep_present "NewModelToolNameProjectionWithReservedControls\(names\)" "${DECL}" \
+    "phase 141: the shared winner population reserves planner-control names (D-382)"
 # The budget is a parameter, so the shortener must be TOTAL (CLAUDE.md §5 —
 # a panic needs an impossible-by-construction case, and an argument is not one).
-assert_grep_present "minDigestBudget" "${SANI}" \
+assert_grep_present "minModelToolNameDigestBudget" "${MODEL_NAMES}" \
     "phase 141: the shortener is total over every budget — no negative-slice panic (D-382)"
 
 # The behavioural gate. Static greps pin that the code SHAPE survives; these

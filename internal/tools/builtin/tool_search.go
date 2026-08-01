@@ -7,11 +7,12 @@ import (
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
 )
 
-func registerToolSearch(cat tools.ToolCatalog) error {
+func registerToolSearch(rc RegistryContext) error {
+	grantedScopes := append([]string(nil), rc.GrantedScopes...)
 	return inproc.RegisterFunc[ToolSearchArgs, ToolSearchOut](
-		cat, "tool_search",
+		rc.Catalog, "tool_search",
 		func(ctx context.Context, args ToolSearchArgs) (ToolSearchOut, error) {
-			return toolSearch(ctx, cat, args)
+			return toolSearchWithScopes(ctx, rc.Catalog, args, grantedScopes)
 		},
 		tools.WithDescription("Search the tool catalog by capability text + optional tag filter. Returns matching tool names + descriptions."),
 		tools.WithSideEffect(tools.SideEffectPure),
@@ -38,7 +39,12 @@ type ToolSearchResult struct {
 }
 
 func toolSearch(ctx context.Context, cat tools.ToolCatalog, args ToolSearchArgs) (ToolSearchOut, error) {
-	if _, err := requireIdentity(ctx); err != nil {
+	return toolSearchWithScopes(ctx, cat, args, nil)
+}
+
+func toolSearchWithScopes(ctx context.Context, cat tools.ToolCatalog, args ToolSearchArgs, grantedScopes []string) (ToolSearchOut, error) {
+	q, err := requireIdentity(ctx)
+	if err != nil {
 		return ToolSearchOut{}, err
 	}
 	if args.Limit <= 0 {
@@ -47,8 +53,17 @@ func toolSearch(ctx context.Context, cat tools.ToolCatalog, args ToolSearchArgs)
 		args.Limit = 50
 	}
 	results := cat.Search(ctx, args.Query, args.Tags, args.Limit)
-	out := ToolSearchOut{Tools: make([]ToolSearchResult, 0, len(results)), Count: len(results)}
+	projection := modelToolNames(cat, q, grantedScopes)
+	out := ToolSearchOut{Tools: make([]ToolSearchResult, 0, len(results))}
 	for _, t := range results {
+		declaredName, kept := projection.DeclaredName(t.Name)
+		if !kept {
+			// Search indexes can lag catalog removal and can return a
+			// residual-collision loser. Neither is callable in the model's
+			// declared namespace, so teaching that raw key would create a
+			// second, false vocabulary.
+			continue
+		}
 		// `tags` is a required array in the tool_search output schema, so it
 		// must serialize as `[]`, never `null`. A tool with no tags — an MCP
 		// tool discovered without any (its descriptor carries `tags: null`) —
@@ -59,10 +74,11 @@ func toolSearch(ctx context.Context, cat tools.ToolCatalog, args ToolSearchArgs)
 			tags = []string{}
 		}
 		out.Tools = append(out.Tools, ToolSearchResult{
-			Name:        t.Name,
+			Name:        declaredName,
 			Description: t.Description,
 			Tags:        tags,
 		})
 	}
+	out.Count = len(out.Tools)
 	return out, nil
 }

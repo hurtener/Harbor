@@ -32,13 +32,15 @@ package auth
 //
 // The authorization `code` and any token bytes NEVER appear in a log
 // line or a response body. The success page is static HTML; error
-// bodies carry sentinel-derived static detail only (never
-// err.Error(), which may embed upstream response summaries). `state`
+// bodies and log lines carry sentinel-derived static detail only (never
+// err.Error(), which may embed untrusted upstream text). `state`
 // is a one-time-use nonce, documented as non-secret (auth.go), and is
 // safe to log for correlation.
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -129,10 +131,10 @@ func WithSuccessPage(html string) CallbackOption {
 // The handler is a plain http.Handler with no dependency on the
 // Protocol server, the dev server, or cmd/harbor — `harbor dev`
 // mounts it at CallbackRoutePattern; a headless embedder mounts it on
-// any mux at the path matching its configured RedirectURI. The pause
-// handle registry is process-local at V1 (RFC §6.3): the callback
-// must land on the same process that parked the run, which is true by
-// construction for `harbor dev` and single-process embedders.
+// any mux at the path matching its configured RedirectURI. With the
+// production StateStore checkpoint wiring, both the unified pause and
+// the sealed OAuth correlation record survive a Runtime restart; the
+// callback may land on the rebuilt provider and resume that pause.
 //
 // Concurrent reuse: the handler is a compiled artifact — the
 // provider map is copied at construction and read-only afterwards;
@@ -178,12 +180,16 @@ func (h *callbackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name, prov, info, ok := h.lookup(state)
+	name, prov, info, ok, err := h.lookup(r.Context(), state)
+	if err != nil {
+		h.writeFlowError(w, h.cfg.logger, err)
+		return
+	}
 	if !ok {
-		// Covers garbage states AND replayed callbacks: completion /
-		// denial consumes the record, so a second GET with the same
-		// state is flow-not-found by construction (idempotency by
-		// consumption).
+		// Covers garbage states, denied flows, and completed-flow states
+		// outside their bounded callback retry horizon. Successful
+		// completions retain a sealed routing tombstone through that horizon
+		// and therefore take the idempotent success path above.
 		h.writeError(w, http.StatusNotFound, "flow_not_found",
 			"no in-flight OAuth flow matches the supplied state (it may have already been completed)")
 		return
@@ -221,13 +227,14 @@ func (h *callbackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// flow so the pause resumes with DecisionReject instead
 	// of hanging to flow-TTL.
 	if upstreamErr := q.Get("error"); upstreamErr != "" {
-		if derr := prov.DenyFlow(ctx, state, upstreamErr); derr != nil {
+		denialClass := classifyOAuthDenial(upstreamErr)
+		if derr := prov.DenyFlow(ctx, state, string(denialClass)); derr != nil {
 			h.writeFlowError(w, logger, derr)
 			return
 		}
 		logger.WarnContext(ctx, "oauth callback: authorization denied upstream; flow rejected",
-			slog.String("upstream_error", upstreamErr))
-		h.writeError(w, http.StatusBadRequest, "authorization_denied", upstreamErr)
+			slog.String("denial_class", string(denialClass)))
+		h.writeError(w, http.StatusBadRequest, "authorization_denied", string(denialClass))
 		return
 	}
 
@@ -254,22 +261,23 @@ func (h *callbackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // are unguessable 256-bit nonces minted per-provider, so at most one
 // provider claims a given state — flow A's completion can never reach
 // flow B's record (asserted by the concurrent-reuse test).
-func (h *callbackHandler) lookup(state string) (string, OAuthProvider, PendingFlowInfo, bool) {
+func (h *callbackHandler) lookup(ctx context.Context, state string) (string, OAuthProvider, PendingFlowInfo, bool, error) {
 	for name, prov := range h.providers {
-		if info, ok := prov.PendingFlow(state); ok {
-			return name, prov, info, true
+		info, ok, err := prov.PendingFlow(ctx, state)
+		if err != nil {
+			return "", nil, PendingFlowInfo{}, false, fmt.Errorf("oauth callback: lookup provider %q: %w", name, err)
+		}
+		if ok {
+			return name, prov, info, true, nil
 		}
 	}
-	return "", nil, PendingFlowInfo{}, false
+	return "", nil, PendingFlowInfo{}, false, nil
 }
 
 // writeFlowError maps the package's typed sentinels onto HTTP
-// statuses and writes the JSON error body. The full wrapped error is
-// LOGGED — it carries the sentinel plus, on the 502 exchange-failure
-// leg, the provider's truncated upstream response summary (never the
-// authorization code; a misbehaving token endpoint that echoes token
-// material with a non-2xx status would surface in that summary). The
-// response body carries sentinel-derived static detail only.
+// statuses and writes the JSON error body. Logs and response bodies carry only
+// the sentinel-derived status and code: upstream servers may reflect bearer,
+// authorization-code, or client-secret material in their error text.
 func (h *callbackHandler) writeFlowError(w http.ResponseWriter, logger *slog.Logger, err error) {
 	var (
 		status int
@@ -280,6 +288,9 @@ func (h *callbackHandler) writeFlowError(w http.ResponseWriter, logger *slog.Log
 	case errors.Is(err, ErrFlowNotFound):
 		status, code = http.StatusNotFound, "flow_not_found"
 		detail = "no in-flight OAuth flow matches the supplied state (it may have already been completed)"
+	case errors.Is(err, ErrFlowInProgress):
+		status, code = http.StatusConflict, "flow_in_progress"
+		detail = "the OAuth flow callback is already being completed; retry shortly"
 	case errors.Is(err, ErrFlowExpired):
 		status, code = http.StatusGone, "flow_expired"
 		detail = "the OAuth flow expired before the callback arrived; re-initiate the authorization"
@@ -298,8 +309,7 @@ func (h *callbackHandler) writeFlowError(w http.ResponseWriter, logger *slog.Log
 	}
 	logger.Error("oauth callback: flow completion failed",
 		slog.Int("status", status),
-		slog.String("code", code),
-		slog.String("error", err.Error()))
+		slog.String("code", code))
 	h.writeError(w, status, code, detail)
 }
 

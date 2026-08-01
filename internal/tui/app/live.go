@@ -208,8 +208,16 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.inspectCmd()
 	case inspectMsg:
-		if msg.data.Stale || msg.data.RequestEpoch != m.inspectEpoch || msg.data.Generation != m.generation || runtimeScopeKey(msg.data.Identity) != runtimeScopeKey(m.identity) {
+		// A response from another generation or identity invalidates any action
+		// modal because its targets belong to the old scope. A merely superseded
+		// inspection in the SAME scope is different: route changes can leave an
+		// older request in flight, and its late response must not close a modal the
+		// operator opened after the newer route rendered.
+		if msg.data.Generation != m.generation || runtimeScopeKey(msg.data.Identity) != runtimeScopeKey(m.identity) {
 			m.closeInspectionModals()
+			return m, nil
+		}
+		if msg.data.Stale || msg.data.RequestEpoch != m.inspectEpoch {
 			return m, nil
 		}
 		if m.activeIntent != nil && m.activeIntent.RequestEpoch != msg.data.RequestEpoch {

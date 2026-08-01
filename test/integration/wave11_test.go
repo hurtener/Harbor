@@ -227,8 +227,8 @@ func (s *wave11StubProvider) CompleteFlow(_ context.Context, _, _ string) (toola
 	return toolauth.Token{}, nil
 }
 
-func (s *wave11StubProvider) PendingFlow(_ string) (toolauth.PendingFlowInfo, bool) {
-	return toolauth.PendingFlowInfo{}, false
+func (s *wave11StubProvider) PendingFlow(context.Context, string) (toolauth.PendingFlowInfo, bool, error) {
+	return toolauth.PendingFlowInfo{}, false, nil
 }
 
 func (s *wave11StubProvider) DenyFlow(_ context.Context, _, _ string) error { return nil }

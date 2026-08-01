@@ -616,6 +616,10 @@ func TestE2E_AgentSelection_CredentialPlaneStaysBootDerived(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token store: %v", err)
 	}
+	flows, err := auth.NewFlowStore(rawState, sealer)
+	if err != nil {
+		t.Fatalf("flow store: %v", err)
+	}
 	prov, err := tokenexchange.New(auth.ProviderConfig{
 		Name:                   "sel-broker",
 		CredentialSource:       credsource.Static("dummy-client-id-not-a-secret", "dummy-client-secret-not-a-secret"),
@@ -624,7 +628,7 @@ func TestE2E_AgentSelection_CredentialPlaneStaysBootDerived(t *testing.T) {
 		AllowedDownstreamHosts: []string{mcpSrv.URL},
 		IncludeActorToken:      true,
 	}, auth.FactoryDeps{
-		Store: tokStore, Bus: rig.bus, Redactor: red,
+		Store: tokStore, Flows: flows, Bus: rig.bus, Redactor: red,
 		Coordinator: pauseresume.New(),
 		HTTPClient:  &http.Client{Timeout: 5 * time.Second},
 	})

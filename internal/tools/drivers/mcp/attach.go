@@ -21,6 +21,8 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
@@ -78,6 +80,11 @@ type AttachDeps struct {
 	// view scopes to it. It is a reconcile-view filter, never a dispatch or
 	// isolation key.
 	Owner auth.Owner
+	// DescriptorFingerprint is the canonical digest of the NON-SECRET
+	// runtime-added descriptor. It is retained on the live registration so
+	// run-start reconciliation can distinguish an exact no-op from a same-name
+	// descriptor replacement. Boot-declared attachments leave it empty.
+	DescriptorFingerprint string
 	// OAuthProviders is the declared OAuth-provider registry (keyed by the
 	// non-secret provider NAME) Attach resolves a connection's
 	// `oauth_provider` binding against. Populated by the runtime assembler
@@ -96,6 +103,9 @@ type AttachDeps struct {
 	// driver depends only on the narrow resolver interface (bare-name Get +
 	// Names for the fail-loud message) — no concrete import.
 	OAuthProviderSet OAuthProviderResolver
+	// OAuthProviderOverride is a privately prepared provider used for this
+	// attachment's named binding before it is published to the shared set.
+	OAuthProviderOverride auth.OAuthProvider
 	// ArtifactEgressMaxBytes bounds ONE substituted artifact value on one
 	// outbound call for connections this attach wires. Sourced by the boot
 	// loader (and the runtime attacher) from the deployment-level
@@ -104,6 +114,84 @@ type AttachDeps struct {
 	// an embedder that does not set it still gets a real ceiling rather
 	// than an unbounded one. Optional.
 	ArtifactEgressMaxBytes int
+}
+
+// ErrPreparationAuthRequired marks a private MCP prepare that observed a
+// structured HTTP authentication challenge before discovery could complete.
+var ErrPreparationAuthRequired = errors.New("mcp: preparation requires authorization")
+
+// PreparationAuthRequiredError carries the parsed, defensive challenge without
+// exposing it through Error text or relying on transport error strings.
+type PreparationAuthRequiredError struct{ Challenge AuthChallenge }
+
+func (e *PreparationAuthRequiredError) Error() string { return ErrPreparationAuthRequired.Error() }
+
+func (e *PreparationAuthRequiredError) Is(target error) bool {
+	return target == ErrPreparationAuthRequired
+}
+
+type preparationObservations struct {
+	mu        sync.Mutex
+	challenge *AuthChallenge
+	shortfall *ScopeShortfall
+	sink      *RegistrationSwap
+}
+
+func (o *preparationObservations) recordChallenge(ch AuthChallenge) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.sink != nil {
+		o.sink.RecordAuthChallenge(ch)
+		return
+	}
+	captured := ch
+	o.challenge = &captured
+}
+
+func (o *preparationObservations) recordShortfall(sf ScopeShortfall) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.sink != nil {
+		o.sink.RecordScopeShortfall(sf)
+		return
+	}
+	captured := sf
+	captured.RequiredScopes = append([]string(nil), sf.RequiredScopes...)
+	captured.GrantedScopes = append([]string(nil), sf.GrantedScopes...)
+	o.shortfall = &captured
+}
+
+func (o *preparationObservations) authRequired() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.challenge == nil {
+		return nil
+	}
+	return &PreparationAuthRequiredError{Challenge: defensiveAuthChallenge(*o.challenge)}
+}
+
+func defensiveAuthChallenge(ch AuthChallenge) AuthChallenge {
+	// Raw is deliberately omitted: a hostile downstream controls the complete
+	// header and may place credential-like bytes in extensions. Parsed fields
+	// are the bounded, protocol-relevant challenge surfaced to callers.
+	return AuthChallenge{
+		Scheme: ch.Scheme, ResourceMetadataURL: ch.ResourceMetadataURL,
+		Realm: ch.Realm, Error: ch.Error, Scope: ch.Scope, CapturedAt: ch.CapturedAt,
+	}
+}
+
+func (o *preparationObservations) transfer(sink *RegistrationSwap) {
+	o.mu.Lock()
+	o.sink = sink
+	challenge, shortfall := o.challenge, o.shortfall
+	o.challenge, o.shortfall = nil, nil
+	o.mu.Unlock()
+	if challenge != nil {
+		sink.RecordAuthChallenge(*challenge)
+	}
+	if shortfall != nil {
+		sink.RecordScopeShortfall(*shortfall)
+	}
 }
 
 // OAuthProviderResolver is the narrow bare-name resolution seam Attach uses to
@@ -137,19 +225,75 @@ func (m mapProviderResolver) Names() []string {
 	return out
 }
 
-// Attach wires one configured MCP server (config.MCPServerConfig) into
-// the supplied catalog + registry. See the file doc for the full
-// lifecycle. Every error is wrapped with the failing step so the boot
-// path's `mcp[<name>]: ...` prefix pins the offending server.
+type overrideProviderResolver struct {
+	base     OAuthProviderResolver
+	name     string
+	provider auth.OAuthProvider
+}
+
+func (r overrideProviderResolver) Get(name string) (auth.OAuthProvider, bool) {
+	if name == r.name && r.provider != nil {
+		return r.provider, true
+	}
+	return r.base.Get(name)
+}
+
+func (r overrideProviderResolver) Names() []string {
+	names := r.base.Names()
+	for _, name := range names {
+		if name == r.name {
+			return names
+		}
+	}
+	return append(names, r.name)
+}
+
+// PreparedAttachment is a connected and discovered MCP provider that has not
+// yet been published to the tool catalog or live registry. Activate publishes
+// it once; Close drains it on refusal or shutdown. Its state is internally
+// synchronized so a cancellation/cleanup race cannot publish after close.
+type PreparedAttachment struct {
+	mu            sync.Mutex
+	ms            config.MCPServerConfig
+	deps          AttachDeps
+	mode          MCPTransportMode
+	defaultPolicy tools.ToolPolicy
+	provider      *Provider
+	closeFn       func(context.Context) error
+	descriptors   []tools.ToolDescriptor
+	observations  *preparationObservations
+	activated     bool
+	closed        bool
+}
+
+// Attach preserves the boot-time one-shot API by preparing and immediately
+// activating. Runtime control-plane callers use Prepare directly so durable
+// desired state can be written between those stages.
 func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) error {
+	prepared, err := Prepare(ctx, ms, deps)
+	if err != nil {
+		return err
+	}
+	if err := prepared.Activate(ctx); err != nil {
+		*deps.Closers = append(*deps.Closers, prepared.Close)
+		return closePreparedAfterFailure(ctx, prepared, err)
+	}
+	*deps.Closers = append(*deps.Closers, prepared.Close)
+	return nil
+}
+
+// Prepare validates, connects, and discovers one MCP server without changing
+// the shared catalog or registry. The returned attachment owns the connected
+// provider until Activate or Close.
+func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*PreparedAttachment, error) {
 	if deps.Catalog == nil {
-		return fmt.Errorf("mcp attach: Catalog is required")
+		return nil, fmt.Errorf("mcp attach: Catalog is required")
 	}
 	if deps.Registry == nil {
-		return fmt.Errorf("mcp attach: Registry is required")
+		return nil, fmt.Errorf("mcp attach: Registry is required")
 	}
 	if deps.Closers == nil {
-		return fmt.Errorf("mcp attach: Closers chain is required (the Provider's subprocess must drain on teardown)")
+		return nil, fmt.Errorf("mcp attach: Closers chain is required (the Provider's subprocess must drain on teardown)")
 	}
 	// Separator safety, checked BEFORE any side effect (no transport spawned,
 	// no catalog rows written), so an ambiguous id is refused cleanly rather
@@ -159,7 +303,10 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	// through; this is the early, clean-failure copy. Both the boot-declared
 	// and the runtime-attach path reach here.
 	if err := deps.Registry.CheckServerIDUnambiguous(ms.Name); err != nil {
-		return fmt.Errorf("mcp server %q: %w", ms.Name, err)
+		return nil, fmt.Errorf("mcp server %q: %w", ms.Name, err)
+	}
+	if priorOwner, exists := deps.Registry.OwnerOf(ms.Name); exists && priorOwner != deps.Owner {
+		return nil, fmt.Errorf("%w: a connection named %q is already registered to a different owner", ErrConnectionNameOwnerConflict, ms.Name)
 	}
 	mode := MCPTransportMode(ms.TransportMode)
 	if mode == "" {
@@ -173,7 +320,7 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	// boot loud (CLAUDE.md §5).
 	defaultPolicy, toolPolicies, policyErr := ProjectToolPolicies(ms)
 	if policyErr != nil {
-		return fmt.Errorf("mcp server %q: %w", ms.Name, policyErr)
+		return nil, fmt.Errorf("mcp server %q: %w", ms.Name, policyErr)
 	}
 	// Resolve the non-secret `oauth_provider` binding (per-identity southbound
 	// bearer) against the declared registry, and re-enforce the binding rules
@@ -189,22 +336,25 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if resolver == nil {
 		resolver = mapProviderResolver(deps.OAuthProviders)
 	}
+	if deps.OAuthProviderOverride != nil && ms.OAuthProvider != "" {
+		resolver = overrideProviderResolver{base: resolver, name: ms.OAuthProvider, provider: deps.OAuthProviderOverride}
+	}
 	oauthProvider, bindErr := resolveOAuthBinding(ms, mode, resolver)
 	if bindErr != nil {
-		return fmt.Errorf("mcp server %q: %w", ms.Name, bindErr)
+		return nil, fmt.Errorf("mcp server %q: %w", ms.Name, bindErr)
 	}
 	// Resolve the per-tool oauth_provider overrides (CallTool granularity),
 	// re-enforcing every binding rule per entry against the same resolver.
 	toolProviders, toolBindErr := resolveToolOAuthBindings(ms, mode, resolver)
 	if toolBindErr != nil {
-		return fmt.Errorf("mcp server %q: %w", ms.Name, toolBindErr)
+		return nil, fmt.Errorf("mcp server %q: %w", ms.Name, toolBindErr)
 	}
 	// Resolve the per-user credential-injection binding (receiver-style server),
 	// re-enforcing one-auth-mode + the downstream-sink allow-list at attach time
 	// for the runtime-add path exactly like the bearer binding.
 	injection, injErr := resolveInjectionBinding(ms, mode, resolver)
 	if injErr != nil {
-		return fmt.Errorf("mcp server %q: %w", ms.Name, injErr)
+		return nil, fmt.Errorf("mcp server %q: %w", ms.Name, injErr)
 	}
 	// Resolve the egress-substitution declaration (byte-eligibility + the
 	// per-tool artifact-parameter mapping), re-enforcing every rule the
@@ -215,12 +365,13 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	// session can perform.
 	egressMapping, egressErr := resolveArtifactEgress(ms, mode)
 	if egressErr != nil {
-		return fmt.Errorf("mcp server %q: %w", ms.Name, egressErr)
+		return nil, fmt.Errorf("mcp server %q: %w", ms.Name, egressErr)
 	}
 	egressMaxBytes := deps.ArtifactEgressMaxBytes
 	if egressMaxBytes <= 0 {
 		egressMaxBytes = config.DefaultMCPArtifactEgressMaxBytes
 	}
+	observations := &preparationObservations{}
 	provider, err := New(Config{
 		Name:               ms.Name,
 		TransportMode:      mode,
@@ -248,126 +399,113 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 		// registry state so an operator can inspect the advertised requirement
 		// Best-effort observability — never alters the call.
 		OnAuthChallenge: func(ch AuthChallenge) {
-			deps.Registry.RecordAuthChallenge(ms.Name, ch)
+			observations.recordChallenge(ch)
 		},
 		// Record any downstream insufficient-scope step-up on the registry
 		// state (mirrors OnAuthChallenge for the 403 path). Best-effort
 		// observability — never alters the call.
 		OnScopeShortfall: func(sf ScopeShortfall) {
-			deps.Registry.RecordScopeShortfall(ms.Name, sf)
+			observations.recordShortfall(sf)
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("mcp.New: %w", err)
-	}
-	// Idempotent same-name replace at the live layer — SAME-OWNER ONLY. When
-	// this connection name already has a live in-memory registration owned by
-	// the SAME (tenant, agent) — a re-attach against a still-attached server
-	// whose deferred detach has not run yet — tear the old one down BEFORE
-	// dialing and registering the new connection: (1) deregister the old
-	// server's catalog tools (so the register step below does not collide on a
-	// duplicate `<name>_<tool>`), and (2) close the old transport via the
-	// registry deregister. The attach then proceeds as an atomic upsert. The
-	// teardown-first supersede is deliberate but confined to the caller
-	// replacing THEIR OWN connection (the operator asked to replace it): a
-	// same-name registration owned by a DIFFERENT owner is NEVER torn down —
-	// that would evict another tenant's live tools/transport — it is rejected
-	// loud instead (the registry is process-global bare-name but owner-tagged,
-	// and the run-start reconcile is likewise owner-scoped). A FIRST attach
-	// with no prior registration is unaffected: the deregister legs no-op
-	// (DeregisterSource removes 0; Deregister returns ErrServerNotFound), both
-	// swallowed — idempotent by construction. This runs inside the caller's
-	// serialise-the-whole-attach lock (the runtime attacher holds it for the
-	// whole Attach), so two concurrent same-name attaches cannot race the
-	// replace — no new lock. Once the old tools are deregistered a later
-	// Connect/Discover failure leaves the old set removed; that is intended for
-	// a same-owner re-attach the operator asked for.
-	if priorOwner, priorExists := deps.Registry.OwnerOf(ms.Name); priorExists {
-		if priorOwner != deps.Owner {
-			return fmt.Errorf("%w: a connection named %q is already registered to a different owner", ErrConnectionNameOwnerConflict, ms.Name)
-		}
-		// The production catalog implements CatalogSourceDeregisterer, so this
-		// branch always runs in practice. Were a catalog to not implement it, the
-		// old tools would not be deregistered and the Register below would fail
-		// LOUD on ErrToolDuplicateName — never a silent stale-registration.
-		if dc, ok := deps.Catalog.(tools.CatalogSourceDeregisterer); ok {
-			if removed := dc.DeregisterSource(tools.ToolSourceID(ms.Name)); removed > 0 && deps.Logger != nil {
-				deps.Logger.Info("mcp: replacing live same-name registration",
-					slog.String("name", ms.Name),
-					slog.Int("tools_deregistered", removed),
-				)
-			}
-		}
-		// deps.Owner is the prior entry's own owner: the OwnerOf comparison
-		// above refused every other case, so the owner-scoped Deregister
-		// resolves exactly the registration this branch is replacing —
-		// including a boot re-attach, where both owners are the zero owner.
-		if deregErr := deps.Registry.Deregister(ctx, ms.Name, deps.Owner); deregErr != nil && !errors.Is(deregErr, ErrServerNotFound) {
-			return fmt.Errorf("mcp attach %q: replace live registration: %w", ms.Name, deregErr)
-		}
+		return nil, fmt.Errorf("mcp.New: %w", err)
 	}
 	if connectErr := provider.Connect(ctx); connectErr != nil {
-		_ = provider.Close(ctx)
-		return fmt.Errorf("provider.Connect: %w", connectErr)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		cleanupErr := provider.Close(cleanupCtx)
+		cancel()
+		return nil, errors.Join(fmt.Errorf("provider.Connect: %w", connectErr), observations.authRequired(), cleanupErr)
 	}
-	// Append closer NOW (after a successful Connect) so a Discover
-	// failure still drains the live subprocess.
-	*deps.Closers = append(*deps.Closers, provider.Close)
-
 	descriptors, discoverErr := provider.Discover(ctx)
 	if discoverErr != nil {
-		return fmt.Errorf("provider.Discover: %w", discoverErr)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		cleanupErr := provider.Close(cleanupCtx)
+		cancel()
+		return nil, errors.Join(fmt.Errorf("provider.Discover: %w", discoverErr), observations.authRequired(), cleanupErr)
 	}
-	for _, d := range descriptors {
-		if regErr := deps.Catalog.Register(d); regErr != nil {
-			return fmt.Errorf("catalog.Register(%q): %w", d.Tool.Name, regErr)
-		}
-	}
+	return &PreparedAttachment{
+		ms: ms, deps: deps, mode: mode, defaultPolicy: defaultPolicy,
+		provider: provider, closeFn: provider.Close, descriptors: descriptors, observations: observations,
+	}, nil
+}
 
-	// Surface the live Provider on the MCP Registry so observability
-	// surfaces can project it without re-spawning. URLOrCommand is
-	// best-effort cosmetic — Console operators read it to identify the
-	// server.
-	urlOrCommand := ms.URL
+// Activate privately reserves the reversible registry replacement first, then
+// swaps the catalog source as the dispatch linearization point. The old
+// same-owner provider remains callable through both the old catalog descriptors
+// and direct registry reads until that point and is closed only after both
+// shared structures publish successfully.
+func (p *PreparedAttachment) Activate(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return fmt.Errorf("mcp prepared attachment %q is closed", p.ms.Name)
+	}
+	if p.activated {
+		return nil
+	}
+	if err := p.deps.Registry.CheckServerIDUnambiguous(p.ms.Name); err != nil {
+		return fmt.Errorf("mcp server %q: %w", p.ms.Name, err)
+	}
+	priorOwner, priorExists := p.deps.Registry.OwnerOf(p.ms.Name)
+	if priorExists && priorOwner != p.deps.Owner {
+		return fmt.Errorf("%w: a connection named %q is already registered to a different owner", ErrConnectionNameOwnerConflict, p.ms.Name)
+	}
+	urlOrCommand := p.ms.URL
 	if urlOrCommand == "" {
-		urlOrCommand = strings.Join(ms.Command, " ")
+		urlOrCommand = strings.Join(p.ms.Command, " ")
 	}
-	if regErr := deps.Registry.Register(ctx, ServerRegistration{
-		Provider:     provider,
-		Transport:    string(mode),
-		URLOrCommand: urlOrCommand,
-		InitialState: ServerStateOnline,
-		// Surface the configured per-server policy on the registry so the
-		// Console's mcp.servers.list / mcp.servers.policy read the policy
-		// the operator actually set, not tools.DefaultPolicy() (an
-		// audit fix). Per-tool overrides are not part of the registry
-		// projection; the per-server default is the headline.
-		Policy: defaultPolicy,
-		// The explicit cross-origin allowance list for OAuth-requirement
-		// discovery fetches. Empty leaves the authorization-server hop
-		// needs-allowance (partial discovery), never a network hole.
-		OAuthDiscoveryAllowedOrigins: append([]string(nil), ms.OAuthDiscoveryAllowedOrigins...),
-		// The reconcile-view owner tag — zero for boot-declared servers, a
-		// non-zero (tenant, agent) for a runtime-added connection.
-		Owner: deps.Owner,
-	}); regErr != nil {
-		return fmt.Errorf("registry.Register: %w", regErr)
+	registrySwap, err := p.deps.Registry.StageRegistration(ServerRegistration{
+		Provider: p.provider, Transport: string(p.mode), URLOrCommand: urlOrCommand,
+		InitialState: ServerStateOnline, Policy: p.defaultPolicy,
+		OAuthDiscoveryAllowedOrigins: append([]string(nil), p.ms.OAuthDiscoveryAllowedOrigins...),
+		Owner:                        p.deps.Owner,
+		DescriptorFingerprint:        p.deps.DescriptorFingerprint,
+	}, p.descriptors)
+	if err != nil {
+		return fmt.Errorf("registry.StageRegistration: %w", err)
 	}
-	// (P1+P2): seed the registry's per-server stats from the
-	// boot-time discovery so mcp.servers.list reports the actual
-	// tool_count + a real last_discovery_at instead of zero values on a
-	// just-booted Runtime.
-	if recErr := deps.Registry.RecordDiscovery(ms.Name, descriptors); recErr != nil {
-		return fmt.Errorf("registry.RecordDiscovery: %w", recErr)
+	p.observations.transfer(registrySwap)
+	catalogSwap, err := p.deps.Catalog.StageSource(tools.ToolSourceID(p.ms.Name), p.descriptors, priorExists)
+	if err != nil {
+		rollbackErr := registrySwap.Rollback()
+		return errors.Join(fmt.Errorf("catalog.Register source %q: %w", p.ms.Name, err), rollbackErr)
 	}
-	if deps.Logger != nil {
-		deps.Logger.Info("mcp: server attached",
-			slog.String("name", ms.Name),
-			slog.String("transport", string(mode)),
-			slog.Int("tools_registered", len(descriptors)),
-		)
+	// StageSource is the dispatch linearization point. Once it succeeds, Commit
+	// has no rejecting path and merely makes that publication irrevocable plus
+	// syncs the optional search cache. Only then may the private registry stage
+	// become visible to direct reads. The name reservation makes that registry
+	// publication non-conflicting; its only expected error is displaced-provider
+	// cleanup after publication, which is logged rather than changing success.
+	catalogSwap.Commit()
+	p.activated = true
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	cleanupErr := registrySwap.Commit(cleanupCtx)
+	cancel()
+	if cleanupErr != nil && p.deps.Logger != nil {
+		p.deps.Logger.Warn("mcp: server activated but displaced transport cleanup failed", slog.String("name", p.ms.Name), slog.String("error", cleanupErr.Error()))
+	}
+	if p.deps.Logger != nil {
+		p.deps.Logger.Info("mcp: server attached", slog.String("name", p.ms.Name), slog.String("transport", string(p.mode)), slog.Int("tools_registered", len(p.descriptors)))
 	}
 	return nil
+}
+
+// Close drains the prepared provider. It is idempotent.
+func (p *PreparedAttachment) Close(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	p.closed = true
+	return p.closeFn(ctx)
+}
+
+func closePreparedAfterFailure(ctx context.Context, prepared *PreparedAttachment, cause error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return errors.Join(cause, prepared.Close(cleanupCtx))
 }
 
 // ProjectToolPolicies converts an MCPServerConfig's operator-facing

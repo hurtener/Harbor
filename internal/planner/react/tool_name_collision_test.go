@@ -127,7 +127,7 @@ func TestBuildToolDeclarations_LongSourceIDDoesNotCollapse(t *testing.T) {
 	rcp := &planner.RunContext{Catalog: &collisionCatalog{list: catalog}}
 	for _, tool := range catalog {
 		declared := sanitizeToolName(tool.Name)
-		if got := resolveDeclaredToolName(rcp, declared); got != tool.Name {
+		if got := mustResolveDeclaredToolName(t, rcp, declared); got != tool.Name {
 			t.Errorf("resolveDeclaredToolName(%q) = %q, want %q", declared, got, tool.Name)
 		}
 	}

@@ -5,8 +5,9 @@
 #
 # The phase makes the ALREADY-additive `planner.LLMOverrides.ExtraInstructions`
 # reachable over the Harbor Protocol as one optional field on `RunOverrides`,
-# and pins the two-producer join: the run-level value COMPOSES BELOW the
-# tenant-level value and can never clear it.
+# and pins the two-producer authority split corrected by Phase 225: tenant
+# guidance remains operator-owned while the run-level value renders as the
+# verified user's contained personalization and can never clear the tenant tier.
 #
 # WHAT THIS SCRIPT SKIPS, precisely. Exactly TWO arms can SKIP, and both are
 # harness preamble rather than assertions: the `/healthz` reachability probe
@@ -98,50 +99,27 @@ assert_block_grep "${OVERRIDES_GO}" \
     'phase 220: ComposeLLMOverrides reads the session-level extra instructions (the field is not inert)'
 
 # ----------------------------------------------------------------------------
-# 3. THE PRECEDENCE GUARD (D-365). The session arm must feed the ALREADY-
-#    COMPOSED tenant value into the join. A bare
-#    `out.ExtraInstructions = session.ExtraInstructions` does not, so mutating
-#    the join into an assignment turns this OK into a FAIL — the whole point:
-#    an assignment would hand a non-admin session caller a silent delete on an
-#    admin-set tenant block.
+# 3. THE AUTHORITY GUARD (D-387 superseding D-365's original prompt seat).
+#    Tenant guidance and session personalization must occupy separate fields.
+#    Copying the session value into ExtraInstructions would promote a normal
+#    user's prose into the operator tier; clearing ExtraInstructions would let
+#    the user delete tenant guidance.
 # ----------------------------------------------------------------------------
 
 assert_block_grep "${OVERRIDES_GO}" \
     '^func ComposeLLMOverrides(' '^}' \
-    'out\.ExtraInstructions[[:space:]]*=[[:space:]]*joinAdditiveGuidance\(out\.ExtraInstructions,[[:space:]]*session\.ExtraInstructions\)' \
-    'phase 220: the two-producer join READS the tenant value (composition, not last-writer-wins)'
-
-# The join helper exists EXACTLY once — one production composition site, no
-# second copy that could drift (CLAUDE.md §17.4).
-# `|| true` on the pipeline: under `set -o pipefail` a no-match grep (exit 1)
-# aborts the whole script AT THE ASSIGNMENT, so the case this guard exists to
-# catch — the helper deleted, ZERO definitions — would exit early and silently
-# instead of reaching the `fail` below. Phase 219's ordering guard already
-# guards the same shape this way.
-JOIN_DEFS=$( (grep -rlE '^func joinAdditiveGuidance\(' --include='*.go' internal/ cmd/ 2>/dev/null || true) | wc -l | tr -d ' ')
-if [ "${JOIN_DEFS}" = "1" ]; then
-    ok 'phase 220: joinAdditiveGuidance is defined exactly once (one production composition, no second copy)'
-else
-    fail "phase 220: found ${JOIN_DEFS} definitions of joinAdditiveGuidance, want exactly 1"
-fi
-
-# The join ORDER and the no-clear property, mechanically. `above` first, the
-# separator between, `below` after; and an empty `below` returns `above`
-# UNTOUCHED rather than an empty string.
-assert_block_grep "${OVERRIDES_GO}" \
-    '^func joinAdditiveGuidance(' '^}' \
-    'TrimSpace\(\*above\)[[:space:]]*\+[[:space:]]*additiveGuidanceSeparator[[:space:]]*\+[[:space:]]*strings\.TrimSpace\(\*below\)' \
-    'phase 220: the join renders the tenant text FIRST, separator, then the run-level text'
+    'out\.UserPersonalization[[:space:]]*=[[:space:]]*&v' \
+    'phase 220: session extra_instructions lands only in UserPersonalization'
 
 assert_block_grep "${OVERRIDES_GO}" \
-    '^func joinAdditiveGuidance(' '^}' \
-    'below == nil \|\| strings\.TrimSpace\(\*below\) == ""' \
-    'phase 220: an empty run-level value short-circuits to the tenant value (there is no run-level clear)'
+    '^func ComposeLLMOverrides(' '^}' \
+    'out\.UserPersonalization[[:space:]]*=[[:space:]]*nil' \
+    'phase 220: tenant input cannot become a second personalization producer'
 
-assert_grep_present \
-    '^const additiveGuidanceSeparator = "\\n\\n"$' \
+assert_grep_absent \
+    'out\.ExtraInstructions[[:space:]]*=[[:space:]]*session\.ExtraInstructions' \
     "${OVERRIDES_GO}" \
-    'phase 220: the separator is a blank line, matching the prompt builder own guidance join'
+    'phase 220: a normal user cannot overwrite operator guidance'
 
 # ----------------------------------------------------------------------------
 # 4. The audit flag — and ONLY the flag. The VALUE is caller-supplied free text
@@ -159,20 +137,19 @@ assert_block_grep "${OVERRIDES_GO}" \
     'phase 220: emitAudit carries only the boolean flag — the caller-supplied text never reaches the bus'
 
 # ----------------------------------------------------------------------------
-# 5. The trust statement. The field renders VERBATIM into an operator-TRUSTED
-#    position; a field that ships without saying so is the documentation gap
-#    this phase exists to close.
+# 5. The corrected trust statement. Normal-user access is intentional, and the
+#    wire godoc must name the contained personalization seat.
 # ----------------------------------------------------------------------------
 
 assert_block_grep "${RUNS_TYPES_GO}" \
     'ExtraInstructions, when non-nil' 'ExtraInstructions \*string' \
-    'additional_guidance' \
-    'phase 220: the wire godoc names the <additional_guidance> render position'
+    'user_personalization' \
+    'phase 220: the wire godoc names the contained personalization position'
 
 assert_block_grep "${RUNS_TYPES_GO}" \
     'ExtraInstructions, when non-nil' 'ExtraInstructions \*string' \
-    'VERBATIM' \
-    'phase 220: the wire godoc states the text is rendered verbatim (operator-trusted, unescaped)'
+    'verified non-admin user' \
+    'phase 220: the wire godoc preserves normal-user personalization access'
 
 assert_block_grep "${RUNS_TYPES_GO}" \
     'ExtraInstructions, when non-nil' 'ExtraInstructions \*string' \
@@ -312,8 +289,9 @@ else
     trap 'rm -f "${GOLOG}"' EXIT
 
     assert_go_tests_pass "${GOLOG}" './internal/runtime/runs/protocol/' \
-        'phase 220: the join table, the no-clear property, the by-value copy, the audit flag and the concurrent-reuse run' \
-        TestComposeLLMOverrides_ExtraInstructionsJoinTable \
+        'phase 220: the authority table, single personalization producer, no-clear property, copy, audit and concurrent reuse' \
+        TestComposeLLMOverrides_ExtraInstructionsAuthorityTable \
+        TestComposeLLMOverrides_UserPersonalizationHasOnlySessionProducer \
         TestComposeLLMOverrides_ExtraInstructionsNoRunLevelClear \
         TestComposeLLMOverrides_ConcurrentReuse_NoCrossTalk \
         TestSetOverrides_ExtraInstructionsCopiedByValue \
@@ -321,17 +299,17 @@ else
         TestSetOverrides_IdentityAndCrossSessionRefusedWithExtraInstructions
 
     assert_go_tests_pass "${GOLOG}" './internal/planner/react/' \
-        'phase 220: the composed value renders VERBATIM, survives a SystemPromptOverride, and is absent-safe' \
-        TestComposition_ExtraInstructionsRenderedVerbatim_TwoProducers \
+        'phase 220: operator guidance and escaped personalization stay separated through a SystemPromptOverride' \
+        TestComposition_ExtraInstructionsAuthoritySeparated_TwoProducers \
         TestComposition_ComposedExtraInstructionsSurviveSystemPromptOverride \
         TestComposition_AbsentExtraInstructionsRendersNoGuidanceSection
 
     assert_go_tests_pass "${GOLOG}" './internal/runtime/serve/' \
-        'phase 220: the run loop run-start resolution carries the join (not just the composer in isolation)' \
-        TestResolveLLMOverrides_ExtraInstructionsJoin_TenantThenSession
+        'phase 220: the run loop carries the authority split at run start' \
+        TestResolveLLMOverrides_ExtraInstructionsAuthoritySplit
 
     assert_go_tests_pass "${GOLOG}" './test/integration/' \
-        'phase 220: the two-producer seam end to end, with identity propagation and three failure modes' \
+        'phase 220: the authority-separated two-producer seam end to end, with identity and failure modes' \
         TestE2E_RunExtraInstructions_TwoProducerSeam \
         TestE2E_RunExtraInstructions_TenantBlockSurvivesEverySessionShape \
         TestE2E_RunExtraInstructions_FailureModes \

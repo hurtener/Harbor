@@ -527,7 +527,7 @@ func buildPhase30Env(t *testing.T, sc phase30StoreCase) *phase30Env {
 		Scopes:       []string{"mail.read"},
 	}
 	prov, err := auth.NewProvider([]auth.OAuthConfig{userCfg, agentCfg}, auth.ProviderDeps{
-		Store: ts, Bus: bus, Redactor: red, Coordinator: coord,
+		Store: ts, Flows: mustPhase30FlowStore(t, raw, sealer), Bus: bus, Redactor: red, Coordinator: coord,
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
 	if err != nil {
@@ -540,6 +540,15 @@ func buildPhase30Env(t *testing.T, sc phase30StoreCase) *phase30Env {
 		provider: prov, server: server,
 		userCfg: userCfg, agentCfg: agentCfg,
 	}
+}
+
+func mustPhase30FlowStore(t *testing.T, store state.StateStore, sealer auth.Sealer) auth.FlowStore {
+	t.Helper()
+	flows, err := auth.NewFlowStore(store, sealer)
+	if err != nil {
+		t.Fatalf("NewFlowStore: %v", err)
+	}
+	return flows
 }
 
 func phase30KEK() []byte {

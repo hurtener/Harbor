@@ -22,12 +22,24 @@ const (
 	SearchIndexArtifacts SearchIndex = "artifacts"
 )
 
+// CanonicalSearchIndexes returns the closed runtime-side search-index
+// population in declaration order. The caller owns the returned slice.
+func CanonicalSearchIndexes() []SearchIndex {
+	return []SearchIndex{
+		SearchIndexSessions,
+		SearchIndexTasks,
+		SearchIndexEvents,
+		SearchIndexArtifacts,
+	}
+}
+
 // IsValidSearchIndex reports whether i is one of the four canonical
 // runtime-side indexes.
 func IsValidSearchIndex(i SearchIndex) bool {
-	switch i {
-	case SearchIndexSessions, SearchIndexTasks, SearchIndexEvents, SearchIndexArtifacts:
-		return true
+	for _, candidate := range CanonicalSearchIndexes() {
+		if i == candidate {
+			return true
+		}
 	}
 	return false
 }

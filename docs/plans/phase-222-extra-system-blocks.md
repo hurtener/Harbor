@@ -1,5 +1,9 @@
 # Phase 222 — `ExtraSystemBlocks` on the agent-config payload
 
+## Current status after Phase 225
+
+Phase 225 and D-387 preserve Phase 222's admin-only trust and ordering model while correcting byte fidelity: normalization validates `strings.TrimSpace(body) != ""` but stores and hashes every admitted nonblank body exactly as supplied, including leading and trailing whitespace. Historical wording below that says the normalizer "trims" blocks means validation-only blank detection; it does not authorize rewriting body bytes.
+
 ## Summary
 
 The agent-config payload's prompt surface is two flat `*string`s — `AgentConfigPromptLayers{Base, User}` (`internal/protocol/types/agentconfig.go:64-73`) — with no name, no ordering and no attribution. N independent capability sources that each want to contribute one prompt block therefore collapse into one opaque string, and removing one contributor's text means re-deriving the whole composition from prose. This phase adds a new agent-config payload SECTION, `ExtraSystemBlocks`, carrying an ordered list of `{name, body}` blocks with a dedicated admin verb, a deterministic declared-order render into the operator-trusted additive position, and name-addressed removal. Absent section ⇒ byte-identical prompt.
@@ -227,7 +231,7 @@ Why a plain `[name]` label rather than a `<block name="…">` tag: **the attribu
 
 - `[]NamedBlock` is a slice, so the render order is fixed by the data. A `map[string]string` keyed by name would reintroduce exactly the map-iteration nondeterminism phase 217 removed elsewhere; no map appears anywhere on the write → normalize → hash → project → render path, and the smoke greps for its absence.
 - An explicit integer index was rejected: it invites collisions and gaps, and it needs its own tie-break rule — which is a sort, which is the thing being avoided.
-- **Order is SEMANTIC here, which makes the canonical form different from its two sibling sections.** `Skills.Names` is `sortDedup`'d (`agentcfg.go:647`) and `OAuthProviders` is sorted by name (`agentcfg.go:826-863`), both because "a re-ordering of a set does not change the hash" (`ContentHash`'s own godoc, `agentcfg.go:865-868`). For blocks, a re-ordering DOES change the prompt, so it must change the hash. The normalizer therefore preserves order and only trims and de-duplicates; a test asserts that swapping two blocks yields a different `ContentHash`, and a second test asserts the normalizer's output order equals its input order (the mutation "someone made blocks consistent with skills by adding a sort" turns both red).
+- **Order is SEMANTIC here, which makes the canonical form different from its two sibling sections.** `Skills.Names` is `sortDedup`'d (`agentcfg.go:647`) and `OAuthProviders` is sorted by name (`agentcfg.go:826-863`), both because "a re-ordering of a set does not change the hash" (`ContentHash`'s own godoc, `agentcfg.go:865-868`). For blocks, a re-ordering DOES change the prompt, so it must change the hash. The normalizer therefore preserves order, validates bodies as nonblank without rewriting their bytes, and de-duplicates names; a test asserts that swapping two blocks yields a different `ContentHash`, and a second test asserts the normalizer's output order equals its input order (the mutation "someone made blocks consistent with skills by adding a sort" turns both red).
 - Uniqueness of names is what makes remove-by-name well defined; the write door refuses a duplicate, so the section is an ordered set rather than a bag.
 
 ### 3. Interaction with `Base` / `User` — three positions, not two mechanisms for one concept

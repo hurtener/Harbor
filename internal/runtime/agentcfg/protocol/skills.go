@@ -2,7 +2,9 @@ package protocol
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -61,15 +63,17 @@ func (s *Service) SkillsUpsert(ctx context.Context, req prototypes.AgentConfigSk
 		return prototypes.AgentConfigSkillsUpsertResponse{}, err
 	}
 	q := identity.Quadruple{Identity: id}
+	release := s.lockAgent(q.TenantID, req.AgentID)
+	defer release()
+	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
+	if err := s.precheckExpectedRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, opts); err != nil {
+		return prototypes.AgentConfigSkillsUpsertResponse{}, err
+	}
 	skill := skillFromInput(req.Skill)
-	// Ordering: the body is written to the SkillStore FIRST, then the
-	// membership revision. The two are not transactional — if the membership
-	// write fails, the body persists (and its skill.upserted already fired)
-	// but no membership revision references it, so projection never includes
-	// it; the operator gets the error and an idempotent retry self-heals
-	// (re-upsert is a no-op body write + the membership revision). A stranded
-	// body is inert (membership is the projection gate), never a silent
-	// partial success.
+	prior, hadPrior, err := s.skillAtScope(ctx, q, skill.Name, skill.Scope)
+	if err != nil {
+		return prototypes.AgentConfigSkillsUpsertResponse{}, err
+	}
 	if err := s.skills.Upsert(ctx, q, skill); err != nil {
 		// ErrPackOverwriteRefused (and any validation error) propagate
 		// up — the wire handler classifies them. No silent overwrite.
@@ -79,11 +83,11 @@ func (s *Service) SkillsUpsert(ctx context.Context, req prototypes.AgentConfigSk
 	// store-computed content hash + timestamps.
 	stored, err := s.skills.Get(ctx, q, skill.Name)
 	if err != nil {
-		return prototypes.AgentConfigSkillsUpsertResponse{}, err
+		return prototypes.AgentConfigSkillsUpsertResponse{}, s.compensateSkillUpsert(ctx, q, skill, prior, hadPrior, err)
 	}
-	rev, err := s.recordSkillsMembership(ctx, q, req.AgentID, addName, skill.Name, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
+	rev, err := s.recordSkillsMembership(ctx, q, req.AgentID, addName, skill.Name, opts)
 	if err != nil {
-		return prototypes.AgentConfigSkillsUpsertResponse{}, err
+		return prototypes.AgentConfigSkillsUpsertResponse{}, s.compensateSkillUpsert(ctx, q, skill, prior, hadPrior, err)
 	}
 	return prototypes.AgentConfigSkillsUpsertResponse{
 		Revision:        revisionToWire(rev),
@@ -109,15 +113,25 @@ func (s *Service) SkillsDelete(ctx context.Context, req prototypes.AgentConfigSk
 	if req.Name == "" {
 		return prototypes.AgentConfigSkillsDeleteResponse{}, fmt.Errorf("%w: skill name is empty", ErrIdentityRequired)
 	}
+	release := s.lockAgent(q.TenantID, req.AgentID)
+	defer release()
+	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
+	if err := s.precheckExpectedRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, opts); err != nil {
+		return prototypes.AgentConfigSkillsDeleteResponse{}, err
+	}
+	prior, hadPrior, err := s.skillAtScope(ctx, q, req.Name, skills.ScopeSession)
+	if err != nil {
+		return prototypes.AgentConfigSkillsDeleteResponse{}, err
+	}
 	// Admin manages agent-level (session-local, non-durable) skills — it never
 	// deletes a user's durable personal skill. A non-user target scope keeps
 	// this a session-local delete.
 	if err := s.skills.Delete(ctx, q, req.Name, skills.ScopeSession); err != nil {
 		return prototypes.AgentConfigSkillsDeleteResponse{}, err
 	}
-	rev, err := s.recordSkillsMembership(ctx, q, req.AgentID, removeName, req.Name, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
+	rev, err := s.recordSkillsMembership(ctx, q, req.AgentID, removeName, req.Name, opts)
 	if err != nil {
-		return prototypes.AgentConfigSkillsDeleteResponse{}, err
+		return prototypes.AgentConfigSkillsDeleteResponse{}, s.compensateSkillDelete(ctx, q, prior, hadPrior, err)
 	}
 	return prototypes.AgentConfigSkillsDeleteResponse{
 		Revision:        revisionToWire(rev),
@@ -140,7 +154,6 @@ const (
 // is a pure function of prior revisions — the SkillStore holds bodies, the
 // registry holds the versioned membership.
 func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadruple, agentID string, op membershipOp, name string, opts agentcfg.SetOptions) (agentcfg.Revision, error) {
-	defer s.lockAgent(q.TenantID, agentID)()
 	active, hasActive, err := s.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return agentcfg.Revision{}, err
@@ -184,6 +197,66 @@ func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadrup
 		payload.OAuthProviders = active.Payload.OAuthProviders
 	}
 	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload, opts)
+}
+
+const skillCompensationTimeout = 5 * time.Second
+
+func (s *Service) precheckExpectedRevision(ctx context.Context, q identity.Quadruple, agentID string, scope agentcfg.ConfigScope, opts agentcfg.SetOptions) error {
+	active, hasActive, err := s.registry.Active(ctx, q, agentID, scope)
+	if err != nil {
+		return err
+	}
+	return agentcfg.CheckExpectedRevision(opts, active, hasActive)
+}
+
+func (s *Service) skillAtScope(ctx context.Context, q identity.Quadruple, name string, scope skills.Scope) (skills.Skill, bool, error) {
+	if scope == skills.ScopeUser {
+		sk, err := s.userScopeSkillByName(ctx, q, name)
+		if errors.Is(err, skills.ErrSkillNotFound) {
+			return skills.Skill{}, false, nil
+		}
+		return sk, err == nil, err
+	}
+	sk, err := s.skills.Get(ctx, q, name)
+	if errors.Is(err, skills.ErrSkillNotFound) {
+		return skills.Skill{}, false, nil
+	}
+	if err != nil {
+		return skills.Skill{}, false, err
+	}
+	if sk.Scope != scope {
+		return skills.Skill{}, false, nil
+	}
+	return sk, true, nil
+}
+
+func (s *Service) compensateSkillUpsert(ctx context.Context, q identity.Quadruple, written, prior skills.Skill, hadPrior bool, cause error) error {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), skillCompensationTimeout)
+	defer cancel()
+	var err error
+	if hadPrior {
+		err = s.skills.Upsert(cctx, q, prior)
+	} else {
+		err = s.skills.Delete(cctx, q, written.Name, written.Scope)
+	}
+	if err != nil {
+		s.logger.ErrorContext(ctx, "agent-config: failed to compensate skill body after membership revision failure", "skill", written.Name, "error", err.Error(), "cause", cause.Error())
+		return errors.Join(cause, fmt.Errorf("compensate skill body: %w", err))
+	}
+	return cause
+}
+
+func (s *Service) compensateSkillDelete(ctx context.Context, q identity.Quadruple, prior skills.Skill, hadPrior bool, cause error) error {
+	if !hadPrior {
+		return cause
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), skillCompensationTimeout)
+	defer cancel()
+	if err := s.skills.Upsert(cctx, q, prior); err != nil {
+		s.logger.ErrorContext(ctx, "agent-config: failed to restore skill body after membership revision failure", "skill", prior.Name, "error", err.Error(), "cause", cause.Error())
+		return errors.Join(cause, fmt.Errorf("restore deleted skill body: %w", err))
+	}
+	return cause
 }
 
 // skillFromInput maps a wire skill input onto a runtime skills.Skill. The

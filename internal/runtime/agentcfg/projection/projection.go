@@ -110,7 +110,7 @@ type ConnectionReattacher interface {
 	// per-(owner, name) backoff, so the sweep never goes silent and never spams.
 	// The returned error is for the caller's loud log + the joined sweep error;
 	// it never means "fail the run".
-	Reattach(ctx context.Context, owner auth.Owner, id identity.Quadruple, desc agentcfg.MCPConnectionDescriptor) error
+	Reattach(ctx context.Context, owner auth.Owner, id identity.Quadruple, desc agentcfg.MCPConnectionDescriptor) (changed bool, err error)
 }
 
 // ErrReconcileRead wraps an active-revision read failure inside
@@ -304,16 +304,11 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 		// concrete gets.
 		return detached, 0, errors.Join(errs...)
 	}
-	// The ATTACH pass. The attached set is re-read AFTER the detach pass so a
-	// name torn down above is a candidate here (the within-one-transition
-	// replace), and so the live view is as fresh as this sweep can make it. The
-	// reattacher re-checks under its own lock regardless — this read is the cheap
-	// filter, not the guard.
-	live := make(map[string]struct{})
-	for _, src := range detacher.AttachedSources(ctx, owner) {
-		live[src] = struct{}{}
-	}
-	// Deterministic order so a partially-cancelled sweep is reproducible and the
+	// The ATTACH pass considers every declared descriptor, including names that
+	// are already live. Only the concrete owns the atomic owner+fingerprint read
+	// needed to distinguish an exact no-op from a same-name descriptor change;
+	// a name-only filter here would make URL/auth/annotation edits inert forever.
+	// Deterministic order keeps a partially-cancelled sweep reproducible and the
 	// tests can pin which connections were reached.
 	names := make([]string, 0, len(declared))
 	for name := range declared {
@@ -334,14 +329,14 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 			// or replaces a boot server.
 			continue
 		}
-		if _, isLive := live[name]; isLive {
-			continue // already carried under this owner — nothing to re-establish.
-		}
-		if aerr := reattacher.Reattach(ctx, owner, id, declared[name]); aerr != nil {
+		changed, aerr := reattacher.Reattach(ctx, owner, id, declared[name])
+		if aerr != nil {
 			errs = append(errs, &reattachFailure{name: name, err: aerr})
 			continue
 		}
-		attached++
+		if changed {
+			attached++
+		}
 	}
 	return detached, attached, errors.Join(errs...)
 }

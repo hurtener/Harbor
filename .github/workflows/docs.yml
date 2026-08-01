@@ -27,11 +27,15 @@ permissions:
   pages: write
   id-token: write
 
-# Only one deploy can be in flight at a time. A push to main that lands
-# while a previous build is mid-deploy supersedes it cleanly.
+# Validation may supersede only an older run for the SAME ref. Different PRs
+# never contend for one slot; the deploy job below separately serializes the
+# singleton Pages environment across main pushes.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: docs-${{ github.workflow }}-${{ github.ref }}
+  # A newer validation may supersede an older validation for the same PR.
+  # Main deployments queue instead: cancelling the workflow here would also
+  # cancel an already-running deploy before the job-level Pages lock can act.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -81,6 +85,12 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    # PR validation must never join this group: a global workflow-level
+    # Pages group serializes or cancels unrelated pull-request builds. Only
+    # deployments contend for the singleton Pages environment.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

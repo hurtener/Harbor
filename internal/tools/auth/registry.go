@@ -122,6 +122,9 @@ type ProviderConfig struct {
 type FactoryDeps struct {
 	// Store is the shared TokenStore (one per binary). Mandatory.
 	Store TokenStore
+	// Flows is the shared durable, sealed pending authorization-flow store.
+	// Mandatory.
+	Flows FlowStore
 	// Bus is the shared event bus. Mandatory.
 	Bus events.EventBus
 	// Redactor is the shared audit redactor. Mandatory.
@@ -141,7 +144,7 @@ type FactoryDeps struct {
 // Factory builds an OAuthProvider from a ProviderConfig + FactoryDeps.
 // Drivers self-register one Factory each via init() → Register.
 //
-// A factory MUST fail closed on missing required deps (Store / Bus /
+// A factory MUST fail closed on missing required deps (Store / Flows / Bus /
 // Redactor / Coordinator); the `internal/tools/auth.NewProvider`
 // constructor already enforces this for the `oauth2` driver, but
 // custom drivers MUST honour the same contract.
