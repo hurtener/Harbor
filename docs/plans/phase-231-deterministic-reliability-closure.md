@@ -6,6 +6,14 @@ Closes the accepted test-flake backlog without retries, longer sleeps, or weaker
 
 The final corrective tree passed 100 race-instrumented repetitions of the full authenticated PTY workflow in a two-CPU Go 1.26 Linux container (`ok`, 381.857s). Its predecessor had independently passed 100 repetitions (`ok`, 392.617s), after a 20-repetition constrained calibration and 10 local race repetitions; the repeated final-tree gate confirms the added rename-result barrier rather than relying on that earlier evidence.
 
+Release-assembly confirmation on 2026-08-01 reran every remaining named
+regression with `-race -count=100`: auth refresh singleflight, in-process
+tool concurrent reuse, Protocol-client cancellation isolation, parallel
+executor cancellation, owner-scoped provider uninstall, the full OAuth
+choreography, and the group-cancelled conversational mirror all passed. Those
+exact repetitions, the PTY result above (covering both PTY reports), and the
+green full-suite CI run together satisfy the stale-issue evidence criterion.
+
 ## RFC anchor
 
 - RFC §5.4.
