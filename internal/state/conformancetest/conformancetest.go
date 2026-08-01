@@ -44,6 +44,7 @@ type Factory func() (state.StateStore, func())
 // Subtests:
 //
 //   - Save_Load_RoundTrip
+//   - Save_ZeroLengthBytes_NilAndEmptyAreByteEqual
 //   - Save_Idempotent_SameIDSameContent
 //   - Save_Idempotent_SameIDDifferentBytes
 //   - Save_Idempotent_SameIDDifferentKey
@@ -98,6 +99,38 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if string(got.Bytes) != "hello" {
 			t.Errorf("Bytes round-trip failed: got %q", got.Bytes)
+		}
+	})
+
+	t.Run("Save_ZeroLengthBytes_NilAndEmptyAreByteEqual", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		rec := state.StateRecord{
+			ID:       "01HABXXX00000000ZB",
+			Identity: tripleA(),
+			Kind:     "empty.payload",
+			Bytes:    nil,
+			Version:  1,
+		}
+		if err := s.Save(ctx, rec); err != nil {
+			t.Fatalf("Save nil Bytes: %v", err)
+		}
+
+		got, err := s.Load(ctx, tripleA(), rec.Kind)
+		if err != nil {
+			t.Fatalf("Load nil Bytes: %v", err)
+		}
+		if len(got.Bytes) != 0 {
+			t.Fatalf("Load Bytes length = %d, want 0", len(got.Bytes))
+		}
+
+		// The idempotency contract compares payloads byte-for-byte. A nil
+		// slice and an allocated zero-length slice therefore name the same
+		// payload and must remain an idempotent no-op across every driver.
+		rec.Bytes = []byte{}
+		if err := s.Save(ctx, rec); err != nil {
+			t.Fatalf("Save empty Bytes after nil Bytes: %v", err)
 		}
 	})
 

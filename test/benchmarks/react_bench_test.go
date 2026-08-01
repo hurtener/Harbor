@@ -29,14 +29,12 @@ func (c *benchScriptedClient) Complete(_ context.Context, _ llm.CompleteRequest)
 
 func (c *benchScriptedClient) Close(_ context.Context) error { return nil }
 
-// BenchmarkReActPlanner_NextStep measures one ReAct planner step against
-// the REAL *react.ReActPlanner (no mock planner — only the LLM edge is a
-// scripted fixture, as a benchmark cannot call a live model). Each
-// iteration runs Planner.Next: prompt assembly, the LLM Complete call,
-// and the native-tool-call projection into a planner.Decision. The
-// planner is a compiled artifact built once and shared; per-step state
-// (the RunContext) lives on the stack, never on the planner.
-func BenchmarkReActPlanner_NextStep(b *testing.B) {
+// BenchmarkReActPlanner_NextStep_DeclaredTool measures one ReAct planner step
+// against the REAL *react.ReActPlanner (no mock planner — only the LLM edge is
+// scripted, as a benchmark cannot call a live model). The catalog fixture is
+// load-bearing: each iteration must build a native declaration and resolve the
+// model-authored name only through that exact per-turn projection.
+func BenchmarkReActPlanner_NextStep_DeclaredTool(b *testing.B) {
 	client := &benchScriptedClient{
 		resp: llm.CompleteResponse{
 			ToolCalls: []llm.ToolCallStructured{{
@@ -77,6 +75,35 @@ func BenchmarkReActPlanner_NextStep(b *testing.B) {
 		Quadruple: q,
 		Goal:      "answer the benchmark query",
 		Catalog:   tools.NewPlannerView(catalog, tools.CatalogFilter{}),
+		Emit:      func(events.Event) {},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := p.Next(ctx, rc); err != nil {
+			b.Fatalf("Next: %v", err)
+		}
+	}
+}
+
+// BenchmarkReActPlanner_NextStep_ToolFree is the stable no-catalog terminal
+// path. It keeps prompt assembly and response projection measurable without
+// conflating their baseline with declared-tool snapshot construction.
+func BenchmarkReActPlanner_NextStep_ToolFree(b *testing.B) {
+	client := &benchScriptedClient{resp: llm.CompleteResponse{Content: "benchmark answer"}}
+	p := react.New(client)
+	q := identity.Quadruple{
+		Identity: identity.Identity{TenantID: "bench-tenant", UserID: "bench-user", SessionID: "bench-session"},
+		RunID:    "bench-run",
+	}
+	ctx, err := identity.WithRun(context.Background(), q.Identity, q.RunID)
+	if err != nil {
+		b.Fatalf("identity.WithRun: %v", err)
+	}
+	rc := planner.RunContext{
+		Quadruple: q,
+		Goal:      "answer the benchmark query",
 		Emit:      func(events.Event) {},
 	}
 

@@ -16,8 +16,9 @@ import (
 )
 
 type mutableProjectionCatalog struct {
-	mu   sync.RWMutex
-	list []tools.Tool
+	mu    sync.RWMutex
+	list  []tools.Tool
+	lists int
 }
 
 func (c *mutableProjectionCatalog) Replace(list []tools.Tool) {
@@ -38,9 +39,16 @@ func (c *mutableProjectionCatalog) Resolve(name string) (tools.Tool, bool) {
 }
 
 func (c *mutableProjectionCatalog) List() []tools.Tool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lists++
+	return append([]tools.Tool(nil), c.list...)
+}
+
+func (c *mutableProjectionCatalog) ListCalls() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return append([]tools.Tool(nil), c.list...)
+	return c.lists
 }
 
 type projectionMutationLLM struct {
@@ -100,6 +108,9 @@ func TestReActPlanner_TurnProjectionSurvivesConcurrentCatalogMutation(t *testing
 	}
 	if call.Tool != initial.Name {
 		t.Fatalf("CallTool.Tool = %q, want request-time owner %q; catalog mutation retargeted the declared name", call.Tool, initial.Name)
+	}
+	if got := catalog.ListCalls(); got != 1 {
+		t.Fatalf("catalog List calls = %d, want exactly one immutable provider-turn snapshot", got)
 	}
 }
 

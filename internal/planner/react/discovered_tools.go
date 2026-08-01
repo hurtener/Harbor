@@ -241,10 +241,22 @@ func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.Too
 // model saw under a different schema.
 func buildToolDeclarationProjection(rc planner.RunContext, discovered []string) ([]llm.ToolDeclaration, tools.ModelToolNameProjection) {
 	if rc.Catalog == nil {
-		return nil, tools.NewModelToolNameProjection(nil, tools.ReservedModelToolNames())
+		return nil, tools.NewModelToolNameProjectionWithReservedControls(nil)
 	}
 	projected, projection := projectModelTools(rc, discovered)
-	if len(projected) == 0 && len(projection.Collisions()) == 0 {
+	return buildToolDeclarationsFromProjection(rc, projected, projection)
+}
+
+// buildToolDeclarationsFromProjection materializes provider declarations from
+// the exact immutable turn snapshot retained for response resolution. Keeping
+// this worker separate lets Next share one catalog read with the default
+// prompt's quick-reference instead of independently rebuilding the mapping.
+func buildToolDeclarationsFromProjection(rc planner.RunContext, projected []tools.Tool, projection tools.ModelToolNameProjection) ([]llm.ToolDeclaration, tools.ModelToolNameProjection) {
+	if rc.Catalog == nil {
+		return nil, projection
+	}
+	collisions := projection.Collisions()
+	if len(projected) == 0 && len(collisions) == 0 {
 		// Even an empty catalog still gets the planner-reserved
 		// controls — they're how the LLM signals "spawn a side task"
 		// or "await a previously-spawned task" under native tool-calling.
@@ -256,7 +268,7 @@ func buildToolDeclarationProjection(rc planner.RunContext, discovered []string) 
 	for _, t := range projected {
 		decls = append(decls, toolToDeclaration(t))
 	}
-	for _, collision := range projection.Collisions() {
+	for _, collision := range collisions {
 		emitToolDeclarationCollision(rc, collision.DeclaredName, collision.DeclaredTool, collision.DroppedTool)
 	}
 	return decls, projection
@@ -271,7 +283,7 @@ func projectModelTools(rc planner.RunContext, discovered []string) ([]tools.Tool
 	if rc.Catalog == nil {
 		return nil, tools.NewModelToolNameProjection(nil, nil)
 	}
-	candidates := append([]tools.Tool(nil), rc.Catalog.List()...)
+	candidates := rc.Catalog.List()
 	for _, name := range discovered {
 		if name == "" {
 			continue
@@ -281,17 +293,24 @@ func projectModelTools(rc planner.RunContext, discovered []string) ([]tools.Tool
 		}
 	}
 	names := make([]string, 0, len(candidates))
-	byName := make(map[string]tools.Tool, len(candidates))
 	for _, tool := range candidates {
 		names = append(names, tool.Name)
-		if _, exists := byName[tool.Name]; !exists {
-			byName[tool.Name] = tool
-		}
 	}
-	projection := tools.NewModelToolNameProjection(names, tools.ReservedModelToolNames())
-	projected := make([]tools.Tool, 0, len(projection.Entries()))
-	for _, entry := range projection.Entries() {
-		projected = append(projected, byName[entry.CatalogName])
+	projection := tools.NewModelToolNameProjectionWithReservedControls(names)
+	entries := projection.Entries()
+	projected := make([]tools.Tool, 0, len(entries))
+	// Entries preserve first-winner encounter order. Walk the candidate
+	// snapshot once in that same order, skipping residual collisions and
+	// benign rediscovery duplicates without building a second name map.
+	next := 0
+	for _, candidate := range candidates {
+		if next == len(entries) {
+			break
+		}
+		if candidate.Name == entries[next].CatalogName {
+			projected = append(projected, candidate)
+			next++
+		}
 	}
 	return projected, projection
 }

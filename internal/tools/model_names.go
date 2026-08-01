@@ -34,6 +34,15 @@ func ReservedModelToolNames() []string {
 	return append([]string(nil), reservedModelToolNames[:]...)
 }
 
+// NewModelToolNameProjectionWithReservedControls projects catalogNames after
+// seeding Harbor's runtime-control namespace. It is the allocation-conscious
+// production form of calling [NewModelToolNameProjection] with
+// [ReservedModelToolNames]: the package-owned array is read during
+// construction but never exposed to callers.
+func NewModelToolNameProjectionWithReservedControls(catalogNames []string) ModelToolNameProjection {
+	return NewModelToolNameProjection(catalogNames, reservedModelToolNames[:])
+}
+
 // ModelToolNameEntry is one catalog name that survived projection onto the
 // provider-safe model-visible namespace.
 type ModelToolNameEntry struct {

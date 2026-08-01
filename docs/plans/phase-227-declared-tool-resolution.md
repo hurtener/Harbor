@@ -55,6 +55,11 @@ Closes #654 by giving every model-authored tool name one shared declaration proj
 - **Integration:** planner declaration through builtin dispatch to the real catalog.
 - **Conformance:** all model-authored builtin resolution paths share the projection.
 - **Concurrency / leak:** N≥100 projections/resolutions on one shared catalog.
+- **Performance:** `BenchmarkReActPlanner_NextStep_DeclaredTool` measures the
+  strict real-catalog projection, while `BenchmarkReActPlanner_NextStep_ToolFree`
+  keeps the no-catalog terminal path separate. The renamed identities reset the
+  baseline because the former benchmark accepted a raw undeclared tool name and
+  therefore measured a different, now-forbidden workload.
 
 ## Smoke script additions
 

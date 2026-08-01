@@ -160,6 +160,14 @@ func (d *driver) Save(ctx context.Context, r state.StateRecord) error {
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
+	payload := r.Bytes
+	if payload == nil {
+		// database/sql binds a nil []byte as SQL NULL, but StateStore's
+		// byte-equality contract treats nil and an allocated empty slice as
+		// the same valid zero-length payload. Preserve that contract while
+		// satisfying the Postgres BYTEA NOT NULL storage invariant.
+		payload = []byte{}
+	}
 
 	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
 	if err != nil {
@@ -213,7 +221,7 @@ func (d *driver) Save(ctx context.Context, r state.StateRecord) error {
 	`
 	if _, err := tx.ExecContext(ctx, upsert,
 		r.Identity.TenantID, r.Identity.UserID, r.Identity.SessionID, r.Identity.RunID,
-		r.Kind, string(r.ID), r.Version, r.Bytes, updatedAt,
+		r.Kind, string(r.ID), r.Version, payload, updatedAt,
 	); err != nil {
 		return d.translateUpsertErr(err)
 	}

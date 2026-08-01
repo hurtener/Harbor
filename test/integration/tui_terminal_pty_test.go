@@ -316,6 +316,12 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 		response, inspectErr := secondClient.SessionsInspect(t.Context(), types.SessionsInspectRequest{SessionID: second.Session})
 		return inspectErr == nil && response.Row.Title == "renamed"
 	}, "PTY canonical session rename")
+	// SessionsInspect confirms that the server accepted the title before the
+	// Bubble Tea command result has necessarily been delivered back to the
+	// terminal event loop. Do not send the next shortcut until that result has
+	// closed the rename dialog; otherwise its key bytes can be consumed by the
+	// still-open title input on a busy runner.
+	session.waitContainsAfter(t, mark, "Session renamed: renamed")
 
 	expiredReplacement := mintExpiredToken(t, stack, second.Session)
 	mark = len(session.snapshot())

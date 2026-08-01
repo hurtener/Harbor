@@ -127,7 +127,6 @@ import (
 	"github.com/hurtener/Harbor/internal/llm/output"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/repair"
-	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // FinishToolName is the reserved tool name the LLM emits to signal
@@ -622,6 +621,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// informational on `rc.DiscoveredTools`; the same set drives this
 	// turn's `req.Tools` construction.
 	rc.DiscoveredTools = mergeDiscovered(rc.DiscoveredTools, deriveDiscoveredFromTrajectory(rc.Trajectory))
+	projectedTools, declaredToolProjection := projectModelTools(rc, rc.DiscoveredTools)
 
 	// Build the LLM request via the configured prompt builder. The
 	// builder reads from rc; it MUST NOT mutate rc.
@@ -630,7 +630,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// loudly when a `RunContext.MemoryBlocks` tier or a `SkillsContext`
 	// entry is not JSON-serialisable. The [PromptBuilder] interface
 	// signature is fixed, so the planner drives the default builder via
-	// the error-returning [defaultBuilder.buildRequest] and surfaces
+	// the error-returning [defaultBuilder.buildRequestWithProjectedTools] and surfaces
 	// [planner.ErrMemoryBlockUnserializable] from `Next` — never a
 	// silently dropped memory tier. An operator-supplied builder owns
 	// its own assembly and uses the interface `Build` (custom builders
@@ -638,7 +638,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	var req llm.CompleteRequest
 	if db, ok := p.builder.(defaultBuilder); ok {
 		var buildErr error
-		req, buildErr = db.buildRequest(rc, p.systemPrompt)
+		req, buildErr = db.buildRequestWithProjectedTools(rc, p.systemPrompt, projectedTools)
 		if buildErr != nil {
 			return nil, buildErr
 		}
@@ -680,8 +680,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// LoadingAlways flow through this path naturally. Per-run
 	// discovered tools (AC-18) are resolved by name and appended
 	// without duplication.
-	var declaredToolProjection tools.ModelToolNameProjection
-	req.Tools, declaredToolProjection = buildToolDeclarationProjection(rc, rc.DiscoveredTools)
+	req.Tools, declaredToolProjection = buildToolDeclarationsFromProjection(rc, projectedTools, declaredToolProjection)
 	// the provider-side parallel hint tracks the
 	// `parallel_tool_calls` knob. When ON (the default), the projector
 	// maps an N>1-ToolCall response to a native [planner.CallParallel]

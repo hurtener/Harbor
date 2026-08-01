@@ -149,7 +149,16 @@ func (b defaultBuilder) Build(rc planner.RunContext, systemPrompt string) llm.Co
 // surface loudly as [planner.ErrMemoryBlockUnserializable] from `Next`
 // (fail-loud, never a silently dropped memory tier).
 func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string) (llm.CompleteRequest, error) {
-	req := b.baseRequest(rc, systemPrompt)
+	projected, _ := projectModelTools(rc, rc.DiscoveredTools)
+	return b.buildRequestWithProjectedTools(rc, systemPrompt, projected)
+}
+
+// buildRequestWithProjectedTools renders the default prompt from the same
+// immutable catalog snapshot Next uses for provider declarations and response
+// resolution. The snapshot is per invocation; no state is retained on the
+// compiled builder or planner.
+func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool) (llm.CompleteRequest, error) {
+	req := b.baseRequestWithProjectedTools(rc, systemPrompt, projected)
 
 	// memory + skills injection. The wrappers are
 	// emitted as SEPARATE system-role messages immediately after the
@@ -199,6 +208,11 @@ func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string)
 //     `<additional_guidance>`. One-run UserPersonalization renders in its own
 //     escaped lower-authority section. Both survive a spine replacement.
 func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) llm.CompleteRequest {
+	projected, _ := projectModelTools(rc, rc.DiscoveredTools)
+	return b.baseRequestWithProjectedTools(rc, systemPrompt, projected)
+}
+
+func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool) llm.CompleteRequest {
 	// userLayer is the durable lower-trust user-instruction layer; it is
 	// suppressed when a session override replaces the whole spine.
 	var userLayer string
@@ -224,7 +238,7 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 	var messages []llm.ChatMessage
 
 	// 1. System block: the twelve XML-tagged sections.
-	sysContent := buildSystemContent(systemPrompt, userLayer, b.extraGuidance, b.maxToolExamples, rc)
+	sysContent := buildSystemContentWithProjectedTools(systemPrompt, userLayer, b.extraGuidance, b.maxToolExamples, rc, projected)
 	messages = append(messages, llm.ChatMessage{
 		Role:    llm.RoleSystem,
 		Content: textContent(sysContent),
@@ -568,7 +582,7 @@ If you cannot complete the task after reasonable attempts:
 // section composed BELOW the operator base sections — it can extend the
 // operator's guidance but the framing subordinates it to the base
 // guardrails. Empty → the section is omitted entirely.
-func buildSystemContent(systemPrompt, userLayer, extraGuidance string, maxToolExamples int, rc planner.RunContext) string {
+func buildSystemContentWithProjectedTools(systemPrompt, userLayer, extraGuidance string, maxToolExamples int, rc planner.RunContext, projected []tools.Tool) string {
 	// When the operator overrode the prompt via WithSystemPrompt with a
 	// non-default string, honour the override verbatim as the leading
 	// content — the structured sections ARE the default; an explicit
@@ -595,7 +609,7 @@ func buildSystemContent(systemPrompt, userLayer, extraGuidance string, maxToolEx
 	// "no tools" marker when the catalog is empty). The cap
 	// is threaded from the builder so each tool's curated examples are
 	// bounded; the builder value carries the resolved knob.
-	sections = append(sections, renderAvailableToolsSection(rc, maxToolExamples))
+	sections = append(sections, renderProjectedToolsSection(projected, maxToolExamples))
 
 	// Section: <user_instructions> — the durable user prompt layer (the
 	// layered system prompt's optional higher layer). It composes BELOW the
@@ -671,14 +685,17 @@ func renderIdentitySection() string {
 // `planner.tool_declaration_collision` for the same catalog on the same
 // turn; a second emit would double-count one collision.
 func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) string {
+	projected, _ := projectModelTools(rc, rc.DiscoveredTools)
+	return renderProjectedToolsSection(projected, maxToolExamples)
+}
+
+func renderProjectedToolsSection(catalog []tools.Tool, maxToolExamples int) string {
 	// `maxToolExamples` is ignored — schemas live
 	// in req.Tools[]; the prompt renders name+description only.
 	_ = maxToolExamples
 
 	var b strings.Builder
 	b.WriteString("<available_tools>\n")
-
-	catalog, _ := projectModelTools(rc, rc.DiscoveredTools)
 
 	if len(catalog) == 0 {
 		b.WriteString("(no tools registered for this run)\n")

@@ -57,7 +57,9 @@ func NewEventID() EventID {
 //
 // `Bytes` is opaque to the store — callers serialize their domain
 // types and run them through audit redaction upstream of `Save`. The
-// store does not interpret payloads or re-redact.
+// store does not interpret payloads or re-redact. Zero-length payloads
+// are valid; nil and allocated empty slices are byte-equal for Save's
+// idempotency contract.
 //
 // `Kind` is a free-form caller-namespaced key (e.g.
 // "session.lifecycle", "task.checkpoint", "governance.cost"). Two

@@ -25,5 +25,5 @@ func modelToolNames(cat tools.ToolCatalog, q identity.Quadruple, grantedScopes [
 	for _, tool := range visible {
 		names = append(names, tool.Name)
 	}
-	return tools.NewModelToolNameProjection(names, tools.ReservedModelToolNames())
+	return tools.NewModelToolNameProjectionWithReservedControls(names)
 }

@@ -2,9 +2,9 @@
 
 ## Summary
 
-Closes the accepted test-flake backlog without retries, longer sleeps, or weaker assertions. Tests coordinate through explicit barriers and liveness signals. The Linux PTY workflow is an unconditional release gate with failure-only process/goroutine diagnostics. The #604 recurrence exposed three harness defects and one production modal race: the harness sent legacy/internal function-key values after Kitty CSI-u negotiation, treated a cell-diff byte stream as a terminal screen, and required a transient toast that the renderer may validly coalesce; a superseded same-scope inspection could also close a newly opened action modal. The corrected path uses real CSI-u functional-key codepoints, persisted-state acknowledgements before full visual repaints, canonical Runtime outcomes, and discards stale same-scope inspection results without changing current focus.
+Closes the accepted test-flake backlog without retries, longer sleeps, or weaker assertions. Tests coordinate through explicit barriers and liveness signals. The Linux PTY workflow is an unconditional release gate with failure-only process/goroutine diagnostics. The #604 recurrence exposed four harness defects and one production modal race: the harness sent legacy/internal function-key values after Kitty CSI-u negotiation, treated a cell-diff byte stream as a terminal screen, required a transient toast that the renderer may validly coalesce, and treated a server-side rename commit as proof that Bubble Tea had delivered the result and closed its input modal; a superseded same-scope inspection could also close a newly opened action modal. The corrected path uses real CSI-u functional-key codepoints, persisted-state and UI-result acknowledgements before subsequent input or full visual repaints, canonical Runtime outcomes, and discards stale same-scope inspection results without changing current focus.
 
-The frozen corrective tree passed 100 race-instrumented repetitions of the full authenticated PTY workflow in a two-CPU Go 1.26 Linux container (`ok`, 392.617s), after an independent 20-repetition constrained calibration and 10 local race repetitions.
+The final corrective tree passed 100 race-instrumented repetitions of the full authenticated PTY workflow in a two-CPU Go 1.26 Linux container (`ok`, 381.857s). Its predecessor had independently passed 100 repetitions (`ok`, 392.617s), after a 20-repetition constrained calibration and 10 local race repetitions; the repeated final-tree gate confirms the added rename-result barrier rather than relying on that earlier evidence.
 
 ## RFC anchor
 
@@ -46,6 +46,7 @@ The frozen corrective tree passed 100 race-instrumented repetitions of the full 
 - [x] A second retry command while the first retry is dispatching is deterministically rejected without a second start or queued-intent mutation; the PTY sends the canonical single command.
 - [x] A focused real-PTY decoder test covers F1–F9 and fails when the Kitty wire translation is removed; the unquarantined workflow then passes at least 100 two-CPU Linux `-race` repetitions.
 - [x] A superseded inspection in the current identity/generation cannot close a newer action modal; a cross-generation or cross-identity result still invalidates it.
+- [x] A persisted session rename is followed by the terminal's rename-result acknowledgement before the next shortcut, so input cannot be consumed by the closing modal.
 - [ ] Stale issues have exact targeted `-race -count=100` and CI/full-suite evidence.
 
 ## Files added or changed
