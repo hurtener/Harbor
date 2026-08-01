@@ -19,10 +19,9 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [1.25.0]
 
-Thirteen phases (219–231), one release-closure slice: the original
-**prompt-composition surface**, the transaction and declared-tool corrections
-found by adversarial review, and the external-oracle/reliability gates needed
-to trust the candidate. No
+One release-closure slice: the original **prompt-composition surface**, the
+transaction and declared-tool corrections found by adversarial review, and the
+external-oracle/reliability gates needed to trust the candidate. No
 Protocol wire-version change (`ProtocolVersion` stays `0.1.0`) and no
 migration. Every wire *addition* is an optional field or an additive error
 code; **two changes are nonetheless breaking for a deployed client**, and they
@@ -403,7 +402,7 @@ below).
   A real token is 64 lowercase hex characters, so `"-"` can never collide with
   one — asserted by a conformance row rather than argued. Three conformance
   rows carry it (one of which reproduces the lost update and then shows it
-  closed), and `scripts/smoke/phase-221.sh`'s exact-count guards moved 4 → 7
+  closed), and the conditional-write smoke's exact-count guards moved 4 → 7
   with them.
 
 - **What the token still does not do, named rather than discovered later.** An
@@ -414,16 +413,16 @@ below).
 
 - **`scripts/smoke/inert-baseline.txt` drains to zero, and thirteen of its
   twenty-four entries were the measuring instrument's own false positives.**
-  The v1.24 release switched on a gate: a smoke belonging to a **shipped** phase
+  The v1.24 release switched on a gate: a smoke belonging to a **shipped** surface
   that reports `OK: 0` and `FAIL: 0` asserted nothing. Twenty-four scripts
   violated it and were parked as declared debt. Measurement showed the count
   itself was wrong — the shipped/not-shipped classifier failed two independent
-  ways, and **thirteen of the twenty-four were not shipped phases at all.** Its
+  ways, and **thirteen of the twenty-four did not belong to shipped surfaces.** Its
   row regex could see 233 of 339 master-plan rows and treated the other 106 as
   shipped; its status vocabulary named two of the eight not-shipped words in
   use and defaulted the rest to shipped. **The correction can only relax, never
   tighten**, and that is verified rather than argued: both classifiers were run
-  over all 360 phase tokens — 345 unchanged, 15 relaxed, 0 tightened.
+  over all 360 plan entries — 345 unchanged, 15 relaxed, 0 tightened.
 
 - **The eleven genuinely-inert smokes got real assertions**, and the helper
   they use closes a trap. `go test -run NoSuchTest ./pkg` prints "no tests to
@@ -450,21 +449,21 @@ below).
   read someone else's violations. The verdict was never wrong — it comes from
   the exit code — but the file the failure message *named* was.
 
-- **The drift-audit's own guards are now mutation-verified** (D-376, phase
-  224). `scripts/drift-audit.sh` is the mechanical instrument behind the
+- **The drift-audit's own guards are now mutation-verified** (D-376).
+  `scripts/drift-audit.sh` is the mechanical instrument behind the
   contributor workflow and half the rejection-on-sight list, and **nothing
   verified the instrument** — its guards had been mutation-verified by hand,
   with the results recorded in code comments that no automated check re-ran. A
   guard that cannot fire is indistinguishable from a corpus with no violations.
-  `scripts/smoke/phase-224.sh` now builds a throwaway corpus per guard, applies
-  the defect that guard names, runs the **real** audit against it, and asserts
+  The mutation harness now builds a throwaway corpus per guard, applies the
+  defect that guard names, runs the **real** audit against it, and asserts
   **that guard's own** FAIL line — never merely the exit code, which would
   report "caught" when a *different* guard fired. 18 guard units, 18 covered,
   22 mutations, and a census that fails when a new guard ships with no case.
 
   It found two live defects on its first run, both fixed here: **`brief NN`
   reference resolution could not fail** (an unmatched glob under `nullglob`
-  degenerated to a bare `ls`, exit 0 — every brief citation in every phase plan
+  degenerated to a bare `ls`, exit 0 — every brief citation in every implementation plan
   had been unverified), and **a smoke with no `PREFLIGHT_REQUIRES` header
   aborted the whole audit** under `set -euo pipefail`, silently skipping six
   later guards.
@@ -738,7 +737,7 @@ below).
   143 canonical names.
 
 - **A shipped smoke that exits zero without a canonical summary is red in a
-  black-box fixture.** The Phase 224 mutation harness derives its declared
+  black-box fixture.** The mutation harness derives its declared
   cases and guard signatures from one registry, so deleting a whole registered
   case leaves either an unexecuted declaration or an unclaimed audit guard.
 
