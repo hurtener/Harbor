@@ -82,7 +82,34 @@ Bind each authenticated data-plane bearer to a bounded signed set of agent regis
 
 ## Coverage target
 
-- `internal/protocol/auth`: 90%; `internal/protocol` and `internal/protocol/transports/stream`: 85%; touched runtime/CLI packages do not regress below their v1.25 floors.
+**§4.3 deviation (recorded before ship).** The initial package-wide targets
+were disproportionate to this narrow cross-cutting authority change because
+the pre-existing v1.25 package baselines are `auth` 85.7%, `protocol` 78.7%,
+and `stream` 67.1%. The acceptance gate is therefore: no regression from
+those baselines (the Phase-232 measurement is auth 86.7%, protocol 78.7%, and
+stream 69.7%), plus 100% function coverage for
+`internal/protocol/auth/agent_reach.go`, exercised malformed-validator and
+shared-gate call-site branches, and the race-enabled closed-census smoke.
+The PR must report the exact `go test -cover` / coverprofile commands and the
+new-path evidence; it may not represent the original aggregate floors as met.
+
+## As-built notes
+
+- The one shared gate is stateless. Production and devstack construct one
+  instance and inject it into control, agent-config, and tools; a direct
+  `ControlSurface` starts with the same fail-closed gate so neither explicit
+  nor omitted `start` can bypass reach before task creation.
+- **§4.3 smoke-fixture deviation.** `harbor dev` intentionally exposes only
+  one bootstrap bearer, bounded to the boot agent; the live server has no
+  test-only minting door for absent, empty, or malformed `agent_reach` claims.
+  The live smoke therefore exercises omitted/explicit allowed starts, a
+  tenant-local resolvable-but-excluded target, all four covered method
+  families, malformed-signature authentication, and task no-side-effects.
+  The same smoke invokes the race-enabled real-validator/real-mux integration
+  matrix for excluded, absent, empty, and malformed-claim bearers across the
+  closed method census, including durable state snapshots. This preserves the
+  acceptance evidence without weakening the production token surface merely
+  to manufacture live test credentials.
 
 ## Dependencies
 

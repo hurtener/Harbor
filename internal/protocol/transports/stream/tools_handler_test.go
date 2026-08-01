@@ -53,7 +53,8 @@ func newToolsHandler(t *testing.T) *stream.ToolsHandler {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	h, err := stream.NewToolsHandler(svc)
+	h, err := stream.NewToolsHandler(svc,
+		stream.WithToolsReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		t.Fatalf("NewToolsHandler: %v", err)
 	}
@@ -75,6 +76,9 @@ func doToolsRequest(t *testing.T, h http.Handler, verb, body string, id *identit
 	}
 	if scopes != nil {
 		req = req.WithContext(auth.WithScopes(req.Context(), scopes))
+	}
+	if id != nil {
+		req = req.WithContext(auth.WithAgentReach(req.Context(), []string{"agent-a"}))
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -148,6 +152,21 @@ func TestToolsHandler_Describe_HappyPath(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("tools/describe status = %d, want 200", status)
 	}
+}
+
+func TestToolsHandler_Describe_ExplicitAgentReachOnly(t *testing.T) {
+	h := newToolsHandler(t)
+	status, body := doToolsRequest(t, h, "describe", `{"id":"echo","agent_id":"agent-a"}`, &toolsHandlerID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("allowed explicit projection status = %d body=%s", status, body)
+	}
+	status, body = doToolsRequest(t, h, "describe", `{"id":"echo","agent_id":"agent-b"}`, &toolsHandlerID, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("excluded explicit projection status = %d body=%s", status, body)
+	}
+	assertErrorCode(t, body, protoerrors.CodeScopeMismatch)
+	// Omission remains the boot-effective projection and therefore does not
+	// consume reach; TestToolsHandler_Describe_HappyPath covers that route.
 }
 
 func TestToolsHandler_Metrics_HappyPath(t *testing.T) {

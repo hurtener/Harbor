@@ -73,6 +73,9 @@ const (
 	DevTenant  = "dev"
 	DevUser    = "dev"
 	DevSession = "dev"
+	// DevAgentConfigID is the sole registration ID the default local bearer
+	// may address. Other agent IDs require an explicitly minted token.
+	DevAgentConfigID = "harbor-dev-agent"
 )
 
 // devKeySet is the auth.KeySet implementation `harbor dev` mounts.
@@ -136,6 +139,9 @@ func (s *devSigner) SignDevToken(now time.Time, tenant, user, session string, sc
 	// fixed issuer / audience / TTL; the operator-managed `harbor token`
 	// signer parameterizes all three.
 	claims := harborClaims(now, DevTokenTTL, "harbor-dev", "harbor", tenant, user, session, scopes)
+	if err := setAgentReachClaim(claims, []string{DevAgentConfigID}); err != nil {
+		return "", fmt.Errorf("dev signer: set agent reach: %w", err)
+	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
 	tok.Header["kid"] = s.keys.kid
 	signed, err := tok.SignedString(s.priv)

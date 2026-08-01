@@ -106,6 +106,8 @@ var fixedNowWave10 = conformance.FixedNow
 
 const wave10Kid = "harbor-wave10-k1"
 
+const wave10AgentID = "wave10-agent"
+
 // wave10TestdataRoot resolves the path to the auth package's
 // testdata/ from this test's run cwd (test/integration/).
 func wave10TestdataRoot(t *testing.T) string {
@@ -181,7 +183,9 @@ func newWave10Deps(t *testing.T) *wave10Deps {
 		t.Fatalf("tasks.Open: %v", err)
 	}
 	steerReg := steering.NewRegistry()
-	surface, err := protocol.NewControlSurface(taskReg, steerReg)
+	surface, err := protocol.NewControlSurface(taskReg, steerReg,
+		protocol.WithAgentResolver(explicitAgentReachResolver{effective: wave10AgentID}),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())
@@ -293,14 +297,15 @@ func signES256Wave10(t *testing.T, priv *ecdsa.PrivateKey, claims jwt.MapClaims,
 
 func wave10Claims(id identity.Identity, scopes []string) jwt.MapClaims {
 	return jwt.MapClaims{
-		"iss":     "https://idp.test",
-		"sub":     id.UserID,
-		"exp":     fixedNowWave10.Add(15 * time.Minute).Unix(),
-		"nbf":     fixedNowWave10.Add(-1 * time.Minute).Unix(),
-		"tenant":  id.TenantID,
-		"user":    id.UserID,
-		"session": id.SessionID,
-		"scopes":  scopes,
+		"iss":         "https://idp.test",
+		"sub":         id.UserID,
+		"exp":         fixedNowWave10.Add(15 * time.Minute).Unix(),
+		"nbf":         fixedNowWave10.Add(-1 * time.Minute).Unix(),
+		"tenant":      id.TenantID,
+		"user":        id.UserID,
+		"session":     id.SessionID,
+		"scopes":      scopes,
+		"agent_reach": []string{wave10AgentID},
 	}
 }
 

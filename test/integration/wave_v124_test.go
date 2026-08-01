@@ -62,6 +62,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/dispatch"
@@ -309,7 +310,8 @@ func newWVRig(t *testing.T) *wvRig {
 	// The PRODUCTION agent resolver: a caller-named agent is admitted only
 	// when the CALLER's own tenant carries an admin revision for it.
 	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry(),
-		protocol.WithAgentResolver(serve.NewAgentResolverAdapter(cfgReg, wvBootAgent)))
+		protocol.WithAgentResolver(serve.NewAgentResolverAdapter(cfgReg, wvBootAgent)),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		t.Fatalf("NewControlSurface: %v", err)
 	}
@@ -406,7 +408,7 @@ func wvCtx(t *testing.T, id identity.Identity) context.Context {
 	if err != nil {
 		t.Fatalf("identity.WithVerified: %v", err)
 	}
-	return ctx
+	return auth.WithAgentReach(ctx, []string{wvBootAgent, wvAgentA, wvAgentB})
 }
 
 // wvDeclare writes an agent-scoped revision under `id`'s tenant declaring one

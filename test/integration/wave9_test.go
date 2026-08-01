@@ -64,6 +64,7 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/deterministic"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -75,6 +76,21 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
 )
+
+const wave9EffectiveAgentID = "wave9-control-agent"
+
+type wave9AgentResolver struct{}
+
+func (wave9AgentResolver) ResolveAgent(_ context.Context, _ identity.Identity, agentID string) (bool, error) {
+	return agentID == wave9EffectiveAgentID, nil
+}
+
+func (wave9AgentResolver) EffectiveAgentID(requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	return wave9EffectiveAgentID, nil
+}
 
 // wave9Deps bundles the full Wave 9 runtime surface, all real drivers.
 type wave9Deps struct {
@@ -144,7 +160,9 @@ func newWave9Deps(t *testing.T) *wave9Deps {
 		_ = bus.Close(context.Background())
 		t.Fatalf("registry.New: %v", err)
 	}
-	surface, err := protocol.NewControlSurface(taskReg, steerReg)
+	surface, err := protocol.NewControlSurface(taskReg, steerReg,
+		protocol.WithAgentResolver(wave9AgentResolver{}),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())
@@ -312,7 +330,8 @@ func TestE2E_Wave9_ProtocolDrivenRun_AssembledSurface(t *testing.T) {
 	}
 
 	// (2) `start` through the Protocol ControlSurface — spawns the task.
-	startResp, err := deps.surface.Dispatch(context.Background(), methods.MethodStart, &types.StartRequest{
+	startCtx := auth.WithAgentReach(context.Background(), []string{wave9EffectiveAgentID})
+	startResp, err := deps.surface.Dispatch(startCtx, methods.MethodStart, &types.StartRequest{
 		Identity: types.IdentityScope{Tenant: q.TenantID, User: q.UserID, Session: q.SessionID},
 		Query:    "do a HITL-gated thing",
 	})
@@ -526,7 +545,8 @@ func TestE2E_Wave9_Concurrency_NoCrossTalk(t *testing.T) {
 			q := wave9Run(fmt.Sprintf("tenant-%d", i), fmt.Sprintf("conc-%d", i))
 
 			// `start` via the shared surface.
-			startResp, err := deps.surface.Dispatch(context.Background(), methods.MethodStart, &types.StartRequest{
+			startCtx := auth.WithAgentReach(context.Background(), []string{wave9EffectiveAgentID})
+			startResp, err := deps.surface.Dispatch(startCtx, methods.MethodStart, &types.StartRequest{
 				Identity: types.IdentityScope{Tenant: q.TenantID, User: q.UserID, Session: q.SessionID},
 				Query:    fmt.Sprintf("concurrent run %d", i),
 			})

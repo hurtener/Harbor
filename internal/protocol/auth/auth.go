@@ -184,6 +184,10 @@ type Verified struct {
 	// to any elevated subscription. Membership is checked via
 	// auth.HasScope.
 	Scopes []Scope
+	// AgentReach is the signed closed set of agent registration IDs this
+	// bearer may select on agent-addressed data-plane surfaces. A nil or empty
+	// set grants no such authority; it is not part of the isolation tuple.
+	AgentReach []string
 	// Subject is the JWT's `sub` claim, if present. Audited; never used
 	// as an isolation principal (the triple is the isolation key).
 	Subject string
@@ -478,12 +482,18 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 	}
 
 	scopes := extractScopes(claims["scopes"])
+	reach, reachErr := ParseAgentReach(claims[AgentReachClaim])
+	if reachErr != nil {
+		v.audit(ctx, kidSeen, iss, sub, ErrAgentReachMalformed)
+		return Verified{}, reachErr
+	}
 
 	return Verified{
-		Identity: id,
-		Scopes:   scopes,
-		Subject:  sub,
-		Issuer:   iss,
+		Identity:   id,
+		Scopes:     scopes,
+		AgentReach: reach,
+		Subject:    sub,
+		Issuer:     iss,
 	}, nil
 }
 

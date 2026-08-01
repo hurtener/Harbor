@@ -68,6 +68,7 @@ var ErrToolsMisconfigured = errors.New("stream: tools handler missing a mandator
 type ToolsHandler struct {
 	service *toolsprotocol.Service
 	logger  *slog.Logger
+	reach   auth.AgentReachAuthorizer
 }
 
 // ToolsOption configures NewToolsHandler at construction.
@@ -80,6 +81,16 @@ func WithToolsLogger(l *slog.Logger) ToolsOption {
 	return func(h *ToolsHandler) {
 		if l != nil {
 			h.logger = l
+		}
+	}
+}
+
+// WithToolsReachAuthorizer wires the shared signed reach gate for the
+// optional per-agent tools.describe projection.
+func WithToolsReachAuthorizer(a auth.AgentReachAuthorizer) ToolsOption {
+	return func(h *ToolsHandler) {
+		if a != nil {
+			h.reach = a
 		}
 	}
 }
@@ -236,6 +247,13 @@ func (h *ToolsHandler) serveDescribe(w http.ResponseWriter, r *http.Request, bod
 		return
 	}
 	req.Identity = scope
+	if req.AgentID != "" {
+		if h.reach == nil || h.reach.AuthorizeAgentReach(r.Context(), req.AgentID) != nil {
+			writeToolsError(w, protoerrors.CodeScopeMismatch, http.StatusForbidden,
+				"caller is not authorized for the effective agent")
+			return
+		}
+	}
 	resp, err := h.service.Describe(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodToolsDescribe, err)

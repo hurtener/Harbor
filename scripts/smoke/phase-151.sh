@@ -24,9 +24,11 @@
 # sketched resolving the dev agent id via `agents.list`. The
 # `agent_config.*` / `tools.describe` agent_id is an opaque per-agent KEY
 # into the agentcfg.Registry (CLAUDE.md §6 clarifying note — agent_id is
-# never an isolation principal), not a lookup against the Agent Registry, so
-# a fixed smoke-owned id needs no agents.list round trip and avoids a false
-# SKIP on a build with no self-registered agents.
+# never an isolation principal), not a lookup against the Agent Registry.
+# Phase 232 additionally requires signed reach for an explicit
+# `tools.describe` projection, so this historical live round trip uses the
+# boot agent — the only id intentionally present in the dev bearer's bounded
+# reach — rather than inventing an unauthorized fixture id.
 #
 # Conventions (AGENTS.md §4.2): 404/405/501 -> SKIP; OK >= 1 once shipped;
 # use scripts/smoke/common.sh helpers.
@@ -125,7 +127,7 @@ fi
 
 TOKEN="${HARBOR_DEV_TOKEN}"
 ID_HEADERS=(-H "X-Harbor-Tenant: dev" -H "X-Harbor-User: dev" -H "X-Harbor-Session: dev")
-AGENT_ID="phase151-smoke-agent"
+AGENT_ID="harbor-dev-agent"
 
 describe_loading_mode() {
     local tool_name="$1"

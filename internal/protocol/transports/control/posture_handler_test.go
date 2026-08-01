@@ -26,6 +26,7 @@ func withIdentity(h http.Handler, id identity.Identity) http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		ctx = withControlTestReach(ctx)
 		h.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

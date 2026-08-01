@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/devdraft"
@@ -178,6 +180,15 @@ func TestSignDevToken_ProducesParseableJWT(t *testing.T) {
 	// JWT structure: three '.'-separated base64 segments.
 	if countDots(tok) != 2 {
 		t.Errorf("token does not look like a JWT (3 segments): %q", tok)
+	}
+	parsed, _, err := jwt.NewParser().ParseUnverified(tok, jwt.MapClaims{})
+	if err != nil {
+		t.Fatalf("parse dev token claims: %v", err)
+	}
+	claims := parsed.Claims.(jwt.MapClaims)
+	reach, ok := claims[auth.AgentReachClaim].([]any)
+	if !ok || len(reach) != 1 || reach[0] != DevAgentConfigID {
+		t.Fatalf("dev token agent_reach = %#v, want [%q]", claims[auth.AgentReachClaim], DevAgentConfigID)
 	}
 }
 

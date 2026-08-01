@@ -72,7 +72,8 @@ func TestE2E_DurableUserSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("service: %v", err)
 	}
-	h, err := stream.NewAgentConfigHandler(svc)
+	h, err := stream.NewAgentConfigHandler(svc,
+		stream.WithAgentConfigReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestE2E_DurableUserSkills(t *testing.T) {
 		_ = st.Close(context.Background())
 	})
 
-	dus := &usHarness{handler: h, registry: reg, bus: bus}
+	dus := &usHarness{handler: h, registry: reg, bus: bus, agentReach: []string{dusAgent}}
 	alice := identity.Identity{TenantID: dusTenant, UserID: "alice", SessionID: "s-write"}
 	aliceRead := identity.Identity{TenantID: dusTenant, UserID: "alice", SessionID: "s-read"}
 	bob := identity.Identity{TenantID: dusTenant, UserID: "bob", SessionID: "s-read"}

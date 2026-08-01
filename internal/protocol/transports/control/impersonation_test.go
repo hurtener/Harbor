@@ -54,7 +54,8 @@ func authedAdminCtx(t *testing.T) context.Context {
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
-	return auth.WithScopes(ctx, []auth.Scope{auth.ScopeAdmin})
+	ctx = auth.WithScopes(ctx, []auth.Scope{auth.ScopeAdmin})
+	return withControlTestReach(ctx)
 }
 
 // authedNonAdminCtx is like authedAdminCtx but without the admin
@@ -69,7 +70,8 @@ func authedNonAdminCtx(t *testing.T, tenant, user, session string) context.Conte
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
-	return auth.WithScopes(ctx, nil)
+	ctx = auth.WithScopes(ctx, nil)
+	return withControlTestReach(ctx)
 }
 
 // impersonationStartBody renders a JSON body for a `start` request
@@ -480,7 +482,9 @@ func TestImpersonation_RedactorReturnsNonMap_LogsLoud(t *testing.T) {
 		t.Fatalf("tasks.Open: %v", err)
 	}
 	defer func() { _ = taskReg.Close(context.Background()) }()
-	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry())
+	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry(),
+		protocol.WithAgentResolver(controlTestAgentResolver{}),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		t.Fatalf("protocol.NewControlSurface: %v", err)
 	}
@@ -547,7 +551,9 @@ func TestImpersonation_RedactorFailure_LogsLoud_Not200Regression(t *testing.T) {
 		t.Fatalf("tasks.Open: %v", err)
 	}
 	defer func() { _ = taskReg.Close(context.Background()) }()
-	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry())
+	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry(),
+		protocol.WithAgentResolver(controlTestAgentResolver{}),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		t.Fatalf("protocol.NewControlSurface: %v", err)
 	}

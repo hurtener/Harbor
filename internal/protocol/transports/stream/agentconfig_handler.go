@@ -78,6 +78,7 @@ var ErrAgentConfigMisconfigured = errors.New("stream: agent-config handler missi
 type AgentConfigHandler struct {
 	service *agentcfgprotocol.Service
 	logger  *slog.Logger
+	reach   auth.AgentReachAuthorizer
 }
 
 // AgentConfigOption configures NewAgentConfigHandler.
@@ -89,6 +90,16 @@ func WithAgentConfigLogger(l *slog.Logger) AgentConfigOption {
 	return func(h *AgentConfigHandler) {
 		if l != nil {
 			h.logger = l
+		}
+	}
+}
+
+// WithAgentConfigReachAuthorizer wires Harbor's one shared effective-agent
+// authorization gate into the agent-addressed session and user routes.
+func WithAgentConfigReachAuthorizer(a auth.AgentReachAuthorizer) AgentConfigOption {
+	return func(h *AgentConfigHandler) {
+		if a != nil {
+			h.reach = a
 		}
 	}
 }
@@ -591,6 +602,9 @@ func (h *AgentConfigHandler) serveSessionSetUserPrompt(w http.ResponseWriter, r 
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.SessionSetUserPrompt(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigSessionSetUserPrompt, err)
@@ -608,6 +622,9 @@ func (h *AgentConfigHandler) serveSessionSetSourceDisables(w http.ResponseWriter
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.SessionSetSourceDisables(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigSessionSetSourceDisables, err)
@@ -625,6 +642,9 @@ func (h *AgentConfigHandler) serveSessionSkillsList(w http.ResponseWriter, r *ht
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.SessionSkillsList(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigSessionSkillsList, err)
@@ -642,6 +662,9 @@ func (h *AgentConfigHandler) serveSessionSkillsUpsert(w http.ResponseWriter, r *
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.SessionSkillsUpsert(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigSessionSkillsUpsert, err)
@@ -659,6 +682,9 @@ func (h *AgentConfigHandler) serveSessionSkillsDelete(w http.ResponseWriter, r *
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.SessionSkillsDelete(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigSessionSkillsDelete, err)
@@ -678,6 +704,9 @@ func (h *AgentConfigHandler) serveUserGet(w http.ResponseWriter, r *http.Request
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.UserGet(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigUserGet, err)
@@ -695,6 +724,9 @@ func (h *AgentConfigHandler) serveUserSetRevision(w http.ResponseWriter, r *http
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.UserSetRevision(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigUserSetRevision, err)
@@ -712,6 +744,9 @@ func (h *AgentConfigHandler) serveUserListRevisions(w http.ResponseWriter, r *ht
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.UserListRevisions(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigUserListRevisions, err)
@@ -729,6 +764,9 @@ func (h *AgentConfigHandler) serveUserDiff(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.UserDiff(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigUserDiff, err)
@@ -746,6 +784,9 @@ func (h *AgentConfigHandler) serveUserRollback(w http.ResponseWriter, r *http.Re
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.UserRollback(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigUserRollback, err)
@@ -765,6 +806,9 @@ func (h *AgentConfigHandler) serveUserSkillsList(w http.ResponseWriter, r *http.
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.UserSkillsList(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsList, err)
@@ -782,6 +826,9 @@ func (h *AgentConfigHandler) serveUserSkillsUpsert(w http.ResponseWriter, r *htt
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.UserSkillsUpsert(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsUpsert, err)
@@ -799,6 +846,9 @@ func (h *AgentConfigHandler) serveUserSkillsDelete(w http.ResponseWriter, r *htt
 		return
 	}
 	req.Identity = wireID
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
 	resp, err := h.service.UserSkillsDelete(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsDelete, err)
@@ -825,6 +875,22 @@ func (h *AgentConfigHandler) decode(w http.ResponseWriter, body []byte, req any,
 func (h *AgentConfigHandler) assertIdentity(w http.ResponseWriter, r *http.Request, scope *prototypes.IdentityScope) bool {
 	if perr := reconcileBodyScope(r, scope, bodyscope.SurfaceAgentConfig); perr != nil {
 		writeAgentConfigError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return false
+	}
+	return true
+}
+
+// authorizeAgent applies the single shared reach gate after strict decoding
+// and body-identity reconciliation, before any service or storage call.
+func (h *AgentConfigHandler) authorizeAgent(w http.ResponseWriter, r *http.Request, agentID string) bool {
+	if h.reach == nil {
+		writeAgentConfigError(w, protoerrors.CodeScopeMismatch, http.StatusForbidden,
+			"agent reach authority is not configured")
+		return false
+	}
+	if err := h.reach.AuthorizeAgentReach(r.Context(), agentID); err != nil {
+		writeAgentConfigError(w, protoerrors.CodeScopeMismatch, http.StatusForbidden,
+			"caller is not authorized for the effective agent")
 		return false
 	}
 	return true

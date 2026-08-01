@@ -92,7 +92,8 @@ func esbHarnessOn(t *testing.T, st state.StateStore) *esbHarness {
 	if err != nil {
 		t.Fatalf("service: %v", err)
 	}
-	h, err := stream.NewAgentConfigHandler(svc)
+	h, err := stream.NewAgentConfigHandler(svc,
+		stream.WithAgentConfigReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
@@ -140,7 +141,9 @@ func esbCall(t *testing.T, h http.Handler, path string, body any, tenant, user, 
 		req.Header.Set(stream.HeaderUser, user)
 		req.Header.Set(stream.HeaderSession, session)
 	}
-	req = req.WithContext(auth.WithScopes(req.Context(), scopes))
+	ctx := auth.WithScopes(req.Context(), scopes)
+	ctx = auth.WithAgentReach(ctx, []string{esbAgent})
+	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 

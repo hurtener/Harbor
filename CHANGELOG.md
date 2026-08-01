@@ -17,6 +17,17 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Security
+
+- Agent-addressed data-plane calls now require signed, bounded
+  `agent_reach` authority. This applies to `control.start`, the session and
+  user `agent_config` data-plane methods, and `tools.describe` only when it
+  names an `agent_id`. Add `--agent-reach <id>[,<id>...]` when minting a
+  bearer with `harbor token`; the default `harbor dev` bearer reaches only its
+  boot agent. Missing or empty reach denies these calls, while malformed reach
+  rejects authentication. Omitted `tools.describe.agent_id` remains the
+  boot-effective projection. (D-397, Phase 232.)
+
 ## [1.25.0] — 2026-08-01
 
 One release-closure slice: the original **prompt-composition surface**, the

@@ -81,6 +81,7 @@ important thing to get right, because most IdPs do **not** emit them by default.
 | `user` | **yes** (non-empty) | The connection's user. |
 | `session` | **yes** (non-empty) | A **default** session id — a placeholder, not "the conversation" (see below). |
 | `scopes` | no | Elevated scopes — a closed set: `admin`, `console:fleet`, `agent_config:user`. Absent = authenticated but unprivileged. |
+| `agent_reach` | required for agent-addressed data-plane calls | Unique JSON array of 1–128 nonblank registration IDs (each <=128 bytes). It grants resource authority only; it is not part of the isolation triple. Absent or empty grants no agent reach; malformed rejects the token. |
 | `iss` | **yes** | Must equal `identity.issuer` **exactly**. |
 | `aud` | **yes** | Must equal (or, for an array, contain) `identity.audience`. |
 | `exp` | **yes** | A token with no `exp` is rejected as expired. Keep it short. |
@@ -138,8 +139,9 @@ differs.
 3. **Note the issuer.** The IdP's issuer URL becomes `identity.issuer`; its JWKS
    endpoint (usually `<issuer>/.well-known/jwks.json` or
    `<issuer>/protocol/openid-connect/certs`) becomes `identity.jwks_url`.
-4. **Add the Harbor custom claims** — inject `tenant`, `user`, `session`, and
-   `scopes` as **top-level** claims on the access token. This is the
+4. **Add the Harbor custom claims** — inject `tenant`, `user`, `session`,
+   `scopes` and, when the client must address an agent, `agent_reach` as
+   **top-level** claims on the access token. This is the
    per-provider step the guide's snippets cover: an Auth0
    **Client-Credentials Action**, Okta **authorization-server Claims**, a
    Keycloak **client-scope Mapper**, or a Cognito **Pre-Token-Generation
@@ -172,11 +174,14 @@ harbor token keygen --out ./identity --alg ES256
 harbor token mint --key ./identity/private.pem \
   --tenant tenant-acme --user user-1 --session default \
   --issuer https://harbor.internal --audience harbor \
-  --scopes console:fleet --ttl 1h
+  --scopes console:fleet --agent-reach support-agent --ttl 1h
 ```
 
 `--issuer` / `--audience` are mandatory and **must equal** `identity.issuer` /
 `identity.audience`. Mint with no `--scopes` for a least-privileged token.
+Mint with no `--agent-reach` unless the bearer must use `control.start`, the
+agent-config session/user data plane, or `tools.describe` with an explicit
+`agent_id`; tenant-local configuration never grants this authority.
 
 > **Honesty note — know what grade this is.** Self-issued tokens are signed by a
 > key **you** manage — protect the private key (it is the entire trust root),

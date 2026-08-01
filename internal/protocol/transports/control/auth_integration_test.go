@@ -46,6 +46,7 @@ func TestControl_AuthCtx_BodyEmpty_Backfilled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
+	ctx = withControlTestReach(ctx)
 	body := `{"identity":{},"query":"q"}`
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/control/start", strings.NewReader(body))
 	req.SetPathValue("method", string(methods.MethodStart))
@@ -74,6 +75,7 @@ func TestControl_AuthCtx_BodyMatches_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
+	ctx = withControlTestReach(ctx)
 	body := startBody("t1", "u1", "s1")
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/control/start", strings.NewReader(body))
 	req.SetPathValue("method", string(methods.MethodStart))

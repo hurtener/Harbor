@@ -168,6 +168,9 @@ type MuxInput struct {
 	// un-mounted (the production posture — no in-runtime token issuer).
 	Validator   auth.Validator
 	AuthSurface *auth.RotateSurface
+	// AgentReach is the gate shared with the control surface by runtime
+	// assembly. Nil still builds fail-closed stream projections.
+	AgentReach auth.AgentReachAuthorizer
 
 	// Posture stamps.
 	DisplayName  string
@@ -211,6 +214,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		// Auth explicitly opted out (the test-kit WithoutValidator path).
 		muxOpts = append(muxOpts, transports.WithoutValidator())
 	}
+	muxOpts = append(muxOpts, transports.WithAgentReachAuthorizer(in.AgentReach))
 
 	// The session-erasure cascade is available only when every scoped store
 	// the cascade deletes is present; the same condition gates the capability

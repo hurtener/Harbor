@@ -45,6 +45,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
+	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -180,7 +181,8 @@ func newSelRig(t *testing.T) *selRig {
 
 	steerReg := steering.NewRegistry()
 	surface, err := protocol.NewControlSurface(taskReg, steerReg,
-		protocol.WithAgentResolver(serve.NewAgentResolverAdapter(cfgReg, selBoot)))
+		protocol.WithAgentResolver(serve.NewAgentResolverAdapter(cfgReg, selBoot)),
+		protocol.WithAgentReachAuthorizer(protocolauth.NewAgentReachAuthorizer()))
 	if err != nil {
 		t.Fatalf("NewControlSurface: %v", err)
 	}
@@ -220,7 +222,7 @@ func selCtx(t *testing.T, id identity.Identity) context.Context {
 	if err != nil {
 		t.Fatalf("identity.WithVerified: %v", err)
 	}
-	return ctx
+	return protocolauth.WithAgentReach(ctx, []string{selBoot, selAlpha, selBravo})
 }
 
 // selWriteAgent pins an admin (ConfigScopeAgent) revision.
@@ -439,7 +441,8 @@ func TestE2E_AgentSelection_ResolverStoreErrorFailsLoud(t *testing.T) {
 	surface, err := protocol.NewControlSurface(rig.tasks, steering.NewRegistry(),
 		// defaultID deliberately EMPTY so check (i) cannot short-circuit
 		// the store read this leg is about.
-		protocol.WithAgentResolver(serve.NewAgentResolverAdapter(brokenReg, "")))
+		protocol.WithAgentResolver(serve.NewAgentResolverAdapter(brokenReg, "")),
+		protocol.WithAgentReachAuthorizer(protocolauth.NewAgentReachAuthorizer()))
 	if err != nil {
 		t.Fatalf("NewControlSurface: %v", err)
 	}

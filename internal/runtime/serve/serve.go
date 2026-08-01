@@ -434,9 +434,11 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	// A `start` naming an agent is validated against the SAME agent-config
 	// registry + boot agent id the run-loop driver projects from, so the
 	// edge cannot accept an agent the run loop would not honour.
+	agentReach := auth.NewAgentReachAuthorizer()
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
 		protocol.WithSessionEnsurer(NewSessionEnsurerAdapter(sessionRegistry)),
 		protocol.WithAgentResolver(NewAgentResolverAdapter(agentConfigRegistry, devAgentConfigID)),
+		protocol.WithAgentReachAuthorizer(agentReach),
 	)
 	if err != nil {
 		closeAll(ctx)
@@ -676,6 +678,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		InferenceBrokers:         inferenceBrokerNames,
 		Validator:                validator,
 		AuthSurface:              authSurface,
+		AgentReach:               agentReach,
 		DisplayName:              opts.DisplayName,
 		InstanceID:               opts.InstanceID,
 		BuildVersion:             opts.BuildVersion,

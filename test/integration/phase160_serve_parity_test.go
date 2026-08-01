@@ -190,14 +190,15 @@ func (k *parityRSAKey) mint(t *testing.T, id identity.Identity) string {
 	t.Helper()
 	now := time.Now()
 	claims := jwt.MapClaims{
-		"iss":     parityIssuer,
-		"aud":     parityAudience,
-		"sub":     id.UserID,
-		"iat":     now.Unix(),
-		"exp":     now.Add(1 * time.Hour).Unix(),
-		"tenant":  id.TenantID,
-		"user":    id.UserID,
-		"session": id.SessionID,
+		"iss":         parityIssuer,
+		"aud":         parityAudience,
+		"sub":         id.UserID,
+		"iat":         now.Unix(),
+		"exp":         now.Add(1 * time.Hour).Unix(),
+		"tenant":      id.TenantID,
+		"user":        id.UserID,
+		"session":     id.SessionID,
+		"agent_reach": []string{"harbor-dev-agent"},
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	tok.Header["kid"] = parityKID
@@ -1046,6 +1047,7 @@ func WeatherLookup(_ context.Context, in WeatherLookupInput) (WeatherLookupOutpu
 	tok := strings.TrimSpace(runCmd(work, harborBin, "token", "mint",
 		"--key", filepath.Join(keysDir, "private.pem"),
 		"--tenant", "acme", "--user", "alice", "--session", "s1",
+		"--agent-reach", "harbor-dev-agent",
 		"--issuer", liveIssuer, "--audience", liveAudience))
 	if tok == "" {
 		t.Fatal("harbor token mint produced no token")

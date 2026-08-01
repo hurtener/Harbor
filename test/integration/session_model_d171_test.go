@@ -59,6 +59,8 @@ import (
 
 const d171Kid = "d171-kid"
 
+const d171AgentID = "d171-agent"
+
 var fixedNowD171 = time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)
 
 // d171Stack mirrors the production `cmd/harbor` boot surfaces relevant to
@@ -118,6 +120,8 @@ func newD171Stack(t *testing.T, dsn string, priv *ecdsa.PrivateKey, pub *ecdsa.P
 	// over an existing state dir regardless of session state.
 	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry(),
 		protocol.WithSessionEnsurer(d171Ensurer{reg: reg}),
+		protocol.WithAgentResolver(explicitAgentReachResolver{effective: d171AgentID}),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()),
 	)
 	if err != nil {
 		t.Fatalf("protocol.NewControlSurface: %v", err)
@@ -164,14 +168,15 @@ func newD171Stack(t *testing.T, dsn string, priv *ecdsa.PrivateKey, pub *ecdsa.P
 func d171Token(t *testing.T, priv *ecdsa.PrivateKey, tenant, user string, scopes []string) string {
 	t.Helper()
 	claims := jwt.MapClaims{
-		"iss":     "https://idp.test",
-		"sub":     user,
-		"exp":     fixedNowD171.Add(15 * time.Minute).Unix(),
-		"nbf":     fixedNowD171.Add(-1 * time.Minute).Unix(),
-		"tenant":  tenant,
-		"user":    user,
-		"session": "default", // DEFAULT only; never a hard pin
-		"scopes":  scopes,
+		"iss":         "https://idp.test",
+		"sub":         user,
+		"exp":         fixedNowD171.Add(15 * time.Minute).Unix(),
+		"nbf":         fixedNowD171.Add(-1 * time.Minute).Unix(),
+		"tenant":      tenant,
+		"user":        user,
+		"session":     "default", // DEFAULT only; never a hard pin
+		"scopes":      scopes,
+		"agent_reach": []string{d171AgentID},
 	}
 	return signES256Wave10(t, priv, claims, d171Kid)
 }

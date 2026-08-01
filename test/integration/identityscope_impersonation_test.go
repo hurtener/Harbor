@@ -78,6 +78,8 @@ import (
 // is reproducible.
 var fixedNowPhase72b = time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 
+const phase72bAgentID = "phase72b-agent"
+
 // phase72bDeps wires the REAL runtime drivers behind the
 // auth-decorated wire transport — no mocks at any seam (CLAUDE.md §17.3).
 type phase72bDeps struct {
@@ -121,7 +123,9 @@ func newPhase72bDeps(t *testing.T) *phase72bDeps {
 		_ = bus.Close(context.Background())
 		t.Fatalf("tasks.Open: %v", err)
 	}
-	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry())
+	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry(),
+		protocol.WithAgentResolver(explicitAgentReachResolver{effective: phase72bAgentID}),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())
@@ -244,14 +248,15 @@ func signES256Phase72b(t *testing.T, priv *ecdsa.PrivateKey, claims jwt.MapClaim
 
 func validClaimsPhase72b(tenant, user, session string, scopes []string) jwt.MapClaims {
 	return jwt.MapClaims{
-		"iss":     "https://idp.test",
-		"sub":     user,
-		"exp":     fixedNowPhase72b.Add(15 * time.Minute).Unix(),
-		"nbf":     fixedNowPhase72b.Add(-1 * time.Minute).Unix(),
-		"tenant":  tenant,
-		"user":    user,
-		"session": session,
-		"scopes":  scopes,
+		"iss":         "https://idp.test",
+		"sub":         user,
+		"exp":         fixedNowPhase72b.Add(15 * time.Minute).Unix(),
+		"nbf":         fixedNowPhase72b.Add(-1 * time.Minute).Unix(),
+		"tenant":      tenant,
+		"user":        user,
+		"session":     session,
+		"scopes":      scopes,
+		"agent_reach": []string{phase72bAgentID},
 	}
 }
 

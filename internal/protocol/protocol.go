@@ -111,11 +111,12 @@ type ScopeChecker func(ctx context.Context, s auth.Scope) bool
 type ControlSurface struct {
 	tasks      tasks.TaskRegistry
 	steering   *steering.Registry
-	topology   TopologyAccessor // may be nil (Runtime hosts no engine)
-	adminScope ScopeChecker     // the admin-cross-tenant gate; defaults to auth.HasScope
-	bus        events.EventBus  // optional; the audit.admin_scope_used emit on a cross-tenant topology read
-	sessions   SessionEnsurer   // optional; create-on-first-use on `start`
-	agents     AgentResolver    // optional to CONSTRUCT; a named agent without it is REFUSED
+	topology   TopologyAccessor          // may be nil (Runtime hosts no engine)
+	adminScope ScopeChecker              // the admin-cross-tenant gate; defaults to auth.HasScope
+	bus        events.EventBus           // optional; the audit.admin_scope_used emit on a cross-tenant topology read
+	sessions   SessionEnsurer            // optional; create-on-first-use on `start`
+	agents     AgentResolver             // optional to CONSTRUCT; a named agent without it is REFUSED
+	reach      auth.AgentReachAuthorizer // always fail-closed; assembly may replace the default shared gate
 }
 
 // SessionEnsurer is the create-on-first-use seam the `start` method
@@ -171,6 +172,10 @@ func NewControlSurface(taskRegistry tasks.TaskRegistry, steeringRegistry *steeri
 		tasks:      taskRegistry,
 		steering:   steeringRegistry,
 		adminScope: auth.HasScope,
+		// A direct/embedded surface must never accidentally omit the
+		// signed-reach decision. Assembly may replace this immutable gate with
+		// its one shared instance, but the default is always fail-closed.
+		reach: auth.NewAgentReachAuthorizer(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -278,8 +283,17 @@ type AgentResolver interface {
 	ResolveAgent(ctx context.Context, ident identity.Identity, agentID string) (bool, error)
 }
 
-// WithAgentResolver wires the caller-named-agent validation seam the
-// `start` method calls when a request carries a non-empty `agent_id`.
+// EffectiveAgentResolver resolves the actual target of a caller selection.
+// It extends AgentResolver so an omitted start.agent_id can be checked against
+// signed reach before a session or task exists.
+type EffectiveAgentResolver interface {
+	AgentResolver
+	EffectiveAgentID(requested string) (string, error)
+}
+
+// WithAgentResolver wires the effective agent-selection seam. A direct or
+// embedded ControlSurface already has a default fail-closed signed-reach gate,
+// so installation cannot accidentally bypass bearer authority.
 //
 // The option is OPTIONAL so a control-only Runtime (no agent-config
 // registry) still builds — but the ABSENCE is fail-closed, not
@@ -291,6 +305,17 @@ func WithAgentResolver(r AgentResolver) Option {
 	return func(s *ControlSurface) {
 		if r != nil {
 			s.agents = r
+		}
+	}
+}
+
+// WithAgentReachAuthorizer wires the shared signed-agent-reach gate. The
+// concrete instance is constructed once at runtime assembly and is shared by
+// control, agent-config and tools projections.
+func WithAgentReachAuthorizer(a auth.AgentReachAuthorizer) Option {
+	return func(s *ControlSurface) {
+		if a != nil {
+			s.reach = a
 		}
 	}
 }

@@ -110,7 +110,11 @@ else
       # build does not wire a skills store the verb 501s → SKIP (not FAIL).
       if [[ -n "${HARBOR_DEV_TOKEN:-}" ]] && command -v jq >/dev/null 2>&1; then
         AUTH="Authorization: Bearer ${HARBOR_DEV_TOKEN}"
-        SKILL='{"agent_id":"smoke-202","skill":{"name":"durable-smoke-202","trigger":"when asked","steps":["do it"],"origin":"generated"}}'
+        # Phase 232 binds even claim-free user-skill routes to signed agent
+        # reach. The dev bearer reaches only its boot agent, so the historical
+        # durability proof uses that authorized target instead of its old
+        # arbitrary fixture id.
+        SKILL='{"agent_id":"harbor-dev-agent","skill":{"name":"durable-smoke-202","trigger":"when asked","steps":["do it"],"origin":"generated"}}'
         up=$(curl -s --max-time 5 -X POST -H "${AUTH}" -H 'X-Harbor-Session: sess-A' \
           -H 'Content-Type: application/json' -d "${SKILL}" "${UPSERT_URL}" || true)
         up_scope="$(printf '%s' "${up}" | jq -r '.skill.scope // ""' 2>/dev/null || true)"
@@ -118,7 +122,7 @@ else
           ok "claim-free upsert stored the skill at user scope"
           # List from a DIFFERENT session (durable cross-session visibility).
           ls=$(curl -s --max-time 5 -X POST -H "${AUTH}" -H 'X-Harbor-Session: sess-B' \
-            -H 'Content-Type: application/json' -d '{"agent_id":"smoke-202"}' "${LIST_URL}" || true)
+            -H 'Content-Type: application/json' -d '{"agent_id":"harbor-dev-agent"}' "${LIST_URL}" || true)
           if printf '%s' "${ls}" | jq -e '.skills[]? | select(.name=="durable-smoke-202")' >/dev/null 2>&1; then
             ok "durable user skill is visible from a different session (durable-by-default)"
           else
@@ -127,7 +131,7 @@ else
           # Delete from session B removes it for the whole (tenant, user).
           del=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H "${AUTH}" \
             -H 'X-Harbor-Session: sess-B' -H 'Content-Type: application/json' \
-            -d '{"agent_id":"smoke-202","name":"durable-smoke-202"}' "${DELETE_URL}" || true)
+            -d '{"agent_id":"harbor-dev-agent","name":"durable-smoke-202"}' "${DELETE_URL}" || true)
           if [[ "${del}" == "200" ]]; then
             ok "claim-free delete removed the durable user skill (${del})"
           else
