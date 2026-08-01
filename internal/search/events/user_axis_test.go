@@ -3,6 +3,7 @@ package events_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
@@ -31,6 +32,7 @@ func denyingSearcher(t *testing.T, h *busHarness) *eventsearch.Searcher {
 	s, err := eventsearch.New(h.bus.(eventsubsys.Replayer), search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("eventsearch.New: %v", err)
@@ -43,6 +45,7 @@ func claimedSearcher(t *testing.T, h *busHarness) *eventsearch.Searcher {
 	s, err := eventsearch.New(h.bus.(eventsubsys.Replayer), search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: server.SearchAdminScopeFromAuth,
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("eventsearch.New: %v", err)
@@ -218,6 +221,59 @@ func TestEventsSearcher_WidenedReadSetsBusAdmin(t *testing.T) {
 	seeded := seededRows(resp.Rows)
 	if len(seeded) != 1 || seeded[0].UserID != victim {
 		t.Fatalf("widened read: got %d seeded rows %v, want exactly the victim's one row", len(seeded), seeded)
+	}
+}
+
+func TestEventsSearcher_WideningEmitsExactlyOnceViaReplay(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		req  types.SearchRequest
+	}{
+		{name: "tenant axis", req: types.SearchRequest{Filter: types.SearchFilter{TenantIDs: []string{"tenant-target"}}}},
+		{name: "user axis", req: types.SearchRequest{Filter: types.SearchFilter{UserIDs: []string{victim}}}},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newBusHarness(t)
+			defer h.cleanup()
+			seedTwoUsersOneTenant(t, h)
+			if tc.name == "tenant axis" {
+				publishRuntimeError(t, h.bus, identity.Quadruple{Identity: identity.Identity{
+					TenantID: "tenant-target", UserID: "target-user", SessionID: "target-session",
+				}})
+			}
+
+			var sinkCalls atomic.Int64
+			s, err := eventsearch.New(h.bus.(eventsubsys.Replayer), search.Deps{
+				Redactor:   patterns.New(),
+				AdminScope: func(context.Context) bool { return true },
+				Audit: func(ctx context.Context, ev eventsubsys.Event) error {
+					sinkCalls.Add(1)
+					return h.bus.Publish(ctx, ev)
+				},
+			})
+			if err != nil {
+				t.Fatalf("eventsearch.New: %v", err)
+			}
+			resp, err := s.Search(attackerCtx(), tc.req)
+			if err != nil {
+				t.Fatalf("Search: %v", err)
+			}
+			if got := sinkCalls.Load(); got != 0 {
+				t.Errorf("search audit sink calls = %d, want 0; Replay owns this index's notice", got)
+			}
+			notices := 0
+			for _, row := range resp.Rows {
+				if row.Facets["type"] == string(eventsubsys.EventTypeAdminScopeUsed) {
+					notices++
+				}
+			}
+			if notices != 1 {
+				t.Fatalf("audit.admin_scope_used rows = %d, want exactly 1; rows=%+v", notices, resp.Rows)
+			}
+		})
 	}
 }
 

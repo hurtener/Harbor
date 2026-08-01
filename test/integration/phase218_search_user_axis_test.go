@@ -103,7 +103,7 @@ func newUserAxisStack(t *testing.T) *userAxisStack {
 		t.Fatalf("artifacts.New: %v", err)
 	}
 
-	deps := search.Deps{Redactor: red, AdminScope: server.SearchAdminScopeFromAuth}
+	deps := search.Deps{Redactor: red, AdminScope: server.SearchAdminScopeFromAuth, Audit: bus.Publish}
 	ss, err := sessionsearch.New(sreg, deps)
 	if err != nil {
 		t.Fatalf("session search: %v", err)
@@ -405,6 +405,7 @@ func TestE2E_Phase218_FailureModes(t *testing.T) {
 		s, err := sessionsearch.New(sreg, search.Deps{
 			Redactor:   p218FailingRedactor{},
 			AdminScope: server.SearchAdminScopeFromAuth,
+			Audit:      bus.Publish,
 		})
 		if err != nil {
 			t.Fatalf("sessionsearch.New: %v", err)

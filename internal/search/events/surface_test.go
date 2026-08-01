@@ -28,17 +28,22 @@ func TestEventsSearcher_New_RejectsMissingDeps(t *testing.T) {
 	replayer := h.bus.(eventsubsys.Replayer)
 
 	if _, err := eventsearch.New(nil, search.Deps{
-		Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false },
+		Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false }, Audit: testAudit,
 	}); !errors.Is(err, search.ErrInvalidRequest) {
 		t.Errorf("nil replayer: got %v, want ErrInvalidRequest", err)
 	}
 	if _, err := eventsearch.New(replayer, search.Deps{
-		AdminScope: func(context.Context) bool { return false },
+		AdminScope: func(context.Context) bool { return false }, Audit: testAudit,
 	}); !errors.Is(err, search.ErrInvalidRequest) {
 		t.Errorf("nil redactor: got %v, want ErrInvalidRequest", err)
 	}
-	if _, err := eventsearch.New(replayer, search.Deps{Redactor: patterns.New()}); !errors.Is(err, search.ErrInvalidRequest) {
+	if _, err := eventsearch.New(replayer, search.Deps{Redactor: patterns.New(), Audit: testAudit}); !errors.Is(err, search.ErrInvalidRequest) {
 		t.Errorf("nil AdminScope: got %v, want ErrInvalidRequest", err)
+	}
+	if _, err := eventsearch.New(replayer, search.Deps{
+		Redactor: patterns.New(), AdminScope: func(context.Context) bool { return false },
+	}); !errors.Is(err, search.ErrInvalidRequest) {
+		t.Errorf("nil Audit: got %v, want ErrInvalidRequest", err)
 	}
 }
 
@@ -164,6 +169,7 @@ func TestEventsSearcher_ReplayUnavailableDegradesToAnEmptyPage(t *testing.T) {
 	s, err := eventsearch.New(bus.(eventsubsys.Replayer), search.Deps{
 		Redactor:   patterns.New(),
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("eventsearch.New: %v", err)
@@ -204,6 +210,7 @@ func TestEventsSearcher_RedactorFailureRefusesTheRow(t *testing.T) {
 	s, err := eventsearch.New(h.bus.(eventsubsys.Replayer), search.Deps{
 		Redactor:   failingRedactor{},
 		AdminScope: func(context.Context) bool { return false },
+		Audit:      testAudit,
 	})
 	if err != nil {
 		t.Fatalf("eventsearch.New: %v", err)

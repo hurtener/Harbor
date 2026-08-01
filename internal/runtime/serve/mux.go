@@ -572,7 +572,11 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	}
 
 	if in.Sessions != nil && in.Tasks != nil && in.Artifacts != nil {
-		searchDeps := search.Deps{Redactor: red, AdminScope: server.SearchAdminScopeFromAuth}
+		searchDeps := search.Deps{
+			Redactor:   red,
+			AdminScope: server.SearchAdminScopeFromAuth,
+			Audit:      bus.Publish,
+		}
 		searchSessions, seErr := searchsessions.New(in.Sessions, searchDeps)
 		if seErr != nil {
 			return nil, wrapErr("search sessions", seErr)
