@@ -481,10 +481,12 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 		t.Fatalf("pause.resumed token %q != tool.auth_completed pause token %q", resPayload.Token, done.PauseToken)
 	}
 
-	// 4. The callback already resumed the OAuth pause. Add only the
-	//    operator-visible completion note; enqueueing a second steering
-	//    RESUME races that callback-owned transition and can wake a run that
-	//    has already re-entered.
+	// 4. CompleteFlow resumed the OAuth PAUSE, not the planner RUN. The
+	//    tool-level pause and the run's steering inbox are two distinct
+	//    coordination layers: this explicit control event is what releases the
+	//    RunLoop's ExternalEvent park after the token is durably persisted.
+	//    Omitting it leaves the run parked forever even though
+	//    pause.resumed was correctly emitted by the callback.
 	inbox, err := env.steerReg.Lookup(q)
 	if err != nil {
 		t.Fatalf("steering.Registry.Lookup: %v", err)
@@ -497,6 +499,15 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 		Payload:      map[string]any{"note": "oauth completed; token persisted"},
 	}); err != nil {
 		t.Fatalf("Enqueue(INJECT_CONTEXT): %v", err)
+	}
+	if err := inbox.Enqueue(steering.ControlEvent{
+		Type:         steering.ControlResume,
+		Identity:     q,
+		CallerScope:  steering.ScopeOwnerUser,
+		CallerTenant: q.TenantID,
+		Payload:      map[string]any{"reason": "tool-oauth completed"},
+	}); err != nil {
+		t.Fatalf("Enqueue(RESUME): %v", err)
 	}
 	// 5. The run re-enters and finishes: the re-dispatched tool
 	//    invocation succeeded USING the minted token.
