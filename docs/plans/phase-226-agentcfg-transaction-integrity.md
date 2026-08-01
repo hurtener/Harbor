@@ -83,4 +83,4 @@ Supersedes the affected Phase 221 write ordering: conditional skill mutations ar
 ## Pre-merge checklist
 
 - [x] `make drift-audit` and `make check-mirror` pass
-- [ ] CI preflight, coverage, isolation, concurrency, conformance, and integration gates pass
+- [x] CI preflight, coverage, isolation, concurrency, conformance, and integration gates pass

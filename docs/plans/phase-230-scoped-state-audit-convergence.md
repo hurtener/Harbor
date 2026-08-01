@@ -80,4 +80,4 @@ Closes #396, #612, and #462: StateStore enumeration is identity-scoped in every 
 
 ## Pre-merge checklist
 
-- [ ] Drift, mirror, CI preflight, three-driver conformance, identity, integration, and concurrency gates pass
+- [x] Drift, mirror, CI preflight, three-driver conformance, identity, integration, and concurrency gates pass

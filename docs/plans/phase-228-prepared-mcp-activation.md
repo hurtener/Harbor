@@ -84,4 +84,4 @@ Closes #653 by replacing live-first add-connection compensation with prepare, pe
 
 ## Pre-merge checklist
 
-- [ ] Drift, mirror, CI preflight, spec-fixture integration, identity, concurrent-reuse, and leak gates pass
+- [x] Drift, mirror, CI preflight, spec-fixture integration, identity, concurrent-reuse, and leak gates pass

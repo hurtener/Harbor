@@ -17,7 +17,7 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-## [1.25.0]
+## [1.25.0] — 2026-08-01
 
 One release-closure slice: the original **prompt-composition surface**, the
 transaction and declared-tool corrections found by adversarial review, and the
