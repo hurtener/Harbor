@@ -392,6 +392,11 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 - **Ordering:** 233a and 233b are independent after 233; both gate 234. Phase
   235 gates release completion after 232, 233, 233a, 233b, and 234.
 - **Decision:** D-400. **Status:** Shipped (v1.26).
+- **Coverage evidence:** sessionoverlay is 90.3%; LocalDB is 85.4%
+  (`SearchSnapshot` 94.1%); the shared conformance harness is 86.7% in a
+  combined profile across its real LocalDB happy paths and adversarial
+  contract-rejection self-tests. PostgreSQL remains measured by its
+  `HARBOR_PG_DSN` real-driver CI job.
 
 ### Phase 233b — Signed OAuth MCP capability registration (HA-50)
 

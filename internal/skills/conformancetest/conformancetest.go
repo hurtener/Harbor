@@ -41,6 +41,17 @@ type Harness struct {
 	SnapshotFullTextPath string
 }
 
+// failureReporter is the minimal assertion surface used by the suite's
+// individual contract checks. Keeping it narrower than testing.TB lets the
+// harness self-test its fail-closed diagnostics with an adversarial reporter;
+// testing.TB intentionally has private methods and cannot be implemented by a
+// test double.
+type failureReporter interface {
+	Helper()
+	Fatal(args ...any)
+	Fatalf(format string, args ...any)
+}
+
 // Run executes the shared suite against the harness returned by
 // `factory`. Each subtest gets its own harness; `factory` is called
 // once per subtest so state is isolated.
@@ -169,7 +180,7 @@ func newSkill(name string) skills.Skill {
 	return s
 }
 
-func testUpsertGetRoundTrip(t *testing.T, h Harness) {
+func testUpsertGetRoundTrip(t failureReporter, h Harness) {
 	ctx := context.Background()
 	want := newSkill("alpha")
 	if err := h.Store.Upsert(ctx, fixtureID, want); err != nil {
@@ -187,7 +198,7 @@ func testUpsertGetRoundTrip(t *testing.T, h Harness) {
 	}
 }
 
-func testConflictPolicy(t *testing.T, h Harness) {
+func testConflictPolicy(t failureReporter, h Harness) {
 	ctx := context.Background()
 
 	// Seed a pack-origin skill.
@@ -243,7 +254,7 @@ func testConflictPolicy(t *testing.T, h Harness) {
 	}
 }
 
-func testOrdering(t *testing.T, h Harness) {
+func testOrdering(t failureReporter, h Harness) {
 	ctx := context.Background()
 	names := []string{"echo", "alpha", "delta", "bravo", "charlie"}
 	for _, n := range names {
@@ -273,7 +284,7 @@ func testOrdering(t *testing.T, h Harness) {
 	}
 }
 
-func testIdentityRejection(t *testing.T, h Harness) {
+func testIdentityRejection(t failureReporter, h Harness) {
 	ctx := context.Background()
 	bad := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u"}} // missing session
 	cases := []struct {
@@ -303,7 +314,7 @@ func testIdentityRejection(t *testing.T, h Harness) {
 // seam. The candidate is intentionally not stored: a compliant implementation
 // must rank exactly the supplied run snapshot, not silently re-read its mutable
 // backing catalog.
-func testSnapshotSearch(t *testing.T, h Harness) {
+func testSnapshotSearch(t failureReporter, h Harness) {
 	candidate := newSkill("snapshot-target")
 	candidate.Description = "frozen snapshot harborneedle"
 	candidate.UpdatedAt = time.Unix(10, 0).UTC()
@@ -320,7 +331,7 @@ func testSnapshotSearch(t *testing.T, h Harness) {
 // migration. A same-named wider user row may never replace an exact session
 // row, and an absent session rung must remain absent even when the user rung
 // exists.
-func testGetScopeExactRung(t *testing.T, h Harness) {
+func testGetScopeExactRung(t failureReporter, h Harness) {
 	ctx := context.Background()
 	sessionSkill := newSkill("same-name")
 	sessionSkill.Scope = skills.ScopeSession
@@ -369,7 +380,7 @@ func testGetScopeExactRung(t *testing.T, h Harness) {
 	}
 }
 
-func testNotFound(t *testing.T, h Harness) {
+func testNotFound(t failureReporter, h Harness) {
 	ctx := context.Background()
 	if _, err := h.Store.Get(ctx, fixtureID, "no-such-skill"); err == nil {
 		t.Fatalf("Get: expected ErrSkillNotFound, got nil")
@@ -379,7 +390,7 @@ func testNotFound(t *testing.T, h Harness) {
 	}
 }
 
-func testDelete(t *testing.T, h Harness) {
+func testDelete(t failureReporter, h Harness) {
 	ctx := context.Background()
 	s := newSkill("doomed")
 	if err := h.Store.Upsert(ctx, fixtureID, s); err != nil {
@@ -393,7 +404,7 @@ func testDelete(t *testing.T, h Harness) {
 	}
 }
 
-func testRestartSurvival(t *testing.T, h Harness) {
+func testRestartSurvival(t failureReporter, h Harness) {
 	ctx := context.Background()
 	s := newSkill("durable")
 	if err := h.Store.Upsert(ctx, fixtureID, s); err != nil {
@@ -422,7 +433,7 @@ func testRestartSurvival(t *testing.T, h Harness) {
 // a different tenant, and does NOT change the session-pinned visibility of
 // non-user scopes. Every driver inherits this verbatim (the persistence
 // three-driver parity contract).
-func testUserScopeResolution(t *testing.T, h Harness) {
+func testUserScopeResolution(t failureReporter, h Harness) {
 	ctx := context.Background()
 
 	// Identity variants off the base fixture.
@@ -496,7 +507,7 @@ func testUserScopeResolution(t *testing.T, h Harness) {
 // the session↔user rung boundary the READ filter unions. It covers both
 // directions plus the plain "delete nothing durable" case, so every driver is
 // held to rung-precise deletes.
-func testDeleteRungIndependence(t *testing.T, h Harness) {
+func testDeleteRungIndependence(t failureReporter, h Harness) {
 	ctx := context.Background()
 
 	sessionA := fixtureID
@@ -568,7 +579,7 @@ func testDeleteRungIndependence(t *testing.T, h Harness) {
 // testDeleteSessionScope pins the session-erasure-only destructive surface:
 // it sweeps only exact ScopeSession rows, is idempotent, and cannot cross a
 // session, user, or tenant boundary or delete the durable ScopeUser rung.
-func testDeleteSessionScope(t *testing.T, h Harness) {
+func testDeleteSessionScope(t failureReporter, h Harness) {
 	ctx := context.Background()
 	sessionA := fixtureID
 	sessionB := fixtureID
@@ -639,7 +650,7 @@ func testDeleteSessionScope(t *testing.T, h Harness) {
 	}
 }
 
-func testDeleteSessionScopeAfterClose(t *testing.T, h Harness) {
+func testDeleteSessionScopeAfterClose(t failureReporter, h Harness) {
 	ctx := context.Background()
 	if err := h.Store.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -649,7 +660,7 @@ func testDeleteSessionScopeAfterClose(t *testing.T, h Harness) {
 	}
 }
 
-func testGetScopeAfterClose(t *testing.T, h Harness) {
+func testGetScopeAfterClose(t failureReporter, h Harness) {
 	ctx := context.Background()
 	if err := h.Store.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -659,7 +670,7 @@ func testGetScopeAfterClose(t *testing.T, h Harness) {
 	}
 }
 
-func assertListContains(t *testing.T, ctx context.Context, h Harness, id identity.Quadruple, filter skills.ListFilter, name string, want bool, msg string) {
+func assertListContains(t failureReporter, ctx context.Context, h Harness, id identity.Quadruple, filter skills.ListFilter, name string, want bool, msg string) {
 	t.Helper()
 	list, err := h.Store.List(ctx, id, filter)
 	if err != nil {

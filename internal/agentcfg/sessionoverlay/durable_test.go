@@ -1129,6 +1129,13 @@ func TestCutoverController_StrictCheckpointValidationNeverAuthorizes(t *testing.
 		name  string
 		bytes []byte
 	}{
+		{name: "duplicate schema", bytes: []byte(`{"schema":0,"schema":1,"mode":"state_only","epoch":"epoch","roster_digest":"digest","copied":0,"generation":2}`)},
+		{name: "duplicate mode last key would authorize", bytes: []byte(`{"schema":1,"mode":"dual_read","mode":"state_only","epoch":"epoch","roster_digest":"digest","copied":0,"generation":2}`)},
+		{name: "duplicate epoch", bytes: []byte(`{"schema":1,"mode":"state_only","epoch":"other","epoch":"epoch","roster_digest":"digest","copied":0,"generation":2}`)},
+		{name: "duplicate roster digest", bytes: []byte(`{"schema":1,"mode":"state_only","epoch":"epoch","roster_digest":"other","roster_digest":"digest","copied":0,"generation":2}`)},
+		{name: "duplicate continuation", bytes: []byte(`{"schema":1,"mode":"state_only","epoch":"epoch","roster_digest":"digest","continuation":"stale","continuation":"","copied":0,"generation":2}`)},
+		{name: "duplicate copied", bytes: []byte(`{"schema":1,"mode":"state_only","epoch":"epoch","roster_digest":"digest","copied":-1,"copied":0,"generation":2}`)},
+		{name: "duplicate generation last key would authorize", bytes: []byte(`{"schema":1,"mode":"state_only","epoch":"epoch","roster_digest":"digest","copied":0,"generation":0,"generation":2}`)},
 		{name: "unknown field state only", bytes: []byte(`{"schema":1,"mode":"state_only","epoch":"epoch","roster_digest":"digest","copied":0,"generation":2,"authority":true}`)},
 		{name: "trailing document state only", bytes: append(marshalCutoverRecord(t, validStateOnly), []byte(`{}`)...)},
 		{name: "oversized state only", bytes: oversizedStateOnly},

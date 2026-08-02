@@ -1061,6 +1061,9 @@ func decodeCutoverRecord(data []byte, declaration config.SessionPersonalCutoverT
 	if len(data) == 0 || len(data) > MaxSessionPersonalCutoverRecordBytes {
 		return CutoverRecord{}, fmt.Errorf("%w: checkpoint size %d is outside 1..%d", ErrCutoverRecordInvalid, len(data), MaxSessionPersonalCutoverRecordBytes)
 	}
+	if err := rejectDuplicateJSONObjectFields(data); err != nil {
+		return CutoverRecord{}, fmt.Errorf("%w: duplicate checkpoint field: %w", ErrCutoverRecordInvalid, err)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var record CutoverRecord

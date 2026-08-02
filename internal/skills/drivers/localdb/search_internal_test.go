@@ -2,6 +2,7 @@ package localdb
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -207,5 +208,77 @@ func TestSearchSnapshot_FTS5EqualRank_AppliesTieBreakBeforeLimit(t *testing.T) {
 		if result.Path != skills.PathFTS5 {
 			t.Fatalf("path = %q, want %q", result.Path, skills.PathFTS5)
 		}
+	}
+}
+
+func TestSearchSnapshot_FailClosedBoundariesAndSemanticDispatch(t *testing.T) {
+	t.Run("identity required", func(t *testing.T) {
+		d := newSnapshotSearchDriver(t)
+		if _, err := d.SearchSnapshot(context.Background(), identity.Quadruple{}, "harbor", nil, 1); err == nil {
+			t.Fatal("SearchSnapshot accepted an empty identity")
+		}
+	})
+
+	t.Run("closed store", func(t *testing.T) {
+		d := newSnapshotSearchDriver(t)
+		if err := d.Close(context.Background()); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if _, err := d.SearchSnapshot(context.Background(), snapshotSearchID(), "harbor", nil, 1); !errors.Is(err, skills.ErrStoreClosed) {
+			t.Fatalf("SearchSnapshot after Close = %v, want ErrStoreClosed", err)
+		}
+	})
+
+	t.Run("semantic mode fails loud without embedder", func(t *testing.T) {
+		d := newSnapshotSearchDriver(t)
+		d.retrieval = skills.RetrievalSemantic
+		candidate := []skills.Skill{{Name: "semantic", Description: "harbor", UpdatedAt: time.Unix(1, 0)}}
+		if _, err := d.SearchSnapshot(context.Background(), snapshotSearchID(), "harbor", candidate, 0); err == nil {
+			t.Fatal("semantic SearchSnapshot without Embedder returned nil error")
+		}
+	})
+}
+
+func TestSearchSnapshot_FTS5FallsBackFromANDToOR(t *testing.T) {
+	d := newSnapshotSearchDriver(t)
+	if !d.ftsAvailable {
+		t.Skip("reason: linked SQLite build does not provide FTS5")
+	}
+	candidates := []skills.Skill{
+		{Name: "alpha", Description: "harbor only", UpdatedAt: time.Unix(2, 0).UTC()},
+		{Name: "beta", Description: "dock only", UpdatedAt: time.Unix(1, 0).UTC()},
+	}
+
+	got, err := d.SearchSnapshot(context.Background(), snapshotSearchID(), "harbor missing", candidates, 50_000)
+	if err != nil {
+		t.Fatalf("SearchSnapshot: %v", err)
+	}
+	if len(got) != 1 || got[0].Skill.Name != "alpha" || got[0].Path != skills.PathFTS5 {
+		t.Fatalf("OR fallback = %+v, want alpha via FTS5", got)
+	}
+
+	empty, err := d.searchSnapshotFTS5(context.Background(), "   ", candidates, 5)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty FTS query = (%+v, %v), want empty success", empty, err)
+	}
+}
+
+func TestSnapshotFTS5Results_RejectsDriverCorruptionAndNormalizesScores(t *testing.T) {
+	candidates := []skills.Skill{
+		{Name: "newer", UpdatedAt: time.Unix(2, 0).UTC()},
+		{Name: "older", UpdatedAt: time.Unix(1, 0).UTC()},
+	}
+	if empty, err := snapshotFTS5Results(candidates, nil); err != nil || len(empty) != 0 {
+		t.Fatalf("empty hits = (%+v, %v)", empty, err)
+	}
+	if _, err := snapshotFTS5Results(candidates, []snapshotFTS5Hit{{ordinal: 0}}); err == nil {
+		t.Fatal("out-of-range ordinal was accepted")
+	}
+	got, err := snapshotFTS5Results(candidates, []snapshotFTS5Hit{{ordinal: 2, raw: 3}, {ordinal: 1, raw: 1}})
+	if err != nil {
+		t.Fatalf("snapshotFTS5Results: %v", err)
+	}
+	if len(got) != 2 || got[0].Skill.Name != "newer" || got[0].Score != 1 || got[1].Skill.Name != "older" || got[1].Score != 0 {
+		t.Fatalf("normalized results = %+v", got)
 	}
 }

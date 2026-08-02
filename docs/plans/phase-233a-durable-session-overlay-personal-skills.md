@@ -328,6 +328,14 @@ safe rolling cutover from legacy `ScopeSession` bodies.
 - `internal/agentcfg/sessionoverlay`: 90%; `internal/skills` and resolver/
   tools packages: 85%; `internal/sessions`: 90%; touched SkillStore drivers
   and conformance package: 85%.
+- As built, `internal/agentcfg/sessionoverlay` is 90.3% and LocalDB is 85.4%,
+  including `SearchSnapshot` at 94.1%. The conformance harness is 86.7% when
+  its real LocalDB happy paths and adversarial self-tests are merged in one
+  `-coverpkg=./internal/skills/conformancetest` profile. The adversarial matrix
+  injects contract violations and asserts the harness rejects each one, so its
+  failure-reporting branches are exercised without accepting a broken driver.
+  PostgreSQL coverage remains CI-only: without `HARBOR_PG_DSN`, its
+  real-driver tests skip and direct local coverage is not representative.
 
 ## Dependencies
 
@@ -364,7 +372,10 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   skipped per maintainer process
 - [x] `make check-mirror` passes
 - [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [x] Coverage on touched packages >= stated target
+- [x] Coverage on touched packages >= stated target; sessionoverlay is 90.3%,
+  LocalDB is 85.4% (`SearchSnapshot` 94.1%), and the conformance harness is
+  86.7% across its real-driver and adversarial self-tests. PostgreSQL is
+  measured only in its real-driver CI job.
 - [x] If multi-isolation paths changed: cross-session isolation test passes
 - [x] Reusable overlay/resolver concurrent-reuse test passes — N>=100 shared
   invocations under `-race`, with no data races, context bleed, cancellation
