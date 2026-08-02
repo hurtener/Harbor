@@ -3,6 +3,7 @@ package sessionoverlay_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
@@ -168,6 +169,9 @@ func TestSessionPersonalController_NormalizesStructAndPointerExtraWithoutAliases
 	if err != nil || len(got) != 1 {
 		t.Fatalf("SessionSkills = (%+v, %v)", got, err)
 	}
+	if got[0].ContentHash != skills.CanonicalContentHash(got[0]) {
+		t.Fatalf("stored normalized content hash = %q, want %q", got[0].ContentHash, skills.CanonicalContentHash(got[0]))
+	}
 	structLeaf := got[0].Extra["struct"].(map[string]any)["leaf"].(map[string]any)
 	pointerLeaf := got[0].Extra["pointer"].(map[string]any)
 	if structLeaf["value"] != "original" || pointerLeaf["labels"].([]any)[0] != "one" {
@@ -190,6 +194,77 @@ func TestSessionPersonalController_NormalizesStructAndPointerExtraWithoutAliases
 	}
 }
 
+func TestSessionPersonalController_NormalizesDurableScalarAndByteTypesBeforeHash(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("state-controller-json-types")
+	activateAgent(t, st, id, "agent-a")
+	bytesValue := []byte{0, 1, 2}
+	body := durableSkill("json-types")
+	body.Extra = map[string]any{
+		"int32":  int32(7),
+		"number": json.Number("12.5"),
+		"bytes":  bytesValue,
+	}
+	controller, _ := newSessionPersonalController(t, st, sessionoverlay.CutoverStateOnly, &exactLegacyReader{})
+	if err := controller.UpsertSessionSkill(t.Context(), id, "agent-a", body); err != nil {
+		t.Fatal(err)
+	}
+	bytesValue[0] = 9
+
+	got, err := controller.SessionSkills(t.Context(), id, "agent-a")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("SessionSkills = (%+v, %v)", got, err)
+	}
+	if got[0].Extra["int32"] != float64(7) || got[0].Extra["number"] != 12.5 || got[0].Extra["bytes"] != "AAEC" {
+		t.Fatalf("normalized Extra = %#v", got[0].Extra)
+	}
+	if got[0].ContentHash != skills.CanonicalContentHash(got[0]) {
+		t.Fatalf("stored content hash = %q, want %q", got[0].ContentHash, skills.CanonicalContentHash(got[0]))
+	}
+	got[0].Extra["int32"] = float64(99)
+
+	reloaded, err := controller.SessionSkills(t.Context(), id, "agent-a")
+	if err != nil || len(reloaded) != 1 || reloaded[0].Extra["int32"] != float64(7) {
+		t.Fatalf("immutable normalized reload = (%+v, %v)", reloaded, err)
+	}
+	if reloaded[0].ContentHash != skills.CanonicalContentHash(reloaded[0]) {
+		t.Fatalf("reloaded content hash = %q, want %q", reloaded[0].ContentHash, skills.CanonicalContentHash(reloaded[0]))
+	}
+}
+
+func TestSessionPersonalController_DualReadRehashesNormalizedExtra(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("dual-controller-json-types")
+	activateAgent(t, st, id, "agent-a")
+	reader := &exactLegacyReader{}
+	body := durableSkill("legacy-json-types")
+	body.Extra = map[string]any{
+		"int32":  int32(7),
+		"number": json.Number("12.5"),
+		"bytes":  []byte{0, 1, 2},
+	}
+	reader.add(id, body.Name, body)
+	sourceHash := reader.rows[legacyReaderKey(id, body.Name, skills.ScopeSession)].ContentHash
+	if err := st.Save(t.Context(), legacyCandidate(t, id, "agent-a", body.Name)); err != nil {
+		t.Fatal(err)
+	}
+	controller, _ := newSessionPersonalController(t, st, sessionoverlay.CutoverDualRead, reader)
+
+	got, err := controller.SessionSkills(t.Context(), id, "agent-a")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("SessionSkills = (%+v, %v)", got, err)
+	}
+	if got[0].ContentHash == sourceHash {
+		t.Fatalf("dual-read returned stale pre-normalization hash %q", sourceHash)
+	}
+	if got[0].ContentHash != skills.CanonicalContentHash(got[0]) {
+		t.Fatalf("dual-read content hash = %q, want %q", got[0].ContentHash, skills.CanonicalContentHash(got[0]))
+	}
+	if got[0].Extra["int32"] != float64(7) || got[0].Extra["number"] != 12.5 || got[0].Extra["bytes"] != "AAEC" {
+		t.Fatalf("dual-read normalized Extra = %#v", got[0].Extra)
+	}
+}
+
 func TestSessionPersonalController_RejectsCyclicAndUnsupportedExtra(t *testing.T) {
 	for name, extra := range map[string]map[string]any{
 		"cycle": func() map[string]any {
@@ -206,8 +281,8 @@ func TestSessionPersonalController_RejectsCyclicAndUnsupportedExtra(t *testing.T
 			body := durableSkill("bad-extra")
 			body.Extra = extra
 			controller, _ := newSessionPersonalController(t, st, sessionoverlay.CutoverStateOnly, &exactLegacyReader{})
-			if err := controller.UpsertSessionSkill(t.Context(), id, "agent-a", body); err == nil {
-				t.Fatal("UpsertSessionSkill accepted non-JSON Extra")
+			if err := controller.UpsertSessionSkill(t.Context(), id, "agent-a", body); !errors.Is(err, sessionoverlay.ErrInvalidInput) {
+				t.Fatalf("UpsertSessionSkill = %v, want ErrInvalidInput", err)
 			}
 			if got, err := controller.SessionSkills(t.Context(), id, "agent-a"); err != nil || len(got) != 0 {
 				t.Fatalf("failed upsert changed session tier = (%+v, %v)", got, err)

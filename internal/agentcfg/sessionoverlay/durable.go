@@ -204,6 +204,11 @@ func (s *DurableStore) SavePersonal(ctx context.Context, id identity.Quadruple, 
 	if err := validateCopyMarkers(copyEpoch, legacyContentHash); err != nil {
 		return PersonalSkillRecord{}, fmt.Errorf("%w: %w", ErrInvalidInput, err)
 	}
+	normalized, err := normalizeDurablePersonalSkill(skill)
+	if err != nil {
+		return PersonalSkillRecord{}, fmt.Errorf("%w: normalize personal skill: %w", ErrInvalidInput, err)
+	}
+	skill = normalized
 	canonicalName := canonicalNameFor(skill.Name)
 	kind, err := PersonalSkillKind(agentID, canonicalName)
 	if err != nil {
@@ -223,7 +228,7 @@ func (s *DurableStore) SavePersonal(ctx context.Context, id identity.Quadruple, 
 	if err != nil {
 		return PersonalSkillRecord{}, err
 	}
-	contentHash := skills.CanonicalContentHash(skill)
+	contentHash := skill.ContentHash
 	record := PersonalSkillRecord{Schema: 1, AgentID: agentID, CanonicalName: canonicalName, ContentHash: contentHash, Skill: skill, CopyEpoch: copyEpoch, LegacyContentHash: legacyContentHash, UpdatedAt: s.clock().UTC()}
 	bytes, err := json.Marshal(record)
 	if err != nil {
@@ -248,6 +253,26 @@ func (s *DurableStore) SavePersonal(ctx context.Context, id identity.Quadruple, 
 		return PersonalSkillRecord{}, fmt.Errorf("%w: conditional personal save outcome uncertain: %w", ErrStateUnavailable, err)
 	}
 	return record, nil
+}
+
+// normalizeDurablePersonalSkill freezes Extra into the representation JSON
+// persistence will decode, then hashes and stores that exact body. Without this
+// boundary, valid caller values such as int32, json.Number, and []byte can hash
+// differently after a restart because encoding/json changes their Go types.
+func normalizeDurablePersonalSkill(skill skills.Skill) (skills.Skill, error) {
+	if skill.Extra != nil {
+		encoded, err := json.Marshal(skill.Extra)
+		if err != nil {
+			return skills.Skill{}, fmt.Errorf("skill %q Extra must be JSON-compatible and acyclic: %w", skill.Name, err)
+		}
+		var normalized map[string]any
+		if err := json.Unmarshal(encoded, &normalized); err != nil {
+			return skills.Skill{}, fmt.Errorf("skill %q Extra normalization: %w", skill.Name, err)
+		}
+		skill.Extra = normalized
+	}
+	skill.ContentHash = skills.CanonicalContentHash(skill)
+	return skill, nil
 }
 
 // DeletePersonal writes a logical tombstone. The tombstone, not an absent

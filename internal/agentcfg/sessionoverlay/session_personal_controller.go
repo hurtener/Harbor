@@ -315,7 +315,7 @@ func sortedControllerSkills(byName map[string]skills.Skill) []skills.Skill {
 }
 
 func cloneControllerSkill(skill skills.Skill) (skills.Skill, error) {
-	normalized, err := normalizeResolverSkill(skill)
+	normalized, err := normalizeDurablePersonalSkill(skill)
 	if err != nil {
 		return skills.Skill{}, err
 	}
