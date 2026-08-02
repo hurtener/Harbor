@@ -28,13 +28,14 @@ assert_grep_present 'completeRetirementCleanup' internal/runtime/agentcfg/protoc
 assert_grep_present 'RetirementStatus' internal/runtime/serve/agent_resolver.go \
   'phase 234: run resolver refuses a retired effective target'
 
-assert_go_tests_pass "${P234_TMP}/retirement.log" '-race -count=1 ./internal/agentcfg/drivers/statestore ./internal/runtime/agentcfg/protocol ./internal/runtime/serve ./internal/protocol/transports/stream' \
-  'phase 234: terminal state, frozen cleanup, protocol replay, and start refusal run under race' \
-  TestRetirement_TerminalHistoryAndReplay \
-  TestRetirement_ConcurrentSameOperationAndTenantIsolation \
-  TestRetirement_ProgressIsFrozenCASState \
-  TestAgentConfigHandler_Retire_AdminReplayAndTerminalRefusal \
-  TestAgentResolverAdapter_DefaultTombstoneWins
+assert_go_tests_pass "${P234_TMP}/retirement.log" '-race -count=1 ./cmd/harbor ./internal/agentcfg/drivers/statestore ./internal/runtime/agentcfg/protocol ./internal/runtime/serve ./internal/protocol/transports/stream' \
+	'phase 234: terminal state, frozen cleanup, production HTTP start refusal, and protocol replay run under race' \
+	TestRetirement_TerminalHistoryAndReplay \
+	TestRetirement_ConcurrentSameOperationAndTenantIsolation \
+	TestRetirement_ProgressIsFrozenCASState \
+	TestDevComposition_RetiredDefaultRefusesExplicitAndImplicitStartBeforeSpawn \
+	TestAgentConfigHandler_Retire_AdminReplayAndTerminalRefusal \
+	TestAgentResolverAdapter_DefaultTombstoneWins
 
 # The dev bearer is an admin and reaches the dev agent. This is a real mux
 # exercise when preflight has booted the server; standalone runs degrade only
