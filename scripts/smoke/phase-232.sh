@@ -11,7 +11,19 @@ source "scripts/smoke/common.sh"
 assert_file docs/plans/phase-232-signed-agent-reach.md 'phase 232: plan exists'
 assert_grep_present '^## D-397 ' docs/decisions.md 'phase 232: signed-reach decision is recorded'
 assert_grep_present 'const AgentReachClaim = "agent_reach"' internal/protocol/auth/agent_reach.go 'phase 232: strict signed claim exists'
-assert_grep_count 'authorizeAgent\(w, r, req.AgentID\)' internal/protocol/transports/stream/agentconfig_handler.go 13 'phase 232: all agent-config data-plane handlers share the gate'
+# The closed thirteen-door census remains load-bearing after Phase 233a.
+# Historical user ListRevisions/Diff are reach-only so they preserve immutable
+# history without bootstrapping lifecycle state. The other eleven current,
+# mutating, and skill doors MUST perform signed reach before lifecycle lookup
+# through the helper; TestAgentConfigHandler_AgentReachClosedCensus executes
+# the method matrix as the semantic backstop.
+AGENTCONFIG_HANDLER='internal/protocol/transports/stream/agentconfig_handler.go'
+assert_grep_count 'h\.authorizeAgent\(w, r, req\.AgentID\)' "${AGENTCONFIG_HANDLER}" 2 \
+    'phase 232: exactly two historical agent-config reads use direct signed reach only'
+assert_grep_count 'h\.authorizeAndEnsureBootAgent\(w, r, req\.Identity, req\.AgentID, methods\.MethodAgentConfig' "${AGENTCONFIG_HANDLER}" 11 \
+    'phase 232: exactly eleven active/current/mutating/skill doors enforce signed reach before lifecycle'
+assert_grep_present 'func \(h \*AgentConfigHandler\) authorizeAndEnsureBootAgent' "${AGENTCONFIG_HANDLER}" \
+    'phase 232: lifecycle helper remains the single signed-reach-before-lifecycle ordering seam'
 assert_grep_present 'WithAgentReachAuthorizer\(agentReach\)' internal/runtime/serve/serve.go 'phase 232: production assembly shares one gate'
 assert_grep_present 'WithAgentReachAuthorizer\(stack.AgentReach\)' harbortest/devstack/devstack.go 'phase 232: devstack assembly shares one gate'
 
@@ -117,12 +129,29 @@ else
         fail "phase 232: denied-start task count was not a real stable 0 (status ${BEFORE_STATUS}->${AFTER_STATUS}, count ${BEFORE_COUNT:-?}->${AFTER_COUNT:-?})"
     fi
 
-    p232_call phase232-config /v1/agent_config/session/set_user_prompt "${TOKEN}" \
-        "{\"identity\":{\"tenant\":\"dev\",\"user\":\"dev\",\"session\":\"phase232-config\"},\"agent_id\":\"${DEFAULT_AGENT}\",\"user_prompt\":\"phase 232 live\"}"
-    p232_expect 200 'phase 232: in-reach agent-config mutation passes the same shared gate'
-    p232_call phase232-config /v1/agent_config/session/set_user_prompt "${TOKEN}" \
-        "{\"identity\":{\"tenant\":\"dev\",\"user\":\"dev\",\"session\":\"phase232-config\"},\"agent_id\":\"${EXCLUDED_AGENT}\",\"user_prompt\":\"must not persist\"}"
-    p232_expect 403 'phase 232: out-of-reach agent-config mutation is refused'
+    # The stock dev config intentionally leaves skills disabled, so the
+    # session overlay family correctly reports its controller as unwired. Use
+    # the real, shipped user-tier mutation as the live success control instead:
+    # bootstrap can mint the closed `agent_config:user` scope while retaining
+    # the same signed one-agent reach claim. A 200 proves the request passed
+    # reach AND lifecycle into a real durable write; the identical excluded
+    # request must stop 403 before lifecycle/service lookup.
+    USER_TOKEN_RESULT=$(curl -sS --max-time 10 -X POST \
+        -H 'Content-Type: application/json' \
+        -d '{"tenant":"dev","user":"dev","session":"phase232-user","scopes":["agent_config:user"]}' \
+        "$(api_url /v1/dev/bootstrap.json)" 2>/dev/null || printf '{}')
+    USER_TOKEN=$(printf '%s' "${USER_TOKEN_RESULT}" | jq -r '.token // empty' 2>/dev/null || printf '')
+    USER_SCOPE=$(printf '%s' "${USER_TOKEN_RESULT}" | jq -r '(.scopes // []) | join(",")' 2>/dev/null || printf '')
+    if [ -z "${USER_TOKEN}" ] || [ "${USER_SCOPE}" != 'agent_config:user' ]; then
+        fail "phase 232: dev bootstrap did not mint the exact agent_config:user live-control token (scopes=${USER_SCOPE:-empty})"
+    else
+        p232_call phase232-user /v1/agent_config/user/set_revision "${USER_TOKEN}" \
+            "{\"identity\":{\"tenant\":\"dev\",\"user\":\"dev\",\"session\":\"phase232-user\"},\"agent_id\":\"${DEFAULT_AGENT}\",\"payload\":{\"user_prompt\":\"phase 232 signed reach live mutation\"}}"
+        p232_expect 200 'phase 232: in-reach user-tier mutation passes signed reach before lifecycle and persists'
+        p232_call phase232-user /v1/agent_config/user/set_revision "${USER_TOKEN}" \
+            "{\"identity\":{\"tenant\":\"dev\",\"user\":\"dev\",\"session\":\"phase232-user\"},\"agent_id\":\"${EXCLUDED_AGENT}\",\"payload\":{\"user_prompt\":\"must not persist\"}}"
+        p232_expect 403 'phase 232: out-of-reach user-tier mutation is refused before lifecycle/service lookup'
+    fi
 
     p232_call phase232-user-config /v1/agent_config/user/skills/list "${TOKEN}" \
         "{\"agent_id\":\"${DEFAULT_AGENT}\"}"

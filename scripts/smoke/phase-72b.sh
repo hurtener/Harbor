@@ -93,19 +93,36 @@ assert_grep_present 'auth\.HasScope\(r\.Context\(\), auth\.ScopeAdmin\)' "${CONT
 # session-reopen surface: a reopen of an erased session is terminal,
 # D-312) plus CodeRevisionConflict (the agent-config expected-revision
 # token: a conditional spine write whose declared base has moved,
-# Phase 221 / D-366) = 14. The count is updated per CLAUDE.md §17.6
-# ("fix what the integration test finds — no matter where the bug
-# lives") as the canonical set grows; the load-bearing 72b assertion is
-# that NO code was minted by 72b, which still holds.
-#
-# The EXACT count is the point. It must never be relaxed to a `>=`, nor
-# the regex loosened, nor the assertion deleted: any of those converts a
-# working lockstep into one that cannot fail, which is precisely the
-# defect class this guard exists to catch. A phase that mints a code
-# updates the number AND adds its provenance to the list above.
-assert_grep_count 'Code[A-Z][A-Za-z]+[[:space:]]+Code[[:space:]]*=' \
-    internal/protocol/errors/errors.go 14 \
-    "phase 72b: internal/protocol/errors carries the canonical 14-code set (8 Phase 56 + Phase 72 + 2 Phase 73l + Phase 130 + session-reopen + agent-config revision-conflict) — no new code minted by 72b"
+# Phase 221 / D-366), and Phase 233a's two typed session-skill outcomes
+# (CodeSessionSkillCutoverPending / CodeSessionSkillReadUnstable). Pin the
+# EXACT closed set by identifier, not a raw declaration count: a count alone
+# accepts a missing old code paired with an unrelated replacement.
+CANONICAL_ERROR_CODES=(
+    CodeInvalidRequest
+    CodeIdentityRequired
+    CodeScopeMismatch
+    CodePayloadInvalid
+    CodeUnknownMethod
+    CodeNotFound
+    CodeRuntimeError
+    CodeAuthRejected
+    CodeIdentityScopeRequired
+    CodePresignUnsupported
+    CodeRequestTooLarge
+    CodeSessionRunning
+    CodeSessionErased
+    CodeRevisionConflict
+    CodeSessionSkillCutoverPending
+    CodeSessionSkillReadUnstable
+)
+for code in "${CANONICAL_ERROR_CODES[@]}"; do
+    assert_grep_present "^[[:space:]]*${code}[[:space:]]+Code[[:space:]]*=" \
+        internal/protocol/errors/errors.go \
+        "phase 72b: canonical Protocol error ${code} remains declared"
+done
+assert_grep_count '^[[:space:]]*Code[A-Z][A-Za-z0-9_]*[[:space:]]+Code[[:space:]]*=' \
+    internal/protocol/errors/errors.go "${#CANONICAL_ERROR_CODES[@]}" \
+    'phase 72b: internal/protocol/errors contains exactly the closed canonical error-code identifier set'
 
 # 5. No Console import from the impersonation surface (CLAUDE.md
 # §13 — the Runtime never imports Console code). Defence in depth
