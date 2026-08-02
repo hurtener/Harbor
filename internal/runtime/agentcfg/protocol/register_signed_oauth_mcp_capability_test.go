@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -73,6 +74,40 @@ type capabilityLandedThenErroredRegistry struct {
 	agentcfg.Registry
 	err  error
 	once sync.Once
+}
+
+func (r *capabilityLandedThenErroredRegistry) PhysicalActive(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
+	physical, ok := r.Registry.(interface {
+		PhysicalActive(context.Context, identity.Quadruple, string, agentcfg.ConfigScope) (agentcfg.Revision, bool, error)
+	})
+	if !ok {
+		return agentcfg.Revision{}, false, errors.New("registry has no physical active recovery seam")
+	}
+	return physical.PhysicalActive(ctx, id, agentID, scope)
+}
+
+var (
+	errCapabilityPointerWrite = errors.New("injected capability active-pointer write failure")
+	errCapabilityOrphanDelete = errors.New("injected capability orphan cleanup failure")
+)
+
+// capabilityOrphanFaultStore leaves the exact residue that must never be
+// mistaken for authority: the immutable candidate lands, its active-pointer
+// SaveIf fails, and the compensating revision delete fails too.
+type capabilityOrphanFaultStore struct{ state.StateStore }
+
+func (s *capabilityOrphanFaultStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if next.Kind == agentcfg.ActiveSlotKind {
+		return errCapabilityPointerWrite
+	}
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
+func (s *capabilityOrphanFaultStore) Delete(ctx context.Context, id identity.Quadruple, kind string) error {
+	if strings.HasPrefix(kind, "agentcfg.revision.") {
+		return errCapabilityOrphanDelete
+	}
+	return s.StateStore.Delete(ctx, id, kind)
 }
 
 func (r *capabilityLandedThenErroredRegistry) SetRevision(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope, payload agentcfg.ConfigPayload, opts agentcfg.SetOptions) (agentcfg.Revision, error) {
@@ -610,6 +645,53 @@ func TestRegisterOAuthMCPCapability_CommittedRevisionThenError_RecoversExactCand
 	}
 	if active.RevisionID != registered.Revision.RevisionID || active.Payload.SignedOAuthMCPPair == nil {
 		t.Fatalf("active candidate = %+v, want recovered signed pair %q", active, registered.Revision.RevisionID)
+	}
+}
+
+func TestRegisterOAuthMCPCapability_PointerAndCompensationFailure_DoesNotPublishMatchingOrphan(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	base, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	faults := &capabilityOrphanFaultStore{StateStore: base}
+	svc, key, reg, st, preparer := signedCapabilityServiceWithStore(t, now, faults)
+	req := signedCapabilityRequest(t, key, now, "jti-matching-orphan", "aud-orphan")
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), req); !errors.Is(err, errCapabilityPointerWrite) || !errors.Is(err, errCapabilityOrphanDelete) {
+		t.Fatalf("registration error = %v, want pointer and compensation failures", err)
+	}
+
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	history, err := reg.ListRevisions(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, 0)
+	if err != nil || len(history) != 1 || history[0].Payload.SignedOAuthMCPPair == nil {
+		t.Fatalf("matching orphan history = %+v, err=%v", history, err)
+	}
+	physical := reg.(interface {
+		PhysicalActive(context.Context, identity.Quadruple, string, agentcfg.ConfigScope) (agentcfg.Revision, bool, error)
+	})
+	if revision, set, err := physical.PhysicalActive(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); err != nil || set {
+		t.Fatalf("physical active = (%+v, %t, %v), want absent despite matching history", revision, set, err)
+	}
+	ops, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := ops.LoadForPair(context.Background(), q.TenantID, history[0].Payload.SignedOAuthMCPPair)
+	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhaseClaimed || op.RevisionID != "" {
+		t.Fatalf("operation advanced on orphan: phase=%q revision=%q err=%v", op.Phase, op.RevisionID, err)
+	}
+	fences, err := agentcfg.NewSignedOAuthMCPActivationFenceStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := fences.Load(context.Background(), q.TenantID, testAgentID)
+	if err != nil || fence.Phase != agentcfg.SignedOAuthMCPFencePending || fence.CandidateRevisionID != "" {
+		t.Fatalf("fence committed orphan: phase=%q revision=%q err=%v", fence.Phase, fence.CandidateRevisionID, err)
+	}
+	preparer.mu.Lock()
+	defer preparer.mu.Unlock()
+	if preparer.activations != 0 || len(preparer.live) != 0 {
+		t.Fatalf("matching orphan was published: activations=%d live=%d", preparer.activations, len(preparer.live))
 	}
 }
 

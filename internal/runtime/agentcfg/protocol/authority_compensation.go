@@ -47,3 +47,18 @@ func findRevisionByContentHash(ctx context.Context, registry agentcfg.Registry, 
 	}
 	return agentcfg.Revision{}, false, nil
 }
+
+// requirePhysicalActiveRevision proves that the durable active pointer names
+// the exact candidate revision. Immutable history is not authority: a failed
+// pointer write may leave an unreferenced revision that ListRevisions and Get
+// can still read.
+func requirePhysicalActiveRevision(ctx context.Context, physical physicalActiveRegistry, q identity.Quadruple, agentID, revisionID, contentHash string) (agentcfg.Revision, error) {
+	revision, set, err := physical.PhysicalActive(ctx, q, agentID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return agentcfg.Revision{}, fmt.Errorf("%w: load physical active candidate: %w", agentcfg.ErrSignedCapabilityPending, err)
+	}
+	if !set || revision.RevisionID != revisionID || (contentHash != "" && revision.ContentHash != contentHash) {
+		return agentcfg.Revision{}, fmt.Errorf("%w: physical active pointer does not name candidate revision %q", agentcfg.ErrSignedCapabilityPending, revisionID)
+	}
+	return revision, nil
+}

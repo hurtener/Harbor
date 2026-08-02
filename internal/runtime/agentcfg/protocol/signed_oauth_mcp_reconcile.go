@@ -189,6 +189,10 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 		if err != nil {
 			return err
 		}
+		revision, err = requirePhysicalActiveRevision(ctx, r.physical, q, agentID, revision.RevisionID, revision.ContentHash)
+		if err != nil || !signedCapabilityPairMatches(revision.Payload.SignedOAuthMCPPair, q.TenantID, op.Binding) {
+			return fmt.Errorf("%w: recovery candidate is not the physical active pair", agentcfg.ErrSignedCapabilityPending)
+		}
 		if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed {
 			op, err = r.operations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhaseRevisionCommitted, revision.RevisionID)
 			if err != nil {
@@ -281,6 +285,11 @@ func (r *SignedOAuthMCPReconciler) commitFence(ctx context.Context, tenant, agen
 	}
 	if fence.OperationKind != kind || fence.Fingerprint != op.Fingerprint || fence.CandidateContentHash != revision.ContentHash {
 		return fmt.Errorf("%w: fence does not bind published pair", agentcfg.ErrSignedCapabilityPending)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: op.Binding.UserID, SessionID: op.Binding.SessionID}}
+	physicalRevision, err := requirePhysicalActiveRevision(ctx, r.physical, q, agentID, revision.RevisionID, revision.ContentHash)
+	if err != nil || !signedCapabilityPairMatches(physicalRevision.Payload.SignedOAuthMCPPair, tenant, op.Binding) {
+		return fmt.Errorf("%w: published recovery candidate is not physically active", agentcfg.ErrSignedCapabilityPending)
 	}
 	if fence.Phase == agentcfg.SignedOAuthMCPFenceCommitted {
 		if fence.CandidateRevisionID == revision.RevisionID {
