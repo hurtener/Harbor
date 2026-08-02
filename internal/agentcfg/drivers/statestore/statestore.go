@@ -144,13 +144,19 @@ type activeRecord struct {
 // placed beside it: all legacy writers already condition that exact slot, so
 // a terminal transition cannot be bypassed by an older config writer.
 type retirementRecord struct {
-	OperationID      string                 `json:"operation_id"`
-	RetiredAt        time.Time              `json:"retired_at"`
-	PriorRevisionID  string                 `json:"prior_revision_id,omitempty"`
-	PriorContentHash string                 `json:"prior_content_hash,omitempty"`
-	Generation       uint64                 `json:"generation"`
-	Cleanup          []agentcfg.CleanupStep `json:"cleanup,omitempty"`
-	Completed        bool                   `json:"completed"`
+	OperationID      string                     `json:"operation_id"`
+	RetiredAt        time.Time                  `json:"retired_at"`
+	PriorRevisionID  string                     `json:"prior_revision_id,omitempty"`
+	PriorContentHash string                     `json:"prior_content_hash,omitempty"`
+	Generation       uint64                     `json:"generation"`
+	Cleanup          []agentcfg.CleanupStep     `json:"cleanup,omitempty"`
+	Completed        bool                       `json:"completed"`
+	PendingEvent     *retirementEventCheckpoint `json:"pending_event,omitempty"`
+}
+
+type retirementEventCheckpoint struct {
+	Stage string `json:"stage"`
+	Class string `json:"class,omitempty"`
 }
 
 // revisionRecord is the JSON-encoded immutable revision record. Parent
@@ -727,7 +733,7 @@ func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID st
 		if current.Retirement.OperationID != operationID {
 			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: durable operation differs", agentcfg.ErrRetirementConflict)
 		}
-		return retirementStatus(current.Retirement), nil
+		return r.ackRetirementEvent(ctx, id, agentID, q)
 	}
 
 	var prior agentcfg.Revision
@@ -743,9 +749,10 @@ func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID st
 		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: %v", agentcfg.ErrRetirementConflict, err)
 	}
 	t := &retirementRecord{
-		OperationID: operationID,
-		RetiredAt:   r.clock().UTC(),
-		Generation:  1,
+		OperationID:  operationID,
+		RetiredAt:    r.clock().UTC(),
+		Generation:   1,
+		PendingEvent: &retirementEventCheckpoint{Stage: "started"},
 	}
 	if hasPrior {
 		t.PriorRevisionID = prior.RevisionID
@@ -770,7 +777,7 @@ func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID st
 		UpdatedAt: t.RetiredAt,
 	})
 	if err == nil {
-		return retirementStatus(t), nil
+		return r.ackRetirementEvent(ctx, id, agentID, q)
 	}
 	if !errors.Is(err, state.ErrConditionFailed) {
 		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement tombstone: %w", agentcfg.ErrStateUnavailable, err)
@@ -783,9 +790,67 @@ func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID st
 		return agentcfg.RetirementStatus{}, rereadErr
 	}
 	if landed.Retirement != nil && landed.Retirement.OperationID == operationID {
-		return retirementStatus(landed.Retirement), nil
+		return r.ackRetirementEvent(ctx, id, agentID, q)
 	}
 	return agentcfg.RetirementStatus{}, fmt.Errorf("%w: active slot moved", agentcfg.ErrRetirementConflict)
+}
+
+// ackRetirementEvent implements the durable at-least-once transition: the
+// pending checkpoint was written before this publish, and is CAS-cleared only
+// after delivery. A publish failure remains pending for the same-operation
+// retry; duplicate publication is therefore safe and intentional.
+func (r *registry) ackRetirementEvent(ctx context.Context, id identity.Quadruple, agentID string, q identity.Quadruple) (agentcfg.RetirementStatus, error) {
+	current, eventID, _, err := r.loadActiveRecord(ctx, q, kindActive)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if current.Retirement == nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: lifecycle disappeared", agentcfg.ErrRetirementConflict)
+	}
+	p := current.Retirement.PendingEvent
+	if p == nil {
+		return retirementStatus(current.Retirement), nil
+	}
+	typ := agentcfg.EventTypeRetirementProgress
+	if p.Stage == "started" {
+		typ = agentcfg.EventTypeRetirementStarted
+	} else if p.Stage == "completed" {
+		typ = agentcfg.EventTypeRetirementCompleted
+	}
+	done := 0
+	for _, step := range current.Retirement.Cleanup {
+		if step.Completed {
+			done++
+		}
+	}
+	if err := r.bus.Publish(ctx, events.Event{Type: typ, Identity: id, OccurredAt: r.clock().UTC(), Payload: agentcfg.RetirementEventPayload{AgentID: agentID, OperationHash: agentcfg.RetirementOperationHash(current.Retirement.OperationID), Stage: p.Stage, Class: p.Class, Completed: done, Total: len(current.Retirement.Cleanup), Generation: current.Retirement.Generation, OccurredAt: r.clock().UTC()}}); err != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: publish retirement %s: %w", agentcfg.ErrStateUnavailable, p.Stage, err)
+	}
+	next := current
+	next.Retirement = cloneRetirement(current.Retirement)
+	next.Retirement.PendingEvent = nil
+	next.UpdatedAt = r.clock().UTC()
+	buf, err := json.Marshal(next)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("marshal retirement event acknowledgement: %w", err)
+	}
+	if err := r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kindActive, ExpectedEventID: eventID}}, state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kindActive, Bytes: buf, UpdatedAt: next.UpdatedAt}); err != nil {
+		if errors.Is(err, state.ErrConditionFailed) {
+			return r.ackRetirementEvent(ctx, id, agentID, q)
+		}
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: acknowledge retirement event: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	return retirementStatus(next.Retirement), nil
+}
+
+func cloneRetirement(in *retirementRecord) *retirementRecord {
+	out := *in
+	out.Cleanup = append([]agentcfg.CleanupStep(nil), in.Cleanup...)
+	if in.PendingEvent != nil {
+		p := *in.PendingEvent
+		out.PendingEvent = &p
+	}
+	return &out
 }
 
 // RetirementStatus reads only the lifecycle envelope. It is intentionally
@@ -841,14 +906,8 @@ func (r *registry) CompleteRetirementStep(ctx context.Context, id identity.Quadr
 		return retirementStatus(current.Retirement), nil
 	}
 	next := current
-	next.Retirement = &retirementRecord{
-		OperationID:      current.Retirement.OperationID,
-		RetiredAt:        current.Retirement.RetiredAt,
-		PriorRevisionID:  current.Retirement.PriorRevisionID,
-		PriorContentHash: current.Retirement.PriorContentHash,
-		Generation:       current.Retirement.Generation + 1,
-		Cleanup:          append([]agentcfg.CleanupStep(nil), current.Retirement.Cleanup...),
-	}
+	next.Retirement = cloneRetirement(current.Retirement)
+	next.Retirement.Generation++
 	next.Retirement.Cleanup[step].Completed = true
 	next.Retirement.Completed = true
 	for _, item := range next.Retirement.Cleanup {
@@ -856,6 +915,11 @@ func (r *registry) CompleteRetirementStep(ctx context.Context, id identity.Quadr
 			next.Retirement.Completed = false
 			break
 		}
+	}
+	if next.Retirement.Completed {
+		next.Retirement.PendingEvent = &retirementEventCheckpoint{Stage: "completed", Class: class}
+	} else {
+		next.Retirement.PendingEvent = &retirementEventCheckpoint{Stage: "progress", Class: class}
 	}
 	next.UpdatedAt = r.clock().UTC()
 	buf, err := json.Marshal(next)
@@ -866,7 +930,7 @@ func (r *registry) CompleteRetirementStep(ctx context.Context, id identity.Quadr
 		ID: state.NewEventID(), Identity: q, Kind: kindActive, Bytes: buf, UpdatedAt: next.UpdatedAt,
 	})
 	if err == nil {
-		return retirementStatus(next.Retirement), nil
+		return r.ackRetirementEvent(ctx, id, agentID, q)
 	}
 	if !errors.Is(err, state.ErrConditionFailed) {
 		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement progress: %w", agentcfg.ErrStateUnavailable, err)
@@ -880,7 +944,7 @@ func (r *registry) CompleteRetirementStep(ctx context.Context, id identity.Quadr
 	if landed.Retirement != nil && landed.Retirement.OperationID == operationID {
 		for _, item := range landed.Retirement.Cleanup {
 			if item.Class == class && item.Resource == resource && item.Completed {
-				return retirementStatus(landed.Retirement), nil
+				return r.ackRetirementEvent(ctx, id, agentID, q)
 			}
 		}
 	}
