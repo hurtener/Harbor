@@ -221,6 +221,32 @@ memory:
   # semantic` opts skill_search into the same mode.
   # retrieval: semantic
 
+# Phase 233a / D-400 — durable session-personal skills. This sample leaves
+# the block absent, so every tenant is safely read-only `dual_read`: existing
+# legacy session skills remain readable, but the session-personal mutation
+# verbs refuse rather than write another legacy body. That refusal is the
+# default deployment posture, not a transparent fallback.
+#
+# To begin a declared tenant migration, use a durable StateStore in production
+# (`state.driver: sqlite` or `postgres`) and configure a real SkillStore. The
+# declaration is static and restart-required; Harbor never discovers tenants
+# or old writers. Set `legacy_writers_drained: true` only after every older
+# writer has been drained and the roster digest has been independently
+# attested. It authorizes the bounded, restart-resumable migration; it does
+# NOT make writes safe immediately. Mutations continue to return
+# `session_skill_cutover_pending` until Harbor finishes a fresh verification
+# pass and durably reaches `state_only`.
+#
+# skills:
+#   driver: localdb
+#   dsn: /var/lib/harbor/skills.sqlite
+#   session_personal_cutover:
+#     tenants:
+#       - tenant_id: tenant-acme       # exact, case-sensitive opaque key
+#         epoch: 2026-08-cutover-01    # new epoch for each intentional rollout
+#         roster_digest: sha256-...    # attested writer-roster digest; not a secret
+#         legacy_writers_drained: false # start false; true only after drain
+
 # D-103 — Planner driver selection (closes issue #126). The V1
 # reference planner is `react` (the LLM-driven ReAct concrete from
 # Phase 45 / D-051). Future drivers (Plan-Execute, Workflow, Graph,

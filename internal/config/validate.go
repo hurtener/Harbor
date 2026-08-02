@@ -1110,6 +1110,10 @@ func (c *Config) validateSkills() error {
 			return fieldError("skills.driver",
 				"must not be empty when skills.retrieval is set (the retrieval mode shapes the configured store's search)")
 		}
+		if len(c.Skills.SessionPersonalCutover.Tenants) > 0 {
+			return fieldError("skills.driver",
+				"must not be empty when skills.session_personal_cutover is set (the declared migration requires the configured skill store)")
+		}
 		return nil
 	}
 	if c.Skills.Driver == "" {

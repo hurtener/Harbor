@@ -28,6 +28,16 @@ Two versions move independently in Harbor (RFC §5.3):
   rejects authentication. Omitted `tools.describe.agent_id` remains the
   boot-effective projection.
 
+- Session-personal skill mutation now defaults to a deliberate read-only
+  `dual_read` deployment posture. Existing eligible legacy session skills stay
+  readable, but new/update/delete requests return
+  `session_skill_cutover_pending` (HTTP 409) until an operator declares the
+  tenant's bounded static cutover, drains every older writer, and Harbor
+  completes a fresh durable verification pass to `state_only`. This is not a
+  transparent fallback and clients must not retry by writing a legacy shared
+  SkillStore body. The declaration requires a configured SkillStore; malformed,
+  duplicate, over-bound, or unwired declarations fail boot loud.
+
 ## [1.25.0] — 2026-08-01
 
 One release-closure slice: the original **prompt-composition surface**, the
