@@ -48,7 +48,7 @@ Add one mandatory multi-slot conditional-save primitive to the StateStore interf
 - [x] Every StateStore wrapper/fake forwards or faults `SaveIf` explicitly; the driver registry and conformance census hold the triad closed.
 - [x] Agent-tier SetRevision/Rollback condition the active pointer; user-tier writes condition both the user pointer and agent lifecycle slot so retirement can win terminally.
 - [x] Shared SQLite and environment-gated real Postgres races prove one winner across two registry instances; N≥100 reuse, cancellation, close, and leak checks pass under `-race`.
-- [ ] `ScanKindForTenant` is mandatory across in-memory, SQLite, and Postgres:
+- [x] `ScanKindForTenant` is mandatory across in-memory, SQLite, and Postgres:
   storage-side tenant plus literal-prefix filtering, bounded limit, stable
   lexicographic composite-slot order, opaque validated continuation, and no
   snapshot claim across restart. Its conformance rows reject missing scope,
@@ -93,11 +93,11 @@ Add one mandatory multi-slot conditional-save primitive to the StateStore interf
 
 - `internal/state`: 90%; each touched StateStore driver and conformance package: 85%; `internal/agentcfg/drivers/statestore`: 90%.
 
-## Proposed permanent deviation
+## Permanent deviation
 
 The `internal/agentcfg/drivers/statestore` package is at 83.8% direct package
-coverage, below the 90% target. This draft proposes a documented §4.3
-deviation: 53 uncovered statements are pre-existing error, list, and
+coverage, below the 90% target. This documented §4.3 deviation covers 53
+uncovered statements in pre-existing error, list, and
 event-emission branches outside the conditional-save change. Expanding those
 unrelated paths merely to reach a package aggregate would make this phase own
 unrelated behavior.
