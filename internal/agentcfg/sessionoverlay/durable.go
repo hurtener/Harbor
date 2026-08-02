@@ -537,24 +537,67 @@ func decodeLifecycleEnvelope(data []byte) lifecycleEnvelopeState {
 	if len(data) == 0 || len(data) > MaxAgentLifecycleFenceBytes {
 		return lifecycleEnvelopeInvalid
 	}
+	if err := rejectDuplicateJSONObjectFields(data); err != nil {
+		return lifecycleEnvelopeInvalid
+	}
 	var envelope struct {
-		Schema     int       `json:"schema"`
-		RevisionID string    `json:"revision_id"`
-		UpdatedAt  time.Time `json:"updated_at"`
+		Schema     *int       `json:"schema"`
+		RevisionID *string    `json:"revision_id"`
+		UpdatedAt  *time.Time `json:"updated_at"`
 	}
-	if err := decodeStrictJSON(data, &envelope); err != nil || (envelope.Schema != 0 && envelope.Schema != 1) {
+	if err := decodeStrictJSON(data, &envelope); err != nil || envelope.Schema == nil || envelope.RevisionID == nil || envelope.UpdatedAt == nil {
 		return lifecycleEnvelopeInvalid
 	}
-	if envelope.Schema == 1 && envelope.UpdatedAt.IsZero() {
+	if (*envelope.Schema != 0 && *envelope.Schema != 1) || envelope.UpdatedAt.IsZero() {
 		return lifecycleEnvelopeInvalid
 	}
-	if envelope.RevisionID == "" {
+	if *envelope.RevisionID == "" {
 		return lifecycleEnvelopeTerminal
 	}
-	if envelope.RevisionID != strings.TrimSpace(envelope.RevisionID) {
+	if *envelope.RevisionID != strings.TrimSpace(*envelope.RevisionID) {
 		return lifecycleEnvelopeInvalid
 	}
 	return lifecycleEnvelopeActive
+}
+
+// rejectDuplicateJSONObjectFields closes encoding/json's last-key-wins
+// behavior at the lifecycle authority boundary. A duplicate required field
+// must be corrupt rather than letting wire order decide active versus terminal.
+func rejectDuplicateJSONObjectFields(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	first, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if delimiter, ok := first.(json.Delim); !ok || delimiter != '{' {
+		return errors.New("expected JSON object")
+	}
+	seen := make(map[string]struct{}, 3)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		name, ok := token.(string)
+		if !ok {
+			return errors.New("expected JSON object member name")
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("duplicate JSON object member %q", name)
+		}
+		seen[name] = struct{}{}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("trailing JSON document")
+	}
+	return nil
 }
 
 func decodeStrictJSON(data []byte, target any) error {

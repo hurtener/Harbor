@@ -205,6 +205,17 @@ func TestDurableStore_LifecycleEnvelopePreservesMissingTerminalAndCorruptStates(
 	}{
 		{name: "missing", want: sessionoverlay.ErrAgentLifecycleInactive},
 		{name: "terminal empty pointer", present: true, bytes: []byte(`{"schema":1,"revision_id":"",` + validTimestamp + `}`), want: agentcfg.ErrAgentRetired},
+		{name: "empty object", present: true, bytes: []byte(`{}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "sparse schema zero", present: true, bytes: []byte(`{"schema":0}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "missing schema", present: true, bytes: []byte(`{"revision_id":"active",` + validTimestamp + `}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "missing revision", present: true, bytes: []byte(`{"schema":1,` + validTimestamp + `}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "missing timestamp", present: true, bytes: []byte(`{"schema":1,"revision_id":"active"}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "null schema", present: true, bytes: []byte(`{"schema":null,"revision_id":"active",` + validTimestamp + `}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "null revision", present: true, bytes: []byte(`{"schema":1,"revision_id":null,` + validTimestamp + `}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "null timestamp", present: true, bytes: []byte(`{"schema":1,"revision_id":"active","updated_at":null}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "duplicate schema", present: true, bytes: []byte(`{"schema":1,"schema":0,"revision_id":"active",` + validTimestamp + `}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "duplicate revision", present: true, bytes: []byte(`{"schema":1,"revision_id":"active","revision_id":"",` + validTimestamp + `}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "duplicate timestamp", present: true, bytes: []byte(`{"schema":1,"revision_id":"active","updated_at":"2026-08-02T00:00:00Z","updated_at":"2026-08-03T00:00:00Z"}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
 		{name: "unknown retired marker", present: true, bytes: []byte(`{"schema":1,"revision_id":"active","retired":true,` + validTimestamp + `}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
 		{name: "unknown field", present: true, bytes: []byte(`{"schema":1,"revision_id":"active","authority":true,` + validTimestamp + `}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
 		{name: "trailing document", present: true, bytes: []byte(`{"schema":1,"revision_id":"active",` + validTimestamp + `}{}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
@@ -243,7 +254,7 @@ func TestDurableStore_LifecycleEnvelopePreservesMissingTerminalAndCorruptStates(
 	}
 
 	for _, bytes := range [][]byte{
-		[]byte(`{"revision_id":"legacy-active"}`),
+		[]byte(`{"schema":0,"revision_id":"legacy-active","updated_at":"2026-08-02T00:00:00Z"}`),
 		[]byte(`{"schema":1,"revision_id":"active","updated_at":"2026-08-02T00:00:00Z"}`),
 	} {
 		st := newDurableState(t)
