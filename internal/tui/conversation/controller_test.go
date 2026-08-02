@@ -19,20 +19,31 @@ import (
 )
 
 type controllerFixture struct {
-	t            *testing.T
-	mu           sync.Mutex
-	streams      map[string][]chan types.StateEvent
-	closed       map[string]int
-	requests     map[string]int
-	disconnect   map[string]chan struct{}
-	order        []string
-	reject       string
-	failPath     map[string]int
-	capabilities []types.Capability
+	t                   *testing.T
+	mu                  sync.Mutex
+	streams             map[string][]chan types.StateEvent
+	streamRegistrations map[string]int
+	streamSignals       map[string]chan struct{}
+	closed              map[string]int
+	requests            map[string]int
+	disconnect          map[string]chan struct{}
+	order               []string
+	reject              string
+	failPath            map[string]int
+	capabilities        []types.Capability
 }
 
 func newControllerFixture(t *testing.T) (*controllerFixture, *httptest.Server) {
-	f := &controllerFixture{t: t, streams: map[string][]chan types.StateEvent{}, closed: map[string]int{}, requests: map[string]int{}, disconnect: map[string]chan struct{}{}, failPath: map[string]int{}}
+	f := &controllerFixture{
+		t:                   t,
+		streams:             map[string][]chan types.StateEvent{},
+		streamRegistrations: map[string]int{},
+		streamSignals:       map[string]chan struct{}{},
+		closed:              map[string]int{},
+		requests:            map[string]int{},
+		disconnect:          map[string]chan struct{}{},
+		failPath:            map[string]int{},
+	}
 	return f, httptest.NewServer(http.HandlerFunc(f.serve))
 }
 func (f *controllerFixture) serve(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +78,11 @@ func (f *controllerFixture) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		ch := make(chan types.StateEvent, 8)
 		f.streams[session] = append(f.streams[session], ch)
+		f.streamRegistrations[session]++
+		if signal := f.streamSignals[session]; signal != nil {
+			close(signal)
+			f.streamSignals[session] = make(chan struct{})
+		}
 		disconnect := make(chan struct{})
 		f.disconnect[session] = disconnect
 		f.mu.Unlock()
@@ -129,6 +145,32 @@ func (f *controllerFixture) emit(session string, event types.StateEvent) {
 		}
 	}
 }
+
+// awaitStreamRegistration waits for the fixture handler to publish the exact
+// SSE stream registration. Subscribe returns after the response headers are
+// flushed, which is intentionally before the handler reaches that publish.
+func (f *controllerFixture) awaitStreamRegistration(ctx context.Context, session string, want int) {
+	f.t.Helper()
+	for {
+		f.mu.Lock()
+		if f.streamRegistrations[session] >= want {
+			f.mu.Unlock()
+			return
+		}
+		signal := f.streamSignals[session]
+		if signal == nil {
+			signal = make(chan struct{})
+			f.streamSignals[session] = signal
+		}
+		f.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			f.t.Fatalf("stream registration for session %q did not reach %d", session, want)
+		case <-signal:
+		}
+	}
+}
+
 func (f *controllerFixture) drop(session string) {
 	f.mu.Lock()
 	ch := f.disconnect[session]
@@ -333,6 +375,7 @@ func TestController_ReconnectRehydratesAndResumesAtCursor(t *testing.T) {
 	if eventsAt < 0 || historyAt < 0 || eventsAt >= historyAt {
 		t.Fatalf("attach did not open stream before hydration: order=%v", f.order)
 	}
+	f.awaitStreamRegistration(ctx, id.Session, 1)
 	f.emit(id.Session, types.StateEvent{Type: "task.started", Sequence: 1, OccurredAt: now, Tenant: "t", User: "u", Session: id.Session, Payload: map[string]any{"TaskID": "before-drop"}})
 	awaitBlock(t, ctx, updates, "before-drop")
 	f.drop(id.Session)
@@ -347,6 +390,7 @@ func TestController_ReconnectRehydratesAndResumesAtCursor(t *testing.T) {
 		}
 	}
 reconnected:
+	f.awaitStreamRegistration(ctx, id.Session, 2)
 	f.emit(id.Session, types.StateEvent{Type: "task.started", Sequence: 2, OccurredAt: now, Tenant: "t", User: "u", Session: id.Session, Payload: map[string]any{"TaskID": "after-drop"}})
 	awaitBlock(t, ctx, updates, "after-drop")
 	if err = controller.Close(); err != nil {
