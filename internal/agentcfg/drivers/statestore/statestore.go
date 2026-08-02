@@ -133,9 +133,13 @@ const recordSchema = 1
 
 // activeRecord is the JSON-encoded active-pointer record.
 type activeRecord struct {
-	Schema     int       `json:"schema"`
-	RevisionID string    `json:"revision_id"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	Schema     int    `json:"schema"`
+	RevisionID string `json:"revision_id"`
+	// Inactive is a durable physical-pointer tombstone used only by exact
+	// first-write compensation. Keeping the old revision id makes the
+	// compensation auditable while Active still returns no-active.
+	Inactive  bool      `json:"inactive,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // revisionRecord is the JSON-encoded immutable revision record. Parent
@@ -358,6 +362,60 @@ func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID st
 	return r.loadActiveRevision(ctx, keys.quad, keys.activeKind, keys.revPfx)
 }
 
+// DeactivateIfActive advances the physical active-pointer slot to an inactive
+// marker only when it still names revisionID. It uses the exact StateStore
+// EventID predicate, so a compensation can never erase another Runtime's
+// winner after the caller lost its acknowledgement.
+func (r *registry) DeactivateIfActive(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope agentcfg.ConfigScope) (bool, error) {
+	if err := r.validate(id, agentID); err != nil {
+		return false, err
+	}
+	if revisionID == "" {
+		return false, fmt.Errorf("%w: revision id is empty", agentcfg.ErrRevisionNotFound)
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	keys, err := keysFor(scope, id, agentID)
+	if err != nil {
+		return false, err
+	}
+	current, err := r.state.Load(ctx, keys.quad, keys.activeKind)
+	if errors.Is(err, state.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%w: load active pointer: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	var pointer activeRecord
+	if err := json.Unmarshal(current.Bytes, &pointer); err != nil {
+		return false, fmt.Errorf("%w: unmarshal active pointer: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	if pointer.Schema != 0 && pointer.Schema != recordSchema {
+		return false, fmt.Errorf("%w: active pointer schema=%d, runtime supports %d", agentcfg.ErrStateUnavailable, pointer.Schema, recordSchema)
+	}
+	if pointer.Inactive || pointer.RevisionID != revisionID {
+		return false, nil
+	}
+	pointer.Schema = recordSchema
+	pointer.Inactive = true
+	pointer.UpdatedAt = r.clock().UTC()
+	encoded, err := json.Marshal(pointer)
+	if err != nil {
+		return false, fmt.Errorf("agentcfg/statestore: marshal inactive pointer: %w", err)
+	}
+	err = r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: keys.quad, Kind: keys.activeKind, ExpectedEventID: current.ID}}, state.StateRecord{
+		ID: state.NewEventID(), Identity: keys.quad, Kind: keys.activeKind, Bytes: encoded, UpdatedAt: pointer.UpdatedAt,
+	})
+	if errors.Is(err, state.ErrConditionFailed) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%w: conditionally deactivate active pointer: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	return true, nil
+}
+
 func (r *registry) Get(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope agentcfg.ConfigScope) (agentcfg.Revision, error) {
 	if err := r.validate(id, agentID); err != nil {
 		return agentcfg.Revision{}, err
@@ -568,7 +626,7 @@ func (r *registry) loadActiveRevision(ctx context.Context, q identity.Quadruple,
 	if ar.Schema != 0 && ar.Schema != recordSchema {
 		return agentcfg.Revision{}, false, fmt.Errorf("%w: active pointer schema=%d, runtime supports %d", agentcfg.ErrStateUnavailable, ar.Schema, recordSchema)
 	}
-	if ar.RevisionID == "" {
+	if ar.Inactive || ar.RevisionID == "" {
 		return agentcfg.Revision{}, false, nil
 	}
 	rr, err := r.loadRevision(ctx, q, revPfx, ar.RevisionID)
@@ -615,6 +673,9 @@ func (r *registry) loadActivePointerID(ctx context.Context, q identity.Quadruple
 	}
 	if ar.Schema != 0 && ar.Schema != recordSchema {
 		return "", fmt.Errorf("%w: active pointer schema=%d, runtime supports %d", agentcfg.ErrStateUnavailable, ar.Schema, recordSchema)
+	}
+	if ar.Inactive {
+		return "", nil
 	}
 	return ar.RevisionID, nil
 }

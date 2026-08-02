@@ -245,8 +245,17 @@ func TestSetOAuthProvider_AuditFailClosed(t *testing.T) {
 		t.Fatalf("audit fail-closed must UNINSTALL the just-installed provider (no observable state)")
 	}
 	got, _ := s.Get(ctx, prototypes.AgentConfigGetRequest{Identity: scope(), AgentID: testAgentID})
-	if got.Set && got.Revision != nil && got.Revision.Payload.OAuthProviders != nil {
-		t.Fatalf("audit fail-closed must leave no installed-provider section")
+	if got.Set || got.Revision != nil {
+		t.Fatalf("first-install audit compensation must restore no-active, got %+v", got)
+	}
+	// The failed candidate stays immutable history for diagnosis, but no
+	// forward empty revision may be written as a compensating authority state.
+	history, err := s.ListRevisions(ctx, prototypes.AgentConfigListRevisionsRequest{Identity: scope(), AgentID: testAgentID})
+	if err != nil {
+		t.Fatalf("list history: %v", err)
+	}
+	if len(history.Revisions) != 1 || history.Revisions[0].Payload.OAuthProviders == nil {
+		t.Fatalf("first-install compensation must retain only the candidate history, got %+v", history.Revisions)
 	}
 }
 

@@ -181,13 +181,15 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 						errs = append(errs, e)
 					}
 				} else {
-					// No prior revision to roll back to (this install wrote the
-					// FIRST revision). Neutralise the observable state by writing an
-					// empty revision so the active config carries no installed
-					// provider — the pre-write "no config" state, restored (there is
-					// no revision-delete; a forward empty write is the neutralisation).
-					if _, e := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, compensatingWrite()); e != nil {
+					// No prior revision exists. A forward empty revision is NOT a
+					// safe compensation: another Runtime can observe and authorise the
+					// candidate between the write and that new revision. Deactivate only
+					// if the physical pointer still names OUR exact candidate.
+					deactivated, e := s.registry.DeactivateIfActive(ctx, q, req.AgentID, rev.RevisionID, agentcfg.ConfigScopeAgent)
+					if e != nil {
 						errs = append(errs, e)
+					} else if !deactivated {
+						errs = append(errs, fmt.Errorf("first-install compensation did not own active revision %q", rev.RevisionID))
 					}
 				}
 				return errors.Join(errs...)

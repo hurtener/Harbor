@@ -835,6 +835,14 @@ type Registry interface {
 	// carry that content hash or the repoint is refused with
 	// ErrRevisionConflict and the pointer is left where it was.
 	Rollback(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope ConfigScope, opts SetOptions) (Revision, error)
+	// DeactivateIfActive removes an active revision only when that exact
+	// revision still owns the pointer. It is the first-write compensation seam:
+	// a failed first install returns to no-active without writing a forward empty
+	// revision that could become an authority-bearing candidate.
+	//
+	// The bool reports whether this call changed the active pointer. A false
+	// result is a concurrent-state outcome, not permission to assume inactive.
+	DeactivateIfActive(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope ConfigScope) (bool, error)
 	// Diff returns the deterministic compare of two existing revisions.
 	Diff(ctx context.Context, id identity.Quadruple, agentID, fromRev, toRev string, scope ConfigScope) (Diff, error)
 	// Close releases resources. Idempotent.
