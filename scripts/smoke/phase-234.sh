@@ -11,6 +11,6 @@ source "scripts/smoke/common.sh"
 # effective-agent selection; signed reach before tenant-local lifecycle lookup;
 # `agent_retired` / `agent_retirement_conflict`; history matrix; redacted
 # started/progress/completed events; and replay after cleanup or event faults.
-# Until then this skeleton intentionally skips so predecessor builds coexist.
+# Until then this skeleton intentionally skips so older builds coexist.
 skip "phase 234: pending agent-config retirement implementation"
 smoke_summary
