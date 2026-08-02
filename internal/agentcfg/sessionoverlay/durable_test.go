@@ -185,6 +185,10 @@ func TestDurableStore_PersonalRecordCASAndTombstone(t *testing.T) {
 	if err != nil || !found || loaded.Skill.Name != "Alpha" {
 		t.Fatalf("LoadPersonal = (%+v, %v, %v)", loaded, found, err)
 	}
+	canonicalHash := skills.CanonicalContentHash(loaded.Skill)
+	if loaded.ContentHash != canonicalHash || loaded.Skill.ContentHash != loaded.ContentHash {
+		t.Fatalf("reloaded hashes outer/inner/canonical = %q/%q/%q", loaded.ContentHash, loaded.Skill.ContentHash, canonicalHash)
+	}
 	tombstone, err := store.DeletePersonal(context.Background(), id, "agent-a", "alpha")
 	if err != nil || !tombstone.Deleted {
 		t.Fatalf("DeletePersonal = (%+v, %v)", tombstone, err)
@@ -298,11 +302,12 @@ func TestDurableStore_ReservedAgentConfigUserRejectedAtEveryPersonalBoundary(t *
 func TestDurableStore_PersonalRecordStrictLiveAndTombstoneInvariants(t *testing.T) {
 	id := durableID("session-a")
 	liveSkill := durableSkill("strict")
+	liveSkill.ContentHash = skills.CanonicalContentHash(liveSkill)
 	valid := sessionoverlay.PersonalSkillRecord{
 		Schema:        1,
 		AgentID:       "agent-a",
 		CanonicalName: "strict",
-		ContentHash:   skills.CanonicalContentHash(liveSkill),
+		ContentHash:   liveSkill.ContentHash,
 		Skill:         liveSkill,
 		UpdatedAt:     time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC),
 	}
@@ -347,6 +352,11 @@ func TestDurableStore_PersonalRecordStrictLiveAndTombstoneInvariants(t *testing.
 			record := valid
 			record.Skill.Scope = skills.ScopeUser
 			record.ContentHash = skills.CanonicalContentHash(record.Skill)
+			return encode(t, record)
+		}},
+		{name: "live inner content hash mismatch", bytes: func(t *testing.T) []byte {
+			record := valid
+			record.Skill.ContentHash = strings.Repeat("f", 64)
 			return encode(t, record)
 		}},
 		{name: "live explicit empty copy markers", bytes: func(t *testing.T) []byte {

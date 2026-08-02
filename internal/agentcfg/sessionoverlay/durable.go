@@ -419,7 +419,10 @@ func decodePersonal(bytes []byte, agentID, canonicalName string) (PersonalSkillR
 	if err := validateCopyMarkers(record.CopyEpoch, record.LegacyContentHash); err != nil {
 		return PersonalSkillRecord{}, false, fmt.Errorf("%w: %w", ErrPersonalRecordInvalid, err)
 	}
-	if err := record.Skill.Validate(); err != nil || record.Skill.Scope != skills.ScopeSession || canonicalNameFor(record.Skill.Name) != canonicalName || !validCanonicalSHA256(record.ContentHash) || record.ContentHash != skills.CanonicalContentHash(record.Skill) {
+	canonicalHash := skills.CanonicalContentHash(record.Skill)
+	if err := record.Skill.Validate(); err != nil || record.Skill.Scope != skills.ScopeSession || canonicalNameFor(record.Skill.Name) != canonicalName ||
+		!validCanonicalSHA256(record.ContentHash) || !validCanonicalSHA256(record.Skill.ContentHash) ||
+		record.ContentHash != canonicalHash || record.Skill.ContentHash != record.ContentHash {
 		return PersonalSkillRecord{}, false, fmt.Errorf("%w: body validation failed", ErrPersonalRecordInvalid)
 	}
 	return record, true, nil
