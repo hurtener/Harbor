@@ -52,15 +52,14 @@ explicit signed-capability production opt-in; it is not enabled by default.
   provider/capability identifier and revision, canonical connection URL digest,
   audience, normalized scope set, issuer/key ID, issue/expiry, and anti-replay
   ID. Request fields must byte-for-byte/canonically equal their claims.
-- Derive exactly one normalized bearer sink from `connection.url`, persist it
-  as the pair binding, and re-derive/reverify it on rollback and reconcile.
+- Share one canonical URL-byte helper across envelope matching, pair
+  fingerprinting, transport enforcement, and restart/reconcile.
 - Preserve the verified `(tenant, user, session)` subject through cache and
   exchange. Bind cache/exchange assertions additionally to agent, capability
   revision, audience, and URL digest; exchange independently validates the
   entitlement, exact audience, and binding.
-- Repair first-ever `set_oauth_provider` failure so unknown broker, build,
-  install, publish, or audit failure leaves a truly unset agent without an
-  active revision, provider, or live binding.
+- Repair first-ever `set_oauth_provider` uncertainty with a durable
+  pending-activation/compensation fence, not a process-local repair guess.
 
 ## Non-goals
 
@@ -89,30 +88,47 @@ explicit signed-capability production opt-in; it is not enabled by default.
 - [ ] The envelope uses an approved asymmetric signature and has exact claims:
   tenant ID, agent ID, broker, capability/provider ID and immutable capability
   revision, canonical URL digest, audience, normalized unique scope set,
-  issuer, key ID, issued-at, bounded expiry, and unique replay ID (JTI).
-  The first valid operation durably records JTI plus complete immutable pair
-  fingerprint through expiry. An exact retry of that JTI/fingerprint converges
-  idempotently to the original pair and creates no revision or claim; the same
-  JTI with any different fingerprint, and any new mutation reusing it, rejects.
-  Algorithm confusion, unknown key/issuer, malformed timing, expired authority,
-  or any request/claim mismatch has no prepare, revision, provider, or live
-  connection side effect.
-- [ ] One operation privately builds the provider, prepares/dials/discovers the
-  connection, CAS-writes one revision containing a durable signed-pair binding,
-  then publishes provider and connection through one composite dispatch/
-  visibility linearization point. A private capability reservation owns the
-  unpublished provider and MCP prepared binding to that exact reservation;
-  public `ProviderSet.Stage`, a mutex, or separately ordered provider/catalog
-  swaps are forbidden. Refusal or unknown persistence outcome closes unpublished
-  resources; exact landed outcome converges only when the complete pair
-  fingerprint matches.
-- [ ] The provider's token endpoint stays the broker's boot-pinned endpoint.
-  Harbor derives one canonical HTTPS bearer sink from the connection URL:
-  `https`, lower-case IDNA host, explicit/effective port (443 when omitted),
-  no userinfo/fragment; path/query contribute only to the URL digest. The pair
-  stores this digest/sink binding, never a host list, and every bearer request
-  rechecks it before send with redirects refused. Each
-  attach/rollback/restart/reconcile recomputes it before a bearer can flow.
+  issuer, key ID, issued-at, bounded expiry, and unique replay ID (JTI). The
+  durable operation key is tenant-scoped `(tenant_id, trust_anchor_name, issuer,
+  kid, jti)`; tenant is signed and Harbor isolation stays tenant-local. A
+  reserved tenant control-scope record uses a collision-safe deterministic Kind
+  from the canonical length-prefixed tuple hash. Its bounded payload repeats
+  tuple hashes/fields, exact pair fingerprint, expiry, phase, and revision
+  identity. First claim is a `SaveIf`-absent record retained through expiry plus
+  bounded skew; cleanup occurs only after expiry. It transitions only
+  `claimed -> revision_committed -> published`, and paired remove/retire moves
+  it to `removed`; every transition `SaveIf`-compares its exact operation
+  EventID. No claim+revision cross-record ACID is asserted: this durable state
+  machine is recovery. Exact tuple+fingerprint retries resume phase; the same
+  key with a different fingerprint rejects. A `claimed` retry re-prepares;
+  uncertain revision write exact-rereads active revision/fingerprint to advance,
+  retry, or conflict; `revision_committed` re-prepares/re-publishes after
+  restart; publish-then-checkpoint error verifies the exact live pair before
+  advancing; `published` returns the original response; `removed` never
+  recreates. Expired incomplete records close/reject and remain
+  retained/tombstoned through the expiry/skew horizon.
+- [ ] A signed provider is pair-owned and outside the general `ProviderSet`.
+  Private MCP preparation binds directly to that exact provider instance; a
+  catalog source swap is the sole data-plane dispatch linearization point.
+  Protocol projections derive only from the immutable signed-pair revision,
+  never a live provider map, and generic provider resolution cannot bind it. A
+  pair-owned live registry may retain close/reconcile receipts only: it is never
+  an authority, projection, or dispatch surface. Name reservation still
+  collision-checks the general bare namespace. Prepare is never durable and
+  closes on refusal/failure/restart; teardown closes transport and provider as
+  one receipt.
+- [ ] The provider token endpoint stays boot-pinned. One named shared
+  canonical-URL helper supplies signer/verifier request matching, fingerprinting,
+  transport enforcement, and restart/reconcile. It requires absolute HTTPS;
+  applies IDNA2008 ASCII lower-case host with trailing root dot removed and
+  bracket-normalized IPv6; rejects IP zone, userinfo, and fragment; canonicalizes
+  an explicit numeric port (omitted is `443`); applies RFC3986
+  remove-dot-segments with empty path `/`; uppercases percent hex and decodes
+  only unreserved bytes. Query preserves original pair order and duplicates while
+  canonicalizing percent encoding (no sorting; `+` remains literal plus).
+  Canonical URL bytes are `https://host:port/path[?query]`; the only sink is
+  origin `https://host:port`. The pair stores canonical URL digest/sink, never a
+  host list; every bearer send rechecks it and refuses redirects.
 - [ ] Requested scopes are normalized before signing/comparison. A requested
   scope outside the boot true ceiling rejects loudly with a typed invalid-scope
   result; the production path never silently intersects/drops scopes.
@@ -129,24 +145,24 @@ explicit signed-capability production opt-in; it is not enabled by default.
   Rollback activation performs full binding verification, while paired removal
   and retirement use the frozen durable pair fingerprint to close/revoke even
   if envelope verification would now fail.
-- [ ] Reconcile/restart/rollback activate a stored immutable pair only after
-  verifying its stored JTI/fingerprint association and every non-replay
-  binding; they never classify that same stored JTI as a new request replay.
-  They fail closed for absent/malformed/expired/unentitled authority, a JTI
-  bound to another fingerprint, unknown broker, scope widening, URL-host
-  mismatch, provider collision, or pair half-state. They never install one
-  half, forward a token, or repair state by creating a new authority claim.
-- [ ] `set_oauth_provider` validates and prepares unknown broker/build/install
-  failures before writing. On a first-write publish/audit failure it performs
-  exact conditional neutralization through mandatory
-  `Registry.DeactivateIfActive(ctx, identity, agent, scope, attemptedRevisionID)`.
-  The statestore implementation owns the active slot and `SaveIf`-compares its
-  exact attempted EventID, then replaces only that pointer with deterministic
-  schema-valid semantic inactive-marker bytes which `Active` treats as absent.
-  It never writes a forward empty revision and never overwrites a concurrent
-  winner. An uncertain pointer outcome fences readers/reconcile loud until
-  reread proves the marker or winner. The immutable failed revision remains
-  history only, never active/live, and is surfaced loudly.
+- [ ] Reconcile/restart/rollback activate only a stored immutable pair whose
+  operation record is exactly `published`, whose fingerprint/bindings verify,
+  and whose activation fence is committed; they never classify that stored JTI
+  as a fresh replay. They fail closed for an incomplete/expired/unentitled
+  operation, JTI bound to another fingerprint, unknown broker, scope widening,
+  URL mismatch, provider collision, pending fence, or pair half-state.
+- [ ] Before a first-install candidate can become semantically active,
+  `set_oauth_provider` creates a durable pending-activation/compensation fence
+  under the agent scope. The fence binds exact operation/content fingerprint,
+  attempted revision identity, and prior active revision/EventID (or no-active),
+  and has its own phase/EventID. `Registry.Active`, revision mutation, and
+  reconcile consult it: while pending they return exactly the prior revision or
+  no-active, never authorize the candidate. Success `SaveIf`-commits the fence;
+  failure `SaveIf`-aborts it; every unknown transition stays safely pending
+  across runtimes until exact reread proves committed or aborted. Immutable
+  candidate history remains. `DeactivateIfActive` may afterwards compact a
+  physical pointer with its exact EventID/inactive marker, but is not the
+  security fence and cannot assert an unknown result inactive.
 - [ ] All canonical method/type/error/event/Console manifest/docs lockstep
   gates cover the new surface. Events and audit carry only redacted identity,
   provider/capability names or hashes, revision, audience hash, and URL digest;
@@ -172,35 +188,38 @@ explicit signed-capability production opt-in; it is not enabled by default.
   failures.
 - `agent_config.remove_oauth_mcp_capability` is the only paired removal verb;
   it is admin-only and owner-scoped.
-- `agentcfg.Registry.DeactivateIfActive(ctx, identity, agent, scope,
-  attemptedRevisionID)` is the mandatory registry-owned, exact-pointer
-  conditional deactivation seam; StateStore drivers implement it with `SaveIf`
-  and deterministic schema-valid inactive-marker bytes.
+- `agentcfg` operation-record and pending-activation-fence types plus their
+  tenant/agent control-scope identities, phases, exact EventID `SaveIf`
+  transitions, and typed conflict/pending errors.
+- `CanonicalOAuthMCPURL(raw string) (canonicalURL, sink string, err error)` is
+  the shared canonical-byte helper; cross-language golden fixtures are public
+  testdata for signers.
+- `agentcfg.Registry.DeactivateIfActive` remains a post-fence physical-pointer
+  compaction/convergence seam, never the cross-runtime security fence.
 - A boot-only `ToolOAuthCredentialBrokerConfig` signed-capability authority
   block; none of its secrets, endpoints, host lists, or verifier material are
   Protocol-writable.
 
 ## Test plan
 
-- **Unit:** strict wire decoding; claim canonicalization and exact matching;
-  signature algorithm/issuer/key/timing rejection; first JTI consumption,
-  exact JTI/fingerprint idempotent retry, and same-JTI/different-fingerprint
-  rejection; scope-ceiling loud
-  refusal; URL canonicalization/digest/sink equality; forbidden-field
-  reflection guard; pair fingerprint and closed generic-writer/removal census;
-  no partial publication and one composite visibility point; first-write
-  unknown-broker/build/publish/audit failure; exact conditional deactivation,
-  marker bytes, uncertain-outcome reader fence, and CAS-race neutralization.
-- **Integration:** real SQLite and Postgres broker/trust-anchor registration,
-  token exchange assertion capture, provider+connection atomic visibility,
-  restart/rollback/reconcile stored-pair re-verification and same-JTI
-  idempotence, exact HTTPS-sink/no-redirect enforcement, pair removal, and
-  retirement cleanup after authority expiry/key rotation/revocation,
-  and cross-tenant/user/session/agent cache and bearer-bleed denials.
-- **Conformance:** all StateStore drivers run the same
-  `DeactivateIfActive` marker/uncertain-outcome/fault suite and pair lifecycle
-  suite; Protocol/Console/generated-doc
-  lockstep covers every new canonical type, method, error, and event.
+- **Unit:** strict wire decoding; claim matching; JTI operation Kind/payload
+  construction; every operation/fence phase, EventID CAS, unknown-outcome reread,
+  expiry/skew retention, remove terminality, and same-key/different-fingerprint
+  refusal; scope-ceiling loud refusal; canonical URL golden bytes/digest/sink
+  equality including IDNA, IPv6, dot segments, percent/query edge cases;
+  forbidden-field reflection; pair fingerprint and writer/removal census;
+  pair-owned-provider/catalog-only dispatch; and first-write pending-fence
+  commit/abort/uncertain cross-runtime reader cases.
+- **Integration:** real SQLite/Postgres operation-state recovery through every
+  phase and restart/fault point; token exchange assertion capture; exact
+  pair-owned catalog dispatch/no generic-provider binding; cross-language URL
+  signer fixtures; no-redirect enforcement; pair removal/retirement after
+  authority expiry/key rotation/revocation; and cross-tenant/user/session/agent
+  cache and bearer-bleed denials.
+- **Conformance:** all StateStore drivers run the same JTI operation and
+  pending-activation fence phase/EventID/fault suite, including two-runtime
+  readers and recovery; Protocol/Console/generated-doc lockstep covers every
+  new canonical type, method, error, and event.
 - **Concurrency / leak:** N>=100 shared broker verifier/provider-set and MCP
   preparer invocations under `-race`; competing registration/removal/rollback/
   retirement and commit-then-error cases prove one winner, no incorrect
@@ -233,10 +252,9 @@ explicit signed-capability production opt-in; it is not enabled by default.
 - Signature format and verifier key rotation must use an existing approved
   asymmetric validator or receive an RFC ruling before implementation; request
   parsing must not select algorithms or issuers.
-- Replay persistence needs bounded retention through expiry without widening
-  maintenance scans. It must distinguish an exact stored JTI/fingerprint
-  idempotence lookup from a fresh replay/mutation attempt; neither may be a
-  best-effort cache.
+- Operation retention needs a bounded expiry+skew maintenance path without
+  weakening exact tuple lookup. It must distinguish exact phase-resume from a
+  fresh mutation; neither may be a best-effort cache.
 - A previously registered capability can expire before rollback/reconcile. The
   safe behavior is inactive/unavailable with loud diagnostics, not an implicit
   renewal or acceptance of administrator input; removal/retirement remains

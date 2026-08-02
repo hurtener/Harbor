@@ -1561,11 +1561,42 @@ therefore at-least-once (duplicates are permitted; silent loss is not).
 
 **Signed OAuth MCP capability registration is atomic, production-safe, and boot-authorized (D-401).** A runtime may boot one generic OAuth credential broker/trust anchor: it alone retains the fixed exchange endpoint, credential-pull endpoint, runtime broker credential, KEK, true scope ceiling, and signed-capability authority verifier material. This production path is usable without a development flag only when that broker/trust anchor explicitly opts into signed capability authority; an absent anchor/opt-in remains fail-closed. An administrator then registers one new OAuth-fronted MCP capability with exactly one `agent_config.register_oauth_mcp_capability` operation. The operation prepares an unpublished provider and connection, CAS-persists one agent-config revision, and publishes the pair together; two public writes must never be composed to manufacture this state. Its writable request contains only a provider name, broker name, bounded ordinary MCP connection descriptor, audience, normalized requested scopes, `expected_content_hash`, and a signed authority envelope. It contains no token URL, credential URL, client secret, env-var name, KEK, or downstream-host list.
 
-The envelope is the authority, not the administrator's input. A boot opt-in names the issuer/key set allowed to authorize bounded capability registration; the verified envelope binds exact tenant, agent, broker, provider/capability identifier and revision, canonical connection-URL digest, audience, normalized scope set, issuer/key ID, issue/expiry times, and one-time replay ID (JTI). Harbor accepts only an exact request-to-claim match. The first valid registration durably consumes the JTI together with the complete immutable pair fingerprint through expiry. Before expiry, an exact retry of that JTI and fingerprint converges idempotently to that already-recorded pair; that is not a new authorization, revision, or claim. The same JTI with any different fingerprint, and every new mutation reusing it, rejects. Restart, reconcile, and rollback activate only stored immutable pair state after verifying the stored JTI/fingerprint association and every non-replay binding; they do not treat that same stored JTI as a fresh request replay. Expired, malformed, unknown, unentitled, or mismatched authority fails closed for activation. Harbor derives exactly one canonical HTTPS bearer sink from the bound connection URL and persists/reconciles that binding; it never accepts or persists an arbitrary downstream-host allow-list. The sink is `https` plus a lower-case IDNA host and explicit/effective port (443 when omitted), with no userinfo or fragment; path/query contribute to the URL digest but not the sink. Bearer requests must match that origin before send and use a redirect-refusing client, so a bearer never follows a redirect. The boot-pinned exchange endpoint may remain constant while the signed capability supplies the bounded audience. The exchange independently validates capability entitlement, the exact audience, and the tenant/agent/provider/URL binding while preserving the verified `(tenant, user, session)` subject; audience identifies the destination resource, not a person. Requested scopes outside the boot ceiling reject loudly, rather than silently intersecting.
+The envelope is authority, not administrator input. Its durable operation key is
+tenant-scoped `(tenant_id, trust_anchor_name, issuer, kid, jti)`; a reserved
+tenant-control-scope record uses a canonical length-prefixed tuple-hash Kind and
+stores bounded tuple fields/hashes, exact pair fingerprint, expiry, phase, and
+revision identity. `SaveIf` claims absent then transitions only
+`claimed -> revision_committed -> published`; remove/retire reaches `removed`.
+Every phase transition compares its exact operation EventID, and expiry+bounded
+skew retains incomplete records before cleanup. Exact tuple+fingerprint resumes
+the recorded phase; same key/different fingerprint rejects. `claimed` retries
+prepare; uncertain revision writes exact-reread; `revision_committed`
+re-prepares/re-publishes after restart; publish checkpoint errors verify the
+exact live pair; `published` returns the original response; `removed` never
+recreates. This recovery state machine explicitly does not claim cross-record
+ACID with the revision.
 
-Pair visibility has one linearization point. D-401 uses a private capability reservation that owns the unpublished provider and the MCP prepared binding to that exact provider; `ProviderSet.Stage` is not a D-401 publication seam. After the one revision persists, the reservation performs one composite dispatch/visibility swap, making provider resolution and the connection/catalog view observable together. No mutex or ordered pair of public swaps is equivalent.
+One shared canonical URL-byte helper serves signing, matching, fingerprinting,
+transport, and reconcile: absolute HTTPS only; IDNA2008 lower-case ASCII host
+without root dot; bracket-normalized IPv6; no IP zone/userinfo/fragment; numeric
+port with omitted `443`; RFC3986 dot-segment removal, `/` empty path, uppercase
+percent hex and unreserved decode. Query order and duplicate pairs stay intact;
+`+` is literal. Bytes are `https://host:port/path[?query]`, sink is
+`https://host:port`, and redirects are refused.
 
-Signed-pair representation is server-owned and read-only. Every generic section writer carries it forward byte-identically and rejects its addition, mutation, omission, deletion, or a half-pair. Whole `set_revision`, rollback, every section setter, and legacy `remove_oauth_provider` / `remove_mcp_connection` are closed against pair-owned halves; only paired removal may remove it. Pair removal and retirement use the tombstone's frozen durable pair fingerprint to close/revoke both resources idempotently even if the envelope has expired, replayed, been revoked, or can no longer be verified. Admission validity therefore gates activation only, never teardown. The shared bare-name catalog remains a shared namespace: collisions fail loudly; this mechanism does not claim catalog-level tenant isolation. The older wire-descriptor opt-in remains development-only and is neither a prerequisite nor an alternate production path. First-install provider failures prepare and validate before persistence. The mandatory Registry seam supplies `DeactivateIfActive(ctx, identity, agent, scope, attemptedRevisionID)`: the statestore implementation `SaveIf`-compares the driver-owned exact active-pointer EventID and replaces only that pointer with deterministic schema-valid inactive-marker bytes. `Active` treats that marker as absent while immutable revision history remains. An uncertain deactivation outcome fences readers and reconcile loud until reread proves either that exact inactive marker or a concurrent winner; it is never asserted inactive by assumption. (Phase 233b.)
+The signed provider is pair-owned and outside general `ProviderSet`; private MCP
+prepare binds directly to it, and only catalog source swap makes data-plane
+dispatch visible. Protocol projections come from immutable pair revision;
+generic provider resolution cannot bind it. A pair-owned registry holds only
+close/reconcile receipts. Generic writers remain closed against pair halves;
+teardown closes transport+provider from the frozen fingerprint. Before a
+first-install candidate is semantic active, a durable agent-scope pending-
+activation/compensation fence binds exact operation/content fingerprint,
+candidate revision, and prior active revision/EventID or no-active. `Active`,
+mutation, and reconcile return only prior/no-active while pending. Exact-EventID
+`SaveIf` commits or aborts it; uncertainty remains pending cross-runtime until
+reread proves its phase. `DeactivateIfActive` is post-fence pointer compaction,
+never this security fence. (Phase 233b.)
 
 **Events.** The registry emits `agent.registered`, `agent.restarted`, `agent.health`, `agent.drained`, `agent.deregistered` on the typed event bus (§6.13), carrying the registration `agent_id`. The Console Agents page (§7) is a lens over these events plus a registry state snapshot — the Console never holds the agent list itself (D-061).
 

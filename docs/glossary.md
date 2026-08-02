@@ -1438,21 +1438,25 @@ broker-pull OAuth provider and one MCP connection registered by
 the **signed capability authority envelope**, persists in one agent-config
 revision, derives its single bearer sink from the canonical connection URL, and
 is prepared/published, reconciled, removed, and retired as one lifecycle unit.
-Its broker retains all credential custody. It does not change the process-global
-bare-name catalog namespace; collisions fail loudly. Phase 233b, D-401.
+Its provider is pair-owned outside the general ProviderSet; catalog source swap
+alone exposes dispatch, while Protocol projection comes from the immutable
+revision. Its broker retains all credential custody. It does not change the
+process-global bare-name catalog namespace; collisions fail loudly. Phase 233b,
+D-401.
 
 **Signed capability authority envelope** — the asymmetric-signature-verified,
 boot-trust-anchor-authorized claim set required for a D-401 dynamic OAuth MCP
 capability. It exactly binds tenant, agent, broker, provider/capability ID and
 revision, canonical URL digest, audience, normalized scopes, issuer/key ID,
-issued-at/expiry, and a durable one-time replay ID (JTI). The first valid
-registration stores JTI plus its complete immutable pair fingerprint through
-expiry: an exact retry converges idempotently, while the same JTI for any
-different fingerprint/new mutation rejects. Stored-pair activation checks that
-association rather than treating it as a fresh replay. Administrator-supplied
-fields merely request these values and must exactly equal the claims; they are
-not authority. The envelope carries neither credentials nor arbitrary bearer
-sinks.
+issued-at/expiry, and a durable one-time replay ID (JTI). Its tenant-scoped
+operation key is `(tenant_id, trust_anchor_name, issuer, kid, jti)` and has a
+canonical length-prefixed tuple-hash control record containing bounded tuple
+fields/hashes, pair fingerprint, expiry, revision, phase, and exact EventID.
+`claimed`, `revision_committed`, `published`, and terminal `removed` transition
+only by `SaveIf`; exact tuple/fingerprint resumes phase while a different
+fingerprint rejects. Stored-pair activation requires published state, rather
+than treating it as a fresh replay. Administrator-supplied fields merely request
+the signed values; the envelope carries neither credentials nor arbitrary sinks.
 
 **Capability-pair binding** — the persisted non-secret, server-owned/read-only
 binding of a signed OAuth MCP capability's provider/capability revision,
@@ -1462,6 +1466,22 @@ reconcile re-derive and verify it before a bearer can flow. Generic revision
 and section writers carry it byte-identically or reject; only the paired
 removal/retirement lifecycle may close it from its frozen fingerprint. Phase
 233b, D-401.
+
+**Canonical OAuth MCP URL** — the one byte canonicalization used by D-401
+signing, claim matching, pair fingerprinting, transport, and reconcile: absolute
+HTTPS; IDNA2008 lower-case ASCII host without a trailing root dot; normalized
+bracketed IPv6; no IP zone/userinfo/fragment; numeric explicit port (default
+443); RFC3986 dot-segment removal; `/` empty path; upper-case percent hex with
+only unreserved decoding; ordered duplicate query pairs retained and `+`
+literal. Its bytes are `https://host:port/path[?query]`; the bearer sink is the
+origin only. Golden fixtures make other signers reproduce it. Phase 233b, D-401.
+
+**Pending activation/compensation fence** — an agent-scope durable record that
+precedes a first-install candidate's semantic activation. It binds operation and
+content fingerprint, candidate revision, prior active revision/EventID or
+no-active, phase, and EventID. While pending, Active, mutation, and reconcile
+expose only the prior/no-active state; `SaveIf` commit or abort decides the
+candidate. Unknown outcomes remain pending across runtimes. Phase 233b, D-401.
 
 ## T
 

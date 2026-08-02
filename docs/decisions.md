@@ -12006,30 +12006,39 @@ list. `tools.allow_wire_oauth_descriptor` and its environment switch remain
 development-only D-340 controls and are neither required nor consulted by this
 production path.
 
-The signed envelope, not admin input, authorizes the dynamic values. It is
-verified against the boot trust anchor and binds exact tenant, agent, broker,
-provider/capability ID and immutable capability revision, canonical connection
-URL digest, audience, normalized scope set, issuer/key ID, issued-at, expiry,
-and unique anti-replay ID (JTI). Every request field exactly matches the
-verified claim. The first valid registration durably consumes/stores that JTI
-and the complete immutable pair fingerprint through expiry. An exact retry of
-the same JTI and fingerprint idempotently converges to the existing pair and
-does not issue a new revision or claim; the same JTI for any different
-fingerprint, or any new mutation reusing it, rejects. Restart, reconcile, and
-rollback re-activate stored immutable state by checking its recorded
-JTI/fingerprint association and other bindings, not by treating the stored JTI
-as a fresh request replay. Unknown broker/issuer/key, malformed/expired
-authority, unentitled capability, scope widening, URL mismatch, or CAS
-mismatch fails before a live side effect. Replay persistence is durable through
-expiry, not a best-effort memory cache.
+The signed envelope, not admin input, authorizes the dynamic values. It binds
+tenant, agent, broker, provider/capability ID and immutable capability revision,
+canonical URL digest, audience, normalized scope set, issuer/key ID, timing,
+and JTI. The durable JTI operation key is tenant-scoped
+`(tenant_id, trust_anchor_name, issuer, kid, jti)`: tenant is signed and Harbor
+isolation remains tenant-local. A reserved tenant-control-scope record uses a
+collision-safe deterministic Kind derived from a canonical length-prefixed
+tuple hash; its bounded payload repeats tuple hashes/fields, exact pair
+fingerprint, expiry, phase, and revision identity. First `SaveIf`-absent claim
+retains the operation through expiry plus bounded skew. It transitions only
+`claimed -> revision_committed -> published`; paired remove/retire becomes
+`removed`; every transition `SaveIf`-compares the exact operation EventID.
+There is no claim+revision cross-record ACID assertion: this durable state
+machine is recovery. Exact tuple+fingerprint resumes phase; same key/different
+fingerprint rejects. `claimed` retries prepare again; uncertain revision write
+exact-rereads active revision/fingerprint to advance, retry, or conflict;
+`revision_committed` re-prepares/re-publishes after restart; publish-then-
+checkpoint errors verify the exact live pair before advancing; `published`
+returns the original response; and `removed` never recreates. Expired incomplete
+operations close/reject and remain retained/tombstoned until expiry+skew; only
+then may cleanup run. Unknown broker/issuer/key, malformed authority, scope
+widening, or mismatch fails before a live side effect.
 
-Harbor derives exactly one canonical HTTPS bearer sink from the bound MCP
-connection URL, persists the pair's URL-digest/sink binding, and re-derives it
-on activation, rollback, restart, and reconcile. It is `https` plus lower-case
-IDNA host and explicit/effective port (443 when omitted), rejects userinfo and
-fragment, and excludes path/query from the sink while retaining them in the
-URL digest. A bearer request verifies this origin before send and uses a
-redirect-refusing client; a free-form host list or bearer redirect is never
+One named shared canonical-URL helper supplies signer/verifier matching, pair
+fingerprinting, transport enforcement, and restart/reconcile. It requires
+absolute HTTPS; uses IDNA2008 ASCII lower-case host with trailing root dot
+removed and bracket-normalized IPv6; rejects IP zone, userinfo, and fragment;
+canonicalizes explicit numeric port (omitted `443`); applies RFC3986
+remove-dot-segments (empty path `/`); uppercases percent hex and decodes only
+unreserved bytes. Query preserves original pair order and duplicates while
+canonicalizing percent encoding (no sorting; `+` stays literal plus). Canonical
+URL bytes are `https://host:port/path[?query]`; sink is `https://host:port`.
+Bearer send rechecks that sink and refuses redirects; no free-form host list is
 accepted. The exchange endpoint stays boot-pinned; the
 capability's signed audience is bounded by the envelope and independently
 validated by the exchange along with tenant, agent, provider/capability,
@@ -12039,32 +12048,27 @@ Token/cache assertions include the subject plus agent, capability revision,
 audience, and URL digest. Requested scope outside the true boot ceiling rejects
 loudly; silent scope intersection is forbidden for this path.
 
-Pair publication has one composite visibility linearization point: a private
-capability reservation owns the unpublished provider and MCP prepared binding;
-after one CAS revision write it swaps provider resolution and connection/catalog
-dispatch visibility together. `ProviderSet.Stage` and a separate MCP catalog
-swap are not D-401 publication seams. Signed pairs are server-owned, read-only
-revision state. Generic `set_revision`, rollback, every section setter, and
-legacy provider/connection removals must carry a pair forward byte-identically
-or reject addition, mutation, omission, deletion, or a half-pair; only paired
-removal may remove it. Admission validity gates activation only. Paired removal
-and D-399 retirement close/revoke from their frozen durable pair fingerprint
-even if authority is expired, replayed, revoked, or no longer verifiable.
-D-301's honest bare-name namespace is
-unchanged: a process-global collision fails loudly, and this decision makes no
-claim of catalog dispatch isolation in a shared runtime.
+The signed provider is pair-owned and outside general `ProviderSet`; private MCP
+prepare binds directly to that exact provider instance. The catalog source swap
+alone linearizes data-plane dispatch. Protocol projections derive from the
+immutable signed-pair revision, not a live provider map; generic provider
+resolution cannot bind the pair. A pair-owned live registry may retain only
+close/reconcile receipts, never authority/projection/dispatch. General bare-name
+collision checking remains. Prepare is never durable and closes on failure or
+restart; teardown closes transport+provider as one receipt. Generic revision
+writers remain closed against a pair; paired removal/retirement uses the frozen
+fingerprint even after authority expiry.
 
-**First-install repair.** `set_oauth_provider` validates/prepares an unknown
-broker/build/install failure before persistence. On any remaining post-write
-failure, the mandatory `Registry.DeactivateIfActive` conditionally neutralizes
-only when the active pointer still equals the attempted revision. The
-statestore-owned implementation compares that exact active EventID with
-`SaveIf` and replaces only the pointer with deterministic schema-valid semantic
-inactive-marker bytes; `Active` treats the next marker generation as absent.
-It never overwrites a concurrent writer and never writes a forward empty
-revision as compensation. An uncertain result fences every reader and reconcile
-loud until reread proves the exact marker or concurrent winner. The failed
-immutable revision remains history only, inactive, unpublished, and loud.
+**First-install repair.** Before any candidate can become semantically active,
+`set_oauth_provider` writes a durable pending-activation/compensation fence
+under agent scope, bound to exact operation/content fingerprint, attempted
+revision, and prior active revision/EventID (or no-active), with phase/EventID.
+`Registry.Active`, revision mutation, and reconcile consult it: pending returns
+only prior active or no-active and never authorizes the candidate. Success
+`SaveIf` commits the fence; failure aborts it; unknown transitions remain safely
+pending across runtimes until exact reread proves either phase. Candidate history
+is immutable. `DeactivateIfActive` may compact the physical pointer afterward;
+it is not the security fence and cannot infer an unknown outcome inactive.
 
 **Cross-references.** D-025, D-300, D-301, D-303, D-340, D-390, D-394,
 D-396, D-398, D-399. RFC §4, §5.5, §6.4, §6.11, §6.16. Plan:
