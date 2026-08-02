@@ -192,6 +192,100 @@ func TestSetRevision_ConditionalWrite_NoActiveRevisionRefused(t *testing.T) {
 	}
 }
 
+// TestSignedOAuthMCPActivationFence_HidesCandidateAndRejectsForeignWriters
+// proves the D-401 fence at the real Registry boundary. The candidate pointer
+// is physically durable before publication, yet Active exposes only the prior
+// authority and every unmarked writer fails closed across that interval.
+func TestSignedOAuthMCPActivationFence_HidesCandidateAndRejectsForeignWriters(t *testing.T) {
+	ctx := context.Background()
+	reg, st := newRegistryWithStore(t)
+	q := agentQuad(condAgent)
+	prior, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("prior"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed prior: %v", err)
+	}
+	pair := &agentcfg.SignedOAuthMCPPair{ProviderName: "provider", Broker: "broker", Audience: "aud", CapabilityRevision: "v1", URLDigest: "digest", OwnerAgentID: condAgent, AuthorityOperationKind: "operation-kind"}
+	candidatePayload := agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"candidate"}}, SignedOAuthMCPPair: pair}
+	candidateHash, err := agentcfg.ContentHash(agentcfg.NormalizePayload(candidatePayload))
+	if err != nil {
+		t.Fatalf("candidate hash: %v", err)
+	}
+	fences, err := agentcfg.NewSignedOAuthMCPActivationFenceStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := fences.Begin(ctx, tenantT, condAgent, pair.AuthorityOperationKind, "fingerprint", candidateHash, prior.RevisionID)
+	if err != nil {
+		t.Fatalf("begin fence: %v", err)
+	}
+	if _, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("foreign"), agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityPending) {
+		t.Fatalf("foreign writer = %v, want ErrSignedCapabilityPending", err)
+	}
+	candidate, err := reg.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, condAgent, agentcfg.ConfigScopeAgent, candidatePayload, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("owning candidate write: %v", err)
+	}
+	visible, set, err := reg.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || visible.RevisionID != prior.RevisionID {
+		t.Fatalf("pending Active = (%q, %v, %v), want prior %q", visible.RevisionID, set, err, prior.RevisionID)
+	}
+	if _, err := fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceCommitted, candidate.RevisionID); err != nil {
+		t.Fatalf("commit fence: %v", err)
+	}
+	visible, set, err = reg.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || visible.RevisionID != candidate.RevisionID {
+		t.Fatalf("committed Active = (%q, %v, %v), want candidate %q", visible.RevisionID, set, err, candidate.RevisionID)
+	}
+}
+
+// TestSignedOAuthMCPActivationFence_SQLiteTwoRuntimeRecovery pins the restart
+// contract against two independent real SQLite handles. The second runtime
+// cannot observe or mutate the physically-landed candidate until the first
+// operation writes the exact committed fence receipt.
+func TestSignedOAuthMCPActivationFence_SQLiteTwoRuntimeRecovery(t *testing.T) {
+	ctx := context.Background()
+	leftStore, rightStore := newSharedStores(t)
+	left := newRegistryOnStore(t, leftStore)
+	right := newRegistryOnStore(t, rightStore)
+	q := agentQuad("agent-fence-sqlite")
+	prior, err := left.SetRevision(ctx, q, "agent-fence-sqlite", agentcfg.ConfigScopeAgent, condPayload("prior"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed prior: %v", err)
+	}
+	pair := &agentcfg.SignedOAuthMCPPair{ProviderName: "provider", Broker: "broker", Audience: "aud", CapabilityRevision: "v1", URLDigest: "digest", OwnerAgentID: "agent-fence-sqlite", AuthorityOperationKind: "sqlite-operation"}
+	payload := agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"candidate"}}, SignedOAuthMCPPair: pair}
+	hash, err := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fences, err := agentcfg.NewSignedOAuthMCPActivationFenceStore(leftStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := fences.Begin(ctx, tenantT, "agent-fence-sqlite", pair.AuthorityOperationKind, "fingerprint", hash, prior.RevisionID)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	candidate, err := left.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, "agent-fence-sqlite", agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("candidate: %v", err)
+	}
+	visible, set, err := right.Active(ctx, q, "agent-fence-sqlite", agentcfg.ConfigScopeAgent)
+	if err != nil || !set || visible.RevisionID != prior.RevisionID {
+		t.Fatalf("restart Active = (%q, %v, %v), want prior %q", visible.RevisionID, set, err, prior.RevisionID)
+	}
+	if _, err := right.SetRevision(ctx, q, "agent-fence-sqlite", agentcfg.ConfigScopeAgent, condPayload("foreign"), agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityPending) {
+		t.Fatalf("foreign restart writer = %v, want pending", err)
+	}
+	if _, err := fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceCommitted, candidate.RevisionID); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	visible, set, err = right.Active(ctx, q, "agent-fence-sqlite", agentcfg.ConfigScopeAgent)
+	if err != nil || !set || visible.RevisionID != candidate.RevisionID {
+		t.Fatalf("committed restart Active = (%q, %v, %v), want candidate %q", visible.RevisionID, set, err, candidate.RevisionID)
+	}
+}
+
 // TestSetRevision_ConditionalWrite_RefusalPersistsNothing — after a refusal:
 // the chain has not grown, the active pointer has not moved, and a subscriber
 // on a REAL in-memory bus received NO agent.config.revised.

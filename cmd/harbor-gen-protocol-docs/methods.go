@@ -542,6 +542,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigRegisterOAuthMCPCapabilityRequest", Response: "AgentConfigRegisterOAuthMCPCapabilityResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigRemoveOAuthMCPCapability: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigRemoveOAuthMCPCapability),
+			Mutates: true,
+			Request: "AgentConfigRemoveOAuthMCPCapabilityRequest", Response: "AgentConfigRemoveOAuthMCPCapabilityResponse",
+			Auth: adminNote,
+		},
 		methods.MethodAgentConfigRemoveOAuthProvider: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigRemoveOAuthProvider),
 			Mutates: true,

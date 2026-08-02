@@ -443,6 +443,9 @@ const (
 	// connection. It is admin-only and cannot be composed from generic
 	// provider/connection writes.
 	MethodAgentConfigRegisterOAuthMCPCapability Method = "agent_config.register_oauth_mcp_capability"
+	// MethodAgentConfigRemoveOAuthMCPCapability is D-401's sole paired-removal
+	// verb. It resumes the same frozen JTI receipt and is admin-only.
+	MethodAgentConfigRemoveOAuthMCPCapability Method = "agent_config.remove_oauth_mcp_capability"
 
 	// MethodAgentConfigRemoveOAuthProvider — admin verb: uninstalls a
 	// Protocol-installed OAuth provider by name as a NEW revision AND uninstalls
@@ -1124,6 +1127,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSetMCPDiscoveryOrigins:     {},
 	MethodAgentConfigSetOAuthProvider:           {},
 	MethodAgentConfigRegisterOAuthMCPCapability: {},
+	MethodAgentConfigRemoveOAuthMCPCapability:   {},
 	MethodAgentConfigRemoveOAuthProvider:        {},
 	MethodAgentConfigSetLLMProvider:             {},
 	MethodAgentConfigSessionSetUserPrompt:       {},
@@ -1410,6 +1414,7 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigSetMCPDiscoveryOrigins:     {},
 	MethodAgentConfigSetOAuthProvider:           {},
 	MethodAgentConfigRegisterOAuthMCPCapability: {},
+	MethodAgentConfigRemoveOAuthMCPCapability:   {},
 	MethodAgentConfigRemoveOAuthProvider:        {},
 	MethodAgentConfigSetLLMProvider:             {},
 	// Session-user safe subset (the non-admin lower tier).
@@ -1494,6 +1499,7 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSetMCPDiscoveryOrigins:     {},
 	MethodAgentConfigSetOAuthProvider:           {},
 	MethodAgentConfigRegisterOAuthMCPCapability: {},
+	MethodAgentConfigRemoveOAuthMCPCapability:   {},
 	MethodAgentConfigRemoveOAuthProvider:        {},
 	MethodAgentConfigSetLLMProvider:             {},
 }

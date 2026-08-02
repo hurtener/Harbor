@@ -14,6 +14,26 @@ import (
 	"github.com/hurtener/Harbor/internal/state"
 )
 
+type signedOAuthMCPFenceContextKey struct{}
+
+// WithSignedOAuthMCPFenceOperation marks the single registration write that
+// owns a pending fence. It is an internal cross-package capability, not a wire
+// value; callers cannot manufacture it from Protocol input.
+func WithSignedOAuthMCPFenceOperation(ctx context.Context, operationKind string) context.Context {
+	return context.WithValue(ctx, signedOAuthMCPFenceContextKey{}, operationKind)
+}
+
+// SignedOAuthMCPFenceOperation returns the owning operation marker carried by
+// an internal registration write.
+func SignedOAuthMCPFenceOperation(ctx context.Context) string {
+	value, _ := ctx.Value(signedOAuthMCPFenceContextKey{}).(string)
+	return value
+}
+
+// SignedOAuthMCPActivationFenceKind returns the fixed agent-scoped record
+// kind used by registry readers and writers to enforce the durable fence.
+func SignedOAuthMCPActivationFenceKind() string { return signedOAuthMCPActivationFenceKind }
+
 var (
 	// ErrSignedCapabilityReplay is returned when an authority JTI has already
 	// claimed a different immutable capability fingerprint.
@@ -21,6 +41,11 @@ var (
 	// ErrSignedCapabilityTransition marks a transition that is not in D-401's
 	// one pair-lifetime operation graph.
 	ErrSignedCapabilityTransition = errors.New("agentcfg: invalid signed oauth mcp capability operation transition")
+	// ErrSignedCapabilityPending is returned when a foreign writer observes a
+	// durable first-install fence. It must retry after the owning operation
+	// commits or aborts; treating a physical candidate pointer as authority is
+	// forbidden.
+	ErrSignedCapabilityPending = errors.New("agentcfg: signed oauth mcp capability activation is pending")
 )
 
 // SignedOAuthMCPOperationPhase is a durable pair-lifetime operation phase.
@@ -62,6 +87,132 @@ type SignedOAuthMCPOperation struct {
 // SignedOAuthMCPOperationStore persists D-401's tenant-scoped anti-replay
 // operation record through the mandatory StateStore SaveIf primitive.
 type SignedOAuthMCPOperationStore struct{ state state.StateStore }
+
+// SignedOAuthMCPActivationFencePhase is the durable first-install authority
+// fence. A pending fence hides its matching physical candidate from Active and
+// rejects foreign pointer mutations across runtimes.
+type SignedOAuthMCPActivationFencePhase string
+
+const (
+	SignedOAuthMCPFencePending   SignedOAuthMCPActivationFencePhase = "pending"
+	SignedOAuthMCPFenceCommitted SignedOAuthMCPActivationFencePhase = "committed"
+	SignedOAuthMCPFenceAborted   SignedOAuthMCPActivationFencePhase = "aborted"
+)
+
+// SignedOAuthMCPActivationFence binds one pending candidate to its exact
+// operation receipt and prior active revision. It contains no envelope, JTI,
+// URL, credential, or other secret material.
+type SignedOAuthMCPActivationFence struct {
+	TenantID             string                             `json:"tenant_id"`
+	AgentID              string                             `json:"agent_id"`
+	OperationKind        string                             `json:"operation_kind"`
+	Fingerprint          string                             `json:"fingerprint"`
+	CandidateContentHash string                             `json:"candidate_content_hash"`
+	CandidateRevisionID  string                             `json:"candidate_revision_id,omitempty"`
+	PriorRevisionID      string                             `json:"prior_revision_id,omitempty"`
+	Phase                SignedOAuthMCPActivationFencePhase `json:"phase"`
+	EventID              state.EventID                      `json:"-"`
+}
+
+// SignedOAuthMCPActivationFenceStore is the durable D-401 security fence.
+type SignedOAuthMCPActivationFenceStore struct{ state state.StateStore }
+
+const signedOAuthMCPActivationFenceKind = "agentcfg.signed_oauth_mcp.activation_fence"
+
+// NewSignedOAuthMCPActivationFenceStore constructs the StateStore-backed
+// fence facade.
+func NewSignedOAuthMCPActivationFenceStore(store state.StateStore) (*SignedOAuthMCPActivationFenceStore, error) {
+	if store == nil {
+		return nil, fmt.Errorf("%w: signed capability activation fence store is nil", ErrInvalidConfig)
+	}
+	return &SignedOAuthMCPActivationFenceStore{state: store}, nil
+}
+
+// Begin creates or resumes exactly the owning pending fence. A different
+// operation or candidate content at the same agent slot fails closed.
+func (s *SignedOAuthMCPActivationFenceStore) Begin(ctx context.Context, tenant, agentID, operationKind, fingerprint, candidateHash, priorRevisionID string) (SignedOAuthMCPActivationFence, error) {
+	if err := ctx.Err(); err != nil {
+		return SignedOAuthMCPActivationFence{}, err
+	}
+	if strings.TrimSpace(tenant) == "" || strings.TrimSpace(agentID) == "" || strings.TrimSpace(operationKind) == "" || strings.TrimSpace(fingerprint) == "" || strings.TrimSpace(candidateHash) == "" {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: incomplete activation fence", ErrSignedCapabilityAuthority)
+	}
+	quad := signedOAuthMCPActivationFenceQuad(tenant, agentID)
+	fence := SignedOAuthMCPActivationFence{TenantID: tenant, AgentID: agentID, OperationKind: operationKind, Fingerprint: fingerprint, CandidateContentHash: candidateHash, PriorRevisionID: priorRevisionID, Phase: SignedOAuthMCPFencePending, EventID: state.NewEventID()}
+	encoded, err := json.Marshal(fence)
+	if err != nil {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("marshal signed capability activation fence: %w", err)
+	}
+	err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: signedOAuthMCPActivationFenceKind}}, state.StateRecord{ID: fence.EventID, Identity: quad, Kind: signedOAuthMCPActivationFenceKind, Bytes: encoded})
+	if err == nil {
+		return fence, nil
+	}
+	if !errors.Is(err, state.ErrConditionFailed) {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("claim signed capability activation fence: %w", err)
+	}
+	existing, loadErr := s.Load(ctx, tenant, agentID)
+	if loadErr != nil {
+		return SignedOAuthMCPActivationFence{}, loadErr
+	}
+	if existing.OperationKind != operationKind || existing.Fingerprint != fingerprint || existing.CandidateContentHash != candidateHash || existing.PriorRevisionID != priorRevisionID {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: foreign operation owns activation fence", ErrSignedCapabilityPending)
+	}
+	return existing, nil
+}
+
+// Load returns the exact durable fence for an agent. An absent fence is a
+// wrapped StateStore not-found error so callers cannot accidentally treat a
+// missing receipt as a committed activation.
+func (s *SignedOAuthMCPActivationFenceStore) Load(ctx context.Context, tenant, agentID string) (SignedOAuthMCPActivationFence, error) {
+	if err := ctx.Err(); err != nil {
+		return SignedOAuthMCPActivationFence{}, err
+	}
+	record, err := s.state.Load(ctx, signedOAuthMCPActivationFenceQuad(tenant, agentID), signedOAuthMCPActivationFenceKind)
+	if err != nil {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("load signed capability activation fence: %w", err)
+	}
+	var fence SignedOAuthMCPActivationFence
+	if err := json.Unmarshal(record.Bytes, &fence); err != nil {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("decode signed capability activation fence: %w", err)
+	}
+	if fence.TenantID != tenant || fence.AgentID != agentID || fence.OperationKind == "" || fence.Fingerprint == "" || fence.CandidateContentHash == "" || (fence.Phase != SignedOAuthMCPFencePending && fence.Phase != SignedOAuthMCPFenceCommitted && fence.Phase != SignedOAuthMCPFenceAborted) {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: corrupt signed capability activation fence", ErrSignedCapabilityPending)
+	}
+	fence.EventID = record.ID
+	return fence, nil
+}
+
+// Advance marks the exact fence terminally committed or aborted. Candidate ID
+// is immutable once recorded, and every transition CAS-compares EventID.
+func (s *SignedOAuthMCPActivationFenceStore) Advance(ctx context.Context, current SignedOAuthMCPActivationFence, phase SignedOAuthMCPActivationFencePhase, candidateRevisionID string) (SignedOAuthMCPActivationFence, error) {
+	if phase != SignedOAuthMCPFenceCommitted && phase != SignedOAuthMCPFenceAborted {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: invalid activation fence transition", ErrSignedCapabilityTransition)
+	}
+	if current.Phase != SignedOAuthMCPFencePending || (phase == SignedOAuthMCPFenceCommitted && strings.TrimSpace(candidateRevisionID) == "") {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: activation fence %s -> %s", ErrSignedCapabilityTransition, current.Phase, phase)
+	}
+	next := current
+	next.Phase = phase
+	next.CandidateRevisionID = candidateRevisionID
+	next.EventID = state.NewEventID()
+	encoded, err := json.Marshal(next)
+	if err != nil {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("marshal signed capability activation fence: %w", err)
+	}
+	quad := signedOAuthMCPActivationFenceQuad(current.TenantID, current.AgentID)
+	err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: signedOAuthMCPActivationFenceKind, ExpectedEventID: current.EventID}}, state.StateRecord{ID: next.EventID, Identity: quad, Kind: signedOAuthMCPActivationFenceKind, Bytes: encoded})
+	if errors.Is(err, state.ErrConditionFailed) {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: activation fence changed concurrently", ErrSignedCapabilityPending)
+	}
+	if err != nil {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("advance signed capability activation fence: %w", err)
+	}
+	return next, nil
+}
+
+func signedOAuthMCPActivationFenceQuad(tenant, agentID string) identity.Quadruple {
+	return identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "__agentcfg__", SessionID: agentID}}
+}
 
 // NewSignedOAuthMCPOperationStore constructs the durable operation facade.
 func NewSignedOAuthMCPOperationStore(store state.StateStore) (*SignedOAuthMCPOperationStore, error) {
@@ -123,6 +274,38 @@ func (s *SignedOAuthMCPOperationStore) Load(ctx context.Context, key SignedOAuth
 		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: corrupt signed capability operation", ErrSignedCapabilityReplay)
 	}
 	return op, nil
+}
+
+// LoadForPair returns the frozen pair-lifetime receipt without recovering the
+// raw JTI. The opaque operation kind is persisted in immutable pair history,
+// so a removal can resume after the registration envelope has expired or its
+// verifier key has rotated. It is not bearer authority.
+func (s *SignedOAuthMCPOperationStore) LoadForPair(ctx context.Context, tenant string, pair *SignedOAuthMCPPair) (SignedOAuthMCPOperation, error) {
+	if err := ctx.Err(); err != nil {
+		return SignedOAuthMCPOperation{}, err
+	}
+	if pair == nil || tenant == "" || strings.TrimSpace(pair.AuthorityOperationKind) == "" {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: signed pair has no durable operation receipt", ErrSignedCapabilityReplay)
+	}
+	quad := identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "__agentcfg__", SessionID: "__signed_oauth_mcp__"}}
+	op, err := s.load(ctx, quad, pair.AuthorityOperationKind)
+	if err != nil {
+		return SignedOAuthMCPOperation{}, err
+	}
+	if op.ReplayKey.TenantID != tenant || op.Fingerprint == "" || !signedOAuthMCPOperationPhaseKnown(op.Phase) ||
+		op.Binding.Broker != pair.Broker || op.Binding.ProviderName != pair.ProviderName ||
+		op.Binding.CapabilityRevision != pair.CapabilityRevision || op.Binding.URLDigest != pair.URLDigest ||
+		op.Binding.Audience != pair.Audience || op.Binding.AgentID != pair.OwnerAgentID ||
+		op.Fingerprint != SignedOAuthMCPPairFingerprint(SignedOAuthMCPBinding{TenantID: tenant, AgentID: pair.OwnerAgentID, Broker: pair.Broker, ProviderName: pair.ProviderName, CapabilityRevision: pair.CapabilityRevision, URLDigest: pair.URLDigest, Audience: pair.Audience, Scopes: pair.Scopes}) {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: corrupt or foreign signed-pair operation receipt", ErrSignedCapabilityReplay)
+	}
+	return op, nil
+}
+
+// Kind returns the opaque durable operation slot retained in pair history.
+func (s *SignedOAuthMCPOperationStore) Kind(key SignedOAuthMCPReplayKey) (string, error) {
+	_, kind, err := signedOAuthMCPOperationSlot(key)
+	return kind, err
 }
 
 // Advance atomically records the next legal D-401 recovery phase. The caller

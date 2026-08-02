@@ -28,7 +28,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if s.preparer == nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
 	}
-	if s.signedOAuthMCPOperations == nil {
+	if s.signedOAuthMCPOperations == nil || s.signedOAuthMCPFences == nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
 	}
 	providerPreparer, ok := s.providerInstaller.(SignedCapabilityProviderPreparer)
@@ -86,9 +86,25 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
+	operationKind, err := s.signedOAuthMCPOperations.Kind(operationKey)
+	if err != nil {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+	}
 
 	defer s.lockAgent(id.TenantID, req.AgentID)()
+	// Claim precedes this process-local lock so independent runtimes compete at
+	// the durable StateStore boundary. Refresh after waiting: a same-JTI caller
+	// may already have advanced the exact receipt.
+	op, err = s.signedOAuthMCPOperations.Load(ctx, operationKey)
+	if err != nil {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+	}
 	q := identity.Quadruple{Identity: id}
+	if op.Phase == agentcfg.SignedOAuthMCPPhasePublished {
+		if err := s.commitSignedOAuthMCPFence(ctx, id.TenantID, req.AgentID, operationKind, op); err != nil {
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+		}
+	}
 	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
@@ -136,18 +152,41 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		CapabilityRevision: claims.CapabilityRevision, URLDigest: binding.URLDigest, Sink: sink,
 		Connection:      agentcfg.SignedOAuthMCPConnectionDescriptor{Name: connection.Name, URL: canonicalURL, ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist, ConnectTimeoutMS: connection.ConnectTimeoutMS, RequestTimeoutMS: connection.RequestTimeoutMS},
 		AuthorityIssuer: claims.Issuer, AuthorityKeyID: kid, AuthorityJTIHash: signedCapabilityJTIHash(claims.ID),
+		AuthorityOperationKind: operationKind, OwnerAgentID: req.AgentID,
 	}
 	var rev agentcfg.Revision
 	if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed {
 		payload := carrySiblingsForward(active, hasActive)
 		payload.SignedOAuthMCPPair = pair
-		rev, err = s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
+		normalized := agentcfg.NormalizePayload(payload)
+		candidateHash, hashErr := agentcfg.ContentHash(normalized)
+		if hashErr != nil {
+			closePrepared()
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, hashErr
+		}
+		priorRevisionID := ""
+		if hasActive {
+			priorRevisionID = active.RevisionID
+		}
+		if _, err := s.signedOAuthMCPFences.Begin(ctx, id.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID); err != nil {
+			closePrepared()
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+		}
+		fenceCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, operationKind)
+		rev, err = s.registry.SetRevision(fenceCtx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 		if err != nil {
 			// A StateStore acknowledgement can be lost after the pointer commits.
 			// Exact immutable pair equality, never a same-name heuristic, is the
 			// recovery proof that allows this operation to continue.
-			active, hasActive, readErr := s.registry.Active(context.WithoutCancel(ctx), q, req.AgentID, agentcfg.ConfigScopeAgent)
-			if readErr != nil || !hasActive || !signedCapabilityPairMatches(active.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
+			history, readErr := s.registry.ListRevisions(context.WithoutCancel(ctx), q, req.AgentID, agentcfg.ConfigScopeAgent, 0)
+			for _, candidate := range history {
+				if candidate.ContentHash == candidateHash && signedCapabilityPairMatches(candidate.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
+					rev = candidate
+					readErr = nil
+					break
+				}
+			}
+			if readErr != nil || rev.RevisionID == "" {
 				closePrepared()
 				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 			}
@@ -178,7 +217,32 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		// pair and only writes the missing durable phase.
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
+	if err := s.commitSignedOAuthMCPFence(ctx, id.TenantID, req.AgentID, operationKind, agentcfg.SignedOAuthMCPOperation{Fingerprint: op.Fingerprint, RevisionID: rev.RevisionID, Phase: agentcfg.SignedOAuthMCPPhasePublished}); err != nil {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+	}
 	return signedCapabilityResponse(rev, providerName, connection.Name), nil
+}
+
+func (s *Service) commitSignedOAuthMCPFence(ctx context.Context, tenant, agentID, operationKind string, op agentcfg.SignedOAuthMCPOperation) error {
+	fence, err := s.signedOAuthMCPFences.Load(ctx, tenant, agentID)
+	if err != nil {
+		return err
+	}
+	if fence.OperationKind != operationKind || fence.Fingerprint != op.Fingerprint || fence.Phase == agentcfg.SignedOAuthMCPFenceAborted {
+		return fmt.Errorf("%w: activation fence does not bind published operation", agentcfg.ErrSignedCapabilityPending)
+	}
+	if fence.Phase == agentcfg.SignedOAuthMCPFenceCommitted {
+		if fence.CandidateRevisionID != op.RevisionID {
+			return fmt.Errorf("%w: committed activation fence names another revision", agentcfg.ErrSignedCapabilityPending)
+		}
+		return nil
+	}
+	revision, err := s.registry.Get(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "__agentcfg__", SessionID: "__signed_oauth_mcp__"}}, agentID, op.RevisionID, agentcfg.ConfigScopeAgent)
+	if err != nil || revision.ContentHash != fence.CandidateContentHash {
+		return fmt.Errorf("%w: published operation candidate cannot be verified", agentcfg.ErrSignedCapabilityPending)
+	}
+	_, err = s.signedOAuthMCPFences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceCommitted, op.RevisionID)
+	return err
 }
 
 func signedCapabilityResponse(rev agentcfg.Revision, providerName, connectionName string) prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse {

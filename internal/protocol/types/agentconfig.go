@@ -1303,6 +1303,25 @@ type AgentConfigRegisterOAuthMCPCapabilityResponse struct {
 	ProtocolVersion string                  `json:"protocol_version"`
 }
 
+// AgentConfigRemoveOAuthMCPCapabilityRequest is the only D-401 paired-removal
+// verb. It carries no authority envelope or credential material: Harbor looks
+// up the frozen, owner-bound lifetime receipt from immutable pair history.
+type AgentConfigRemoveOAuthMCPCapabilityRequest struct {
+	Identity            IdentityScope `json:"identity"`
+	AgentID             string        `json:"agent_id"`
+	ExpectedContentHash string        `json:"expected_content_hash,omitempty"`
+}
+
+// AgentConfigRemoveOAuthMCPCapabilityResponse reports the revision that drops
+// the server-owned pair and the terminal durable receipt phase.
+type AgentConfigRemoveOAuthMCPCapabilityResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProviderName    string                  `json:"provider_name"`
+	ConnectionName  string                  `json:"connection_name"`
+	OperationPhase  string                  `json:"operation_phase"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
 // AgentConfigRemoveOAuthProviderRequest is the admin-scoped
 // `agent_config.remove_oauth_provider` request — uninstall a Protocol-installed
 // OAuth provider by name. The runtime records a new revision dropping the named

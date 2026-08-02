@@ -809,6 +809,23 @@ export interface AgentConfigRegisterOAuthMCPCapabilityResponse {
 	protocol_version: string;
 }
 
+/** D-401's sole removal verb for a server-owned signed OAuth MCP pair. The
+ * removal resumes the frozen durable receipt and therefore carries no signed
+ * envelope or credential material. */
+export interface AgentConfigRemoveOAuthMCPCapabilityRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	expected_content_hash?: string;
+}
+
+export interface AgentConfigRemoveOAuthMCPCapabilityResponse {
+	revision: AgentConfigRevisionView;
+	provider_name: string;
+	connection_name: string;
+	operation_phase: string;
+	protocol_version: string;
+}
+
 /** `agent_config.set_llm_provider` request — admin-scoped. Install (upsert) /
  * rotate a ZERO-URL, broker-pull inference provider binding. A separate method
  * from set_oauth_provider (a distinct credential plane); the descriptor carries

@@ -85,6 +85,8 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"AgentConfigSetOAuthProviderResponse":           reflect.TypeOf(types.AgentConfigSetOAuthProviderResponse{}),
 	"AgentConfigRegisterOAuthMCPCapabilityRequest":  reflect.TypeOf(types.AgentConfigRegisterOAuthMCPCapabilityRequest{}),
 	"AgentConfigRegisterOAuthMCPCapabilityResponse": reflect.TypeOf(types.AgentConfigRegisterOAuthMCPCapabilityResponse{}),
+	"AgentConfigRemoveOAuthMCPCapabilityRequest":    reflect.TypeOf(types.AgentConfigRemoveOAuthMCPCapabilityRequest{}),
+	"AgentConfigRemoveOAuthMCPCapabilityResponse":   reflect.TypeOf(types.AgentConfigRemoveOAuthMCPCapabilityResponse{}),
 	"AgentConfigRemoveOAuthProviderRequest":         reflect.TypeOf(types.AgentConfigRemoveOAuthProviderRequest{}),
 	"AgentConfigRemoveOAuthProviderResponse":        reflect.TypeOf(types.AgentConfigRemoveOAuthProviderResponse{}),
 	"AgentConfigLLMProviderDescriptor":              reflect.TypeOf(types.AgentConfigLLMProviderDescriptor{}),

@@ -672,6 +672,14 @@ type SignedOAuthMCPPair struct {
 	AuthorityIssuer    string                             `json:"authority_issuer"`
 	AuthorityKeyID     string                             `json:"authority_key_id"`
 	AuthorityJTIHash   string                             `json:"authority_jti_hash"`
+	// AuthorityOperationKind is an opaque deterministic StateStore kind for
+	// the pair-lifetime receipt. It is retained only in immutable desired-state
+	// history and deliberately has no Protocol projection.
+	AuthorityOperationKind string `json:"authority_operation_kind"`
+	// OwnerAgentID is the signed agent binding retained only for internal
+	// receipt validation. agent_id remains a runtime entity key, not an
+	// isolation principal.
+	OwnerAgentID string `json:"owner_agent_id"`
 }
 
 // RunCompletionHook is the durable, versioned run-completion hook

@@ -53,6 +53,7 @@ func (capabilityInstaller) PrepareSignedCapabilityProvider(context.Context, stri
 type capabilityPreparer struct {
 	mu          sync.Mutex
 	activations int
+	detaches    int
 }
 
 func (p *capabilityPreparer) PrepareConnection(context.Context, agentcfgprotocol.AttachRequest) (agentcfgprotocol.PreparedConnection, error) {
@@ -68,6 +69,13 @@ func (p capabilityPreparedConnection) Activate(context.Context) error {
 	return nil
 }
 func (capabilityPreparedConnection) Close(context.Context) error { return nil }
+
+func (p *capabilityPreparer) DetachConnection(context.Context, string, string, string) error {
+	p.mu.Lock()
+	p.detaches++
+	p.mu.Unlock()
+	return nil
+}
 
 func signedCapabilityService(t *testing.T, now time.Time) (*agentcfgprotocol.Service, *rsa.PrivateKey, state.StateStore, *capabilityPreparer) {
 	t.Helper()
@@ -96,6 +104,7 @@ func signedCapabilityService(t *testing.T, now time.Time) (*agentcfgprotocol.Ser
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithClock(func() time.Time { return now }),
 		agentcfgprotocol.WithConnectionPreparer(preparer),
+		agentcfgprotocol.WithConnectionDetacher(preparer),
 		agentcfgprotocol.WithProviderInstaller(capabilityInstaller{}),
 		agentcfgprotocol.WithSignedOAuthMCPOperationState(st),
 		agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority{
@@ -106,6 +115,37 @@ func signedCapabilityService(t *testing.T, now time.Time) (*agentcfgprotocol.Ser
 		t.Fatal(err)
 	}
 	return svc, key, st, preparer
+}
+
+func TestRemoveOAuthMCPCapability_ContinuesPairLifetimeReceipt(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	svc, key, _, preparer := signedCapabilityService(t, now)
+	registered, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-remove", "aud-1"))
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	removed, err := svc.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{Identity: scope(), AgentID: testAgentID, ExpectedContentHash: registered.Revision.ContentHash})
+	if err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if got, want := removed.OperationPhase, string(agentcfg.SignedOAuthMCPPhaseRemoved); got != want {
+		t.Fatalf("phase = %q, want %q", got, want)
+	}
+	// The terminal retry must use immutable history rather than requiring the
+	// now-removed pair to remain in desired state.
+	again, err := svc.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{Identity: scope(), AgentID: testAgentID})
+	if err != nil {
+		t.Fatalf("terminal retry: %v", err)
+	}
+	if again.Revision.RevisionID != removed.Revision.RevisionID {
+		t.Fatalf("terminal retry revision = %q, want %q", again.Revision.RevisionID, removed.Revision.RevisionID)
+	}
+	preparer.mu.Lock()
+	detaches := preparer.detaches
+	preparer.mu.Unlock()
+	if detaches != 1 {
+		t.Fatalf("detaches = %d, want exactly one", detaches)
+	}
 }
 
 func signedCapabilityRequest(t *testing.T, key *rsa.PrivateKey, now time.Time, jti, audience string) prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest {

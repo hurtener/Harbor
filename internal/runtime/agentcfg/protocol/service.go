@@ -280,6 +280,10 @@ type Service struct {
 	// unavailable: accepting an authority without its anti-replay store would
 	// turn a restart into a second registration attempt.
 	signedOAuthMCPOperations *agentcfg.SignedOAuthMCPOperationStore
+	// signedOAuthMCPFences hides a first-install physical pointer until the
+	// exact pair-lifetime receipt is published. It is mandatory with the
+	// operation store; nil leaves the D-401 surface fail-closed.
+	signedOAuthMCPFences *agentcfg.SignedOAuthMCPActivationFenceStore
 	// allowWireInjection is the effective DEV-ONLY, fail-closed opt-in that
 	// permits add_mcp_connection to carry a per-user credential-INJECTION mapping
 	// (the `injection` object) for a receiver-style MCP server over the wire,
@@ -685,6 +689,10 @@ func WithSignedOAuthMCPOperationState(store state.StateStore) Option {
 		ops, err := agentcfg.NewSignedOAuthMCPOperationStore(store)
 		if err == nil {
 			s.signedOAuthMCPOperations = ops
+			fences, fenceErr := agentcfg.NewSignedOAuthMCPActivationFenceStore(store)
+			if fenceErr == nil {
+				s.signedOAuthMCPFences = fences
+			}
 		}
 	}
 }

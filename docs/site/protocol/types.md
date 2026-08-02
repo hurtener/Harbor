@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 346 canonical Harbor Protocol wire types, generated from the single-source
+The 348 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -465,6 +465,28 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `name` | `string` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigRemoveOAuthMCPCapabilityRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
+
+## AgentConfigRemoveOAuthMCPCapabilityResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `provider_name` | `string` |  |
+| `connection_name` | `string` |  |
+| `operation_phase` | `string` |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigRemoveOAuthProviderRequest
