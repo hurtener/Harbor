@@ -26,7 +26,7 @@ Two versions move independently in Harbor (RFC §5.3):
   bearer with `harbor token`; the default `harbor dev` bearer reaches only its
   boot agent. Missing or empty reach denies these calls, while malformed reach
   rejects authentication. Omitted `tools.describe.agent_id` remains the
-  boot-effective projection. (D-397, Phase 232.)
+  boot-effective projection.
 
 ## [1.25.0] — 2026-08-01
 
