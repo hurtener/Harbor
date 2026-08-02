@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/hurtener/Harbor/internal/config"
@@ -756,6 +757,9 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 		return nil, fmt.Errorf("mcp: resolve bearer before resources discovery: %w", err)
 	}
 	resRes, err := session.ListResources(resourcesCtx, nil)
+	if err != nil && !isJSONRPCMethodNotFound(err) {
+		return nil, fmt.Errorf("%w: list resources: %w", ErrTransportFailed, err)
+	}
 	if err == nil && resRes != nil {
 		for _, r := range resRes.Resources {
 			if r == nil || r.URI == "" {
@@ -774,6 +778,9 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 		return nil, fmt.Errorf("mcp: resolve bearer before prompts discovery: %w", err)
 	}
 	prRes, err := session.ListPrompts(promptsCtx, nil)
+	if err != nil && !isJSONRPCMethodNotFound(err) {
+		return nil, fmt.Errorf("%w: list prompts: %w", ErrTransportFailed, err)
+	}
 	if err == nil && prRes != nil {
 		for _, pr := range prRes.Prompts {
 			if pr == nil || pr.Name == "" {
@@ -802,6 +809,14 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	}
 
 	return out, nil
+}
+
+// isJSONRPCMethodNotFound recognizes only the canonical JSON-RPC optional
+// method absence. Authentication failures, HTTP/transport failures, malformed
+// responses, and every other JSON-RPC code remain discovery failures.
+func isJSONRPCMethodNotFound(err error) bool {
+	var rpcErr *jsonrpc.Error
+	return errors.As(err, &rpcErr) && rpcErr.Code == jsonrpc.CodeMethodNotFound
 }
 
 // checkArtifactEgressSchema validates every egress-mapped parameter
