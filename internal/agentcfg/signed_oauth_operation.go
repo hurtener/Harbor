@@ -26,8 +26,12 @@ func WithSignedOAuthMCPFenceOperation(ctx context.Context, operationKind string)
 // SignedOAuthMCPFenceOperation returns the owning operation marker carried by
 // an internal registration write.
 func SignedOAuthMCPFenceOperation(ctx context.Context) string {
-	value, _ := ctx.Value(signedOAuthMCPFenceContextKey{}).(string)
-	return value
+	value := ctx.Value(signedOAuthMCPFenceContextKey{})
+	operation, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return operation
 }
 
 // SignedOAuthMCPActivationFenceKind returns the fixed agent-scoped record

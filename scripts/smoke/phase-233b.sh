@@ -43,6 +43,18 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestRegisterOAuthMCPCapability_CommittedRevisionThenError_RecoversExactCandidate \
     TestRegisterOAuthMCPCapability_ConcurrentReplaySharesOnePublication \
     TestRegisterOAuthMCPCapability_ConcurrentMixedIdentityN128 \
-    TestRemoveOAuthMCPCapability_ContinuesPairLifetimeReceipt
+    TestRemoveOAuthMCPCapability_ContinuesPairLifetimeReceipt \
+    TestSignedOAuthMCPReconciler_Restart_ReattachesOnlyExactPublishedPair \
+    TestSignedOAuthMCPReconciler_SQLiteRestart_ReattachesPublishedPair \
+    TestSignedOAuthMCPReconciler_RecoversRemovalAfterDetachFault \
+    TestSignedOAuthMCPReconciler_ConcurrentReuseN128_CancellationDoesNotLeak
+
+if [ -n "${HARBOR_PG_DSN:-}" ]; then
+    assert_go_tests_pass "${P233B_TMP}/postgres-reconcile.log" '-race -count=1 ./internal/runtime/agentcfg/protocol' \
+        'phase 233b: configured real Postgres two-runtime reconciler executes' \
+        TestRegisterOAuthMCPCapability_PostgresTwoIndependentRuntimes
+else
+    skip "phase 233b: HARBOR_PG_DSN is not configured; real Postgres two-runtime reconciler is CI-gated"
+fi
 
 smoke_summary

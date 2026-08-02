@@ -100,9 +100,9 @@ func VerifySignedOAuthMCPAuthority(raw, issuer, keyID string, key any, now time.
 		return key, nil
 	})
 	if err != nil || token == nil || !token.Valid {
-		return SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: %v", ErrSignedCapabilityAuthority, err)
+		return SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: verify authority: %w", ErrSignedCapabilityAuthority, err)
 	}
-	if strings.TrimSpace(claims.ID) == "" || claims.IssuedAt == nil || claims.ExpiresAt == nil || !claims.ExpiresAt.Time.After(now) {
+	if strings.TrimSpace(claims.ID) == "" || claims.IssuedAt == nil || claims.ExpiresAt == nil || !claims.ExpiresAt.After(now) {
 		return SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: jti or bounded timing missing", ErrSignedCapabilityAuthority)
 	}
 	if err := matchSignedOAuthMCPBinding(claims, expected); err != nil {
@@ -114,7 +114,7 @@ func VerifySignedOAuthMCPAuthority(raw, issuer, keyID string, key any, now time.
 	}
 	ceiling, err := CanonicalScopes(scopeCeiling)
 	if err != nil {
-		return SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: invalid boot ceiling: %v", ErrSignedCapabilityAuthority, err)
+		return SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: invalid boot ceiling: %w", ErrSignedCapabilityAuthority, err)
 	}
 	allowed := make(map[string]struct{}, len(ceiling))
 	for _, scope := range ceiling {
@@ -142,7 +142,7 @@ func VerifySignedOAuthMCPAuthorityBounded(raw, issuer, keyID string, key any, no
 	if err != nil {
 		return SignedOAuthMCPAuthorityClaims{}, err
 	}
-	if claims.IssuedAt == nil || claims.ExpiresAt == nil || claims.ExpiresAt.Time.Before(claims.IssuedAt.Time) || claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time) > maxLifetime {
+	if claims.IssuedAt == nil || claims.ExpiresAt == nil || claims.ExpiresAt.Before(claims.IssuedAt.Time) || claims.ExpiresAt.Sub(claims.IssuedAt.Time) > maxLifetime {
 		return SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: authority lifetime exceeds boot maximum", ErrSignedCapabilityAuthority)
 	}
 	return claims, nil
@@ -180,8 +180,14 @@ func sameStrings(left, right []string) bool {
 // SignedOAuthMCPPairFingerprint produces the collision-resistant immutable
 // pair identifier used to bind a durable JTI record to exactly one capability.
 func SignedOAuthMCPPairFingerprint(binding SignedOAuthMCPBinding) string {
-	canonicalScopes, _ := CanonicalScopes(binding.Scopes)
-	parts := []string{binding.TenantID, binding.AgentID, binding.Broker, binding.ProviderName, binding.CapabilityRevision, binding.URLDigest, binding.Audience}
+	canonicalScopes, err := CanonicalScopes(binding.Scopes)
+	if err != nil {
+		// The public fingerprint helper cannot return an error. Preserve the raw
+		// values rather than silently dropping an invalid scope from a binding.
+		canonicalScopes = append([]string(nil), binding.Scopes...)
+	}
+	parts := make([]string, 0, 7+len(canonicalScopes))
+	parts = append(parts, binding.TenantID, binding.AgentID, binding.Broker, binding.ProviderName, binding.CapabilityRevision, binding.URLDigest, binding.Audience)
 	parts = append(parts, canonicalScopes...)
 	h := sha256.New()
 	for _, part := range parts {

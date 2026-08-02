@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	statepostgres "github.com/hurtener/Harbor/internal/state/drivers/postgres"
+	statesqlite "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
@@ -136,6 +138,11 @@ func signedCapabilityServiceWithRegistry(t *testing.T, now time.Time) (*agentcfg
 	if err != nil {
 		t.Fatal(err)
 	}
+	return signedCapabilityServiceWithStore(t, now, st)
+}
+
+func signedCapabilityServiceWithStore(t *testing.T, now time.Time, st state.StateStore) (*agentcfgprotocol.Service, *rsa.PrivateKey, agentcfg.Registry, state.StateStore, *capabilityPreparer) {
+	t.Helper()
 	bus, err := eventsinmem.New(config.EventsConfig{Driver: "inmem", MaxSubscribersPerSession: 8, SubscriberBufferSize: 32, IdleTimeout: time.Minute, DropWindow: time.Second}, auditpatterns.New())
 	if err != nil {
 		t.Fatal(err)
@@ -203,6 +210,43 @@ func TestSignedOAuthMCPReconciler_Restart_ReattachesOnlyExactPublishedPair(t *te
 	defer preparer.mu.Unlock()
 	if preparer.activations != activations {
 		t.Fatalf("foreign reconcile dispatched a local pair")
+	}
+}
+
+func TestSignedOAuthMCPReconciler_SQLiteRestart_ReattachesPublishedPair(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	dsn := filepath.Join(t.TempDir(), "signed-capability.sqlite")
+	firstStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, key, firstRegistry, _, _ := signedCapabilityServiceWithStore(t, now, firstStore)
+	if _, err := first.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-sqlite-restart", "aud-sqlite")); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := firstRegistry.Close(context.Background()); err != nil {
+		t.Fatalf("close first registry: %v", err)
+	}
+	if err := firstStore.Close(context.Background()); err != nil {
+		t.Fatalf("close first state: %v", err)
+	}
+	secondStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, secondRegistry, _, secondPreparer := signedCapabilityServiceWithStore(t, now, secondStore)
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(secondRegistry, secondStore, secondPreparer, secondPreparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	secondPreparer.mu.Lock()
+	defer secondPreparer.mu.Unlock()
+	if secondPreparer.activations != 1 {
+		t.Fatalf("restart activations = %d, want 1", secondPreparer.activations)
 	}
 }
 
@@ -489,7 +533,8 @@ func TestRegisterOAuthMCPCapability_PostgresTwoIndependentRuntimes(t *testing.T)
 		return svc
 	}
 	first := newService(firstRegistry, firstStore, &capabilityPreparer{})
-	second := newService(secondRegistry, secondStore, &capabilityPreparer{})
+	secondPreparer := &capabilityPreparer{}
+	second := newService(secondRegistry, secondStore, secondPreparer)
 	// The Postgres test intentionally reuses the database across local reruns
 	// and CI packages. Its JTI therefore must be unique per test invocation:
 	// a fixed value would (correctly) collide with the prior run's durable
@@ -499,12 +544,19 @@ func TestRegisterOAuthMCPCapability_PostgresTwoIndependentRuntimes(t *testing.T)
 	if err != nil {
 		t.Fatalf("first runtime registration: %v", err)
 	}
-	replayed, err := second.RegisterOAuthMCPCapability(context.Background(), req)
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(secondRegistry, secondStore, secondPreparer, secondPreparer, capabilityInstaller{})
 	if err != nil {
-		t.Fatalf("second runtime exact replay: %v", err)
+		t.Fatal(err)
 	}
-	if replayed.Revision.RevisionID != registered.Revision.RevisionID {
-		t.Fatalf("second runtime revision = %q, want %q", replayed.Revision.RevisionID, registered.Revision.RevisionID)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("second runtime reconcile: %v", err)
+	}
+	secondPreparer.mu.Lock()
+	activations := secondPreparer.activations
+	secondPreparer.mu.Unlock()
+	if activations != 1 {
+		t.Fatalf("second runtime activations = %d, want restart attach", activations)
 	}
 	removed, err := second.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{Identity: scope(), AgentID: testAgentID, ExpectedContentHash: registered.Revision.ContentHash})
 	if err != nil {

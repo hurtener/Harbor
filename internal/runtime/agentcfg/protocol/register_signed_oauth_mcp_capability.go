@@ -268,10 +268,10 @@ func normalizeSignedCapabilityConnection(in prototypes.SignedOAuthMCPConnectionD
 	}
 	var err error
 	if out.ToolAllowlist, err = agentcfg.CanonicalScopes(out.ToolAllowlist); err != nil {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: tool_allowlist: %v", ErrInvalidSignedCapabilityDescriptor, err)
+		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: tool_allowlist: %w", ErrInvalidSignedCapabilityDescriptor, err)
 	}
 	if out.ToolDenylist, err = agentcfg.CanonicalScopes(out.ToolDenylist); err != nil {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: tool_denylist: %v", ErrInvalidSignedCapabilityDescriptor, err)
+		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: tool_denylist: %w", ErrInvalidSignedCapabilityDescriptor, err)
 	}
 	return out, nil
 }
@@ -281,7 +281,11 @@ func signedCapabilityEnvelopeKID(raw string) (string, error) {
 	if err != nil || token == nil {
 		return "", fmt.Errorf("%w: malformed authority envelope", agentcfg.ErrSignedCapabilityAuthority)
 	}
-	kid, _ := token.Header["kid"].(string)
+	kidValue := token.Header["kid"]
+	kid, ok := kidValue.(string)
+	if !ok {
+		return "", fmt.Errorf("%w: kid header is not a string", agentcfg.ErrSignedCapabilityAuthority)
+	}
 	if strings.TrimSpace(kid) == "" {
 		return "", fmt.Errorf("%w: authority envelope has no key id", agentcfg.ErrSignedCapabilityAuthority)
 	}

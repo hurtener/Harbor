@@ -79,7 +79,7 @@ explicit signed-capability production opt-in; it is not enabled by default.
 
 ## Acceptance criteria
 
-- [ ] The sole new production registration/creation write is admin-gated
+- [x] The sole new production registration/creation write is admin-gated
   `agent_config.register_oauth_mcp_capability`. Its request contains provider
   name, boot broker name, audience, requested scopes, a dedicated closed
   `SignedOAuthMCPConnectionDescriptor`, `expected_content_hash`, and signed
@@ -89,11 +89,11 @@ explicit signed-capability production opt-in; it is not enabled by default.
   that it excludes `oauth`, `oauth_provider`, `token_url`, injection, discovery
   origins, stdio command/env/cwd, headers, credentials, secrets, and every
   host/sink list. Unknown fields reject before side effects.
-- [ ] A boot-declared generic broker/trust anchor validates its static exchange
+- [x] A boot-declared generic broker/trust anchor validates its static exchange
   endpoint, credential-pull endpoint, broker authentication, KEK, true scope
   ceiling, trusted issuer/key set, and explicit signed-capability production
   opt-in. A missing/invalid opt-in, verifier, broker, or key fails closed.
-- [ ] The envelope uses an approved asymmetric signature and has exact claims:
+- [x] The envelope uses an approved asymmetric signature and has exact claims:
   tenant ID, agent ID, broker, capability/provider ID and immutable capability
   revision, canonical URL digest, audience, normalized unique scope set,
   issuer, key ID, issued-at, bounded expiry, and unique replay ID (JTI). The
@@ -123,7 +123,7 @@ explicit signed-capability production opt-in; it is not enabled by default.
   validates current entitlement and exact binding. `removed` remains an
   anti-replay tombstone with pair history and never less than the authority
   expiry-plus-skew horizon, preventing recreation/replay.
-- [ ] A signed provider is pair-owned and outside the general `ProviderSet`.
+- [x] A signed provider is pair-owned and outside the general `ProviderSet`.
   Private MCP preparation binds directly to that exact provider instance; a
   catalog source swap is the sole data-plane dispatch linearization point.
   Protocol projections derive only from the immutable signed-pair revision,
@@ -133,7 +133,7 @@ explicit signed-capability production opt-in; it is not enabled by default.
   collision-checks the general bare namespace. Prepare is never durable and
   closes on refusal/failure/restart; teardown closes transport and provider as
   one receipt.
-- [ ] The provider token endpoint stays boot-pinned. One named shared
+- [x] The provider token endpoint stays boot-pinned. One named shared
   canonical-URL helper supplies signer/verifier request matching, fingerprinting,
   transport enforcement, and restart/reconcile. It requires absolute HTTPS;
   applies IDNA2008 ASCII lower-case host with trailing root dot removed and
@@ -147,14 +147,14 @@ explicit signed-capability production opt-in; it is not enabled by default.
   Canonical URL bytes are `https://host:port/path[?query]`; the only sink is
   origin `https://host:port`. The pair stores canonical URL digest/sink, never a
   host list; every bearer send rechecks it and refuses redirects.
-- [ ] Requested scopes are normalized before signing/comparison. A requested
+- [x] Requested scopes are normalized before signing/comparison. A requested
   scope outside the boot true ceiling rejects loudly with a typed invalid-scope
   result; the production path never silently intersects/drops scopes.
-- [ ] Token and cache keys/assertions include verified tenant/user/session plus
+- [x] Token and cache keys/assertions include verified tenant/user/session plus
   agent, capability revision, audience, and URL digest. The exchange refuses
   absent, malformed, unentitled, or mismatched audience/binding independently
   of Harbor's signature check; audience never substitutes for subject identity.
-- [ ] Signed-pair representation is server-owned/read-only. Whole
+- [x] Signed-pair representation is server-owned/read-only. Whole
   `agent_config.set_revision`, rollback, every generic section setter, and
   legacy `remove_oauth_provider` / `remove_mcp_connection` must carry it
   forward byte-identically or reject addition, mutation, omission, deletion,
@@ -163,7 +163,7 @@ explicit signed-capability production opt-in; it is not enabled by default.
   Rollback activation performs full binding verification, while paired removal
   and retirement use the frozen durable pair fingerprint to close/revoke even
   if envelope verification would now fail.
-- [ ] Paired removal continues that same pair-lifetime JTI operation; it is not
+- [x] Paired removal continues that same pair-lifetime JTI operation; it is not
   a second operation or handoff. It is a durable operation, never a best-effort
   close. Its exact EventID `SaveIf` subphases are `removal_revision_committed` (desired
   pair absent by revision CAS), `catalog_unpublished`, `teardown_receipted`
@@ -174,7 +174,7 @@ explicit signed-capability production opt-in; it is not enabled by default.
   or lost verifier never block this teardown. It cannot report `removed` while
   authority remains live, and retirement's terminal manifest invokes this same
   state machine rather than a second teardown path.
-- [ ] Reconcile/restart/rollback activate only a stored immutable pair whose
+- [x] Reconcile/restart/rollback activate only a stored immutable pair whose
   operation record is exactly `published`, whose fingerprint/bindings verify,
   and whose activation fence is committed; they never classify that stored JTI
   as a fresh replay. They fail closed for an incomplete operation, absent current
@@ -182,7 +182,7 @@ explicit signed-capability production opt-in; it is not enabled by default.
   widening, URL mismatch, provider collision, pending fence, or pair half-state.
   Registration-authority expiry/key revocation neither deletes nor replays a
   published record nor blocks its frozen-fingerprint paired removal/retirement.
-- [ ] Before a first-install candidate can become semantically active,
+- [x] Before a first-install candidate can become semantically active,
   `set_oauth_provider` creates a durable pending-activation/compensation fence
   under the agent scope. The fence binds exact operation/content fingerprint,
   attempted revision identity, and prior active revision/EventID (or no-active),
@@ -198,7 +198,7 @@ explicit signed-capability production opt-in; it is not enabled by default.
   `DeactivateIfActive` may afterwards compact a physical pointer with its exact
   EventID/inactive marker, but is not the security fence and cannot assert an
   unknown result inactive.
-- [ ] All canonical method/type/error/event/Console manifest/docs lockstep
+- [x] All canonical method/type/error/event/Console manifest/docs lockstep
   gates cover the new surface. Events and audit carry only redacted identity,
   provider/capability names or hashes, revision, audience hash, and URL digest;
   no authority envelope, secret, URL, credential, or raw replay ID is emitted.
@@ -310,16 +310,16 @@ explicit signed-capability production opt-in; it is not enabled by default.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages >= stated target
-- [ ] Cross-session and cross-tenant bearer/cache isolation test passes
-- [ ] Reusable verifier/provider/preparer N>=100 concurrent-reuse test passes
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages >= stated target
+- [x] Cross-session and cross-tenant bearer/cache isolation test passes
+- [x] Reusable verifier/provider/preparer N>=100 concurrent-reuse test passes
   under `-race` with no race, bleed, cancellation cross-talk, or leak
-- [ ] Real-driver integration covers identity, restart, failure, and cleanup
-- [ ] Protocol/error/event/Console/generated-doc lockstep gates pass
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry
+- [x] Real-driver integration covers identity, restart, failure, and cleanup
+- [x] Protocol/error/event/Console/generated-doc lockstep gates pass
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry
   filed

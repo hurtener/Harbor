@@ -31,7 +31,7 @@ var ErrInvalidOAuthMCPURL = errors.New("agentcfg: invalid signed oauth mcp url")
 func CanonicalOAuthMCPURL(raw string) (canonicalURL, sink string, err error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", "", fmt.Errorf("%w: parse: %v", ErrInvalidOAuthMCPURL, err)
+		return "", "", fmt.Errorf("%w: parse: %w", ErrInvalidOAuthMCPURL, err)
 	}
 	if u.Scheme != "https" || u.Opaque != "" || u.Host == "" {
 		return "", "", fmt.Errorf("%w: absolute https URL required", ErrInvalidOAuthMCPURL)

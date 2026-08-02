@@ -54,7 +54,7 @@ func (a SignedOAuthMCPCapabilityAuthority) Verify(raw string, now time.Time, bin
 	}
 	key, trustedAlg, err := a.Keys.KeyByID(kid)
 	if err != nil || key == nil {
-		return agentcfg.SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: resolve configured key: %v", agentcfg.ErrSignedCapabilityAuthority, err)
+		return agentcfg.SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: resolve configured key: %w", agentcfg.ErrSignedCapabilityAuthority, err)
 	}
 	if alg != trustedAlg {
 		return agentcfg.SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: authority algorithm does not match configured key", agentcfg.ErrSignedCapabilityAuthority)
