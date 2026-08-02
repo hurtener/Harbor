@@ -47,7 +47,7 @@ Two versions move independently in Harbor (RFC §5.3):
   contributes content, reasoning, tool calls, or callbacks. The same bytes are
   verified through live callbacks, completed responses, planner decisions,
   task trajectory, durable restart history, and Console history rendering
-  (HA-51, D-402, Phase 233c). This is an internal fidelity correction with no
+  (HA-51, D-402). This is an internal fidelity correction with no
   Protocol type, method, event, error, manifest, or version change.
 
 ## [1.25.0] — 2026-08-01
