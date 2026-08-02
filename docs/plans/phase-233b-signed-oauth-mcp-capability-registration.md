@@ -165,7 +165,11 @@ explicit signed-capability production opt-in; it is not enabled by default.
   if envelope verification would now fail.
 - [x] Paired removal continues that same pair-lifetime JTI operation; it is not
   a second operation or handoff. It is a durable operation, never a best-effort
-  close. Its exact EventID `SaveIf` subphases are `removal_revision_committed` (desired
+  close. Its mandatory `expected_content_hash` names the exact immutable
+  pair-bearing revision being removed; hash-less or stale delayed targets fail
+  closed, while an exact terminal retry returns that pair lifetime's original
+  removal receipt and cannot select a replacement. Its exact EventID `SaveIf`
+  subphases are `removal_revision_committed` (desired
   pair absent by revision CAS), `catalog_unpublished`, `teardown_receipted`
   (transport/provider close+revoke from frozen fingerprint), then terminal
   `removed` checkpoint. Each commit-then-error or unknown outcome exact-rereads
@@ -174,6 +178,15 @@ explicit signed-capability production opt-in; it is not enabled by default.
   or lost verifier never block this teardown. It cannot report `removed` while
   authority remains live, and retirement's terminal manifest invokes this same
   state machine rather than a second teardown path.
+- [x] Live attachment and exact teardown are generation-bound to the durable
+  operation identity as well as the connection descriptor. A new registration
+  cannot replace a pair while an older lifetime is `published` without an
+  active pair or is in any removal subphase. Sequential and independent-runtime
+  races therefore cannot let an old teardown detach a same-named replacement.
+- [x] Every post-prepare refusal uses one bounded cleanup context, attempts both
+  connection and pair-owned provider cleanup, and joins every cleanup failure
+  with the primary error. Erroring-close tests prove no catalog publication,
+  active revision, provider resource, or connection worker remains.
 - [x] Reconcile/restart/rollback activate only a stored immutable pair whose
   operation record is exactly `published`, whose fingerprint/bindings verify,
   and whose activation fence is committed; they never classify that stored JTI
@@ -182,6 +195,10 @@ explicit signed-capability production opt-in; it is not enabled by default.
   widening, URL mismatch, provider collision, pending fence, or pair half-state.
   Registration-authority expiry/key revocation neither deletes nor replays a
   published record nor blocks its frozen-fingerprint paired removal/retirement.
+  A same-JTI published retry may observe a later active revision only when the
+  committed fence still proves the original immutable candidate and that later
+  revision carries the exact same operation-bound pair; ordinary sibling edits
+  are therefore replay-safe without weakening orphan rejection.
 - [x] Before a first-install candidate can become semantically active,
   `set_oauth_provider` creates a durable pending-activation/compensation fence
   under the agent scope. The fence binds exact operation/content fingerprint,

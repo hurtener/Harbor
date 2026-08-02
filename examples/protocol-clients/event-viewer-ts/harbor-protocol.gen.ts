@@ -622,7 +622,7 @@ export interface AgentConfigRemoveMCPConnectionResponse {
 export interface AgentConfigRemoveOAuthMCPCapabilityRequest {
   identity: IdentityScope;
   agent_id: string;
-  expected_content_hash?: string;
+  expected_content_hash: string;
 }
 
 export interface AgentConfigRemoveOAuthMCPCapabilityResponse {

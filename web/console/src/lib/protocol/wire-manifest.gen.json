@@ -1119,8 +1119,7 @@
         },
         {
           "key": "expected_content_hash",
-          "type": "string",
-          "optional": true
+          "type": "string"
         }
       ]
     },

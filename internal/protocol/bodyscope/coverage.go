@@ -25,6 +25,7 @@ var requestSurfaces = map[string]Surface{
 	"AgentConfigGetRequest":                        SurfaceAgentConfig,
 	"AgentConfigListRevisionsRequest":              SurfaceAgentConfig,
 	"AgentConfigRemoveMCPConnectionRequest":        SurfaceAgentConfig,
+	"AgentConfigRemoveOAuthMCPCapabilityRequest":   SurfaceAgentConfig,
 	"AgentConfigRemoveOAuthProviderRequest":        SurfaceAgentConfig,
 	"AgentConfigRollbackRequest":                   SurfaceAgentConfig,
 	"AgentConfigSessionSetSourceDisablesRequest":   SurfaceAgentConfig,

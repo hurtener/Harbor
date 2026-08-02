@@ -1305,11 +1305,13 @@ type AgentConfigRegisterOAuthMCPCapabilityResponse struct {
 
 // AgentConfigRemoveOAuthMCPCapabilityRequest is the only signed-capability paired-removal
 // verb. It carries no authority envelope or credential material: Harbor looks
-// up the frozen, owner-bound lifetime receipt from immutable pair history.
+// up the frozen, owner-bound lifetime receipt from the exact immutable revision
+// named by ExpectedContentHash. The hash is mandatory so a delayed removal can
+// never select a replacement pair.
 type AgentConfigRemoveOAuthMCPCapabilityRequest struct {
 	Identity            IdentityScope `json:"identity"`
 	AgentID             string        `json:"agent_id"`
-	ExpectedContentHash string        `json:"expected_content_hash,omitempty"`
+	ExpectedContentHash string        `json:"expected_content_hash"`
 }
 
 // AgentConfigRemoveOAuthMCPCapabilityResponse reports the revision that drops

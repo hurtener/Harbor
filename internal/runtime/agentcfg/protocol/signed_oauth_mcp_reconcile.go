@@ -177,7 +177,7 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 	if pair.AuthorityOperationKind != kind || pair.AuthorityJTIHash != signedCapabilityJTIHash(op.ReplayKey.JTI) {
 		return fmt.Errorf("%w: pair receipt does not bind its exact authority", agentcfg.ErrSignedCapabilityReplay)
 	}
-	if (op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed || op.Phase == agentcfg.SignedOAuthMCPPhaseRevisionCommitted || op.Phase == agentcfg.SignedOAuthMCPPhasePublished) && op.RevisionID != "" && op.RevisionID != revision.RevisionID {
+	if (op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed || op.Phase == agentcfg.SignedOAuthMCPPhaseRevisionCommitted) && op.RevisionID != "" && op.RevisionID != revision.RevisionID {
 		return fmt.Errorf("%w: receipt names another revision", agentcfg.ErrSignedCapabilityReplay)
 	}
 	switch op.Phase {
@@ -284,21 +284,27 @@ func (r *SignedOAuthMCPReconciler) commitFence(ctx context.Context, tenant, agen
 		return err
 	}
 	if fence.OperationKind != kind || fence.Fingerprint != op.Fingerprint || fence.CandidateContentHash != revision.ContentHash {
-		return fmt.Errorf("%w: fence does not bind published pair", agentcfg.ErrSignedCapabilityPending)
+		if fence.Phase != agentcfg.SignedOAuthMCPFenceCommitted {
+			return fmt.Errorf("%w: fence does not bind published pair", agentcfg.ErrSignedCapabilityPending)
+		}
 	}
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: op.Binding.UserID, SessionID: op.Binding.SessionID}}
-	physicalRevision, err := requirePhysicalActiveRevision(ctx, r.physical, q, agentID, revision.RevisionID, revision.ContentHash)
-	if err != nil || !signedCapabilityPairMatches(physicalRevision.Payload.SignedOAuthMCPPair, tenant, op.Binding) {
-		return fmt.Errorf("%w: published recovery candidate is not physically active", agentcfg.ErrSignedCapabilityPending)
-	}
 	if fence.Phase == agentcfg.SignedOAuthMCPFenceCommitted {
-		if fence.CandidateRevisionID == revision.RevisionID {
+		candidate, getErr := r.registry.Get(ctx, q, agentID, op.RevisionID, agentcfg.ConfigScopeAgent)
+		physicalRevision, physicalErr := requirePhysicalActiveRevision(ctx, r.physical, q, agentID, revision.RevisionID, revision.ContentHash)
+		if getErr == nil && physicalErr == nil && fence.CandidateRevisionID == op.RevisionID && candidate.ContentHash == fence.CandidateContentHash &&
+			signedCapabilityPairMatchesOperation(candidate.Payload.SignedOAuthMCPPair, tenant, op.Binding, kind) &&
+			signedCapabilityPairMatchesOperation(physicalRevision.Payload.SignedOAuthMCPPair, tenant, op.Binding, kind) {
 			return nil
 		}
-		return fmt.Errorf("%w: committed fence names another revision", agentcfg.ErrSignedCapabilityPending)
+		return errors.Join(fmt.Errorf("%w: committed fence or active revision does not bind published pair", agentcfg.ErrSignedCapabilityPending), getErr, physicalErr)
 	}
 	if fence.Phase != agentcfg.SignedOAuthMCPFencePending {
 		return fmt.Errorf("%w: aborted fence", agentcfg.ErrSignedCapabilityPending)
+	}
+	physicalRevision, err := requirePhysicalActiveRevision(ctx, r.physical, q, agentID, revision.RevisionID, revision.ContentHash)
+	if err != nil || !signedCapabilityPairMatchesOperation(physicalRevision.Payload.SignedOAuthMCPPair, tenant, op.Binding, kind) {
+		return fmt.Errorf("%w: published recovery candidate is not physically active", agentcfg.ErrSignedCapabilityPending)
 	}
 	_, err = r.fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceCommitted, revision.RevisionID)
 	return err
@@ -317,7 +323,7 @@ func (r *SignedOAuthMCPReconciler) publish(ctx context.Context, q identity.Quadr
 
 func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identity.Quadruple, agentID string, pair *agentcfg.SignedOAuthMCPPair) error {
 	owner := toolauth.Owner{Tenant: q.TenantID, Agent: agentID}
-	fingerprint := agentcfg.SignedOAuthMCPConnectionFingerprint(pair.Connection)
+	fingerprint := signedCapabilityPairAttachmentFingerprint(pair)
 	if r.matcher.ConnectionMatches(owner, pair.Connection.Name, fingerprint) {
 		return nil
 	}
@@ -336,26 +342,27 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 		ConnectTimeoutMS: pair.Connection.ConnectTimeoutMS, RequestTimeoutMS: pair.Connection.RequestTimeoutMS,
 		DescriptorFingerprint: fingerprint})
 	if err != nil {
-		_ = provider.Close(context.WithoutCancel(ctx))
-		return err
+		return errors.Join(err, closePreparedSignedCapability(ctx, nil, provider))
 	}
 	if err := prepared.Activate(ctx); err != nil {
-		_ = prepared.Close(context.WithoutCancel(ctx))
-		_ = provider.Close(context.WithoutCancel(ctx))
-		return err
+		return errors.Join(err, closePreparedSignedCapability(ctx, prepared, provider))
 	}
 	provider.Commit(ctx)
 	return nil
 }
 
 func (r *SignedOAuthMCPReconciler) detach(ctx context.Context, q identity.Quadruple, agentID string, pair *agentcfg.SignedOAuthMCPPair) error {
-	return r.exactDetacher.DetachExactConnection(ctx, q.TenantID, agentID, pair.Connection.Name, agentcfg.SignedOAuthMCPConnectionFingerprint(pair.Connection))
+	return r.exactDetacher.DetachExactConnection(ctx, q.TenantID, agentID, pair.Connection.Name, signedCapabilityPairAttachmentFingerprint(pair))
 }
 
 func (r *SignedOAuthMCPReconciler) resumeRemoval(ctx context.Context, q identity.Quadruple, agentID string, op agentcfg.SignedOAuthMCPOperation) error {
-	var err error
+	operationKind, err := r.operations.Kind(op.ReplayKey)
+	if err != nil {
+		return err
+	}
+	fingerprint := signedCapabilityAttachmentFingerprint(op.Binding.Connection, operationKind)
 	if op.Phase == agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted {
-		if err := r.exactDetacher.DetachExactConnection(ctx, q.TenantID, agentID, op.Binding.Connection.Name, agentcfg.SignedOAuthMCPConnectionFingerprint(op.Binding.Connection)); err != nil {
+		if err := r.exactDetacher.DetachExactConnection(ctx, q.TenantID, agentID, op.Binding.Connection.Name, fingerprint); err != nil {
 			return err
 		}
 		op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseCatalogUnpublished, op.RevisionID)
@@ -366,7 +373,7 @@ func (r *SignedOAuthMCPReconciler) resumeRemoval(ctx context.Context, q identity
 	if op.Phase == agentcfg.SignedOAuthMCPPhaseCatalogUnpublished {
 		// The exact detach is idempotent. Repeating it here proves the private
 		// provider and its cache are closed before the teardown receipt lands.
-		if err := r.exactDetacher.DetachExactConnection(ctx, q.TenantID, agentID, op.Binding.Connection.Name, agentcfg.SignedOAuthMCPConnectionFingerprint(op.Binding.Connection)); err != nil {
+		if err := r.exactDetacher.DetachExactConnection(ctx, q.TenantID, agentID, op.Binding.Connection.Name, fingerprint); err != nil {
 			return err
 		}
 		op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseTeardownReceipted, op.RevisionID)

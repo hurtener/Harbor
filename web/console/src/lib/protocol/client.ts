@@ -1433,7 +1433,7 @@ export class AgentConfigNamespace {
 	 * server-owned pair through its durable lifetime receipt. */
 	removeOAuthMCPCapability(
 		agentId: string,
-		expectedContentHash?: string,
+		expectedContentHash: string,
 	): Promise<AgentConfigRemoveOAuthMCPCapabilityResponse> {
 		return this.#t.request<AgentConfigRemoveOAuthMCPCapabilityResponse>(
 			'/v1/agent_config/remove_oauth_mcp_capability',

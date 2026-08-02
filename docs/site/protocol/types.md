@@ -475,7 +475,7 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
-| `expected_content_hash` | `string` | optional (`omitempty`) |
+| `expected_content_hash` | `string` |  |
 
 ## AgentConfigRemoveOAuthMCPCapabilityResponse
 

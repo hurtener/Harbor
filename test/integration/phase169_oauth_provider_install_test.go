@@ -192,6 +192,7 @@ func newP169Harness(t *testing.T, f *p169Fixtures) *p169Harness {
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithBus(bus),
 		agentcfgprotocol.WithProviderInstaller(installer),
+		agentcfgprotocol.WithSignedOAuthMCPOperationState(st),
 	)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

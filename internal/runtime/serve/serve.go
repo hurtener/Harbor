@@ -578,7 +578,9 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	// every run start. It can enumerate only the configured bootstrap identity
 	// here; tenant/user/session-specific recovery happens when that exact run
 	// starts, never through a cross-tenant maintenance sweep.
-	var signedOAuthMCPReconciler *agentcfgprotocol.SignedOAuthMCPReconciler
+	var signedOAuthMCPReconciler interface {
+		ReconcileSignedOAuthMCPCapability(context.Context, identity.Quadruple, string) error
+	}
 	if len(signedOAuthMCPCapabilityAuthorities) > 0 {
 		preparer, prepared := mcpAttacher.(agentcfgprotocol.ConnectionPreparer)
 		detacher, detachable := mcpDetacher.(agentcfgprotocol.ConnectionDetacher)
@@ -587,11 +589,12 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 			closeAll(ctx)
 			return nil, fmt.Errorf("signed oauth mcp capability recovery: %w", agentcfgprotocol.ErrSignedCapabilityUnavailable)
 		}
-		signedOAuthMCPReconciler, err = agentcfgprotocol.NewSignedOAuthMCPReconciler(agentConfigRegistry, stack.State, preparer, detacher, providers)
+		concreteReconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(agentConfigRegistry, stack.State, preparer, detacher, providers)
 		if err != nil {
 			closeAll(ctx)
 			return nil, fmt.Errorf("signed oauth mcp capability recovery: %w", err)
 		}
+		signedOAuthMCPReconciler = concreteReconciler
 		bootIdentity := resolveMCPAttachIdentity(opts.MCPDefaultIdentity)
 		if err := signedOAuthMCPReconciler.ReconcileSignedOAuthMCPCapability(ctx, identity.Quadruple{Identity: bootIdentity}, devAgentConfigID); err != nil {
 			closeAll(ctx)

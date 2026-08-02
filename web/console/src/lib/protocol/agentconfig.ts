@@ -810,12 +810,12 @@ export interface AgentConfigRegisterOAuthMCPCapabilityResponse {
 }
 
 /** D-401's sole removal verb for a server-owned signed OAuth MCP pair. The
- * removal resumes the frozen durable receipt and therefore carries no signed
- * envelope or credential material. */
+ * mandatory content hash names the exact immutable pair revision whose frozen
+ * durable receipt is resumed, so a delayed request cannot remove a replacement. */
 export interface AgentConfigRemoveOAuthMCPCapabilityRequest {
 	identity: IdentityScope;
 	agent_id: string;
-	expected_content_hash?: string;
+	expected_content_hash: string;
 }
 
 export interface AgentConfigRemoveOAuthMCPCapabilityResponse {

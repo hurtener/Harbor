@@ -2,7 +2,9 @@ package protocol
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -28,32 +30,14 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 	}
 	q := identity.Quadruple{Identity: id}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
+	expectedContentHash := strings.TrimSpace(req.ExpectedContentHash)
+	if expectedContentHash == "" {
+		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: expected_content_hash is required to identify the immutable signed pair", agentcfg.ErrRevisionConflict)
+	}
 
-	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
+	targetRevision, pair, err := s.signedCapabilityRemovalTarget(ctx, q, req.AgentID, expectedContentHash)
 	if err != nil {
 		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
-	}
-	if !hasActive {
-		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: no signed capability pair history is active", agentcfg.ErrSignedCapabilityReplay)
-	}
-	pair := active.Payload.SignedOAuthMCPPair
-	if pair == nil {
-		// After desired-state removal, the active revision deliberately contains
-		// no pair. Immutable history is the only safe source for a terminal
-		// retry; it must still bind the exact same owner and receipt.
-		history, listErr := s.registry.ListRevisions(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, 0)
-		if listErr != nil {
-			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, listErr
-		}
-		for _, revision := range history {
-			if revision.Payload.SignedOAuthMCPPair != nil {
-				pair = revision.Payload.SignedOAuthMCPPair
-				break
-			}
-		}
-		if pair == nil {
-			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: no signed capability pair history", agentcfg.ErrSignedCapabilityReplay)
-		}
 	}
 	if pair.OwnerAgentID != req.AgentID || pair.OwnerUserID != id.UserID || pair.OwnerSessionID != id.SessionID {
 		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: pair owner does not match requested subject and agent", agentcfg.ErrSignedCapabilityReplay)
@@ -67,30 +51,46 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 	// inactive after an acknowledgement-loss recovery, so return its frozen
 	// revision identity only when the receipt proves the terminal operation.
 	if op.Phase == agentcfg.SignedOAuthMCPPhaseRemoved {
-		return signedCapabilityRemovalResponse(active, pair, op), nil
+		removalRevision, err := s.registry.Get(ctx, q, req.AgentID, op.RevisionID, agentcfg.ConfigScopeAgent)
+		if err != nil {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
+		}
+		return signedCapabilityRemovalResponse(removalRevision, pair, op), nil
 	}
 	if op.Phase != agentcfg.SignedOAuthMCPPhasePublished && op.Phase != agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted &&
 		op.Phase != agentcfg.SignedOAuthMCPPhaseCatalogUnpublished && op.Phase != agentcfg.SignedOAuthMCPPhaseTeardownReceipted {
 		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: operation phase %q cannot be removed", agentcfg.ErrSignedCapabilityReplay, op.Phase)
 	}
 
+	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
+	}
+	if !hasActive {
+		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: signed capability removal has no active desired revision", agentcfg.ErrSignedCapabilityReplay)
+	}
 	removalRevision := active
 	if op.Phase == agentcfg.SignedOAuthMCPPhasePublished {
-		if active.Payload.SignedOAuthMCPPair == nil {
-			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: published receipt has no active pair", agentcfg.ErrSignedCapabilityReplay)
+		if active.RevisionID != targetRevision.RevisionID || active.ContentHash != expectedContentHash || active.Payload.SignedOAuthMCPPair == nil ||
+			active.Payload.SignedOAuthMCPPair.AuthorityOperationKind != pair.AuthorityOperationKind {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: removal target is not the active signed pair", agentcfg.ErrRevisionConflict)
 		}
 		payload := carrySiblingsForward(active, true)
 		payload.SignedOAuthMCPPair = nil
+		candidateHash, hashErr := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
+		if hashErr != nil {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, hashErr
+		}
 		removalCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind)
 		removalRevision, err = s.registry.SetRevision(removalCtx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,
-			agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
+			agentcfg.SetOptions{ExpectedContentHash: expectedContentHash})
 		if err != nil {
 			// An unknown SaveIf result can have committed the exact desired removal.
 			// Re-read only the pair absence, then let the receipt CAS decide whether
 			// this caller is permitted to advance the lifetime graph.
 			current, currentSet, readErr := s.registry.Active(context.WithoutCancel(ctx), q, req.AgentID, agentcfg.ConfigScopeAgent)
-			if readErr != nil || !currentSet || current.Payload.SignedOAuthMCPPair != nil {
-				return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
+			if readErr != nil || !currentSet || current.Payload.SignedOAuthMCPPair != nil || current.ContentHash != candidateHash {
+				return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, errors.Join(err, readErr)
 			}
 			removalRevision = current
 		}
@@ -98,13 +98,21 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 		if err != nil {
 			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
 		}
+	} else {
+		removalRevision, err = s.registry.Get(ctx, q, req.AgentID, op.RevisionID, agentcfg.ConfigScopeAgent)
+		if err != nil {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
+		}
+		if active.Payload.SignedOAuthMCPPair != nil {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: stale removal cannot detach the active pair", agentcfg.ErrSignedCapabilityReplay)
+		}
 	}
 
 	// Withdraw through exactly the owner-scoped detacher that owns the MCP
 	// catalog source. It is idempotent; a crash after detachment is proven by
 	// the subsequent receipt CAS rather than inferred from process-local state.
 	if op.Phase == agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted {
-		if err := exactDetacher.DetachExactConnection(ctx, id.TenantID, req.AgentID, pair.Connection.Name, agentcfg.SignedOAuthMCPConnectionFingerprint(pair.Connection)); err != nil {
+		if err := exactDetacher.DetachExactConnection(ctx, id.TenantID, req.AgentID, pair.Connection.Name, signedCapabilityPairAttachmentFingerprint(pair)); err != nil {
 			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
 		}
 		op, err = s.signedOAuthMCPOperations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhaseCatalogUnpublished, removalRevision.RevisionID)
@@ -128,6 +136,19 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 		}
 	}
 	return signedCapabilityRemovalResponse(removalRevision, pair, op), nil
+}
+
+func (s *Service) signedCapabilityRemovalTarget(ctx context.Context, q identity.Quadruple, agentID, expectedContentHash string) (agentcfg.Revision, *agentcfg.SignedOAuthMCPPair, error) {
+	history, err := s.registry.ListRevisions(ctx, q, agentID, agentcfg.ConfigScopeAgent, 0)
+	if err != nil {
+		return agentcfg.Revision{}, nil, err
+	}
+	for _, revision := range history {
+		if revision.ContentHash == expectedContentHash && revision.Payload.SignedOAuthMCPPair != nil {
+			return revision, revision.Payload.SignedOAuthMCPPair, nil
+		}
+	}
+	return agentcfg.Revision{}, nil, fmt.Errorf("%w: expected_content_hash does not identify a signed capability pair revision", agentcfg.ErrRevisionConflict)
 }
 
 func signedCapabilityRemovalResponse(revision agentcfg.Revision, pair *agentcfg.SignedOAuthMCPPair, op agentcfg.SignedOAuthMCPOperation) prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse {
