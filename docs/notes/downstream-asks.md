@@ -27,8 +27,12 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-40 | Replay of `mcp.app_available` in session-history hydration | web/console (sessions) | Medium | Contained | Shipped — phase 204 / D-348 |
 | HA-41 | App→host `tools/call` server-namespace confinement | web/console (MCP Apps host) | High (security) | Small | Shipped — phase 207 / D-351 (items 1–2); item 3 (`_meta.ui.visibility`) still Filed |
 | HA-42 | Progressive `tool-input-partial` streaming into a rendered App | internal/llm + internal/protocol + web/console | Low | Large | Deferred — reserved as D-343 |
+| HA-51 | Bifrost reasoning byte fidelity | internal/llm + planner + tasks + Console | Release blocker | Contained | Shipped (v1.26) — phase 233c / D-402 |
 
-All five were filed by a downstream team building an MCP-Apps server against Harbor. All are **framework-framed** — none is gating that team's own delivery; each names a Harbor-side capability that is absent, inert, or narrower than its documentation claims.
+The original five were filed by a downstream team building an MCP-Apps server
+against Harbor. HA-51 is a separate release-blocking fidelity report. The
+entries are **framework-framed** — each names a Harbor-side capability that is
+absent, inert, or narrower than its documentation claims.
 
 ---
 

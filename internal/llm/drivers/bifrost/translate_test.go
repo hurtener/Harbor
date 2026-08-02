@@ -630,6 +630,75 @@ func TestTranslateResponse_NoUsage(t *testing.T) {
 	}
 }
 
+func TestTranslateResponse_SelectsWireChoiceZeroIndependentOfSliceOrder(t *testing.T) {
+	t.Parallel()
+	badContent, goodContent := "choice-one", "choice-zero"
+	badReasoning, goodReasoning := "wrong reasoning", "selected reasoning"
+	badID, goodID := "call-one", "call-zero"
+	badName, goodName := "wrong-tool", "selected-tool"
+	message := func(content, reasoning string, id, name *string) *bfschemas.ChatMessage {
+		return &bfschemas.ChatMessage{
+			Role:    bfschemas.ChatMessageRoleAssistant,
+			Content: &bfschemas.ChatMessageContent{ContentStr: &content},
+			ChatAssistantMessage: &bfschemas.ChatAssistantMessage{
+				ReasoningDetails: []bfschemas.ChatReasoningDetails{{
+					Index: 0, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: &reasoning,
+				}},
+				ToolCalls: []bfschemas.ChatAssistantMessageToolCall{{
+					ID: id,
+					Function: bfschemas.ChatAssistantMessageToolCallFunction{
+						Name: name, Arguments: `{"selected":true}`,
+					},
+				}},
+			},
+		}
+	}
+	resp := &bfschemas.BifrostChatResponse{Choices: []bfschemas.BifrostResponseChoice{
+		{Index: 1, ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{
+			Message: message(badContent, badReasoning, &badID, &badName),
+		}},
+		{Index: 0, ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{
+			Message: message(goodContent, goodReasoning, &goodID, &goodName),
+		}},
+	}}
+
+	out := translateResponse(resp)
+	if out.Content != goodContent || out.Reasoning != goodReasoning {
+		t.Fatalf("selected response = content %q reasoning %q", out.Content, out.Reasoning)
+	}
+	if len(out.ToolCalls) != 1 || out.ToolCalls[0].ID != goodID || out.ToolCalls[0].Name != goodName {
+		t.Fatalf("selected tool calls = %#v", out.ToolCalls)
+	}
+}
+
+func TestTranslateResponse_NoWireChoiceZeroReturnsEmptySelection(t *testing.T) {
+	t.Parallel()
+	content, reasoning := "must-not-leak", "must-not-leak"
+	id, name := "must-not-leak", "must-not-leak"
+	resp := &bfschemas.BifrostChatResponse{Choices: []bfschemas.BifrostResponseChoice{{
+		Index: 2,
+		ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{Message: &bfschemas.ChatMessage{
+			Content: &bfschemas.ChatMessageContent{ContentStr: &content},
+			ChatAssistantMessage: &bfschemas.ChatAssistantMessage{
+				ReasoningDetails: []bfschemas.ChatReasoningDetails{{
+					Index: 0, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: &reasoning,
+				}},
+				ToolCalls: []bfschemas.ChatAssistantMessageToolCall{{
+					ID: &id, Function: bfschemas.ChatAssistantMessageToolCallFunction{Name: &name},
+				}},
+			},
+		}},
+	}}}
+
+	out := translateResponse(resp)
+	if out.Content != "" || out.Reasoning != "" || out.ToolCalls != nil {
+		t.Fatalf("no choice zero must return empty selection: %#v", out)
+	}
+	if selectedNonStreamChoice(resp) != nil || selectedNonStreamChoice(nil) != nil {
+		t.Fatal("selector returned a choice when wire index zero was absent")
+	}
+}
+
 // TestExtractUsageAndCost_CacheTokens_ExplicitSplit — providers that report
 // separate read/write cache counts (e.g. Anthropic/OpenRouter) land both on
 // llm.Usage. Uses bifrost's own vendored struct type directly (§17.8: the
@@ -726,5 +795,90 @@ func TestTranslateError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), msg) {
 		t.Errorf("err missing message: %q", err.Error())
+	}
+}
+
+func TestTranslateRequest_ToolParametersAndFailLoudSchema(t *testing.T) {
+	t.Parallel()
+	text := "use the tool"
+	req := llm.CompleteRequest{
+		Model: "m",
+		Messages: []llm.ChatMessage{{
+			Role: llm.RoleUser, Content: llm.Content{Text: &text},
+		}},
+		Tools: []llm.ToolDeclaration{{
+			Name:        "lookup",
+			Description: "look something up",
+			Schema:      json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}`),
+		}},
+		ToolChoice:        "required",
+		ParallelToolCalls: true,
+	}
+
+	got, err := translateRequest(bfschemas.OpenAI, req)
+	if err != nil {
+		t.Fatalf("translateRequest: %v", err)
+	}
+	if got.Params == nil || len(got.Params.Tools) != 1 {
+		t.Fatalf("translated tool params = %#v", got.Params)
+	}
+	tool := got.Params.Tools[0]
+	if tool.Type != bfschemas.ChatToolTypeFunction || tool.Function == nil || tool.Function.Name != "lookup" {
+		t.Fatalf("translated tool = %#v", tool)
+	}
+	if tool.Function.Description == nil || *tool.Function.Description != "look something up" || tool.Function.Parameters == nil {
+		t.Fatalf("translated function = %#v", tool.Function)
+	}
+	if tool.Function.Parameters.Type != "object" || got.Params.ToolChoice == nil || got.Params.ToolChoice.ChatToolChoiceStr == nil || *got.Params.ToolChoice.ChatToolChoiceStr != "required" {
+		t.Fatalf("schema/tool choice not preserved: params=%#v", got.Params)
+	}
+	if got.Params.ParallelToolCalls == nil || !*got.Params.ParallelToolCalls {
+		t.Fatalf("parallel_tool_calls = %#v, want true", got.Params.ParallelToolCalls)
+	}
+
+	req.Tools[0].Schema = json.RawMessage(`{"type":`)
+	if _, err := translateRequest(bfschemas.OpenAI, req); err == nil || !strings.Contains(err.Error(), "malformed JSON schema") {
+		t.Fatalf("malformed schema err = %v", err)
+	}
+}
+
+func TestExtractToolCalls_ProjectsCompleteAndSparseEntries(t *testing.T) {
+	t.Parallel()
+	id := "call-1"
+	name := "lookup"
+	resp := &bfschemas.BifrostChatResponse{Choices: []bfschemas.BifrostResponseChoice{{
+		Index: 0,
+		ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{Message: &bfschemas.ChatMessage{
+			ChatAssistantMessage: &bfschemas.ChatAssistantMessage{ToolCalls: []bfschemas.ChatAssistantMessageToolCall{
+				{ID: &id, Function: bfschemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: `{"q":"harbor"}`}},
+				{Function: bfschemas.ChatAssistantMessageToolCallFunction{}},
+			}},
+		}},
+	}}}
+
+	got := extractToolCalls(resp)
+	if len(got) != 2 {
+		t.Fatalf("tool calls = %#v", got)
+	}
+	if got[0].ID != id || got[0].Name != name || string(got[0].Args) != `{"q":"harbor"}` {
+		t.Fatalf("complete tool call = %#v", got[0])
+	}
+	if got[1].ID != "" || got[1].Name != "" || got[1].Args != nil {
+		t.Fatalf("sparse tool call = %#v", got[1])
+	}
+
+	for label, empty := range map[string]*bfschemas.BifrostChatResponse{
+		"nil":                nil,
+		"no_choices":         {},
+		"stream_choice":      {Choices: []bfschemas.BifrostResponseChoice{{ChatStreamResponseChoice: &bfschemas.ChatStreamResponseChoice{}}}},
+		"nil_message":        {Choices: []bfschemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{}}}},
+		"no_assistant_block": {Choices: []bfschemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{Message: &bfschemas.ChatMessage{}}}}},
+		"no_calls": {Choices: []bfschemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{Message: &bfschemas.ChatMessage{
+			ChatAssistantMessage: &bfschemas.ChatAssistantMessage{},
+		}}}}},
+	} {
+		if calls := extractToolCalls(empty); calls != nil {
+			t.Errorf("%s: calls = %#v, want nil", label, calls)
+		}
 	}
 }

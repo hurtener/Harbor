@@ -199,8 +199,7 @@ func (d *Driver) streamComplete(
 
 	var (
 		contentB       strings.Builder
-		reasoningB     strings.Builder
-		finalDetails   []bfschemas.ChatReasoningDetails
+		reasoning      = newReasoningAccumulator()
 		finalToolCalls []llm.ToolCallStructured
 		finalUsage     llm.Usage
 		finalCost      llm.Cost
@@ -232,7 +231,7 @@ readLoop:
 				break readLoop
 			}
 			if chunk.BifrostChatResponse != nil {
-				processStreamChunk(chunk.BifrostChatResponse, &contentB, &reasoningB, &finalDetails, &finalToolCalls, &finalUsage, &finalCost, req.OnContent, req.OnReasoning)
+				processStreamChunk(chunk.BifrostChatResponse, &contentB, reasoning, &finalToolCalls, &finalUsage, &finalCost, req.OnContent, req.OnReasoning)
 			}
 		}
 	}
@@ -243,7 +242,7 @@ readLoop:
 	if req.OnContent != nil {
 		req.OnContent("", true)
 	}
-	if req.OnReasoning != nil && reasoningB.Len() > 0 {
+	if req.OnReasoning != nil && reasoning.rawObserved {
 		req.OnReasoning("", true)
 	}
 
@@ -255,20 +254,10 @@ readLoop:
 		// silent success-with-no-content.
 		return llm.CompleteResponse{}, fmt.Errorf("bifrost: stream returned no chunks")
 	}
-	// Reasoning capture: prefer the message-level
-	// `ReasoningDetails` a final stream chunk carried — bifrost's
-	// canonical normalised surface — over the per-delta accumulator.
-	// Fall back to the accumulated builder when the stream emitted
-	// reasoning deltas but no final message-level details array (some
-	// providers stream `delta.Reasoning` without a normalised tail).
-	reasoning := joinReasoningDetails(finalDetails)
-	if reasoning == "" {
-		reasoning = reasoningB.String()
-	}
 	out := llm.CompleteResponse{
 		Content:   contentB.String(),
 		ToolCalls: finalToolCalls,
-		Reasoning: reasoning,
+		Reasoning: reasoning.result(),
 		Usage:     finalUsage,
 		Cost:      finalCost,
 	}
@@ -284,8 +273,7 @@ readLoop:
 func processStreamChunk(
 	resp *bfschemas.BifrostChatResponse,
 	contentB *strings.Builder,
-	reasoningB *strings.Builder,
-	details *[]bfschemas.ChatReasoningDetails,
+	reasoning *reasoningAccumulator,
 	toolCalls *[]llm.ToolCallStructured,
 	usage *llm.Usage,
 	cost *llm.Cost,
@@ -296,6 +284,9 @@ func processStreamChunk(
 		return
 	}
 	for _, choice := range resp.Choices {
+		if choice.Index != 0 {
+			continue
+		}
 		if choice.ChatStreamResponseChoice == nil || choice.Delta == nil {
 			continue
 		}
@@ -306,20 +297,16 @@ func processStreamChunk(
 				onContent(*delta.Content, false)
 			}
 		}
-		if delta.Reasoning != nil && *delta.Reasoning != "" {
-			reasoningB.WriteString(*delta.Reasoning)
+		if delta.Reasoning != nil {
+			reasoning.observeRaw(*delta.Reasoning)
 			if onReasoning != nil {
 				onReasoning(*delta.Reasoning, false)
 			}
 		}
-		// Collect message-level normalised reasoning details. Bifrost
-		// emits `reasoning_details[]` on stream deltas for providers
-		// whose stream carries the normalised tail (the Gemini-direct
-		// path among them); the driver prefers these
-		// over the per-delta `delta.Reasoning` accumulator.
-		if len(delta.ReasoningDetails) > 0 {
-			*details = append(*details, delta.ReasoningDetails...)
-		}
+		// Details are the fallback only when this completion never
+		// exposes raw reasoning. The accumulator still records them so
+		// details-only providers retain their trace.
+		reasoning.observeDetails(delta.ReasoningDetails)
 		// accumulate streamed tool-call deltas.
 		// Per the OpenAI streaming spec (also followed by Anthropic via
 		// Bedrock, Gemini's OpenAI-compat surface, and OpenRouter): the

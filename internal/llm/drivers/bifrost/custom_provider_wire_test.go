@@ -1,8 +1,10 @@
 package bifrost
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -174,6 +176,123 @@ func TestE2E_CustomProvider_HappyPath(t *testing.T) {
 
 	// Avoid teardown audit emit on shutdown surfacing a flake.
 	_ = audit.Redactor(nil)
+}
+
+// TestE2E_CustomProvider_StreamReasoningByteFidelity drives generated
+// OpenAI-compatible SSE JSON through Bifrost's real decoder. Bifrost
+// synthesizes one reasoning-details entry per raw reasoning delta;
+// Harbor must still return the exact raw byte concatenation.
+func TestE2E_CustomProvider_StreamReasoningByteFidelity(t *testing.T) {
+	const envName = "HARBOR_TEST_OPENAI_COMPAT_REASONING"
+	t.Setenv(envName, "test-key-value")
+
+	fragments := []string{"**Preparing to send email**", "\n\n", "I", " need", " to", " compose"}
+	var sawNewlineWire atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("server read request: %v", err)
+		}
+		var request map[string]any
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("server decode request: %v", err)
+		}
+		if stream, _ := request["stream"].(bool); !stream {
+			t.Errorf("request stream = %#v, want true", request["stream"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("httptest response writer lacks Flusher")
+		}
+		for _, fragment := range fragments {
+			payload := map[string]any{
+				"id": "chatcmpl-reasoning", "object": "chat.completion.chunk",
+				"created": 1700000000, "model": "google/gemma-4-31b-it",
+				"choices": []map[string]any{{
+					"index": 0,
+					"delta": map[string]any{"reasoning": fragment},
+				}},
+			}
+			encoded, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal SSE fixture: %v", err)
+			}
+			if fragment == "\n\n" {
+				if !bytes.Contains(encoded, []byte(`"reasoning":"\n\n"`)) {
+					t.Fatalf("newline fixture encoded as %q; want standard JSON newline escapes", encoded)
+				}
+				sawNewlineWire.Store(true)
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
+			flusher.Flush()
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	cfg := llm.ConfigSnapshot{
+		Driver:               "bifrost",
+		Provider:             "custom-openai-compat",
+		Model:                "google/gemma-4-31b-it",
+		ContextWindowReserve: 0.05,
+		HeavyOutputThreshold: 32 * 1024,
+		ModelProfiles: map[string]llm.ModelProfile{
+			"google/gemma-4-31b-it": {ContextWindowTokens: 8192},
+		},
+		DisableCorrections: true,
+		CustomProviders: []llm.CustomProviderSpec{{
+			Name: "custom-openai-compat", BaseURL: server.URL,
+			APIKeyEnvVar: envName, Models: []string{"google/gemma-4-31b-it"},
+			Timeout: 5 * time.Second, MaxRetries: 0,
+		}},
+	}
+	deps, teardown := makeCustomProviderTestDeps(t)
+	defer teardown()
+	drv, err := New(cfg, deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = drv.Close(context.Background()) }()
+
+	idCtx, _ := identity.With(context.Background(), identity.Identity{
+		TenantID: "t", UserID: "u", SessionID: "s-reasoning-wire",
+	})
+	ctx, cancel := context.WithTimeout(idCtx, 10*time.Second)
+	defer cancel()
+	text := "compose"
+	var callbackBytes strings.Builder
+	var callbackDeltas [][]byte
+	terminalCount := 0
+	out, err := drv.Complete(ctx, llm.CompleteRequest{
+		Model: "google/gemma-4-31b-it", Stream: true,
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
+		OnReasoning: func(delta string, done bool) {
+			if done {
+				terminalCount++
+				return
+			}
+			callbackBytes.WriteString(delta)
+			callbackDeltas = append(callbackDeltas, []byte(delta))
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	want := "**Preparing to send email**\n\nI need to compose"
+	if out.Reasoning != want || callbackBytes.String() != want {
+		t.Fatalf("reasoning parity: response=%q callback=%q want=%q", out.Reasoning, callbackBytes.String(), want)
+	}
+	if len(callbackDeltas) != len(fragments) || !bytes.Equal(callbackDeltas[1], []byte{0x0a, 0x0a}) {
+		t.Fatalf("decoded newline delta = %#v; want exact bytes [0x0a 0x0a]", callbackDeltas)
+	}
+	if terminalCount != 1 {
+		t.Fatalf("terminal reasoning callbacks = %d, want 1", terminalCount)
+	}
+	if !sawNewlineWire.Load() {
+		t.Fatal("newline JSON/SSE fixture was not emitted")
+	}
 }
 
 // TestE2E_CustomProvider_Timeout exercises the per-provider Timeout

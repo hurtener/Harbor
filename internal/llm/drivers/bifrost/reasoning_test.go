@@ -4,12 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 )
 
@@ -52,8 +58,7 @@ func TestReasoningFromMessage_SummaryEntry(t *testing.T) {
 }
 
 // TestReasoningFromMessage_EncryptedSkipped asserts encrypted /
-// content-block entries are skipped — V1 has no provider_native mode
-// (D-148), so signature-bearing thinking blocks have no use.
+// content-block entries stay outside D-147's flat-text capture.
 func TestReasoningFromMessage_EncryptedSkipped(t *testing.T) {
 	t.Parallel()
 	msg := &bfschemas.ChatMessage{
@@ -92,8 +97,40 @@ func TestReasoningFromMessage_EmptyAndNil(t *testing.T) {
 			},
 		},
 	}
-	if got := reasoningFromMessage(whitespaceOnly); got != "" {
-		t.Errorf("whitespace-only: got %q, want empty", got)
+	if got := reasoningFromMessage(whitespaceOnly); got != "   \n  " {
+		t.Errorf("whitespace-only: got %q, want exact bytes", got)
+	}
+}
+
+func TestJoinReasoningDetails_CoalescesStableBlocksWithoutRewriting(t *testing.T) {
+	t.Parallel()
+	id := "block-a"
+	details := []bfschemas.ChatReasoningDetails{
+		{ID: &id, Index: 0, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: strptr("first")},
+		{Index: 0, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: strptr("\n  second\n")},
+		{Index: 1, Type: bfschemas.BifrostReasoningDetailsTypeSummary, Summary: strptr(" summary ")},
+	}
+	want := "first\n  second\n\n\n summary "
+	if got := joinReasoningDetails(details); got != want {
+		t.Fatalf("joinReasoningDetails = %q, want exact %q", got, want)
+	}
+}
+
+func TestJoinReasoningDetails_IDIsPrimaryAndAliasesUnclaimedFallbacks(t *testing.T) {
+	t.Parallel()
+	id1 := "stable-1"
+	id2 := "stable-2"
+	details := []bfschemas.ChatReasoningDetails{
+		{ID: &id1, Index: 4, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: strptr("one")},
+		{ID: &id1, Index: 9, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: strptr("two")},
+		{Index: 4, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: strptr("three")},
+		{ID: &id2, Index: 4, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: strptr("four")},
+		{ID: &id2, Index: 8, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: strptr("five")},
+		{Index: 8, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: strptr("six")},
+	}
+	want := "onetwothree\n\nfourfivesix"
+	if got := joinReasoningDetails(details); got != want {
+		t.Fatalf("joinReasoningDetails = %q, want %q", got, want)
 	}
 }
 
@@ -189,14 +226,13 @@ func TestReasoningCapture_UnaryPath_StubDriver(t *testing.T) {
 	}
 }
 
-// TestReasoningCapture_StreamingPath asserts the streaming path
-// prefers a final chunk's message-level ReasoningDetails over the
-// per-delta accumulator, and falls back to the accumulator when no
-// details array is present.
+// TestReasoningCapture_StreamingPath asserts raw observed deltas are
+// byte-authoritative over synthesized details and details-only streams
+// retain their stable-block fallback.
 func TestReasoningCapture_StreamingPath(t *testing.T) {
 	t.Parallel()
 
-	t.Run("details_array_preferred", func(t *testing.T) {
+	t.Run("raw_deltas_preferred", func(t *testing.T) {
 		t.Parallel()
 		stub := newStubClient()
 		stub.streamHandler = func(req *bfschemas.BifrostChatRequest) (chan *bfschemas.BifrostStreamChunk, *bfschemas.BifrostError) {
@@ -212,7 +248,7 @@ func TestReasoningCapture_StreamingPath(t *testing.T) {
 						Delta: &bfschemas.ChatStreamResponseChoiceDelta{Content: &content, Reasoning: &perDelta},
 					}}},
 				}}
-				// Chunk 2: normalised reasoning_details — this wins.
+				// Chunk 2: normalised reasoning_details cannot override raw.
 				ch <- &bfschemas.BifrostStreamChunk{BifrostChatResponse: &bfschemas.BifrostChatResponse{
 					Model: req.Model,
 					Choices: []bfschemas.BifrostResponseChoice{{ChatStreamResponseChoice: &bfschemas.ChatStreamResponseChoice{
@@ -238,12 +274,12 @@ func TestReasoningCapture_StreamingPath(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Complete: %v", err)
 		}
-		if out.Reasoning != "normalised final trace" {
-			t.Errorf("Reasoning = %q, want the normalised details to win", out.Reasoning)
+		if out.Reasoning != "partial-thought" {
+			t.Errorf("Reasoning = %q, want exact raw delta", out.Reasoning)
 		}
 	})
 
-	t.Run("falls_back_to_accumulator", func(t *testing.T) {
+	t.Run("raw_accumulates_exactly", func(t *testing.T) {
 		t.Parallel()
 		stub := newStubClient()
 		stub.streamHandler = func(req *bfschemas.BifrostChatRequest) (chan *bfschemas.BifrostStreamChunk, *bfschemas.BifrostError) {
@@ -280,6 +316,295 @@ func TestReasoningCapture_StreamingPath(t *testing.T) {
 			t.Errorf("Reasoning = %q, want the accumulated per-delta trace", out.Reasoning)
 		}
 	})
+
+	t.Run("details_only_coalesces_blocks", func(t *testing.T) {
+		t.Parallel()
+		stub := newStubClient()
+		stub.streamHandler = func(req *bfschemas.BifrostChatRequest) (chan *bfschemas.BifrostStreamChunk, *bfschemas.BifrostError) {
+			ch := make(chan *bfschemas.BifrostStreamChunk, 2)
+			go func() {
+				defer close(ch)
+				id := "detail-a"
+				for _, details := range [][]bfschemas.ChatReasoningDetails{
+					{{ID: &id, Index: 0, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: strptr("one ")}},
+					{{Index: 0, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: strptr("two")}, {Index: 1, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: strptr(" three ")}},
+				} {
+					ch <- &bfschemas.BifrostStreamChunk{BifrostChatResponse: &bfschemas.BifrostChatResponse{
+						Model: req.Model,
+						Choices: []bfschemas.BifrostResponseChoice{{Index: 0, ChatStreamResponseChoice: &bfschemas.ChatStreamResponseChoice{
+							Delta: &bfschemas.ChatStreamResponseChoiceDelta{ReasoningDetails: details},
+						}}},
+					}}
+				}
+			}()
+			return ch, nil
+		}
+		drv := newDriverWithClient(stub, bfschemas.OpenRouter, nil)
+		defer func() { _ = drv.Close(context.Background()) }()
+		ctx := withIdentity(t, context.Background(), "s-stream-details")
+		text := "go"
+		out, err := drv.Complete(ctx, llm.CompleteRequest{
+			Model: "m", Stream: true,
+			Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
+		})
+		if err != nil {
+			t.Fatalf("Complete: %v", err)
+		}
+		if out.Reasoning != "one two\n\n three " {
+			t.Fatalf("Reasoning = %q, want exact details-only blocks", out.Reasoning)
+		}
+	})
+}
+
+func TestReasoningCapture_EmptyRawDeltaCallbackLifecycle(t *testing.T) {
+	t.Parallel()
+	stub := newStubClient()
+	stub.streamHandler = func(req *bfschemas.BifrostChatRequest) (chan *bfschemas.BifrostStreamChunk, *bfschemas.BifrostError) {
+		ch := make(chan *bfschemas.BifrostStreamChunk, 1)
+		empty := ""
+		ch <- &bfschemas.BifrostStreamChunk{BifrostChatResponse: &bfschemas.BifrostChatResponse{
+			Model: req.Model,
+			Choices: []bfschemas.BifrostResponseChoice{{Index: 0, ChatStreamResponseChoice: &bfschemas.ChatStreamResponseChoice{
+				Delta: &bfschemas.ChatStreamResponseChoiceDelta{Reasoning: &empty},
+			}}},
+		}}
+		close(ch)
+		return ch, nil
+	}
+	drv := newDriverWithClient(stub, bfschemas.OpenRouter, nil)
+	defer func() { _ = drv.Close(context.Background()) }()
+
+	type callback struct {
+		delta string
+		done  bool
+	}
+	var callbacks []callback
+	ctx := withIdentity(t, context.Background(), "s-empty-raw")
+	text := "go"
+	out, err := drv.Complete(ctx, llm.CompleteRequest{
+		Model: "m", Stream: true,
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
+		OnReasoning: func(delta string, done bool) {
+			callbacks = append(callbacks, callback{delta: delta, done: done})
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if out.Reasoning != "" {
+		t.Fatalf("Reasoning = %q, want empty raw result", out.Reasoning)
+	}
+	want := []callback{{delta: "", done: false}, {delta: "", done: true}}
+	if !equalCallbacks(callbacks, want) {
+		t.Fatalf("callbacks = %#v, want %#v", callbacks, want)
+	}
+}
+
+func TestReasoningCapture_StreamConsumesChoiceZeroOnly(t *testing.T) {
+	t.Parallel()
+	stub := newStubClient()
+	stub.streamHandler = func(req *bfschemas.BifrostChatRequest) (chan *bfschemas.BifrostStreamChunk, *bfschemas.BifrostError) {
+		ch := make(chan *bfschemas.BifrostStreamChunk, 1)
+		badContent, badReasoning := "bad-content", "bad-reasoning"
+		badDetail := "bad-detail"
+		badID, badName := "bad-id", "bad-tool"
+		goodContent, goodReasoning := "good-content", "good-reasoning"
+		goodID, goodName := "good-id", "good-tool"
+		ch <- &bfschemas.BifrostStreamChunk{BifrostChatResponse: &bfschemas.BifrostChatResponse{
+			Model: req.Model,
+			Choices: []bfschemas.BifrostResponseChoice{
+				{Index: 1, ChatStreamResponseChoice: &bfschemas.ChatStreamResponseChoice{Delta: &bfschemas.ChatStreamResponseChoiceDelta{
+					Content: &badContent, Reasoning: &badReasoning,
+					ReasoningDetails: []bfschemas.ChatReasoningDetails{{Index: 0, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: &badDetail}},
+					ToolCalls:        []bfschemas.ChatAssistantMessageToolCall{{Index: 0, ID: &badID, Function: bfschemas.ChatAssistantMessageToolCallFunction{Name: &badName, Arguments: `{}`}}},
+				}}},
+				{Index: 0, ChatStreamResponseChoice: &bfschemas.ChatStreamResponseChoice{Delta: &bfschemas.ChatStreamResponseChoiceDelta{
+					Content: &goodContent, Reasoning: &goodReasoning,
+					ToolCalls: []bfschemas.ChatAssistantMessageToolCall{{Index: 0, ID: &goodID, Function: bfschemas.ChatAssistantMessageToolCallFunction{Name: &goodName, Arguments: `{}`}}},
+				}}},
+			},
+		}}
+		close(ch)
+		return ch, nil
+	}
+	drv := newDriverWithClient(stub, bfschemas.OpenRouter, nil)
+	defer func() { _ = drv.Close(context.Background()) }()
+
+	var contentCallbacks, reasoningCallbacks []string
+	ctx := withIdentity(t, context.Background(), "s-choice-zero")
+	text := "go"
+	out, err := drv.Complete(ctx, llm.CompleteRequest{
+		Model: "m", Stream: true,
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
+		OnContent: func(delta string, done bool) {
+			if !done {
+				contentCallbacks = append(contentCallbacks, delta)
+			}
+		},
+		OnReasoning: func(delta string, done bool) {
+			if !done {
+				reasoningCallbacks = append(reasoningCallbacks, delta)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if out.Content != "good-content" || out.Reasoning != "good-reasoning" {
+		t.Fatalf("response = content %q reasoning %q; non-zero choice contaminated output", out.Content, out.Reasoning)
+	}
+	if len(out.ToolCalls) != 1 || out.ToolCalls[0].ID != "good-id" || out.ToolCalls[0].Name != "good-tool" {
+		t.Fatalf("tool calls = %#v, want selected choice only", out.ToolCalls)
+	}
+	if len(contentCallbacks) != 1 || contentCallbacks[0] != "good-content" {
+		t.Fatalf("content callbacks = %#v", contentCallbacks)
+	}
+	if len(reasoningCallbacks) != 1 || reasoningCallbacks[0] != "good-reasoning" {
+		t.Fatalf("reasoning callbacks = %#v", reasoningCallbacks)
+	}
+}
+
+func equalCallbacks[T comparable](got, want []T) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestReasoningCapture_ConcurrentReuseNoBleedOrLeak(t *testing.T) {
+	stub := newStubClient()
+	stub.streamHandler = func(req *bfschemas.BifrostChatRequest) (chan *bfschemas.BifrostStreamChunk, *bfschemas.BifrostError) {
+		if strings.HasPrefix(req.Model, "short-") {
+			// The callback cancels this call after the only buffered
+			// fragment. Leaving the channel open makes the next loop
+			// iteration deterministically select that call's context.
+			ch := make(chan *bfschemas.BifrostStreamChunk, 1)
+			piece := req.Model + ":"
+			ch <- &bfschemas.BifrostStreamChunk{BifrostChatResponse: &bfschemas.BifrostChatResponse{
+				Model: req.Model,
+				Choices: []bfschemas.BifrostResponseChoice{{Index: 0, ChatStreamResponseChoice: &bfschemas.ChatStreamResponseChoice{
+					Delta: &bfschemas.ChatStreamResponseChoiceDelta{Reasoning: &piece},
+				}}},
+			}}
+			return ch, nil
+		}
+		ch := make(chan *bfschemas.BifrostStreamChunk, 2)
+		for _, fragment := range []string{req.Model + ":", "reasoning"} {
+			piece := fragment
+			ch <- &bfschemas.BifrostStreamChunk{BifrostChatResponse: &bfschemas.BifrostChatResponse{
+				Model: req.Model,
+				Choices: []bfschemas.BifrostResponseChoice{{Index: 0, ChatStreamResponseChoice: &bfschemas.ChatStreamResponseChoice{
+					Delta: &bfschemas.ChatStreamResponseChoiceDelta{Reasoning: &piece},
+				}}},
+			}}
+		}
+		close(ch)
+		return ch, nil
+	}
+	drv := newDriverWithClient(stub, bfschemas.OpenRouter, nil)
+	defer func() { _ = drv.Close(context.Background()) }()
+
+	const n = 128
+	baseline := runtime.NumGoroutine()
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func() {
+			defer wg.Done()
+			mode := "ok"
+			switch i % 8 {
+			case 0:
+				mode = "pre"
+			case 1:
+				mode = "short"
+			}
+			model := fmt.Sprintf("%s-%03d", mode, i)
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if mode == "ok" {
+				ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			} else {
+				ctx, cancel = context.WithCancel(context.Background())
+			}
+			defer cancel()
+			var identityErr error
+			ctx, identityErr = identity.With(ctx, identity.Identity{
+				TenantID:  "T",
+				UserID:    "U",
+				SessionID: fmt.Sprintf("reasoning-%03d", i),
+			})
+			if identityErr != nil {
+				errs <- fmt.Errorf("call %d identity: %w", i, identityErr)
+				return
+			}
+			if mode == "pre" {
+				cancel()
+			}
+			text := "go"
+			var callback strings.Builder
+			terminal := 0
+			var shortCancel sync.Once
+			out, err := drv.Complete(ctx, llm.CompleteRequest{
+				Model: model, Stream: true,
+				Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
+				OnReasoning: func(delta string, done bool) {
+					if done {
+						terminal++
+						return
+					}
+					callback.WriteString(delta)
+					if mode == "short" {
+						shortCancel.Do(cancel)
+					}
+				},
+			})
+			errText := "<nil>"
+			if err != nil {
+				errText = err.Error()
+			}
+			switch mode {
+			case "pre":
+				if !errors.Is(err, context.Canceled) || out.Content != "" || out.Reasoning != "" || len(out.ToolCalls) != 0 || callback.Len() != 0 || terminal != 0 {
+					errs <- fmt.Errorf("pre-cancel call %d: err=%s response=%#v callback=%q terminal=%d", i, errText, out, callback.String(), terminal)
+					return
+				}
+			case "short":
+				want := model + ":"
+				if !errors.Is(err, context.Canceled) || out.Content != "" || out.Reasoning != "" || len(out.ToolCalls) != 0 || callback.String() != want || terminal != 1 {
+					errs <- fmt.Errorf("short-cancel call %d: err=%s response=%#v callback=%q terminal=%d want=%q/1", i, errText, out, callback.String(), terminal, want)
+					return
+				}
+			default:
+				want := model + ":reasoning"
+				if err != nil || out.Reasoning != want || callback.String() != want || terminal != 1 {
+					errs <- fmt.Errorf("success call %d: err=%s response=%q callback=%q terminal=%d want=%q/1", i, errText, out.Reasoning, callback.String(), terminal, want)
+					return
+				}
+			}
+			errs <- nil
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline+5 && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if got := runtime.NumGoroutine(); got > baseline+5 {
+		t.Errorf("goroutine baseline not restored: got %d baseline %d (+5)", got, baseline)
+	}
 }
 
 // TestAnthropicReasoningBudget_BelowFloorFailsLoud asserts the
