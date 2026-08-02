@@ -101,6 +101,46 @@ func TestRetirement_ConcurrentSameOperationAndTenantIsolation(t *testing.T) {
 	}
 }
 
+// TestRetirement_SharedSQLiteTwoRegistries_N100 proves the durable active-slot
+// CAS, rather than either Runtime's local lock, linearises a terminal replay.
+func TestRetirement_SharedSQLiteTwoRegistries_N100(t *testing.T) {
+	ctx := context.Background()
+	left, right := newSharedStores(t)
+	a := newRegistryOnStore(t, left)
+	b := newRegistryOnStore(t, right)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-sqlite", UserID: "admin", SessionID: "control"}}
+	const agent = "agent-shared"
+	rev, err := a.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, skills("seed"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 100)
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r := a
+			if i%2 == 1 {
+				r = b
+			}
+			_, err := r.(agentcfg.RetirementRegistry).Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "shared-op", ExpectedContentHash: rev.ContentHash})
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("same-operation race: %v", err)
+		}
+	}
+	status, found, err := a.(agentcfg.RetirementRegistry).RetirementStatus(ctx, id, agent)
+	if err != nil || !found || status.OperationID != "shared-op" || !status.Completed {
+		t.Fatalf("durable status=(%+v,%v,%v)", status, found, err)
+	}
+}
+
 // TestRetirement_ProgressIsFrozenCASState proves cleanup acknowledgement is
 // durable, exactly names a manifest item, and cannot be replaced by an
 // invented cleanup target after the tombstone wins.
