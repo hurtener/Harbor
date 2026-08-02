@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"sort"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -56,7 +55,7 @@ func (c *SessionPersonalController) SessionSkills(ctx context.Context, id identi
 		if err := controllerFenceError(before); err != nil {
 			return nil, err
 		}
-		mode, err := c.cutover.Mode(ctx, id.TenantID)
+		mode, err := c.loadCutoverMode(ctx, id.TenantID)
 		if err != nil {
 			return nil, err
 		}
@@ -79,7 +78,15 @@ func (c *SessionPersonalController) SessionSkills(ctx context.Context, id identi
 		if err := controllerFenceError(after); err != nil {
 			return nil, err
 		}
-		if before.equal(after) {
+		afterMode, err := c.loadCutoverMode(ctx, id.TenantID)
+		if err != nil {
+			return nil, err
+		}
+		// CutoverController is monotonic: dual_read -> state_only is the only
+		// authority transition. Re-reading the mode therefore supplies the
+		// semantic cutover-version fence without exposing checkpoint progress;
+		// dual-read generation changes do not change which tier is authoritative.
+		if before.equal(after) && mode == afterMode {
 			return result, nil
 		}
 	}
@@ -139,7 +146,7 @@ func (c *SessionPersonalController) requireStateOnly(ctx context.Context, id ide
 	if err := controllerFenceError(fences); err != nil {
 		return err
 	}
-	mode, err := c.cutover.Mode(ctx, id.TenantID)
+	mode, err := c.loadCutoverMode(ctx, id.TenantID)
 	if err != nil {
 		return err
 	}
@@ -148,8 +155,20 @@ func (c *SessionPersonalController) requireStateOnly(ctx context.Context, id ide
 		return nil
 	case CutoverDualRead:
 		return ErrCutoverPending
+	}
+	return fmt.Errorf("%w: unknown cutover mode %q", ErrCutoverRecordInvalid, mode)
+}
+
+func (c *SessionPersonalController) loadCutoverMode(ctx context.Context, tenantID string) (CutoverMode, error) {
+	mode, err := c.cutover.Mode(ctx, tenantID)
+	if err != nil {
+		return CutoverDualRead, err
+	}
+	switch mode {
+	case CutoverDualRead, CutoverStateOnly:
+		return mode, nil
 	default:
-		return fmt.Errorf("%w: unknown cutover mode %q", ErrCutoverRecordInvalid, mode)
+		return CutoverDualRead, fmt.Errorf("%w: unknown cutover mode %q", ErrCutoverRecordInvalid, mode)
 	}
 }
 
@@ -296,122 +315,9 @@ func sortedControllerSkills(byName map[string]skills.Skill) []skills.Skill {
 }
 
 func cloneControllerSkill(skill skills.Skill) (skills.Skill, error) {
-	result := skill
-	result.Tags = append([]string(nil), skill.Tags...)
-	result.Steps = append([]string(nil), skill.Steps...)
-	result.Preconditions = append([]string(nil), skill.Preconditions...)
-	result.FailureModes = append([]string(nil), skill.FailureModes...)
-	result.RequiredTools = append([]string(nil), skill.RequiredTools...)
-	result.RequiredNS = append([]string(nil), skill.RequiredNS...)
-	result.RequiredTags = append([]string(nil), skill.RequiredTags...)
-	if skill.Extra == nil {
-		return result, nil
-	}
-	cloned, err := cloneControllerValue(reflect.ValueOf(skill.Extra), make(map[controllerCloneVisit]bool))
+	normalized, err := normalizeResolverSkill(skill)
 	if err != nil {
 		return skills.Skill{}, err
 	}
-	extra, ok := cloned.Interface().(map[string]any)
-	if !ok {
-		return skills.Skill{}, errors.New("cloned Extra has an incompatible type")
-	}
-	result.Extra = extra
-	return result, nil
-}
-
-type controllerCloneVisit struct {
-	typ reflect.Type
-	ptr uintptr
-}
-
-func cloneControllerValue(value reflect.Value, active map[controllerCloneVisit]bool) (reflect.Value, error) {
-	if !value.IsValid() {
-		return value, nil
-	}
-	switch value.Kind() {
-	case reflect.Interface:
-		if value.IsNil() {
-			return reflect.Zero(value.Type()), nil
-		}
-		cloned, err := cloneControllerValue(value.Elem(), active)
-		if err != nil {
-			return reflect.Value{}, err
-		}
-		result := reflect.New(value.Type()).Elem()
-		result.Set(cloned)
-		return result, nil
-	case reflect.Map:
-		if value.IsNil() {
-			return reflect.Zero(value.Type()), nil
-		}
-		if value.Type().Key().Kind() != reflect.String {
-			return reflect.Value{}, errors.New("extra maps must use string keys")
-		}
-		visit := controllerCloneVisit{typ: value.Type(), ptr: value.Pointer()}
-		if active[visit] {
-			return reflect.Value{}, errors.New("extra contains a map cycle")
-		}
-		active[visit] = true
-		defer delete(active, visit)
-		result := reflect.MakeMapWithSize(value.Type(), value.Len())
-		iter := value.MapRange()
-		for iter.Next() {
-			cloned, err := cloneControllerValue(iter.Value(), active)
-			if err != nil {
-				return reflect.Value{}, err
-			}
-			result.SetMapIndex(iter.Key(), cloned)
-		}
-		return result, nil
-	case reflect.Slice:
-		if value.IsNil() {
-			return reflect.Zero(value.Type()), nil
-		}
-		visit := controllerCloneVisit{typ: value.Type(), ptr: value.Pointer()}
-		if active[visit] {
-			return reflect.Value{}, errors.New("extra contains a slice cycle")
-		}
-		active[visit] = true
-		defer delete(active, visit)
-		result := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
-		for i := range value.Len() {
-			cloned, err := cloneControllerValue(value.Index(i), active)
-			if err != nil {
-				return reflect.Value{}, err
-			}
-			result.Index(i).Set(cloned)
-		}
-		return result, nil
-	case reflect.Array:
-		result := reflect.New(value.Type()).Elem()
-		for i := range value.Len() {
-			cloned, err := cloneControllerValue(value.Index(i), active)
-			if err != nil {
-				return reflect.Value{}, err
-			}
-			result.Index(i).Set(cloned)
-		}
-		return result, nil
-	case reflect.Pointer:
-		if value.IsNil() {
-			return reflect.Zero(value.Type()), nil
-		}
-		visit := controllerCloneVisit{typ: value.Type(), ptr: value.Pointer()}
-		if active[visit] {
-			return reflect.Value{}, errors.New("extra contains a pointer cycle")
-		}
-		active[visit] = true
-		defer delete(active, visit)
-		cloned, err := cloneControllerValue(value.Elem(), active)
-		if err != nil {
-			return reflect.Value{}, err
-		}
-		result := reflect.New(value.Type().Elem())
-		result.Elem().Set(cloned)
-		return result, nil
-	case reflect.Struct, reflect.Chan, reflect.Func, reflect.UnsafePointer:
-		return reflect.Value{}, fmt.Errorf("extra contains unsupported %s value", value.Kind())
-	default:
-		return value, nil
-	}
+	return cloneSkill(normalized), nil
 }

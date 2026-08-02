@@ -15,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionfence"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
@@ -31,6 +32,15 @@ var _ sessionPersonalControllerContract = (*sessionoverlay.SessionPersonalContro
 type controllerModeReader struct {
 	mode sessionoverlay.CutoverMode
 	err  error
+}
+
+type controllerExtraLeaf struct {
+	Value  string   `json:"value"`
+	Labels []string `json:"labels"`
+}
+
+type controllerExtraEnvelope struct {
+	Leaf *controllerExtraLeaf `json:"leaf"`
 }
 
 func (r controllerModeReader) Mode(ctx context.Context, _ string) (sessionoverlay.CutoverMode, error) {
@@ -137,6 +147,75 @@ func TestSessionPersonalController_DualReadExactAgentTripleAndImmutableBodies(t 
 	}
 }
 
+func TestSessionPersonalController_NormalizesStructAndPointerExtraWithoutAliases(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("state-controller-extra")
+	activateAgent(t, st, id, "agent-a")
+	leaf := &controllerExtraLeaf{Value: "original", Labels: []string{"one"}}
+	body := durableSkill("structured")
+	body.Extra = map[string]any{
+		"struct":  controllerExtraEnvelope{Leaf: leaf},
+		"pointer": leaf,
+	}
+	controller, _ := newSessionPersonalController(t, st, sessionoverlay.CutoverStateOnly, &exactLegacyReader{})
+	if err := controller.UpsertSessionSkill(t.Context(), id, "agent-a", body); err != nil {
+		t.Fatal(err)
+	}
+	leaf.Value = "source-mutated"
+	leaf.Labels[0] = "source-mutated"
+
+	got, err := controller.SessionSkills(t.Context(), id, "agent-a")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("SessionSkills = (%+v, %v)", got, err)
+	}
+	structLeaf := got[0].Extra["struct"].(map[string]any)["leaf"].(map[string]any)
+	pointerLeaf := got[0].Extra["pointer"].(map[string]any)
+	if structLeaf["value"] != "original" || pointerLeaf["labels"].([]any)[0] != "one" {
+		t.Fatalf("persisted Extra retained caller aliases: %+v", got[0].Extra)
+	}
+	structLeaf["value"] = "returned-struct-mutation"
+	pointerLeaf["labels"].([]any)[0] = "returned-pointer-mutation"
+	if leaf.Value != "source-mutated" || leaf.Labels[0] != "source-mutated" {
+		t.Fatalf("returned normalized Extra mutated source pointer: %+v", leaf)
+	}
+
+	reloaded, err := controller.SessionSkills(t.Context(), id, "agent-a")
+	if err != nil || len(reloaded) != 1 {
+		t.Fatalf("reloaded SessionSkills = (%+v, %v)", reloaded, err)
+	}
+	reloadedStruct := reloaded[0].Extra["struct"].(map[string]any)["leaf"].(map[string]any)
+	reloadedPointer := reloaded[0].Extra["pointer"].(map[string]any)
+	if reloadedStruct["value"] != "original" || reloadedPointer["labels"].([]any)[0] != "one" {
+		t.Fatalf("normalized Extra leaked returned aliases: %+v", reloaded[0].Extra)
+	}
+}
+
+func TestSessionPersonalController_RejectsCyclicAndUnsupportedExtra(t *testing.T) {
+	for name, extra := range map[string]map[string]any{
+		"cycle": func() map[string]any {
+			value := map[string]any{}
+			value["self"] = value
+			return value
+		}(),
+		"unsupported": {"function": func() {}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := newDurableState(t)
+			id := durableID("state-controller-extra-" + name)
+			activateAgent(t, st, id, "agent-a")
+			body := durableSkill("bad-extra")
+			body.Extra = extra
+			controller, _ := newSessionPersonalController(t, st, sessionoverlay.CutoverStateOnly, &exactLegacyReader{})
+			if err := controller.UpsertSessionSkill(t.Context(), id, "agent-a", body); err == nil {
+				t.Fatal("UpsertSessionSkill accepted non-JSON Extra")
+			}
+			if got, err := controller.SessionSkills(t.Context(), id, "agent-a"); err != nil || len(got) != 0 {
+				t.Fatalf("failed upsert changed session tier = (%+v, %v)", got, err)
+			}
+		})
+	}
+}
+
 func TestSessionPersonalController_DualReadFailsLoudForMissingAndMalformedBodies(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -174,6 +253,146 @@ func TestSessionPersonalController_DualReadFailsLoudForMissingAndMalformedBodies
 				t.Fatalf("SessionSkills = %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+type cutoverBlockingLegacyReader struct {
+	*exactLegacyReader
+	entered chan struct{}
+	release chan struct{}
+	blocked atomic.Bool
+}
+
+func (r *cutoverBlockingLegacyReader) GetScope(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) (skills.Skill, error) {
+	if r.blocked.CompareAndSwap(false, true) {
+		close(r.entered)
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return skills.Skill{}, ctx.Err()
+		}
+	}
+	return r.exactLegacyReader.GetScope(ctx, id, name, scope)
+}
+
+type controllerTransitionMigrator struct{}
+
+func (controllerTransitionMigrator) CopyLegacyOverlay(context.Context, state.StateRecord, config.SessionPersonalCutoverTenant) (int, error) {
+	return 0, nil
+}
+
+func (controllerTransitionMigrator) VerifyLegacyOverlay(context.Context, state.StateRecord, config.SessionPersonalCutoverTenant) (bool, error) {
+	return true, nil
+}
+
+type alternatingControllerModeReader struct {
+	calls atomic.Int32
+}
+
+func (r *alternatingControllerModeReader) Mode(ctx context.Context, _ string) (sessionoverlay.CutoverMode, error) {
+	if err := ctx.Err(); err != nil {
+		return sessionoverlay.CutoverDualRead, err
+	}
+	if r.calls.Add(1)%2 == 0 {
+		return sessionoverlay.CutoverStateOnly, nil
+	}
+	return sessionoverlay.CutoverDualRead, nil
+}
+
+func TestSessionPersonalController_CutoverCASDuringEnumerationRetriesToStateOnly(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("controller-cutover-race")
+	activateAgent(t, st, id, "agent-a")
+	legacy := &cutoverBlockingLegacyReader{
+		exactLegacyReader: &exactLegacyReader{},
+		entered:           make(chan struct{}),
+		release:           make(chan struct{}),
+	}
+	legacy.add(id, "legacy", durableSkill("legacy"))
+	if err := st.Save(t.Context(), legacyCandidate(t, id, "agent-a", "legacy")); err != nil {
+		t.Fatal(err)
+	}
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := personal.SavePersonal(t.Context(), id, "agent-a", durableSkill("owned"), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	declaration := config.SessionPersonalCutoverTenant{
+		TenantID: id.TenantID, Epoch: "epoch", RosterDigest: "digest", LegacyWritersDrained: true,
+	}
+	cutover, err := sessionoverlay.NewCutoverController(st, []config.SessionPersonalCutoverTenant{declaration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cutover.Ensure(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	controller, err := sessionoverlay.NewSessionPersonalController(personal, cutover, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type readResult struct {
+		skills []skills.Skill
+		err    error
+	}
+	result := make(chan readResult, 1)
+	go func() {
+		rows, readErr := controller.SessionSkills(context.Background(), id, "agent-a")
+		result <- readResult{skills: rows, err: readErr}
+	}()
+	select {
+	case <-legacy.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dual-read enumeration did not reach the legacy body")
+	}
+	t.Cleanup(func() {
+		select {
+		case <-legacy.release:
+		default:
+			close(legacy.release)
+		}
+	})
+	mode, err := cutover.Advance(t.Context(), id.TenantID, 8, controllerTransitionMigrator{})
+	if err != nil || mode != sessionoverlay.CutoverStateOnly {
+		t.Fatalf("Advance = (%q, %v), want state_only", mode, err)
+	}
+	close(legacy.release)
+	select {
+	case got := <-result:
+		if got.err != nil || fmt.Sprint(skillNames(got.skills)) != "[owned]" {
+			t.Fatalf("SessionSkills after cutover CAS = (%v, %v), want owned state-only view", skillNames(got.skills), got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SessionSkills did not complete after cutover CAS")
+	}
+}
+
+func TestSessionPersonalController_PerpetualCutoverModeChurnIsBounded(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("controller-cutover-churn")
+	activateAgent(t, st, id, "agent-a")
+	legacy := &exactLegacyReader{}
+	legacy.add(id, "legacy", durableSkill("legacy"))
+	if err := st.Save(t.Context(), legacyCandidate(t, id, "agent-a", "legacy")); err != nil {
+		t.Fatal(err)
+	}
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := &alternatingControllerModeReader{}
+	controller, err := sessionoverlay.NewSessionPersonalController(personal, mode, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.SessionSkills(t.Context(), id, "agent-a"); !errors.Is(err, sessionoverlay.ErrSessionSkillReadUnstable) {
+		t.Fatalf("SessionSkills = %v, want ErrSessionSkillReadUnstable", err)
+	}
+	if got, want := mode.calls.Load(), int32(2*sessionoverlay.MaxSessionSkillReadAttempts); got != want {
+		t.Fatalf("cutover mode reads = %d, want %d", got, want)
 	}
 }
 
