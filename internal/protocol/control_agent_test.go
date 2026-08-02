@@ -341,6 +341,82 @@ func TestDispatchStart_AgentReach_BareDirectOmittedTargetFailsClosed(t *testing.
 	}
 }
 
+// recordingReachResolver makes a tenant-local resolvability lookup observable.
+// It is deliberately not a config registry: this test pins the ControlSurface
+// ordering contract itself, including the case where a selected ID is unknown.
+type recordingReachResolver struct {
+	defaultID string
+	calls     int
+}
+
+func (r *recordingReachResolver) ResolveAgent(context.Context, identity.Identity, string) (bool, error) {
+	r.calls++
+	return false, nil
+}
+
+func (r *recordingReachResolver) EffectiveAgentID(requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	return r.defaultID, nil
+}
+
+// TestDispatchStart_AgentReach_DenialPrecedesTenantResolver proves that an
+// unauthorized bearer cannot use start as a tenant-local config existence
+// oracle. The resolver would report every target unknown, but it is never
+// called for explicit or defaulted selections when reach is missing, empty, or
+// excludes that effective target.
+func TestDispatchStart_AgentReach_DenialPrecedesTenantResolver(t *testing.T) {
+	f := newAgentFixture(t, false)
+	caller := agentIdent("tenant-a", "user-1", "session-x")
+
+	for _, selection := range []struct {
+		name      string
+		agentID   string
+		effective string
+	}{
+		{name: "explicit unknown", agentID: "unknown-explicit", effective: "unknown-explicit"},
+		{name: "omitted default unknown", effective: "unknown-default"},
+	} {
+		t.Run(selection.name, func(t *testing.T) {
+			for _, authority := range []struct {
+				name string
+				ctx  context.Context
+			}{
+				{name: "missing", ctx: authCtx(t, caller)},
+				{name: "empty", ctx: auth.WithAgentReach(authCtx(t, caller), []string{})},
+				{name: "excluded", ctx: auth.WithAgentReach(authCtx(t, caller), []string{"another-agent"})},
+			} {
+				t.Run(authority.name, func(t *testing.T) {
+					resolver := &recordingReachResolver{defaultID: "unknown-default"}
+					surface, err := protocol.NewControlSurface(f.tasks, steering.NewRegistry(),
+						protocol.WithAgentResolver(resolver),
+						protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
+					if err != nil {
+						t.Fatalf("NewControlSurface: %v", err)
+					}
+					before := countTasks(t, f.tasks, caller)
+					_, err = surface.Dispatch(authority.ctx, methods.MethodStart, &types.StartRequest{
+						Identity:       types.IdentityScope{Tenant: caller.TenantID, User: caller.UserID, Session: caller.SessionID},
+						Query:          "hello",
+						AgentID:        selection.agentID,
+						IdempotencyKey: selection.name + "-" + authority.name,
+					})
+					if got := codeOf(t, err); got != protoerrors.CodeScopeMismatch {
+						t.Fatalf("%s target %q error code = %q, want %q", authority.name, selection.effective, got, protoerrors.CodeScopeMismatch)
+					}
+					if resolver.calls != 0 {
+						t.Fatalf("%s target %q called tenant resolver %d times before reach denial", authority.name, selection.effective, resolver.calls)
+					}
+					if after := countTasks(t, f.tasks, caller); after != before {
+						t.Fatalf("task count %d -> %d: denied reach must precede resolver and spawn", before, after)
+					}
+				})
+			}
+		})
+	}
+}
+
 // errResolver fails every lookup — the "the backing store is down"
 // failure mode. A resolve error must FAIL the request loud, never fall
 // through to the default agent (CLAUDE.md §13).
@@ -360,7 +436,7 @@ func TestDispatchStart_NamedAgent_ResolverErrorFailsLoud(t *testing.T) {
 	caller := agentIdent("tenant-a", "user-1", "session-x")
 	before := countTasks(t, f.tasks, caller)
 
-	_, dErr := surface.Dispatch(authCtx(t, caller), methods.MethodStart, &types.StartRequest{
+	_, dErr := surface.Dispatch(auth.WithAgentReach(authCtx(t, caller), []string{bootAgentID}), methods.MethodStart, &types.StartRequest{
 		Identity: types.IdentityScope{Tenant: caller.TenantID, User: caller.UserID, Session: caller.SessionID},
 		Query:    "hello",
 		AgentID:  bootAgentID,

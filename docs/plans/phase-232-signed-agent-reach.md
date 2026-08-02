@@ -30,7 +30,8 @@ Bind each authenticated data-plane bearer to a bounded signed set of agent regis
 ## Goals
 
 - Parse a strict bounded `agent_reach` JWT claim into immutable verified authority.
-- Resolve every effective agent choice before one shared authorization check.
+- Resolve every effective agent choice, then run the one shared authorization
+  check before any tenant-local config existence or resolvability lookup.
 - Deny before session, task, config, skill, or projection side effects.
 - Preserve `tools.describe` without `agent_id` as the boot-effective projection.
 
@@ -70,7 +71,9 @@ Bind each authenticated data-plane bearer to a bounded signed set of agent regis
 
 ## Test plan
 
-- **Unit:** strict claim parsing, boundedness, gate result, default resolution, and no-service-call refusals.
+- **Unit:** strict claim parsing, boundedness, gate result, default resolution,
+  and recording-resolver proof that missing, empty, and excluded reach deny
+  explicit and omitted unknown targets before any tenant-local lookup.
 - **Integration:** authenticated real mux over every enumerated method, default selection, cross-tenant config, carrier posture, and `tools.describe` omission.
 - **Conformance:** a closed method census fails if a covered method is added or removed without a gate row.
 - **Concurrency / leak:** N≥100 mixed-authority calls against one mux under `-race`, cancellation isolation, and goroutine baseline.

@@ -190,11 +190,13 @@ case "${REV_PROBE:-000}" in
         ;;
 esac
 
-# --- (4) An UNKNOWN agent_id is refused with 400 during selection, and no
-#         task is created. Phase 232 separately proves that a RESOLVABLE but
-#         out-of-reach id reaches the authority gate and is refused 403.
-#         The task-count check is the load-bearing half: a status-code-only
-#         assertion would not catch a refusal that happened after Spawn.
+# --- (4) The stock bearer cannot reach an UNKNOWN agent_id, so it is refused
+#         with 403 before tenant-local selection lookup, and no task is
+#         created. Phase 232's recording-resolver test separately proves that
+#         an allowed bearer sees unknown and foreign targets as the same 400
+#         invalid_request selection refusal. The task-count check is the
+#         load-bearing half: a status-code-only assertion would not catch a
+#         refusal that happened after Spawn.
 #
 #         The block runs in its OWN session so the count is not perturbed
 #         by the runs steps 1-3 started (or by any child task one of them
@@ -245,10 +247,10 @@ UNKNOWN_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${START_URL}" \
     -H 'Content-Type: application/json' \
     -d '{"query":"phase-215 smoke: unknown agent 2","agent_id":"phase215-no-such-agent"}' 2>/dev/null || true)"
 read -r AFTER_STATUS AFTER_COUNT <<< "$(count_isolated_tasks)"
-if [ "${UNKNOWN_CODE}" = "400" ]; then
-    ok "phase 215: an unknown agent_id is refused with 400 invalid_request during selection"
+if [ "${UNKNOWN_CODE}" = "403" ]; then
+    ok "phase 215/232: an unknown out-of-reach agent_id is refused with 403 before tenant-local selection"
 else
-    fail "phase 215: an unknown agent_id returned ${UNKNOWN_CODE}, want 400"
+    fail "phase 215/232: an unknown out-of-reach agent_id returned ${UNKNOWN_CODE}, want 403"
 fi
 if [ "${BEFORE_STATUS}" != "200" ] || [ "${AFTER_STATUS}" != "200" ] || [ -z "${BEFORE_COUNT}" ] || [ -z "${AFTER_COUNT}" ]; then
     fail "phase 215: task count unreadable (tasks.list ${BEFORE_STATUS} → ${AFTER_STATUS}) — a refused start MUST NOT create a task, and this guard cannot say whether it did"

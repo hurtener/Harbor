@@ -390,21 +390,12 @@ const agentNotResolvableMsg = "agent_id is not resolvable for the caller's tenan
 // A resolver ERROR fails the request loud with CodeRuntimeError; it
 // never falls through to the default agent.
 func (s *ControlSurface) validateNamedAgent(ctx context.Context, method string, id identity.Identity, agentID string) error {
-	// An omitted request target is still an effective-agent choice. A bare
-	// surface has no configured default resolver, but it must still fail closed
-	// through the same gate rather than falling through to task creation.
-	if s.agents == nil && agentID == "" {
-		if err := s.reach.AuthorizeAgentReach(ctx, ""); err != nil {
-			return protoerrors.Newf(protoerrors.CodeScopeMismatch,
-				"method %q: caller is not authorized for the effective agent", method)
-		}
-		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
-			"method %q: %s", method, agentNotResolvableMsg)
-	}
-	if s.agents == nil {
-		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
-			"method %q: %s", method, agentNotResolvableMsg)
-	}
+	// Determine the effective target without consulting tenant-local state.
+	// Reach is the authority boundary, so it MUST run before ResolveAgent:
+	// otherwise an untrusted caller can distinguish configured targets from
+	// unknown or foreign ones by observing which lookup occurred. An omitted
+	// id is an effective selection too; a bare surface deliberately leaves it
+	// empty, which the same fail-closed gate rejects.
 	effectiveID := agentID
 	if resolver, ok := s.agents.(EffectiveAgentResolver); ok {
 		var err error
@@ -412,8 +403,16 @@ func (s *ControlSurface) validateNamedAgent(ctx context.Context, method string, 
 		if err != nil {
 			return protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %s", method, agentNotResolvableMsg)
 		}
-	} else if effectiveID == "" {
+	} else if s.agents != nil && effectiveID == "" {
 		return protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %s", method, agentNotResolvableMsg)
+	}
+	if err := s.reach.AuthorizeAgentReach(ctx, effectiveID); err != nil {
+		return protoerrors.Newf(protoerrors.CodeScopeMismatch,
+			"method %q: caller is not authorized for the effective agent", method)
+	}
+	if s.agents == nil {
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: %s", method, agentNotResolvableMsg)
 	}
 	allowed, err := s.agents.ResolveAgent(ctx, id, effectiveID)
 	if err != nil {
@@ -423,10 +422,6 @@ func (s *ControlSurface) validateNamedAgent(ctx context.Context, method string, 
 	if !allowed {
 		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: %s", method, agentNotResolvableMsg)
-	}
-	if err := s.reach.AuthorizeAgentReach(ctx, effectiveID); err != nil {
-		return protoerrors.Newf(protoerrors.CodeScopeMismatch,
-			"method %q: caller is not authorized for the effective agent", method)
 	}
 	return nil
 }

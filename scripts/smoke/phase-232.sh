@@ -159,6 +159,7 @@ assert_go_tests_pass "${P232_TMP}/go-test.log" '-race -count=1 ./internal/protoc
     TestDispatchStart_AgentReach_GatesExplicitAndDefaultBeforeSpawn \
     TestDispatchStart_AgentReach_DirectResolverConstructionFailsClosed \
     TestDispatchStart_AgentReach_BareDirectOmittedTargetFailsClosed \
+    TestDispatchStart_AgentReach_DenialPrecedesTenantResolver \
     TestAgentConfigHandler_UserRoute_WithUserScopeAllowed \
     TestToolsHandler_Describe_ExplicitAgentReachOnly \
     TestSignDevToken_ProducesParseableJWT \
