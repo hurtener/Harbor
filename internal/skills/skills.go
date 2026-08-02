@@ -188,6 +188,20 @@ type RankedSkill struct {
 	Path  string
 }
 
+// SnapshotCandidateSearcher ranks one immutable, already-authorized candidate
+// view. It is the search-policy seam for per-run composite readers: the
+// implementation preserves the configured lexical ladder or opt-in semantic
+// mode while the caller owns membership and snapshot isolation.
+//
+// Candidates are complete copies from a single run-start view. Implementations
+// MUST rank only those candidates, preserve their configured retrieval policy,
+// and fail loudly rather than falling back from semantic retrieval when its
+// Embedder is unavailable or fails. They must honour ctx and are safe for
+// concurrent reuse.
+type SnapshotCandidateSearcher interface {
+	SearchSnapshot(ctx context.Context, id identity.Quadruple, query string, candidates []Skill, limit int) ([]RankedSkill, error)
+}
+
 // Search-result paths.
 const (
 	// PathFTS5 — FTS5 virtual table produced the row.

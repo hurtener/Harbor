@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -99,6 +100,43 @@ func (r *resolverReader) Search(context.Context, identity.Quadruple, string, int
 	return nil, errors.New("resolver must rank the composed view itself")
 }
 
+// resolverSearcher is the test stand-in for the boot-configured snapshot
+// search policy. Production supplies a policy that retains its configured
+// full-text or semantic retrieval strategy; the resolver only owns the frozen
+// candidate set and validates the returned rows.
+type resolverSearcher struct {
+	err error
+}
+
+func (s resolverSearcher) SearchSnapshot(ctx context.Context, _ identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.err != nil {
+		return nil, s.err
+	}
+	needle := strings.TrimSpace(query)
+	if needle == "" {
+		return nil, nil
+	}
+	result := make([]skills.RankedSkill, 0, len(candidates))
+	for _, skill := range candidates {
+		path := skills.PathRegex
+		score := 0.75
+		if strings.EqualFold(strings.TrimSpace(skill.Name), needle) || strings.EqualFold(strings.TrimSpace(skill.Title), needle) || strings.EqualFold(strings.TrimSpace(skill.Trigger), needle) {
+			path, score = skills.PathExact, 1
+		} else if !strings.Contains(strings.ToLower(skill.Name+" "+skill.Title+" "+skill.Trigger+" "+skill.Description+" "+strings.Join(skill.Tags, " ")), strings.ToLower(needle)) {
+			continue
+		}
+		result = append(result, skills.RankedSkill{Skill: skill, Score: score, Path: path})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Skill.Name < result[j].Skill.Name })
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
 func resolverSkill(id identity.Quadruple, name string, scope skills.Scope) skills.Skill {
 	skill := durableSkill(name)
 	skill.Scope = scope
@@ -113,7 +151,7 @@ func resolverSkill(id identity.Quadruple, name string, scope skills.Scope) skill
 
 func resolverConfig(id identity.Quadruple, personal *sessionoverlay.DurableStore, base skills.SkillReader, mode sessionoverlay.CutoverMode, membership sessionoverlay.SessionSkillMembership) sessionoverlay.SessionSkillResolverConfig {
 	return sessionoverlay.SessionSkillResolverConfig{
-		Run: id, AgentID: "agent-a", Base: base, Personal: personal, Cutover: resolverModeReader{mode: mode}, Membership: membership,
+		Run: id, AgentID: "agent-a", Base: base, Searcher: resolverSearcher{}, Personal: personal, Cutover: resolverModeReader{mode: mode}, Membership: membership,
 	}
 }
 
@@ -172,6 +210,36 @@ func TestSessionSkillResolver_DualReadComposesOnlyExactLegacySessionTier(t *test
 	}
 }
 
+func TestSessionSkillResolver_SearchPolicyIsRequiredAndFailuresPassThrough(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("resolver-search-policy")
+	id.RunID = "run-search-policy"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &resolverReader{}
+	base.add(id, resolverSkill(id, "searchable", skills.ScopeGlobal))
+
+	missing := resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{})
+	missing.Searcher = nil
+	if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), missing); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+		t.Fatalf("missing configured search policy = %v, want ErrInvalidSessionSkillResolver", err)
+	}
+
+	semanticFailure := errors.New("embedder unavailable")
+	configured := resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{})
+	configured.Searcher = resolverSearcher{err: semanticFailure}
+	resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.Search(context.Background(), id, "searchable", 10); !errors.Is(err, semanticFailure) {
+		t.Fatalf("configured semantic failure = %v, want preserved failure", err)
+	}
+}
+
 func TestSessionSkillResolver_FailsLoudForMissingPinnedAndLegacyBodies(t *testing.T) {
 	st := newDurableState(t)
 	id := durableID("resolver-missing")
@@ -182,6 +250,16 @@ func TestSessionSkillResolver_FailsLoudForMissingPinnedAndLegacyBodies(t *testin
 		t.Fatal(err)
 	}
 	base := &resolverReader{}
+	// D-345: a durable-user membership name may legitimately outlive its
+	// independently stored body. It is absent from the composed view, not a
+	// resolver/bootstrap failure.
+	resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{UserPersonalNames: []string{"missing-user"}}))
+	if err != nil {
+		t.Fatalf("missing ScopeUser membership body = %v, want harmless absence", err)
+	}
+	if listed, listErr := resolver.List(context.Background(), id, skills.ListFilter{Limit: 10}); listErr != nil || len(listed) != 0 {
+		t.Fatalf("missing ScopeUser membership list = (%+v, %v), want empty", listed, listErr)
+	}
 	if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{AdminMembershipSet: true, AdminNames: []string{"missing"}})); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
 		t.Fatalf("missing admin pinned body = %v", err)
 	}
@@ -312,6 +390,25 @@ func TestSessionSkillResolver_OwnedDecodeRejectsDuplicateFieldsAndExtraIsDeeplyI
 	if got := second.Extra["nested"].(map[string]any)["list"].([]any)[0].(map[string]any)["value"]; got != "original" {
 		t.Fatalf("nested Extra alias leaked mutation: %v", got)
 	}
+
+	for name, extra := range map[string]map[string]any{
+		"cycle": func() map[string]any {
+			value := map[string]any{}
+			value["self"] = value
+			return value
+		}(),
+		"unsupported": {"func": func() {}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := &resolverReader{}
+			skill := resolverSkill(id, "bad-extra-"+name, skills.ScopeGlobal)
+			skill.Extra = extra
+			bad.add(id, skill)
+			if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, bad, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{})); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+				t.Fatalf("unsupported Extra = %v, want ErrInvalidSessionSkillResolver", err)
+			}
+		})
+	}
 }
 
 type flappingLifecycleStore struct {
@@ -347,44 +444,52 @@ func TestSessionSkillResolver_FenceChurnExhausts(t *testing.T) {
 func TestSessionSkillResolver_ConcurrentReuseCancellationAndIsolation(t *testing.T) {
 	st := newDurableState(t)
 	const n = 128
-	seed := durableID("seed")
-	activateAgent(t, st, seed, "agent-a")
+	id := durableID("shared")
+	id.RunID = "run-shared"
+	activateAgent(t, st, id, "agent-a")
 	personal, err := sessionoverlay.NewDurableStore(st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	base := &resolverReader{}
+	base.add(id, resolverSkill(id, "shared-skill", skills.ScopeGlobal))
+	resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{}))
+	if err != nil {
+		t.Fatalf("NewSessionSkillResolver: %v", err)
+	}
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
 	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: fmt.Sprintf("user-%03d", i), SessionID: fmt.Sprintf("session-%03d", i)}, RunID: fmt.Sprintf("run-%03d", i)}
-			base.add(id, resolverSkill(id, fmt.Sprintf("skill-%03d", i), skills.ScopeGlobal))
 			ctx := context.Background()
 			if i%2 == 0 {
 				cancelled, cancel := context.WithCancel(ctx)
 				cancel()
 				ctx = cancelled
 			}
-			resolver, err := sessionoverlay.NewSessionSkillResolver(ctx, resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{}))
 			if i%2 == 0 {
-				if !errors.Is(err, context.Canceled) {
-					errs <- fmt.Errorf("%d canceled build = %w", i, err)
+				if _, err := resolver.Search(ctx, id, "shared-skill", 1); !errors.Is(err, context.Canceled) {
+					errs <- fmt.Errorf("%d canceled search = %w", i, err)
 				}
 				return
 			}
-			if err != nil {
-				errs <- fmt.Errorf("%d build: %w", i, err)
+			got, err := resolver.Get(ctx, id, "shared-skill")
+			if err != nil || got.Name != "shared-skill" {
+				errs <- fmt.Errorf("%d own skill = (%q, %w)", i, got.Name, err)
 				return
 			}
-			got, err := resolver.Get(context.Background(), id, fmt.Sprintf("skill-%03d", i))
-			if err != nil || got.Name != fmt.Sprintf("skill-%03d", i) {
-				errs <- fmt.Errorf("%d own skill = (%q, %w)", i, got.Name, err)
+			if listed, err := resolver.List(ctx, id, skills.ListFilter{Limit: 1}); err != nil || len(listed) != 1 || listed[0].Name != "shared-skill" {
+				errs <- fmt.Errorf("%d list = (%+v, %w)", i, listed, err)
+				return
+			}
+			if ranked, err := resolver.Search(ctx, id, "shared-skill", 1); err != nil || len(ranked) != 1 || ranked[0].Path != skills.PathExact {
+				errs <- fmt.Errorf("%d search = (%+v, %w)", i, ranked, err)
+				return
 			}
 			other := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "other", SessionID: "other"}, RunID: "other"}
-			if _, err := resolver.Get(context.Background(), other, got.Name); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+			if _, err := resolver.Get(ctx, other, got.Name); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
 				errs <- fmt.Errorf("%d cross identity = %w", i, err)
 			}
 		}(i)

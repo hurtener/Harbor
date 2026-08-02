@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
+	"math"
 	"sort"
 	"strings"
 
@@ -42,9 +42,14 @@ type SessionSkillMembership struct {
 // run snapshot. Agent selection and config-revision projection occur before
 // this constructor; this type never reads tool-invocation provenance.
 type SessionSkillResolverConfig struct {
-	Run        identity.Quadruple
-	AgentID    string
-	Base       skills.SkillReader
+	Run     identity.Quadruple
+	AgentID string
+	Base    skills.SkillReader
+	// Searcher is the immutable candidate-search policy captured alongside the
+	// run view. It must preserve the configured lexical ladder or semantic
+	// Embedder policy over exactly the composed candidates; the resolver never
+	// substitutes an ad-hoc lexical fallback.
+	Searcher   skills.SnapshotCandidateSearcher
 	Personal   *DurableStore
 	Cutover    CutoverModeReader
 	Membership SessionSkillMembership
@@ -54,11 +59,12 @@ type SessionSkillResolverConfig struct {
 // owns no goroutines and performs no writes. All returned skills are copies so
 // a consumer cannot mutate the snapshot observed by another invocation.
 type SessionSkillResolver struct {
-	run     identity.Quadruple
-	agentID string
-	all     map[string]skills.Skill
-	byScope map[skills.Scope]map[string]skills.Skill
-	session map[string]skills.Skill
+	run      identity.Quadruple
+	agentID  string
+	searcher skills.SnapshotCandidateSearcher
+	all      map[string]skills.Skill
+	byScope  map[skills.Scope]map[string]skills.Skill
+	session  map[string]skills.Skill
 }
 
 // NewSessionSkillResolver captures a fence-stable composed skill view for one
@@ -122,8 +128,8 @@ func validateResolverConfig(cfg SessionSkillResolverConfig) error {
 	if strings.TrimSpace(cfg.AgentID) == "" {
 		return fmt.Errorf("%w: selected agent ID is required", ErrInvalidSessionSkillResolver)
 	}
-	if cfg.Base == nil || cfg.Personal == nil || cfg.Personal.state == nil || cfg.Cutover == nil {
-		return fmt.Errorf("%w: base reader, durable store, and cutover reader are required", ErrInvalidSessionSkillResolver)
+	if cfg.Base == nil || cfg.Searcher == nil || cfg.Personal == nil || cfg.Personal.state == nil || cfg.Cutover == nil {
+		return fmt.Errorf("%w: base reader, candidate searcher, durable store, and cutover reader are required", ErrInvalidSessionSkillResolver)
 	}
 	return nil
 }
@@ -183,6 +189,13 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 	for name := range user {
 		skill, err := cfg.Base.GetScope(ctx, cfg.Run, name, skills.ScopeUser)
 		if err != nil {
+			// D-345 membership is only a selection hint for an independently
+			// durable body. A deleted or not-yet-written ScopeUser body is
+			// harmlessly absent; unlike an admin-pinned body it is not an
+			// authority/configuration failure.
+			if errors.Is(err, skills.ErrSkillNotFound) {
+				continue
+			}
 			return nil, fmt.Errorf("agentcfg/sessionoverlay: read durable user skill %q: %w", name, err)
 		}
 		if err := validateExactResolverSkill(skill, name, skills.ScopeUser); err != nil {
@@ -218,7 +231,7 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 	if len(session) > 0 {
 		byScope[skills.ScopeSession] = cloneSkillMap(session)
 	}
-	return &SessionSkillResolver{run: cfg.Run, agentID: cfg.AgentID, all: all, byScope: byScope, session: cloneSkillMap(session)}, nil
+	return &SessionSkillResolver{run: cfg.Run, agentID: cfg.AgentID, searcher: cfg.Searcher, all: all, byScope: byScope, session: cloneSkillMap(session)}, nil
 }
 
 func loadLegacySessionTier(ctx context.Context, cfg SessionSkillResolverConfig) (map[string]skills.Skill, error) {
@@ -246,7 +259,11 @@ func loadLegacySessionTier(ctx context.Context, cfg SessionSkillResolverConfig) 
 		if prior, ok := result[canonical]; ok && prior.ContentHash != skill.ContentHash {
 			return nil, fmt.Errorf("%w: canonical legacy aliases for %q disagree", ErrLegacySkillInvalid, canonical)
 		}
-		result[canonical] = cloneSkill(skill)
+		normalized, err := normalizeResolverSkill(skill)
+		if err != nil {
+			return nil, err
+		}
+		result[canonical] = cloneSkill(normalized)
 	}
 	return result, nil
 }
@@ -300,7 +317,11 @@ func loadOwnedSessionTier(ctx context.Context, cfg SessionSkillResolverConfig) (
 		if _, exists := result[personal.CanonicalName]; exists {
 			return nil, fmt.Errorf("%w: duplicate owned personal name %q", ErrPersonalRecordInvalid, personal.CanonicalName)
 		}
-		result[personal.CanonicalName] = cloneSkill(personal.Skill)
+		normalized, err := normalizeResolverSkill(personal.Skill)
+		if err != nil {
+			return nil, err
+		}
+		result[personal.CanonicalName] = cloneSkill(normalized)
 	}
 	return result, nil
 }
@@ -408,9 +429,10 @@ func (r *SessionSkillResolver) List(ctx context.Context, id identity.Quadruple, 
 	return result, nil
 }
 
-// Search performs deterministic lexical ranking over exactly the composed
-// view. Semantic retrieval is intentionally not surfaced by this seam; a
-// future semantic API must require an injected skills.Embedder.
+// Search delegates exactly the frozen composed candidates to the run-bound
+// candidate-search policy. The policy is required at construction so a
+// semantic runtime cannot silently degrade to lexical ranking, and a lexical
+// runtime retains its configured FTS5 -> regex -> exact ordering.
 func (r *SessionSkillResolver) Search(ctx context.Context, id identity.Quadruple, query string, limit int) ([]skills.RankedSkill, error) {
 	if err := r.validateCall(ctx, id); err != nil {
 		return nil, err
@@ -418,34 +440,42 @@ func (r *SessionSkillResolver) Search(ctx context.Context, id identity.Quadruple
 	if limit < 0 || limit > 1000 {
 		return nil, fmt.Errorf("%w: invalid search limit", ErrInvalidSessionSkillResolver)
 	}
-	needle := strings.ToLower(strings.TrimSpace(query))
-	if needle == "" {
-		return []skills.RankedSkill{}, nil
-	}
-	result := make([]skills.RankedSkill, 0, len(r.all))
-	for _, skill := range r.all {
-		score, path, ok := lexicalScore(skill, needle)
-		if ok {
-			result = append(result, skills.RankedSkill{Skill: cloneSkill(skill), Score: score, Path: path})
-		}
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Score != result[j].Score {
-			return result[i].Score > result[j].Score
-		}
-		return canonicalNameFor(result[i].Skill.Name) < canonicalNameFor(result[j].Skill.Name)
-	})
 	if limit == 0 {
 		limit = 20
 	}
+	result, err := r.searcher.SearchSnapshot(ctx, r.run, query, sortedSkills(r.all), limit)
+	if err != nil {
+		return nil, err
+	}
 	if len(result) > limit {
-		result = result[:limit]
+		return nil, fmt.Errorf("%w: candidate searcher exceeded limit", ErrInvalidSessionSkillResolver)
+	}
+	seen := make(map[string]struct{}, len(result))
+	for i := range result {
+		if math.IsNaN(result[i].Score) || math.IsInf(result[i].Score, 0) || result[i].Score < 0 || result[i].Score > 1 {
+			return nil, fmt.Errorf("%w: candidate searcher returned invalid score", ErrInvalidSessionSkillResolver)
+		}
+		switch result[i].Path {
+		case skills.PathFTS5, skills.PathRegex, skills.PathExact, skills.PathSemantic:
+		default:
+			return nil, fmt.Errorf("%w: candidate searcher returned unknown path %q", ErrInvalidSessionSkillResolver, result[i].Path)
+		}
+		name := canonicalNameFor(result[i].Skill.Name)
+		expected, ok := r.all[name]
+		if !ok || skills.CanonicalContentHash(expected) != skills.CanonicalContentHash(result[i].Skill) {
+			return nil, fmt.Errorf("%w: candidate searcher returned a non-snapshot skill %q", ErrInvalidSessionSkillResolver, result[i].Skill.Name)
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return nil, fmt.Errorf("%w: candidate searcher returned duplicate skill %q", ErrInvalidSessionSkillResolver, result[i].Skill.Name)
+		}
+		seen[name] = struct{}{}
+		result[i].Skill = cloneSkill(expected)
 	}
 	return result, nil
 }
 
 func (r *SessionSkillResolver) validateCall(ctx context.Context, id identity.Quadruple) error {
-	if r == nil || r.all == nil || r.run != id {
+	if r == nil || r.searcher == nil || r.all == nil || r.run != id {
 		return fmt.Errorf("%w: resolver identity does not match caller", ErrInvalidSessionSkillResolver)
 	}
 	return ctx.Err()
@@ -469,6 +499,11 @@ func validateExactResolverSkill(skill skills.Skill, name string, scope skills.Sc
 }
 
 func putScoped(in map[skills.Scope]map[string]skills.Skill, skill skills.Skill) error {
+	var err error
+	skill, err = normalizeResolverSkill(skill)
+	if err != nil {
+		return err
+	}
 	if in[skill.Scope] == nil {
 		in[skill.Scope] = make(map[string]skills.Skill)
 	}
@@ -557,58 +592,58 @@ func cloneSkill(skill skills.Skill) skills.Skill {
 	return result
 }
 
+// normalizeResolverSkill accepts only JSON-compatible Extra values and
+// normalizes them once at snapshot construction. This supplies a complete,
+// cycle-safe immutable boundary: unsupported values and cycles are rejected
+// before they can reach shared resolver state.
+func normalizeResolverSkill(skill skills.Skill) (skills.Skill, error) {
+	if err := validateResolverSkill(skill); err != nil {
+		return skills.Skill{}, err
+	}
+	if skill.Extra == nil {
+		return skill, nil
+	}
+	bytes, err := json.Marshal(skill.Extra)
+	if err != nil {
+		return skills.Skill{}, fmt.Errorf("%w: skill %q Extra must be JSON-compatible and acyclic: %w", ErrInvalidSessionSkillResolver, skill.Name, err)
+	}
+	var normalized map[string]any
+	if err := json.Unmarshal(bytes, &normalized); err != nil {
+		return skills.Skill{}, fmt.Errorf("%w: skill %q Extra normalization: %w", ErrInvalidSessionSkillResolver, skill.Name, err)
+	}
+	skill.Extra = normalized
+	return skill, nil
+}
+
+// cloneExtra copies a normalized JSON object. normalizeResolverSkill proves
+// the only reachable values are nil, bool, string, float64, []any, and
+// map[string]any, so cloning cannot recurse through cycles or retain mutable
+// aliases.
 func cloneExtra(in map[string]any) map[string]any {
 	result := make(map[string]any, len(in))
 	for key, value := range in {
-		if value == nil {
-			result[key] = nil
-			continue
-		}
-		result[key] = cloneExtraValue(reflect.ValueOf(value)).Interface()
+		result[key] = cloneExtraValue(value)
 	}
 	return result
 }
 
-func cloneExtraValue(value reflect.Value) reflect.Value {
-	if !value.IsValid() {
-		return value
-	}
-	switch value.Kind() {
-	case reflect.Interface:
-		if value.IsNil() {
-			return reflect.Zero(value.Type())
-		}
-		result := reflect.New(value.Type()).Elem()
-		result.Set(cloneExtraValue(value.Elem()))
-		return result
-	case reflect.Map:
-		if value.IsNil() {
-			return reflect.Zero(value.Type())
-		}
-		result := reflect.MakeMapWithSize(value.Type(), value.Len())
-		iter := value.MapRange()
-		for iter.Next() {
-			result.SetMapIndex(cloneExtraValue(iter.Key()), cloneExtraValue(iter.Value()))
+func cloneExtraValue(value any) any {
+	switch typed := value.(type) {
+	case nil, bool, string, float64:
+		return typed
+	case []any:
+		result := make([]any, len(typed))
+		for i := range typed {
+			result[i] = cloneExtraValue(typed[i])
 		}
 		return result
-	case reflect.Slice:
-		if value.IsNil() {
-			return reflect.Zero(value.Type())
-		}
-		result := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
-		for i := range value.Len() {
-			result.Index(i).Set(cloneExtraValue(value.Index(i)))
-		}
-		return result
-	case reflect.Pointer:
-		if value.IsNil() {
-			return reflect.Zero(value.Type())
-		}
-		result := reflect.New(value.Type().Elem())
-		result.Elem().Set(cloneExtraValue(value.Elem()))
-		return result
+	case map[string]any:
+		return cloneExtra(typed)
 	default:
-		return value
+		// This is unreachable after normalizeResolverSkill. Keeping the value
+		// out rather than exposing a shared mutable reference preserves the
+		// resolver's immutable-output contract if an internal invariant regresses.
+		return nil
 	}
 }
 
@@ -621,31 +656,4 @@ func hasAnyTag(skillTags, wanted []string) bool {
 		}
 	}
 	return false
-}
-
-func lexicalScore(skill skills.Skill, needle string) (float64, string, bool) {
-	exact := func(value string) bool { return strings.EqualFold(strings.TrimSpace(value), needle) }
-	if exact(skill.Name) || exact(skill.Title) || exact(skill.Trigger) {
-		return 1, skills.PathExact, true
-	}
-	for _, tag := range skill.Tags {
-		if exact(tag) {
-			return 1, skills.PathExact, true
-		}
-	}
-	if strings.Contains(strings.ToLower(skill.Name), needle) {
-		return .90, skills.PathRegex, true
-	}
-	if strings.Contains(strings.ToLower(skill.Title), needle) || strings.Contains(strings.ToLower(skill.Trigger), needle) {
-		return .85, skills.PathRegex, true
-	}
-	for _, tag := range skill.Tags {
-		if strings.Contains(strings.ToLower(tag), needle) {
-			return .85, skills.PathRegex, true
-		}
-	}
-	if strings.Contains(strings.ToLower(skill.Description), needle) {
-		return .75, skills.PathRegex, true
-	}
-	return 0, "", false
 }
