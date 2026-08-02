@@ -334,11 +334,14 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   `-coverpkg=./internal/skills/conformancetest` profile. The adversarial matrix
   injects contract violations and asserts the harness rejects each one, so its
   failure-reporting branches are exercised without accepting a broken driver.
-  PostgreSQL remains CI-only: without `HARBOR_PG_DSN`, its real-driver tests
-  skip and direct local coverage is not representative. The Postgres service
-  job now refuses a skipped/no-match two-instance sessionoverlay race and
-  enforces the SkillStore driver's binding 85% package floor; its authoritative
-  cloud result is pending.
+  PostgreSQL still requires `HARBOR_PG_DSN`: without it, the real-driver tests
+  skip and direct coverage is not representative. Against an isolated local
+  `postgres:16` container with unique per-test schemas and cleanup, the exact
+  CI race profile passes with no skips at 88.4% for
+  `internal/skills/drivers/postgres`; the exact two-instance sessionoverlay
+  Postgres race also passes. The service job refuses skipped/no-match runs and
+  enforces the binding 85% package floor; its authoritative cloud rerun is
+  pending.
 
 ## Dependencies
 
@@ -375,18 +378,20 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   skipped per maintainer process
 - [x] `make check-mirror` passes
 - [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages >= stated target; local evidence is
+- [x] Coverage on touched packages >= stated target; local evidence is
   sessionoverlay 90.3%, LocalDB 85.4% (`SearchSnapshot` 94.1%), and the
-  conformance harness 86.7% across its real-driver and adversarial self-tests.
-  The PostgreSQL >=85% cloud gate is configured and authoritative execution is
-  pending.
+  conformance harness 86.7% across its real-driver and adversarial self-tests;
+  the isolated `postgres:16` exact race profile is 88.4% with `TestConformance`
+  passing and no skips. The PostgreSQL >=85% cloud gate is configured and its
+  authoritative rerun is pending.
 - [x] If multi-isolation paths changed: cross-session isolation test passes
 - [x] Reusable overlay/resolver concurrent-reuse test passes — N>=100 shared
   invocations under `-race`, with no data races, context bleed, cancellation
   cross-talk, or goroutine leak
-- [ ] Real-driver integration test covers identity, restart, erasure-ledger,
+- [x] Real-driver integration test covers identity, restart, erasure-ledger,
   and condition-failed behavior; SQLite and local compile/selection gates pass,
-  while authoritative execution of the Postgres two-instance leg is pending CI
+  and the isolated `postgres:16` two-instance Postgres leg passes under
+  `-race`. Authoritative cloud confirmation is pending CI.
 - [x] If new vocabulary: glossary updated
 - [x] If a brief finding was departed from: N/A; no brief departure is recorded
   above

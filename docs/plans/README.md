@@ -395,10 +395,12 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 - **Coverage evidence:** sessionoverlay is 90.3%; LocalDB is 85.4%
   (`SearchSnapshot` 94.1%); the shared conformance harness is 86.7% in a
   combined profile across its real LocalDB happy paths and adversarial
-  contract-rejection self-tests. The `HARBOR_PG_DSN` service job now refuses a
-  skipped/no-match two-instance sessionoverlay Postgres race and enforces the
-  Postgres SkillStore's binding 85% package floor. That authoritative cloud
-  result is pending; no local Postgres execution is claimed.
+  contract-rejection self-tests. An isolated local `postgres:16` run of the
+  exact CI race profile passes with no skips at 88.4% for the Postgres
+  SkillStore, and the two-instance sessionoverlay Postgres race passes under
+  `-race`. The `HARBOR_PG_DSN` service job refuses skipped/no-match runs and
+  enforces the binding 85% package floor; its authoritative cloud rerun is
+  pending.
 
 ### Phase 233b — Signed OAuth MCP capability registration (HA-50)
 
