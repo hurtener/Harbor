@@ -161,8 +161,8 @@ func WithSignedCapabilityPreparation(ctx context.Context) context.Context {
 
 // IsSignedCapabilityPreparation reports the private preparation marker.
 func IsSignedCapabilityPreparation(ctx context.Context) bool {
-	prepared, _ := ctx.Value(signedCapabilityPreparationContextKey{}).(bool)
-	return prepared
+	prepared, ok := ctx.Value(signedCapabilityPreparationContextKey{}).(bool)
+	return ok && prepared
 }
 
 // FactoryDeps bundles the shared collaborators every OAuth provider
