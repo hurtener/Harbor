@@ -108,6 +108,12 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 		defer h.Cleanup()
 		testDeleteSessionScope(t, h)
 	})
+
+	t.Run("delete_session_scope_after_close", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testDeleteSessionScopeAfterClose(t, h)
+	})
 }
 
 // fixtureID is the identity quadruple every subtest uses by default;
@@ -534,8 +540,18 @@ func testDeleteSessionScope(t *testing.T, h Harness) {
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := h.Store.DeleteSessionScope(canceled, sessionA); err == nil {
-		t.Fatal("DeleteSessionScope canceled context: err=nil")
+	if err := h.Store.DeleteSessionScope(canceled, sessionA); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DeleteSessionScope canceled context: err=%v, want context.Canceled", err)
+	}
+}
+
+func testDeleteSessionScopeAfterClose(t *testing.T, h Harness) {
+	ctx := context.Background()
+	if err := h.Store.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := h.Store.DeleteSessionScope(ctx, fixtureID); !errors.Is(err, skills.ErrStoreClosed) {
+		t.Fatalf("DeleteSessionScope after Close: err=%v, want ErrStoreClosed", err)
 	}
 }
 

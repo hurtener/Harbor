@@ -57,12 +57,34 @@ func (f *failingUpsertStore) Delete(ctx context.Context, id identity.Quadruple, 
 	return f.inner.Delete(ctx, id, name, scope)
 }
 
-func (f *failingUpsertStore) DeleteSessionScope(context.Context, identity.Quadruple) error {
-	return nil
+func (f *failingUpsertStore) DeleteSessionScope(ctx context.Context, id identity.Quadruple) error {
+	return f.inner.DeleteSessionScope(ctx, id)
 }
 
 func (f *failingUpsertStore) Close(ctx context.Context) error {
 	return f.inner.Close(ctx)
+}
+
+func TestFailingUpsertStore_DeleteSessionScopeDelegates(t *testing.T) {
+	t.Parallel()
+	bus := newTestBus(t)
+	inner := newTestStore(t, bus)
+	id := testIdentity()
+	skill := skills.Skill{
+		Name: "session-delete-delegate", Title: "delegate", Trigger: "delegate",
+		Steps: []string{"delegate"}, Origin: skills.OriginGenerated, Scope: skills.ScopeSession,
+	}
+	skill.ContentHash = skills.CanonicalContentHash(skill)
+	if err := inner.Upsert(context.Background(), id, skill); err != nil {
+		t.Fatalf("seed session skill: %v", err)
+	}
+	wrapper := &failingUpsertStore{inner: inner}
+	if err := wrapper.DeleteSessionScope(context.Background(), id); err != nil {
+		t.Fatalf("DeleteSessionScope: %v", err)
+	}
+	if _, err := inner.Get(context.Background(), id, skill.Name); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("inner session skill survived delegated sweep: err=%v", err)
+	}
 }
 
 // TestPropose_StoreUpsertReturnsPackOverwriteRefused exercises the

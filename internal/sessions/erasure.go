@@ -498,7 +498,9 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 	//    erased triple and ScopeSession: ScopeUser is a durable shared rung and
 	//    must survive erasure of one session. A runtime with no configured
 	//    SkillStore has no legacy rows to sweep; otherwise a successful no-row
-	//    sweep is a completed, retry-safe destructive step.
+	//    sweep is a completed, retry-safe destructive step. This sweep is not
+	//    an exclusion fence: cutover must refuse legacy session mutations before
+	//    erasure can rely on it for cross-process convergence.
 	if e.skills != nil {
 		if err := e.skills.DeleteSessionScope(ctx, identity.Quadruple{Identity: id}); err != nil {
 			return zero, fmt.Errorf("sessions: erase legacy session skills: %w", err)

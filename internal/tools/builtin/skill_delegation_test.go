@@ -36,10 +36,12 @@ import (
 
 // fakeSkillStore is a minimal identity-checking SkillStore for the
 // unit-level delegation tests (the integration E2E uses the real
-// localdb driver). Keyed by the full identity triple plus name; concurrent-safe.
+// localdb driver). ScopeUser rows are session-zeroed and resolve across
+// sessions of the same tenant/user; every other row stays session-pinned.
+// Concurrent-safe.
 type fakeSkillStore struct {
 	mu    sync.RWMutex
-	rows  map[string]skills.Skill // key: tenant + "/" + user + "/" + session + "/" + name
+	rows  map[string]skills.Skill // key: tenant + "/" + user + "/" + storage-session + "/" + name
 	bus   events.EventBus
 	limit int
 }
@@ -48,12 +50,25 @@ func newFakeSkillStore(bus events.EventBus) *fakeSkillStore {
 	return &fakeSkillStore{rows: map[string]skills.Skill{}, bus: bus, limit: 20}
 }
 
-func (f *fakeSkillStore) key(q identity.Quadruple, name string) string {
-	return q.TenantID + "/" + q.UserID + "/" + q.SessionID + "/" + name
+func (f *fakeSkillStore) key(q identity.Quadruple, scope skills.Scope, name string) string {
+	session := q.SessionID
+	if scope == skills.ScopeUser {
+		session = ""
+	}
+	return q.TenantID + "/" + q.UserID + "/" + session + "/" + name
 }
 
-func (f *fakeSkillStore) identityPrefix(q identity.Quadruple) string {
+func (f *fakeSkillStore) sessionPrefix(q identity.Quadruple) string {
 	return q.TenantID + "/" + q.UserID + "/" + q.SessionID + "/"
+}
+
+func (f *fakeSkillStore) userPrefix(q identity.Quadruple) string {
+	return q.TenantID + "/" + q.UserID + "//"
+}
+
+func (f *fakeSkillStore) visible(q identity.Quadruple, key string, skill skills.Skill) bool {
+	return strings.HasPrefix(key, f.sessionPrefix(q)) ||
+		(skill.Scope == skills.ScopeUser && strings.HasPrefix(key, f.userPrefix(q)))
 }
 
 func (f *fakeSkillStore) Upsert(ctx context.Context, q identity.Quadruple, s skills.Skill) error {
@@ -62,7 +77,7 @@ func (f *fakeSkillStore) Upsert(ctx context.Context, q identity.Quadruple, s ski
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.rows[f.key(q, s.Name)] = s
+	f.rows[f.key(q, s.Scope, s.Name)] = s
 	return nil
 }
 
@@ -72,14 +87,16 @@ func (f *fakeSkillStore) Get(ctx context.Context, q identity.Quadruple, name str
 	}
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	s, ok := f.rows[f.key(q, name)]
-	if !ok {
-		return skills.Skill{}, skills.ErrSkillNotFound
+	if s, ok := f.rows[f.key(q, skills.ScopeSession, name)]; ok {
+		return s, nil
 	}
-	return s, nil
+	if s, ok := f.rows[f.key(q, skills.ScopeUser, name)]; ok && s.Scope == skills.ScopeUser {
+		return s, nil
+	}
+	return skills.Skill{}, skills.ErrSkillNotFound
 }
 
-func (f *fakeSkillStore) List(ctx context.Context, q identity.Quadruple, _ skills.ListFilter) ([]skills.Skill, error) {
+func (f *fakeSkillStore) List(ctx context.Context, q identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if err := skills.ValidateIdentity(q); err != nil {
 		return nil, err
 	}
@@ -87,7 +104,7 @@ func (f *fakeSkillStore) List(ctx context.Context, q identity.Quadruple, _ skill
 	defer f.mu.RUnlock()
 	out := make([]skills.Skill, 0, len(f.rows))
 	for k, s := range f.rows {
-		if strings.HasPrefix(k, f.identityPrefix(q)) {
+		if f.visible(q, k, s) && (filter.Scope == "" || s.Scope == filter.Scope) {
 			out = append(out, s)
 		}
 	}
@@ -105,7 +122,7 @@ func (f *fakeSkillStore) Search(ctx context.Context, q identity.Quadruple, query
 	defer f.mu.RUnlock()
 	out := make([]skills.RankedSkill, 0, len(f.rows))
 	for k, s := range f.rows {
-		if !strings.HasPrefix(k, f.identityPrefix(q)) {
+		if !f.visible(q, k, s) {
 			continue
 		}
 		if query == "" || strings.Contains(strings.ToLower(s.Title+s.Trigger+s.Name), strings.ToLower(query)) {
@@ -118,13 +135,13 @@ func (f *fakeSkillStore) Search(ctx context.Context, q identity.Quadruple, query
 	return out, nil
 }
 
-func (f *fakeSkillStore) Delete(ctx context.Context, q identity.Quadruple, name string, _ skills.Scope) error {
+func (f *fakeSkillStore) Delete(ctx context.Context, q identity.Quadruple, name string, scope skills.Scope) error {
 	if err := skills.ValidateIdentity(q); err != nil {
 		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	k := f.key(q, name)
+	k := f.key(q, scope, name)
 	if _, ok := f.rows[k]; !ok {
 		return skills.ErrSkillNotFound
 	}
@@ -139,7 +156,7 @@ func (f *fakeSkillStore) DeleteSessionScope(ctx context.Context, q identity.Quad
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for key, skill := range f.rows {
-		if skill.Scope == skills.ScopeSession && strings.HasPrefix(key, f.identityPrefix(q)) {
+		if skill.Scope == skills.ScopeSession && strings.HasPrefix(key, f.sessionPrefix(q)) {
 			delete(f.rows, key)
 		}
 	}
@@ -147,6 +164,43 @@ func (f *fakeSkillStore) DeleteSessionScope(ctx context.Context, q identity.Quad
 }
 
 func (f *fakeSkillStore) Close(context.Context) error { return nil }
+
+func TestFakeSkillStore_UserScopeCrossSessionAndSessionSweep(t *testing.T) {
+	t.Parallel()
+	store := newFakeSkillStore(skillTestBus(t))
+	sessionA := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "a"}}
+	sessionB := sessionA
+	sessionB.SessionID = "b"
+	userSkill := skills.Skill{Name: "durable", Scope: skills.ScopeUser}
+	sessionSkill := skills.Skill{Name: "ephemeral", Scope: skills.ScopeSession}
+	if err := store.Upsert(context.Background(), sessionA, userSkill); err != nil {
+		t.Fatalf("Upsert user: %v", err)
+	}
+	if err := store.Upsert(context.Background(), sessionA, sessionSkill); err != nil {
+		t.Fatalf("Upsert session: %v", err)
+	}
+	if got, err := store.Get(context.Background(), sessionB, userSkill.Name); err != nil || got.Scope != skills.ScopeUser {
+		t.Fatalf("Get user from sibling session: got=%+v err=%v", got, err)
+	}
+	if got, err := store.List(context.Background(), sessionB, skills.ListFilter{Scope: skills.ScopeUser}); err != nil || len(got) != 1 || got[0].Name != userSkill.Name {
+		t.Fatalf("List user from sibling session: got=%+v err=%v", got, err)
+	}
+	if got, err := store.Search(context.Background(), sessionB, userSkill.Name, 5); err != nil || len(got) != 1 || got[0].Skill.Name != userSkill.Name {
+		t.Fatalf("Search user from sibling session: got=%+v err=%v", got, err)
+	}
+	if _, err := store.Get(context.Background(), sessionB, sessionSkill.Name); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("Get session row from sibling: err=%v, want ErrSkillNotFound", err)
+	}
+	if err := store.DeleteSessionScope(context.Background(), sessionA); err != nil {
+		t.Fatalf("DeleteSessionScope: %v", err)
+	}
+	if _, err := store.Get(context.Background(), sessionA, sessionSkill.Name); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("session row survived sweep: err=%v", err)
+	}
+	if got, err := store.Get(context.Background(), sessionB, userSkill.Name); err != nil || got.Scope != skills.ScopeUser {
+		t.Fatalf("user row did not survive sweep: got=%+v err=%v", got, err)
+	}
+}
 
 // skillTestBus opens an inmem events bus for the delegation tests.
 func skillTestBus(t *testing.T) events.EventBus {
