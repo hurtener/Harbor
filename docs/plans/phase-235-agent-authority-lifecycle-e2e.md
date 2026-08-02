@@ -43,6 +43,12 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 
 - [ ] `test/integration/wave_v126_test.go` exercises reach-authorized start/config/tools paths, D-401 signed OAuth capability registration/restart/reconcile/removal, durable session overlay/personal resolution, erasure, and retirement over real SQLite, with identity propagation and at least one denial per seam.
 - [ ] Two independent runtimes over shared Postgres race retirement and session erasure against agent write, signed-capability registration/removal, user write, rollback, overlay write, personal-record write/delete, and second retirement; exactly one valid transition wins and restart preserves the result.
+- [ ] HA-50 remains a v1.26 release gate. A narrow boot-pinned compatibility
+  flow is not the generic capability contract and cannot substitute for the
+  atomic production Protocol registration of one provider plus one connection,
+  its durable first-write pending-activation fence, fail-loud scope ceiling,
+  zero wire `token_url`/credential/host-list fields, or its race and restart
+  coverage.
 - [ ] The existing `state-postgres` Postgres 16 CI job runs the named
   `TestE2E_WaveV126...` integration suite under `-race` with
   `HARBOR_PG_DSN` set. A missing local DSN may skip only outside that CI step;
