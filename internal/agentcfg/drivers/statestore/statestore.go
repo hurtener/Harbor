@@ -840,7 +840,38 @@ func (r *registry) ackRetirementEvent(ctx context.Context, id identity.Quadruple
 		}
 		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: acknowledge retirement event: %w", agentcfg.ErrStateUnavailable, err)
 	}
+	// An empty manifest is still a two-transition lifecycle. Persist the
+	// completed checkpoint only after the started acknowledgement wins, so a
+	// crash/retry cannot reorder or lose either canonical event.
+	if p.Stage == "started" && next.Retirement.Completed {
+		return r.queueRetirementEvent(ctx, id, agentID, q, "completed", "")
+	}
 	return retirementStatus(next.Retirement), nil
+}
+
+func (r *registry) queueRetirementEvent(ctx context.Context, id identity.Quadruple, agentID string, q identity.Quadruple, stage, class string) (agentcfg.RetirementStatus, error) {
+	current, eventID, _, err := r.loadActiveRecord(ctx, q, kindActive)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if current.Retirement == nil || current.Retirement.PendingEvent != nil {
+		return r.ackRetirementEvent(ctx, id, agentID, q)
+	}
+	next := current
+	next.Retirement = cloneRetirement(current.Retirement)
+	next.Retirement.PendingEvent = &retirementEventCheckpoint{Stage: stage, Class: class}
+	next.UpdatedAt = r.clock().UTC()
+	buf, err := json.Marshal(next)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("marshal retirement event checkpoint: %w", err)
+	}
+	if err := r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kindActive, ExpectedEventID: eventID}}, state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kindActive, Bytes: buf, UpdatedAt: next.UpdatedAt}); err != nil {
+		if errors.Is(err, state.ErrConditionFailed) {
+			return r.queueRetirementEvent(ctx, id, agentID, q, stage, class)
+		}
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement event checkpoint: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	return r.ackRetirementEvent(ctx, id, agentID, q)
 }
 
 func cloneRetirement(in *retirementRecord) *retirementRecord {
