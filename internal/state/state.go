@@ -397,8 +397,8 @@ type encodedStateScanCursor struct {
 // The cursor is intentionally bound to the query dimensions, preventing a
 // cursor issued for one tenant or prefix from widening another scan.
 func DecodeStateScanContinuation(continuation, tenantID, literalKindPrefix string, scope ListScope) (StateScanCursor, error) {
-	if !scope.MaintenanceScoped {
-		return StateScanCursor{}, ErrMaintenanceScopeRequired
+	if err := ValidateScanKindForTenant(scope, tenantID, literalKindPrefix, 1); err != nil {
+		return StateScanCursor{}, err
 	}
 	if continuation == "" {
 		return StateScanCursor{}, nil

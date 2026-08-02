@@ -161,8 +161,30 @@ func TestTenantScanValidationAndContinuation_Cases(t *testing.T) {
 	if err != nil || got != cursor {
 		t.Fatalf("DecodeStateScanContinuation = %+v, %v; want %+v", got, err, cursor)
 	}
-	if got, err := state.DecodeStateScanContinuation("", "tenant", "prefix", scope); err != nil || got != (state.StateScanCursor{}) {
-		t.Fatalf("empty continuation = %+v, %v", got, err)
+	for _, tc := range []struct {
+		name     string
+		tenantID string
+		prefix   string
+		scope    state.ListScope
+		wantErr  error
+	}{
+		{name: "valid empty continuation", tenantID: "tenant", prefix: "prefix", scope: scope},
+		{name: "empty tenant", prefix: "prefix", scope: scope, wantErr: state.ErrInvalidScan},
+		{name: "empty prefix", tenantID: "tenant", scope: scope, wantErr: state.ErrInvalidScan},
+		{name: "missing maintenance scope", tenantID: "tenant", prefix: "prefix", wantErr: state.ErrMaintenanceScopeRequired},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := state.DecodeStateScanContinuation("", tc.tenantID, tc.prefix, tc.scope)
+			if tc.wantErr == nil {
+				if err != nil || got != (state.StateScanCursor{}) {
+					t.Fatalf("DecodeStateScanContinuation(empty) = (%+v, %v), want zero cursor and nil", got, err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("DecodeStateScanContinuation(empty) error = %v, want %v", err, tc.wantErr)
+			}
+		})
 	}
 	if _, err := state.EncodeStateScanContinuation(state.StateScanCursor{}, "tenant", "prefix", scope); !errors.Is(err, state.ErrInvalidScan) {
 		t.Fatalf("empty cursor = %v, want ErrInvalidScan", err)
