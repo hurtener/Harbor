@@ -12029,8 +12029,9 @@ collision-safe deterministic Kind derived from a canonical length-prefixed
 tuple hash; its bounded payload repeats tuple hashes/fields, exact pair
 fingerprint, expiry, phase, and revision identity. First `SaveIf`-absent claim
 creates one pair-lifetime operation record. Its sole normal graph is
-`claimed -> revision_committed -> published -> removal_revision_committed ->
-catalog_unpublished -> teardown_receipted -> removed`; every transition
+`claimed -> revision_committed -> published -> removal_admitted ->
+removal_revision_committed -> catalog_unpublished -> teardown_receipted ->
+removed`; every transition
 `SaveIf`-compares the exact operation EventID. There is no generic `aborted`
 phase: a prepared-but-incomplete claim retries its recorded phase. Only
 `claimed` or `revision_committed` may terminally enter `expired_incomplete`
@@ -12107,10 +12108,13 @@ provider ownership. A completed removal or replacement closes the prepared
 private resources and publishes nothing; immutable history cannot resurrect a
 removed pair.
 Paired removal continues the same
-pair-lifetime JTI record; it is never a second operation. It is the durable
-exact-EventID `SaveIf` sequence `removal_revision_committed` (desired pair absent by revision
-CAS), `catalog_unpublished`, `teardown_receipted` (close+revoke from frozen
-fingerprint), then terminal `removed`. Commit-then-error or unknown outcomes
+pair-lifetime JTI record; it is never a second operation. It first exact-EventID
+`SaveIf`-advances to `removal_admitted`, serializing with the exact operation-slot
+publication fence before desired-state mutation. It then advances through
+`removal_revision_committed` (desired pair absent by revision CAS),
+`catalog_unpublished`, `teardown_receipted` (close+revoke from frozen
+fingerprint), then terminal `removed`. A definitive desired-state refusal rolls
+the admission back to `published`; commit-then-error or unknown outcomes
 exact-reread the operation phase/EventID, desired revision, catalog source, and
 receipt, then resume only the missing phase. Expiry, key revocation, or a lost
 verifier never block it; retirement uses this same removal path.
@@ -12213,7 +12217,7 @@ release gate and was not duplicated locally.
 
 ---
 
-## D-403 — Exact-generation conditional deletion restores an absent authority state without weakening lifecycle decoding
+## D-403 — Exact-generation conditional mutation protects authority compensation and publication
 
 **Date:** 2026-08-02
 
@@ -12229,6 +12233,17 @@ failure remain loud. All drivers run the same conformance suite, and durable
 drivers additionally race independent clients through conditional delete versus
 replacement and verify the one CAS winner after reopen. This is one mandatory
 interface, not an optional capability.
+
+The same mandatory surface adds `FenceIf(ctx, SlotExpectation, fn) error`.
+Under the driver's SaveIf serialization lock it verifies one exact present
+EventID, runs one short process-local callback, and releases without changing
+the record. The callback performs no network or StateStore I/O. Its first
+consumer is D-401 catalog/registry publication: paired removal must first
+SaveIf-advance that exact operation generation to `removal_admitted`, so either
+publication completes before admission or a stale publisher fails before a
+bearer-capable handle becomes dispatchable. Context cancellation is checked at
+admission; once this irreversible callback starts, cancellation is not evidence
+that publication did not occur.
 
 The shared invalid-expectation row pins the exact canonical sentinels:
 incomplete identity returns `ErrIdentityRequired`; empty Kind or EventID returns

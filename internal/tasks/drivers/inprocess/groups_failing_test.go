@@ -41,6 +41,10 @@ func (f *failingStateStore) SaveIf(ctx context.Context, expectations []state.Slo
 	return f.inner.SaveIf(ctx, expectations, rec)
 }
 
+func (f *failingStateStore) FenceIf(ctx context.Context, expectation state.SlotExpectation, fn func() error) error {
+	return f.inner.FenceIf(ctx, expectation, fn)
+}
+
 func (f *failingStateStore) DeleteIf(ctx context.Context, expectation state.SlotExpectation) (bool, error) {
 	return f.inner.DeleteIf(ctx, expectation)
 }

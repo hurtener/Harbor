@@ -225,6 +225,41 @@ func TestRegistry_DeregisterExact_StagedCloseFailureRetainsSameHandleAndBlocksPu
 	}
 }
 
+func TestRegistry_ExactRemovalFence_CancelCloseFailureRetainsReservationForRetry(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	closeFault := errors.New("staged cancel close fault")
+	provider := &stubProvider{id: "cancel-close", closeErrs: []error{closeFault, nil}}
+	swap, err := reg.StageRegistration(ServerRegistration{Provider: provider, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-a"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := reg.BeginExactRemoval("cancel-close", owner, "generation-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fence.Cancel(ctx); !errors.Is(err, closeFault) {
+		t.Fatalf("first Cancel = %v, want close fault", err)
+	}
+	if published, err := swap.Publish(ctx, nil); err == nil || published {
+		t.Fatalf("invalidated stage published=%t err=%v after failed Cancel", published, err)
+	}
+	if _, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "cancel-close"}, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-b"}, nil); err == nil {
+		t.Fatal("replacement staged while failed Cancel retained reservation")
+	}
+	if err := fence.Cancel(ctx); err != nil {
+		t.Fatalf("retry Cancel: %v", err)
+	}
+	replacement, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "cancel-close"}, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-b"}, nil)
+	if err != nil {
+		t.Fatalf("replacement remained blocked after positive Cancel receipt: %v", err)
+	}
+	if err := replacement.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRegistry_ExactStagedPublishVsRemoval_ConcurrentReuseN128(t *testing.T) {
 	const n = 128
 	ctx := context.Background()

@@ -248,8 +248,11 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			closePrepared(),
 		)
 	}
-	if err := authorityPrepared.ActivateIf(ctx, func(proofCtx context.Context) error {
-		return revalidateSignedAttachmentAuthority(proofCtx, physical, s.signedOAuthMCPOperations, s.signedOAuthMCPFences, q, req.AgentID, rev, pair, op)
+	if err := authorityPrepared.ActivateUnder(ctx, func(proofCtx context.Context, publish func() error) error {
+		if err := revalidateSignedAttachmentAuthority(proofCtx, physical, s.signedOAuthMCPOperations, s.signedOAuthMCPFences, q, req.AgentID, rev, pair, op); err != nil {
+			return err
+		}
+		return s.signedOAuthMCPOperations.FencePublication(proofCtx, op, publish)
 	}); err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closePrepared())
 	}
@@ -348,7 +351,8 @@ func (s *Service) rejectIncompletePriorSignedPairLifetime(ctx context.Context, i
 				continue
 			}
 			switch operation.Phase {
-			case agentcfg.SignedOAuthMCPPhasePublished, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted,
+			case agentcfg.SignedOAuthMCPPhasePublished, agentcfg.SignedOAuthMCPPhaseRemovalAdmitted,
+				agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted,
 				agentcfg.SignedOAuthMCPPhaseCatalogUnpublished, agentcfg.SignedOAuthMCPPhaseTeardownReceipted:
 				return fmt.Errorf("%w: prior signed capability pair lifetime is still %q", agentcfg.ErrSignedCapabilityPending, operation.Phase)
 			}

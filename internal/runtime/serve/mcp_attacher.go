@@ -454,6 +454,15 @@ func (p *preparedMCPConnection) ActivateIf(ctx context.Context, prove func(conte
 	return err
 }
 
+func (p *preparedMCPConnection) ActivateUnder(ctx context.Context, admit func(context.Context, func() error) error) error {
+	err := p.inner.ActivateUnder(ctx, admit)
+	if err == nil {
+		p.owner.closers = append(p.owner.closers, p.inner.Close)
+	}
+	p.unlock()
+	return err
+}
+
 func (p *preparedMCPConnection) Close(ctx context.Context) error {
 	err := p.inner.Close(ctx)
 	p.unlock()
@@ -549,6 +558,16 @@ func (a *MCPConnectionAttacher) DetachExactConnection(ctx context.Context, tenan
 	}
 	return detachSourceExpected(ctx, a.catalog, a.registry, name, owner, descriptorFingerprint, a.logger,
 		"mcp: detached exact signed capability source")
+}
+
+// BeginExactConnectionTeardown installs the process-local admission fence
+// before signed desired-state removal. The receipt is sealed after the durable
+// CAS or canceled when the CAS is proven not to have committed.
+func (a *MCPConnectionAttacher) BeginExactConnectionTeardown(tenant, agentID, name, descriptorFingerprint string) (agentcfgprotocol.ExactConnectionTeardownFence, error) {
+	if a.registry == nil {
+		return nil, errors.New("mcp: exact teardown fence requires registry")
+	}
+	return a.registry.BeginExactRemoval(name, toolauth.Owner{Tenant: tenant, Agent: agentID}, descriptorFingerprint)
 }
 
 // Close drains every runtime-added server's transport in reverse order. Wired

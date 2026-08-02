@@ -118,6 +118,10 @@ type PreparedConnection interface {
 type AuthorityBoundPreparedConnection interface {
 	PreparedConnection
 	ActivateIf(ctx context.Context, prove func(context.Context) error) error
+	// ActivateUnder hands the exact local publication callback to admit. The
+	// caller uses this to hold a durable operation-slot fence across catalog and
+	// registry publication without putting network preparation inside the fence.
+	ActivateUnder(ctx context.Context, admit func(context.Context, func() error) error) error
 }
 
 // ProviderPreparer builds an unpublished OAuth provider for an MCP prepare.
@@ -191,6 +195,22 @@ type ConnectionDetacher interface {
 // linearization point before any source is withdrawn.
 type ExactConnectionDetacher interface {
 	DetachExactConnection(ctx context.Context, tenant, agentID, name, descriptorFingerprint string) error
+}
+
+// ExactConnectionTeardownFence is the process-local admission receipt that
+// spans desired-state removal. Seal is called once pair absence is durable;
+// Cancel is called only when the CAS is proven not to have committed.
+type ExactConnectionTeardownFence interface {
+	Seal()
+	Cancel(ctx context.Context) error
+}
+
+// ExactConnectionTeardownFencer prevents a matching private preparation from
+// publishing between the final durable authority proof and pair removal CAS.
+// It is a companion to ExactConnectionDetacher so existing non-signed detach
+// implementations do not acquire lifecycle ceremony they cannot use.
+type ExactConnectionTeardownFencer interface {
+	BeginExactConnectionTeardown(tenant, agentID, name, descriptorFingerprint string) (ExactConnectionTeardownFence, error)
 }
 
 // AttachRequest is the input to a ConnectionAttacher. It carries the

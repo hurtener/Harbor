@@ -199,6 +199,30 @@ func (d *driver) DeleteIf(ctx context.Context, expectation state.SlotExpectation
 	return true, nil
 }
 
+// FenceIf implements StateStore's exact-generation callback fence under the
+// same mutex used by SaveIf.
+func (d *driver) FenceIf(ctx context.Context, expectation state.SlotExpectation, fn func() error) error {
+	if d.closed.Load() {
+		return state.ErrStoreClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := state.ValidateFenceIf(expectation, fn); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rec, ok := d.records[keyFor(expectation.Identity, expectation.Kind)]
+	if !ok || rec.ID != expectation.ExpectedEventID {
+		return fmt.Errorf("%w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+	}
+	return fn()
+}
+
 // saveLocked implements Save after the caller has acquired d.mu.
 func (d *driver) saveLocked(r state.StateRecord) error {
 	key := keyFor(r.Identity, r.Kind)

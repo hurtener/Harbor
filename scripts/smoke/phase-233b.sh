@@ -15,7 +15,7 @@ assert_grep_present 'D-401' "RFC-001-Harbor.md" "RFC carries the D-401 productio
 assert_grep_present 'production-safe, boot-authorized' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "production path requires boot authorization"
 assert_grep_present 'explicit signed-capability production opt-in' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "broker opt-in is explicit"
 assert_grep_present 'trust_anchor_name' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "JTI operation key includes the trust anchor"
-assert_grep_present 'claimed -> revision_committed -> published -> removal_revision_committed -> catalog_unpublished -> teardown_receipted -> removed' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "complete pair-lifetime JTI graph is specified"
+assert_grep_present 'claimed -> revision_committed -> published -> removal_admitted -> removal_revision_committed -> catalog_unpublished -> teardown_receipted -> removed' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "complete pair-lifetime JTI graph is specified"
 assert_grep_present 'pair-history lifetime despite registration-authority expiry' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "published record survives registration-authority expiry"
 assert_grep_present 'anti-replay tombstone' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "removed pair cannot be recreated or replayed"
 assert_grep_present 'cleanup/maintenance applies only to `claimed`, `revision_committed`,' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "expiry maintenance excludes published and removed records"
@@ -29,8 +29,8 @@ assert_grep_present 'RFC5952' "docs/plans/phase-233b-signed-oauth-mcp-capability
 assert_grep_present 'foreign operation' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "activation fence rejects foreign authority mutators"
 assert_grep_present 'redirects' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "bearer redirects are fail-closed"
 assert_grep_present 'CanonicalOAuthMCPURL' internal/runtime/agentcfg/protocol/register_signed_oauth_mcp_capability.go "registration derives its URL bytes and sink through the canonical helper"
-assert_grep_present 'ActivateIf' internal/runtime/agentcfg/protocol/register_signed_oauth_mcp_capability.go "initial registration proves authority under the exact staged publication receipt"
-assert_grep_present 'ActivateIf' internal/runtime/agentcfg/protocol/signed_oauth_mcp_reconcile.go "restart reconcile proves authority under the exact staged publication receipt"
+assert_grep_present 'ActivateUnder' internal/runtime/agentcfg/protocol/register_signed_oauth_mcp_capability.go "initial registration proves authority under the exact staged publication receipt"
+assert_grep_present 'ActivateUnder' internal/runtime/agentcfg/protocol/signed_oauth_mcp_reconcile.go "restart reconcile proves authority under the exact staged publication receipt"
 assert_grep_absent 'AllowWireOAuthDescriptor|allowWireOAuthDescriptor' internal/runtime/agentcfg/protocol/register_signed_oauth_mcp_capability.go "D-401 registration does not consult the development-only wire OAuth descriptor opt-in"
 
 P233B_TMP="$(mktemp -d "${TMPDIR:-/tmp}/harbor-phase-233b.XXXXXX")"
@@ -45,6 +45,7 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestRegisterOAuthMCPCapability_CommittedRevisionThenError_RecoversExactCandidate \
     TestRegisterOAuthMCPCapability_PointerAndCompensationFailure_DoesNotPublishMatchingOrphan \
     TestRegisterOAuthMCPCapability_CrossSessionServiceCannotReplaceDuringRemoval \
+    TestRegisterOAuthMCPCapability_CrossServiceRemovalAdmissionBlocksReplacement \
     TestRegisterOAuthMCPCapability_ConcurrentReplaySharesOnePublication \
     TestRegisterOAuthMCPCapability_ConcurrentMixedIdentityN128 \
     TestRemoveOAuthMCPCapability_ContinuesPairLifetimeReceipt \
@@ -54,7 +55,11 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestSignedOAuthMCPReconciler_ExpiredIncompleteRestoresBootLifecycle \
     TestSignedOAuthMCPReconciler_HistoricalPublishedPairCannotReattach \
     TestSignedOAuthMCPReconciler_RemovalDuringPrepareCannotRepublish \
+    TestSignedOAuthMCPReconciler_TwoRegistriesRemovalCannotCrossPublicationFence \
+    TestSignedOAuthMCPReconciler_RemovalAdmittedWithActivePairResumesForward \
     TestSignedOAuthMCPReconciler_RecoversRemovalAfterDetachFault \
+    TestRemoveOAuthMCPCapability_DefinitiveCASFailureRollsBackAdmissionAndSurfacesFenceCleanup \
+    TestRemoveOAuthMCPCapability_PairAbsentCheckpointFailureDirectRetryCompletes \
     TestSignedOAuthMCPReconciler_ConcurrentReuseN128_CancellationDoesNotLeak \
     TestSetOAuthProvider_FirstInstallCommitThenErrorRestoresUnsetAgent \
     TestSetOAuthProvider_BootLifecycleCommitThenErrorRestoresExactPrior
@@ -68,6 +73,7 @@ assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./intern
     TestRegistry_DeregisterExact_CloseFailureRetainsExactRetryReceiptAndBlocksReplacement \
     TestRegistry_DeregisterExact_PersistentCloseFailureNeverBecomesAbsentSuccess \
     TestRegistry_DeregisterExact_StagedCloseFailureRetainsSameHandleAndBlocksPublish \
+    TestRegistry_ExactRemovalFence_CancelCloseFailureRetainsReservationForRetry \
     TestRegistry_ExactStagedPublishVsRemoval_ConcurrentReuseN128 \
     TestPreparedAttachment_AuthorityLostBeforeReservationNeverPublishes \
     TestPreparedAttachment_ExactRemovalAfterReservationInvalidatesPublication \

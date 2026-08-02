@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -133,6 +134,51 @@ func TestSQLite_DeleteIf_TwoClientsCASWinnerSurvivesReopen(t *testing.T) {
 		}
 	} else if !errors.Is(loadErr, state.ErrNotFound) {
 		t.Fatalf("reopened deleted slot = %+v err=%v, want ErrNotFound", got, loadErr)
+	}
+}
+
+func TestSQLite_FenceIf_TwoClientsPublicationAndReplacementSerialize(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "conditional-fence.sqlite")
+	left, err := sqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = left.Close(context.Background()) })
+	right, err := sqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = right.Close(context.Background()) })
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	base := state.StateRecord{ID: "01HABXXX00000000SF", Identity: q, Kind: "conditional.fence.two-client", Bytes: []byte("published")}
+	if err := left.Save(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	fenced := make(chan error, 1)
+	go func() {
+		fenced <- left.FenceIf(context.Background(), state.SlotExpectation{Identity: q, Kind: base.Kind, ExpectedEventID: base.ID}, func() error { close(entered); <-release; return nil })
+	}()
+	<-entered
+	next := state.StateRecord{ID: "01HABXXX00000000SG", Identity: q, Kind: base.Kind, Bytes: []byte("removal-admitted")}
+	replaced := make(chan error, 1)
+	go func() {
+		replaced <- right.SaveIf(context.Background(), []state.SlotExpectation{{Identity: q, Kind: base.Kind, ExpectedEventID: base.ID}}, next)
+	}()
+	select {
+	case err := <-replaced:
+		t.Fatalf("replacement crossed fence: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+	if err := <-fenced; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-replaced; err != nil {
+		t.Fatal(err)
+	}
+	if err := left.FenceIf(context.Background(), state.SlotExpectation{Identity: q, Kind: base.Kind, ExpectedEventID: base.ID}, func() error { return nil }); !errors.Is(err, state.ErrConditionFailed) {
+		t.Fatalf("stale publication after replacement = %v, want ErrConditionFailed", err)
 	}
 }
 

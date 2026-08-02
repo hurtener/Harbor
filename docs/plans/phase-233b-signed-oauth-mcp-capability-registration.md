@@ -103,7 +103,7 @@ explicit signed-capability production opt-in; it is not enabled by default.
   from the canonical length-prefixed tuple hash. Its bounded payload repeats
   tuple hashes/fields, exact pair fingerprint, expiry, phase, and revision
   identity. One pair-lifetime record has exactly one normal graph:
-  `claimed -> revision_committed -> published -> removal_revision_committed -> catalog_unpublished -> teardown_receipted -> removed`.
+  `claimed -> revision_committed -> published -> removal_admitted -> removal_revision_committed -> catalog_unpublished -> teardown_receipted -> removed`.
   Every transition `SaveIf`-compares its exact operation EventID. There is no
   generic `aborted` phase: a prepared-but-incomplete claim retries its recorded
   phase. Only `claimed` or `revision_committed` may terminally enter
@@ -169,8 +169,10 @@ explicit signed-capability production opt-in; it is not enabled by default.
   pair-bearing revision being removed; hash-less or stale delayed targets fail
   closed, while an exact terminal retry returns that pair lifetime's original
   removal receipt and cannot select a replacement. Its exact EventID `SaveIf`
-  subphases are `removal_revision_committed` (desired
-  pair absent by revision CAS), `catalog_unpublished`, `teardown_receipted`
+  subphases are `removal_admitted` (the operation generation won the mandatory
+  StateStore publication fence before desired-state mutation),
+  `removal_revision_committed` (desired pair absent by revision CAS),
+  `catalog_unpublished`, `teardown_receipted`
   (transport/provider close+revoke from frozen fingerprint), then terminal
   `removed` checkpoint. Each commit-then-error or unknown outcome exact-rereads
   the operation EventID/phase, desired revision, catalog source, and close/revoke
@@ -178,6 +180,13 @@ explicit signed-capability production opt-in; it is not enabled by default.
   or lost verifier never block this teardown. It cannot report `removed` while
   authority remains live, and retirement's terminal manifest invokes this same
   state machine rather than a second teardown path.
+- [x] The irreversible local catalog+registry publish callback runs under
+  mandatory StateStore `FenceIf` against the operation's exact EventID and does
+  no network or StateStore I/O. Removal admission is a competing exact-EventID
+  `SaveIf`; two independent Services/registries therefore cannot cross publish
+  and removal. A definitive desired-state CAS refusal rolls the operation back
+  to `published` and reports any exact local-fence cleanup failure; retry keeps
+  the same owner/fingerprint receipt.
 - [x] Live attachment and exact teardown are generation-bound to the durable
   operation identity as well as the connection descriptor. A new registration
   cannot replace a pair while an older lifetime is `published` without an

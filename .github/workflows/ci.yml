@@ -343,10 +343,9 @@ jobs:
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
         run: go test -race -count=1 -timeout 240s ./internal/state/drivers/postgres/...
-      - name: Run exact-generation state deletion conformance against postgres:16
-        # D-403: select both the shared invalid-expectation conformance row and
-        # the DSN-gated two-client DeleteIf-vs-SaveIf durable reopen test so
-        # validation parity and atomicity cannot pass through a skipped path.
+      - name: Run exact-generation state mutation conformance against postgres:16
+        # D-403: exercise both conditional deletion and the publication fence
+        # through explicit DSN-backed selectors so neither can pass by skip.
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
         run: |
@@ -358,6 +357,12 @@ jobs:
           : > "${test_log}"
           go test -v -race -count=10 -timeout 240s ./internal/state/drivers/postgres -run '^TestPostgres_DeleteIf_TwoClientsCASWinnerSurvivesReopen$' | tee "${test_log}"
           grep -Fq -- '--- PASS: TestPostgres_DeleteIf_TwoClientsCASWinnerSurvivesReopen' "${test_log}"
+          : > "${test_log}"
+          go test -v -race -count=10 -timeout 240s ./internal/state/drivers/postgres -run '^TestPostgres_Conformance$/^FenceIf_InvalidCancelledAndClosedFailLoud$' | tee "${test_log}"
+          grep -Fq -- '--- PASS: TestPostgres_Conformance/FenceIf_InvalidCancelledAndClosedFailLoud' "${test_log}"
+          : > "${test_log}"
+          go test -v -race -count=10 -timeout 240s ./internal/state/drivers/postgres -run '^TestPostgres_FenceIf_TwoClientsPublicationAndReplacementSerialize$' | tee "${test_log}"
+          grep -Fq -- '--- PASS: TestPostgres_FenceIf_TwoClientsPublicationAndReplacementSerialize' "${test_log}"
       - name: Run artifacts/postgres tests against postgres:16
         # Phase 18: same container as the state/postgres step above.
         # Running both packages in the same job keeps CI overhead

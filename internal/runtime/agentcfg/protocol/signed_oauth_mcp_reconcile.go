@@ -26,6 +26,7 @@ type SignedOAuthMCPReconciler struct {
 	preparer      ConnectionPreparer
 	detacher      ConnectionDetacher
 	exactDetacher ExactConnectionDetacher
+	exactFencer   ExactConnectionTeardownFencer
 	providers     SignedCapabilityProviderPreparer
 	matcher       connectionMatcher
 	gate          chan struct{}
@@ -58,6 +59,10 @@ func NewSignedOAuthMCPReconciler(registry agentcfg.Registry, store state.StateSt
 	if !ok || exactDetacher == nil {
 		return nil, fmt.Errorf("%w: signed capability reconciler needs exact detacher", ErrSignedCapabilityUnavailable)
 	}
+	exactFencer, ok := detacher.(ExactConnectionTeardownFencer)
+	if !ok || exactFencer == nil {
+		return nil, fmt.Errorf("%w: signed capability reconciler needs exact teardown admission", ErrSignedCapabilityUnavailable)
+	}
 	operations, err := agentcfg.NewSignedOAuthMCPOperationStore(store)
 	if err != nil {
 		return nil, err
@@ -66,7 +71,7 @@ func NewSignedOAuthMCPReconciler(registry agentcfg.Registry, store state.StateSt
 	if err != nil {
 		return nil, err
 	}
-	return &SignedOAuthMCPReconciler{registry: registry, physical: physical, operations: operations, fences: fences, preparer: preparer, detacher: detacher, exactDetacher: exactDetacher, providers: providers, matcher: matcher, gate: make(chan struct{}, 1), continuations: make(map[string]string)}, nil
+	return &SignedOAuthMCPReconciler{registry: registry, physical: physical, operations: operations, fences: fences, preparer: preparer, detacher: detacher, exactDetacher: exactDetacher, exactFencer: exactFencer, providers: providers, matcher: matcher, gate: make(chan struct{}, 1), continuations: make(map[string]string)}, nil
 }
 
 // ReconcileSignedOAuthMCPCapability converges a single exact agent slot. A
@@ -139,6 +144,10 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 				if !sameSubject {
 					return fmt.Errorf("%w: prior subject signed capability pair lifetime is awaiting removal recovery", agentcfg.ErrSignedCapabilityPending)
 				}
+				op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalAdmitted, active.RevisionID)
+				if err != nil {
+					return err
+				}
 				op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, active.RevisionID)
 				if err != nil {
 					return err
@@ -147,15 +156,35 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 					return err
 				}
 			}
-		case agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, agentcfg.SignedOAuthMCPPhaseCatalogUnpublished, agentcfg.SignedOAuthMCPPhaseTeardownReceipted:
+		case agentcfg.SignedOAuthMCPPhaseRemovalAdmitted, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, agentcfg.SignedOAuthMCPPhaseCatalogUnpublished, agentcfg.SignedOAuthMCPPhaseTeardownReceipted:
 			if !sameSubject {
 				return fmt.Errorf("%w: prior subject signed capability pair lifetime is still %q", agentcfg.ErrSignedCapabilityPending, op.Phase)
 			}
 			if hasActive && active.Payload.SignedOAuthMCPPair != nil {
 				return fmt.Errorf("%w: stale removal cannot detach the active pair", agentcfg.ErrSignedCapabilityReplay)
 			}
+			if op.Phase == agentcfg.SignedOAuthMCPPhaseRemovalAdmitted {
+				op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, active.RevisionID)
+				if err != nil {
+					return err
+				}
+			}
 			if err := r.resumeRemoval(ctx, q, agentID, op); err != nil {
 				return err
+			}
+		case agentcfg.SignedOAuthMCPPhaseRemoved:
+			// A different runtime may have published before removal won the
+			// shared operation-slot fence. Its process-local handle converges from
+			// the terminal durable receipt on the next reconciliation pass.
+			if sameSubject {
+				operationKind, kindErr := r.operations.Kind(op.ReplayKey)
+				if kindErr != nil {
+					return kindErr
+				}
+				fingerprint := signedCapabilityAttachmentFingerprint(op.Binding.Connection, operationKind)
+				if err := r.exactDetacher.DetachExactConnection(ctx, q.TenantID, agentID, op.Binding.Connection.Name, fingerprint); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -227,6 +256,12 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 			return err
 		}
 		return r.ensureAttached(ctx, q, agentID, pair, revision, op)
+	case agentcfg.SignedOAuthMCPPhaseRemovalAdmitted:
+		// Admission is durable removal intent. Another runtime may still be
+		// performing its desired-state CAS, so a reconciler must never roll it
+		// back merely because the old pair remains active. Resume that exact CAS
+		// under this runtime's local teardown fence instead.
+		return r.resumeAdmittedActiveRemoval(ctx, q, agentID, revision, pair, op)
 	case agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted:
 		if err := r.detach(ctx, q, agentID, pair); err != nil {
 			return err
@@ -367,8 +402,11 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 	// while the proof runs; publication then fails by the same reservation. If
 	// publication wins, registry and catalog become visible under one registry
 	// lock, so every later removal necessarily observes the exact handle.
-	if err := authorityPrepared.ActivateIf(ctx, func(proofCtx context.Context) error {
-		return r.revalidateAttachmentAuthority(proofCtx, q, agentID, revision, pair, op)
+	if err := authorityPrepared.ActivateUnder(ctx, func(proofCtx context.Context, publish func() error) error {
+		if err := r.revalidateAttachmentAuthority(proofCtx, q, agentID, revision, pair, op); err != nil {
+			return err
+		}
+		return r.operations.FencePublication(proofCtx, op, publish)
 	}); err != nil {
 		return errors.Join(err, closePreparedSignedCapability(ctx, prepared, provider))
 	}
@@ -425,6 +463,48 @@ func revalidateSignedAttachmentAuthority(ctx context.Context, physicalRegistry p
 
 func (r *SignedOAuthMCPReconciler) detach(ctx context.Context, q identity.Quadruple, agentID string, pair *agentcfg.SignedOAuthMCPPair) error {
 	return r.exactDetacher.DetachExactConnection(ctx, q.TenantID, agentID, pair.Connection.Name, signedCapabilityPairAttachmentFingerprint(pair))
+}
+
+func (r *SignedOAuthMCPReconciler) resumeAdmittedActiveRemoval(ctx context.Context, q identity.Quadruple, agentID string, revision agentcfg.Revision, pair *agentcfg.SignedOAuthMCPPair, op agentcfg.SignedOAuthMCPOperation) (retErr error) {
+	fingerprint := signedCapabilityPairAttachmentFingerprint(pair)
+	teardownFence, err := r.exactFencer.BeginExactConnectionTeardown(q.TenantID, agentID, pair.Connection.Name, fingerprint)
+	if err != nil {
+		return err
+	}
+	sealed := false
+	defer func() {
+		if !sealed {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), signedCapabilityCleanupTimeout)
+			defer cancel()
+			retErr = errors.Join(retErr, teardownFence.Cancel(cleanupCtx))
+		}
+	}()
+	payload := carrySiblingsForward(revision, true)
+	payload.SignedOAuthMCPPair = nil
+	candidateHash, err := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
+	if err != nil {
+		return err
+	}
+	operationKind, err := r.operations.Kind(op.ReplayKey)
+	if err != nil {
+		return err
+	}
+	removalCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, operationKind)
+	removalRevision, err := r.registry.SetRevision(removalCtx, q, agentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{ExpectedContentHash: revision.ContentHash})
+	if err != nil {
+		current, set, readErr := r.registry.Active(context.WithoutCancel(ctx), q, agentID, agentcfg.ConfigScopeAgent)
+		if readErr != nil || !set || current.Payload.SignedOAuthMCPPair != nil || current.ContentHash != candidateHash {
+			return errors.Join(err, readErr)
+		}
+		removalRevision = current
+	}
+	teardownFence.Seal()
+	sealed = true
+	op, err = r.operations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, removalRevision.RevisionID)
+	if err != nil {
+		return err
+	}
+	return r.resumeRemoval(ctx, q, agentID, op)
 }
 
 func (r *SignedOAuthMCPReconciler) resumeRemoval(ctx context.Context, q identity.Quadruple, agentID string, op agentcfg.SignedOAuthMCPOperation) error {

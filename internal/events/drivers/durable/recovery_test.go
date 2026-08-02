@@ -346,6 +346,9 @@ func (s *listFailingStore) Save(context.Context, state.StateRecord) error { retu
 func (s *listFailingStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
 	return nil
 }
+func (s *listFailingStore) FenceIf(_ context.Context, _ state.SlotExpectation, fn func() error) error {
+	return fn()
+}
 func (s *listFailingStore) DeleteIf(context.Context, state.SlotExpectation) (bool, error) {
 	return false, nil
 }
@@ -382,6 +385,9 @@ type scopeRecordingStore struct{ sawMaintenanceScope bool }
 func (s *scopeRecordingStore) Save(context.Context, state.StateRecord) error { return nil }
 func (s *scopeRecordingStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
 	return nil
+}
+func (s *scopeRecordingStore) FenceIf(_ context.Context, _ state.SlotExpectation, fn func() error) error {
+	return fn()
 }
 func (s *scopeRecordingStore) DeleteIf(context.Context, state.SlotExpectation) (bool, error) {
 	return false, nil

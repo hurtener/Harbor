@@ -59,6 +59,7 @@ const (
 	SignedOAuthMCPPhaseClaimed                  SignedOAuthMCPOperationPhase = "claimed"
 	SignedOAuthMCPPhaseRevisionCommitted        SignedOAuthMCPOperationPhase = "revision_committed"
 	SignedOAuthMCPPhasePublished                SignedOAuthMCPOperationPhase = "published"
+	SignedOAuthMCPPhaseRemovalAdmitted          SignedOAuthMCPOperationPhase = "removal_admitted"
 	SignedOAuthMCPPhaseRemovalRevisionCommitted SignedOAuthMCPOperationPhase = "removal_revision_committed"
 	SignedOAuthMCPPhaseCatalogUnpublished       SignedOAuthMCPOperationPhase = "catalog_unpublished"
 	SignedOAuthMCPPhaseTeardownReceipted        SignedOAuthMCPOperationPhase = "teardown_receipted"
@@ -403,6 +404,35 @@ func (s *SignedOAuthMCPOperationStore) Advance(ctx context.Context, current Sign
 	return nextRecord, nil
 }
 
+// FencePublication holds the StateStore's exact operation-slot lock while fn
+// publishes one already-prepared local catalog/registry generation. It performs
+// no network I/O and mutates no durable state. A concurrent removal must first
+// SaveIf-advance this same EventID to removal_admitted, so exactly one side
+// wins before catalog dispatch becomes visible.
+func (s *SignedOAuthMCPOperationStore) FencePublication(ctx context.Context, current SignedOAuthMCPOperation, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if current.Phase != SignedOAuthMCPPhaseRevisionCommitted && current.Phase != SignedOAuthMCPPhasePublished {
+		return fmt.Errorf("%w: phase %q cannot admit publication", ErrSignedCapabilityTransition, current.Phase)
+	}
+	quad, kind, err := signedOAuthMCPOperationSlot(current.ReplayKey)
+	if err != nil {
+		return err
+	}
+	// Publication is a short, process-local irreversible commit. Once caller
+	// cancellation has passed the check above, do not return a cancellation
+	// that could be mistaken for proof the callback did not publish.
+	err = s.state.FenceIf(context.WithoutCancel(ctx), state.SlotExpectation{Identity: quad, Kind: kind, ExpectedEventID: current.EventID}, fn)
+	if errors.Is(err, state.ErrConditionFailed) {
+		return fmt.Errorf("%w: publication operation changed concurrently", ErrSignedCapabilityReplay)
+	}
+	if err != nil {
+		return fmt.Errorf("fence signed capability publication: %w", err)
+	}
+	return nil
+}
+
 func (s *SignedOAuthMCPOperationStore) load(ctx context.Context, quad identity.Quadruple, kind string) (SignedOAuthMCPOperation, error) {
 	record, err := s.state.Load(ctx, quad, kind)
 	if err != nil {
@@ -442,7 +472,9 @@ func signedOAuthMCPTransitionAllowed(from, to SignedOAuthMCPOperationPhase) bool
 	case SignedOAuthMCPPhaseRevisionCommitted:
 		return to == SignedOAuthMCPPhasePublished
 	case SignedOAuthMCPPhasePublished:
-		return to == SignedOAuthMCPPhaseRemovalRevisionCommitted
+		return to == SignedOAuthMCPPhaseRemovalAdmitted
+	case SignedOAuthMCPPhaseRemovalAdmitted:
+		return to == SignedOAuthMCPPhasePublished || to == SignedOAuthMCPPhaseRemovalRevisionCommitted
 	case SignedOAuthMCPPhaseRemovalRevisionCommitted:
 		return to == SignedOAuthMCPPhaseCatalogUnpublished
 	case SignedOAuthMCPPhaseCatalogUnpublished:
@@ -457,7 +489,7 @@ func signedOAuthMCPTransitionAllowed(from, to SignedOAuthMCPOperationPhase) bool
 func signedOAuthMCPOperationPhaseKnown(phase SignedOAuthMCPOperationPhase) bool {
 	switch phase {
 	case SignedOAuthMCPPhaseClaimed, SignedOAuthMCPPhaseRevisionCommitted,
-		SignedOAuthMCPPhasePublished, SignedOAuthMCPPhaseRemovalRevisionCommitted,
+		SignedOAuthMCPPhasePublished, SignedOAuthMCPPhaseRemovalAdmitted, SignedOAuthMCPPhaseRemovalRevisionCommitted,
 		SignedOAuthMCPPhaseCatalogUnpublished, SignedOAuthMCPPhaseTeardownReceipted,
 		SignedOAuthMCPPhaseRemoved, SignedOAuthMCPPhaseExpiredIncomplete:
 		return true

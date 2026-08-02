@@ -489,8 +489,26 @@ func (p *PreparedAttachment) Activate(ctx context.Context) error {
 // teardown invalidates it first or every later teardown sees the live handle;
 // there is no catalog-only generation between those outcomes.
 func (p *PreparedAttachment) ActivateIf(ctx context.Context, prove func(context.Context) error) error {
+	return p.ActivateUnder(ctx, func(ctx context.Context, publish func() error) error {
+		if prove != nil {
+			if err := prove(ctx); err != nil {
+				return err
+			}
+		}
+		return publish()
+	})
+}
+
+// ActivateUnder stages the exact private registry handle, then delegates the
+// final local publication callback to admit. Signed capability callers use an
+// exact durable operation-slot fence in admit, so removal CAS and local catalog
+// visibility have one cross-runtime ordering point.
+func (p *PreparedAttachment) ActivateUnder(ctx context.Context, admit func(context.Context, func() error) error) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if admit == nil {
+		return errors.New("mcp prepared attachment activation admission is nil")
+	}
 	if p.closed {
 		return fmt.Errorf("mcp prepared attachment %q is closed", p.ms.Name)
 	}
@@ -522,26 +540,32 @@ func (p *PreparedAttachment) ActivateIf(ctx context.Context, prove func(context.
 		p.registrySwap = registrySwap
 		p.observations.transfer(registrySwap)
 	}
-	if prove != nil {
-		if err := prove(ctx); err != nil {
-			rollbackErr := p.registrySwap.Rollback()
-			return errors.Join(err, rollbackErr)
-		}
-	}
 	var catalogSwap tools.CatalogSourceSwap
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	published, publishErr := p.registrySwap.Publish(cleanupCtx, func() error {
-		var err error
-		catalogSwap, err = p.deps.Catalog.StageSource(tools.ToolSourceID(p.ms.Name), p.descriptors, priorExists)
-		if err != nil {
-			return fmt.Errorf("catalog.Register source %q: %w", p.ms.Name, err)
+	published := false
+	var publishErr error
+	admitErr := admit(ctx, func() error {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		published, publishErr = p.registrySwap.Publish(cleanupCtx, func() error {
+			var err error
+			catalogSwap, err = p.deps.Catalog.StageSource(tools.ToolSourceID(p.ms.Name), p.descriptors, priorExists)
+			if err != nil {
+				return fmt.Errorf("catalog.Register source %q: %w", p.ms.Name, err)
+			}
+			// Commit synchronizes the optional search cache before exact teardown may
+			// proceed. Once this callback returns, registry publication cannot fail.
+			catalogSwap.Commit()
+			return nil
+		})
+		if !published {
+			return publishErr
 		}
-		// Commit synchronizes the optional search cache before exact teardown may
-		// proceed. Once this callback returns, registry publication cannot fail.
-		catalogSwap.Commit()
 		return nil
 	})
-	cancel()
+	if admitErr != nil {
+		rollbackErr := p.registrySwap.Rollback()
+		return errors.Join(admitErr, rollbackErr)
+	}
 	if !published {
 		rollbackErr := p.registrySwap.Rollback()
 		return errors.Join(publishErr, rollbackErr)
