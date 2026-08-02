@@ -55,19 +55,56 @@ func TestRegistry_Deregister_UnknownName_NotFound(t *testing.T) {
 	}
 }
 
-func TestRegistry_Deregister_PropagatesCloseError(t *testing.T) {
+func TestRegistry_Deregister_CloseFailureRetainsRetryHandleAndBlocksReplacement(t *testing.T) {
 	r := NewRegistry()
-	prov := &stubProvider{id: "srv", closeErr: errors.New("close boom")}
+	closeErr := errors.New("close boom")
+	prov := &stubProvider{id: "srv", closeErrs: []error{closeErr, nil}}
 	if err := r.Register(idCtx(t), ServerRegistration{Provider: prov, Transport: "stdio", InitialState: ServerStateOnline}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	// The entry is still removed (visible immediately) but the close error is
 	// surfaced loud (never swallowed).
 	err := r.Deregister(idCtx(t), "srv", auth.Owner{})
-	if err == nil {
-		t.Fatal("want a close error surfaced")
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("first close = %v, want injected error", err)
 	}
 	if got := r.SourceIDs(); len(got) != 0 {
 		t.Fatalf("entry not removed despite close error: %v", got)
+	}
+	if err := r.Register(idCtx(t), ServerRegistration{Provider: &stubProvider{id: "srv"}, Transport: "stdio"}); err == nil {
+		t.Fatal("replacement registered while prior generic handle was closing")
+	}
+	if err := r.Deregister(idCtx(t), "srv", auth.Owner{}); err != nil {
+		t.Fatalf("retry close: %v", err)
+	}
+	prov.mu.Lock()
+	closeCalls := prov.closed
+	prov.mu.Unlock()
+	if closeCalls != 2 {
+		t.Fatalf("close calls = %d, want one failed attempt plus one retry", closeCalls)
+	}
+	if err := r.Register(idCtx(t), ServerRegistration{Provider: &stubProvider{id: "srv"}, Transport: "stdio"}); err != nil {
+		t.Fatalf("replacement remained blocked after close receipt: %v", err)
+	}
+}
+
+func TestRegistry_Deregister_PersistentCloseFailureNeverBecomesAbsentSuccess(t *testing.T) {
+	r := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	closeErr := errors.New("persistent close boom")
+	prov := &stubProvider{id: "srv", closeErr: closeErr}
+	if err := r.Register(idCtx(t), ServerRegistration{Provider: prov, Transport: "stdio", Owner: owner}); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := range 3 {
+		if err := r.Deregister(idCtx(t), "srv", owner); !errors.Is(err, closeErr) {
+			t.Fatalf("attempt %d = %v, want persistent close error", attempt, err)
+		}
+		if err := r.Deregister(idCtx(t), "srv", auth.Owner{Tenant: "tenant", Agent: "other"}); !errors.Is(err, ErrServerNotFound) {
+			t.Fatalf("cross-owner retry = %v, want ErrServerNotFound", err)
+		}
+		if err := r.Register(idCtx(t), ServerRegistration{Provider: &stubProvider{id: "srv"}, Transport: "stdio", Owner: owner}); err == nil {
+			t.Fatalf("attempt %d allowed replacement before close receipt", attempt)
+		}
 	}
 }

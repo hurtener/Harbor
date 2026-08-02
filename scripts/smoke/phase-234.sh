@@ -31,9 +31,13 @@ assert_grep_present 'retireSignedOAuthMCPPair' internal/runtime/agentcfg/protoco
   'phase 234: D-401 cleanup uses a private retirement adapter'
 assert_grep_present 'RetirementStatus' internal/runtime/serve/agent_resolver.go \
   'phase 234: run resolver refuses a retired effective target'
+assert_grep_present 'RunSnapshots:.*runSnapshots' internal/runtime/serve/serve.go \
+  'phase 234: production run loop and retirement service share one snapshot gate'
+assert_grep_present 'WithToolsAgentResolver' internal/protocol/transports/stream/tools_handler.go \
+  'phase 234: tools describe resolves lifecycle after signed reach'
 
-assert_go_tests_pass "${P234_TMP}/retirement.log" '-race -count=1 ./cmd/harbor ./internal/agentcfg ./internal/agentcfg/drivers/statestore ./internal/agentcfg/sessionoverlay ./internal/runtime/agentcfg/protocol ./internal/runtime/registry ./internal/runtime/serve ./internal/protocol/bodyscope ./internal/protocol/transports/stream' \
-	'phase 234: terminal state, frozen cleanup, production HTTP start refusal, and protocol replay run under race' \
+assert_go_tests_pass "${P234_TMP}/retirement.log" '-race -count=1 ./cmd/harbor ./internal/agentcfg ./internal/agentcfg/drivers/statestore ./internal/agentcfg/sessionoverlay ./internal/runtime/agentcfg/protocol ./internal/runtime/agentcfg/runsnapshot ./internal/runtime/registry ./internal/runtime/serve ./internal/protocol/bodyscope ./internal/protocol/transports/stream ./internal/tools/auth ./internal/tools/drivers/mcp' \
+	'phase 234: terminal state, run drain, retryable live cleanup, lifecycle projections, and protocol replay run under race' \
 	TestRetirement_TerminalHistoryAndReplay \
 	TestRetirement_NoActiveSentinelReplay \
 	TestRetirement_ConcurrentSameOperationAndTenantIsolation \
@@ -69,7 +73,22 @@ assert_go_tests_pass "${P234_TMP}/retirement.log" '-race -count=1 ./cmd/harbor .
 	TestAgentConfigHandler_Retire_AdminReplayAndTerminalRefusal \
 	TestAgentConfigHandler_Retire_UsesSharedAgentConfigBodyScope \
 	TestGate_Coverage_EveryScopeCarryingRequestIsRegistered \
-	TestAgentResolverAdapter_DefaultTombstoneWins
+	TestAgentResolverAdapter_DefaultTombstoneWins \
+	TestGate_SealDrainsOnlyMatchingTenantAgentAndPermanentlyRefuses \
+	TestGate_ConcurrentSealAndReleaseDoesNotLoseLease \
+	TestRunLoopDriver_RetirementTombstonesNewStartsAndDrainsAdmittedRunBeforeCleanup \
+	TestRunSnapshotAdmissionTaskError_OnlyClosedGateMeansRetired \
+	TestRetire_TombstonesThenCanceledDrainRetryDefersCleanup \
+	TestRetire_GenericCleanupFailureReplaysBeforeProgressAck \
+	TestRegistry_Deregister_CloseFailureRetainsRetryHandleAndBlocksReplacement \
+	TestRegistry_Deregister_PersistentCloseFailureNeverBecomesAbsentSuccess \
+	TestProviderSet_Uninstall_CloseFailureRetainsRetryHandleAndBlocksReplacement \
+	TestProviderSet_Uninstall_PersistentCloseFailureNeverBecomesAbsentSuccess \
+	TestToolsHandler_Describe_ExcludedReachPrecedesLifecycleResolver \
+	TestToolsHandler_Describe_RetiredAgent409 \
+	TestToolsHandler_Describe_ResolvableAgentStillReachesService \
+	TestToolsHandler_Describe_UnresolvableAgentPreservesNonOracleRefusal \
+	TestToolsHandler_Describe_LifecycleFault500
 
 # A preflight-provided base URL is a live-server contract: do not turn an
 # unavailable bearer, tool, or server into a passing SKIP. Standalone remains

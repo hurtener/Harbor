@@ -120,6 +120,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
@@ -406,6 +407,9 @@ type DevStack struct {
 	// on the next run. Nil/"" when the StateStore is unavailable.
 	AgentConfig   agentcfg.Registry
 	AgentConfigID string
+	// RunSnapshots is the process-local retirement drain shared by the mounted
+	// agent-config service and RunLoopDriver.
+	RunSnapshots *runsnapshot.Gate
 	// AgentReach is the shared effective-agent gate used by this stack's
 	// control and stream projections.
 	AgentReach auth.AgentReachAuthorizer
@@ -658,6 +662,8 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 	// set through the mounted route actually reaches the run (D-094; closes
 	// the §17.6 cross-surface omission the adversarial pass found).
 	runsStore := runsprotocol.NewStore()
+	runSnapshots := runsnapshot.NewGate()
+	stack.RunSnapshots = runSnapshots
 	metricsReg := core.Metrics
 	llmPostureCfg := core.LLMSnapshot
 
@@ -739,6 +745,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 	// run-loop driver consumes it as its run-start ConnectionReattacher) but is
 	// also consumed by the mux builder further down, so it is declared here.
 	var attacher agentcfgprotocol.ConnectionAttacher
+	var agentResolver protocol.AgentResolver
 
 	// Steering surface + run-loop driver. Skip-aware: the Mux phase
 	// below depends on the surface, so SkipSteering implies
@@ -772,8 +779,9 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		// every named agent, which is the fail-closed posture, never a
 		// silent accept.
 		stack.AgentReach = auth.NewAgentReachAuthorizer()
+		agentResolver = serve.NewAgentResolverAdapter(stack.AgentConfig, stack.AgentConfigID, serve.WithBootLifecycleEnsurer(bootLifecycleEnsurer))
 		surfaceOpts = append(surfaceOpts,
-			protocol.WithAgentResolver(serve.NewAgentResolverAdapter(stack.AgentConfig, stack.AgentConfigID, serve.WithBootLifecycleEnsurer(bootLifecycleEnsurer))),
+			protocol.WithAgentResolver(agentResolver),
 			protocol.WithAgentReachAuthorizer(stack.AgentReach))
 		surface, surfaceErr := protocol.NewControlSurface(taskReg, core.Steering, surfaceOpts...)
 		if surfaceErr != nil {
@@ -888,6 +896,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				AgentConfig:              stack.AgentConfig,
 				AgentConfigID:            stack.AgentConfigID,
 				EnsureBootAgentLifecycle: bootLifecycleEnsurer,
+				RunSnapshots:             runSnapshots,
 				SessionOverlay:           stack.SessionOverlay,
 				RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 				ConnectionDetacher:       devDetacher,
@@ -1054,7 +1063,9 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			Skills:                         stack.Skills,
 			AgentConfig:                    stack.AgentConfig,
 			AgentConfigID:                  stack.AgentConfigID,
+			AgentResolver:                  agentResolver,
 			BootLifecycleEnsurer:           bootLifecycleEnsurer,
+			RunSnapshots:                   runSnapshots,
 			SessionOverlay:                 stack.SessionOverlay,
 			SessionPersonalSkillController: devSessionPersonalController(stack.SessionPersonalSkillAuthority),
 			RunsStore:                      runsStore,

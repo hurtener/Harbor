@@ -59,6 +59,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	agentregistry "github.com/hurtener/Harbor/internal/runtime/registry"
@@ -428,6 +429,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	bootLifecycleEnsurer := agentcfg.BootLifecycleEnsurer(func(runCtx context.Context, id identity.Identity, agentID string) error {
 		return EnsureBootAgentLifecycle(runCtx, stack.State, agentConfigRegistry, id, agentID)
 	})
+	runSnapshots := runsnapshot.NewGate()
 
 	// The session-scoped safe-subset overlay store (the non-admin lower tier).
 	sessionOverlayStore, err := sessionoverlay.NewStore(stack.State, nil)
@@ -464,9 +466,10 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	// registry + boot agent id the run-loop driver projects from, so the
 	// edge cannot accept an agent the run loop would not honour.
 	agentReach := auth.NewAgentReachAuthorizer()
+	agentResolver := NewAgentResolverAdapter(agentConfigRegistry, devAgentConfigID, WithBootLifecycleEnsurer(bootLifecycleEnsurer))
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
 		protocol.WithSessionEnsurer(NewSessionEnsurerAdapter(sessionRegistry)),
-		protocol.WithAgentResolver(NewAgentResolverAdapter(agentConfigRegistry, devAgentConfigID, WithBootLifecycleEnsurer(bootLifecycleEnsurer))),
+		protocol.WithAgentResolver(agentResolver),
 		protocol.WithAgentReachAuthorizer(agentReach),
 	)
 	if err != nil {
@@ -660,6 +663,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		AgentConfig:              agentConfigRegistry,
 		AgentConfigID:            devAgentConfigID,
 		EnsureBootAgentLifecycle: bootLifecycleEnsurer,
+		RunSnapshots:             runSnapshots,
 		SessionOverlay:           sessionOverlayStore,
 		RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 		ConnectionDetacher:       mcpDetacher,
@@ -728,7 +732,9 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		Skills:                         skillStore,
 		AgentConfig:                    agentConfigRegistry,
 		AgentConfigID:                  devAgentConfigID,
+		AgentResolver:                  agentResolver,
 		BootLifecycleEnsurer:           bootLifecycleEnsurer,
+		RunSnapshots:                   runSnapshots,
 		SessionOverlay:                 sessionOverlayStore,
 		SessionPersonalSkillController: sessionPersonalController,
 		RunsStore:                      runsStore,

@@ -13,6 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -142,7 +143,7 @@ func TestRetire_SignedOAuthMCPDiscoversCrossSessionExpiredPairsAndRetriesClose(t
 			"connection-two": {TenantID: tenant, UserID: "owner-two", SessionID: "session-two"},
 		},
 	}
-	svc, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithSignedOAuthMCPOperationState(st), agentcfgprotocol.WithConnectionDetacher(detacher))
+	svc, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithSignedOAuthMCPOperationState(st), agentcfgprotocol.WithConnectionDetacher(detacher), agentcfgprotocol.WithRunSnapshotGate(runsnapshot.NewGate()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +209,7 @@ func TestRetire_SignedOAuthMCPResumesEveryRemovalPhase(t *testing.T) {
 				t.Fatal(err)
 			}
 			detacher := &retirementExactDetacher{siblings: make(map[string]bool)}
-			svc, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithSignedOAuthMCPOperationState(st), agentcfgprotocol.WithConnectionDetacher(detacher))
+			svc, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithSignedOAuthMCPOperationState(st), agentcfgprotocol.WithConnectionDetacher(detacher), agentcfgprotocol.WithRunSnapshotGate(runsnapshot.NewGate()))
 			if err != nil {
 				t.Fatal(err)
 			}

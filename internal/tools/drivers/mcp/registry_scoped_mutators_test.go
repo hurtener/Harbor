@@ -291,10 +291,11 @@ func TestRegistry_Deregister_ZeroOwnerMatchesOnlyBootDeclared(t *testing.T) {
 }
 
 // TestRegistry_Deregister_ConcurrentOwners hammers ONE shared registry with
-// N≥128 removals per owner (D-025). Exactly one removal can win the entry, it
-// must be the OWNING owner's, and the transport closes exactly once — the owner
-// comparison runs under the same write lock as the delete, so a cross-owner
-// removal can never slip between a resolve and a delete.
+// N≥128 removals per owner (D-025). One or more overlapping owning removals may
+// coalesce on the private close receipt and report success, but the transport
+// closes exactly once; later owning calls observe absence. Cross-owner calls
+// always observe ErrServerNotFound because the owner comparison runs under the
+// same write lock as withdrawal and close-receipt lookup.
 func TestRegistry_Deregister_ConcurrentOwners(t *testing.T) {
 	r := NewRegistry()
 	prov := &stubProvider{id: "owned-srv", toolNames: []string{"call"}}
@@ -333,8 +334,8 @@ func TestRegistry_Deregister_ConcurrentOwners(t *testing.T) {
 	}
 	wg.Wait()
 
-	if owningWins != 1 {
-		t.Fatalf("owning removals that landed = %d, want exactly 1", owningWins)
+	if owningWins < 1 {
+		t.Fatalf("owning removals that landed = %d, want at least one", owningWins)
 	}
 	prov.mu.Lock()
 	closed := prov.closed

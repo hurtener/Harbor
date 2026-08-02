@@ -54,6 +54,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
@@ -204,6 +205,7 @@ type Service struct {
 	bus                   events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
 	logger                *slog.Logger
 	now                   Clock
+	runSnapshots          *runsnapshot.Gate
 
 	// preparer drives the unpublished MCP prepare/persist/activate lifecycle.
 	// Optional — nil ⇒ add_mcp_connection returns ErrConnectionAttachUnavailable
@@ -501,6 +503,18 @@ func WithClock(c Clock) Option {
 	return func(s *Service) {
 		if c != nil {
 			s.now = c
+		}
+	}
+}
+
+// WithRunSnapshotGate wires the process-local admission/drain gate shared with
+// the RunLoopDriver. Retirement requires this gate before installing a
+// tombstone so destructive runtime cleanup can never overtake a pre-tombstone
+// immutable run snapshot.
+func WithRunSnapshotGate(g *runsnapshot.Gate) Option {
+	return func(s *Service) {
+		if g != nil {
+			s.runSnapshots = g
 		}
 	}
 }
@@ -1158,6 +1172,9 @@ func (s *Service) Retire(ctx context.Context, req prototypes.AgentConfigRetireRe
 	if !ok {
 		return prototypes.AgentConfigRetireResponse{}, fmt.Errorf("%w: configured registry lacks terminal lifecycle support", ErrMisconfigured)
 	}
+	if s.runSnapshots == nil {
+		return prototypes.AgentConfigRetireResponse{}, fmt.Errorf("%w: retirement requires the shared run-snapshot gate", ErrMisconfigured)
+	}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
 	status, err := reg.Retire(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.RetirementRequest{
 		OperationID:         req.OperationID,
@@ -1165,6 +1182,13 @@ func (s *Service) Retire(ctx context.Context, req prototypes.AgentConfigRetireRe
 	})
 	if err != nil {
 		return prototypes.AgentConfigRetireResponse{}, err
+	}
+	drain, err := s.runSnapshots.Seal(id.TenantID, req.AgentID)
+	if err != nil {
+		return prototypes.AgentConfigRetireResponse{}, fmt.Errorf("seal retired run snapshots: %w", err)
+	}
+	if err := drain.Wait(ctx); err != nil {
+		return prototypes.AgentConfigRetireResponse{}, fmt.Errorf("drain pre-retirement run snapshots: %w", err)
 	}
 	status, err = s.completeRetirementCleanup(ctx, reg, identity.Quadruple{Identity: id}, req.AgentID, status)
 	if err != nil {

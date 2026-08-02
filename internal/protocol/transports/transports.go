@@ -79,6 +79,7 @@ type muxConfig struct {
 	keepalive       time.Duration
 	validator       auth.Validator
 	reach           auth.AgentReachAuthorizer
+	agentResolver   protocol.AgentResolver
 	withoutAuth     bool
 	aggregatorClock events.AggregatorClock
 	// redactor is the audit.Redactor wired into the control transport
@@ -516,6 +517,13 @@ func WithToolsService(s *toolsprotocol.Service) Option {
 // projections fail closed instead of silently widening authority.
 func WithAgentReachAuthorizer(a auth.AgentReachAuthorizer) Option {
 	return func(c *muxConfig) { c.reach = a }
+}
+
+// WithAgentResolver supplies the lifecycle-aware resolver shared by
+// control.start and explicit tools.describe projections. Reach remains a
+// separate gate and always runs first.
+func WithAgentResolver(resolver protocol.AgentResolver) Option {
+	return func(c *muxConfig) { c.agentResolver = resolver }
 }
 
 // WithTasksService wires the `tasks.*` handler into
@@ -966,7 +974,8 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	if cfg.toolsService != nil {
 		th, err := stream.NewToolsHandler(cfg.toolsService,
 			stream.WithToolsLogger(cfg.logger),
-			stream.WithToolsReachAuthorizer(cfg.reach))
+			stream.WithToolsReachAuthorizer(cfg.reach),
+			stream.WithToolsAgentResolver(cfg.agentResolver))
 		if err != nil {
 			return nil, fmt.Errorf("transports: build tools handler: %w", err)
 		}

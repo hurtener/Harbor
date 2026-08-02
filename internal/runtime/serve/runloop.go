@@ -94,7 +94,9 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
+	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -220,6 +222,10 @@ type RunLoopDriverOptions struct {
 	// EnsureBootAgentLifecycle materialises only the configured default agent
 	// after trusted direct task construction selected it for this run.
 	EnsureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
+	// RunSnapshots is the process-local tenant+agent admission gate shared with
+	// agent-config retirement. A lease is acquired before every config/reconcile
+	// snapshot and held through the run's terminal handling.
+	RunSnapshots *runsnapshot.Gate
 
 	// sessionOverlay resolves the SESSION-scoped safe-subset overlay (the
 	// non-admin lower tier) at run start: the session's user prompt layer,
@@ -361,6 +367,7 @@ type RunLoopDriver struct {
 	agentConfig              agentcfg.Registry
 	agentConfigID            string
 	ensureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
+	runSnapshots             *runsnapshot.Gate
 
 	// session-scoped safe-subset overlay store, read once at run start to
 	// compose the session user layer + narrow-only disables + personal skills
@@ -479,6 +486,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		agentConfig:              opts.AgentConfig,
 		agentConfigID:            opts.AgentConfigID,
 		ensureBootAgentLifecycle: opts.EnsureBootAgentLifecycle,
+		runSnapshots:             opts.RunSnapshots,
 		sessionOverlay:           opts.SessionOverlay,
 		runCompletionHook:        opts.RunCompletionHook,
 		connectionDetacher:       opts.ConnectionDetacher,
@@ -983,6 +991,13 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string
 	}
 }
 
+func runSnapshotAdmissionTaskError(err error) tasks.TaskError {
+	if errors.Is(err, runsnapshot.ErrAdmissionClosed) {
+		return tasks.TaskError{Code: string(protoerrors.CodeAgentRetired), Message: "agent is retired"}
+	}
+	return tasks.TaskError{Code: "runtime_fetch_error", Message: "run snapshot admission: " + err.Error()}
+}
+
 func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Build the identity-scoped ctx the TaskRegistry needs. We attach
 	// the triple via identity.With (the same call site §6 mandates for
@@ -1061,6 +1076,21 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	effectiveAgentID := d.agentConfigID
 	if task.AgentID != "" {
 		effectiveAgentID = task.AgentID
+	}
+	if d.runSnapshots != nil {
+		lease, admissionErr := d.runSnapshots.Acquire(taskCtx, q.TenantID, effectiveAgentID)
+		if admissionErr != nil {
+			taskErr := runSnapshotAdmissionTaskError(admissionErr)
+			d.logger.WarnContext(taskCtx, "RunLoopDriver: run snapshot admission refused; failing run",
+				slog.String("task_id", string(taskID)), slog.String("run_id", q.RunID),
+				slog.String("agent_id", effectiveAgentID), slog.String("err", admissionErr.Error()))
+			if markErr := d.tasks.MarkFailed(taskCtx, taskID, taskErr); markErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed(run snapshot admission) failed",
+					slog.String("task_id", string(taskID)), slog.String("err", markErr.Error()))
+			}
+			return
+		}
+		defer lease.Release()
 	}
 	if d.ensureBootAgentLifecycle != nil && effectiveAgentID != "" && effectiveAgentID == d.agentConfigID {
 		if err := d.ensureBootAgentLifecycle(taskCtx, q.Identity, effectiveAgentID); err != nil {

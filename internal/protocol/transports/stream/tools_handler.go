@@ -38,6 +38,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
@@ -69,6 +71,7 @@ type ToolsHandler struct {
 	service *toolsprotocol.Service
 	logger  *slog.Logger
 	reach   auth.AgentReachAuthorizer
+	agents  protocol.AgentResolver
 }
 
 // ToolsOption configures NewToolsHandler at construction.
@@ -91,6 +94,17 @@ func WithToolsReachAuthorizer(a auth.AgentReachAuthorizer) ToolsOption {
 	return func(h *ToolsHandler) {
 		if a != nil {
 			h.reach = a
+		}
+	}
+}
+
+// WithToolsAgentResolver wires the same lifecycle resolver used by
+// control.start. tools.describe consults it only after signed reach authorizes
+// the explicit agent, preserving the non-oracle ordering.
+func WithToolsAgentResolver(resolver protocol.AgentResolver) ToolsOption {
+	return func(h *ToolsHandler) {
+		if resolver != nil {
+			h.agents = resolver
 		}
 	}
 }
@@ -252,6 +266,27 @@ func (h *ToolsHandler) serveDescribe(w http.ResponseWriter, r *http.Request, bod
 			writeToolsError(w, protoerrors.CodeScopeMismatch, http.StatusForbidden,
 				"caller is not authorized for the effective agent")
 			return
+		}
+		if h.agents != nil {
+			allowed, err := h.agents.ResolveAgent(r.Context(), identity.Identity{
+				TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session,
+			}, req.AgentID)
+			switch {
+			case errors.Is(err, protocol.ErrAgentRetired):
+				writeToolsError(w, protoerrors.CodeAgentRetired, http.StatusConflict,
+					"tools.describe: agent is retired")
+				return
+			case err != nil:
+				h.logger.ErrorContext(r.Context(), "tools handler: agent lifecycle resolution failed",
+					slog.String("method", string(methods.MethodToolsDescribe)), slog.String("error", err.Error()))
+				writeToolsError(w, protoerrors.CodeRuntimeError, http.StatusInternalServerError,
+					"tools.describe: agent lifecycle resolution failed")
+				return
+			case !allowed:
+				writeToolsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+					"tools.describe: agent_id is not resolvable for the caller's tenant")
+				return
+			}
 		}
 	}
 	resp, err := h.service.Describe(r.Context(), req)

@@ -15,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
 )
@@ -49,7 +50,7 @@ func (d *retirementCountingDetacher) DetachConnection(context.Context, string, s
 func TestRetire_TamperedStatusFailsBeforeExternalTeardown(t *testing.T) {
 	reg := &tamperedRetirementRegistry{Registry: newRegistry(t)}
 	detacher := &retirementCountingDetacher{}
-	svc, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithConnectionDetacher(detacher))
+	svc, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithConnectionDetacher(detacher), agentcfgprotocol.WithRunSnapshotGate(runsnapshot.NewGate()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +118,7 @@ func TestRetire_UnfencedAbsentPersonalTargetFailsBeforeExternalTeardown(t *testi
 	}
 
 	detacher := &retirementCountingDetacher{}
-	svc, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithConnectionDetacher(detacher))
+	svc, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithConnectionDetacher(detacher), agentcfgprotocol.WithRunSnapshotGate(runsnapshot.NewGate()))
 	if err != nil {
 		t.Fatal(err)
 	}

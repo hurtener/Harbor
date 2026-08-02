@@ -44,6 +44,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	governanceprotocol "github.com/hurtener/Harbor/internal/runtime/governance/protocol"
@@ -105,7 +106,9 @@ type MuxInput struct {
 	// Control-plane handles.
 	AgentConfig          agentcfg.Registry
 	AgentConfigID        string
+	AgentResolver        protocol.AgentResolver
 	BootLifecycleEnsurer agentcfg.BootLifecycleEnsurer
+	RunSnapshots         *runsnapshot.Gate
 	SessionOverlay       sessionoverlay.Store
 	// SessionPersonalSkillController is the single durable authority for the
 	// session-personal skill Protocol tier and its dynamic overlay projection.
@@ -678,6 +681,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithSessionOverlay(in.SessionOverlay),
 			agentcfgprotocol.WithSessionPersonalSkillController(in.SessionPersonalSkillController),
 			agentcfgprotocol.WithBootLifecycleEnsurer(in.AgentConfigID, in.BootLifecycleEnsurer),
+			agentcfgprotocol.WithRunSnapshotGate(in.RunSnapshots),
 			agentcfgprotocol.WithValidModels(in.ValidModels),
 			agentcfgprotocol.WithBootDeclaredMCPServers(append([]string(nil), in.BootDeclaredMCP...)),
 			agentcfgprotocol.WithBootDeclaredOAuthProviders(append([]string(nil), in.BootDeclaredOAuth...)),
@@ -718,6 +722,9 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			return nil, wrapErr("agent-config/protocol service", acErr)
 		}
 		muxOpts = append(muxOpts, transports.WithAgentConfigService(agentConfigService))
+	}
+	if in.AgentResolver != nil {
+		muxOpts = append(muxOpts, transports.WithAgentResolver(in.AgentResolver))
 	}
 
 	mux, muxErr := transports.NewMux(in.Surface, bus, muxOpts...)
