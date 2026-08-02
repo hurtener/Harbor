@@ -49,6 +49,11 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
   its closed registration-only descriptor, durable paired-removal recovery and
   first-write pending-activation fence, fail-loud scope ceiling, zero wire
   `token_url`/credential/host-list fields, or its race and restart coverage.
+- [ ] HA-51 remains a v1.26 release gate. The decoded Bifrost JSON/SSE
+  reasoning fixture is byte-identical from raw callback through completed
+  response, planner decision, live `tasks.get`, durable restart history, and
+  Console rendering; details-only multi-block behavior and N>=100 shared-driver
+  race/cancel/no-bleed/leak coverage remain green.
 - [ ] The existing `state-postgres` Postgres 16 CI job runs the named
   `TestE2E_WaveV126...` integration suite under `-race` with
   `HARBOR_PG_DSN` set. A missing local DSN may skip only outside that CI step;
@@ -135,7 +140,7 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 
 ## Dependencies
 
-- 232, 233, 233a, 233b, 234.
+- 232, 233, 233a, 233b, 233c, 234.
 
 ## Risks / open questions
 

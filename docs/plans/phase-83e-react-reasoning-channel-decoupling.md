@@ -8,6 +8,12 @@ Decouple the ReAct planner's **decision contract** (the JSON the model emits) fr
 2. **Surface captured reasoning on `CompleteResponse`** — extend `internal/llm.CompleteResponse` with `Reasoning string`. Update the bifrost driver to read `BifrostChatResponse.Choices[0].Message.ReasoningDetails` and concatenate the text-typed entries. This closes (a) the unary-path gap (today `OnReasoning` is streaming-only) AND (b) the Gemini-direct black hole pinned in brief 13 §2.6 (today bifrost populates `reasoning_details[]` on the message but Harbor drops it). The bifrost streaming path continues to forward per-delta reasoning to `OnReasoning` for live UX, while the final response's `Reasoning` is the authoritative captured trace.
 3. **Add the per-agent replay knob** — `PlannerConfig.ReasoningReplay` enum, defaulting to `never` for ALL models. When set to `text`, the trajectory renderer prepends each prior step's captured reasoning trace as a text block before the prior `{tool, args}` action JSON. No `provider_native` mode in V1 (Bifrost docs don't address thinking-block round-trips).
 
+**Dated capture-source correction (2026-08-02).** The historical
+`ReasoningDetails`-first source-precedence statement is superseded by D-402:
+when any raw streamed `delta.Reasoning` value was observed, its exact
+concatenation is the completed trace. This correction changes neither the
+action-schema narrowing nor D-148's replay modes.
+
 ## RFC anchor
 
 - RFC §6.2 (Planner)

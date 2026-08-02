@@ -3472,6 +3472,12 @@ The `v1.0.0` git tag is operator-run from `main` after this PR merges and `main`
 
 **Protocol additions.** None — `CompleteResponse` and the planner Decision sum are internal Go types, not Protocol wire types. The `planner.decision` and `planner.action_extra_field_dropped` events are internal event-bus types (registered in `internal/planner/events.go`), surfaced to operators via `harbor inspect-runs` event replay — not new Protocol methods.
 
+**Dated implementation correction (2026-08-02).** D-402 supersedes only this
+decision's capture-source precedence: a streamed raw reasoning channel wins
+over synthesized `ReasoningDetails` when it was observed. The action-schema
+narrowing, provider-side capture boundary, trajectory persistence, and D-148
+replay policy remain unchanged.
+
 ---
 
 ## D-148 — Reasoning replay is a per-agent operator knob; `never` by default for ALL models, two modes only
@@ -12097,3 +12103,57 @@ it is not the security fence and cannot infer an unknown outcome inactive.
 **Cross-references.** D-025, D-300, D-301, D-303, D-340, D-390, D-394,
 D-396, D-398, D-399. RFC §4, §5.5, §6.4, §6.11, §6.16. Plan:
 `docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md`.
+
+---
+
+## D-402 — Bifrost reasoning preserves the observed source bytes
+
+**Date:** 2026-08-02
+
+**Status:** Accepted for Phase 233c (HA-51).
+
+**Decision.** Reasoning is an ordered provider-output byte stream, not prose
+that Harbor may normalize. During one Bifrost completion, the first observed
+non-nil raw `delta.Reasoning` establishes the raw source. Every subsequent
+non-nil raw value, including empty or whitespace-only values, is appended
+byte-for-byte. When that source was observed, the completed
+`llm.CompleteResponse.Reasoning` is exactly that concatenation; synthesized
+`ReasoningDetails` neither override it nor add separators. Raw reasoning
+continues to invoke the live callback immediately.
+
+When no raw reasoning value was observed, Harbor reconstructs details-only
+reasoning without trimming or otherwise rewriting text. Fragments coalesce by
+stable semantic block identity: a non-empty provider block ID is primary;
+otherwise the identity is response-choice index plus block type and index. An
+initial ID-bearing fragment aliases its fallback identity so a later ID-less
+fragment joins the same block. Within a block, text concatenates exactly; only
+distinct emitted blocks receive one literal `\n\n` separator in first-seen
+block order. Encrypted and non-text/content-only blocks remain excluded under
+D-148's provider-native boundary. Per-choice state is independent.
+
+This corrects only the capture-source precedence described by D-147 and the
+historical Phase 83e plan. It does not change D-147's decision-schema
+narrowing, D-148's `never`/`text` replay contract, existing Protocol types,
+methods, events, or Protocol version. The final reasoning bytes flow unchanged
+through the planner decision, trajectory, live `tasks.get`, and durable
+`state.history` reconstruction.
+
+**Why.** Bifrost can synthesize one `reasoning.text` detail per decoded stream
+delta. Treating those synthetic fragments as independently paragraph-separated
+blocks creates bytes that were never emitted and cannot be repaired safely by a
+consumer because intentional line breaks are indistinguishable from corruption.
+Raw observed deltas are therefore authoritative; details-only providers retain
+an explicit, block-preserving fallback.
+
+**Verification.** The regression is decoded JSON/SSE, not a direct Go struct:
+`["**Preparing to send email**", "\\n\\n", "I", " need", " to", " compose"]`
+must yield exactly `**Preparing to send email**\n\nI need to compose` in the
+live callback, completed response, planner decision, live `tasks.get`, and,
+after restart, durable `state.history`. Details-only multi-fragment and
+multi-block coverage remains. The shared driver is exercised by N>=100
+concurrent/cancelled identity-distinct calls under `-race`, with no byte,
+identity, cancellation, or goroutine leak cross-talk. Console history rendering
+asserts the same exact newline bytes.
+
+**Cross-references.** D-025, D-147, D-148, D-298. RFC §6.2, §6.5, §6.8,
+§6.13. Plan: `docs/plans/phase-233c-bifrost-reasoning-fidelity.md`.
