@@ -15,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/state/drivers/postgres"
 )
@@ -201,7 +202,10 @@ func TestPostgres_AgentConfigRetirement_D401PairAcrossTwoRuntimes(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := agentcfgprotocol.NewService(secondRegistry, agentcfgprotocol.WithSignedOAuthMCPOperationState(secondStore), agentcfgprotocol.WithConnectionDetacher(postgresRetirementExactDetacher{}))
+	svc, err := agentcfgprotocol.NewService(secondRegistry,
+		agentcfgprotocol.WithSignedOAuthMCPOperationState(secondStore),
+		agentcfgprotocol.WithConnectionDetacher(postgresRetirementExactDetacher{}),
+		agentcfgprotocol.WithRunSnapshotGate(runsnapshot.NewGate()))
 	if err != nil {
 		t.Fatal(err)
 	}
