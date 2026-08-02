@@ -41,8 +41,8 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 
 ## Acceptance criteria
 
-- [ ] `test/integration/wave_v126_test.go` exercises reach-authorized start/config/tools paths, durable session overlay/personal resolution, erasure, and retirement over real SQLite, with identity propagation and at least one denial per seam.
-- [ ] Two independent runtimes over shared Postgres race retirement and session erasure against agent write, user write, rollback, overlay write, personal-record write/delete, and second retirement; exactly one valid transition wins and restart preserves the result.
+- [ ] `test/integration/wave_v126_test.go` exercises reach-authorized start/config/tools paths, D-401 signed OAuth capability registration/restart/reconcile/removal, durable session overlay/personal resolution, erasure, and retirement over real SQLite, with identity propagation and at least one denial per seam.
+- [ ] Two independent runtimes over shared Postgres race retirement and session erasure against agent write, signed-capability registration/removal, user write, rollback, overlay write, personal-record write/delete, and second retirement; exactly one valid transition wins and restart preserves the result.
 - [ ] The existing `state-postgres` Postgres 16 CI job runs the named
   `TestE2E_WaveV126...` integration suite under `-race` with
   `HARBOR_PG_DSN` set. A missing local DSN may skip only outside that CI step;
@@ -106,7 +106,7 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 
 ## Public API surface
 
-- None beyond phases 232–234 including Phase 233a's pending-cutover error;
+- None beyond phases 232–234 and 233b including Phase 233a's pending-cutover error;
   this phase verifies the shipped surface.
 
 ## Test plan
@@ -114,7 +114,7 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 - **Unit:** targeted regressions for every checkpoint finding.
 - **Integration:** real mux/runtime/SQLite/Postgres wave composition with restart, erasure-ledger replay, resolver parity, and fault injection.
 - **Conformance:** rerun StateStore and agentcfg conformance suites plus closed reach/mutation method censuses.
-- **Concurrency / leak:** N≥10 wave stress, N≥100 primitive reuse inherited from phases 232–234, `-race`, cancellation isolation, goroutine baseline.
+- **Concurrency / leak:** N≥10 wave stress, N≥100 primitive reuse inherited from phases 232–234 and 233b, `-race`, cancellation isolation, goroutine baseline.
 
 ## Smoke script additions
 
@@ -129,7 +129,7 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 
 ## Dependencies
 
-- 232, 233, 233a, 234.
+- 232, 233, 233a, 233b, 234.
 
 ## Risks / open questions
 

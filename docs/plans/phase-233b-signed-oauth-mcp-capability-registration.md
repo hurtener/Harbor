@@ -1,0 +1,231 @@
+# Phase 233b — Signed OAuth MCP capability registration
+
+## Summary
+
+Deliver HA-50 and D-401: a production-default, admin-only Protocol operation
+that atomically prepares, persists, and publishes one OAuth provider plus one
+MCP connection. A generic boot broker/trust anchor keeps all credential
+custody; a signed, bounded authority envelope permits a new capability without
+a runtime-config edit or redeploy.
+
+## RFC anchor
+
+- RFC §4.
+- RFC §5.5.
+- RFC §6.4.
+- RFC §6.11.
+- RFC §6.16.
+
+## Briefs informing this phase
+
+- brief 03
+- brief 05
+- brief 09
+
+## Brief findings incorporated
+
+- brief 03 §5: tool transports use one catalog/egress path and fail loudly at
+  their declared security boundary.
+- brief 05 §4 and §10: durable conditional state and real-driver restart/race
+  tests are part of the persistence contract.
+- brief 09 §5 and §7: OAuth authority is identity-bound, token custody stays
+  outside ordinary tool configuration, and missing authorization is explicit.
+
+## Findings I'm departing from (if any)
+
+- brief 09 discusses dynamic registration as an operator-convenience path.
+  D-401 narrows that path: dynamic audience and endpoint binding are admitted
+  only by a boot-authorized signed capability envelope, never administrator
+  input alone. This is required by D-300's credential-sink invariant.
+
+## Goals
+
+- Add the one canonical admin method
+  `agent_config.register_oauth_mcp_capability`; no composition of
+  `set_oauth_provider` and `add_mcp_connection` can create the same pair.
+- Keep one generic boot broker/trust anchor responsible for the fixed exchange
+  endpoint, credential pull, runtime broker credential, KEK, true scope
+  ceiling, verifier issuer/key material, and an explicit production opt-in
+  permitting signed capability authority.
+- Accept only a signed envelope that exactly binds tenant, agent, broker,
+  provider/capability identifier and revision, canonical connection URL digest,
+  audience, normalized scope set, issuer/key ID, issue/expiry, and anti-replay
+  ID. Request fields must byte-for-byte/canonically equal their claims.
+- Derive exactly one normalized bearer sink from `connection.url`, persist it
+  as the pair binding, and re-derive/reverify it on rollback and reconcile.
+- Preserve the verified `(tenant, user, session)` subject through cache and
+  exchange. Bind cache/exchange assertions additionally to agent, capability
+  revision, audience, and URL digest; exchange independently validates the
+  entitlement, exact audience, and binding.
+- Repair first-ever `set_oauth_provider` failure so unknown broker, build,
+  install, publish, or audit failure leaves a truly unset agent without an
+  active revision, provider, or live binding.
+
+## Non-goals
+
+- No wire-carried token URL, credential URL, client secret, credential/env
+  name, KEK, or downstream-host list.
+- No use of `tools.allow_wire_oauth_descriptor` or its environment counterpart
+  in the production path; D-340 remains development-only.
+- No change to the process-global bare-name catalog rule. A cross-owner name
+  collision fails loudly; this phase does not claim tenant-isolated dispatch
+  in a shared runtime.
+- No generic marketplace/catalog implementation, user OAuth interaction
+  redesign, or free-form authority issuer discovered from the request.
+
+## Acceptance criteria
+
+- [ ] The sole new production write is admin-gated
+  `agent_config.register_oauth_mcp_capability`. Its request contains provider
+  name, boot broker name, audience, requested scopes, an ordinary bounded MCP
+  connection descriptor, expected revision precondition, and signed authority
+  envelope only. Unknown fields reject at decode; no forbidden credential-sink
+  or custody field exists on any writable type.
+- [ ] A boot-declared generic broker/trust anchor validates its static exchange
+  endpoint, credential-pull endpoint, broker authentication, KEK, true scope
+  ceiling, trusted issuer/key set, and explicit signed-capability production
+  opt-in. A missing/invalid opt-in, verifier, broker, or key fails closed.
+- [ ] The envelope uses an approved asymmetric signature and has exact claims:
+  tenant ID, agent ID, broker, capability/provider ID and immutable capability
+  revision, canonical URL digest, audience, normalized unique scope set,
+  issuer, key ID, issued-at, bounded expiry, and unique replay ID. Algorithm
+  confusion, unknown key/issuer, malformed timing, expired authority, replay,
+  or any request/claim mismatch has no prepare, revision, provider, or live
+  connection side effect.
+- [ ] One operation privately builds the provider, prepares/dials/discovers the
+  connection, CAS-writes one revision containing a durable signed-pair binding,
+  then publishes provider and connection as one logical capability. Refusal or
+  unknown persistence outcome closes unpublished resources; exact landed
+  outcome converges only when the complete pair fingerprint matches.
+- [ ] The provider's token endpoint stays the broker's boot-pinned endpoint.
+  Harbor derives one normalized bearer sink from the canonical connection URL;
+  the pair stores the URL digest/sink binding, never a host list, and each
+  attach/rollback/restart/reconcile recomputes it before a bearer can flow.
+- [ ] Requested scopes are normalized before signing/comparison. A requested
+  scope outside the boot true ceiling rejects loudly with a typed invalid-scope
+  result; the production path never silently intersects/drops scopes.
+- [ ] Token and cache keys/assertions include verified tenant/user/session plus
+  agent, capability revision, audience, and URL digest. The exchange refuses
+  absent, malformed, unentitled, or mismatched audience/binding independently
+  of Harbor's signature check; audience never substitutes for subject identity.
+- [ ] Generic `agent_config.set_revision`, rollback-to-an-arbitrary revision,
+  and section setters cannot add or mutate a signed pair. Rollback may activate
+  a previously immutable signed pair only after full authority, expiry, replay,
+  URL-digest, scope, and broker re-verification. Pair removal is owner-scoped,
+  atomic in desired state, and closes both live resources; retirement lists the
+  pair as one fixed cleanup manifest item after its tombstone wins.
+- [ ] Reconcile/restart fail closed for an absent/malformed/expired/replayed or
+  unentitled envelope, unknown broker, scope widening, URL-host mismatch,
+  provider collision, or pair half-state. It never installs one half, forwards
+  a token, or repairs state by creating a new authority claim.
+- [ ] `set_oauth_provider` validates and prepares unknown broker/build/install
+  failures before writing. On a first-write publish/audit failure it performs
+  exact conditional neutralization only when the active pointer still equals
+  the attempted revision, using the Phase 233 `SaveIf` no-active marker; it
+  never writes a forward empty revision and never overwrites a concurrent
+  winner. An immutable failed revision may remain only when exact conditional
+  removal is unresolvable, is never active/live, and is surfaced loudly.
+- [ ] All canonical method/type/error/event/Console manifest/docs lockstep
+  gates cover the new surface. Events and audit carry only redacted identity,
+  provider/capability names or hashes, revision, audience hash, and URL digest;
+  no authority envelope, secret, URL, credential, or raw replay ID is emitted.
+
+## Files added or changed
+
+- `internal/config/{config,validate}.go` and tests for broker trust-anchor
+  posture; no configuration migration/docs are shipped in this planning phase.
+- `internal/agentcfg/`, `internal/runtime/agentcfg/protocol/`, projection, and
+  `internal/runtime/serve/` provider/connection preparation and reconcile.
+- `internal/tools/auth/` and MCP driver binding/cache/exchange checks.
+- `internal/protocol/{types,methods,errors,singlesource}/`, stream transport,
+  generated Protocol docs and Console typed lockstep artifacts.
+- `test/integration/` and focused unit/conformance tests.
+- `scripts/smoke/phase-233b.sh`, RFC, decisions, glossary, and phase index.
+
+## Public API surface
+
+- `agent_config.register_oauth_mcp_capability` request/response, signed
+  authority envelope view, immutable signed capability-pair revision binding,
+  and typed errors for authority, replay, scope ceiling, broker, and binding
+  failures.
+- `agent_config.remove_oauth_mcp_capability` is the only paired removal verb;
+  it is admin-only and owner-scoped.
+- A boot-only `ToolOAuthCredentialBrokerConfig` signed-capability authority
+  block; none of its secrets, endpoints, host lists, or verifier material are
+  Protocol-writable.
+
+## Test plan
+
+- **Unit:** strict wire decoding; claim canonicalization and exact matching;
+  signature algorithm/issuer/key/timing/replay rejection; scope-ceiling loud
+  refusal; URL canonicalization/digest/sink equality; forbidden-field
+  reflection guard; pair fingerprint and generic-set-revision refusal; no
+  partial publication; first-write unknown-broker/build/publish/audit failure
+  and exact no-active/CAS-race neutralization.
+- **Integration:** real SQLite and Postgres broker/trust-anchor registration,
+  token exchange assertion capture, provider+connection atomic visibility,
+  restart/rollback/reconcile re-verification, pair removal, retirement cleanup,
+  and cross-tenant/user/session/agent cache and bearer-bleed denials.
+- **Conformance:** all StateStore drivers run the same no-active conditional
+  neutralization and pair lifecycle suite; Protocol/Console/generated-doc
+  lockstep covers every new canonical type, method, error, and event.
+- **Concurrency / leak:** N>=100 shared broker verifier/provider-set and MCP
+  preparer invocations under `-race`; competing registration/removal/rollback/
+  retirement and commit-then-error cases prove one winner, no incorrect
+  compensation, cancellation cross-talk, identity bleed, or goroutine leak.
+
+## Smoke script additions
+
+- Static source assertions pin the canonical method name, D-401 RFC anchor,
+  no-use production-path rule for the development-only descriptor opt-in, and
+  the Phase 233 `SaveIf` no-active neutralization requirement.
+- Once implemented, replace the static checks with named unit/integration test
+  assertions for authority rejection, atomic pair registration, derived sink,
+  scope-ceiling refusal, restart/reconcile, removal/retirement, and first-write
+  failure. Absent live endpoint remains `404`/`405`/`501` SKIP-conformant.
+
+## Coverage target
+
+- `internal/runtime/agentcfg/protocol`, `internal/runtime/serve`,
+  `internal/tools/auth`, `internal/tools/drivers/mcp`, and Protocol types/
+  transport: 85%; config/agentcfg StateStore paths: 90%.
+
+## Dependencies
+
+- Phase 233 is the prerequisite. Phase 233a and 233b may proceed independently
+  after it; both gate Phase 234. Phase 235 gates release completion after 232,
+  233, 233a, 233b, and 234.
+
+## Risks / open questions
+
+- Signature format and verifier key rotation must use an existing approved
+  asymmetric validator or receive an RFC ruling before implementation; request
+  parsing must not select algorithms or issuers.
+- Replay persistence needs bounded retention through expiry without widening
+  maintenance scans; exact replay identity cannot be treated as a best-effort
+  cache.
+- A previously registered capability can expire before rollback/reconcile. The
+  safe behavior is inactive/unavailable with loud diagnostics, not an implicit
+  renewal or acceptance of administrator input.
+
+## Glossary additions
+
+- Signed OAuth MCP capability.
+- Signed capability authority envelope.
+- Capability-pair binding.
+
+## Pre-merge checklist
+
+- [ ] `make drift-audit` passes
+- [ ] `make preflight` passes
+- [ ] `make check-mirror` passes
+- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [ ] Coverage on touched packages >= stated target
+- [ ] Cross-session and cross-tenant bearer/cache isolation test passes
+- [ ] Reusable verifier/provider/preparer N>=100 concurrent-reuse test passes
+  under `-race` with no race, bleed, cancellation cross-talk, or leak
+- [ ] Real-driver integration covers identity, restart, failure, and cleanup
+- [ ] Protocol/error/event/Console/generated-doc lockstep gates pass
+- [ ] If new vocabulary: glossary updated
+- [ ] If a brief finding was departed from: justified above + decisions.md entry
+  filed

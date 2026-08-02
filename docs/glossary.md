@@ -1432,6 +1432,30 @@ Additions to this set are RFC PRs.
 
 **`Subflow`** — Runtime primitive (Phase 14): `(nctx *NodeContext) CallSubflow(ctx, factory) (Envelope, error)`. Runs a child engine for one parent envelope, mirrors parent cancellation via a watcher goroutine, returns the first egress payload, then `Stop`s the child. RFC §6.1, brief 01 §4.
 
+**Signed OAuth MCP capability** — the immutable, owner-scoped pair of one
+broker-pull OAuth provider and one MCP connection registered by
+`agent_config.register_oauth_mcp_capability`. The pair is admitted only by
+the **signed capability authority envelope**, persists in one agent-config
+revision, derives its single bearer sink from the canonical connection URL, and
+is prepared/published, reconciled, removed, and retired as one lifecycle unit.
+Its broker retains all credential custody. It does not change the process-global
+bare-name catalog namespace; collisions fail loudly. Phase 233b, D-401.
+
+**Signed capability authority envelope** — the asymmetric-signature-verified,
+boot-trust-anchor-authorized claim set required for a D-401 dynamic OAuth MCP
+capability. It exactly binds tenant, agent, broker, provider/capability ID and
+revision, canonical URL digest, audience, normalized scopes, issuer/key ID,
+issued-at/expiry, and a durable one-time replay ID. Administrator-supplied
+fields merely request these values and must exactly equal the claims; they are
+not authority. The envelope carries neither credentials nor arbitrary bearer
+sinks.
+
+**Capability-pair binding** — the persisted non-secret binding of a signed
+OAuth MCP capability's provider/capability revision, audience, normalized
+scope set, canonical connection URL digest, and exactly one URL-derived bearer
+sink. Runtime activation, rollback, restart, and reconcile re-derive and
+verify it before a bearer can flow. Phase 233b, D-401.
+
 ## T
 
 **Tool-declaration collision diagnostic** — the `planner.tool_declaration_collision` canonical event emitted when two catalog tools collapse onto one **declared name** and one declaration is therefore dropped. The drop itself is correct (two tools under one function name make provider-side dispatch ambiguous) and is kept; what changed is that it is no longer silent. The typed `SafePayload` names the run identity, the colliding declared name, the catalog tool that KEPT the declaration and the one that was DROPPED, because the remedy is operator-side — rename one of the two. An event rather than an error, because failing every run of an agent with two ambiguously-named tools would escalate a config problem into a total outage; the planner also holds no logger by design. A benign re-discovery of an already-loaded tool stays quiet: the dedup map records which real catalog name claimed each declared name, so the drop can tell "same tool" from "lost surface". Residual collisions stay reachable by construction — `clock.now` and `clock/now` sanitize alike at any length — which is what makes the diagnostic load-bearing rather than theatre. D-378.

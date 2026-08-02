@@ -375,8 +375,34 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |232 | Signed agent reach (D-397): strict bounded `agent_reach` bearer authority enforced by one effective-agent gate on start, all session/user agent-config data-plane methods, and explicit `tools.describe` agent projection; default start is checked and config existence never grants authority | protocol auth/control/stream + runtime serve + token/devstack | §5.5, §6.16 | 151, 205, 221, 228 | §4.3: v1.25 package-baseline non-regression + 100% new authority paths | Shipped (v1.26) |
 |233 | StateStore conditional save (D-398): mandatory atomic multi-slot `SaveIf` plus deterministic tenant-bounded paged maintenance scan across inmem/SQLite/Postgres, with exact event-ID/absence expectations and agent/user config consumers closing D-366's cross-process residual | state triad + conformance + agentcfg statestore | §6.11, §6.16, §9 | 130, 221, 230 | 85–90% | Pending (v1.26) |
 |233a | Durable session overlay and personal-skill correction (D-400): four-slot lifecycle/erasure/record CAS, agent-owned StateStore personal bodies, admitted-tenant verified cutover, composite resolver, canonical 409 pending error, and ledgered exact legacy sweep | sessionoverlay + skills + sessions + agentcfg runtime + Protocol | §6.7, §6.9, §6.11, §6.13, §6.16 | 130, 221, 230, 233 | 85–90% | Pending (v1.26) |
-|234 | Agent-config retirement (D-399/D-400): terminal CAS tombstone, immutable history, exact pre-retirement hash and operation identity, deterministic paged owner-scoped cleanup after tombstone, four-slot session-write freeze, and explicit/default new-run refusal; `agents.deregister` remains fleet-only | agentcfg + runtime projection/serve + Protocol/Console lockstep | §5.5, §6.11, §6.13, §6.16 | 232, 233, 233a | 85–90% | Pending (v1.26) |
+|233b | Signed OAuth MCP capability registration (HA-50, D-401): one production-default admin operation prepares, CAS-persists, and publishes a signed provider/connection pair against a generic boot broker/trust anchor; one URL-derived bearer sink, bounded audience/scopes, exact authority claims, replay resistance, and reverified reconcile | agentcfg + Protocol + tools/auth + MCP serve + config | §4, §5.5, §6.4, §6.11, §6.16 | 233 | 85-90% | Pending (v1.26) |
+|234 | Agent-config retirement (D-399/D-400/D-401): terminal CAS tombstone, immutable history, exact pre-retirement hash and operation identity, deterministic paged owner-scoped cleanup after tombstone, four-slot session-write freeze, signed OAuth pair cleanup, and explicit/default new-run refusal; `agents.deregister` remains fleet-only | agentcfg + runtime projection/serve + Protocol/Console lockstep | §5.5, §6.11, §6.13, §6.16 | 232, 233, 233a, 233b | 85-90% | Pending (v1.26) |
 |235 | Agent authority/lifecycle wave E2E + v1.26 checkpoint: real SQLite/Postgres composition of session records, erasure, and retirement; two-runtime write races, N≥10 mixed-identity stress, read-only §17.5 audit and corrective gate before release | test/integration + scripts/smoke + release docs | §5.5, §6.9, §6.11, §6.16, §9 | 232, 233, 233a, 234 | inherited floors | Pending (v1.26) |
+
+### Phase 233b — Signed OAuth MCP capability registration (HA-50)
+
+- **Subsystem:** agent-config Protocol/service and revision registry,
+  tools/auth broker/provider set, MCP preparation/reconcile, boot config, and
+  Protocol/Console lockstep.
+- **RFC:** §4, §5.5, §6.4, §6.11, §6.16. **Deps:** 233.
+- **What it delivers:** D-401's smallest production-safe exception to D-300's
+  static audience/sink posture: one admin-only atomic
+  `agent_config.register_oauth_mcp_capability` operation prepares an OAuth
+  provider plus MCP connection, CAS-persists one signed capability-pair
+  revision, then publishes both. One generic boot broker/trust anchor retains
+  credential custody and its fixed exchange endpoint. A signed authority
+  envelope, rather than administrator input, exactly binds tenant/agent,
+  broker, provider/capability revision, URL digest, audience, normalized
+  scopes, issuer/key/timing, and replay ID. The sink is derived only from the
+  connection URL; scope widening, malformed/unentitled authority, collision,
+  restart/reconcile mismatch, and identity bleed fail closed. D-340 remains
+  dev-only. Generic revision edits cannot forge the pair; removal and
+  retirement cleanup are pair-scoped. The shipped first-write
+  `set_oauth_provider` failure is repaired with exact no-active `SaveIf`
+  neutralization, never an empty forward revision.
+- **Ordering:** 233a and 233b are independent after 233; both gate 234. Phase
+  235 gates release completion after 232, 233, 233a, 233b, and 234.
+- **Decision:** D-401. **Status:** Pending (v1.26).
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 
