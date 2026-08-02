@@ -25,6 +25,10 @@ assert_grep_present 'func \(r \*registry\) CompleteRetirementStep' internal/agen
   'phase 234: frozen cleanup progress is durably acknowledged by CAS'
 assert_grep_present 'completeRetirementCleanup' internal/runtime/agentcfg/protocol/service.go \
   'phase 234: same-operation cleanup replay is runtime-wired'
+assert_grep_present 'RetirementCleanupClassSignedOAuthMCPPair = "signed_oauth_mcp_pair"' internal/agentcfg/signed_oauth_operation.go \
+  'phase 234: D-401 pair lifetime has a frozen hash-only cleanup class'
+assert_grep_present 'retireSignedOAuthMCPPair' internal/runtime/agentcfg/protocol/retire_signed_oauth_mcp.go \
+  'phase 234: D-401 cleanup uses a private retirement adapter'
 assert_grep_present 'RetirementStatus' internal/runtime/serve/agent_resolver.go \
   'phase 234: run resolver refuses a retired effective target'
 
@@ -53,6 +57,9 @@ assert_go_tests_pass "${P234_TMP}/retirement.log" '-race -count=1 ./cmd/harbor .
 	TestRetirementManifestTamper_RecomputedSelfDigestFailsBeforeProjectionAndProgress \
 	TestRetire_TamperedStatusFailsBeforeExternalTeardown \
 	TestRetire_UnfencedAbsentPersonalTargetFailsBeforeExternalTeardown \
+	TestRetire_SignedOAuthMCPDiscoversCrossSessionExpiredPairsAndRetriesClose \
+	TestRetire_SignedOAuthMCPResumesEveryRemovalPhase \
+	TestSignedOAuthMCPRetirementResource_HashOnlyRejectsTamperAndForeignBinding \
 	TestRetirementStrictDecoders_RejectNestedDuplicatesAndUnknownClass \
 	TestClassifyLifecycleRecord_RetirementEnvelopeStrictAndTerminal \
 	TestClassifyLifecycleRecord_PendingEventAndFrozenInvariants \

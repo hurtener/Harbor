@@ -142,15 +142,16 @@ func activeKindFor(revPfx string) (string, error) {
 const recordSchema = 1
 
 const (
-	retirementCleanupSessionPersonal = "session_personal"
-	retirementCleanupLegacyOverlay   = "legacy_session_overlay"
-	retirementDiscoveryConfig        = "config"
-	retirementDiscoveryPersonal      = "personal"
-	retirementDiscoveryLegacy        = "legacy"
-	retirementManifestKindPrefix     = "agentcfg.retirement.manifest."
-	retirementManifestSchema         = 1
-	retirementDiscoveryScanLimit     = 1
-	maxRetirementManifestItemBytes   = 1024 * 1024
+	retirementCleanupSessionPersonal  = "session_personal"
+	retirementCleanupLegacyOverlay    = "legacy_session_overlay"
+	retirementDiscoveryConfig         = "config"
+	retirementDiscoverySignedOAuthMCP = "signed_oauth_mcp"
+	retirementDiscoveryPersonal       = "personal"
+	retirementDiscoveryLegacy         = "legacy"
+	retirementManifestKindPrefix      = "agentcfg.retirement.manifest."
+	retirementManifestSchema          = 1
+	retirementDiscoveryScanLimit      = 1
+	maxRetirementManifestItemBytes    = 1024 * 1024
 )
 
 // activeRecord is the JSON-encoded active-pointer record.
@@ -1009,12 +1010,38 @@ func (r *registry) nextRetirementDiscovery(ctx context.Context, q identity.Quadr
 			step := steps[checkpoint.ConfigIndex]
 			checkpoint.ConfigIndex++
 			if checkpoint.ConfigIndex == uint64(len(steps)) {
-				checkpoint = retirementDiscovery{Stage: retirementDiscoveryPersonal}
+				checkpoint = retirementDiscovery{Stage: retirementDiscoverySignedOAuthMCP}
 			}
 			item, err := newRetirementManifestItem(retirement, step.Class, step.Resource, &checkpoint, false)
 			return item, &checkpoint, false, err
 		}
-		return nil, &retirementDiscovery{Stage: retirementDiscoveryPersonal}, false, nil
+		return nil, &retirementDiscovery{Stage: retirementDiscoverySignedOAuthMCP}, false, nil
+	case retirementDiscoverySignedOAuthMCP:
+		operations, err := agentcfg.NewSignedOAuthMCPOperationStore(r.state)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		page, continuation, err := operations.ScanTenantPage(ctx, tenantID, retirementDiscoveryScanLimit, checkpoint.Continuation)
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("%w: scan signed OAuth MCP retirement records: %w", agentcfg.ErrStateUnavailable, err)
+		}
+		next := &retirementDiscovery{Stage: retirementDiscoverySignedOAuthMCP, Continuation: continuation}
+		if continuation == "" {
+			next = &retirementDiscovery{Stage: retirementDiscoveryPersonal}
+		}
+		if len(page) == 0 {
+			return nil, next, false, nil
+		}
+		op := page[0]
+		if op.Binding.AgentID != agentID || !agentcfg.SignedOAuthMCPRetirementPending(op.Phase) {
+			return nil, next, false, nil
+		}
+		resource, err := agentcfg.SignedOAuthMCPRetirementResource(op)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		item, err := newRetirementManifestItem(retirement, agentcfg.RetirementCleanupClassSignedOAuthMCPPair, resource, next, false)
+		return item, next, false, err
 	case retirementDiscoveryPersonal, retirementDiscoveryLegacy:
 		prefix := sessionoverlay.LegacyOverlayPrefix()
 		if checkpoint.Stage == retirementDiscoveryPersonal {
@@ -1177,7 +1204,7 @@ func validateRetirementManifestSuccessor(retirement *retirementRecord, item reti
 }
 
 func validRetirementDiscovery(discovery retirementDiscovery) bool {
-	if discovery.Stage != retirementDiscoveryConfig && discovery.Stage != retirementDiscoveryPersonal && discovery.Stage != retirementDiscoveryLegacy {
+	if discovery.Stage != retirementDiscoveryConfig && discovery.Stage != retirementDiscoverySignedOAuthMCP && discovery.Stage != retirementDiscoveryPersonal && discovery.Stage != retirementDiscoveryLegacy {
 		return false
 	}
 	return (discovery.Stage != retirementDiscoveryConfig || discovery.Continuation == "") && (discovery.Stage == retirementDiscoveryConfig || discovery.ConfigIndex == 0)
@@ -1846,7 +1873,7 @@ func validRetirementDigest(value string) bool {
 
 func validRetirementCleanupClass(class string) bool {
 	switch class {
-	case "mcp_connection", "oauth_provider", retirementCleanupSessionPersonal, retirementCleanupLegacyOverlay:
+	case "mcp_connection", "oauth_provider", agentcfg.RetirementCleanupClassSignedOAuthMCPPair, retirementCleanupSessionPersonal, retirementCleanupLegacyOverlay:
 		return true
 	default:
 		return false

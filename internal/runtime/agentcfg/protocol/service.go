@@ -1209,6 +1209,10 @@ func (s *Service) completeRetirementCleanup(ctx context.Context, reg agentcfg.Re
 			if err := s.providerInstaller.UninstallProvider(ctx, q.TenantID, agentID, step.Resource); err != nil {
 				return agentcfg.RetirementStatus{}, fmt.Errorf("retirement cleanup uninstall OAuth provider %q: %w", step.Resource, err)
 			}
+		case agentcfg.RetirementCleanupClassSignedOAuthMCPPair:
+			if err := s.retireSignedOAuthMCPPair(ctx, q.TenantID, agentID, step.Resource, status.PriorRevisionID); err != nil {
+				return agentcfg.RetirementStatus{}, fmt.Errorf("retirement cleanup signed OAuth MCP pair: %w", err)
+			}
 		case "session_personal", "legacy_session_overlay":
 			// Registry-owned StateStore cleanup executes under the target row's
 			// exact identity and the four-slot lifecycle/erasure fence when the

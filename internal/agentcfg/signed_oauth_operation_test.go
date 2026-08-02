@@ -3,6 +3,7 @@ package agentcfg
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,5 +147,41 @@ func TestSignedOAuthMCPActivationFenceStore_TerminalFenceYieldsToNextOperation(t
 	}
 	if _, err := fences.Begin(context.Background(), "tenant-a", "agent", "foreign", "foreign", "foreign", "revision-one"); !errors.Is(err, ErrSignedCapabilityPending) {
 		t.Fatalf("foreign pending operation = %v, want ErrSignedCapabilityPending", err)
+	}
+}
+
+func TestSignedOAuthMCPRetirementResource_HashOnlyRejectsTamperAndForeignBinding(t *testing.T) {
+	binding := SignedOAuthMCPBinding{
+		TenantID: "tenant-a", UserID: "private-user", SessionID: "private-session", AgentID: "agent",
+		Broker: "broker", ProviderName: "provider", CapabilityRevision: "revision", URLDigest: "url-digest", SinkDigest: "sink-digest", Audience: "audience",
+		Connection: SignedOAuthMCPConnectionDescriptor{Name: "server", URL: "https://secret.example/path"},
+	}
+	op := SignedOAuthMCPOperation{
+		ReplayKey: SignedOAuthMCPReplayKey{TenantID: binding.TenantID, TrustAnchorName: "anchor", Issuer: "issuer", KeyID: "kid", JTI: "private-jti"},
+		Binding:   binding, Fingerprint: SignedOAuthMCPPairFingerprint(binding), Phase: SignedOAuthMCPPhasePublished,
+	}
+	resource, err := SignedOAuthMCPRetirementResource(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resource) != 129 || resource[64] != '.' || strings.Contains(resource, "private") || strings.Contains(resource, "secret") || strings.Contains(resource, "jti") {
+		t.Fatalf("resource is not hash-only: %q", resource)
+	}
+	terminal := op
+	terminal.Phase = SignedOAuthMCPPhaseRemoved
+	if !SignedOAuthMCPRetirementResourceMatches(resource, terminal) {
+		t.Fatal("same exact operation must remain matchable after terminal convergence")
+	}
+	tampered := op
+	tampered.Fingerprint = strings.Repeat("0", 64)
+	if SignedOAuthMCPRetirementResourceMatches(resource, tampered) {
+		t.Fatal("tampered fingerprint matched frozen resource")
+	}
+	foreign := op
+	foreign.ReplayKey.TenantID = "tenant-b"
+	foreign.Binding.TenantID = "tenant-b"
+	foreign.Fingerprint = SignedOAuthMCPPairFingerprint(foreign.Binding)
+	if SignedOAuthMCPRetirementResourceMatches(resource, foreign) {
+		t.Fatal("foreign tenant operation matched frozen resource")
 	}
 }

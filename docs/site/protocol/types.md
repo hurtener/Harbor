@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 348 canonical Harbor Protocol wire types, generated from the single-source
+The 352 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -510,6 +510,50 @@ Declared in `internal/protocol/types`.
 | `name` | `string` |  |
 | `uninstalled` | `bool` |  |
 | `protocol_version` | `string` |  |
+
+## AgentConfigRetireRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `operation_id` | `string` |  |
+| `expected_content_hash` | `string` |  |
+
+## AgentConfigRetireResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `status` | `types.AgentConfigRetirementStatus` — see [`AgentConfigRetirementStatus`](./types.md#agentconfigretirementstatus) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigRetirementCleanupStep
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `class` | `string` |  |
+| `resource` | `string` |  |
+| `completed` | `bool` |  |
+
+## AgentConfigRetirementStatus
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `operation_id` | `string` |  |
+| `retired_at` | `time.Time` |  |
+| `prior_revision_id` | `string` | optional (`omitempty`) |
+| `prior_content_hash` | `string` | optional (`omitempty`) |
+| `generation` | `uint64` |  |
+| `cleanup` | `[]types.AgentConfigRetirementCleanupStep` — see [`AgentConfigRetirementCleanupStep`](./types.md#agentconfigretirementcleanupstep) | optional (`omitempty`) |
+| `completed` | `bool` |  |
 
 ## AgentConfigRevisionView
 

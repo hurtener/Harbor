@@ -101,7 +101,7 @@ func validRetirementEnvelope(data []byte) bool {
 		return false
 	}
 	if record.Discovery != nil {
-		if record.Discovery.Stage == nil || (*record.Discovery.Stage != "config" && *record.Discovery.Stage != "personal" && *record.Discovery.Stage != "legacy") || record.Discovery.Continuation == nil || record.Discovery.ConfigIndex == nil {
+		if record.Discovery.Stage == nil || (*record.Discovery.Stage != "config" && *record.Discovery.Stage != "signed_oauth_mcp" && *record.Discovery.Stage != "personal" && *record.Discovery.Stage != "legacy") || record.Discovery.Continuation == nil || record.Discovery.ConfigIndex == nil {
 			return false
 		}
 		if (*record.Discovery.Stage == "config" && *record.Discovery.Continuation != "") || (*record.Discovery.Stage != "config" && *record.Discovery.ConfigIndex != 0) {
@@ -166,7 +166,7 @@ func validRetirementPendingEvent(event *retirementEventEnvelope, frozen, complet
 
 func validLifecycleCleanupClass(class string) bool {
 	switch class {
-	case "mcp_connection", "oauth_provider", "session_personal", "legacy_session_overlay":
+	case "mcp_connection", "oauth_provider", RetirementCleanupClassSignedOAuthMCPPair, "session_personal", "legacy_session_overlay":
 		return true
 	default:
 		return false

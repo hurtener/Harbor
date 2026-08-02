@@ -101,6 +101,10 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
   refusal before spawn, history preservation, exact paged owned-record cleanup
   after tombstone, event emit/ack failure and restart replay, and
   `agents.deregister` independence.
+- **D-401 composition:** expired-authority teardown, cross-session
+  tenant+agent discovery, every removal-phase restart, close-failure replay,
+  hash-only manifest/event projection, tamper/foreign-tenant refusal, sibling
+  preservation, and a shared-Postgres two-runtime receipt path.
 - **Conformance:** all agentcfg drivers implement terminal lifecycle and same-operation replay; the 17 spine writes plus five session writes are held in a closed refusal census.
 - **Concurrency / leak:** stale writer/rollback/user/overlay/personal-record
   writer versus retirement and erasure across two instances; four-slot
@@ -127,14 +131,19 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 
 - 232, 233, 233a, 233b.
 
-Delivery note (2026-08-02): this branch is based on the shipped Phase 233a
-four-slot session overlay/personal-state work. Phase 233b is not present on
-this base, so the D-401 signed OAuth capability-pair manifest item remains
-explicitly deferred; this delivery does not infer, scan, or revoke that pair.
-The existing owner-scoped MCP-connection and OAuth-provider cleanup remains,
-and the Phase 233a personal/legacy cleanup is integrated here. The combined
-cleanup acceptance criterion above and Phase 234's master-plan status remain
-open until Phase 233b lands and the pair path is integrated and verified.
+Integration note (2026-08-02): Phase 233b's frozen D-401 head is present on
+this branch. Retirement tenant-scans the durable pair-lifetime ledger and
+freezes one `signed_oauth_mcp_pair` item for every nonterminal published pair
+owned by the retiring `(tenant, agent)`, including pairs registered by other
+user/session subjects. The item contains only the immutable pair fingerprint
+and a second hash of its opaque operation kind. The private retirement adapter
+recovers the exact stored subject from the durable receipt, never from the
+public admin caller, and advances the existing
+`published -> removal_admitted -> removal_revision_committed ->
+catalog_unpublished -> teardown_receipted -> removed` graph through the exact
+connection teardown/closing receipt. Envelope expiry, verifier-key rotation,
+or revocation is not revalidated on teardown. A close failure leaves both the
+D-401 receipt and retirement manifest item retryable and unacknowledged.
 
 The fixed cleanup manifest is operation-owned and discovered into bounded
 StateStore records, one deterministic ordinal at a time. Each item includes

@@ -13,8 +13,28 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	eventsinmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/state/drivers/postgres"
 )
+
+type postgresRetirementExactDetacher struct{}
+
+func (postgresRetirementExactDetacher) DetachConnection(context.Context, string, string, string) error {
+	return nil
+}
+func (postgresRetirementExactDetacher) DetachExactConnection(context.Context, string, string, string, string) error {
+	return nil
+}
+func (postgresRetirementExactDetacher) BeginExactConnectionTeardown(string, string, string, string) (agentcfgprotocol.ExactConnectionTeardownFence, error) {
+	return postgresRetirementExactFence{}, nil
+}
+
+type postgresRetirementExactFence struct{}
+
+func (postgresRetirementExactFence) Seal()                        {}
+func (postgresRetirementExactFence) Cancel(context.Context) error { return nil }
 
 // TestPostgres_AgentConfigRetirement_TwoRegistriesN100 is deliberately kept
 // with the disposable-schema Postgres suite: HARBOR_PG_DSN makes this
@@ -126,5 +146,74 @@ func TestPostgres_AgentConfigRetirement_RestartRetainsTerminalLifecycle(t *testi
 	}
 	if got, err := second.Get(ctx, id, agent, revision.RevisionID, agentcfg.ConfigScopeAgent); err != nil || got.ContentHash != revision.ContentHash {
 		t.Fatalf("post-restart history=(%+v,%v), want retained revision", got, err)
+	}
+}
+
+// TestPostgres_AgentConfigRetirement_D401PairAcrossTwoRuntimes proves the
+// hash-only retirement discovery and private exact cleanup adapter share the
+// same Postgres receipt graph across independently opened runtime stores.
+func TestPostgres_AgentConfigRetirement_D401PairAcrossTwoRuntimes(t *testing.T) {
+	ctx := context.Background()
+	dsn := freshSchema(t, requireDSN(t))
+	open := func() (state.StateStore, agentcfg.Registry) {
+		st, err := postgres.New(config.StateConfig{Driver: "postgres", DSN: dsn})
+		if err != nil {
+			t.Fatalf("open state: %v", err)
+		}
+		bus, err := eventsinmem.New(config.EventsConfig{Driver: "inmem", MaxSubscribersPerSession: 16, SubscriberBufferSize: 64, IdleTimeout: time.Minute, DropWindow: time.Second}, auditpatterns.New())
+		if err != nil {
+			t.Fatalf("open bus: %v", err)
+		}
+		reg, err := agentcfg.Open(ctx, agentcfg.Config{}, agentcfg.Deps{State: st, Bus: bus})
+		if err != nil {
+			t.Fatalf("open registry: %v", err)
+		}
+		t.Cleanup(func() { _ = reg.Close(ctx); _ = bus.Close(ctx); _ = st.Close(ctx) })
+		return st, reg
+	}
+	firstStore, firstRegistry := open()
+	secondStore, secondRegistry := open()
+	const tenant = "pg-d401-retirement"
+	const agent = "pg-d401-agent"
+	binding := agentcfg.SignedOAuthMCPBinding{
+		TenantID: tenant, UserID: "pair-owner", SessionID: "pair-session", AgentID: agent,
+		Broker: "broker", ProviderName: "provider", CapabilityRevision: "v1", URLDigest: "url", SinkDigest: "sink", Audience: "audience",
+		Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{Name: "server", URL: "https://example.invalid/mcp"},
+	}
+	operations, err := agentcfg.NewSignedOAuthMCPOperationStore(firstStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := operations.Claim(ctx, agentcfg.SignedOAuthMCPReplayKey{TenantID: tenant, TrustAnchorName: "anchor", Issuer: "issuer", KeyID: "kid", JTI: "jti"}, binding, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err = operations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhaseRevisionCommitted, "pair-revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err = operations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhasePublished, op.RevisionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "admin", SessionID: "control"}}
+	revision, err := firstRegistry.SetRevision(ctx, admin, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := agentcfgprotocol.NewService(secondRegistry, agentcfgprotocol.WithSignedOAuthMCPOperationState(secondStore), agentcfgprotocol.WithConnectionDetacher(postgresRetirementExactDetacher{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := svc.Retire(ctx, prototypes.AgentConfigRetireRequest{
+		Identity: prototypes.IdentityScope{Tenant: tenant, User: admin.UserID, Session: admin.SessionID}, AgentID: agent,
+		OperationID: "pg-d401-retire", ExpectedContentHash: revision.ContentHash,
+	})
+	if err != nil || !response.Status.Completed {
+		t.Fatalf("retire=(%+v,%v)", response, err)
+	}
+	latest, err := operations.Load(ctx, op.ReplayKey)
+	if err != nil || latest.Phase != agentcfg.SignedOAuthMCPPhaseRemoved {
+		t.Fatalf("shared receipt phase=%s err=%v", latest.Phase, err)
 	}
 }
