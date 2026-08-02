@@ -52,12 +52,10 @@ func anthropicReasoningBudget(e llm.ReasoningEffort) int {
 // `delta.Reasoning` field is nil) and the unary-path gap (where
 // `OnReasoning` never fires).
 //
-// Only `reasoning.text` and `reasoning.summary` entries contribute —
-// `reasoning.encrypted` (signature-bearing thinking blocks) is skipped
-// because V1 ships no `provider_native` replay mode that would round-
-// trip them. `reasoning.content_blocks` carry structured block
-// data without a flat text field; they are skipped for the same
-// reason. A nil/empty slice returns the empty string.
+// Only `reasoning.text` and `reasoning.summary` entries contribute.
+// Encrypted and content-block entries stay outside D-147's flat-text
+// provider-capture boundary. A nil/empty slice returns the empty
+// string.
 //
 // The caller (the driver's unary + streaming paths) stamps the result
 // onto `llm.CompleteResponse.Reasoning`.
@@ -68,31 +66,116 @@ func reasoningFromMessage(msg *bfschemas.ChatMessage) string {
 	return joinReasoningDetails(msg.ReasoningDetails)
 }
 
-// joinReasoningDetails concatenates the plain-text entries of a
-// `[]ChatReasoningDetails` slice. Entries are joined with a blank line
-// so a multi-block trace stays readable. Whitespace-only entries are
-// dropped. Exposed at package scope so the streaming path and the
-// fixture tests can call it directly.
-func joinReasoningDetails(details []bfschemas.ChatReasoningDetails) string {
-	if len(details) == 0 {
-		return ""
+// reasoningBlockFallback identifies a details-only semantic block
+// when the provider did not supply a stable ID.
+type reasoningBlockFallback struct {
+	typeName bfschemas.BifrostReasoningDetailsType
+	index    int
+}
+
+type reasoningBlock struct {
+	text strings.Builder
+}
+
+// reasoningAccumulator is per-completion state. Raw reasoning is
+// authoritative as soon as any non-nil delta is observed, including
+// an empty string. Details are retained only as the fallback for
+// providers that never expose the raw channel.
+type reasoningAccumulator struct {
+	raw         strings.Builder
+	rawObserved bool
+	blocks      []*reasoningBlock
+	byID        map[string]*reasoningBlock
+	byFallback  map[reasoningBlockFallback]*reasoningBlock
+}
+
+func newReasoningAccumulator() *reasoningAccumulator {
+	return &reasoningAccumulator{
+		byID:       make(map[string]*reasoningBlock),
+		byFallback: make(map[reasoningBlockFallback]*reasoningBlock),
 	}
-	var parts []string
-	for _, d := range details {
-		switch d.Type {
-		case bfschemas.BifrostReasoningDetailsTypeText:
-			if d.Text != nil && strings.TrimSpace(*d.Text) != "" {
-				parts = append(parts, strings.TrimRight(*d.Text, "\n"))
+}
+
+// observeRaw records one decoded raw reasoning delta byte-for-byte.
+func (a *reasoningAccumulator) observeRaw(delta string) {
+	a.rawObserved = true
+	a.raw.WriteString(delta)
+}
+
+// observeDetails coalesces detail fragments by stable semantic block
+// identity. A provider ID is primary; each fallback is aliased only
+// when it is still unclaimed so a later ID-less fragment can join the
+// first ID-bearing block without collapsing two distinct provider IDs.
+func (a *reasoningAccumulator) observeDetails(details []bfschemas.ChatReasoningDetails) {
+	for _, detail := range details {
+		fragment, ok := reasoningDetailText(detail)
+		if !ok {
+			continue
+		}
+		fallback := reasoningBlockFallback{typeName: detail.Type, index: detail.Index}
+		var block *reasoningBlock
+		if detail.ID != nil && *detail.ID != "" {
+			block = a.byID[*detail.ID]
+			if block == nil {
+				block = a.addBlock()
+				a.byID[*detail.ID] = block
 			}
-		case bfschemas.BifrostReasoningDetailsTypeSummary:
-			if d.Summary != nil && strings.TrimSpace(*d.Summary) != "" {
-				parts = append(parts, strings.TrimRight(*d.Summary, "\n"))
+			if a.byFallback[fallback] == nil {
+				a.byFallback[fallback] = block
 			}
-		default:
-			// reasoning.encrypted / reasoning.content_blocks — skipped.
-			// V1 has no provider_native replay mode; encrypted
-			// signature blocks have no use until that lands.
+		} else {
+			block = a.byFallback[fallback]
+			if block == nil {
+				block = a.addBlock()
+				a.byFallback[fallback] = block
+			}
+		}
+		block.text.WriteString(fragment)
+	}
+}
+
+func (a *reasoningAccumulator) addBlock() *reasoningBlock {
+	block := &reasoningBlock{}
+	a.blocks = append(a.blocks, block)
+	return block
+}
+
+// result returns raw bytes when raw reasoning was observed; otherwise
+// it joins distinct details-only blocks in first-seen order.
+func (a *reasoningAccumulator) result() string {
+	if a.rawObserved {
+		return a.raw.String()
+	}
+	var out strings.Builder
+	for i, block := range a.blocks {
+		if i > 0 {
+			out.WriteString("\n\n")
+		}
+		out.WriteString(block.text.String())
+	}
+	return out.String()
+}
+
+func reasoningDetailText(detail bfschemas.ChatReasoningDetails) (string, bool) {
+	switch detail.Type {
+	case bfschemas.BifrostReasoningDetailsTypeText:
+		if detail.Text != nil {
+			return *detail.Text, true
+		}
+	case bfschemas.BifrostReasoningDetailsTypeSummary:
+		if detail.Summary != nil {
+			return *detail.Summary, true
 		}
 	}
-	return strings.Join(parts, "\n\n")
+	return "", false
+}
+
+// joinReasoningDetails coalesces details-only fragments without
+// trimming or rewriting their bytes. Exactly one blank line separates
+// distinct semantic blocks. Exposed at package scope so unary capture
+// and fixture tests share the streaming fallback contract.
+func joinReasoningDetails(details []bfschemas.ChatReasoningDetails) string {
+	acc := newReasoningAccumulator()
+	acc.observeDetails(details)
+	return acc.result()
 }

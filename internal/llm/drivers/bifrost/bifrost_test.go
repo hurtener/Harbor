@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -265,5 +266,34 @@ func TestDriver_init_RegistersBifrost(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("bifrost not in registered drivers: %v", names)
+	}
+}
+
+func TestMergeStreamedToolCall_IndexAndIDAssembly(t *testing.T) {
+	t.Parallel()
+	var calls []llm.ToolCallStructured
+	mergeStreamedToolCall(&calls, llm.ToolCallStructured{Index: 0, ID: "call-a", Name: "lookup", Args: json.RawMessage(`{"q":"`)})
+	mergeStreamedToolCall(&calls, llm.ToolCallStructured{Index: 0, Args: json.RawMessage(`harbor"}`)})
+	if len(calls) != 1 || calls[0].ID != "call-a" || calls[0].Name != "lookup" || string(calls[0].Args) != `{"q":"harbor"}` {
+		t.Fatalf("index merge = %#v", calls)
+	}
+
+	// A provider may reveal ID and name after an index-only fragment.
+	mergeStreamedToolCall(&calls, llm.ToolCallStructured{Index: 1, Args: json.RawMessage(`{"x":`)})
+	mergeStreamedToolCall(&calls, llm.ToolCallStructured{Index: 1, ID: "call-b", Name: "late", Args: json.RawMessage(`1}`)})
+	if len(calls) != 2 || calls[1].ID != "call-b" || calls[1].Name != "late" || string(calls[1].Args) != `{"x":1}` {
+		t.Fatalf("late metadata merge = %#v", calls)
+	}
+
+	// ID is the defensive fallback when a provider changes index.
+	mergeStreamedToolCall(&calls, llm.ToolCallStructured{Index: 9, ID: "call-a", Name: "lookup-renamed", Args: json.RawMessage(`{"replacement":true}`)})
+	if len(calls) != 2 || calls[0].Name != "lookup-renamed" || string(calls[0].Args) != `{"replacement":true}` {
+		t.Fatalf("ID fallback merge = %#v", calls)
+	}
+
+	// Empty fragments do not rewrite accumulated metadata or args.
+	mergeStreamedToolCall(&calls, llm.ToolCallStructured{Index: 0})
+	if len(calls) != 2 || string(calls[0].Args) != `{"replacement":true}` {
+		t.Fatalf("empty fragment changed calls = %#v", calls)
 	}
 }
