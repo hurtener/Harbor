@@ -574,6 +574,30 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		closeAll(ctx)
 		return nil, err
 	}
+	// D-401 recovery is deliberately one bounded reconciler shared by boot and
+	// every run start. It can enumerate only the configured bootstrap identity
+	// here; tenant/user/session-specific recovery happens when that exact run
+	// starts, never through a cross-tenant maintenance sweep.
+	var signedOAuthMCPReconciler *agentcfgprotocol.SignedOAuthMCPReconciler
+	if len(signedOAuthMCPCapabilityAuthorities) > 0 {
+		preparer, prepared := mcpAttacher.(agentcfgprotocol.ConnectionPreparer)
+		detacher, detachable := mcpDetacher.(agentcfgprotocol.ConnectionDetacher)
+		providers, providerReady := oauthProviderInstaller.(agentcfgprotocol.SignedCapabilityProviderPreparer)
+		if !prepared || !detachable || !providerReady {
+			closeAll(ctx)
+			return nil, fmt.Errorf("signed oauth mcp capability recovery: %w", agentcfgprotocol.ErrSignedCapabilityUnavailable)
+		}
+		signedOAuthMCPReconciler, err = agentcfgprotocol.NewSignedOAuthMCPReconciler(agentConfigRegistry, stack.State, preparer, detacher, providers)
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("signed oauth mcp capability recovery: %w", err)
+		}
+		bootIdentity := resolveMCPAttachIdentity(opts.MCPDefaultIdentity)
+		if err := signedOAuthMCPReconciler.ReconcileSignedOAuthMCPCapability(ctx, identity.Quadruple{Identity: bootIdentity}, devAgentConfigID); err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("signed oauth mcp capability boot recovery: %w", err)
+		}
+	}
 
 	// The Protocol-installed inference provider installer (set_llm_provider),
 	// plus the boot-connect of a config-declared brokered primary. Wired
@@ -639,6 +663,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		ConnectionReattacher:     mcpReattacher,
 		BootDeclaredMCP:          BootDeclaredMCPServerSet(cfg),
 		OAuthProviderReconciler:  oauthProviderReconciler,
+		SignedOAuthMCPReconciler: signedOAuthMCPReconciler,
 		NamingDefault:            cfg.Runtime.Naming,
 		SessionTitler:            sessionRegistry,
 		NamingLLM:                stack.LLM,
