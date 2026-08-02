@@ -2,7 +2,7 @@
 
 ## Summary
 
-Add a durable CAS retirement verb that makes an agent terminally unresolvable for new runs while preserving immutable revision history. The tombstone retains the exact pre-retirement hash, operation ID, cleanup manifest, and progress so a same-operation retry resumes after any interruption; durable session records use Phase 233a's lifecycle-and-erasure fence composition rather than process-local compensation.
+Add a durable CAS retirement verb that makes an agent terminally unresolvable for new runs while preserving immutable revision history. The tombstone retains the exact pre-retirement hash, operation ID, frozen-manifest digest/count, and bounded cleanup/scrub progress so a same-operation retry resumes after any interruption; durable session records use Phase 233a's lifecycle-and-erasure fence composition rather than process-local compensation.
 
 ## RFC anchor
 
@@ -50,9 +50,9 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 ## Acceptance criteria
 
 - [ ] `agent_config.retire` requires admin scope, exact identity, non-empty bounded operation ID, and expected active content hash (or `ExpectNoActiveRevision`); it never requires `agent_reach`.
-- [ ] The agent active slot becomes a backward-compatible lifecycle envelope; a tombstone contains prior revision ID/hash, operation/time, fixed cleanup manifest, and per-step progress.
+- [ ] The agent active slot becomes a backward-compatible lifecycle envelope; a tombstone contains prior revision ID/hash, operation/time, fixed-manifest digest/count, and bounded discovery/cleanup/scrub progress. Pending external items are compacted to content-free digest anchors only after cleanup advancement is durable, and completion requires cleanup and scrub cursors to reach the manifest count.
 - [ ] Initial retirement and every progress update use `SaveIf`; a stale writer, rollback, or user-tier writer cannot resurrect or mutate the tombstoned agent.
-- [ ] Overlay and agent-owned personal-record mutation builds four exact `SaveIf` expectations (target, lifecycle, pending erasure, terminal erasure) and writes only the target; retirement or erasure wins with no local compensation fiction, and every later read/write refuses the corresponding terminal state.
+- [ ] Overlay and agent-owned personal-record mutation builds four exact `SaveIf` expectations (target, lifecycle, pending erasure, terminal erasure) and writes only the target; retirement or erasure wins with no local compensation fiction, every later read/write refuses the corresponding terminal state, and a discovered personal target that becomes absent converges only under that exact session's pending or terminal erasure fence.
 - [ ] Uncertain retirement tombstone/progress writes reread lifecycle target
   plus operation/progress expectations; cleanup-item writes reread item target
   plus applicable session fences. Only each class's intended event/content is
@@ -101,6 +101,10 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
   refusal before spawn, history preservation, exact paged owned-record cleanup
   after tombstone, event emit/ack failure and restart replay, and
   `agents.deregister` independence.
+- **D-401 composition:** expired-authority teardown, cross-session
+  tenant+agent discovery, every removal-phase restart, close-failure replay,
+  hash-only manifest/event projection, tamper/foreign-tenant refusal, sibling
+  preservation, and a shared-Postgres two-runtime receipt path.
 - **Conformance:** all agentcfg drivers implement terminal lifecycle and same-operation replay; the 17 spine writes plus five session writes are held in a closed refusal census.
 - **Concurrency / leak:** stale writer/rollback/user/overlay/personal-record
   writer versus retirement and erasure across two instances; four-slot
@@ -126,6 +130,32 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 ## Dependencies
 
 - 232, 233, 233a, 233b.
+
+Integration note (2026-08-02): Phase 233b's frozen D-401 head is present on
+this branch. Retirement tenant-scans the durable pair-lifetime ledger and
+freezes one `signed_oauth_mcp_pair` item for every nonterminal published pair
+owned by the retiring `(tenant, agent)`, including pairs registered by other
+user/session subjects. The item contains only the immutable pair fingerprint
+and a second hash of its opaque operation kind. The private retirement adapter
+recovers the exact stored subject from the durable receipt, never from the
+public admin caller, and advances the existing
+`published -> removal_admitted -> removal_revision_committed ->
+catalog_unpublished -> teardown_receipted -> removed` graph through the exact
+connection teardown/closing receipt. Envelope expiry, verifier-key rotation,
+or revocation is not revalidated on teardown. A close failure leaves both the
+D-401 receipt and retirement manifest item retryable and unacknowledged.
+
+The fixed cleanup manifest is operation-owned and discovered into bounded
+StateStore records, one deterministic ordinal at a time. Each item includes
+its exact source and successor discovery authority, so replay validates and
+advances an occupied ordinal before any rescan. The lifecycle tombstone keeps
+only bounded discovery, cleanup, and scrub cursors plus manifest count/digest.
+A same-operation response exposes only the next pending item. After its side
+effect is durably acknowledged, the item is conditionally compacted to a
+content-free digest anchor and the scrub cursor advances; final completion
+requires every item to be cleaned and scrubbed. This ordering closes crashes
+before cleanup CAS, before compaction, and before scrub-cursor CAS without
+retaining erased session or canonical resource identities after completion.
 
 ## Risks / open questions
 

@@ -186,6 +186,8 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveDiff(w, r, body, wireID)
 	case "rollback":
 		h.serveRollback(w, r, body, wireID)
+	case "retire":
+		h.serveRetire(w, r, body, wireID)
 	case "set_tool_exposure":
 		h.serveSetToolExposure(w, r, body, wireID)
 	case "set_prompt_layers":
@@ -399,6 +401,23 @@ func (h *AgentConfigHandler) serveRollback(w http.ResponseWriter, r *http.Reques
 	resp, err := h.service.Rollback(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigRollback, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveRetire(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigRetireRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigRetire) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.Retire(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigRetire, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)
@@ -970,6 +989,12 @@ func (h *AgentConfigHandler) writeServiceError(w http.ResponseWriter, r *http.Re
 func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Code, int, string) {
 	m := string(method)
 	switch {
+	case errors.Is(err, agentcfg.ErrAgentRetired):
+		return protoerrors.CodeAgentRetired, http.StatusConflict,
+			m + ": agent is retired"
+	case errors.Is(err, agentcfg.ErrRetirementConflict):
+		return protoerrors.CodeAgentRetirementConflict, http.StatusConflict,
+			m + ": retirement operation conflicts with current lifecycle"
 	case errors.Is(err, agentcfgprotocol.ErrIdentityRequired),
 		errors.Is(err, agentcfg.ErrIdentityRequired),
 		errors.Is(err, sessionoverlay.ErrIdentityRequired),

@@ -46,6 +46,14 @@ var errorTable = map[protoerrors.Code]errorEntry{
 		When:  "All three bounded before/after lifecycle and session-erasure fence reads observed concurrent change. Harbor returned no partial session-skill view.",
 		Retry: "Yes, after the concurrent lifecycle or erasure transition settles.",
 	},
+	protoerrors.CodeAgentRetired: {
+		When:  "An authorized agent-addressed operation selected a terminally retired agent configuration.",
+		Retry: "No — choose a different agent; retirement is terminal.",
+	},
+	protoerrors.CodeAgentRetirementConflict: {
+		When:  "A retirement request used a stale active-content hash or a different operation id from the durable replay identity.",
+		Retry: "Only by replaying `agent_config.retire` with the exact original operation id and expected content hash.",
+	},
 	protoerrors.CodeIdentityRequired: {
 		When:  "The request resolved no complete `(tenant, user, session)` identity scope — a missing bearer, a missing session (no `X-Harbor-Session` header and no default claim), or a body identity that contradicts the verified token. Identity is mandatory and fails closed.",
 		Retry: "No — attach a token / session first ([Auth & identity](./auth-and-identity.md)).",

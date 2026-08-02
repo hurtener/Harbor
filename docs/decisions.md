@@ -11925,6 +11925,21 @@ When an auth-required revision write reports failure but an exact reread proves 
 
 **Canonical lifecycle events.** Retirement emits redacted, identity-scoped `agent_config.retirement.started`, `.progress`, and `.completed` events. Payloads contain identity, agent ID, a hash of operation ID, and bounded stage/class, counters, and generation only; raw operation IDs, descriptors, and credentials are forbidden. Every durable transition persists a pending event checkpoint before emission, blocks subsequent cleanup progress until it emits, then CAS-acknowledges it. A bus or acknowledgement failure is loud and the same-operation retry resumes the at-least-once sequence; duplicate delivery is acceptable, lost delivery is not.
 
+**D-401 composition (2026-08-02).** The frozen retirement manifest adds one
+`signed_oauth_mcp_pair` class discovered from every nonterminal published
+D-401 operation for the exact tenant and agent across stored user/session
+subjects. Its resource is the pair fingerprint plus a hash of the opaque
+operation kind only; URL, JWT/JTI, credentials, provider descriptor, and owner
+identity never enter the manifest or events. A private retirement adapter
+recovers the exact durable subject from the operation receipt and advances the
+existing paired-removal graph through `DetachExactConnection` and its retryable
+closing receipt. The public admin caller never impersonates that subject, and
+current authority expiry, revocation, or key rotation is not a teardown gate.
+Close failure blocks retirement acknowledgement/scrub; exact same-operation
+retry or another runtime resumes from the durable D-401 phase. Tenant scans and
+exact descriptor fingerprints prohibit cross-tenant, boot/global, unowned, or
+sibling teardown.
+
 **Cross-references.** D-059, D-301, D-312, D-366, D-394, D-398. RFC §5.5, §6.11, §6.13, §6.16.
 
 **Dated correction (2026-08-01).** The preceding process-local session-overlay

@@ -313,6 +313,9 @@ const (
 	// requires the `auth.ScopeAdmin` claim. The wire-transport route is
 	// `POST /v1/agent_config/rollback`.
 	MethodAgentConfigRollback Method = "agent_config.rollback"
+	// MethodAgentConfigRetire terminally retires an agent configuration. It
+	// remains a control-plane admin method; it is not a data-plane reach door.
+	MethodAgentConfigRetire Method = "agent_config.retire"
 	// MethodAgentConfigSkillsList — reads the agent's skills (metadata
 	// only) — the first consumer of the config-revision registry.
 	// Identity-mandatory; requires the `auth.ScopeAdmin` claim. The
@@ -1115,6 +1118,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigListRevisions:              {},
 	MethodAgentConfigDiff:                       {},
 	MethodAgentConfigRollback:                   {},
+	MethodAgentConfigRetire:                     {},
 	MethodAgentConfigSkillsList:                 {},
 	MethodAgentConfigSkillsUpsert:               {},
 	MethodAgentConfigSkillsDelete:               {},
@@ -1402,6 +1406,7 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigListRevisions:              {},
 	MethodAgentConfigDiff:                       {},
 	MethodAgentConfigRollback:                   {},
+	MethodAgentConfigRetire:                     {},
 	MethodAgentConfigSkillsList:                 {},
 	MethodAgentConfigSkillsUpsert:               {},
 	MethodAgentConfigSkillsDelete:               {},
@@ -1488,6 +1493,7 @@ var canonicalAgentConfigSessionMethods = map[Method]struct{}{
 var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSetRevision:                {},
 	MethodAgentConfigRollback:                   {},
+	MethodAgentConfigRetire:                     {},
 	MethodAgentConfigSkillsUpsert:               {},
 	MethodAgentConfigSkillsDelete:               {},
 	MethodAgentConfigSetToolExposure:            {},

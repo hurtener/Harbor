@@ -94,9 +94,11 @@ assert_grep_present 'auth\.HasScope\(r\.Context\(\), auth\.ScopeAdmin\)' "${CONT
 # D-312) plus CodeRevisionConflict (the agent-config expected-revision
 # token: a conditional spine write whose declared base has moved,
 # Phase 221 / D-366), and Phase 233a's two typed session-skill outcomes
-# (CodeSessionSkillCutoverPending / CodeSessionSkillReadUnstable). Pin the
-# EXACT closed set by identifier, not a raw declaration count: a count alone
-# accepts a missing old code paired with an unrelated replacement.
+# (CodeSessionSkillCutoverPending / CodeSessionSkillReadUnstable), and Phase
+# 234's two terminal retirement outcomes (CodeAgentRetired /
+# CodeAgentRetirementConflict). Pin the EXACT closed set by identifier, not a
+# raw declaration count: a count alone accepts a missing old code paired with
+# an unrelated replacement.
 CANONICAL_ERROR_CODES=(
     CodeInvalidRequest
     CodeIdentityRequired
@@ -114,6 +116,8 @@ CANONICAL_ERROR_CODES=(
     CodeRevisionConflict
     CodeSessionSkillCutoverPending
     CodeSessionSkillReadUnstable
+    CodeAgentRetired
+    CodeAgentRetirementConflict
 )
 for code in "${CANONICAL_ERROR_CODES[@]}"; do
     assert_grep_present "^[[:space:]]*${code}[[:space:]]+Code[[:space:]]*=" \

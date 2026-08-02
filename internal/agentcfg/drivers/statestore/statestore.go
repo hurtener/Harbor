@@ -30,17 +30,25 @@
 package statestore
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"reflect"
 	"sort"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/state"
@@ -68,6 +76,8 @@ const (
 	// convention); no real session collides with it.
 	agentCfgUser = agentcfg.ReservedAgentConfigUser
 )
+
+var errLifecycleMalformed = errors.New("agentcfg/statestore: lifecycle envelope malformed")
 
 // scopeKeys is the resolved keying for one (scope, identity, agent) tuple:
 // the identity to persist under plus the active-pointer kind and the
@@ -131,11 +141,94 @@ func activeKindFor(revPfx string) (string, error) {
 // change; a forward-schema record fails loud rather than silently reset.
 const recordSchema = 1
 
+const (
+	retirementCleanupSessionPersonal  = "session_personal"
+	retirementCleanupLegacyOverlay    = "legacy_session_overlay"
+	retirementDiscoveryConfig         = "config"
+	retirementDiscoverySignedOAuthMCP = "signed_oauth_mcp"
+	retirementDiscoveryPersonal       = "personal"
+	retirementDiscoveryLegacy         = "legacy"
+	retirementManifestKindPrefix      = "agentcfg.retirement.manifest."
+	retirementManifestSchema          = 1
+	retirementDiscoveryScanLimit      = 1
+	maxRetirementManifestItemBytes    = 1024 * 1024
+)
+
 // activeRecord is the JSON-encoded active-pointer record.
 type activeRecord struct {
-	Schema     int       `json:"schema"`
-	RevisionID string    `json:"revision_id"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	Schema     int               `json:"schema"`
+	RevisionID string            `json:"revision_id"`
+	UpdatedAt  time.Time         `json:"updated_at"`
+	Retirement *retirementRecord `json:"retirement,omitempty"`
+}
+
+// retirementRecord is deliberately embedded in the active slot rather than
+// placed beside it: all legacy writers already condition that exact slot, so
+// a terminal transition cannot be bypassed by an older config writer.
+type retirementRecord struct {
+	OperationID      string                     `json:"operation_id"`
+	RetiredAt        time.Time                  `json:"retired_at"`
+	PriorRevisionID  string                     `json:"prior_revision_id,omitempty"`
+	PriorContentHash string                     `json:"prior_content_hash,omitempty"`
+	Generation       uint64                     `json:"generation"`
+	Completed        bool                       `json:"completed"`
+	PendingEvent     *retirementEventCheckpoint `json:"pending_event,omitempty"`
+	Discovery        *retirementDiscovery       `json:"discovery,omitempty"`
+	ManifestFrozen   bool                       `json:"manifest_frozen,omitempty"`
+	ManifestCount    uint64                     `json:"manifest_count"`
+	ManifestDigest   string                     `json:"manifest_digest"`
+	CleanupCompleted uint64                     `json:"cleanup_completed"`
+	CleanupDigest    string                     `json:"cleanup_digest"`
+	ScrubCompleted   uint64                     `json:"scrub_completed"`
+}
+
+type retirementDiscovery struct {
+	Stage        string `json:"stage"`
+	Continuation string `json:"continuation"`
+	ConfigIndex  uint64 `json:"config_index"`
+}
+
+type retirementManifestItem struct {
+	Schema        int                         `json:"schema"`
+	OperationHash string                      `json:"operation_hash"`
+	Ordinal       uint64                      `json:"ordinal"`
+	Class         string                      `json:"class"`
+	Resource      string                      `json:"resource"`
+	PriorDigest   string                      `json:"prior_digest"`
+	Digest        string                      `json:"digest"`
+	Source        retirementDiscovery         `json:"source"`
+	Successor     retirementManifestSuccessor `json:"successor"`
+}
+
+type retirementManifestSuccessor struct {
+	State          string               `json:"state"`
+	Discovery      *retirementDiscovery `json:"discovery,omitempty"`
+	ManifestCount  uint64               `json:"manifest_count"`
+	ManifestDigest string               `json:"manifest_digest"`
+}
+
+type retirementManifestScrub struct {
+	Schema        int    `json:"schema"`
+	OperationHash string `json:"operation_hash"`
+	Ordinal       uint64 `json:"ordinal"`
+	PriorDigest   string `json:"prior_digest"`
+	Digest        string `json:"digest"`
+	Scrubbed      bool   `json:"scrubbed"`
+}
+
+type retirementSessionTarget struct {
+	TenantID      string `json:"tenant_id"`
+	UserID        string `json:"user_id"`
+	SessionID     string `json:"session_id"`
+	RunID         string `json:"run_id,omitempty"`
+	Kind          string `json:"kind"`
+	AgentID       string `json:"agent_id"`
+	CanonicalName string `json:"canonical_name,omitempty"`
+}
+
+type retirementEventCheckpoint struct {
+	Stage string `json:"stage"`
+	Class string `json:"class,omitempty"`
 }
 
 // revisionRecord is the JSON-encoded immutable revision record. Parent
@@ -247,6 +340,9 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	if err := r.guardSignedOAuthMCPFenceWriter(ctx, id, agentID, scope); err != nil {
 		return agentcfg.Revision{}, err
 	}
+	if err := r.ensureNotRetired(ctx, id, agentID); err != nil {
+		return agentcfg.Revision{}, err
+	}
 	q := keys.quad
 	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys, opts)
 	if err != nil {
@@ -312,6 +408,11 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	}
 	if err := r.saveActiveIf(ctx, expectations, q, keys.activeKind, revID, now); err != nil {
 		if errors.Is(err, state.ErrConditionFailed) {
+			if retiredErr := r.ensureNotRetired(ctx, id, agentID); retiredErr != nil {
+				if !errors.Is(retiredErr, errLifecycleMalformed) {
+					return agentcfg.Revision{}, retiredErr
+				}
+			}
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensationTimeout)
 			defer cancel()
 			if deleteErr := r.state.Delete(cleanupCtx, q, keys.revPfx+revID); deleteErr != nil {
@@ -395,6 +496,9 @@ func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID st
 		if err := r.validatePresentLifecycle(ctx, syntheticQuad(id.TenantID, agentID), kindActive); err != nil {
 			return agentcfg.Revision{}, false, err
 		}
+	}
+	if err := r.ensureNotRetired(ctx, id, agentID); err != nil {
+		return agentcfg.Revision{}, false, err
 	}
 	active, set, err := r.loadActiveRevision(ctx, keys.quad, keys.activeKind, keys.revPfx)
 	if err != nil || scope != agentcfg.ConfigScopeAgent {
@@ -566,6 +670,9 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	if err := r.guardSignedOAuthMCPFenceWriter(ctx, id, agentID, scope); err != nil {
 		return agentcfg.Revision{}, err
 	}
+	if err := r.ensureNotRetired(ctx, id, agentID); err != nil {
+		return agentcfg.Revision{}, err
+	}
 	q := keys.quad
 	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys, opts)
 	if err != nil {
@@ -616,6 +723,9 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	now := r.clock().UTC()
 	if err := r.saveActiveIf(ctx, expectations, q, keys.activeKind, revisionID, now); err != nil {
 		if errors.Is(err, state.ErrConditionFailed) {
+			if retiredErr := r.ensureNotRetired(ctx, id, agentID); retiredErr != nil {
+				return agentcfg.Revision{}, retiredErr
+			}
 			return agentcfg.Revision{}, fmt.Errorf("%w: active pointer changed during rollback", agentcfg.ErrRevisionConflict)
 		}
 		return agentcfg.Revision{}, err
@@ -668,6 +778,1106 @@ func (r *registry) Diff(ctx context.Context, id identity.Quadruple, agentID, fro
 func (r *registry) Close(_ context.Context) error {
 	r.closed.Store(true)
 	return nil
+}
+
+// Retire CAS-replaces the agent active slot with the terminal lifecycle
+// envelope. It never deletes a revision: the prior id/hash are a durable
+// replay/audit anchor and immutable history continues to use its existing
+// record kinds.
+func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID string, req agentcfg.RetirementRequest) (agentcfg.RetirementStatus, error) {
+	if err := r.validate(id, agentID); err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	operationID := strings.TrimSpace(req.OperationID)
+	if operationID == "" || len(operationID) > 128 {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: operation id must be 1..128 bytes", agentcfg.ErrRetirementConflict)
+	}
+	if req.ExpectedContentHash == "" {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: expected active content hash is required", agentcfg.ErrRetirementConflict)
+	}
+	q := syntheticQuad(id.TenantID, agentID)
+	current, eventID, found, err := r.loadActiveRecord(ctx, q)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if current.Retirement != nil {
+		if current.Retirement.OperationID != operationID {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: durable operation differs", agentcfg.ErrRetirementConflict)
+		}
+		// The operation id alone is not a replay authority. The original
+		// precondition identifies the retired slot too: a config-backed
+		// tombstone replays only with its exact prior hash, while a
+		// first-retirement tombstone replays only with the no-active sentinel.
+		expected := current.Retirement.PriorContentHash
+		if expected == "" {
+			expected = agentcfg.ExpectNoActiveRevision
+		}
+		if req.ExpectedContentHash != expected {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: replay expected content hash differs", agentcfg.ErrRetirementConflict)
+		}
+		return r.resumeRetirement(ctx, id, agentID, q)
+	}
+
+	var prior agentcfg.Revision
+	hasPrior := false
+	if current.RevisionID != "" {
+		rr, loadErr := r.loadRevision(ctx, q, kindRevisionPfx, current.RevisionID)
+		if loadErr != nil {
+			return agentcfg.RetirementStatus{}, loadErr
+		}
+		prior, hasPrior = rr.toRevision(), true
+	}
+	if err := agentcfg.CheckExpectedRevision(agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}, prior, hasPrior); err != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: %w", agentcfg.ErrRetirementConflict, err)
+	}
+	t := &retirementRecord{
+		OperationID:    operationID,
+		RetiredAt:      r.clock().UTC(),
+		Generation:     1,
+		PendingEvent:   &retirementEventCheckpoint{Stage: "started"},
+		Discovery:      &retirementDiscovery{Stage: retirementDiscoveryConfig},
+		ManifestDigest: emptyRetirementManifestDigest(),
+		CleanupDigest:  emptyRetirementManifestDigest(),
+	}
+	if hasPrior {
+		t.PriorRevisionID = prior.RevisionID
+		t.PriorContentHash = prior.ContentHash
+	}
+	// Completion is impossible until both tenant-bounded session-record scans are
+	// durably exhausted and the manifest is frozen.
+	t.Completed = false
+	next := activeRecord{Schema: recordSchema, UpdatedAt: t.RetiredAt, Retirement: t}
+	buf, err := json.Marshal(next)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("agentcfg/statestore: marshal retirement tombstone: %w", err)
+	}
+	expected := state.EventID("")
+	if found {
+		expected = eventID
+	}
+	err = r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kindActive, ExpectedEventID: expected}}, state.StateRecord{
+		ID:        state.NewEventID(),
+		Identity:  q,
+		Kind:      kindActive,
+		Bytes:     buf,
+		UpdatedAt: t.RetiredAt,
+	})
+	if err == nil {
+		return r.resumeRetirement(ctx, id, agentID, q)
+	}
+	// A competing retire OR an unknown acknowledgement is resolved only by an
+	// exact reread. A SaveIf error is not evidence that the write did not land:
+	// the database may have committed the tombstone before its acknowledgement
+	// was lost. Never retry or compensate blindly over that ambiguity.
+	landed, _, _, rereadErr := r.loadActiveRecord(ctx, q)
+	if rereadErr != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement tombstone: %w; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
+	}
+	if landed.Retirement != nil && landed.Retirement.OperationID == operationID {
+		return r.resumeRetirement(ctx, id, agentID, q)
+	}
+	if !errors.Is(err, state.ErrConditionFailed) {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement tombstone: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	return agentcfg.RetirementStatus{}, fmt.Errorf("%w: active slot moved", agentcfg.ErrRetirementConflict)
+}
+
+// resumeRetirement first drains the durable started-event checkpoint, then
+// advances the deterministic session-record scans one CAS checkpoint at a time.
+// A same-operation replay resumes from the stored opaque continuation.
+func (r *registry) resumeRetirement(ctx context.Context, id identity.Quadruple, agentID string, q identity.Quadruple) (agentcfg.RetirementStatus, error) {
+	for {
+		current, eventID, found, err := r.loadActiveRecord(ctx, q)
+		if err != nil {
+			return agentcfg.RetirementStatus{}, err
+		}
+		if !found || current.Retirement == nil {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: retirement lifecycle disappeared", agentcfg.ErrRetirementConflict)
+		}
+		if current.Retirement.PendingEvent != nil {
+			if current.Retirement.PendingEvent.Stage == "progress" && current.Retirement.ScrubCompleted < current.Retirement.CleanupCompleted {
+				if err := r.scrubRetirementDebt(ctx, q); err != nil {
+					return agentcfg.RetirementStatus{}, err
+				}
+			}
+			if _, err := r.ackRetirementEvent(ctx, id, agentID, q); err != nil {
+				return agentcfg.RetirementStatus{}, err
+			}
+			continue
+		}
+		if current.Retirement.ManifestFrozen {
+			if current.Retirement.ScrubCompleted < current.Retirement.CleanupCompleted {
+				if err := r.scrubRetirementDebt(ctx, q); err != nil {
+					return agentcfg.RetirementStatus{}, err
+				}
+				continue
+			}
+			if !current.Retirement.Completed && current.Retirement.CleanupCompleted == current.Retirement.ManifestCount && current.Retirement.ScrubCompleted == current.Retirement.ManifestCount {
+				return r.queueRetirementEvent(ctx, id, agentID, q, "completed", "")
+			}
+			return r.retirementStatus(ctx, q, current.Retirement)
+		}
+		if current.Retirement.Discovery == nil {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: retirement discovery checkpoint is absent", agentcfg.ErrStateUnavailable)
+		}
+		item, found, err := r.loadPendingRetirementManifestItem(ctx, q, current.Retirement)
+		if err != nil {
+			return agentcfg.RetirementStatus{}, err
+		}
+		var nextDiscovery *retirementDiscovery
+		frozen := false
+		if found {
+			nextDiscovery = item.Successor.Discovery
+			frozen = item.Successor.State == "frozen"
+		} else {
+			item, nextDiscovery, frozen, err = r.nextRetirementDiscovery(ctx, q, id.TenantID, agentID, current.Retirement)
+			if err != nil {
+				return agentcfg.RetirementStatus{}, err
+			}
+			if item != nil {
+				if err := r.persistRetirementManifestItem(ctx, q, eventID, *item); err != nil {
+					return agentcfg.RetirementStatus{}, err
+				}
+			}
+		}
+		if item != nil {
+			if err := validateRetirementManifestSuccessor(current.Retirement, *item); err != nil {
+				return agentcfg.RetirementStatus{}, err
+			}
+		}
+		next := current
+		next.Retirement = cloneRetirement(current.Retirement)
+		next.Retirement.Generation++
+		if item != nil {
+			next.Retirement.ManifestDigest = item.Successor.ManifestDigest
+			next.Retirement.ManifestCount = item.Successor.ManifestCount
+		}
+		if frozen {
+			next.Retirement.Discovery = nil
+			next.Retirement.ManifestFrozen = true
+			next.Retirement.Completed = next.Retirement.ManifestCount == 0
+			if next.Retirement.Completed {
+				next.Retirement.PendingEvent = &retirementEventCheckpoint{Stage: "completed"}
+			}
+		} else {
+			next.Retirement.Discovery = nextDiscovery
+		}
+		next.UpdatedAt = r.clock().UTC()
+		buf, err := json.Marshal(next)
+		if err != nil {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("agentcfg/statestore: marshal retirement discovery: %w", err)
+		}
+		if len(buf) > agentcfg.MaxLifecycleRecordBytes {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: retirement manifest exceeds lifecycle record bound", agentcfg.ErrStateUnavailable)
+		}
+		err = r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kindActive, ExpectedEventID: eventID}}, state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kindActive, Bytes: buf, UpdatedAt: next.UpdatedAt})
+		if err == nil {
+			if next.Retirement.PendingEvent != nil {
+				return r.ackRetirementEvent(ctx, id, agentID, q)
+			}
+			continue
+		}
+		landed, _, _, rereadErr := r.loadActiveRecord(ctx, q)
+		if rereadErr != nil {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement discovery: %w; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
+		}
+		if landed.Retirement != nil && landed.Retirement.OperationID == current.Retirement.OperationID && landed.Retirement.Generation >= next.Retirement.Generation {
+			continue
+		}
+		if !errors.Is(err, state.ErrConditionFailed) {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement discovery: %w", agentcfg.ErrStateUnavailable, err)
+		}
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: retirement discovery moved", agentcfg.ErrRetirementConflict)
+	}
+}
+
+func (r *registry) nextRetirementDiscovery(ctx context.Context, q identity.Quadruple, tenantID, agentID string, retirement *retirementRecord) (*retirementManifestItem, *retirementDiscovery, bool, error) {
+	checkpoint := *retirement.Discovery
+	switch checkpoint.Stage {
+	case retirementDiscoveryConfig:
+		var steps []agentcfg.CleanupStep
+		if retirement.PriorRevisionID != "" {
+			prior, err := r.loadRevision(ctx, q, kindRevisionPfx, retirement.PriorRevisionID)
+			if err != nil {
+				return nil, nil, false, err
+			}
+			steps = cleanupManifest(prior.toRevision())
+		}
+		if checkpoint.ConfigIndex < uint64(len(steps)) {
+			step := steps[checkpoint.ConfigIndex]
+			checkpoint.ConfigIndex++
+			if checkpoint.ConfigIndex == uint64(len(steps)) {
+				checkpoint = retirementDiscovery{Stage: retirementDiscoverySignedOAuthMCP}
+			}
+			item, err := newRetirementManifestItem(retirement, step.Class, step.Resource, &checkpoint, false)
+			return item, &checkpoint, false, err
+		}
+		return nil, &retirementDiscovery{Stage: retirementDiscoverySignedOAuthMCP}, false, nil
+	case retirementDiscoverySignedOAuthMCP:
+		operations, err := agentcfg.NewSignedOAuthMCPOperationStore(r.state)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		page, continuation, err := operations.ScanTenantPage(ctx, tenantID, retirementDiscoveryScanLimit, checkpoint.Continuation)
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("%w: scan signed OAuth MCP retirement records: %w", agentcfg.ErrStateUnavailable, err)
+		}
+		next := &retirementDiscovery{Stage: retirementDiscoverySignedOAuthMCP, Continuation: continuation}
+		if continuation == "" {
+			next = &retirementDiscovery{Stage: retirementDiscoveryPersonal}
+		}
+		if len(page) == 0 {
+			return nil, next, false, nil
+		}
+		op := page[0]
+		if op.Binding.AgentID != agentID || !agentcfg.SignedOAuthMCPRetirementPending(op.Phase) {
+			return nil, next, false, nil
+		}
+		resource, err := agentcfg.SignedOAuthMCPRetirementResource(op)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		item, err := newRetirementManifestItem(retirement, agentcfg.RetirementCleanupClassSignedOAuthMCPPair, resource, next, false)
+		return item, next, false, err
+	case retirementDiscoveryPersonal, retirementDiscoveryLegacy:
+		prefix := sessionoverlay.LegacyOverlayPrefix()
+		if checkpoint.Stage == retirementDiscoveryPersonal {
+			var err error
+			prefix, err = sessionoverlay.PersonalSkillPrefix(agentID)
+			if err != nil {
+				return nil, nil, false, err
+			}
+		}
+		page, err := r.state.ScanKindForTenant(ctx, state.ListScope{MaintenanceScoped: true}, tenantID, prefix, retirementDiscoveryScanLimit, checkpoint.Continuation)
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("%w: scan retirement %s records: %w", agentcfg.ErrStateUnavailable, checkpoint.Stage, err)
+		}
+		next := &retirementDiscovery{Stage: checkpoint.Stage, Continuation: page.Continuation}
+		frozen := false
+		if page.Continuation == "" {
+			if checkpoint.Stage == retirementDiscoveryPersonal {
+				next = &retirementDiscovery{Stage: retirementDiscoveryLegacy}
+			} else {
+				next = nil
+				frozen = true
+			}
+		}
+		if len(page.Records) == 0 {
+			return nil, next, frozen, nil
+		}
+		candidate := page.Records[0]
+		target := retirementSessionTarget{TenantID: candidate.Identity.TenantID, UserID: candidate.Identity.UserID, SessionID: candidate.Identity.SessionID, RunID: candidate.Identity.RunID, Kind: candidate.Kind, AgentID: agentID}
+		if checkpoint.Stage == retirementDiscoveryPersonal {
+			canonicalName, err := sessionoverlay.InspectRetirementPersonalCandidate(candidate, tenantID, agentID)
+			if err != nil {
+				return nil, nil, false, err
+			}
+			target.CanonicalName = canonicalName
+			resource, err := encodeRetirementSessionTarget(target)
+			if err != nil {
+				return nil, nil, false, err
+			}
+			item, err := newRetirementManifestItem(retirement, retirementCleanupSessionPersonal, resource, next, frozen)
+			return item, next, frozen, err
+		}
+		if candidate.Kind != sessionoverlay.LegacyOverlayKind(agentID) {
+			return nil, next, frozen, nil
+		}
+		if err := sessionoverlay.InspectRetirementLegacyCandidate(candidate, tenantID, agentID); err != nil {
+			return nil, nil, false, err
+		}
+		resource, err := encodeRetirementSessionTarget(target)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		item, err := newRetirementManifestItem(retirement, retirementCleanupLegacyOverlay, resource, next, frozen)
+		return item, next, frozen, err
+	default:
+		return nil, nil, false, fmt.Errorf("%w: unknown retirement discovery stage %q", agentcfg.ErrStateUnavailable, checkpoint.Stage)
+	}
+}
+
+func newRetirementManifestItem(retirement *retirementRecord, class, resource string, next *retirementDiscovery, frozen bool) (*retirementManifestItem, error) {
+	stateName := "discovering"
+	if frozen {
+		stateName = "frozen"
+	}
+	item := &retirementManifestItem{
+		Schema:        retirementManifestSchema,
+		OperationHash: agentcfg.RetirementOperationHash(retirement.OperationID),
+		Ordinal:       retirement.ManifestCount,
+		Class:         class,
+		Resource:      resource,
+		PriorDigest:   retirement.ManifestDigest,
+		Source:        *retirement.Discovery,
+		Successor: retirementManifestSuccessor{
+			State:         stateName,
+			Discovery:     next,
+			ManifestCount: retirement.ManifestCount + 1,
+		},
+	}
+	digest, err := advanceRetirementManifestDigest(item.PriorDigest, *item)
+	if err != nil {
+		return nil, err
+	}
+	item.Digest = digest
+	item.Successor.ManifestDigest = digest
+	return item, nil
+}
+
+func (r *registry) persistRetirementManifestItem(ctx context.Context, q identity.Quadruple, lifecycleEvent state.EventID, item retirementManifestItem) error {
+	kind := retirementManifestKind(item.OperationHash, item.Ordinal)
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		return fmt.Errorf("marshal retirement manifest item: %w", err)
+	}
+	if len(encoded) == 0 || len(encoded) > maxRetirementManifestItemBytes {
+		return fmt.Errorf("%w: retirement manifest item size %d exceeds bound", agentcfg.ErrStateUnavailable, len(encoded))
+	}
+	existing, err := r.state.Load(ctx, q, kind)
+	if err == nil {
+		if bytes.Equal(existing.Bytes, encoded) {
+			return nil
+		}
+		return fmt.Errorf("%w: manifest ordinal already carries different content", agentcfg.ErrRetirementConflict)
+	}
+	if !errors.Is(err, state.ErrNotFound) {
+		return fmt.Errorf("%w: load retirement manifest item: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	next := state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: encoded, UpdatedAt: r.clock().UTC()}
+	expectations := []state.SlotExpectation{{Identity: q, Kind: kind}, {Identity: q, Kind: kindActive, ExpectedEventID: lifecycleEvent}}
+	if err := r.state.SaveIf(ctx, expectations, next); err != nil {
+		landed, loadErr := r.state.Load(ctx, q, kind)
+		if loadErr == nil && bytes.Equal(landed.Bytes, encoded) {
+			return nil
+		}
+		if errors.Is(err, state.ErrConditionFailed) {
+			return fmt.Errorf("%w: retirement manifest lifecycle moved", agentcfg.ErrRetirementConflict)
+		}
+		return fmt.Errorf("%w: persist retirement manifest item: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	return nil
+}
+
+func (r *registry) loadPendingRetirementManifestItem(ctx context.Context, q identity.Quadruple, retirement *retirementRecord) (*retirementManifestItem, bool, error) {
+	operationHash := agentcfg.RetirementOperationHash(retirement.OperationID)
+	item, scrub, _, found, err := r.loadRetirementManifestRecord(ctx, q, operationHash, retirement.ManifestCount)
+	if err != nil || !found {
+		return item, found, err
+	}
+	if scrub != nil || item == nil {
+		return nil, false, fmt.Errorf("%w: occupied pending manifest ordinal is not a full item", agentcfg.ErrRetirementConflict)
+	}
+	if err := validateRetirementManifestSuccessor(retirement, *item); err != nil {
+		return nil, false, err
+	}
+	return item, true, nil
+}
+
+func validateRetirementManifestSuccessor(retirement *retirementRecord, item retirementManifestItem) error {
+	if retirement.Discovery == nil || item.Ordinal != retirement.ManifestCount || item.PriorDigest != retirement.ManifestDigest || item.Source != *retirement.Discovery {
+		return fmt.Errorf("%w: manifest item does not match its lifecycle predecessor", agentcfg.ErrRetirementConflict)
+	}
+	digest, err := advanceRetirementManifestDigest(item.PriorDigest, item)
+	if err != nil {
+		return err
+	}
+	if item.Digest != digest || item.Successor.ManifestCount != retirement.ManifestCount+1 || item.Successor.ManifestDigest != item.Digest {
+		return fmt.Errorf("%w: manifest item successor authority is invalid", agentcfg.ErrRetirementConflict)
+	}
+	switch item.Successor.State {
+	case "discovering":
+		if item.Successor.Discovery == nil || !validRetirementDiscovery(*item.Successor.Discovery) {
+			return fmt.Errorf("%w: manifest successor lacks valid discovery state", agentcfg.ErrRetirementConflict)
+		}
+	case "frozen":
+		if item.Successor.Discovery != nil {
+			return fmt.Errorf("%w: frozen manifest successor retains discovery state", agentcfg.ErrRetirementConflict)
+		}
+	default:
+		return fmt.Errorf("%w: unknown manifest successor state", agentcfg.ErrRetirementConflict)
+	}
+	return nil
+}
+
+func validRetirementDiscovery(discovery retirementDiscovery) bool {
+	if discovery.Stage != retirementDiscoveryConfig && discovery.Stage != retirementDiscoverySignedOAuthMCP && discovery.Stage != retirementDiscoveryPersonal && discovery.Stage != retirementDiscoveryLegacy {
+		return false
+	}
+	return (discovery.Stage != retirementDiscoveryConfig || discovery.Continuation == "") && (discovery.Stage == retirementDiscoveryConfig || discovery.ConfigIndex == 0)
+}
+
+func retirementManifestKind(operationHash string, ordinal uint64) string {
+	return fmt.Sprintf("%s%s.%020d", retirementManifestKindPrefix, operationHash, ordinal)
+}
+
+func emptyRetirementManifestDigest() string {
+	sum := sha256.Sum256(nil)
+	return hex.EncodeToString(sum[:])
+}
+
+func advanceRetirementManifestDigest(previous string, item retirementManifestItem) (string, error) {
+	encoded, err := json.Marshal(struct {
+		Schema         int                  `json:"schema"`
+		OperationHash  string               `json:"operation_hash"`
+		Ordinal        uint64               `json:"ordinal"`
+		Class          string               `json:"class"`
+		Resource       string               `json:"resource"`
+		Source         retirementDiscovery  `json:"source"`
+		SuccessorState string               `json:"successor_state"`
+		Discovery      *retirementDiscovery `json:"successor_discovery,omitempty"`
+		ManifestCount  uint64               `json:"successor_manifest_count"`
+	}{
+		Schema: item.Schema, OperationHash: item.OperationHash, Ordinal: item.Ordinal,
+		Class: item.Class, Resource: item.Resource, Source: item.Source,
+		SuccessorState: item.Successor.State, Discovery: item.Successor.Discovery,
+		ManifestCount: item.Successor.ManifestCount,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal retirement manifest digest input: %w", err)
+	}
+	sum := sha256.Sum256(append(append([]byte(previous), '\n'), encoded...))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func encodeRetirementSessionTarget(target retirementSessionTarget) (string, error) {
+	data, err := json.Marshal(target)
+	if err != nil {
+		return "", fmt.Errorf("marshal retirement session target: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func decodeRetirementSessionTarget(resource string) (retirementSessionTarget, error) {
+	data, err := base64.RawURLEncoding.DecodeString(resource)
+	if err != nil || len(data) == 0 || len(data) > maxRetirementManifestItemBytes {
+		return retirementSessionTarget{}, fmt.Errorf("%w: invalid retirement session resource", agentcfg.ErrRetirementConflict)
+	}
+	if err := agentcfg.ValidateUniqueJSONFields(data); err != nil {
+		return retirementSessionTarget{}, fmt.Errorf("%w: duplicate retirement session resource field", agentcfg.ErrRetirementConflict)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	var target retirementSessionTarget
+	if err := decoder.Decode(&target); err != nil || target.TenantID == "" || target.UserID == "" || target.SessionID == "" || target.Kind == "" || target.AgentID == "" {
+		return retirementSessionTarget{}, fmt.Errorf("%w: invalid retirement session resource", agentcfg.ErrRetirementConflict)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return retirementSessionTarget{}, fmt.Errorf("%w: trailing retirement session resource", agentcfg.ErrRetirementConflict)
+	}
+	return target, nil
+}
+
+// ackRetirementEvent implements the durable at-least-once transition: the
+// pending checkpoint was written before this publish, and is CAS-cleared only
+// after delivery. A publish failure remains pending for the same-operation
+// retry; duplicate publication is therefore safe and intentional.
+func (r *registry) ackRetirementEvent(ctx context.Context, id identity.Quadruple, agentID string, q identity.Quadruple) (agentcfg.RetirementStatus, error) {
+	current, eventID, _, err := r.loadActiveRecord(ctx, q)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if current.Retirement == nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: lifecycle disappeared", agentcfg.ErrRetirementConflict)
+	}
+	p := current.Retirement.PendingEvent
+	if p == nil {
+		return r.retirementStatus(ctx, q, current.Retirement)
+	}
+	var typ events.EventType
+	switch p.Stage {
+	case "started":
+		typ = agentcfg.EventTypeRetirementStarted
+	case "completed":
+		typ = agentcfg.EventTypeRetirementCompleted
+	default:
+		typ = agentcfg.EventTypeRetirementProgress
+	}
+	completed, err := retirementEventCount(current.Retirement.CleanupCompleted)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	total, err := retirementEventCount(current.Retirement.ManifestCount)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if err := r.bus.Publish(ctx, events.Event{Type: typ, Identity: id, OccurredAt: r.clock().UTC(), Payload: agentcfg.RetirementEventPayload{AgentID: agentID, OperationHash: agentcfg.RetirementOperationHash(current.Retirement.OperationID), Stage: p.Stage, Class: p.Class, Completed: completed, Total: total, Generation: current.Retirement.Generation, OccurredAt: r.clock().UTC()}}); err != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: publish retirement %s: %w", agentcfg.ErrStateUnavailable, p.Stage, err)
+	}
+	next := current
+	next.Retirement = cloneRetirement(current.Retirement)
+	next.Retirement.PendingEvent = nil
+	if p.Stage == "progress" && next.Retirement.ManifestFrozen && next.Retirement.CleanupCompleted == next.Retirement.ManifestCount && next.Retirement.ScrubCompleted == next.Retirement.ManifestCount {
+		next.Retirement.Completed = true
+		next.Retirement.PendingEvent = &retirementEventCheckpoint{Stage: "completed"}
+	}
+	next.UpdatedAt = r.clock().UTC()
+	buf, err := json.Marshal(next)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("marshal retirement event acknowledgement: %w", err)
+	}
+	if err := r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kindActive, ExpectedEventID: eventID}}, state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kindActive, Bytes: buf, UpdatedAt: next.UpdatedAt}); err != nil {
+		landed, _, _, rereadErr := r.loadActiveRecord(ctx, q)
+		if rereadErr != nil {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: acknowledge retirement event: %w; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
+		}
+		if landed.Retirement != nil && landed.Retirement.OperationID == current.Retirement.OperationID {
+			if landed.Retirement.PendingEvent == nil {
+				if p.Stage == "started" && landed.Retirement.Completed {
+					return r.queueRetirementEvent(ctx, id, agentID, q, "completed", "")
+				}
+				return r.retirementStatus(ctx, q, landed.Retirement)
+			}
+			if errors.Is(err, state.ErrConditionFailed) {
+				return r.ackRetirementEvent(ctx, id, agentID, q)
+			}
+		}
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: acknowledge retirement event: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	// An empty manifest is still a two-transition lifecycle. Persist the
+	// completed checkpoint only after the started acknowledgement wins, so a
+	// crash/retry cannot reorder or lose either canonical event.
+	if p.Stage == "started" && next.Retirement.Completed {
+		return r.queueRetirementEvent(ctx, id, agentID, q, "completed", "")
+	}
+	if next.Retirement.PendingEvent != nil {
+		return r.ackRetirementEvent(ctx, id, agentID, q)
+	}
+	return r.retirementStatus(ctx, q, next.Retirement)
+}
+
+func retirementEventCount(value uint64) (int, error) {
+	out, err := strconv.Atoi(strconv.FormatUint(value, 10))
+	if err != nil {
+		return 0, fmt.Errorf("%w: retirement event count exceeds platform int: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	return out, nil
+}
+
+func (r *registry) queueRetirementEvent(ctx context.Context, id identity.Quadruple, agentID string, q identity.Quadruple, stage, class string) (agentcfg.RetirementStatus, error) {
+	current, eventID, _, err := r.loadActiveRecord(ctx, q)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if current.Retirement == nil || current.Retirement.PendingEvent != nil {
+		return r.ackRetirementEvent(ctx, id, agentID, q)
+	}
+	next := current
+	next.Retirement = cloneRetirement(current.Retirement)
+	if stage == "completed" {
+		if !next.Retirement.ManifestFrozen || next.Retirement.CleanupCompleted != next.Retirement.ManifestCount || next.Retirement.ScrubCompleted != next.Retirement.ManifestCount {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: retirement completion precedes cleanup scrubbing", agentcfg.ErrRetirementConflict)
+		}
+		next.Retirement.Completed = true
+	}
+	next.Retirement.PendingEvent = &retirementEventCheckpoint{Stage: stage, Class: class}
+	next.UpdatedAt = r.clock().UTC()
+	buf, err := json.Marshal(next)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("marshal retirement event checkpoint: %w", err)
+	}
+	if err := r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kindActive, ExpectedEventID: eventID}}, state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kindActive, Bytes: buf, UpdatedAt: next.UpdatedAt}); err != nil {
+		landed, _, _, rereadErr := r.loadActiveRecord(ctx, q)
+		if rereadErr != nil {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement event checkpoint: %w; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
+		}
+		if landed.Retirement != nil && landed.Retirement.OperationID == current.Retirement.OperationID {
+			if landed.Retirement.PendingEvent != nil {
+				return r.ackRetirementEvent(ctx, id, agentID, q)
+			}
+			if errors.Is(err, state.ErrConditionFailed) {
+				return r.queueRetirementEvent(ctx, id, agentID, q, stage, class)
+			}
+		}
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement event checkpoint: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	return r.ackRetirementEvent(ctx, id, agentID, q)
+}
+
+func cloneRetirement(in *retirementRecord) *retirementRecord {
+	out := *in
+	if in.PendingEvent != nil {
+		p := *in.PendingEvent
+		out.PendingEvent = &p
+	}
+	if in.Discovery != nil {
+		d := *in.Discovery
+		out.Discovery = &d
+	}
+	return &out
+}
+
+// RetirementStatus reads the lifecycle envelope, its next frozen manifest
+// item, and that item's exact personal target/fences when applicable. It is
+// intentionally available after retirement so a same-operation caller can
+// resume cleanup; it does not reveal config content.
+func (r *registry) RetirementStatus(ctx context.Context, id identity.Quadruple, agentID string) (agentcfg.RetirementStatus, bool, error) {
+	if err := r.validate(id, agentID); err != nil {
+		return agentcfg.RetirementStatus{}, false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return agentcfg.RetirementStatus{}, false, err
+	}
+	rec, _, _, err := r.loadActiveRecord(ctx, syntheticQuad(id.TenantID, agentID))
+	if err != nil {
+		return agentcfg.RetirementStatus{}, false, err
+	}
+	if rec.Retirement == nil {
+		return agentcfg.RetirementStatus{}, false, nil
+	}
+	if rec.Retirement.ManifestFrozen && rec.Retirement.ScrubCompleted < rec.Retirement.CleanupCompleted {
+		if err := r.scrubRetirementDebt(ctx, syntheticQuad(id.TenantID, agentID)); err != nil {
+			return agentcfg.RetirementStatus{}, true, err
+		}
+		rec, _, _, err = r.loadActiveRecord(ctx, syntheticQuad(id.TenantID, agentID))
+		if err != nil {
+			return agentcfg.RetirementStatus{}, true, err
+		}
+	}
+	status, err := r.retirementStatus(ctx, syntheticQuad(id.TenantID, agentID), rec.Retirement)
+	return status, true, err
+}
+
+// CompleteRetirementStep records completion only after the owner-scoped live
+// teardown has succeeded. The frozen manifest is the authority: callers
+// cannot invent an item, and a stale process cannot acknowledge a newer
+// lifecycle generation.
+func (r *registry) CompleteRetirementStep(ctx context.Context, id identity.Quadruple, agentID, operationID, class, resource string) (agentcfg.RetirementStatus, error) {
+	if err := r.validate(id, agentID); err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	q := syntheticQuad(id.TenantID, agentID)
+	current, eventID, found, err := r.loadActiveRecord(ctx, q)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if !found || current.Retirement == nil || current.Retirement.OperationID != operationID {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: lifecycle operation changed", agentcfg.ErrRetirementConflict)
+	}
+	// One persisted event checkpoint is the ordering barrier for the entire
+	// cleanup manifest. A later step may not overwrite a failed earlier
+	// progress/completed event: flush it first, and make the caller retry this
+	// step after the prior transition is acknowledged.
+	if current.Retirement.PendingEvent != nil {
+		if current.Retirement.PendingEvent.Stage == "progress" && current.Retirement.ScrubCompleted < current.Retirement.CleanupCompleted {
+			if err := r.scrubRetirementDebt(ctx, q); err != nil {
+				return agentcfg.RetirementStatus{}, err
+			}
+		}
+		return r.ackRetirementEvent(ctx, id, agentID, q)
+	}
+	if !current.Retirement.ManifestFrozen {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: cleanup manifest is not frozen", agentcfg.ErrRetirementConflict)
+	}
+	if current.Retirement.CleanupCompleted >= current.Retirement.ManifestCount {
+		return r.retirementStatus(ctx, q, current.Retirement)
+	}
+	if current.Retirement.ScrubCompleted != current.Retirement.CleanupCompleted {
+		if err := r.scrubRetirementDebt(ctx, q); err != nil {
+			return agentcfg.RetirementStatus{}, err
+		}
+		return r.CompleteRetirementStep(ctx, id, agentID, operationID, class, resource)
+	}
+	item, err := r.verifiedRetirementCleanupItem(ctx, q, current.Retirement)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if item.Class != class || item.Resource != resource {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: cleanup item is not the next frozen manifest entry", agentcfg.ErrRetirementConflict)
+	}
+	if class == retirementCleanupSessionPersonal || class == retirementCleanupLegacyOverlay {
+		if err := r.completeSessionRetirementStep(ctx, id.TenantID, agentID, class, resource); err != nil {
+			return agentcfg.RetirementStatus{}, err
+		}
+	}
+	next := current
+	next.Retirement = cloneRetirement(current.Retirement)
+	next.Retirement.Generation++
+	next.Retirement.CleanupCompleted++
+	next.Retirement.CleanupDigest = item.Digest
+	next.Retirement.Completed = false
+	next.Retirement.PendingEvent = &retirementEventCheckpoint{Stage: "progress", Class: class}
+	next.UpdatedAt = r.clock().UTC()
+	buf, err := json.Marshal(next)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("agentcfg/statestore: marshal retirement progress: %w", err)
+	}
+	err = r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kindActive, ExpectedEventID: eventID}}, state.StateRecord{
+		ID: state.NewEventID(), Identity: q, Kind: kindActive, Bytes: buf, UpdatedAt: next.UpdatedAt,
+	})
+	if err == nil {
+		if err := r.scrubRetirementDebt(ctx, q); err != nil {
+			return agentcfg.RetirementStatus{}, err
+		}
+		return r.ackRetirementEvent(ctx, id, agentID, q)
+	}
+	// A commit followed by a lost acknowledgement converges by exact reread;
+	// any other movement is a conflict, never a blind retry over new state.
+	landed, _, _, rereadErr := r.loadActiveRecord(ctx, q)
+	if rereadErr != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement progress: %w; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
+	}
+	if landed.Retirement != nil && landed.Retirement.OperationID == operationID {
+		if landed.Retirement.CleanupCompleted > current.Retirement.CleanupCompleted {
+			if err := r.scrubRetirementDebt(ctx, q); err != nil {
+				return agentcfg.RetirementStatus{}, err
+			}
+			return r.ackRetirementEvent(ctx, id, agentID, q)
+		}
+	}
+	if !errors.Is(err, state.ErrConditionFailed) {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement progress: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	return agentcfg.RetirementStatus{}, fmt.Errorf("%w: cleanup progress moved", agentcfg.ErrRetirementConflict)
+}
+
+func (r *registry) scrubRetirementDebt(ctx context.Context, q identity.Quadruple) error {
+	for {
+		current, lifecycleEvent, found, err := r.loadActiveRecord(ctx, q)
+		if err != nil {
+			return err
+		}
+		if !found || current.Retirement == nil || !current.Retirement.ManifestFrozen {
+			return fmt.Errorf("%w: scrub requires a frozen retirement lifecycle", agentcfg.ErrRetirementConflict)
+		}
+		if current.Retirement.ScrubCompleted == current.Retirement.CleanupCompleted {
+			return nil
+		}
+		if current.Retirement.ScrubCompleted+1 != current.Retirement.CleanupCompleted {
+			return fmt.Errorf("%w: retirement scrub debt is not a single durable step", agentcfg.ErrRetirementConflict)
+		}
+		ordinal := current.Retirement.ScrubCompleted
+		operationHash := agentcfg.RetirementOperationHash(current.Retirement.OperationID)
+		item, compact, itemEvent, present, err := r.loadRetirementManifestRecord(ctx, q, operationHash, ordinal)
+		if err != nil {
+			return err
+		}
+		if !present {
+			return fmt.Errorf("%w: cleanup manifest item disappeared before scrub", agentcfg.ErrRetirementConflict)
+		}
+		var scrub retirementManifestScrub
+		if compact != nil {
+			scrub = *compact
+		} else {
+			if item == nil || item.Digest != current.Retirement.CleanupDigest {
+				return fmt.Errorf("%w: cleanup item changed before scrub", agentcfg.ErrRetirementConflict)
+			}
+			scrub = retirementManifestScrub{Schema: retirementManifestSchema, OperationHash: operationHash, Ordinal: ordinal, PriorDigest: item.PriorDigest, Digest: item.Digest, Scrubbed: true}
+			encoded, err := json.Marshal(scrub)
+			if err != nil {
+				return fmt.Errorf("marshal scrubbed retirement manifest item: %w", err)
+			}
+			err = r.state.SaveIf(ctx, []state.SlotExpectation{
+				{Identity: q, Kind: retirementManifestKind(operationHash, ordinal), ExpectedEventID: itemEvent},
+				{Identity: q, Kind: kindActive, ExpectedEventID: lifecycleEvent},
+			}, state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: retirementManifestKind(operationHash, ordinal), Bytes: encoded, UpdatedAt: r.clock().UTC()})
+			if err != nil {
+				landedItem, landedScrub, _, landed, loadErr := r.loadRetirementManifestRecord(ctx, q, operationHash, ordinal)
+				if loadErr == nil && landed && landedItem == nil && landedScrub != nil && *landedScrub == scrub {
+					continue
+				}
+				if errors.Is(err, state.ErrConditionFailed) {
+					return fmt.Errorf("%w: retirement manifest moved before scrub", agentcfg.ErrRetirementConflict)
+				}
+				return fmt.Errorf("%w: compact retirement manifest item: %w", agentcfg.ErrStateUnavailable, err)
+			}
+			continue
+		}
+		if scrub.Digest != current.Retirement.CleanupDigest {
+			return fmt.Errorf("%w: scrubbed manifest digest differs from cleanup authority", agentcfg.ErrRetirementConflict)
+		}
+		next := current
+		next.Retirement = cloneRetirement(current.Retirement)
+		next.Retirement.Generation++
+		next.Retirement.ScrubCompleted++
+		next.UpdatedAt = r.clock().UTC()
+		encoded, err := json.Marshal(next)
+		if err != nil {
+			return fmt.Errorf("marshal retirement scrub progress: %w", err)
+		}
+		err = r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kindActive, ExpectedEventID: lifecycleEvent}}, state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kindActive, Bytes: encoded, UpdatedAt: next.UpdatedAt})
+		if err == nil {
+			continue
+		}
+		landed, _, _, loadErr := r.loadActiveRecord(ctx, q)
+		if loadErr == nil && landed.Retirement != nil && landed.Retirement.OperationID == current.Retirement.OperationID && landed.Retirement.ScrubCompleted > current.Retirement.ScrubCompleted {
+			continue
+		}
+		if errors.Is(err, state.ErrConditionFailed) {
+			return fmt.Errorf("%w: retirement scrub progress moved", agentcfg.ErrRetirementConflict)
+		}
+		return fmt.Errorf("%w: save retirement scrub progress: %w", agentcfg.ErrStateUnavailable, err)
+	}
+}
+
+func (r *registry) completeSessionRetirementStep(ctx context.Context, tenantID, agentID, class, resource string) error {
+	target, err := decodeRetirementSessionTarget(resource)
+	if err != nil {
+		return err
+	}
+	if target.TenantID != tenantID || target.AgentID != agentID || target.RunID != "" {
+		return fmt.Errorf("%w: session cleanup target crossed retirement scope", agentcfg.ErrRetirementConflict)
+	}
+	switch class {
+	case retirementCleanupSessionPersonal:
+		if target.CanonicalName == "" {
+			return fmt.Errorf("%w: personal cleanup target lacks canonical name", agentcfg.ErrRetirementConflict)
+		}
+		personal, err := sessionoverlay.NewDurableStore(r.state, r.clock)
+		if err != nil {
+			return err
+		}
+		return personal.RetirePersonalCandidate(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: target.TenantID, UserID: target.UserID, SessionID: target.SessionID}, RunID: target.RunID}, target.Kind, tenantID, agentID, target.CanonicalName)
+	case retirementCleanupLegacyOverlay:
+		if target.CanonicalName != "" || target.Kind != sessionoverlay.LegacyOverlayKind(agentID) {
+			return fmt.Errorf("%w: legacy cleanup target is not exact", agentcfg.ErrRetirementConflict)
+		}
+		// Schema-1 overlays remain intact for compatibility. The terminal
+		// lifecycle is their retirement fence; no physical or unconditional
+		// Delete is necessary or permitted.
+		return nil
+	default:
+		return fmt.Errorf("%w: unknown session cleanup class %q", agentcfg.ErrRetirementConflict, class)
+	}
+}
+
+func (r *registry) inspectSessionRetirementStep(ctx context.Context, tenantID, agentID, class, resource string) error {
+	if class != retirementCleanupSessionPersonal {
+		return nil
+	}
+	target, err := decodeRetirementSessionTarget(resource)
+	if err != nil {
+		return err
+	}
+	if target.TenantID != tenantID || target.AgentID != agentID || target.RunID != "" || target.CanonicalName == "" {
+		return fmt.Errorf("%w: personal cleanup target crossed retirement scope or lacks canonical name", agentcfg.ErrRetirementConflict)
+	}
+	personal, err := sessionoverlay.NewDurableStore(r.state, r.clock)
+	if err != nil {
+		return err
+	}
+	return personal.InspectRetirementPersonalCandidate(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: target.TenantID, UserID: target.UserID, SessionID: target.SessionID}, RunID: target.RunID}, target.Kind, tenantID, agentID, target.CanonicalName)
+}
+
+func (r *registry) ensureNotRetired(ctx context.Context, id identity.Quadruple, agentID string) error {
+	rec, _, _, err := r.loadActiveRecord(ctx, syntheticQuad(id.TenantID, agentID))
+	if err != nil {
+		return err
+	}
+	if rec.Retirement != nil {
+		return fmt.Errorf("%w: operation=%q", agentcfg.ErrAgentRetired, rec.Retirement.OperationID)
+	}
+	return nil
+}
+
+func (r *registry) loadActiveRecord(ctx context.Context, q identity.Quadruple) (activeRecord, state.EventID, bool, error) {
+	rec, err := r.state.Load(ctx, q, kindActive)
+	if errors.Is(err, state.ErrNotFound) {
+		return activeRecord{}, "", false, nil
+	}
+	if err != nil {
+		return activeRecord{}, "", false, fmt.Errorf("%w: load active pointer: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	if agentcfg.ClassifyLifecycleRecord(rec.Bytes) == agentcfg.LifecycleRecordInvalid {
+		return activeRecord{}, "", false, fmt.Errorf("%w: %w", agentcfg.ErrStateUnavailable, errLifecycleMalformed)
+	}
+	var out activeRecord
+	if len(rec.Bytes) > 0 {
+		if err := json.Unmarshal(rec.Bytes, &out); err != nil {
+			return activeRecord{}, "", false, fmt.Errorf("%w: unmarshal active pointer: %w", agentcfg.ErrStateUnavailable, err)
+		}
+		if out.Schema != 0 && out.Schema != recordSchema {
+			return activeRecord{}, "", false, fmt.Errorf("%w: active pointer schema=%d, runtime supports %d", agentcfg.ErrStateUnavailable, out.Schema, recordSchema)
+		}
+	}
+	return out, rec.ID, true, nil
+}
+
+func cleanupManifest(prior agentcfg.Revision) []agentcfg.CleanupStep {
+	var out []agentcfg.CleanupStep
+	if prior.Payload.Connections != nil {
+		for _, c := range prior.Payload.Connections.Servers {
+			out = append(out, agentcfg.CleanupStep{Class: "mcp_connection", Resource: c.Name})
+		}
+	}
+	if prior.Payload.OAuthProviders != nil {
+		for _, p := range prior.Payload.OAuthProviders.Providers {
+			out = append(out, agentcfg.CleanupStep{Class: "oauth_provider", Resource: p.Name})
+		}
+	}
+	return out
+}
+
+func (r *registry) retirementStatus(ctx context.Context, q identity.Quadruple, in *retirementRecord) (agentcfg.RetirementStatus, error) {
+	out := agentcfg.RetirementStatus{OperationID: in.OperationID, RetiredAt: in.RetiredAt, PriorRevisionID: in.PriorRevisionID, PriorContentHash: in.PriorContentHash, Generation: in.Generation, Completed: in.Completed}
+	if !in.ManifestFrozen || in.ManifestCount == 0 || in.Completed {
+		return out, nil
+	}
+	if in.ScrubCompleted != in.CleanupCompleted {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: retirement cleanup awaits manifest scrub", agentcfg.ErrStateUnavailable)
+	}
+	if in.CleanupCompleted == in.ManifestCount {
+		return out, nil
+	}
+	item, err := r.verifiedRetirementCleanupItem(ctx, q, in)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if err := r.inspectSessionRetirementStep(ctx, q.TenantID, q.SessionID, item.Class, item.Resource); err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	out.Cleanup = []agentcfg.CleanupStep{{Class: item.Class, Resource: item.Resource}}
+	return out, nil
+}
+
+func (r *registry) verifiedRetirementCleanupItem(ctx context.Context, q identity.Quadruple, retirement *retirementRecord) (retirementManifestItem, error) {
+	ordinal := retirement.CleanupCompleted
+	item, err := r.loadRetirementManifestItem(ctx, q, retirement, ordinal)
+	if err != nil {
+		return retirementManifestItem{}, err
+	}
+	if item.PriorDigest != retirement.CleanupDigest {
+		return retirementManifestItem{}, fmt.Errorf("%w: cleanup item breaks lifecycle digest linkage", agentcfg.ErrRetirementConflict)
+	}
+	if ordinal+1 == retirement.ManifestCount {
+		if item.Digest != retirement.ManifestDigest {
+			return retirementManifestItem{}, fmt.Errorf("%w: final cleanup item differs from frozen manifest digest", agentcfg.ErrRetirementConflict)
+		}
+		return item, nil
+	}
+	next, err := r.loadRetirementManifestItem(ctx, q, retirement, ordinal+1)
+	if err != nil {
+		return retirementManifestItem{}, err
+	}
+	if next.PriorDigest != item.Digest {
+		return retirementManifestItem{}, fmt.Errorf("%w: cleanup item breaks successor digest linkage", agentcfg.ErrRetirementConflict)
+	}
+	return item, nil
+}
+
+func (r *registry) loadRetirementManifestItem(ctx context.Context, q identity.Quadruple, retirement *retirementRecord, ordinal uint64) (retirementManifestItem, error) {
+	if ordinal >= retirement.ManifestCount {
+		return retirementManifestItem{}, fmt.Errorf("%w: manifest ordinal exceeds frozen count", agentcfg.ErrRetirementConflict)
+	}
+	operationHash := agentcfg.RetirementOperationHash(retirement.OperationID)
+	item, scrub, _, found, err := r.loadRetirementManifestRecord(ctx, q, operationHash, ordinal)
+	if err != nil {
+		return retirementManifestItem{}, err
+	}
+	if !found || scrub != nil || item == nil {
+		return retirementManifestItem{}, fmt.Errorf("%w: retirement manifest item is absent or scrubbed", agentcfg.ErrRetirementConflict)
+	}
+	return *item, nil
+}
+
+func (r *registry) loadRetirementManifestRecord(ctx context.Context, q identity.Quadruple, operationHash string, ordinal uint64) (*retirementManifestItem, *retirementManifestScrub, state.EventID, bool, error) {
+	record, err := r.state.Load(ctx, q, retirementManifestKind(operationHash, ordinal))
+	if errors.Is(err, state.ErrNotFound) {
+		return nil, nil, "", false, nil
+	}
+	if err != nil {
+		return nil, nil, "", false, fmt.Errorf("%w: load retirement manifest item: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	if len(record.Bytes) == 0 || len(record.Bytes) > maxRetirementManifestItemBytes {
+		return nil, nil, "", false, fmt.Errorf("%w: retirement manifest item exceeds bound", agentcfg.ErrStateUnavailable)
+	}
+	if err := agentcfg.ValidateUniqueJSONFields(record.Bytes); err != nil {
+		return nil, nil, "", false, fmt.Errorf("%w: manifest item duplicate field: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	var header struct {
+		Scrubbed bool `json:"scrubbed"`
+	}
+	if err := json.Unmarshal(record.Bytes, &header); err != nil {
+		return nil, nil, "", false, fmt.Errorf("%w: decode retirement manifest header: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	if header.Scrubbed {
+		decoder := json.NewDecoder(bytes.NewReader(record.Bytes))
+		decoder.DisallowUnknownFields()
+		var scrub retirementManifestScrub
+		if err := decoder.Decode(&scrub); err != nil {
+			return nil, nil, "", false, fmt.Errorf("%w: decode scrubbed retirement manifest item: %w", agentcfg.ErrStateUnavailable, err)
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return nil, nil, "", false, fmt.Errorf("%w: trailing scrubbed retirement manifest item", agentcfg.ErrStateUnavailable)
+		}
+		if scrub.Schema != retirementManifestSchema || scrub.OperationHash != operationHash || scrub.Ordinal != ordinal || !scrub.Scrubbed || !validRetirementDigest(scrub.PriorDigest) || !validRetirementDigest(scrub.Digest) {
+			return nil, nil, "", false, fmt.Errorf("%w: invalid scrubbed retirement manifest item", agentcfg.ErrStateUnavailable)
+		}
+		return nil, &scrub, record.ID, true, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(record.Bytes))
+	decoder.DisallowUnknownFields()
+	var item retirementManifestItem
+	if err := decoder.Decode(&item); err != nil {
+		return nil, nil, "", false, fmt.Errorf("%w: decode retirement manifest item: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, nil, "", false, fmt.Errorf("%w: trailing retirement manifest item", agentcfg.ErrStateUnavailable)
+	}
+	if item.Schema != retirementManifestSchema || item.OperationHash != operationHash || item.Ordinal != ordinal || !validRetirementCleanupClass(item.Class) || item.Resource == "" || !validRetirementDigest(item.PriorDigest) || !validRetirementDigest(item.Digest) || !validRetirementDiscovery(item.Source) {
+		return nil, nil, "", false, fmt.Errorf("%w: invalid retirement manifest item", agentcfg.ErrStateUnavailable)
+	}
+	if !retirementManifestDiscoveryFieldsPresent(record.Bytes, item.Successor.State) {
+		return nil, nil, "", false, fmt.Errorf("%w: retirement manifest discovery authority is incomplete", agentcfg.ErrStateUnavailable)
+	}
+	digest, err := advanceRetirementManifestDigest(item.PriorDigest, item)
+	if err != nil {
+		return nil, nil, "", false, err
+	}
+	if item.Digest != digest || item.Successor.ManifestDigest != item.Digest || item.Successor.ManifestCount != item.Ordinal+1 {
+		return nil, nil, "", false, fmt.Errorf("%w: invalid retirement manifest digest or successor", agentcfg.ErrStateUnavailable)
+	}
+	if (item.Successor.State == "discovering" && (item.Successor.Discovery == nil || !validRetirementDiscovery(*item.Successor.Discovery))) || (item.Successor.State == "frozen" && item.Successor.Discovery != nil) || (item.Successor.State != "discovering" && item.Successor.State != "frozen") {
+		return nil, nil, "", false, fmt.Errorf("%w: invalid retirement manifest successor state", agentcfg.ErrStateUnavailable)
+	}
+	return &item, nil, record.ID, true, nil
+}
+
+func retirementManifestDiscoveryFieldsPresent(data []byte, successorState string) bool {
+	type requiredDiscovery struct {
+		Stage        *string `json:"stage"`
+		Continuation *string `json:"continuation"`
+		ConfigIndex  *uint64 `json:"config_index"`
+	}
+	var required struct {
+		Source    *requiredDiscovery `json:"source"`
+		Successor *struct {
+			State          *string            `json:"state"`
+			Discovery      *requiredDiscovery `json:"discovery"`
+			ManifestCount  *uint64            `json:"manifest_count"`
+			ManifestDigest *string            `json:"manifest_digest"`
+		} `json:"successor"`
+	}
+	if err := json.Unmarshal(data, &required); err != nil || required.Source == nil || required.Source.Stage == nil || required.Source.Continuation == nil || required.Source.ConfigIndex == nil || required.Successor == nil || required.Successor.State == nil || required.Successor.ManifestCount == nil || required.Successor.ManifestDigest == nil {
+		return false
+	}
+	if successorState == "discovering" {
+		return required.Successor.Discovery != nil && required.Successor.Discovery.Stage != nil && required.Successor.Discovery.Continuation != nil && required.Successor.Discovery.ConfigIndex != nil
+	}
+	return successorState == "frozen" && required.Successor.Discovery == nil
+}
+
+func validRetirementDigest(value string) bool {
+	if len(value) != sha256.Size*2 || value != strings.ToLower(value) {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validRetirementCleanupClass(class string) bool {
+	switch class {
+	case "mcp_connection", "oauth_provider", agentcfg.RetirementCleanupClassSignedOAuthMCPPair, retirementCleanupSessionPersonal, retirementCleanupLegacyOverlay:
+		return true
+	default:
+		return false
+	}
 }
 
 // --- internal helpers ---
@@ -760,6 +1970,12 @@ func (r *registry) loadActiveRevision(ctx context.Context, q identity.Quadruple,
 	}
 	if ar.Schema != 0 && ar.Schema != recordSchema {
 		return agentcfg.Revision{}, false, fmt.Errorf("%w: active pointer schema=%d, runtime supports %d", agentcfg.ErrStateUnavailable, ar.Schema, recordSchema)
+	}
+	if ar.Retirement != nil {
+		if strings.TrimSpace(ar.Retirement.OperationID) == "" {
+			return agentcfg.Revision{}, false, fmt.Errorf("%w: malformed retirement tombstone", agentcfg.ErrStateUnavailable)
+		}
+		return agentcfg.Revision{}, false, fmt.Errorf("%w: operation=%q", agentcfg.ErrAgentRetired, ar.Retirement.OperationID)
 	}
 	if ar.RevisionID == "" {
 		return agentcfg.Revision{}, false, nil

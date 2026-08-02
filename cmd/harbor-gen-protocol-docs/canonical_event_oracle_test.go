@@ -24,6 +24,9 @@ agent.restarted
 agent_config.llm_provider.installed
 agent_config.oauth_provider.installed
 agent_config.oauth_provider.removed
+agent_config.retirement.completed
+agent_config.retirement.progress
+agent_config.retirement.started
 artifacts.deleted
 artifacts.uploaded
 audit.admin_scope_used

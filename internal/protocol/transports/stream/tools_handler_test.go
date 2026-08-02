@@ -3,12 +3,15 @@ package stream_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
@@ -22,7 +25,7 @@ var toolsHandlerID = identity.Identity{TenantID: "t-th", UserID: "u-th", Session
 
 // newToolsHandler builds a ToolsHandler over an in-memory catalog
 // seeded with two tools.
-func newToolsHandler(t *testing.T) *stream.ToolsHandler {
+func newToolsHandler(t *testing.T, extra ...stream.ToolsOption) *stream.ToolsHandler {
 	t.Helper()
 	cat := tools.NewCatalog()
 	for _, spec := range []struct {
@@ -53,12 +56,19 @@ func newToolsHandler(t *testing.T) *stream.ToolsHandler {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	h, err := stream.NewToolsHandler(svc,
-		stream.WithToolsReachAuthorizer(auth.NewAgentReachAuthorizer()))
+	opts := []stream.ToolsOption{stream.WithToolsReachAuthorizer(auth.NewAgentReachAuthorizer())}
+	opts = append(opts, extra...)
+	h, err := stream.NewToolsHandler(svc, opts...)
 	if err != nil {
 		t.Fatalf("NewToolsHandler: %v", err)
 	}
 	return h
+}
+
+type toolsAgentResolverFunc func(context.Context, identity.Identity, string) (bool, error)
+
+func (f toolsAgentResolverFunc) ResolveAgent(ctx context.Context, id identity.Identity, agentID string) (bool, error) {
+	return f(ctx, id, agentID)
 }
 
 // doToolsRequest issues a POST /v1/tools/{verb} against the handler.
@@ -167,6 +177,69 @@ func TestToolsHandler_Describe_ExplicitAgentReachOnly(t *testing.T) {
 	assertErrorCode(t, body, protoerrors.CodeScopeMismatch)
 	// Omission remains the boot-effective projection and therefore does not
 	// consume reach; TestToolsHandler_Describe_HappyPath covers that route.
+}
+
+func TestToolsHandler_Describe_ExcludedReachPrecedesLifecycleResolver(t *testing.T) {
+	var calls atomic.Int64
+	h := newToolsHandler(t, stream.WithToolsAgentResolver(toolsAgentResolverFunc(
+		func(context.Context, identity.Identity, string) (bool, error) {
+			calls.Add(1)
+			return true, nil
+		})))
+	status, body := doToolsRequest(t, h, "describe", `{"id":"echo","agent_id":"agent-b"}`, &toolsHandlerID, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("excluded explicit projection status = %d body=%s", status, body)
+	}
+	assertErrorCode(t, body, protoerrors.CodeScopeMismatch)
+	if calls.Load() != 0 {
+		t.Fatalf("lifecycle resolver calls = %d, want 0 before reach authorization", calls.Load())
+	}
+}
+
+func TestToolsHandler_Describe_RetiredAgent409(t *testing.T) {
+	h := newToolsHandler(t, stream.WithToolsAgentResolver(toolsAgentResolverFunc(
+		func(_ context.Context, id identity.Identity, agentID string) (bool, error) {
+			if id != toolsHandlerID || agentID != "agent-a" {
+				t.Fatalf("resolver input = (%+v,%q)", id, agentID)
+			}
+			return false, protocol.ErrAgentRetired
+		})))
+	status, body := doToolsRequest(t, h, "describe", `{"id":"echo","agent_id":"agent-a"}`, &toolsHandlerID, nil)
+	if status != http.StatusConflict {
+		t.Fatalf("retired projection status = %d body=%s", status, body)
+	}
+	assertErrorCode(t, body, protoerrors.CodeAgentRetired)
+}
+
+func TestToolsHandler_Describe_ResolvableAgentStillReachesService(t *testing.T) {
+	h := newToolsHandler(t, stream.WithToolsAgentResolver(toolsAgentResolverFunc(
+		func(context.Context, identity.Identity, string) (bool, error) { return true, nil })))
+	status, body := doToolsRequest(t, h, "describe", `{"id":"echo","agent_id":"agent-a"}`, &toolsHandlerID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("resolvable projection status = %d body=%s", status, body)
+	}
+}
+
+func TestToolsHandler_Describe_UnresolvableAgentPreservesNonOracleRefusal(t *testing.T) {
+	h := newToolsHandler(t, stream.WithToolsAgentResolver(toolsAgentResolverFunc(
+		func(context.Context, identity.Identity, string) (bool, error) { return false, nil })))
+	status, body := doToolsRequest(t, h, "describe", `{"id":"echo","agent_id":"agent-a"}`, &toolsHandlerID, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("unresolvable projection status = %d body=%s", status, body)
+	}
+	assertErrorCode(t, body, protoerrors.CodeInvalidRequest)
+}
+
+func TestToolsHandler_Describe_LifecycleFault500(t *testing.T) {
+	h := newToolsHandler(t, stream.WithToolsAgentResolver(toolsAgentResolverFunc(
+		func(context.Context, identity.Identity, string) (bool, error) {
+			return false, errors.New("lifecycle unavailable")
+		})))
+	status, body := doToolsRequest(t, h, "describe", `{"id":"echo","agent_id":"agent-a"}`, &toolsHandlerID, nil)
+	if status != http.StatusInternalServerError {
+		t.Fatalf("lifecycle fault status = %d body=%s", status, body)
+	}
+	assertErrorCode(t, body, protoerrors.CodeRuntimeError)
 }
 
 func TestToolsHandler_Metrics_HappyPath(t *testing.T) {

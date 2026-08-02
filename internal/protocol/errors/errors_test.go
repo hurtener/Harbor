@@ -30,6 +30,8 @@ var wantCodes = []protoerrors.Code{
 	protoerrors.CodeRevisionConflict,
 	protoerrors.CodeSessionSkillCutoverPending,
 	protoerrors.CodeSessionSkillReadUnstable,
+	protoerrors.CodeAgentRetired,
+	protoerrors.CodeAgentRetirementConflict,
 }
 
 func TestErrorCodes_StableWireStrings(t *testing.T) {
@@ -53,6 +55,8 @@ func TestErrorCodes_StableWireStrings(t *testing.T) {
 		protoerrors.CodeRevisionConflict:           "revision_conflict",
 		protoerrors.CodeSessionSkillCutoverPending: "session_skill_cutover_pending",
 		protoerrors.CodeSessionSkillReadUnstable:   "session_skill_read_unstable",
+		protoerrors.CodeAgentRetired:               "agent_retired",
+		protoerrors.CodeAgentRetirementConflict:    "agent_retirement_conflict",
 	}
 	for code, want := range wire {
 		if string(code) != want {

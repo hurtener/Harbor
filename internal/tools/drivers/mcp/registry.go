@@ -309,6 +309,10 @@ type Registry struct {
 	// exact teardown retry closes the same handle instead of mistaking absence
 	// for a receipt, and its name remains reserved against replacement.
 	closing map[string]*serverEntry
+	// genericClosing retains the exact provider handle removed by ordinary
+	// owner-scoped Deregister until Close succeeds. It is separate from closing
+	// so signed exact-generation teardown semantics remain unchanged.
+	genericClosing map[string]*genericCloseReceipt
 	// pending reserves names for reversible registrations without exposing the
 	// staged provider to ordinary reads. A receipt remains here until Commit or
 	// Rollback, so no concurrent register/deregister can invalidate the exact
@@ -340,11 +344,12 @@ func WithRegistryClock(now func() time.Time) RegistryOption {
 // NewRegistry builds an empty Registry. Servers are added via Register.
 func NewRegistry(opts ...RegistryOption) *Registry {
 	r := &Registry{
-		servers:  map[string]*serverEntry{},
-		closing:  map[string]*serverEntry{},
-		pending:  map[string]*RegistrationSwap{},
-		removing: map[string]*exactRemovalReservation{},
-		clock:    time.Now,
+		servers:        map[string]*serverEntry{},
+		closing:        map[string]*serverEntry{},
+		genericClosing: map[string]*genericCloseReceipt{},
+		pending:        map[string]*RegistrationSwap{},
+		removing:       map[string]*exactRemovalReservation{},
+		clock:          time.Now,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -443,7 +448,15 @@ func (r *Registry) CheckServerIDUnambiguous(name string) error {
 	if err := ambiguousAgainst(r.servers, name); err != nil {
 		return err
 	}
-	return ambiguousAgainst(r.closing, name)
+	if err := ambiguousAgainst(r.closing, name); err != nil {
+		return err
+	}
+	for existing := range r.genericClosing {
+		if existing != name && (strings.HasPrefix(name, existing+"_") || strings.HasPrefix(existing, name+"_")) {
+			return fmt.Errorf("%w: server id %q is separator-ambiguous with a closing server id", ErrAmbiguousServerID, name)
+		}
+	}
+	return nil
 }
 
 // ambiguousAgainst is the lock-free core of CheckServerIDUnambiguous. The
@@ -603,6 +616,16 @@ func (r *Registry) StageRegistration(reg ServerRegistration, descs []tools.ToolD
 	if _, closing := r.closing[name]; closing {
 		r.mu.Unlock()
 		return nil, fmt.Errorf("mcp: registration for %q refused while its exact prior generation is closing", name)
+	}
+	for closingName := range r.genericClosing {
+		if closingName == name {
+			r.mu.Unlock()
+			return nil, fmt.Errorf("mcp: registration for %q refused while its prior generation is closing", name)
+		}
+		if strings.HasPrefix(name, closingName+"_") || strings.HasPrefix(closingName, name+"_") {
+			r.mu.Unlock()
+			return nil, fmt.Errorf("%w: server id %q is separator-ambiguous with a closing server id", ErrAmbiguousServerID, name)
+		}
 	}
 	for pendingName := range r.pending {
 		if pendingName == name {
@@ -909,29 +932,55 @@ func (s *RegistrationSwap) Rollback() error {
 // The map entry is deleted under the write lock (so the server vanishes from
 // the Registry atomically), then the provider's Close runs OUTSIDE the lock
 // (a transport close can block on session teardown and must not stall
-// concurrent reads). An unknown name returns ErrServerNotFound. Idempotent
-// in effect: a second Deregister of the same name returns ErrServerNotFound,
-// which the reconcile caller treats as already-detached.
+// concurrent reads). If Close fails, the exact withdrawn handle and its name
+// reservation remain private: a matching-owner retry closes that same handle,
+// another owner observes ErrServerNotFound, and no replacement may publish
+// until Close returns success. An unknown name with no close debt returns
+// ErrServerNotFound.
+type genericCloseReceipt struct {
+	mu     sync.Mutex
+	entry  *serverEntry
+	closed bool
+}
+
 func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner) error {
 	r.mu.Lock()
 	if _, staged := r.pending[name]; staged {
 		r.mu.Unlock()
 		return fmt.Errorf("mcp: deregister %q refused while an exact replacement is staged", name)
 	}
-	e, ok := r.servers[name]
-	if ok && e.owner != owner {
-		ok = false // another owner's registration — answer as if absent.
-	}
-	if ok {
+	receipt := r.genericClosing[name]
+	if receipt != nil {
+		if receipt.entry.owner != owner {
+			r.mu.Unlock()
+			return fmt.Errorf("%w: %q", ErrServerNotFound, name)
+		}
+	} else {
+		e, ok := r.servers[name]
+		if !ok || e.owner != owner {
+			r.mu.Unlock()
+			return fmt.Errorf("%w: %q", ErrServerNotFound, name)
+		}
 		delete(r.servers, name)
+		receipt = &genericCloseReceipt{entry: e}
+		r.genericClosing[name] = receipt
 	}
 	r.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("%w: %q", ErrServerNotFound, name)
+
+	receipt.mu.Lock()
+	defer receipt.mu.Unlock()
+	if receipt.closed {
+		return nil
 	}
-	if err := e.provider.Close(ctx); err != nil {
+	if err := receipt.entry.provider.Close(ctx); err != nil {
 		return fmt.Errorf("mcp: deregister %q: close transport: %w", name, err)
 	}
+	receipt.closed = true
+	r.mu.Lock()
+	if r.genericClosing[name] == receipt {
+		delete(r.genericClosing, name)
+	}
+	r.mu.Unlock()
 	return nil
 }
 

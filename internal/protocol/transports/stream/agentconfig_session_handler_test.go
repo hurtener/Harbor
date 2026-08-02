@@ -20,6 +20,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/skills"
 	localdb "github.com/hurtener/Harbor/internal/skills/drivers/localdb"
@@ -117,6 +118,7 @@ func newSessionHandlerFixture(t *testing.T) sessionHandlerFixture {
 		agentcfgprotocol.WithBus(bus),
 		agentcfgprotocol.WithSessionOverlay(ov),
 		agentcfgprotocol.WithSessionPersonalSkillController(authority.Controller),
+		agentcfgprotocol.WithRunSnapshotGate(runsnapshot.NewGate()),
 	)
 	if err != nil {
 		t.Fatalf("service: %v", err)

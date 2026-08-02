@@ -1,6 +1,8 @@
 package agentcfg
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
@@ -147,6 +149,9 @@ const (
 	// none on the descriptor). Emitted as one fail-closed unit with the
 	// mutation (CLAUDE.md §7).
 	EventTypeLLMProviderInstalled events.EventType = "agent_config.llm_provider.installed"
+	EventTypeRetirementStarted    events.EventType = "agent_config.retirement.started"
+	EventTypeRetirementProgress   events.EventType = "agent_config.retirement.progress"
+	EventTypeRetirementCompleted  events.EventType = "agent_config.retirement.completed"
 )
 
 func init() {
@@ -166,9 +171,31 @@ func init() {
 		EventTypeOAuthProviderInstalled,
 		EventTypeOAuthProviderRemoved,
 		EventTypeLLMProviderInstalled,
+		EventTypeRetirementStarted, EventTypeRetirementProgress, EventTypeRetirementCompleted,
 	} {
 		events.RegisterEventType(t)
 	}
+}
+
+// RetirementEventPayload is the redacted lifecycle projection. OperationID is
+// represented only by its stable SHA-256 digest; cleanup resource names and
+// descriptors never leave the tombstone.
+type RetirementEventPayload struct {
+	events.SafeSealed
+	AgentID       string
+	OperationHash string
+	Stage         string
+	Class         string `json:"class,omitempty"`
+	Completed     int
+	Total         int
+	Generation    uint64
+	OccurredAt    time.Time
+}
+
+// RetirementOperationHash returns the bounded redacted event correlation id.
+func RetirementOperationHash(operationID string) string {
+	sum := sha256.Sum256([]byte(operationID))
+	return hex.EncodeToString(sum[:])
 }
 
 // The CLOSED set of run-start re-attach failure classes carried in

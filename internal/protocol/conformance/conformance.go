@@ -486,6 +486,8 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodeRevisionConflict:           http.StatusConflict,
 	protoerrors.CodeSessionSkillCutoverPending: http.StatusConflict,
 	protoerrors.CodeSessionSkillReadUnstable:   http.StatusConflict,
+	protoerrors.CodeAgentRetired:               http.StatusConflict,
+	protoerrors.CodeAgentRetirementConflict:    http.StatusConflict,
 }
 
 // errorCodeMatrix is the closed set of canonical Protocol error codes
@@ -542,6 +544,8 @@ var errorCodeMatrix = []protoerrors.Code{
 	// conformance Stack intentionally has no agent-config surface.
 	protoerrors.CodeSessionSkillCutoverPending,
 	protoerrors.CodeSessionSkillReadUnstable,
+	protoerrors.CodeAgentRetired,
+	protoerrors.CodeAgentRetirementConflict,
 }
 
 // methodScopeFor returns the steering scope the suite uses when
@@ -692,8 +696,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 125 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 125 (including signed OAuth MCP capability registration and paired removal)", len(got))
+	if len(got) != 126 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 126 (including signed OAuth MCP capability registration, paired removal, and terminal retirement)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -805,6 +809,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodAgentConfigListRevisions:              {},
 		methods.MethodAgentConfigDiff:                       {},
 		methods.MethodAgentConfigRollback:                   {},
+		methods.MethodAgentConfigRetire:                     {},
 		methods.MethodAgentConfigSkillsList:                 {},
 		methods.MethodAgentConfigSkillsUpsert:               {},
 		methods.MethodAgentConfigSkillsDelete:               {},

@@ -39,15 +39,17 @@ ERRORS_MD='docs/site/protocol/errors.md'
 # silently never fires on Linux CI).
 # ---------------------------------------------------------------------------
 
-# (1) EXACT count, not ">= 1": dropping one of the nineteen doors FAILS here.
+# (1) EXACT count, not ">= 1": dropping one of the twenty doors FAILS here.
 # Phase 233b adds the signed OAuth MCP pair's creation and removal requests.
-# Creation is an ordinary optional CAS write; removal names the immutable pair
-# revision and therefore requires its hash. The two named assertions below keep
-# those semantically different additions from being satisfied by a field on an
-# unrelated request type.
+# Creation is one of the eighteen ordinary optional CAS writes; removal names
+# the immutable pair revision and therefore requires its hash. Phase 234's
+# retirement also requires the active revision hash before it can create a
+# terminal tombstone. The three named assertions below keep those semantically
+# different additions from being satisfied by fields on unrelated request
+# types.
 #     Mutation 3 (drop the field from one request type) turns this OK -> FAIL.
-assert_grep_count 'ExpectedContentHash string' "${TYPES_GO}" 19 \
-    'phase 221: all nineteen spine request types carry expected_content_hash'
+assert_grep_count 'ExpectedContentHash string' "${TYPES_GO}" 20 \
+    'phase 221: all twenty spine request types carry expected_content_hash'
 assert_grep_count 'expected_content_hash,omitempty' "${TYPES_GO}" 18 \
     'phase 221: eighteen ordinary spine writes keep expected_content_hash optional'
 if awk '
@@ -69,6 +71,16 @@ if awk '
     ok 'phase 221: signed OAuth MCP pair removal requires the exact CAS token'
 else
     fail 'phase 221: signed OAuth MCP pair removal must require expected_content_hash'
+fi
+if awk '
+    $0 == "type AgentConfigRetireRequest struct {" { inside = 1; next }
+    inside && /^}/ { exit }
+    inside && /ExpectedContentHash string/ && /json:"expected_content_hash"/ && !/omitempty/ { found = 1 }
+    END { exit !found }
+' "${TYPES_GO}"; then
+    ok 'phase 221: terminal agent retirement requires the exact active-revision CAS token'
+else
+    fail 'phase 221: terminal agent retirement must require expected_content_hash'
 fi
 
 # (2) The domain option + the sentinel.

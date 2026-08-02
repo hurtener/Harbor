@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:a0ca764b13a8974b41120fb9f6b562c0035c8598c6cf0ece2eb15de6f1caf6cc";
+export const WIRE_SURFACE_DIGEST = "sha256:54e8afceec07c96a172eb191355e46bf1191bfb106c9a26e954a32a0c750cbd8";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -29,6 +29,7 @@ export type HarborMethod =
   | "agent_config.remove_mcp_connection"
   | "agent_config.remove_oauth_mcp_capability"
   | "agent_config.remove_oauth_provider"
+  | "agent_config.retire"
   | "agent_config.rollback"
   | "agent_config.session.set_source_disables"
   | "agent_config.session.set_user_prompt"
@@ -149,6 +150,8 @@ export type HarborMethod =
 
 /** Every canonical Harbor Protocol error code. */
 export type HarborErrorCode =
+  | "agent_retired"
+  | "agent_retirement_conflict"
   | "auth_rejected"
   | "identity_required"
   | "identity_scope_required"
@@ -181,6 +184,9 @@ export type HarborEventType =
   | "agent_config.llm_provider.installed"
   | "agent_config.oauth_provider.installed"
   | "agent_config.oauth_provider.removed"
+  | "agent_config.retirement.completed"
+  | "agent_config.retirement.progress"
+  | "agent_config.retirement.started"
   | "artifacts.deleted"
   | "artifacts.uploaded"
   | "audit.admin_scope_used"
@@ -645,6 +651,34 @@ export interface AgentConfigRemoveOAuthProviderResponse {
   name: string;
   uninstalled: boolean;
   protocol_version: string;
+}
+
+export interface AgentConfigRetireRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  operation_id: string;
+  expected_content_hash: string;
+}
+
+export interface AgentConfigRetireResponse {
+  status: AgentConfigRetirementStatus;
+  protocol_version: string;
+}
+
+export interface AgentConfigRetirementCleanupStep {
+  class: string;
+  resource: string;
+  completed: boolean;
+}
+
+export interface AgentConfigRetirementStatus {
+  operation_id: string;
+  retired_at: string;
+  prior_revision_id?: string;
+  prior_content_hash?: string;
+  generation: number;
+  cleanup?: AgentConfigRetirementCleanupStep[];
+  completed: boolean;
 }
 
 export interface AgentConfigRevisionView {

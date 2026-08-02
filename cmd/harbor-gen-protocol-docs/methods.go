@@ -470,6 +470,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigRollbackRequest", Response: "AgentConfigRollbackResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigRetire: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigRetire),
+			Mutates: true,
+			Request: "AgentConfigRetireRequest", Response: "AgentConfigRetireResponse",
+			Auth: adminNote,
+		},
 		methods.MethodAgentConfigSkillsList: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSkillsList),
 			Mutates: false,

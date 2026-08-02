@@ -536,6 +536,38 @@ export interface AgentConfigRollbackResponse {
 	protocol_version: string;
 }
 
+/** One bounded, non-secret retirement cleanup entry. */
+export interface AgentConfigRetirementCleanupStep {
+	class: string;
+	resource: string;
+	completed: boolean;
+}
+
+/** Durable terminal lifecycle state for one agent configuration. */
+export interface AgentConfigRetirementStatus {
+	operation_id: string;
+	retired_at: string;
+	prior_revision_id?: string;
+	prior_content_hash?: string;
+	generation: number;
+	cleanup?: AgentConfigRetirementCleanupStep[];
+	completed: boolean;
+}
+
+/** `agent_config.retire` request — admin control-plane authority. */
+export interface AgentConfigRetireRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	operation_id: string;
+	expected_content_hash: string;
+}
+
+/** `agent_config.retire` response. */
+export interface AgentConfigRetireResponse {
+	status: AgentConfigRetirementStatus;
+	protocol_version: string;
+}
+
 /** `agent_config.set_tool_exposure` request — admin-scoped. Replaces ONLY
  * the tool-exposure section (the skills + prompt sections are preserved). */
 export interface AgentConfigSetToolExposureRequest {

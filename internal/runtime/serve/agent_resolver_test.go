@@ -5,10 +5,12 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol"
 )
 
 // TestAgentResolverAdapter_TwoCheckRule covers every branch of the rule
@@ -98,6 +100,30 @@ func TestAgentResolverAdapter_DefaultEnsuresLifecycle(t *testing.T) {
 	}
 	if _, active, err := reg.Active(t.Context(), identity.Quadruple{Identity: id}, "caller-named-unknown", agentcfg.ConfigScopeAgent); err != nil || active {
 		t.Fatalf("caller-named lifecycle active=%t err=%v, want inactive", active, err)
+	}
+}
+
+func TestAgentResolverAdapter_DefaultTombstoneWins(t *testing.T) {
+	ctx := context.Background()
+	reg := acTestRegistry(t)
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+	quad := identity.Quadruple{Identity: id}
+	const agent = "boot-agent"
+	rev, err := reg.SetRevision(ctx, quad, agent, agentcfg.ConfigScopeAgent,
+		agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"x"}}}, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("SetRevision: %v", err)
+	}
+	retiring, ok := reg.(agentcfg.RetirementRegistry)
+	if !ok {
+		t.Fatal("registry lacks retirement support")
+	}
+	if _, err := retiring.Retire(ctx, quad, agent, agentcfg.RetirementRequest{OperationID: "retire-default", ExpectedContentHash: rev.ContentHash}); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	got, err := NewAgentResolverAdapter(reg, agent).ResolveAgent(ctx, id, agent)
+	if got || !errors.Is(err, protocol.ErrAgentRetired) {
+		t.Fatalf("ResolveAgent(retired default) = (%v, %v), want (false, ErrAgentRetired)", got, err)
 	}
 }
 

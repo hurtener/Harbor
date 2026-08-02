@@ -110,6 +110,12 @@ func (s *Service) SetLLMProvider(ctx context.Context, req prototypes.AgentConfig
 	q := identity.Quadruple{Identity: id}
 
 	defer s.lockAgent(id.TenantID, req.AgentID)()
+	// This live binding does not pass through the revision registry, so it
+	// needs the lifecycle fence explicitly. Every other agent-config writer
+	// reaches registry.Active/SetRevision and is fenced there.
+	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
+		return prototypes.AgentConfigSetLLMProviderResponse{}, err
+	}
 
 	applyErr, emitErr := adminwrite.Apply(
 		func() (revert func() error, err error) {

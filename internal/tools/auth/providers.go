@@ -74,7 +74,9 @@ type ProviderSet interface {
 	// Uninstall removes the runtime-installed provider under name IFF owner
 	// matches the installed entry's owner, and CLOSES it (so a still-bound
 	// connection's next call fails LOUD, never an unauthenticated dial). A
-	// missing name is an idempotent no-op; a boot-seeded (zero-owner) name is
+	// missing name with no close debt is an idempotent no-op; a failed Close
+	// retains the exact private handle and same-name reservation so a matching
+	// owner retry cannot mistake absence for success. A boot-seeded (zero-owner) name is
 	// refused (ErrProviderBootProtected) — boot providers are edited in yaml +
 	// restart, never uninstalled over the control plane; a cross-owner drop is
 	// refused (ErrProviderOwnerCollision).
@@ -120,6 +122,9 @@ var (
 	// provider is edited in yaml + restart, never uninstalled over the control
 	// plane.
 	ErrProviderBootProtected = errors.New("auth: provider set uninstall: name is a boot-declared provider (edit yaml + restart)")
+	// ErrProviderClosing means a prior same-name runtime provider is private and
+	// retrying Close; replacement remains blocked until it returns success.
+	ErrProviderClosing = errors.New("auth: provider set: prior provider is still closing")
 )
 
 // providerEntry is one set member: the instance plus its owner. A zero owner
@@ -133,7 +138,14 @@ type providerEntry struct {
 type providerSet struct {
 	mu          sync.RWMutex
 	entries     map[string]providerEntry
+	closing     map[string]*providerCloseReceipt
 	generations map[string]uint64
+}
+
+type providerCloseReceipt struct {
+	mu     sync.Mutex
+	entry  providerEntry
+	closed bool
 }
 
 // NewProviderSet builds a ProviderSet seeded from the boot-built provider map
@@ -148,7 +160,7 @@ func NewProviderSet(seed map[string]OAuthProvider) ProviderSet {
 		}
 		entries[name] = providerEntry{prov: p}
 	}
-	return &providerSet{entries: entries, generations: make(map[string]uint64)}
+	return &providerSet{entries: entries, closing: make(map[string]*providerCloseReceipt), generations: make(map[string]uint64)}
 }
 
 func (s *providerSet) Get(name string) (OAuthProvider, bool) {
@@ -218,6 +230,10 @@ func (s *providerSet) Stage(owner Owner, name string, p OAuthProvider) (Provider
 		return nil, fmt.Errorf("%w (name=%q tenant=%q agent=%q)", ErrProviderOwnerMissing, name, owner.Tenant, owner.Agent)
 	}
 	s.mu.Lock()
+	if _, closing := s.closing[name]; closing {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("%w: %q", ErrProviderClosing, name)
+	}
 	existing, ok := s.entries[name]
 	if ok {
 		switch {
@@ -301,31 +317,54 @@ func sameOAuthProvider(a, b OAuthProvider) bool {
 // remove_oauth_provider handler already performs.
 func (s *providerSet) Uninstall(ctx context.Context, owner Owner, name string) error {
 	s.mu.Lock()
-	e, ok := s.entries[name]
-	if !ok {
-		s.mu.Unlock()
-		return nil // idempotent — already absent.
+	receipt := s.closing[name]
+	if receipt != nil {
+		if receipt.entry.owner != owner {
+			s.mu.Unlock()
+			return fmt.Errorf("%w: %q (installed by tenant=%q agent=%q)", ErrProviderOwnerCollision, name, receipt.entry.owner.Tenant, receipt.entry.owner.Agent)
+		}
+	} else {
+		e, ok := s.entries[name]
+		if !ok {
+			s.mu.Unlock()
+			return nil // idempotent — already absent and no failed close debt.
+		}
+		if e.owner.IsZero() {
+			s.mu.Unlock()
+			return fmt.Errorf("%w: %q", ErrProviderBootProtected, name)
+		}
+		if e.owner != owner {
+			// Cross-owner drop refused at the store boundary: an owner may only
+			// uninstall its OWN installed provider (defense in depth — never trust
+			// caller-side owner resolution alone). The entry is untouched.
+			s.mu.Unlock()
+			return fmt.Errorf("%w: %q (installed by tenant=%q agent=%q)", ErrProviderOwnerCollision, name, e.owner.Tenant, e.owner.Agent)
+		}
+		delete(s.entries, name)
+		s.generations[name]++
+		receipt = &providerCloseReceipt{entry: e}
+		s.closing[name] = receipt
 	}
-	if e.owner.IsZero() {
-		s.mu.Unlock()
-		return fmt.Errorf("%w: %q", ErrProviderBootProtected, name)
-	}
-	if e.owner != owner {
-		// Cross-owner drop refused at the store boundary: an owner may only
-		// uninstall its OWN installed provider (defense in depth — never trust
-		// caller-side owner resolution alone). The entry is untouched.
-		s.mu.Unlock()
-		return fmt.Errorf("%w: %q (installed by tenant=%q agent=%q)", ErrProviderOwnerCollision, name, e.owner.Tenant, e.owner.Agent)
-	}
-	delete(s.entries, name)
-	s.generations[name]++
 	s.mu.Unlock()
+
+	receipt.mu.Lock()
+	defer receipt.mu.Unlock()
+	if receipt.closed {
+		return nil
+	}
 	// Close the released instance so a still-bound connection's next call fails
-	// LOUD (never an unauthenticated dial). Close is idempotent.
-	if e.prov != nil {
-		if err := e.prov.Close(ctx); err != nil {
+	// LOUD (never an unauthenticated dial). A failure retains this exact handle
+	// privately so a retry cannot convert absence into a false success receipt.
+	if receipt.entry.prov != nil {
+		if err := receipt.entry.prov.Close(ctx); err != nil {
 			return fmt.Errorf("auth: provider set uninstall %q: close: %w", name, err)
 		}
 	}
+	receipt.closed = true
+	s.mu.Lock()
+	if s.closing[name] == receipt {
+		delete(s.closing, name)
+	}
+	s.mu.Unlock()
 	return nil
 }

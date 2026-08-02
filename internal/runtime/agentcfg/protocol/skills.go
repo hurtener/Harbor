@@ -33,7 +33,11 @@ func (s *Service) SkillsList(ctx context.Context, req prototypes.AgentConfigSkil
 	if err != nil {
 		return prototypes.AgentConfigSkillsListResponse{}, err
 	}
-	list, err := s.skills.List(ctx, identity.Quadruple{Identity: id}, skills.ListFilter{})
+	q := identity.Quadruple{Identity: id}
+	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
+		return prototypes.AgentConfigSkillsListResponse{}, err
+	}
+	list, err := s.skills.List(ctx, q, skills.ListFilter{})
 	if err != nil {
 		return prototypes.AgentConfigSkillsListResponse{}, err
 	}
@@ -63,6 +67,9 @@ func (s *Service) SkillsUpsert(ctx context.Context, req prototypes.AgentConfigSk
 		return prototypes.AgentConfigSkillsUpsertResponse{}, err
 	}
 	q := identity.Quadruple{Identity: id}
+	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
+		return prototypes.AgentConfigSkillsUpsertResponse{}, err
+	}
 	release := s.lockAgent(q.TenantID, req.AgentID)
 	defer release()
 	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
@@ -110,6 +117,9 @@ func (s *Service) SkillsDelete(ctx context.Context, req prototypes.AgentConfigSk
 		return prototypes.AgentConfigSkillsDeleteResponse{}, err
 	}
 	q := identity.Quadruple{Identity: id}
+	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
+		return prototypes.AgentConfigSkillsDeleteResponse{}, err
+	}
 	if req.Name == "" {
 		return prototypes.AgentConfigSkillsDeleteResponse{}, fmt.Errorf("%w: skill name is empty", ErrIdentityRequired)
 	}

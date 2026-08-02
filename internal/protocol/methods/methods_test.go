@@ -112,6 +112,7 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigListRevisions,
 	methods.MethodAgentConfigDiff,
 	methods.MethodAgentConfigRollback,
+	methods.MethodAgentConfigRetire,
 	methods.MethodAgentConfigSkillsList,
 	methods.MethodAgentConfigSkillsUpsert,
 	methods.MethodAgentConfigSkillsDelete,
@@ -187,9 +188,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// capability) = 122,
 	// + the agent-config additive-prompt-blocks write one
 	// (agent_config.set_extra_system_blocks, D-367) = 123, plus signed
-	// OAuth MCP capability registration and paired removal = 125.
-	if len(got) != 125 {
-		t.Fatalf("Methods() returned %d methods, want 125", len(got))
+	// OAuth MCP capability registration and paired removal = 125, plus
+	// terminal agent-config retirement = 126.
+	if len(got) != 126 {
+		t.Fatalf("Methods() returned %d methods, want 126", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))

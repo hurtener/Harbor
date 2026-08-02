@@ -14,8 +14,11 @@ import (
 // fakeProvider is a minimal auth.OAuthProvider for ProviderSet tests. It counts
 // closes so a test can assert Uninstall closed it exactly once.
 type fakeProvider struct {
-	name   string
-	closes atomic.Int64
+	name      string
+	closes    atomic.Int64
+	closeMu   sync.Mutex
+	closeErrs []error
+	closeErr  error
 }
 
 func (p *fakeProvider) Token(context.Context, tools.ToolSourceID) (Token, error) {
@@ -36,7 +39,14 @@ func (p *fakeProvider) DenyFlow(context.Context, string, string) error {
 func (p *fakeProvider) Revoke(context.Context, tools.ToolSourceID) error { return nil }
 func (p *fakeProvider) Close(context.Context) error {
 	p.closes.Add(1)
-	return nil
+	p.closeMu.Lock()
+	defer p.closeMu.Unlock()
+	if len(p.closeErrs) > 0 {
+		err := p.closeErrs[0]
+		p.closeErrs = p.closeErrs[1:]
+		return err
+	}
+	return p.closeErr
 }
 func (p *fakeProvider) AllowedDownstreamHosts() []string { return []string{"graph.microsoft.com"} }
 
@@ -127,6 +137,58 @@ func TestProviderSet_Uninstall_OwnerScoped_MatchingDrops(t *testing.T) {
 	}
 	if p.closes.Load() != 1 {
 		t.Fatalf("matching-owner uninstall must close exactly once, got %d", p.closes.Load())
+	}
+}
+
+func TestProviderSet_Uninstall_CloseFailureRetainsRetryHandleAndBlocksReplacement(t *testing.T) {
+	set := NewProviderSet(nil)
+	owner := Owner{Tenant: "tA", Agent: "aA"}
+	closeErr := errors.New("close fault")
+	p := &fakeProvider{name: "m365", closeErrs: []error{closeErr, nil}}
+	if err := set.Install(owner, "m365", p); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.Uninstall(context.Background(), owner, "m365"); !errors.Is(err, closeErr) {
+		t.Fatalf("first uninstall = %v, want close fault", err)
+	}
+	if _, ok := set.Get("m365"); ok {
+		t.Fatal("closing provider remained resolvable")
+	}
+	if err := set.Install(owner, "m365", &fakeProvider{name: "replacement"}); !errors.Is(err, ErrProviderClosing) {
+		t.Fatalf("replacement during close = %v, want ErrProviderClosing", err)
+	}
+	if err := set.Uninstall(context.Background(), Owner{Tenant: "tA", Agent: "other"}, "m365"); !errors.Is(err, ErrProviderOwnerCollision) {
+		t.Fatalf("cross-owner closing retry = %v, want owner collision", err)
+	}
+	if err := set.Uninstall(context.Background(), owner, "m365"); err != nil {
+		t.Fatalf("retry uninstall: %v", err)
+	}
+	if got := p.closes.Load(); got != 2 {
+		t.Fatalf("close calls = %d, want one failed attempt plus one retry", got)
+	}
+	if err := set.Install(owner, "m365", &fakeProvider{name: "replacement"}); err != nil {
+		t.Fatalf("replacement remained blocked after positive close receipt: %v", err)
+	}
+}
+
+func TestProviderSet_Uninstall_PersistentCloseFailureNeverBecomesAbsentSuccess(t *testing.T) {
+	set := NewProviderSet(nil)
+	owner := Owner{Tenant: "tA", Agent: "aA"}
+	closeErr := errors.New("persistent close fault")
+	p := &fakeProvider{name: "m365", closeErr: closeErr}
+	if err := set.Install(owner, "m365", p); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := range 3 {
+		if err := set.Uninstall(context.Background(), owner, "m365"); !errors.Is(err, closeErr) {
+			t.Fatalf("attempt %d = %v, want persistent close error", attempt, err)
+		}
+		if err := set.Install(owner, "m365", &fakeProvider{name: "replacement"}); !errors.Is(err, ErrProviderClosing) {
+			t.Fatalf("attempt %d replacement = %v, want ErrProviderClosing", attempt, err)
+		}
+	}
+	if got := p.closes.Load(); got != 3 {
+		t.Fatalf("close calls = %d, want 3 genuine retries", got)
 	}
 }
 

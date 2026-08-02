@@ -29,6 +29,8 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
+	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/runtime/dispatch"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/sessions"
@@ -40,6 +42,25 @@ import (
 )
 
 var errInjected = errors.New("runloop failure-injection sentinel")
+
+func TestRunSnapshotAdmissionTaskError_OnlyClosedGateMeansRetired(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{name: "retired", err: runsnapshot.ErrAdmissionClosed, code: string(protoerrors.CodeAgentRetired)},
+		{name: "canceled", err: context.Canceled, code: "runtime_fetch_error"},
+		{name: "invalid", err: runsnapshot.ErrInvalidKey, code: "runtime_fetch_error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runSnapshotAdmissionTaskError(tc.err)
+			if got.Code != tc.code {
+				t.Fatalf("code = %q, want %q", got.Code, tc.code)
+			}
+		})
+	}
+}
 
 // failingMemoryStore wraps a real MemoryStore and errors on GetLLMContext
 // (the run-start memory fetch) — every other method delegates to the real

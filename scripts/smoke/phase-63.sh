@@ -151,14 +151,33 @@ else
     fail 'phase 63: github.com/spf13/cobra must be a direct go.mod dependency (RFC §10)'
 fi
 
-# 8. Static guard: cmd/harbor does NOT import internal/protocol/errors
-# for its CLI structured-error type — the CLI surface is distinct from
-# the Protocol wire error surface (acceptance criterion: CLIError is
-# defined in cmd/harbor/errors.go, single-source preserved).
-if grep -rIn --include='*.go' '"github.com/hurtener/Harbor/internal/protocol/errors"' cmd/harbor/ 2>/dev/null | grep -q .; then
-    fail 'phase 63: cmd/harbor imports internal/protocol/errors — the CLI structured error is a separate surface (operator-facing exit codes, not Protocol wire codes); CLIError lives in cmd/harbor/errors.go'
+# 8. Static guard: cmd/harbor production code does NOT import
+# internal/protocol/errors for its CLI structured-error type — the CLI surface
+# is distinct from the Protocol wire error surface (acceptance criterion:
+# CLIError is defined in cmd/harbor/errors.go, single-source preserved).
+#
+# Phase 234's dev-command acceptance test is the one narrow exception: it
+# asserts the canonical CodeAgentRetired returned by the live Protocol route.
+# Pin that exact test-only seam so this does not become a blanket allowance for
+# CLI code (or unrelated CLI tests) to reuse Protocol wire errors.
+if find cmd/harbor -name '*.go' ! -name '*_test.go' -exec grep -Hn '"github.com/hurtener/Harbor/internal/protocol/errors"' {} + 2>/dev/null | grep -q .; then
+    fail 'phase 63: cmd/harbor production code imports internal/protocol/errors — CLIError must remain separate from Protocol wire errors'
 else
-    ok 'phase 63: cmd/harbor does not import internal/protocol/errors (CLI structured-error surface kept distinct from Protocol wire error codes)'
+    ok 'phase 63: cmd/harbor production code does not import internal/protocol/errors (CLIError remains a separate surface)'
+fi
+assert_grep_count 'protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"' \
+    cmd/harbor/cmd_dev_test.go 1 \
+    'phase 63: the dev-command acceptance test has the one reviewed canonical Protocol-error import'
+if grep -rIn --include='*_test.go' '"github.com/hurtener/Harbor/internal/protocol/errors"' cmd/harbor/ 2>/dev/null | \
+    grep -v '^cmd/harbor/cmd_dev_test.go:' | grep -q .; then
+    fail 'phase 63: a CLI test outside cmd_dev_test.go imports Protocol wire errors — only the reviewed retirement mapping seam is allowed'
+else
+    ok 'phase 63: no CLI test outside cmd_dev_test.go imports Protocol wire errors'
+fi
+if grep -n 'protoerrors\.Code' cmd/harbor/cmd_dev_test.go | grep -v 'protoerrors\.CodeAgentRetired' | grep -q .; then
+    fail 'phase 63: cmd_dev_test.go uses a Protocol code outside the reviewed CodeAgentRetired mapping seam'
+else
+    ok 'phase 63: the test-only Protocol error reference is confined to CodeAgentRetired'
 fi
 
 # Phase 63 ships the cobra skeleton itself; the wire-side `harbor dev`

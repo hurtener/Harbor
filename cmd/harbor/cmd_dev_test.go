@@ -30,6 +30,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/runtime/serve"
 )
 
@@ -314,7 +315,7 @@ memory:
 // bootDevForTest boots the dev-only serve composition (ephemeral signer +
 // drafts/bootstrap routes + mock LLM) against the minimal bus-wired YAML and
 // returns the promoted serve.Handle. Cleanup drains the stack.
-func bootDevForTest(t *testing.T, ctx context.Context, serveConsole bool) *serve.Handle {
+func bootDevWithCompositionForTest(t *testing.T, ctx context.Context, serveConsole bool) (*serve.Handle, *devComposition) {
 	t.Helper()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "harbor.yaml")
@@ -335,6 +336,12 @@ func bootDevForTest(t *testing.T, ctx context.Context, serveConsole bool) *serve
 		defer cancel()
 		handle.Close(closeCtx)
 	})
+	return handle, comp
+}
+
+func bootDevForTest(t *testing.T, ctx context.Context, serveConsole bool) *serve.Handle {
+	t.Helper()
+	handle, _ := bootDevWithCompositionForTest(t, ctx, serveConsole)
 	return handle
 }
 
@@ -375,6 +382,104 @@ func TestDevComposition_BootstrapEndpointRegistered_HarborDev(t *testing.T) {
 	}
 	if len(body.Scopes) == 0 {
 		t.Error("bootstrap response scopes is empty")
+	}
+}
+
+// TestDevComposition_RetiredDefaultRefusesExplicitAndImplicitStartBeforeSpawn
+// drives the complete dev composition through a real HTTP server. A normal
+// dev bearer always carries reach for DevAgentConfigID, so the successful
+// config mutation proves this is not an authorization-shaped refusal. Once
+// retired, both an explicitly named default and the omitted/default path must
+// return the typed lifecycle refusal and leave the task list empty.
+func TestDevComposition_RetiredDefaultRefusesExplicitAndImplicitStartBeforeSpawn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	handle, comp := bootDevWithCompositionForTest(t, ctx, false /* serveConsole */)
+	server := httptest.NewServer(handle.Handler())
+	defer server.Close()
+
+	token, err := comp.signer.SignDevToken(time.Now(), DevTenant, DevUser, DevSession,
+		[]string{"admin", "console:fleet"})
+	if err != nil {
+		t.Fatalf("mint normal dev bearer: %v", err)
+	}
+	post := func(path, body string) (int, []byte) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new HTTP request %s: %v", path, err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatalf("HTTP POST %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read HTTP response %s: %v", path, err)
+		}
+		return resp.StatusCode, bodyBytes
+	}
+
+	const scope = `{"identity":{"tenant":"dev","user":"dev","session":"dev"}`
+	status, body := post("/v1/agent_config/set_revision", scope+`,"agent_id":"`+DevAgentConfigID+`","payload":{"skills":{"names":["phase234"]}}}`)
+	if status != http.StatusOK {
+		t.Fatalf("normal dev bearer set_revision status=%d body=%s", status, body)
+	}
+	var seeded struct {
+		Revision struct {
+			ContentHash string `json:"content_hash"`
+		} `json:"revision"`
+	}
+	if err := json.Unmarshal(body, &seeded); err != nil {
+		t.Fatalf("decode set_revision response: %v body=%s", err, body)
+	}
+	if seeded.Revision.ContentHash == "" {
+		t.Fatalf("set_revision response has no content_hash: %s", body)
+	}
+
+	status, body = post("/v1/agent_config/retire", scope+`,"agent_id":"`+DevAgentConfigID+`","operation_id":"dev-default-retirement","expected_content_hash":"`+seeded.Revision.ContentHash+`"}`)
+	if status != http.StatusOK {
+		t.Fatalf("retire default agent status=%d body=%s", status, body)
+	}
+
+	assertRetired := func(label, startBody string) {
+		t.Helper()
+		status, body := post("/v1/control/start", startBody)
+		if status != http.StatusConflict {
+			t.Fatalf("%s start status=%d body=%s, want 409", label, status, body)
+		}
+		var response struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(body, &response); err != nil {
+			t.Fatalf("decode %s start refusal: %v body=%s", label, err, body)
+		}
+		if response.Code != string(protoerrors.CodeAgentRetired) {
+			t.Fatalf("%s start code=%q, want %q; body=%s", label, response.Code, protoerrors.CodeAgentRetired, body)
+		}
+		if strings.Contains(string(body), `"task_id"`) {
+			t.Fatalf("%s retired refusal unexpectedly contains task_id: %s", label, body)
+		}
+	}
+	assertRetired("explicit default", scope+`,"agent_id":"`+DevAgentConfigID+`","query":"must not start"}`)
+	assertRetired("omitted default", scope+`,"query":"must not start"}`)
+
+	status, body = post("/v1/tasks/list", scope+`,"filter":{}}`)
+	if status != http.StatusOK {
+		t.Fatalf("tasks.list after retired start refusals status=%d body=%s", status, body)
+	}
+	var listed struct {
+		Rows []json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &listed); err != nil {
+		t.Fatalf("decode tasks.list response: %v body=%s", err, body)
+	}
+	if len(listed.Rows) != 0 {
+		t.Fatalf("retired start refusals spawned %d task(s): %s", len(listed.Rows), body)
 	}
 }
 

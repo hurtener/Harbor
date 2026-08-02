@@ -599,7 +599,17 @@ Two more things worth knowing:
 - **The token constrains only the writer that supplies it.** A concurrent writer that omits it can still overwrite you, by design — the token is a precondition on your write, never a lock on the agent. Exclusivity requires every writer of that agent's config to participate.
 - **It is a precondition, never an authority.** It is compared strictly after the identity and scope gates and can only ever cause a write to be *refused*. A valid token never buys a caller a write it could not otherwise make.
 
-### 8d. Contributing ONE prompt block without owning the whole prompt — `extra_system_blocks`
+### 8d. Retiring an agent-config identity is terminal — `agent_config.retire`
+
+`agent_config.retire` is an **admin-only**, owner-scoped lifecycle operation. It replaces the active agent-config pointer with a durable tombstone; it does not delete immutable revision history. Supply a non-empty `operation_id` and the active `expected_content_hash` (or `"-"` when there has never been an active revision). A same-operation retry is valid only when it repeats that exact original expectation; a different operation or expectation returns `409 {"code":"agent_retirement_conflict"}`.
+
+After retirement, all active/current config reads and durable writes, plus every `agent_config.session.*` overlay write, fail with `409 {"code":"agent_retired"}`. `agent_config.list_revisions` and `agent_config.diff` remain available for immutable-history audit. To recover status or resume cleanup after a timeout or restart, repeat `agent_config.retire` with the exact same `operation_id` and original `expected_content_hash`; that replay returns the durable status and continues any pending cleanup, while either value changing is a conflict. Operators should watch the canonical `agent_config.retirement.started`, `.progress`, and `.completed` events; event payloads expose only the hashed operation identifier and cleanup counts, never config contents.
+
+D-401 signed OAuth MCP pairs are retired through their existing durable paired-removal receipt even when the original authority has expired, been revoked, or can no longer be verified after key rotation. The retirement status may expose a `signed_oauth_mcp_pair` cleanup class whose resource is hashes only; it never exposes the URL, JWT/JTI, credentials, or stored owner subject. A close failure leaves the retirement incomplete and retryable with the same retirement operation.
+
+Retirement does **not** deregister the Runtime fleet agent. `agents.deregister` remains a separate fleet lifecycle action with separate authorization and audit semantics.
+
+### 8e. Contributing ONE prompt block without owning the whole prompt — `extra_system_blocks`
 
 If two independent capabilities each want to add a paragraph to an agent's system prompt, the layered prompt does not help: `prompt_layers.base` and `prompt_layers.user` are ONE string each, so the second contributor has to know — and re-send — the first's text, and removing one contribution means re-deriving the composition from prose.
 

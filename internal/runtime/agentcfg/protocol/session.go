@@ -59,7 +59,11 @@ func (s *Service) SessionSetUserPrompt(ctx context.Context, req prototypes.Agent
 	if err != nil {
 		return prototypes.AgentConfigSessionSetUserPromptResponse{}, err
 	}
-	ov, err := s.sessionOverlay.SetUserPrompt(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.UserPrompt)
+	q := identity.Quadruple{Identity: id}
+	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
+		return prototypes.AgentConfigSessionSetUserPromptResponse{}, err
+	}
+	ov, err := s.sessionOverlay.SetUserPrompt(ctx, q, req.AgentID, req.UserPrompt)
 	if err != nil {
 		return prototypes.AgentConfigSessionSetUserPromptResponse{}, err
 	}
@@ -92,7 +96,11 @@ func (s *Service) SessionSetSourceDisables(ctx context.Context, req prototypes.A
 	if err != nil {
 		return prototypes.AgentConfigSessionSetSourceDisablesResponse{}, err
 	}
-	ov, err := s.sessionOverlay.SetSourceDisables(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.DisabledServers, req.DisabledTools)
+	q := identity.Quadruple{Identity: id}
+	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
+		return prototypes.AgentConfigSessionSetSourceDisablesResponse{}, err
+	}
+	ov, err := s.sessionOverlay.SetSourceDisables(ctx, q, req.AgentID, req.DisabledServers, req.DisabledTools)
 	if err != nil {
 		return prototypes.AgentConfigSessionSetSourceDisablesResponse{}, err
 	}
@@ -121,7 +129,11 @@ func (s *Service) SessionSkillsList(ctx context.Context, req prototypes.AgentCon
 	if err != nil {
 		return prototypes.AgentConfigSessionSkillsListResponse{}, err
 	}
-	list, _, err := s.loadSessionSkillProjection(ctx, identity.Quadruple{Identity: id}, req.AgentID)
+	q := identity.Quadruple{Identity: id}
+	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
+		return prototypes.AgentConfigSessionSkillsListResponse{}, err
+	}
+	list, _, err := s.loadSessionSkillProjection(ctx, q, req.AgentID)
 	if err != nil {
 		return prototypes.AgentConfigSessionSkillsListResponse{}, err
 	}
@@ -155,6 +167,9 @@ func (s *Service) SessionSkillsUpsert(ctx context.Context, req prototypes.AgentC
 		return prototypes.AgentConfigSessionSkillsUpsertResponse{}, err
 	}
 	q := identity.Quadruple{Identity: id}
+	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
+		return prototypes.AgentConfigSessionSkillsUpsertResponse{}, err
+	}
 	skill := skillFromInput(req.Skill)
 	// Force session scope: an ephemeral personal skill never promotes past the
 	// caller's session (a session caller cannot widen the visibility scope).
@@ -205,6 +220,9 @@ func (s *Service) SessionSkillsDelete(ctx context.Context, req prototypes.AgentC
 		return prototypes.AgentConfigSessionSkillsDeleteResponse{}, fmt.Errorf("%w: skill name is empty", ErrIdentityRequired)
 	}
 	q := identity.Quadruple{Identity: id}
+	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
+		return prototypes.AgentConfigSessionSkillsDeleteResponse{}, err
+	}
 	// RUNG-PRECISE: the controller owns ONLY the selected agent's session tier;
 	// a same-named durable user-scope skill is outside this mutation authority.
 	if err := s.sessionPersonalSkills.DeleteSessionSkill(ctx, q, req.AgentID, req.Name); err != nil {

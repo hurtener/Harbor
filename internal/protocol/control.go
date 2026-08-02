@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -416,6 +417,10 @@ func (s *ControlSurface) validateNamedAgent(ctx context.Context, method string, 
 	}
 	allowed, err := s.agents.ResolveAgent(ctx, id, effectiveID)
 	if err != nil {
+		if errors.Is(err, ErrAgentRetired) {
+			return protoerrors.Newf(protoerrors.CodeAgentRetired,
+				"method %q: agent is retired", method)
+		}
 		return protoerrors.Newf(protoerrors.CodeRuntimeError,
 			"method %q: agent_id resolution failed: %v", method, err)
 	}

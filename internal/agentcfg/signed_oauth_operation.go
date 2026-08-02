@@ -65,6 +65,11 @@ const (
 	SignedOAuthMCPPhaseTeardownReceipted        SignedOAuthMCPOperationPhase = "teardown_receipted"
 	SignedOAuthMCPPhaseRemoved                  SignedOAuthMCPOperationPhase = "removed"
 	SignedOAuthMCPPhaseExpiredIncomplete        SignedOAuthMCPOperationPhase = "expired_incomplete"
+	// RetirementCleanupClassSignedOAuthMCPPair is the frozen retirement
+	// manifest class for one durable signed OAuth MCP pair lifetime. Its
+	// resource is two SHA-256 digests only; owner identity and capability
+	// material remain exclusively in the signed-pair operation receipt.
+	RetirementCleanupClassSignedOAuthMCPPair = "signed_oauth_mcp_pair"
 )
 
 // SignedOAuthMCPReplayKey is tenant-scoped by design. Agent ID is a signed
@@ -371,6 +376,59 @@ func (s *SignedOAuthMCPOperationStore) LoadForPair(ctx context.Context, tenant s
 func (s *SignedOAuthMCPOperationStore) Kind(key SignedOAuthMCPReplayKey) (string, error) {
 	_, kind, err := signedOAuthMCPOperationSlot(key)
 	return kind, err
+}
+
+// SignedOAuthMCPRetirementResource returns the redacted frozen locator used by
+// agent retirement. It deliberately hashes the already-opaque operation kind
+// again so the manifest and lifecycle status expose only a pair fingerprint
+// and an unlinkable operation hash, never JTI, URL, owner, or credentials.
+func SignedOAuthMCPRetirementResource(op SignedOAuthMCPOperation) (string, error) {
+	if !SignedOAuthMCPRetirementPending(op.Phase) {
+		return "", fmt.Errorf("%w: operation is not a valid pending pair lifetime", ErrSignedCapabilityReplay)
+	}
+	return signedOAuthMCPRetirementResource(op)
+}
+
+func signedOAuthMCPRetirementResource(op SignedOAuthMCPOperation) (string, error) {
+	if !validSHA256Hex(op.Fingerprint) || !signedOAuthMCPOperationPhaseKnown(op.Phase) {
+		return "", fmt.Errorf("%w: operation has no valid retirement fingerprint", ErrSignedCapabilityReplay)
+	}
+	_, kind, err := signedOAuthMCPOperationSlot(op.ReplayKey)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(kind))
+	return op.Fingerprint + "." + hex.EncodeToString(sum[:]), nil
+}
+
+// SignedOAuthMCPRetirementResourceMatches validates a frozen hash-only locator
+// against one durable receipt. Callers still tenant-scope their operation scan
+// and compare Binding.AgentID before using the receipt's private exact subject.
+func SignedOAuthMCPRetirementResourceMatches(resource string, op SignedOAuthMCPOperation) bool {
+	want, err := signedOAuthMCPRetirementResource(op)
+	return err == nil && resource == want
+}
+
+// SignedOAuthMCPRetirementPending reports phases whose published pair lifetime
+// has not reached a terminal teardown receipt. Pre-publication candidates are
+// reconciler debt rather than a published pair and follow expired_incomplete.
+func SignedOAuthMCPRetirementPending(phase SignedOAuthMCPOperationPhase) bool {
+	switch phase {
+	case SignedOAuthMCPPhasePublished, SignedOAuthMCPPhaseRemovalAdmitted,
+		SignedOAuthMCPPhaseRemovalRevisionCommitted, SignedOAuthMCPPhaseCatalogUnpublished,
+		SignedOAuthMCPPhaseTeardownReceipted:
+		return true
+	default:
+		return false
+	}
+}
+
+func validSHA256Hex(value string) bool {
+	if len(value) != sha256.Size*2 || value != strings.ToLower(value) {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 // Advance atomically records the next legal signed-capability recovery phase. The caller
