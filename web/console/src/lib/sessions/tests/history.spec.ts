@@ -344,6 +344,36 @@ describe('reduceHistoryTurns — byte-equivalence vs parseReasoningSteps (D-298,
 		// The post-RequestPause step keeps its un-shifted index.
 		expect(reopened[1].index).toBe(2);
 	});
+
+	it('preserves newline-bearing reasoning bytes between live projection and durable reopen', () => {
+		const reasoning = '**Preparing to send email**\n\nI need to compose';
+		const expectedBytes = [
+			42, 42, 80, 114, 101, 112, 97, 114, 105, 110, 103, 32, 116, 111, 32, 115, 101,
+			110, 100, 32, 101, 109, 97, 105, 108, 42, 42, 10, 10, 73, 32, 110, 101, 101, 100,
+			32, 116, 111, 32, 99, 111, 109, 112, 111, 115, 101
+		];
+		const live = parseReasoningSteps({
+			trajectory: { steps: [{ index: 0, reasoning_trace: reasoning }] }
+		});
+		const reopened = turnOf(
+			reduceHistoryTurns([
+				ev('planner.decision', 'r1', {
+					DecisionKind: 'CallTool',
+					Tool: 'email.send',
+					ReasoningTrace: reasoning
+				})
+			]),
+			'r1'
+		).reasoningSteps;
+
+		// This is a data-path assertion, not a presentation workaround: both
+		// producers must retain the two literal LF bytes before rendering.
+		expect(reopened).toEqual(live);
+		expect(live[0].reasoning_trace).toBe(reasoning);
+		expect(reopened[0].reasoning_trace).toBe(reasoning);
+		expect(Array.from(new TextEncoder().encode(live[0].reasoning_trace))).toEqual(expectedBytes);
+		expect(Array.from(new TextEncoder().encode(reopened[0].reasoning_trace))).toEqual(expectedBytes);
+	});
 });
 
 describe('reduceHistoryTurns — reasoning-step page-window-boundary safety (D-298)', () => {
