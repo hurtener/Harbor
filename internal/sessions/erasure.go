@@ -135,11 +135,13 @@ const erasureTombstoneKindPrefix = "session.erasure.tombstone."
 //  4. A re-invoke after the destructive steps completed but the final
 //     emit failed finds the session already gone (ErrSessionNotFound from
 //     the registry pre-flight) AND a still-present ledger checkpoint —
-//     recognized as a CONVERGING retry: it skips every destructive step
-//     (nothing left to do) and goes straight to completeErasure, which
-//     re-attempts the record + emit using the ledger's cumulative counts.
+//     recognized as a CONVERGING retry: it skips already-checkpointed work
+//     and goes straight to completeErasure. A pre-Phase-233a ledger first
+//     performs and checkpoints the separately stored legacy-session-skill
+//     sweep; then completeErasure re-attempts the record + emit using the
+//     ledger's cumulative counts.
 //     Only a successful emit clears the ledger, so an emit failure keeps
-//     the session "re-invokable" without ever touching a store again.
+//     the session re-invokable; completed checkpointed work is not repeated.
 //  5. A redactor refusal or a bus-publish failure at the final emit both
 //     fail Erase loud with the wrapped sentinel ErrErasureRecordFailed
 //     (no `Error`-log-and-continue) — the same loud path, because both
@@ -311,9 +313,10 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 //     probe the running-task seam. A refusal touches NO store — UNLESS a
 //     ledger checkpoint already exists, in which case ErrSessionNotFound
 //     here means the destructive steps already fully completed on a
-//     prior attempt and only the final record-of-fact remains: Erase
-//     converges via completeErasure without touching artifacts / memory
-//     / state again. When the session EXISTS, the ledger's lifecycle
+//     prior attempt and only compatibility upgrade/finalization remains:
+//     Erase converges via completeErasure without touching artifacts,
+//     memory, or the erased session's StateStore scope again. When the session
+//     EXISTS, the ledger's lifecycle
 //     stamp (the session's OpenedAt) is verified: a leftover ledger from
 //     an abandoned prior lifecycle of a reused session id is discarded
 //     with a loud Warn so counts never inflate across a reuse boundary.
@@ -579,6 +582,25 @@ func (e *CascadeEraser) convergeStaleLedger(ctx context.Context, id identity.Ide
 // gone but a ledger checkpoint still pending).
 func (e *CascadeEraser) completeErasure(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) (prototypes.SessionsDeleteResponse, error) {
 	var zero prototypes.SessionsDeleteResponse
+	// A ledger written by a pre-Phase-233a binary has no
+	// legacy_session_skills_deleted field, so JSON decoding leaves the flag
+	// false. The session record may already be absent on retry, but that absence
+	// proves only that StateStore.DeleteScope landed; it says nothing about the
+	// separate legacy SkillStore. Upgrade that checkpoint before any terminal
+	// side effect. The sweep is exact and idempotent, and the upgraded flag is
+	// durably saved before registry clear, record emission, tombstone creation,
+	// or ledger removal. A sweep/save failure therefore retains the old ledger
+	// and retries safely.
+	//
+	// Do not put this upgrade in convergeStaleLedger: that path has a newer live
+	// lifecycle under the same triple, so an exact ScopeSession sweep could erase
+	// the newer lifecycle's skills. completeErasure is reached only after the
+	// session is absent or the current lifecycle's StateStore scope was cleared.
+	var err error
+	ledger, err = e.ensureLegacySessionSkillsCheckpoint(ctx, id, ledger)
+	if err != nil {
+		return zero, err
+	}
 	if err := e.registry.clearErased(ctx, id); err != nil {
 		return zero, fmt.Errorf("sessions: erase registry clear: %w", err)
 	}
@@ -634,6 +656,26 @@ func (e *CascadeEraser) completeErasure(ctx context.Context, id identity.Identit
 			slog.String("error", err.Error()))
 	}
 	return resp, nil
+}
+
+// ensureLegacySessionSkillsCheckpoint upgrades an old erasure ledger before
+// terminal finalization. A true flag is authoritative because the normal
+// cascade checkpoints it before StateStore.DeleteScope; false requires the
+// same exact, idempotent ScopeSession sweep and a durable ledger save.
+func (e *CascadeEraser) ensureLegacySessionSkillsCheckpoint(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) (erasureLedgerRecord, error) {
+	if ledger.LegacySessionSkillsDeleted {
+		return ledger, nil
+	}
+	if e.skills != nil {
+		if err := e.skills.DeleteSessionScope(ctx, identity.Quadruple{Identity: id}); err != nil {
+			return erasureLedgerRecord{}, fmt.Errorf("sessions: converge legacy session skills: %w", err)
+		}
+	}
+	ledger.LegacySessionSkillsDeleted = true
+	if err := e.saveLedger(ctx, id, ledger); err != nil {
+		return erasureLedgerRecord{}, fmt.Errorf("sessions: checkpoint converged legacy session skills: %w", err)
+	}
+	return ledger, nil
 }
 
 // lockSession acquires the striped per-session lock serializing
