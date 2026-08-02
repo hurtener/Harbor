@@ -27,6 +27,7 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	skillspkg "github.com/hurtener/Harbor/internal/skills"
 	localdb "github.com/hurtener/Harbor/internal/skills/drivers/localdb"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
@@ -58,6 +59,7 @@ type suHarness struct {
 	handler    http.Handler
 	registry   agentcfg.Registry
 	overlay    sessionoverlay.Store
+	authority  *serve.SessionPersonalSkillAuthority
 	skills     skillspkg.SkillStore
 	catalog    tools.ToolCatalog
 	bus        events.EventBus
@@ -111,6 +113,15 @@ func newSUHarness(t *testing.T) *suHarness {
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
+	// suAgent is this direct harness's one declared agent. Its session-owned
+	// surface must not manufacture authority from an absent lifecycle slot.
+	activateFixtureAgent(t, reg, suIdentity(suSessionA), suAgent)
+	authority, err := serve.NewSessionPersonalSkillAuthority(context.Background(), st, skillStore, []config.SessionPersonalCutoverTenant{{
+		TenantID: suTenant, Epoch: "fixture-state-only", RosterDigest: "fixture", LegacyWritersDrained: true,
+	}})
+	if err != nil {
+		t.Fatalf("session personal authority: %v", err)
+	}
 	ov, err := sessionoverlay.NewStore(st, nil)
 	if err != nil {
 		t.Fatalf("overlay: %v", err)
@@ -119,6 +130,7 @@ func newSUHarness(t *testing.T) *suHarness {
 		agentcfgprotocol.WithSkillStore(skillStore),
 		agentcfgprotocol.WithBus(bus),
 		agentcfgprotocol.WithSessionOverlay(ov),
+		agentcfgprotocol.WithSessionPersonalSkillController(authority.Controller),
 	)
 	if err != nil {
 		t.Fatalf("service: %v", err)
@@ -135,7 +147,7 @@ func newSUHarness(t *testing.T) *suHarness {
 		_ = bus.Close(context.Background())
 		_ = st.Close(context.Background())
 	})
-	return &suHarness{handler: h, registry: reg, overlay: ov, skills: skillStore, catalog: newSUCatalog(t), bus: bus, agentReach: []string{suAgent}}
+	return &suHarness{handler: h, registry: reg, overlay: ov, authority: authority, skills: skillStore, catalog: newSUCatalog(t), bus: bus, agentReach: []string{suAgent}}
 }
 
 // call POSTs to the handler with the supplied identity + scopes.
@@ -251,18 +263,35 @@ func TestE2E_AgentConfig_SessionUserSafeSubset(t *testing.T) {
 		t.Fatalf("session user layer must render in the lower-trust <user_instructions> section")
 	}
 
-	// --- Next run: the personal skill survives the admin membership filter. ---
+	// --- The durable session-owned tier contains the caller's personal skill. ---
+	// ActiveSkillViews projects an externally supplied candidate list and so is
+	// deliberately not the authority for owned session rows. The production
+	// run-loop constructs SessionSkillResolver from this controller's durable
+	// store and cutover reader instead.
+	personal, err := h.authority.Controller.SessionSkills(ctx, q, suAgent)
+	if err != nil {
+		t.Fatalf("durable session skills: %v", err)
+	}
+	personalNames := make([]string, 0, len(personal))
+	for _, skill := range personal {
+		personalNames = append(personalNames, skill.Name)
+	}
+	if !hasToolName(personalNames, "my-personal") {
+		t.Fatalf("durable personal skill missing: %v", personalNames)
+	}
+
+	// --- Admin membership still filters the externally supplied candidates. ---
 	projected, err := projection.ActiveSkillViews(ctx, h.registry, h.overlay, suAgent, q,
 		skillViews("admin-skill", "my-personal", "stranger"))
 	if err != nil {
 		t.Fatalf("skill projection: %v", err)
 	}
 	pn := skillViewNames(projected)
-	if !hasToolName(pn, "admin-skill") || !hasToolName(pn, "my-personal") {
-		t.Fatalf("admin + personal skills expected: %v", pn)
+	if !hasToolName(pn, "admin-skill") {
+		t.Fatalf("admin skill expected: %v", pn)
 	}
-	if hasToolName(pn, "stranger") {
-		t.Fatalf("a non-member, non-personal skill leaked: %v", pn)
+	if hasToolName(pn, "my-personal") || hasToolName(pn, "stranger") {
+		t.Fatalf("unselected external skill leaked: %v", pn)
 	}
 
 	// --- Failure mode: non-admin base-prompt edit is rejected (403). ---

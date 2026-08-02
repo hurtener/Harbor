@@ -351,18 +351,13 @@ func waveViewNames(v tools.PlannerCatalogView) []string {
 	return out
 }
 
-func newWaveOverlay(t *testing.T) (sessionoverlay.Store, state.StateStore) {
+func newWaveOverlay(t *testing.T, st state.StateStore) sessionoverlay.Store {
 	t.Helper()
-	st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("overlay state: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close(context.Background()) })
 	ov, err := sessionoverlay.NewStore(st, nil)
 	if err != nil {
 		t.Fatalf("overlay store: %v", err)
 	}
-	return ov, st
+	return ov
 }
 
 // TestE2E_WaveSessionHydration_UserScopeProjection composes the durable
@@ -374,7 +369,7 @@ func TestE2E_WaveSessionHydration_UserScopeProjection(t *testing.T) {
 	h := newUSHarness(t) // REAL statestore registry + Service + wire handler.
 	reg := h.registry
 	cat := waveToolCatalog(t)
-	overlay, _ := newWaveOverlay(t)
+	overlay := newWaveOverlay(t, h.state)
 
 	alice := usID("alice", "sa")
 	bob := usID("bob", "sb")

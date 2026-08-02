@@ -181,6 +181,8 @@ type SessionPersonalSkillController interface {
 // Service implements the admin-scoped agent-config methods.
 type Service struct {
 	registry              agentcfg.Registry
+	bootDefaultAgentID    string
+	ensureBootLifecycle   agentcfg.BootLifecycleEnsurer
 	skills                skills.SkillStore // optional — nil ⇒ shared/durable skills methods return ErrSkillsUnavailable
 	sessionPersonalSkills SessionPersonalSkillController
 	bus                   events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
@@ -326,6 +328,36 @@ type Service struct {
 	// (config writes are infrequent, and a brief unrelated serialisation costs
 	// nothing and never affects correctness).
 	writeLocks [writeLockShards]sync.Mutex
+}
+
+// WithBootLifecycleEnsurer wires the production bootstrap authority into the
+// session/user handler path. The handler calls it only after signed reach has
+// authorized the effective target; this option itself never creates a named
+// caller-selected agent.
+func WithBootLifecycleEnsurer(defaultAgentID string, ensure agentcfg.BootLifecycleEnsurer) Option {
+	return func(s *Service) {
+		if defaultAgentID != "" && ensure != nil {
+			s.bootDefaultAgentID = defaultAgentID
+			s.ensureBootLifecycle = ensure
+		}
+	}
+}
+
+// EnsureBootLifecycle materialises the boot-declared default for a verified
+// request identity. It is intentionally a no-op for named agents: their
+// lifecycle is explicit configuration authority, never request-created state.
+func (s *Service) EnsureBootLifecycle(ctx context.Context, scope prototypes.IdentityScope, agentID string) error {
+	if s.ensureBootLifecycle == nil || agentID == "" || agentID != s.bootDefaultAgentID {
+		return nil
+	}
+	id, err := identityFromScope(scope, agentID)
+	if err != nil {
+		return err
+	}
+	if err := s.ensureBootLifecycle(ctx, id, agentID); err != nil {
+		return fmt.Errorf("ensure boot agent lifecycle: %w", err)
+	}
+	return nil
 }
 
 // writeLockShards bounds the per-owner write-lock memory. 256 shards keep

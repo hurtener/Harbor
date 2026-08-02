@@ -54,6 +54,12 @@ func TestE2E_Phase126b_DurableUserPromptReachesRun(t *testing.T) {
 	alice := identity.Identity{TenantID: "t", UserID: "alice", SessionID: "s1"}
 	aliceS2 := identity.Identity{TenantID: "t", UserID: "alice", SessionID: "s2"}
 	bob := identity.Identity{TenantID: "t", UserID: "bob", SessionID: "sb"}
+	// This direct fixture selects agent through real projection calls; declare
+	// its agent-level lifecycle before the lower session tier is used.
+	if _, err := reg.SetRevision(ctx, identity.Quadruple{Identity: alice}, agent, agentcfg.ConfigScopeAgent,
+		agentcfg.ConfigPayload{}, agentcfg.SetOptions{ExpectedContentHash: agentcfg.ExpectNoActiveRevision}); err != nil {
+		t.Fatalf("activate fixture agent: %v", err)
+	}
 
 	// PRODUCER — write alice's durable user_prompt through the real 126a verb.
 	if _, err := svc.UserSetRevision(ctx, prototypes.AgentConfigUserSetRevisionRequest{

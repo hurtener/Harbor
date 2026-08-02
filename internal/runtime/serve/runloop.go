@@ -217,6 +217,9 @@ type RunLoopDriverOptions struct {
 	// the NEXT run (next-turn-only), never mid-flight.
 	AgentConfig   agentcfg.Registry
 	AgentConfigID string
+	// EnsureBootAgentLifecycle materialises only the configured default agent
+	// after trusted direct task construction selected it for this run.
+	EnsureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
 
 	// sessionOverlay resolves the SESSION-scoped safe-subset overlay (the
 	// non-admin lower tier) at run start: the session's user prompt layer,
@@ -349,8 +352,9 @@ type RunLoopDriver struct {
 
 	// agent-config registry + the dev agent's registration id, read once at
 	// run start to project the agent's active skills-set (nil = none).
-	agentConfig   agentcfg.Registry
-	agentConfigID string
+	agentConfig              agentcfg.Registry
+	agentConfigID            string
+	ensureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
 
 	// session-scoped safe-subset overlay store, read once at run start to
 	// compose the session user layer + narrow-only disables + personal skills
@@ -460,23 +464,24 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		grantedScopes:         append([]string(nil), opts.GrantedScopes...),
 		artifactStore:         opts.ArtifactStore,
 		// disposition policy passthrough.
-		dispositionPolicy:       opts.DispositionPolicy,
-		tenantOverrides:         opts.TenantOverrides,
-		sessionOverrides:        opts.SessionOverrides,
-		agentConfig:             opts.AgentConfig,
-		agentConfigID:           opts.AgentConfigID,
-		sessionOverlay:          opts.SessionOverlay,
-		runCompletionHook:       opts.RunCompletionHook,
-		connectionDetacher:      opts.ConnectionDetacher,
-		connectionReattacher:    opts.ConnectionReattacher,
-		bootDeclaredMCP:         opts.BootDeclaredMCP,
-		oauthProviderReconciler: opts.OAuthProviderReconciler,
-		namingDefault:           opts.NamingDefault,
-		sessionTitler:           opts.SessionTitler,
-		namingLLM:               opts.NamingLLM,
-		trajectories:            make(map[tasks.TaskID]*trackedTrajectory),
-		tokenBudget:             opts.TokenBudget,
-		compression:             opts.Compression,
+		dispositionPolicy:        opts.DispositionPolicy,
+		tenantOverrides:          opts.TenantOverrides,
+		sessionOverrides:         opts.SessionOverrides,
+		agentConfig:              opts.AgentConfig,
+		agentConfigID:            opts.AgentConfigID,
+		ensureBootAgentLifecycle: opts.EnsureBootAgentLifecycle,
+		sessionOverlay:           opts.SessionOverlay,
+		runCompletionHook:        opts.RunCompletionHook,
+		connectionDetacher:       opts.ConnectionDetacher,
+		connectionReattacher:     opts.ConnectionReattacher,
+		bootDeclaredMCP:          opts.BootDeclaredMCP,
+		oauthProviderReconciler:  opts.OAuthProviderReconciler,
+		namingDefault:            opts.NamingDefault,
+		sessionTitler:            opts.SessionTitler,
+		namingLLM:                opts.NamingLLM,
+		trajectories:             make(map[tasks.TaskID]*trackedTrajectory),
+		tokenBudget:              opts.TokenBudget,
+		compression:              opts.Compression,
 	}, nil
 }
 
@@ -1039,6 +1044,17 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	effectiveAgentID := d.agentConfigID
 	if task.AgentID != "" {
 		effectiveAgentID = task.AgentID
+	}
+	if d.ensureBootAgentLifecycle != nil && effectiveAgentID != "" && effectiveAgentID == d.agentConfigID {
+		if err := d.ensureBootAgentLifecycle(taskCtx, q.Identity, effectiveAgentID); err != nil {
+			d.logger.ErrorContext(taskCtx, "RunLoopDriver: boot agent lifecycle unavailable; failing run",
+				slog.String("task_id", string(taskID)), slog.String("run_id", q.RunID),
+				slog.String("agent_id", effectiveAgentID), slog.String("err", err.Error()))
+			if markErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: "boot agent lifecycle: " + err.Error()}); markErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed", slog.String("task_id", string(taskID)), slog.String("err", markErr.Error()))
+			}
+			return
+		}
 	}
 
 	// Capture ONE immutable skill-reader authority after effective agent

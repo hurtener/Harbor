@@ -238,6 +238,9 @@ func TestE2E_Phase83f_RunLoopPopulatesAllFourPrimitives(t *testing.T) {
 	plnr := react.New(rec)
 
 	cfg := phase83fConfig(t)
+	cfg.Skills.SessionPersonalCutover.Tenants = []config.SessionPersonalCutoverTenant{{
+		TenantID: devstack.DefaultDevTenant, Epoch: "phase83f-state-only", RosterDigest: "fixture", LegacyWritersDrained: true,
+	}}
 	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
 		// The PlannerOverride is the real ReAct planner backed by the
 		// recording client, so the LLM construction is moot — but the
@@ -261,6 +264,17 @@ func TestE2E_Phase83f_RunLoopPopulatesAllFourPrimitives(t *testing.T) {
 
 	if stack.Tasks == nil || stack.RunLoopDriver == nil {
 		t.Fatal("devstack: Tasks or RunLoopDriver is nil — wiring broken")
+	}
+	if stack.SessionPersonalSkillAuthority == nil {
+		t.Fatal("devstack: SessionPersonalSkillAuthority is nil")
+	}
+	// The session-owned tier is now controller-owned. Seed the same real
+	// durable record the run-start resolver reads; the legacy store write above
+	// remains the directory body, not the authority membership.
+	if err := stack.SessionPersonalSkillAuthority.Controller.UpsertSessionSkill(idCtx, seedQ, stack.AgentConfigID, skills.Skill{
+		Name: "skill-for-compose", Trigger: "download mp3", Steps: []string{"validate url", "invoke downloader"}, Origin: skills.OriginGenerated, Scope: skills.ScopeSession,
+	}); err != nil {
+		t.Fatalf("seed session personal skill: %v", err)
 	}
 
 	// Spawn a task under the dev identity. The driver's subscription

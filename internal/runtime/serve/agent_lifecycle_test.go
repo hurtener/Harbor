@@ -208,6 +208,53 @@ func TestEnsureBootAgentLifecycle_ConcurrentFirstWritersPreserveRealConfig(t *te
 	}
 }
 
+// TestEnsureBootAgentLifecycle_ConcurrentCrossTenantFirstUse proves the
+// injected lifecycle gate is safe when a cold runtime accepts many trusted
+// default-agent calls at once. Each tenant has its own durable lifecycle slot;
+// no caller can make another tenant's first-use revision visible or writable.
+func TestEnsureBootAgentLifecycle_ConcurrentCrossTenantFirstUse(t *testing.T) {
+	const (
+		agentID = "boot-cross-tenant-agent"
+		calls   = 128
+	)
+	st := runSnapshotState(t)
+	reg := lifecycleTestRegistry(t, st)
+	start := make(chan struct{})
+	errs := make(chan error, calls)
+	var workers sync.WaitGroup
+	for i := range calls {
+		id := identity.Identity{
+			TenantID:  fmt.Sprintf("cross-tenant-%03d", i),
+			UserID:    "shared-user",
+			SessionID: "shared-session",
+		}
+		workers.Add(1)
+		go func(id identity.Identity) {
+			defer workers.Done()
+			<-start
+			errs <- EnsureBootAgentLifecycle(context.Background(), st, reg, id, agentID)
+		}(id)
+	}
+	close(start)
+	workers.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent cross-tenant first use: %v", err)
+		}
+	}
+	for i := range calls {
+		id := identity.Identity{
+			TenantID:  fmt.Sprintf("cross-tenant-%03d", i),
+			UserID:    "shared-user",
+			SessionID: "shared-session",
+		}
+		if _, active, err := reg.Active(t.Context(), identity.Quadruple{Identity: id}, agentID, agentcfg.ConfigScopeAgent); err != nil || !active {
+			t.Fatalf("tenant %q lifecycle active=%t err=%v", id.TenantID, active, err)
+		}
+	}
+}
+
 func TestEnsureBootAgentLifecycle_ConcurrentTerminalAndCorruptSlotsStayUntouched(t *testing.T) {
 	const agentID = "boot-lifecycle-race-agent"
 	for _, tc := range []struct {

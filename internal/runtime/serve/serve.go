@@ -425,6 +425,9 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		closeAll(ctx)
 		return nil, fmt.Errorf("boot agent lifecycle: %w", lifecycleErr)
 	}
+	bootLifecycleEnsurer := agentcfg.BootLifecycleEnsurer(func(runCtx context.Context, id identity.Identity, agentID string) error {
+		return EnsureBootAgentLifecycle(runCtx, stack.State, agentConfigRegistry, id, agentID)
+	})
 
 	// The session-scoped safe-subset overlay store (the non-admin lower tier).
 	sessionOverlayStore, err := sessionoverlay.NewStore(stack.State, nil)
@@ -463,7 +466,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	agentReach := auth.NewAgentReachAuthorizer()
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
 		protocol.WithSessionEnsurer(NewSessionEnsurerAdapter(sessionRegistry)),
-		protocol.WithAgentResolver(NewAgentResolverAdapter(agentConfigRegistry, devAgentConfigID)),
+		protocol.WithAgentResolver(NewAgentResolverAdapter(agentConfigRegistry, devAgentConfigID, WithBootLifecycleEnsurer(bootLifecycleEnsurer))),
 		protocol.WithAgentReachAuthorizer(agentReach),
 	)
 	if err != nil {
@@ -595,41 +598,42 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 
 	runLoopDriver, err := NewRunLoopDriver(RunLoopDriverOptions{
-		Logger:                  opts.Logger,
-		Bus:                     bus,
-		RunLoop:                 runLoop,
-		Planner:                 plnr,
-		Tasks:                   taskReg,
-		TaskKind:                tasks.KindForeground,
-		DriveBackground:         true,
-		Memory:                  memStore,
-		MemoryRecall:            memory.RecallFromConfig(cfg.Memory),
-		SkillsDirectory:         skillsDir,
-		PlanningHints:           planner.HintsFromConfig(cfg.Planner.PlanningHints),
-		SkillStore:              skillStore,
-		SessionPersonalSkills:   sessionPersonalStore,
-		SessionSkillCutover:     sessionPersonalCutover,
-		Catalog:                 toolCat,
-		Executor:                stack.Executor,
-		MaxStepsRunLoop:         cfg.Planner.MaxSteps,
-		GrantedScopes:           append([]string(nil), cfg.Tools.GrantedScopes...),
-		ArtifactStore:           artStore,
-		TokenBudget:             cfg.Planner.TokenBudget,
-		Compression:             stack.Compression,
-		DispositionPolicy:       dispositionPolicy,
-		TenantOverrides:         tenantOverridePolicy,
-		SessionOverrides:        runsStore,
-		AgentConfig:             agentConfigRegistry,
-		AgentConfigID:           devAgentConfigID,
-		SessionOverlay:          sessionOverlayStore,
-		RunCompletionHook:       projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
-		ConnectionDetacher:      mcpDetacher,
-		ConnectionReattacher:    mcpReattacher,
-		BootDeclaredMCP:         BootDeclaredMCPServerSet(cfg),
-		OAuthProviderReconciler: oauthProviderReconciler,
-		NamingDefault:           cfg.Runtime.Naming,
-		SessionTitler:           sessionRegistry,
-		NamingLLM:               stack.LLM,
+		Logger:                   opts.Logger,
+		Bus:                      bus,
+		RunLoop:                  runLoop,
+		Planner:                  plnr,
+		Tasks:                    taskReg,
+		TaskKind:                 tasks.KindForeground,
+		DriveBackground:          true,
+		Memory:                   memStore,
+		MemoryRecall:             memory.RecallFromConfig(cfg.Memory),
+		SkillsDirectory:          skillsDir,
+		PlanningHints:            planner.HintsFromConfig(cfg.Planner.PlanningHints),
+		SkillStore:               skillStore,
+		SessionPersonalSkills:    sessionPersonalStore,
+		SessionSkillCutover:      sessionPersonalCutover,
+		Catalog:                  toolCat,
+		Executor:                 stack.Executor,
+		MaxStepsRunLoop:          cfg.Planner.MaxSteps,
+		GrantedScopes:            append([]string(nil), cfg.Tools.GrantedScopes...),
+		ArtifactStore:            artStore,
+		TokenBudget:              cfg.Planner.TokenBudget,
+		Compression:              stack.Compression,
+		DispositionPolicy:        dispositionPolicy,
+		TenantOverrides:          tenantOverridePolicy,
+		SessionOverrides:         runsStore,
+		AgentConfig:              agentConfigRegistry,
+		AgentConfigID:            devAgentConfigID,
+		EnsureBootAgentLifecycle: bootLifecycleEnsurer,
+		SessionOverlay:           sessionOverlayStore,
+		RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
+		ConnectionDetacher:       mcpDetacher,
+		ConnectionReattacher:     mcpReattacher,
+		BootDeclaredMCP:          BootDeclaredMCPServerSet(cfg),
+		OAuthProviderReconciler:  oauthProviderReconciler,
+		NamingDefault:            cfg.Runtime.Naming,
+		SessionTitler:            sessionRegistry,
+		NamingLLM:                stack.LLM,
 	})
 	if err != nil {
 		closeAll(ctx)
@@ -688,6 +692,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		Skills:                         skillStore,
 		AgentConfig:                    agentConfigRegistry,
 		AgentConfigID:                  devAgentConfigID,
+		BootLifecycleEnsurer:           bootLifecycleEnsurer,
 		SessionOverlay:                 sessionOverlayStore,
 		SessionPersonalSkillController: sessionPersonalController,
 		RunsStore:                      runsStore,

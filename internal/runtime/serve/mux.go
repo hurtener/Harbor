@@ -103,9 +103,10 @@ type MuxInput struct {
 	Skills         skills.SkillStore
 
 	// Control-plane handles.
-	AgentConfig    agentcfg.Registry
-	AgentConfigID  string
-	SessionOverlay sessionoverlay.Store
+	AgentConfig          agentcfg.Registry
+	AgentConfigID        string
+	BootLifecycleEnsurer agentcfg.BootLifecycleEnsurer
+	SessionOverlay       sessionoverlay.Store
 	// SessionPersonalSkillController is the single durable authority for the
 	// session-personal skill Protocol tier and its dynamic overlay projection.
 	// Nil keeps those methods fail-loud/unavailable; BuildMux never falls back
@@ -673,6 +674,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithStdioAllowlist(append([]string(nil), in.MCPStdioAllowlist...)),
 			agentcfgprotocol.WithSessionOverlay(in.SessionOverlay),
 			agentcfgprotocol.WithSessionPersonalSkillController(in.SessionPersonalSkillController),
+			agentcfgprotocol.WithBootLifecycleEnsurer(in.AgentConfigID, in.BootLifecycleEnsurer),
 			agentcfgprotocol.WithValidModels(in.ValidModels),
 			agentcfgprotocol.WithBootDeclaredMCPServers(append([]string(nil), in.BootDeclaredMCP...)),
 			agentcfgprotocol.WithBootDeclaredOAuthProviders(append([]string(nil), in.BootDeclaredOAuth...)),

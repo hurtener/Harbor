@@ -20,6 +20,7 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/skills/drivers/localdb" // test harness: real skills store on the seam (§4.4 carve-out)
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
@@ -65,9 +66,16 @@ func TestE2E_DurableUserSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("localdb.New: %v", err)
 	}
+	authority, err := serve.NewSessionPersonalSkillAuthority(context.Background(), st, store, []config.SessionPersonalCutoverTenant{{
+		TenantID: dusTenant, Epoch: "fixture-state-only", RosterDigest: "fixture", LegacyWritersDrained: true,
+	}})
+	if err != nil {
+		t.Fatalf("session personal authority: %v", err)
+	}
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithSkillStore(store),
 		agentcfgprotocol.WithSessionOverlay(ov),
+		agentcfgprotocol.WithSessionPersonalSkillController(authority.Controller),
 		agentcfgprotocol.WithBus(bus))
 	if err != nil {
 		t.Fatalf("service: %v", err)
@@ -89,6 +97,9 @@ func TestE2E_DurableUserSkills(t *testing.T) {
 	aliceRead := identity.Identity{TenantID: dusTenant, UserID: "alice", SessionID: "s-read"}
 	bob := identity.Identity{TenantID: dusTenant, UserID: "bob", SessionID: "s-read"}
 	noScope := []auth.Scope{} // CLAIM-FREE: a valid identity is enough
+	// dusAgent is explicitly reachable in this direct fixture. Provision its
+	// real lifecycle before the claim-free session-owned skill path runs.
+	activateFixtureAgent(t, reg, alice, dusAgent)
 
 	// --- (1) claim-free upsert; scope forced to user ---
 	up := decode[prototypes.AgentConfigUserSkillsUpsertResponse](t, dus.call(t,

@@ -161,6 +161,13 @@ type SetOptions struct {
 	ExpectedContentHash string
 }
 
+// BootLifecycleEnsurer materialises the configured default agent's tenant
+// local lifecycle before a trusted caller uses an agent-addressed surface.
+// Assembly injects the concrete because agentcfg owns the contract while the
+// StateStore-backed bootstrap implementation lives at the runtime boundary.
+// Callers invoke it only after effective-agent reach authorization.
+type BootLifecycleEnsurer func(context.Context, identity.Identity, string) error
+
 // CheckExpectedRevision evaluates opts against an active-revision snapshot.
 // Persistence drivers use it at the authoritative write boundary. Protocol
 // services also use it before a non-transactional side effect; that earlier
