@@ -725,7 +725,7 @@ func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID st
 		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: expected active content hash is required", agentcfg.ErrRetirementConflict)
 	}
 	q := syntheticQuad(id.TenantID, agentID)
-	current, eventID, found, err := r.loadActiveRecord(ctx, q, kindActive)
+	current, eventID, found, err := r.loadActiveRecord(ctx, q)
 	if err != nil {
 		return agentcfg.RetirementStatus{}, err
 	}
@@ -746,7 +746,7 @@ func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID st
 		prior, hasPrior = rr.toRevision(), true
 	}
 	if err := agentcfg.CheckExpectedRevision(agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}, prior, hasPrior); err != nil {
-		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: %v", agentcfg.ErrRetirementConflict, err)
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: %w", agentcfg.ErrRetirementConflict, err)
 	}
 	t := &retirementRecord{
 		OperationID:  operationID,
@@ -783,9 +783,9 @@ func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID st
 	// exact reread. A SaveIf error is not evidence that the write did not land:
 	// the database may have committed the tombstone before its acknowledgement
 	// was lost. Never retry or compensate blindly over that ambiguity.
-	landed, _, _, rereadErr := r.loadActiveRecord(ctx, q, kindActive)
+	landed, _, _, rereadErr := r.loadActiveRecord(ctx, q)
 	if rereadErr != nil {
-		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement tombstone: %v; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement tombstone: %w; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
 	}
 	if landed.Retirement != nil && landed.Retirement.OperationID == operationID {
 		return r.ackRetirementEvent(ctx, id, agentID, q)
@@ -801,7 +801,7 @@ func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID st
 // after delivery. A publish failure remains pending for the same-operation
 // retry; duplicate publication is therefore safe and intentional.
 func (r *registry) ackRetirementEvent(ctx context.Context, id identity.Quadruple, agentID string, q identity.Quadruple) (agentcfg.RetirementStatus, error) {
-	current, eventID, _, err := r.loadActiveRecord(ctx, q, kindActive)
+	current, eventID, _, err := r.loadActiveRecord(ctx, q)
 	if err != nil {
 		return agentcfg.RetirementStatus{}, err
 	}
@@ -812,11 +812,14 @@ func (r *registry) ackRetirementEvent(ctx context.Context, id identity.Quadruple
 	if p == nil {
 		return retirementStatus(current.Retirement), nil
 	}
-	typ := agentcfg.EventTypeRetirementProgress
-	if p.Stage == "started" {
+	var typ events.EventType
+	switch p.Stage {
+	case "started":
 		typ = agentcfg.EventTypeRetirementStarted
-	} else if p.Stage == "completed" {
+	case "completed":
 		typ = agentcfg.EventTypeRetirementCompleted
+	default:
+		typ = agentcfg.EventTypeRetirementProgress
 	}
 	done := 0
 	for _, step := range current.Retirement.Cleanup {
@@ -836,9 +839,9 @@ func (r *registry) ackRetirementEvent(ctx context.Context, id identity.Quadruple
 		return agentcfg.RetirementStatus{}, fmt.Errorf("marshal retirement event acknowledgement: %w", err)
 	}
 	if err := r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kindActive, ExpectedEventID: eventID}}, state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kindActive, Bytes: buf, UpdatedAt: next.UpdatedAt}); err != nil {
-		landed, _, _, rereadErr := r.loadActiveRecord(ctx, q, kindActive)
+		landed, _, _, rereadErr := r.loadActiveRecord(ctx, q)
 		if rereadErr != nil {
-			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: acknowledge retirement event: %v; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: acknowledge retirement event: %w; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
 		}
 		if landed.Retirement != nil && landed.Retirement.OperationID == current.Retirement.OperationID {
 			if landed.Retirement.PendingEvent == nil {
@@ -863,7 +866,7 @@ func (r *registry) ackRetirementEvent(ctx context.Context, id identity.Quadruple
 }
 
 func (r *registry) queueRetirementEvent(ctx context.Context, id identity.Quadruple, agentID string, q identity.Quadruple, stage, class string) (agentcfg.RetirementStatus, error) {
-	current, eventID, _, err := r.loadActiveRecord(ctx, q, kindActive)
+	current, eventID, _, err := r.loadActiveRecord(ctx, q)
 	if err != nil {
 		return agentcfg.RetirementStatus{}, err
 	}
@@ -879,9 +882,9 @@ func (r *registry) queueRetirementEvent(ctx context.Context, id identity.Quadrup
 		return agentcfg.RetirementStatus{}, fmt.Errorf("marshal retirement event checkpoint: %w", err)
 	}
 	if err := r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kindActive, ExpectedEventID: eventID}}, state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kindActive, Bytes: buf, UpdatedAt: next.UpdatedAt}); err != nil {
-		landed, _, _, rereadErr := r.loadActiveRecord(ctx, q, kindActive)
+		landed, _, _, rereadErr := r.loadActiveRecord(ctx, q)
 		if rereadErr != nil {
-			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement event checkpoint: %v; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement event checkpoint: %w; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
 		}
 		if landed.Retirement != nil && landed.Retirement.OperationID == current.Retirement.OperationID {
 			if landed.Retirement.PendingEvent != nil {
@@ -916,7 +919,7 @@ func (r *registry) RetirementStatus(ctx context.Context, id identity.Quadruple, 
 	if err := ctx.Err(); err != nil {
 		return agentcfg.RetirementStatus{}, false, err
 	}
-	rec, _, _, err := r.loadActiveRecord(ctx, syntheticQuad(id.TenantID, agentID), kindActive)
+	rec, _, _, err := r.loadActiveRecord(ctx, syntheticQuad(id.TenantID, agentID))
 	if err != nil {
 		return agentcfg.RetirementStatus{}, false, err
 	}
@@ -938,7 +941,7 @@ func (r *registry) CompleteRetirementStep(ctx context.Context, id identity.Quadr
 		return agentcfg.RetirementStatus{}, err
 	}
 	q := syntheticQuad(id.TenantID, agentID)
-	current, eventID, found, err := r.loadActiveRecord(ctx, q, kindActive)
+	current, eventID, found, err := r.loadActiveRecord(ctx, q)
 	if err != nil {
 		return agentcfg.RetirementStatus{}, err
 	}
@@ -987,9 +990,9 @@ func (r *registry) CompleteRetirementStep(ctx context.Context, id identity.Quadr
 	}
 	// A commit followed by a lost acknowledgement converges by exact reread;
 	// any other movement is a conflict, never a blind retry over new state.
-	landed, _, _, rereadErr := r.loadActiveRecord(ctx, q, kindActive)
+	landed, _, _, rereadErr := r.loadActiveRecord(ctx, q)
 	if rereadErr != nil {
-		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement progress: %v; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement progress: %w; reread: %w", agentcfg.ErrStateUnavailable, err, rereadErr)
 	}
 	if landed.Retirement != nil && landed.Retirement.OperationID == operationID {
 		for _, item := range landed.Retirement.Cleanup {
@@ -1005,7 +1008,7 @@ func (r *registry) CompleteRetirementStep(ctx context.Context, id identity.Quadr
 }
 
 func (r *registry) ensureNotRetired(ctx context.Context, id identity.Quadruple, agentID string) error {
-	rec, _, _, err := r.loadActiveRecord(ctx, syntheticQuad(id.TenantID, agentID), kindActive)
+	rec, _, _, err := r.loadActiveRecord(ctx, syntheticQuad(id.TenantID, agentID))
 	if err != nil {
 		return err
 	}
@@ -1015,8 +1018,8 @@ func (r *registry) ensureNotRetired(ctx context.Context, id identity.Quadruple, 
 	return nil
 }
 
-func (r *registry) loadActiveRecord(ctx context.Context, q identity.Quadruple, kind string) (activeRecord, state.EventID, bool, error) {
-	rec, err := r.state.Load(ctx, q, kind)
+func (r *registry) loadActiveRecord(ctx context.Context, q identity.Quadruple) (activeRecord, state.EventID, bool, error) {
+	rec, err := r.state.Load(ctx, q, kindActive)
 	if errors.Is(err, state.ErrNotFound) {
 		return activeRecord{}, "", false, nil
 	}
