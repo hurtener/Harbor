@@ -11883,7 +11883,7 @@ If the one-time code is spent but credential persistence fails, FlowStore record
 
 **Status:** Accepted for Phase 228; tightens D-390.
 
-**Decision.** `Registry.StageRegistration` reserves a same-name replacement without placing the staged provider in the live registry map. Direct resource/prompt/observability reads continue reaching the exact prior provider until the catalog source swap succeeds. The catalog remains the dispatch linearization point; registry Commit then publishes the reserved entry and drains the displaced provider. Register, deregister, and separator-ambiguous staging cannot invalidate a live reservation.
+**Decision.** `Registry.StageRegistration` reserves a same-name replacement without placing the staged provider in the live registry map. Direct resource/prompt/observability reads continue reaching the exact prior provider until the catalog source swap succeeds. The catalog remains the dispatch linearization point; registry Commit then publishes the reserved entry and drains the displaced provider. Register, generic deregister, and separator-ambiguous staging cannot invalidate a live reservation. Exact generation-bound teardown can invalidate that reservation: it removes the unpublished handle into a private retryable `closing` receipt and closes that same handle. A close failure retains the receipt and blocks replacement; only a positive retry clears it. The invalidated receipt can never Commit.
 
 When an auth-required revision write reports failure but an exact reread proves the descriptor and provider landed, the operation converges as successful `auth_required`: Harbor publishes the exact provider, retains the producer-owned pause, emits the reread revision and pause token, and returns that token to the caller. A lost storage acknowledgement alone never rejects a durable continuation or hides its resume handle.
 
@@ -12074,8 +12074,17 @@ audience, and URL digest. Requested scope outside the true boot ceiling rejects
 loudly; silent scope intersection is forbidden for this path.
 
 The signed provider is pair-owned and outside general `ProviderSet`; private MCP
-prepare binds directly to that exact provider instance. The catalog source swap
-alone linearizes data-plane dispatch. Protocol projections derive from the
+prepare binds directly to that exact provider instance. Before the final
+durable-authority proof, activation installs an exact owner/fingerprint/
+generation registry reservation that is private and non-dispatchable. Exact
+teardown can therefore see and close the staged handle while proof is in
+flight. Publication holds that exact reservation while it verifies the
+physical revision and pair, operation generation/phase, and activation fence,
+then commits the catalog source and live registry handle as one ordered
+critical section. If teardown won or closed the reservation, publication fails
+and prepared resources close; if publication won, any later teardown
+necessarily sees the published handle. The catalog source swap alone
+linearizes data-plane dispatch, and it never occurs before proof. Protocol projections derive from the
 immutable signed-pair revision, not a live provider map; generic provider
 resolution cannot bind the pair. A pair-owned live registry may retain only
 close/reconcile receipts, never authority/projection/dispatch. General bare-name

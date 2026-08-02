@@ -2,18 +2,55 @@ package tokenexchange_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
+	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
 	"github.com/hurtener/Harbor/internal/tools/auth/drivers/tokenexchange"
 )
+
+type shutdownCoordinator struct {
+	base    pauseresume.Coordinator
+	gate    <-chan struct{}
+	honor   bool
+	entered chan struct{}
+}
+
+func (c *shutdownCoordinator) Request(ctx context.Context, _ pauseresume.PauseRequest) (pauseresume.Pause, error) {
+	c.entered <- struct{}{}
+	if c.honor {
+		select {
+		case <-c.gate:
+		case <-ctx.Done():
+			return pauseresume.Pause{}, ctx.Err()
+		}
+	} else {
+		<-c.gate
+	}
+	return pauseresume.Pause{Token: pauseresume.Token("shutdown-test")}, nil
+}
+
+func (c *shutdownCoordinator) Resume(ctx context.Context, token pauseresume.Token, decision pauseresume.Decision, payload map[string]any) error {
+	return c.base.Resume(ctx, token, decision, payload)
+}
+
+func (c *shutdownCoordinator) Status(ctx context.Context, token pauseresume.Token) (pauseresume.Status, error) {
+	return c.base.Status(ctx, token)
+}
+
+func (c *shutdownCoordinator) List(ctx context.Context, req pauseresume.ListRequest) (pauseresume.ListResponse, error) {
+	return c.base.List(ctx, req)
+}
 
 type connectionStates struct {
 	idle   chan net.Conn
@@ -126,6 +163,166 @@ func TestProvider_CloseOwnedTransport_CancelsAndJoinsActiveExchange(t *testing.T
 		t.Fatal("active Token was not joined by provider Close")
 	}
 	close(broker.gate)
+}
+
+func TestProvider_CloseCancelsConsentCoordinatorInvocation(t *testing.T) {
+	broker := newFakeBroker(t)
+	broker.setPosture("consent")
+	gate := make(chan struct{})
+	coord := &shutdownCoordinator{
+		base:    pauseresume.New(),
+		gate:    gate,
+		honor:   true,
+		entered: make(chan struct{}, 1),
+	}
+	deps, _, _ := mkDeps(t)
+	deps.Coordinator = coord
+	provider, err := tokenexchange.New(providerConfig("coordinator-cancel", broker.tokenURL()), deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	tokenDone := make(chan error, 1)
+	go func() {
+		_, tokenErr := provider.Token(mkCtx(t, aliceID()), tools.ToolSourceID("any"))
+		tokenDone <- tokenErr
+	}()
+	select {
+	case <-coord.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("coordinator Request did not become active")
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := provider.Close(closeCtx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case err := <-tokenDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Token error = %v, want shutdown cancellation", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Token remained blocked in coordinator after Close")
+	}
+	if _, err := provider.Token(mkCtx(t, aliceID()), tools.ToolSourceID("any")); !errors.Is(err, auth.ErrProviderClosed) {
+		t.Fatalf("Token after Close = %v, want ErrProviderClosed", err)
+	}
+}
+
+func TestProvider_CloseDeadlineLeavesRetryableClosingWhenCoordinatorIgnoresCancellation(t *testing.T) {
+	broker := newFakeBroker(t)
+	broker.setPosture("consent")
+	gate := make(chan struct{})
+	coord := &shutdownCoordinator{
+		base:    pauseresume.New(),
+		gate:    gate,
+		honor:   false,
+		entered: make(chan struct{}, 1),
+	}
+	deps, _, _ := mkDeps(t)
+	deps.Coordinator = coord
+	provider, err := tokenexchange.New(providerConfig("coordinator-stubborn", broker.tokenURL()), deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	tokenDone := make(chan error, 1)
+	go func() {
+		_, tokenErr := provider.Token(mkCtx(t, aliceID()), tools.ToolSourceID("any"))
+		tokenDone <- tokenErr
+	}()
+	select {
+	case <-coord.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("coordinator Request did not become active")
+	}
+
+	firstCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	started := time.Now()
+	firstErr := provider.Close(firstCtx)
+	cancel()
+	if !errors.Is(firstErr, context.DeadlineExceeded) {
+		t.Fatalf("first Close = %v, want deadline exceeded", firstErr)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("first Close ignored its deadline for %s", elapsed)
+	}
+	if _, err := provider.Token(mkCtx(t, aliceID()), tools.ToolSourceID("any")); !errors.Is(err, auth.ErrProviderClosed) {
+		t.Fatalf("Token during retryable closing = %v, want ErrProviderClosed", err)
+	}
+
+	close(gate)
+	select {
+	case <-tokenDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Token did not leave coordinator after release")
+	}
+	retryCtx, retryCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer retryCancel()
+	if err := provider.Close(retryCtx); err != nil {
+		t.Fatalf("retry Close: %v", err)
+	}
+}
+
+func TestProvider_ConcurrentTokenClose_N128NoBleedOrLeak(t *testing.T) {
+	const n = 128
+	baseline := runtime.NumGoroutine()
+	broker := newFakeBroker(t)
+	broker.setPosture("consent")
+	gate := make(chan struct{})
+	coord := &shutdownCoordinator{
+		base:    pauseresume.New(),
+		gate:    gate,
+		honor:   true,
+		entered: make(chan struct{}, n),
+	}
+	deps, _, _ := mkDeps(t)
+	deps.Coordinator = coord
+	provider, err := tokenexchange.New(providerConfig("concurrent-close", broker.tokenURL()), deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, tokenErr := provider.Token(mkCtx(t, aliceID()), tools.ToolSourceID("any"))
+			errs <- tokenErr
+		}()
+	}
+	for i := 0; i < n; i++ {
+		select {
+		case <-coord.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d/%d Token calls reached coordinator", i, n)
+		}
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := provider.Close(closeCtx); err != nil {
+		cancel()
+		t.Fatalf("Close: %v", err)
+	}
+	cancel()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Token error = %v, want shutdown cancellation", err)
+		}
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for runtime.NumGoroutine() > baseline+12 && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if got := runtime.NumGoroutine(); got > baseline+12 {
+		t.Fatalf("goroutines after Token+Close = %d, baseline=%d", got, baseline)
+	}
 }
 
 type closeCountingTransport struct {

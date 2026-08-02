@@ -269,6 +269,7 @@ type PreparedAttachment struct {
 	closeFn       func(context.Context) error
 	descriptors   []tools.ToolDescriptor
 	observations  *preparationObservations
+	registrySwap  *RegistrationSwap
 	activated     bool
 	closed        bool
 }
@@ -478,6 +479,16 @@ func filterDiscoveredTools(descriptors []tools.ToolDescriptor, source string, al
 // and direct registry reads until that point and is closed only after both
 // shared structures publish successfully.
 func (p *PreparedAttachment) Activate(ctx context.Context) error {
+	return p.ActivateIf(ctx, nil)
+}
+
+// ActivateIf reserves the exact provider handle in the non-dispatchable MCP
+// registry, then runs prove immediately before the catalog publication. Exact
+// teardown can address and close that staged handle while prove performs
+// durable reads. Publication commits through the same reservation, so either
+// teardown invalidates it first or every later teardown sees the live handle;
+// there is no catalog-only generation between those outcomes.
+func (p *PreparedAttachment) ActivateIf(ctx context.Context, prove func(context.Context) error) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -497,35 +508,47 @@ func (p *PreparedAttachment) Activate(ctx context.Context) error {
 	if urlOrCommand == "" {
 		urlOrCommand = strings.Join(p.ms.Command, " ")
 	}
-	registrySwap, err := p.deps.Registry.StageRegistration(ServerRegistration{
-		Provider: p.provider, Transport: string(p.mode), URLOrCommand: urlOrCommand,
-		InitialState: ServerStateOnline, Policy: p.defaultPolicy,
-		OAuthDiscoveryAllowedOrigins: append([]string(nil), p.ms.OAuthDiscoveryAllowedOrigins...),
-		Owner:                        p.deps.Owner,
-		DescriptorFingerprint:        p.deps.DescriptorFingerprint,
-	}, p.descriptors)
-	if err != nil {
-		return fmt.Errorf("registry.StageRegistration: %w", err)
+	if p.registrySwap == nil {
+		registrySwap, err := p.deps.Registry.StageRegistration(ServerRegistration{
+			Provider: p.provider, Transport: string(p.mode), URLOrCommand: urlOrCommand,
+			InitialState: ServerStateOnline, Policy: p.defaultPolicy,
+			OAuthDiscoveryAllowedOrigins: append([]string(nil), p.ms.OAuthDiscoveryAllowedOrigins...),
+			Owner:                        p.deps.Owner,
+			DescriptorFingerprint:        p.deps.DescriptorFingerprint,
+		}, p.descriptors)
+		if err != nil {
+			return fmt.Errorf("registry.StageRegistration: %w", err)
+		}
+		p.registrySwap = registrySwap
+		p.observations.transfer(registrySwap)
 	}
-	p.observations.transfer(registrySwap)
-	catalogSwap, err := p.deps.Catalog.StageSource(tools.ToolSourceID(p.ms.Name), p.descriptors, priorExists)
-	if err != nil {
-		rollbackErr := registrySwap.Rollback()
-		return errors.Join(fmt.Errorf("catalog.Register source %q: %w", p.ms.Name, err), rollbackErr)
+	if prove != nil {
+		if err := prove(ctx); err != nil {
+			rollbackErr := p.registrySwap.Rollback()
+			return errors.Join(err, rollbackErr)
+		}
 	}
-	// StageSource is the dispatch linearization point. Once it succeeds, Commit
-	// has no rejecting path and merely makes that publication irrevocable plus
-	// syncs the optional search cache. Only then may the private registry stage
-	// become visible to direct reads. The name reservation makes that registry
-	// publication non-conflicting; its only expected error is displaced-provider
-	// cleanup after publication, which is logged rather than changing success.
-	catalogSwap.Commit()
-	p.activated = true
+	var catalogSwap tools.CatalogSourceSwap
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	cleanupErr := registrySwap.Commit(cleanupCtx)
+	published, publishErr := p.registrySwap.Publish(cleanupCtx, func() error {
+		var err error
+		catalogSwap, err = p.deps.Catalog.StageSource(tools.ToolSourceID(p.ms.Name), p.descriptors, priorExists)
+		if err != nil {
+			return fmt.Errorf("catalog.Register source %q: %w", p.ms.Name, err)
+		}
+		// Commit synchronizes the optional search cache before exact teardown may
+		// proceed. Once this callback returns, registry publication cannot fail.
+		catalogSwap.Commit()
+		return nil
+	})
 	cancel()
-	if cleanupErr != nil && p.deps.Logger != nil {
-		p.deps.Logger.Warn("mcp: server activated but displaced transport cleanup failed", slog.String("name", p.ms.Name), slog.String("error", cleanupErr.Error()))
+	if !published {
+		rollbackErr := p.registrySwap.Rollback()
+		return errors.Join(publishErr, rollbackErr)
+	}
+	p.activated = true
+	if publishErr != nil && p.deps.Logger != nil {
+		p.deps.Logger.Warn("mcp: server activated but displaced transport cleanup failed", slog.String("name", p.ms.Name), slog.String("error", publishErr.Error()))
 	}
 	if p.deps.Logger != nil {
 		p.deps.Logger.Info("mcp: server attached", slog.String("name", p.ms.Name), slog.String("transport", string(p.mode)), slog.Int("tools_registered", len(p.descriptors)))
@@ -541,7 +564,11 @@ func (p *PreparedAttachment) Close(ctx context.Context) error {
 		return nil
 	}
 	p.closed = true
-	return p.closeFn(ctx)
+	var rollbackErr error
+	if p.registrySwap != nil && !p.activated {
+		rollbackErr = p.registrySwap.Rollback()
+	}
+	return errors.Join(rollbackErr, p.closeFn(ctx))
 }
 
 func closePreparedAfterFailure(ctx context.Context, prepared *PreparedAttachment, cause error) error {

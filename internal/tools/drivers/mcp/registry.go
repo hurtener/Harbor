@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -536,12 +537,17 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 // the staged entry final and drains the exact displaced provider. Rollback
 // restores the exact prior entry only while this staged entry is still current.
 type RegistrationSwap struct {
-	mu       sync.Mutex
-	registry *Registry
-	name     string
-	prior    *serverEntry
-	staged   *serverEntry
-	done     bool
+	mu        sync.Mutex
+	registry  *Registry
+	name      string
+	prior     *serverEntry
+	staged    *serverEntry
+	done      bool
+	published bool
+	// invalidated is set by exact teardown while the staged provider is still
+	// private. It is atomic because teardown owns the registry lock while the
+	// publication receipt owns mu; neither path may invert those locks.
+	invalidated atomic.Bool
 }
 
 // RecordAuthChallenge records on this receipt's exact staged entry, never on a
@@ -606,34 +612,65 @@ func (r *Registry) StageRegistration(reg ServerRegistration, descs []tools.ToolD
 	return swap, nil
 }
 
-// Commit finalizes a staged registration. A displaced provider close error is
-// cleanup failure after publication; callers must log it but must not roll the
-// already-committed state back.
+// Commit finalizes a staged registration without an external publication
+// callback. Prepared MCP attachments use [RegistrationSwap.Publish] so the
+// catalog dispatch swap and live-registry publication share one exact
+// reservation linearization.
 func (s *RegistrationSwap) Commit(ctx context.Context) error {
+	_, err := s.Publish(ctx, nil)
+	return err
+}
+
+// Publish atomically validates this exact private reservation, runs publish
+// while the registry write lock excludes exact teardown, and installs the
+// staged handle in the live registry. A teardown that wins before this method
+// invalidates and closes the staged handle; Publish then fails with
+// published=false. A teardown that starts after publish necessarily observes
+// the live exact handle. publish must make the external dispatch state visible
+// only after all durable authority checks have completed.
+//
+// The returned boolean distinguishes a cleanup error after irreversible
+// publication from a pre-publication refusal. Callers log the former and must
+// close/rollback the latter.
+func (s *RegistrationSwap) Publish(ctx context.Context, publish func() error) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.done {
-		return nil
+		if s.published {
+			return true, nil
+		}
+		return false, fmt.Errorf("mcp: registration publication refused for %q: private stage was invalidated", s.name)
 	}
 	s.registry.mu.Lock()
 	if s.registry.pending[s.name] != s {
 		s.registry.mu.Unlock()
-		return fmt.Errorf("mcp: registration commit refused for %q: private stage is no longer current", s.name)
+		return false, fmt.Errorf("mcp: registration publication refused for %q: private stage is no longer current", s.name)
 	}
 	if s.registry.servers[s.name] != s.prior {
 		s.registry.mu.Unlock()
-		return fmt.Errorf("mcp: registration commit refused for %q: prior entry changed while staged", s.name)
+		return false, fmt.Errorf("mcp: registration publication refused for %q: prior entry changed while staged", s.name)
+	}
+	if s.invalidated.Load() {
+		s.registry.mu.Unlock()
+		return false, fmt.Errorf("mcp: registration publication refused for %q: private stage was invalidated", s.name)
+	}
+	if publish != nil {
+		if err := publish(); err != nil {
+			s.registry.mu.Unlock()
+			return false, err
+		}
 	}
 	s.registry.servers[s.name] = s.staged
 	delete(s.registry.pending, s.name)
 	s.registry.mu.Unlock()
 	s.done = true
+	s.published = true
 	if s.prior != nil && s.prior.provider != nil && s.prior.provider != s.staged.provider {
 		if err := s.prior.provider.Close(ctx); err != nil {
-			return fmt.Errorf("close replaced transport %q: %w", s.name, err)
+			return true, fmt.Errorf("close replaced transport %q: %w", s.name, err)
 		}
 	}
-	return nil
+	return true, nil
 }
 
 // Rollback drops the private reservation iff it is still current. Ordinary
@@ -643,6 +680,10 @@ func (s *RegistrationSwap) Rollback() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.done {
+		return nil
+	}
+	if s.invalidated.Load() {
+		s.done = true
 		return nil
 	}
 	s.registry.mu.Lock()
@@ -727,10 +768,6 @@ func (r *Registry) DeregisterExact(ctx context.Context, name string, owner auth.
 		return 0, fmt.Errorf("%w: %q", ErrServerNotFound, name)
 	}
 	r.mu.Lock()
-	if _, staged := r.pending[name]; staged {
-		r.mu.Unlock()
-		return 0, fmt.Errorf("mcp: deregister %q refused while an exact replacement is staged", name)
-	}
 	e, retryingClose := r.closing[name]
 	removed := 0
 	if retryingClose {
@@ -738,6 +775,18 @@ func (r *Registry) DeregisterExact(ctx context.Context, name string, owner auth.
 			r.mu.Unlock()
 			return 0, fmt.Errorf("%w: %q", ErrServerNotFound, name)
 		}
+	} else if staged := r.pending[name]; staged != nil {
+		e = staged.staged
+		if e.owner != owner || e.descriptorFingerprint != descriptorFingerprint {
+			r.mu.Unlock()
+			return 0, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+		}
+		// The staged provider has never entered catalog dispatch. Exact removal
+		// invalidates its reservation and retains the same handle in closing so
+		// a close failure is retryable and replacement remains blocked.
+		delete(r.pending, name)
+		staged.invalidated.Store(true)
+		r.closing[name] = e
 	} else {
 		var ok bool
 		e, ok = r.servers[name]
@@ -759,6 +808,18 @@ func (r *Registry) DeregisterExact(ctx context.Context, name string, owner auth.
 	}
 	r.mu.Unlock()
 	return removed, nil
+}
+
+// reservationState is a test/diagnostic snapshot of one exact name. It is
+// intentionally package-private: authority remains the registry mutation
+// methods, not a caller-observed state classification.
+func (r *Registry) reservationState(name string) (pending, live, closing bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, pending = r.pending[name]
+	_, live = r.servers[name]
+	_, closing = r.closing[name]
+	return pending, live, closing
 }
 
 // OwnerOf returns the (tenant, agent) owner tag of the named registration and

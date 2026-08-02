@@ -192,10 +192,15 @@ explicit signed-capability production opt-in; it is not enabled by default.
   same-named replacement or publish one before the old generation is closed.
 - [x] Restart reconciliation revalidates the exact physical active revision,
   operation generation/phase, and activation fence after private preparation
-  and immediately around catalog activation. If removal/replacement completed
-  after the initial read, prepared connection/provider resources close and no
-  pair, catalog source, provider handle, or cache is resurrected. Tenant+agent
-  exclusion remains tenant-isolated.
+  under an exact owner/fingerprint/generation registry reservation immediately
+  before catalog activation. The reservation is non-dispatchable but visible to
+  exact teardown, which closes it through the same retryable closing receipt as
+  a live handle. Catalog publication and live-registry installation commit under
+  that exact reservation: removal before commit invalidates publication, while
+  removal after commit necessarily sees the published handle. If removal or
+  replacement completed after the initial read, prepared connection/provider
+  resources close and no pair, catalog source, provider handle, or cache is
+  resurrected. Tenant+agent exclusion remains tenant-isolated.
 - [x] Every post-prepare refusal uses one bounded cleanup context, attempts both
   connection and pair-owned provider cleanup, and joins every cleanup failure
   with the primary error. Erroring-close tests prove no catalog publication,
@@ -305,8 +310,13 @@ explicit signed-capability production opt-in; it is not enabled by default.
   compensation, cancellation cross-talk, identity bleed, or goroutine leak.
   Token-exchange providers drain and join the idle connections of only the
   transport they construct; a caller-supplied client/transport remains shared
-  and untouched across providers. Close is idempotent, cancels and joins an
-  active exchange, and retains independent session/provider teardown receipts.
+  and untouched across providers. Token/Revoke admission takes only a short
+  lifecycle lock and derives a per-call context cancelled by provider shutdown;
+  no coordinator, event, broker, or transport I/O runs under that lock. Close is
+  idempotent and non-admitting, cancels admitted calls and exchange workers, and
+  waits with the caller's context. A deadline leaves a retryable closing state;
+  later Close resumes, while new Token/Revoke calls fail closed. Independent
+  session/provider teardown receipts remain intact.
 
 ## Smoke script additions
 

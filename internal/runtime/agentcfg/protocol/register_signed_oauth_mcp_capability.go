@@ -241,7 +241,16 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closePrepared())
 	}
 	rev = physicalRevision
-	if err := preparedConnection.Activate(ctx); err != nil {
+	authorityPrepared, ok := preparedConnection.(AuthorityBoundPreparedConnection)
+	if !ok {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(
+			fmt.Errorf("%w: signed capability preparation lacks an exact staged-publication receipt", ErrSignedCapabilityUnavailable),
+			closePrepared(),
+		)
+	}
+	if err := authorityPrepared.ActivateIf(ctx, func(proofCtx context.Context) error {
+		return revalidateSignedAttachmentAuthority(proofCtx, physical, s.signedOAuthMCPOperations, s.signedOAuthMCPFences, q, req.AgentID, rev, pair, op)
+	}); err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closePrepared())
 	}
 	// No ProviderSet publication occurs. Commit records that the private

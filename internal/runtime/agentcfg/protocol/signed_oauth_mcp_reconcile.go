@@ -355,21 +355,21 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 	if err != nil {
 		return errors.Join(err, closePreparedSignedCapability(ctx, nil, provider))
 	}
-	// Preparation performs network I/O and can outlive the active-pointer read
-	// that selected this pair. Removal or replacement may have completed while
-	// the connection was private. Re-prove the exact physical revision,
-	// operation generation/phase, and activation fence immediately before the
-	// sole catalog publication point.
-	if err := r.revalidateAttachmentAuthority(ctx, q, agentID, revision, pair, op); err != nil {
-		return errors.Join(err, closePreparedSignedCapability(ctx, prepared, provider))
+	authorityPrepared, ok := prepared.(AuthorityBoundPreparedConnection)
+	if !ok {
+		return errors.Join(
+			fmt.Errorf("%w: signed capability preparation lacks an exact staged-publication receipt", ErrSignedCapabilityUnavailable),
+			closePreparedSignedCapability(ctx, prepared, provider),
+		)
 	}
-	if err := prepared.Activate(ctx); err != nil {
-		return errors.Join(err, closePreparedSignedCapability(ctx, prepared, provider))
-	}
-	// Close the just-activated private attachment if teardown raced the final
-	// pre-activation proof. This second proof prevents the narrow read/Activate
-	// window from leaving a stale catalog/provider generation behind.
-	if err := r.revalidateAttachmentAuthority(ctx, q, agentID, revision, pair, op); err != nil {
+	// ActivateIf reserves the exact provider handle in the production registry
+	// before this durable proof. Removal can close that non-dispatchable handle
+	// while the proof runs; publication then fails by the same reservation. If
+	// publication wins, registry and catalog become visible under one registry
+	// lock, so every later removal necessarily observes the exact handle.
+	if err := authorityPrepared.ActivateIf(ctx, func(proofCtx context.Context) error {
+		return r.revalidateAttachmentAuthority(proofCtx, q, agentID, revision, pair, op)
+	}); err != nil {
 		return errors.Join(err, closePreparedSignedCapability(ctx, prepared, provider))
 	}
 	provider.Commit(ctx)
@@ -377,14 +377,18 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 }
 
 func (r *SignedOAuthMCPReconciler) revalidateAttachmentAuthority(ctx context.Context, q identity.Quadruple, agentID string, revision agentcfg.Revision, pair *agentcfg.SignedOAuthMCPPair, expected agentcfg.SignedOAuthMCPOperation) error {
-	physical, err := requirePhysicalActiveRevision(ctx, r.physical, q, agentID, revision.RevisionID, revision.ContentHash)
+	return revalidateSignedAttachmentAuthority(ctx, r.physical, r.operations, r.fences, q, agentID, revision, pair, expected)
+}
+
+func revalidateSignedAttachmentAuthority(ctx context.Context, physicalRegistry physicalActiveRegistry, operations *agentcfg.SignedOAuthMCPOperationStore, fences *agentcfg.SignedOAuthMCPActivationFenceStore, q identity.Quadruple, agentID string, revision agentcfg.Revision, pair *agentcfg.SignedOAuthMCPPair, expected agentcfg.SignedOAuthMCPOperation) error {
+	physical, err := requirePhysicalActiveRevision(ctx, physicalRegistry, q, agentID, revision.RevisionID, revision.ContentHash)
 	if err != nil {
 		return errors.Join(
 			fmt.Errorf("%w: attachment candidate is no longer physically active", agentcfg.ErrSignedCapabilityPending),
 			err,
 		)
 	}
-	kind, err := r.operations.Kind(expected.ReplayKey)
+	kind, err := operations.Kind(expected.ReplayKey)
 	if err != nil {
 		return err
 	}
@@ -392,7 +396,7 @@ func (r *SignedOAuthMCPReconciler) revalidateAttachmentAuthority(ctx context.Con
 		!signedCapabilityPairMatchesOperation(pair, q.TenantID, expected.Binding, kind) {
 		return fmt.Errorf("%w: attachment candidate no longer binds the exact pair lifetime", agentcfg.ErrSignedCapabilityPending)
 	}
-	latest, err := r.operations.LoadForPair(ctx, q.TenantID, pair)
+	latest, err := operations.LoadForPair(ctx, q.TenantID, pair)
 	if err != nil {
 		return err
 	}
@@ -405,7 +409,7 @@ func (r *SignedOAuthMCPReconciler) revalidateAttachmentAuthority(ctx context.Con
 	} else if expected.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted {
 		return fmt.Errorf("%w: operation phase %q cannot publish an attachment", agentcfg.ErrSignedCapabilityPending, expected.Phase)
 	}
-	fence, err := r.fences.Load(ctx, q.TenantID, agentID)
+	fence, err := fences.Load(ctx, q.TenantID, agentID)
 	if err != nil {
 		return err
 	}

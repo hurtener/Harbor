@@ -432,10 +432,21 @@ type preparedMCPConnection struct {
 	release sync.Once
 }
 
+var _ agentcfgprotocol.AuthorityBoundPreparedConnection = (*preparedMCPConnection)(nil)
+
 func (p *preparedMCPConnection) unlock() { p.release.Do(p.owner.mu.Unlock) }
 
 func (p *preparedMCPConnection) Activate(ctx context.Context) error {
 	err := p.inner.Activate(ctx)
+	if err == nil {
+		p.owner.closers = append(p.owner.closers, p.inner.Close)
+	}
+	p.unlock()
+	return err
+}
+
+func (p *preparedMCPConnection) ActivateIf(ctx context.Context, prove func(context.Context) error) error {
+	err := p.inner.ActivateIf(ctx, prove)
 	if err == nil {
 		p.owner.closers = append(p.owner.closers, p.inner.Close)
 	}

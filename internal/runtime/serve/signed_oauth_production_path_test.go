@@ -350,6 +350,25 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		actor.Resource != sink || actor.PairFingerprint != agentcfg.SignedOAuthMCPPairFingerprint(expectedBinding) {
 		t.Fatalf("actor binding lost exact signed authority: %+v", actor)
 	}
+
+	// Remove on the next instruction after registration. A successful register
+	// response is the publication receipt: exact teardown must already be able
+	// to see and detach the real MCP handle, never race a later registry commit.
+	removed, err := service.RemoveOAuthMCPCapability(verifiedCtx, prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
+		Identity: req.Identity, AgentID: agentID, ExpectedContentHash: response.Revision.ContentHash,
+	})
+	if err != nil {
+		t.Fatalf("immediate production removal: %v", err)
+	}
+	if removed.OperationPhase != string(agentcfg.SignedOAuthMCPPhaseRemoved) {
+		t.Fatalf("immediate removal phase = %q, want removed", removed.OperationPhase)
+	}
+	if _, ok := catalog.Resolve(connectionName + "_echo"); ok {
+		t.Fatal("immediate removal left catalog dispatch live")
+	}
+	if _, _, ok := mcpRegistry.RegistrationIdentity(connectionName); ok {
+		t.Fatal("immediate removal did not detach the published registry handle")
+	}
 }
 
 func decodeExchangeField(t *testing.T, encoded string, out any) {

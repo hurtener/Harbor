@@ -2,7 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -180,6 +183,134 @@ func TestRegistry_DeregisterExact_PersistentCloseFailureNeverBecomesAbsentSucces
 	provider.mu.Unlock()
 	if closeCalls != 3 {
 		t.Fatalf("persistent failure close calls = %d, want one genuine retry per attempt", closeCalls)
+	}
+}
+
+func TestRegistry_DeregisterExact_StagedCloseFailureRetainsSameHandleAndBlocksPublish(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	closeFault := errors.New("staged close fault")
+	provider := &stubProvider{id: "staged-close", closeErrs: []error{closeFault, nil}}
+	swap, err := reg.StageRegistration(ServerRegistration{Provider: provider, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-a"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withdrawals := 0
+	removed, err := reg.DeregisterExact(ctx, "staged-close", owner, "generation-a", func() int {
+		withdrawals++
+		return 1
+	})
+	if !errors.Is(err, closeFault) || removed != 0 || withdrawals != 0 {
+		t.Fatalf("first staged teardown = removed=%d withdrawals=%d err=%v, want 0/0/close fault", removed, withdrawals, err)
+	}
+	if published, err := swap.Publish(ctx, nil); err == nil || published {
+		t.Fatalf("invalidated staged receipt published=%t err=%v, want false/error", published, err)
+	}
+	if _, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "staged-close"}, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-b"}, nil); err == nil {
+		t.Fatal("replacement staged before the invalidated handle had a positive close receipt")
+	}
+	removed, err = reg.DeregisterExact(ctx, "staged-close", owner, "generation-a", func() int {
+		withdrawals++
+		return 1
+	})
+	if err != nil || removed != 0 || withdrawals != 0 {
+		t.Fatalf("staged close retry = removed=%d withdrawals=%d err=%v, want 0/0/nil", removed, withdrawals, err)
+	}
+	provider.mu.Lock()
+	closeCalls := provider.closed
+	provider.mu.Unlock()
+	if closeCalls != 2 {
+		t.Fatalf("staged provider close calls = %d, want exact retry on same handle", closeCalls)
+	}
+}
+
+func TestRegistry_ExactStagedPublishVsRemoval_ConcurrentReuseN128(t *testing.T) {
+	const n = 128
+	ctx := context.Background()
+	reg := NewRegistry()
+	cat := tools.NewCatalog()
+	deregister := cat.(tools.CatalogSourceDeregisterer)
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	type fixture struct {
+		name        string
+		fingerprint string
+		toolName    string
+		provider    *stubProvider
+		swap        *RegistrationSwap
+	}
+	fixtures := make([]fixture, 0, n)
+	for i := range n {
+		name := fmt.Sprintf("race-%03d", i)
+		fingerprint := fmt.Sprintf("generation-%03d", i)
+		provider := &stubProvider{id: tools.ToolSourceID(name)}
+		swap, err := reg.StageRegistration(ServerRegistration{Provider: provider, Transport: "http+sse", Owner: owner, DescriptorFingerprint: fingerprint}, nil)
+		if err != nil {
+			t.Fatalf("stage %s: %v", name, err)
+		}
+		fixtures = append(fixtures, fixture{name: name, fingerprint: fingerprint, toolName: name + "_echo", provider: provider, swap: swap})
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, n*2)
+	for i, f := range fixtures {
+		wg.Add(2)
+		go func(i int, f fixture) {
+			defer wg.Done()
+			<-start
+			for range i % 7 {
+				runtime.Gosched()
+			}
+			published, err := f.swap.Publish(ctx, func() error {
+				catalogSwap, stageErr := cat.StageSource(tools.ToolSourceID(f.name), []tools.ToolDescriptor{{
+					Tool:   tools.Tool{Name: f.toolName, Source: tools.ToolSourceID(f.name)},
+					Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) { return tools.ToolResult{}, nil },
+				}}, false)
+				if stageErr != nil {
+					return stageErr
+				}
+				catalogSwap.Commit()
+				return nil
+			})
+			if published && err != nil {
+				errs <- fmt.Errorf("%s published with cleanup error: %w", f.name, err)
+			}
+			if !published && err == nil {
+				errs <- fmt.Errorf("%s refused publication without an error", f.name)
+			}
+		}(i, f)
+		go func(i int, f fixture) {
+			defer wg.Done()
+			<-start
+			for range (n - i) % 7 {
+				runtime.Gosched()
+			}
+			if _, err := reg.DeregisterExact(ctx, f.name, owner, f.fingerprint, func() int {
+				return deregister.DeregisterSource(tools.ToolSourceID(f.name))
+			}); err != nil {
+				errs <- fmt.Errorf("%s exact removal: %w", f.name, err)
+			}
+		}(i, f)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	for _, f := range fixtures {
+		if _, ok := cat.Resolve(f.toolName); ok {
+			t.Errorf("%s remained dispatchable after publish/removal race", f.name)
+		}
+		if pending, live, closing := reg.reservationState(f.name); pending || live || closing {
+			t.Errorf("%s leaked registry state: pending=%t live=%t closing=%t", f.name, pending, live, closing)
+		}
+		f.provider.mu.Lock()
+		closeCalls := f.provider.closed
+		f.provider.mu.Unlock()
+		if closeCalls != 1 {
+			t.Errorf("%s provider close calls = %d, want exactly one", f.name, closeCalls)
+		}
 	}
 }
 

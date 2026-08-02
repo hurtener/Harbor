@@ -369,6 +369,8 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 	// survive caller cancellation. This lifecycle context has no request values;
 	// it exists solely so Close can cancel and join those unmanaged workers.
 	closeCtx, closeCancel := context.WithCancel(context.Background())
+	activeDrained := make(chan struct{})
+	close(activeDrained)
 
 	return &provider{
 		name:                   cfg.Name,
@@ -389,6 +391,7 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 		ownedHTTPTransport:     ownedHTTPTransport,
 		closeCtx:               closeCtx,
 		closeCancel:            closeCancel,
+		activeDrained:          activeDrained,
 		now:                    clock,
 		bus:                    deps.Bus,
 		redactor:               deps.Redactor,
@@ -614,13 +617,17 @@ type provider struct {
 	flightMu sync.Mutex
 	flight   map[string]*exchangeCall
 
-	closed atomic.Bool
-	// lifecycleMu makes Close a barrier: Token calls admitted before closure
-	// finish before Close returns, and calls arriving after closure fail before
-	// they can observe a cache entry or start an exchange.
-	lifecycleMu sync.RWMutex
-	closeCtx    context.Context
-	closeCancel context.CancelFunc
+	// lifecycleMu guards admission only. It is never held across broker,
+	// coordinator, event-bus, or transport I/O. Close flips closing under this
+	// short lock, cancels every admitted invocation, and then waits on the
+	// current activeDrained receipt with the caller's deadline.
+	lifecycleMu   sync.Mutex
+	closing       bool
+	closeComplete bool
+	activeCalls   int
+	activeDrained chan struct{}
+	closeCtx      context.Context
+	closeCancel   context.CancelFunc
 }
 
 // cachedToken is one in-memory brokered token plus its serve horizon
@@ -656,11 +663,11 @@ func (e *consentError) Error() string { return "auth/tokenexchange: broker requi
 // retargeted onto the operator-configured source (the V1 one-provider-
 // one-attachment model, mirroring the oauth2 driver).
 func (p *provider) Token(ctx context.Context, _ tools.ToolSourceID) (auth.Token, error) {
-	p.lifecycleMu.RLock()
-	defer p.lifecycleMu.RUnlock()
-	if p.closed.Load() {
-		return auth.Token{}, auth.ErrProviderClosed
+	ctx, release, err := p.admit(ctx)
+	if err != nil {
+		return auth.Token{}, err
 	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return auth.Token{}, fmt.Errorf("auth/tokenexchange: Token cancelled: %w", err)
 	}
@@ -1187,11 +1194,11 @@ func (p *provider) PendingFlow(_ context.Context, _ string) (auth.PendingFlowInf
 // (revocation there is the broker's concern; the serve horizon bounds
 // our staleness).
 func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
-	p.lifecycleMu.RLock()
-	defer p.lifecycleMu.RUnlock()
-	if p.closed.Load() {
-		return auth.ErrProviderClosed
+	ctx, release, err := p.admit(ctx)
+	if err != nil {
+		return err
 	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("auth/tokenexchange: Revoke cancelled: %w", err)
 	}
@@ -1214,13 +1221,26 @@ func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
 // barrier: no admitted Token call or detached exchange worker remains, and no
 // cached credential remains reachable when it returns successfully.
 func (p *provider) Close(ctx context.Context) error {
-	p.closed.Store(true)
-	p.closeCancel()
-	// Wait until every Token/Revoke call that passed the closed check has
-	// returned. Cancelling the provider worker context first ensures a caller
-	// waiting on a detached exchange is released promptly.
+	// Admission and shutdown transition are one short critical section. No
+	// external I/O occurs while lifecycleMu is held, so a caller that ignores
+	// cancellation cannot prevent Close from observing its own deadline.
 	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
+	if p.closeComplete {
+		p.lifecycleMu.Unlock()
+		return nil
+	}
+	if !p.closing {
+		p.closing = true
+		p.closeCancel()
+	}
+	activeDrained := p.activeDrained
+	p.lifecycleMu.Unlock()
+
+	select {
+	case <-activeDrained:
+	case <-ctx.Done():
+		return fmt.Errorf("auth/tokenexchange: Close cancelled while draining active calls: %w", ctx.Err())
+	}
 
 	p.flightMu.Lock()
 	done := make([]<-chan struct{}, 0, len(p.flight))
@@ -1245,7 +1265,45 @@ func (p *provider) Close(ctx context.Context) error {
 		// that private pool; caller-supplied/shared transports are untouched.
 		p.ownedHTTPTransport.CloseIdleConnections()
 	}
+	p.lifecycleMu.Lock()
+	p.closeComplete = true
+	p.lifecycleMu.Unlock()
 	return nil
+}
+
+// admit registers one externally visible provider invocation and derives a
+// context cancelled by either the caller or provider shutdown. The returned
+// release must be called exactly once. Admission and Close's transition share
+// lifecycleMu, making "accepted before closing" versus "rejected after
+// closing" exact without holding a lock across I/O.
+func (p *provider) admit(ctx context.Context) (context.Context, func(), error) {
+	p.lifecycleMu.Lock()
+	if p.closing {
+		p.lifecycleMu.Unlock()
+		return nil, nil, auth.ErrProviderClosed
+	}
+	if p.activeCalls == 0 {
+		p.activeDrained = make(chan struct{})
+	}
+	p.activeCalls++
+	callCtx, cancel := context.WithCancel(ctx)
+	stopShutdownCancel := context.AfterFunc(p.closeCtx, cancel)
+	p.lifecycleMu.Unlock()
+
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			stopShutdownCancel()
+			cancel()
+			p.lifecycleMu.Lock()
+			p.activeCalls--
+			if p.activeCalls == 0 {
+				close(p.activeDrained)
+			}
+			p.lifecycleMu.Unlock()
+		})
+	}
+	return callCtx, release, nil
 }
 
 // RefuseRedirects reports whether the downstream transport must reject every

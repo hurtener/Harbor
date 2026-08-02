@@ -29,6 +29,8 @@ assert_grep_present 'RFC5952' "docs/plans/phase-233b-signed-oauth-mcp-capability
 assert_grep_present 'foreign operation' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "activation fence rejects foreign authority mutators"
 assert_grep_present 'redirects' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "bearer redirects are fail-closed"
 assert_grep_present 'CanonicalOAuthMCPURL' internal/runtime/agentcfg/protocol/register_signed_oauth_mcp_capability.go "registration derives its URL bytes and sink through the canonical helper"
+assert_grep_present 'ActivateIf' internal/runtime/agentcfg/protocol/register_signed_oauth_mcp_capability.go "initial registration proves authority under the exact staged publication receipt"
+assert_grep_present 'ActivateIf' internal/runtime/agentcfg/protocol/signed_oauth_mcp_reconcile.go "restart reconcile proves authority under the exact staged publication receipt"
 assert_grep_absent 'AllowWireOAuthDescriptor|allowWireOAuthDescriptor' internal/runtime/agentcfg/protocol/register_signed_oauth_mcp_capability.go "D-401 registration does not consult the development-only wire OAuth descriptor opt-in"
 
 P233B_TMP="$(mktemp -d "${TMPDIR:-/tmp}/harbor-phase-233b.XXXXXX")"
@@ -65,9 +67,17 @@ assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./intern
     TestDetachSourceExpected_CloseFailureIsRetryableAndNeverAbsentSuccess \
     TestRegistry_DeregisterExact_CloseFailureRetainsExactRetryReceiptAndBlocksReplacement \
     TestRegistry_DeregisterExact_PersistentCloseFailureNeverBecomesAbsentSuccess \
+    TestRegistry_DeregisterExact_StagedCloseFailureRetainsSameHandleAndBlocksPublish \
+    TestRegistry_ExactStagedPublishVsRemoval_ConcurrentReuseN128 \
+    TestPreparedAttachment_AuthorityLostBeforeReservationNeverPublishes \
+    TestPreparedAttachment_ExactRemovalAfterReservationInvalidatesPublication \
+    TestPreparedAttachment_RegistryStagesBeforeCatalogDispatchLinearization \
     TestProvider_CloseRetriesPairOwnedOAuthUntilPositiveReceipt \
     TestProvider_CloseOwnedTransport_ClosesIdleConnectionAndIsIdempotent \
     TestProvider_CloseOwnedTransport_CancelsAndJoinsActiveExchange \
+    TestProvider_CloseCancelsConsentCoordinatorInvocation \
+    TestProvider_CloseDeadlineLeavesRetryableClosingWhenCoordinatorIgnoresCancellation \
+    TestProvider_ConcurrentTokenClose_N128NoBleedOrLeak \
     TestProvider_CloseSuppliedTransport_DoesNotCrossProviders \
     TestRollback_ActiveRevisionReadFailureAbortsBeforePointerMutation \
     TestDeactivateIfActive_RestoresAbsentAndSurvivesRestart \

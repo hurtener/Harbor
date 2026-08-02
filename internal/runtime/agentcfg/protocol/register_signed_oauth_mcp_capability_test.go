@@ -166,6 +166,12 @@ func (c *cleanupCapabilityConnection) Activate(context.Context) error {
 	c.parent.mu.Unlock()
 	return nil
 }
+func (c *cleanupCapabilityConnection) ActivateIf(ctx context.Context, prove func(context.Context) error) error {
+	if err := prove(ctx); err != nil {
+		return err
+	}
+	return c.Activate(ctx)
+}
 func (c *cleanupCapabilityConnection) Close(ctx context.Context) error {
 	c.parent.mu.Lock()
 	defer c.parent.mu.Unlock()
@@ -289,6 +295,13 @@ func (p capabilityPreparedConnection) Activate(context.Context) error {
 	p.parent.live[p.req.Identity.TenantID+"/"+p.req.AgentID+"/"+p.req.Name] = p.req.DescriptorFingerprint
 	p.parent.mu.Unlock()
 	return nil
+}
+
+func (p capabilityPreparedConnection) ActivateIf(ctx context.Context, prove func(context.Context) error) error {
+	if err := prove(ctx); err != nil {
+		return err
+	}
+	return p.Activate(ctx)
 }
 
 func TestSignedOAuthMCPReconciler_HistoricalPublishedPairCannotReattach(t *testing.T) {

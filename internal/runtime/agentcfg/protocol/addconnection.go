@@ -109,6 +109,17 @@ type PreparedConnection interface {
 	Close(ctx context.Context) error
 }
 
+// AuthorityBoundPreparedConnection is the mandatory signed-capability
+// publication seam. ActivateIf establishes an exact, non-dispatchable provider
+// reservation before prove runs, then publishes only if that same reservation
+// is still current. Exact teardown can invalidate and close the reservation;
+// callers must treat a non-implementing prepared connection as unavailable,
+// never fall back to ordinary Activate.
+type AuthorityBoundPreparedConnection interface {
+	PreparedConnection
+	ActivateIf(ctx context.Context, prove func(context.Context) error) error
+}
+
 // ProviderPreparer builds an unpublished OAuth provider for an MCP prepare.
 // The provider can be used privately during dial/discovery, then published
 // reversibly after the durable revision lands.
