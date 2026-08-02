@@ -409,6 +409,14 @@ func TestE2E_Phase146_AwaitTask_HeavyAnswerPayload_Offloaded(t *testing.T) {
 	t.Parallel()
 	driver := registerPhase146Driver()
 	stack := phase146DevStack(t, driver)
+	// This leg owns the task lifecycle directly so it can inject the exact
+	// heavy AnswerEnvelope shape. Stop and join the stack's asynchronous
+	// RunLoopDriver before Spawn; otherwise it may consume task.spawned and
+	// complete the task before the manual MarkRunning/MarkComplete sequence.
+	// Close is idempotent, so the stack cleanup may safely call it again.
+	if err := stack.RunLoopDriver.Close(context.Background()); err != nil {
+		t.Fatalf("close RunLoopDriver: %v", err)
+	}
 
 	idCtx, err := identity.With(context.Background(), phase146DevIdentity())
 	if err != nil {
