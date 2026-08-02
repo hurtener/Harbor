@@ -43,6 +43,10 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 
 - [ ] `test/integration/wave_v126_test.go` exercises reach-authorized start/config/tools paths, durable session overlay/personal resolution, erasure, and retirement over real SQLite, with identity propagation and at least one denial per seam.
 - [ ] Two independent runtimes over shared Postgres race retirement and session erasure against agent write, user write, rollback, overlay write, personal-record write/delete, and second retirement; exactly one valid transition wins and restart preserves the result.
+- [ ] The existing `state-postgres` Postgres 16 CI job runs the named
+  `TestE2E_WaveV126...` integration suite under `-race` with
+  `HARBOR_PG_DSN` set. A missing local DSN may skip only outside that CI step;
+  the real Postgres leg is never skipped in CI.
 - [ ] The immutable per-run resolver gives Directory and
   `skill_get`/`skill_list`/`skill_search` the same current personal,
   legacy-fallback, `ScopeUser`, lexical, and semantic view; session-skills
@@ -82,7 +86,15 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
   types/manifest, operator skills, config examples, glossary, plans, and
   CHANGELOG are current.
 - [ ] A separate read-only reviewer audits phases 232–235 against RFC/plans/code/tests; the coordinator fixes and re-verifies every release-blocking finding.
-- [ ] Full preflight, release dry run, Linux release build, and GitHub checks pass before tagging `v1.26.0` from `main`.
+- [ ] Before tagging `v1.26.0` from `main`, the cloud PR-to-main preflight is
+  green and authoritative. Maintainers run focused local race, smoke, lint,
+  drift, mirror, release-dryrun, and Linux release-build gates; they do not
+  claim or run the full local preflight for this release process.
+- [ ] Release evidence records six CGo-free binaries
+  (`linux`/`darwin`/`windows` × `amd64`/`arm64`), every per-binary SHA-256
+  sidecar, successful `checksums.txt` verification, build provenance
+  attestations, every GitHub Release asset, and native `harbor version --json`
+  reporting `v1.26.0`.
 - [ ] After the tag publishes, a separate `chore(release)` commit bumps `cmd/harbor/scaffold.FallbackModuleVersion` to `v1.26.0`, regenerates scaffold goldens, and passes its targeted/cloud validation.
 
 ## Files added or changed
@@ -106,7 +118,10 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 
 ## Smoke script additions
 
-- Run `TestE2E_WaveV126` with a no-match-fails guard and assert its reach, four-slot CAS, resolver, erasure, retirement, restart, cleanup, and isolation subtests execute.
+- Replace the skeleton with a `go test -list` no-match-fails guard for the
+  named `TestE2E_WaveV126...` suite, then run it and assert its reach,
+  four-slot CAS, resolver, erasure, retirement, restart, cleanup, and
+  isolation subtests execute. A zero-match `go test -run` exit is not evidence.
 
 ## Coverage target
 
@@ -118,7 +133,12 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 
 ## Risks / open questions
 
-- The real Postgres gate requires CI credentials; missing credentials skip only local execution and are release-blocking in CI. StateStore has no atomic collection-count primitive, so the wave must verify per-record/request bounds rather than assert a hard personal-record cardinality cap.
+- The existing Postgres 16 CI service must receive the named wave integration
+  invocation with `HARBOR_PG_DSN`; without it, the environment-gated Postgres
+  subtest would skip and the release criterion would be unproven. StateStore
+  has no atomic collection-count primitive, so the wave must verify
+  per-record/request bounds rather than assert a hard personal-record
+  cardinality cap.
 - Any audit finding that changes authority semantics returns to the RFC before code changes.
 
 ## Glossary additions
@@ -128,12 +148,18 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 ## Pre-merge checklist
 
 - [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
+- [ ] Focused local race, smoke, lint, drift, mirror, release-dryrun, and Linux
+  release-build gates pass; local full preflight is intentionally not run
+- [ ] Cloud PR-to-main `make preflight` passes before merge/tag
 - [ ] `make check-mirror` passes
 - [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
 - [ ] Coverage on touched packages ≥ stated target
 - [ ] Cross-session and cross-tenant wave stress passes
 - [ ] N≥10 wave stress and inherited N≥100 artifact tests pass under `-race` with no leak
 - [ ] Real-driver integration covers identity and at least one failure per seam
+- [ ] `state-postgres` CI runs the named v1.26 Postgres E2E with
+  `HARBOR_PG_DSN`; no Postgres skip is accepted there
+- [ ] Release evidence verifies the six artifacts, SHA-256 sidecars,
+  `checksums.txt`, provenance, GitHub Release assets, and native version JSON
 - [ ] If new vocabulary: glossary updated
 - [ ] If a brief finding was departed from: justified above + decisions.md entry filed
