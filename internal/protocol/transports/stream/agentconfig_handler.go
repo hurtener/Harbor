@@ -744,7 +744,10 @@ func (h *AgentConfigHandler) serveUserListRevisions(w http.ResponseWriter, r *ht
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserListRevisions) {
+	// Historical revisions remain readable after retirement and must never
+	// manufacture a lifecycle slot when the default has not been used. Signed
+	// reach still gates this read before the registry is consulted.
+	if !h.authorizeAgent(w, r, req.AgentID) {
 		return
 	}
 	resp, err := h.service.UserListRevisions(r.Context(), req)
@@ -764,7 +767,9 @@ func (h *AgentConfigHandler) serveUserDiff(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserDiff) {
+	// Diff is a historical read over immutable revisions, not a current-agent
+	// operation. Preserve retirement/absence history without bootstrapping.
+	if !h.authorizeAgent(w, r, req.AgentID) {
 		return
 	}
 	resp, err := h.service.UserDiff(r.Context(), req)
