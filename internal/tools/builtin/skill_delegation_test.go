@@ -333,6 +333,53 @@ func TestSkillBuiltins_RequireWiringDepsAtRegistration(t *testing.T) {
 	}
 }
 
+// TestSkillReadBuiltins_AcceptReadOnlyDependency pins the compatibility seam:
+// read builtins prefer SkillReader and do not require a mutation-capable
+// SkillStore, while skill_propose retains its writer dependency.
+func TestSkillReadBuiltins_AcceptReadOnlyDependency(t *testing.T) {
+	t.Parallel()
+	bus := skillTestBus(t)
+	backing := newFakeSkillStore(bus)
+	ctx := skillTestCtx(t)
+	q := identity.Quadruple{Identity: skillTestID}
+	if err := backing.Upsert(ctx, q, skills.Skill{
+		Name: "read-only-skill", Title: "Read only", Trigger: "read trigger",
+		Steps: []string{"read"}, Origin: skills.OriginGenerated, Scope: skills.ScopeProject,
+	}); err != nil {
+		t.Fatalf("seed skill: %v", err)
+	}
+
+	cat := tools.NewCatalog()
+	rc := RegistryContext{
+		Catalog:     cat,
+		SkillReader: skills.SkillReader(backing),
+		Bus:         bus,
+		Redactor:    auditpatterns.New(),
+	}
+	if err := RegisterWith(rc, []string{"skill_search", "skill_get", "skill_list", "skill_propose"}); err != nil {
+		t.Fatalf("RegisterWith: %v", err)
+	}
+	if got := invoke[skilltools.GetResult](t, cat, ctx, "skill_get", SkillGetArgs{
+		Names: []string{"read-only-skill"}, MaxTokens: 1024,
+	}); len(got.Skills) != 1 || got.Skills[0].Name != "read-only-skill" {
+		t.Fatalf("skill_get = %+v, want read-only-skill", got)
+	}
+
+	desc, ok := cat.Resolve("skill_propose")
+	if !ok {
+		t.Fatal("Resolve(skill_propose): not found")
+	}
+	raw, err := json.Marshal(map[string]any{"skill": map[string]any{
+		"name": "proposal", "trigger": "trigger", "steps": []string{"step"},
+	}})
+	if err != nil {
+		t.Fatalf("marshal skill_propose args: %v", err)
+	}
+	if _, err := desc.Invoke(ctx, raw); err == nil || !strings.Contains(err.Error(), "SkillStore is nil") {
+		t.Fatalf("skill_propose with read-only dep error = %v, want SkillStore is nil", err)
+	}
+}
+
 // TestSkillSearch_Delegation_AppliesCapabilityFilter proves the §13
 // closure: the PRODUCTION-registered skill_search runs the Phase-38
 // capability filter — a skill requiring a tool the run cannot see

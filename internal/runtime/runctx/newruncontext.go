@@ -113,6 +113,7 @@ type runContextConfig struct {
 	inputArtifactIDs  []string
 	inputDispositions map[string]string
 	dispositionPolicy planner.DispositionPolicy
+	skillReader       *skills.RunSkillReaderSnapshot
 }
 
 // Option configures a NewRunContext call. The functional-option shape
@@ -139,6 +140,14 @@ func WithInputArtifactDispositions(hints map[string]string) Option {
 // (the middle precedence layer).
 func WithDispositionPolicy(policy planner.DispositionPolicy) Option {
 	return func(c *runContextConfig) { c.dispositionPolicy = policy }
+}
+
+// WithSkillReaderSnapshot installs the immutable read projection already
+// selected for this effective agent and run. The caller must construct one
+// snapshot at run start and reuse it when attaching the tool-invocation
+// context; NewRunContext uses it for the Directory projection only.
+func WithSkillReaderSnapshot(snapshot skills.RunSkillReaderSnapshot) Option {
+	return func(c *runContextConfig) { c.skillReader = &snapshot }
 }
 
 // NewRunContext projects the stack-derived sources into a fully-formed
@@ -194,13 +203,23 @@ func NewRunContext(
 	}
 
 	// Identity-attached projection ctx: the skills Directory (and the
-	// identity-scoped artifact reads) read the triple from ctx, exactly
-	// as the run-loop drivers attach it via identity.With before
-	// projecting. A failure here is a programmer error (the quadruple
-	// already validated above) — fail loud.
+	// identity-scoped artifact reads) read the triple from ctx. Preserve the
+	// historical empty-RunID path for callers that do not install a per-run
+	// reader snapshot; otherwise retain the complete quadruple so the reader
+	// binding can verify its exact run. A failure here is a programmer error
+	// (the identity already validated above) — fail loud.
 	projCtx, err := identity.With(ctx, q.Identity)
+	if q.RunID != "" {
+		projCtx, err = identity.WithRun(ctx, q.Identity, q.RunID)
+	}
 	if err != nil {
 		return planner.RunContext{}, fmt.Errorf("runctx: NewRunContext identity ctx: %w", err)
+	}
+	if cfg.skillReader != nil {
+		if cfg.skillReader.Quadruple() != q {
+			return planner.RunContext{}, fmt.Errorf("runctx: skill reader snapshot: %w", skills.ErrInvalidRunSkillReaderSnapshot)
+		}
+		projCtx = skills.WithRunSkillReaderSnapshot(projCtx, *cfg.skillReader)
 	}
 
 	// Session-scoped quadruple (RunID zeroed): memory + skills span runs

@@ -145,7 +145,7 @@ type DirectoryConfig struct {
 // args; no mutable field on Directory itself changes after
 // construction.
 type Directory struct {
-	store     SkillStore
+	reader    SkillReader
 	bus       events.EventBus
 	maxEntry  int
 	selection Selection
@@ -165,7 +165,7 @@ var ErrInvalidConfig = errors.New("skills: invalid directory config")
 //
 // Validation rules:
 //
-//   - store == nil               → wrapped ErrInvalidConfig
+//   - reader == nil              → wrapped ErrInvalidConfig
 //   - deps.Bus == nil            → wrapped ErrInvalidConfig
 //   - cfg.MaxEntries == 0        → DefaultMaxEntries (30)
 //   - cfg.MaxEntries < 1 or > 200 → wrapped ErrInvalidConfig
@@ -174,9 +174,9 @@ var ErrInvalidConfig = errors.New("skills: invalid directory config")
 //
 // Concurrent reuse: the returned *Directory holds no mutable state;
 // safe to share across N goroutines.
-func NewDirectory(store SkillStore, deps Deps, cfg DirectoryConfig) (*Directory, error) {
-	if store == nil {
-		return nil, fmt.Errorf("%w: store is nil", ErrInvalidConfig)
+func NewDirectory(reader SkillReader, deps Deps, cfg DirectoryConfig) (*Directory, error) {
+	if reader == nil {
+		return nil, fmt.Errorf("%w: reader is nil", ErrInvalidConfig)
 	}
 	if deps.Bus == nil {
 		return nil, fmt.Errorf("%w: deps.Bus is required (events.EventBus)", ErrInvalidConfig)
@@ -221,7 +221,7 @@ func NewDirectory(store SkillStore, deps Deps, cfg DirectoryConfig) (*Directory,
 	}
 
 	return &Directory{
-		store:       store,
+		reader:      reader,
 		bus:         deps.Bus,
 		maxEntry:    maxEntry,
 		selection:   sel,
@@ -237,7 +237,7 @@ func NewDirectory(store SkillStore, deps Deps, cfg DirectoryConfig) (*Directory,
 //
 //  1. Read identity from ctx (Quadruple or Identity); missing →
 //     wrapped ErrIdentityRequired + skill.identity_rejected emit.
-//  2. SkillStore.List for the identity (Limit=0 — driver default;
+//  2. SkillReader.List for the identity (Limit=0 — driver default;
 //     the directory bounds locally to maxEntry afterwards).
 //  3. Capability filter: exclude skills whose RequiredTools /
 //     RequiredNS / RequiredTags are NOT subsets of cap.Allowed*.
@@ -258,11 +258,16 @@ func (d *Directory) View(ctx context.Context, cap DirectoryCapability) ([]SkillV
 		return nil, EmitIdentityRejected(ctx, d.bus, q, "directory.View")
 	}
 
+	reader, err := ResolveSkillReader(ctx, q, d.reader)
+	if err != nil {
+		return nil, fmt.Errorf("skills/directory: resolve reader: %w", err)
+	}
+
 	// Fetch every skill under the identity. We pass Limit=0 so the
-	// store applies its driver default (localdb: 100); the
+	// reader applies its driver default (localdb: 100); the
 	// directory itself bounds to maxEntry after filter + partition,
 	// so a larger driver default just gives us more candidates.
-	all, err := d.store.List(ctx, q, ListFilter{Limit: 0})
+	all, err := reader.List(ctx, q, ListFilter{Limit: 0})
 	if err != nil {
 		return nil, fmt.Errorf("skills/directory: list: %w", err)
 	}

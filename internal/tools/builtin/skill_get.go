@@ -37,10 +37,11 @@ func registerSkillGet(rc RegistryContext) error {
 	return inproc.RegisterFunc[SkillGetArgs, skilltools.GetResult](
 		rc.Catalog, skilltools.ToolNameSkillGet,
 		func(ctx context.Context, args SkillGetArgs) (skilltools.GetResult, error) {
-			if rc.SkillStore == nil {
-				return skilltools.GetResult{}, fmt.Errorf("skill_get: backing SkillStore is nil — `skill_get` was registered without skills.SkillStore deps (operator misconfiguration)")
+			reader := skillReader(rc)
+			if reader == nil {
+				return skilltools.GetResult{}, fmt.Errorf("skill_get: backing SkillStore is nil and no SkillReader was supplied (operator misconfiguration)")
 			}
-			return skilltools.GetHandler(ctx, rc.SkillStore, rc.Bus, skilltools.GetArgs{
+			return skilltools.GetHandler(ctx, reader, rc.Bus, skilltools.GetArgs{
 				Names:      args.Names,
 				MaxTokens:  args.MaxTokens,
 				Capability: runCapability(ctx, rc),
