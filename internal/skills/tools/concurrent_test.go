@@ -195,6 +195,17 @@ func (s *spyStore) Get(ctx context.Context, id identity.Quadruple, name string) 
 	return skills.Skill{}, skills.ErrSkillNotFound
 }
 
+func (s *spyStore) GetScope(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) (skills.Skill, error) {
+	got, err := s.Get(ctx, id, name)
+	if err != nil {
+		return skills.Skill{}, err
+	}
+	if got.Scope != scope {
+		return skills.Skill{}, skills.ErrSkillNotFound
+	}
+	return got, nil
+}
+
 func (s *spyStore) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if err := identity.Validate(id.Identity); err != nil {
 		return nil, fmt.Errorf("%w: %w", skills.ErrIdentityRequired, err)

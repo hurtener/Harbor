@@ -96,6 +96,18 @@ func (f *fakeSkillStore) Get(ctx context.Context, q identity.Quadruple, name str
 	return skills.Skill{}, skills.ErrSkillNotFound
 }
 
+func (f *fakeSkillStore) GetScope(ctx context.Context, q identity.Quadruple, name string, scope skills.Scope) (skills.Skill, error) {
+	if err := skills.ValidateIdentity(q); err != nil {
+		return skills.Skill{}, err
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if s, ok := f.rows[f.key(q, scope, name)]; ok && s.Scope == scope {
+		return s, nil
+	}
+	return skills.Skill{}, skills.ErrSkillNotFound
+}
+
 func (f *fakeSkillStore) List(ctx context.Context, q identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if err := skills.ValidateIdentity(q); err != nil {
 		return nil, err

@@ -90,6 +90,17 @@ func (s *paritySkillStore) Get(_ context.Context, id identity.Quadruple, name st
 	return skills.Skill{}, skills.ErrSkillNotFound
 }
 
+func (s *paritySkillStore) GetScope(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) (skills.Skill, error) {
+	got, err := s.Get(ctx, id, name)
+	if err != nil {
+		return skills.Skill{}, err
+	}
+	if got.Scope != scope {
+		return skills.Skill{}, skills.ErrSkillNotFound
+	}
+	return got, nil
+}
+
 func (s *paritySkillStore) List(_ context.Context, id identity.Quadruple, _ skills.ListFilter) ([]skills.Skill, error) {
 	if err := identity.Validate(id.Identity); err != nil {
 		return nil, err

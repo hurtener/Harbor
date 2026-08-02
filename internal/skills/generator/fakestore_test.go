@@ -41,6 +41,10 @@ func (f *failingUpsertStore) Get(ctx context.Context, id identity.Quadruple, nam
 	return f.inner.Get(ctx, id, name)
 }
 
+func (f *failingUpsertStore) GetScope(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) (skills.Skill, error) {
+	return f.inner.GetScope(ctx, id, name, scope)
+}
+
 func (f *failingUpsertStore) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	return f.inner.List(ctx, id, filter)
 }

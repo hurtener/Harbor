@@ -47,6 +47,17 @@ func (s *fakeStore) Get(ctx context.Context, id identity.Quadruple, name string)
 	return got, nil
 }
 
+func (s *fakeStore) GetScope(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) (skills.Skill, error) {
+	got, err := s.Get(ctx, id, name)
+	if err != nil {
+		return skills.Skill{}, err
+	}
+	if got.Scope != scope {
+		return skills.Skill{}, skills.ErrSkillNotFound
+	}
+	return got, nil
+}
+
 func (s *fakeStore) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if err := identity.Validate(id.Identity); err != nil {
 		return nil, skills.EmitIdentityRejected(ctx, s.bus, id, "List")

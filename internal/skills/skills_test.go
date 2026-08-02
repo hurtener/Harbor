@@ -46,6 +46,9 @@ func (stubStore) Upsert(context.Context, identity.Quadruple, skills.Skill) error
 func (stubStore) Get(context.Context, identity.Quadruple, string) (skills.Skill, error) {
 	return skills.Skill{}, nil
 }
+func (stubStore) GetScope(context.Context, identity.Quadruple, string, skills.Scope) (skills.Skill, error) {
+	return skills.Skill{}, nil
+}
 func (stubStore) List(context.Context, identity.Quadruple, skills.ListFilter) ([]skills.Skill, error) {
 	return nil, nil
 }

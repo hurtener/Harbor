@@ -135,6 +135,20 @@ func (m *memStore) Get(ctx context.Context, id identity.Quadruple, name string) 
 	return skills.Skill{}, skills.ErrSkillNotFound
 }
 
+func (m *memStore) GetScope(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) (skills.Skill, error) {
+	if err := identity.Validate(id.Identity); err != nil {
+		return skills.Skill{}, skills.EmitIdentityRejected(ctx, m.bus, id, "GetScope")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.skillsByIdent[storageKey(id.Identity, scope)] {
+		if s.Name == name && s.Scope == scope {
+			return s, nil
+		}
+	}
+	return skills.Skill{}, skills.ErrSkillNotFound
+}
+
 func (m *memStore) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if err := identity.Validate(id.Identity); err != nil {
 		return nil, skills.EmitIdentityRejected(ctx, m.bus, id, "List")

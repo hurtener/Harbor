@@ -103,6 +103,12 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 		testDeleteRungIndependence(t, h)
 	})
 
+	t.Run("get_scope_exact_rung", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testGetScopeExactRung(t, h)
+	})
+
 	t.Run("delete_session_scope", func(t *testing.T) {
 		h := factory(t)
 		defer h.Cleanup()
@@ -113,6 +119,12 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 		h := factory(t)
 		defer h.Cleanup()
 		testDeleteSessionScopeAfterClose(t, h)
+	})
+
+	t.Run("get_scope_after_close", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testGetScopeAfterClose(t, h)
 	})
 }
 
@@ -263,6 +275,7 @@ func testIdentityRejection(t *testing.T, h Harness) {
 	}{
 		{"Upsert", func() error { return h.Store.Upsert(ctx, bad, newSkill("x")) }},
 		{"Get", func() error { _, err := h.Store.Get(ctx, bad, "x"); return err }},
+		{"GetScope", func() error { _, err := h.Store.GetScope(ctx, bad, "x", skills.ScopeSession); return err }},
 		{"List", func() error { _, err := h.Store.List(ctx, bad, skills.ListFilter{}); return err }},
 		{"Search", func() error { _, err := h.Store.Search(ctx, bad, "x", 5); return err }},
 		{"Delete", func() error { return h.Store.Delete(ctx, bad, "x", skills.ScopeSession) }},
@@ -272,6 +285,59 @@ func testIdentityRejection(t *testing.T, h Harness) {
 		if err == nil {
 			t.Fatalf("%s: expected ErrIdentityRequired, got nil", c.name)
 		}
+	}
+}
+
+// testGetScopeExactRung pins the non-precedence read used by legacy
+// migration. A same-named wider user row may never replace an exact session
+// row, and an absent session rung must remain absent even when the user rung
+// exists.
+func testGetScopeExactRung(t *testing.T, h Harness) {
+	ctx := context.Background()
+	sessionSkill := newSkill("same-name")
+	sessionSkill.Scope = skills.ScopeSession
+	sessionSkill.Title = "session"
+	userSkill := newSkill("same-name")
+	userSkill.Scope = skills.ScopeUser
+	userSkill.Title = "user"
+	for _, skill := range []skills.Skill{userSkill, sessionSkill} {
+		if err := h.Store.Upsert(ctx, fixtureID, skill); err != nil {
+			t.Fatalf("Upsert(%s): %v", skill.Scope, err)
+		}
+	}
+
+	gotSession, err := h.Store.GetScope(ctx, fixtureID, "same-name", skills.ScopeSession)
+	if err != nil || gotSession.Scope != skills.ScopeSession || gotSession.Title != "session" {
+		t.Fatalf("GetScope(session): got=%+v err=%v", gotSession, err)
+	}
+	gotUser, err := h.Store.GetScope(ctx, fixtureID, "same-name", skills.ScopeUser)
+	if err != nil || gotUser.Scope != skills.ScopeUser || gotUser.Title != "user" {
+		t.Fatalf("GetScope(user): got=%+v err=%v", gotUser, err)
+	}
+
+	userOnly := newSkill("user-only")
+	userOnly.Scope = skills.ScopeUser
+	if err := h.Store.Upsert(ctx, fixtureID, userOnly); err != nil {
+		t.Fatalf("Upsert(user-only): %v", err)
+	}
+	if _, err := h.Store.GetScope(ctx, fixtureID, userOnly.Name, skills.ScopeSession); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("GetScope missing exact session rung: err=%v, want ErrSkillNotFound", err)
+	}
+
+	foreign := []identity.Quadruple{fixtureID, fixtureID, fixtureID}
+	foreign[0].SessionID = "s-conformance-foreign"
+	foreign[1].UserID = "u-conformance-foreign"
+	foreign[2].TenantID = "t-conformance-foreign"
+	for _, id := range foreign {
+		if _, err := h.Store.GetScope(ctx, id, "same-name", skills.ScopeSession); !errors.Is(err, skills.ErrSkillNotFound) {
+			t.Fatalf("GetScope foreign identity %+v: err=%v, want ErrSkillNotFound", id.Identity, err)
+		}
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := h.Store.GetScope(canceled, fixtureID, "same-name", skills.ScopeSession); !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetScope canceled context: err=%v, want context.Canceled", err)
 	}
 }
 
@@ -552,6 +618,16 @@ func testDeleteSessionScopeAfterClose(t *testing.T, h Harness) {
 	}
 	if err := h.Store.DeleteSessionScope(ctx, fixtureID); !errors.Is(err, skills.ErrStoreClosed) {
 		t.Fatalf("DeleteSessionScope after Close: err=%v, want ErrStoreClosed", err)
+	}
+}
+
+func testGetScopeAfterClose(t *testing.T, h Harness) {
+	ctx := context.Background()
+	if err := h.Store.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := h.Store.GetScope(ctx, fixtureID, "x", skills.ScopeSession); !errors.Is(err, skills.ErrStoreClosed) {
+		t.Fatalf("GetScope after Close: err=%v, want ErrStoreClosed", err)
 	}
 }
 

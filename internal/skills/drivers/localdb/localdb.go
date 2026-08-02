@@ -383,6 +383,29 @@ func (d *driver) Get(ctx context.Context, id identity.Quadruple, name string) (s
 	return got, nil
 }
 
+// GetScope implements skills.SkillReader. Unlike Get, it never applies
+// scope precedence: the returned row must match exactly the requested rung.
+func (d *driver) GetScope(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) (skills.Skill, error) {
+	if d.closed.Load() {
+		return skills.Skill{}, skills.ErrStoreClosed
+	}
+	if skills.ValidateIdentity(id) != nil {
+		return skills.Skill{}, skills.EmitIdentityRejected(ctx, d.bus, id, "GetScope")
+	}
+	row := d.db.QueryRowContext(ctx, selectSkillsSQL+`
+        WHERE tenant = ? AND user = ? AND session = ? AND scope = ? AND name = ?
+        LIMIT 1`,
+		id.TenantID, id.UserID, skills.StorageSessionID(id, scope), string(scope), name)
+	got, err := scanSkill(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return skills.Skill{}, fmt.Errorf("%w: name=%q scope=%q", skills.ErrSkillNotFound, name, scope)
+		}
+		return skills.Skill{}, fmt.Errorf("skills/localdb: GetScope scan: %w", err)
+	}
+	return got, nil
+}
+
 // List implements skills.SkillStore.
 func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if d.closed.Load() {

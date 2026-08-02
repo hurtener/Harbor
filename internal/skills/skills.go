@@ -231,6 +231,36 @@ type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
+// SkillReader is Harbor's identity-mandatory read-only skill-storage
+// interface. It includes both the normal precedence-aware read and the
+// exact-rung read used by migrations that must never fall through to a
+// wider scope.
+type SkillReader interface {
+	// Get returns the skill identified by `name` under the supplied
+	// identity using the store's normal scope-precedence rules. Missing →
+	// `ErrSkillNotFound`.
+	Get(ctx context.Context, id identity.Quadruple, name string) (Skill, error)
+
+	// GetScope returns the skill identified by `name` at exactly `scope`.
+	// It never falls through to another visibility rung. ScopeUser is keyed
+	// by `(tenant, user)`; every other V1 rung is additionally pinned to the
+	// supplied session. Missing exact rung → `ErrSkillNotFound`.
+	GetScope(ctx context.Context, id identity.Quadruple, name string, scope Scope) (Skill, error)
+
+	// List returns the filtered, paged skills under the supplied
+	// identity. Ordering is deterministic: `(UpdatedAt DESC,
+	// Name ASC)`.
+	List(ctx context.Context, id identity.Quadruple, filter ListFilter) ([]Skill, error)
+
+	// Search returns up to `limit` skills ranked by the FTS5 →
+	// regex → exact ladder. `limit == 0` falls back
+	// to 20. The driver picks the first path that returns rows;
+	// later paths run only when earlier ones produced nothing.
+	// Emits `skill.search_executed` with the path that produced the
+	// result.
+	Search(ctx context.Context, id identity.Quadruple, query string, limit int) ([]RankedSkill, error)
+}
+
 // SkillStore is Harbor's mandatory skill-storage interface. A single
 // surface; every V1 driver (`localdb` here; Portico post-V1)
 // implements every method. No `Supports*` ceremony per AGENTS.md
@@ -249,6 +279,8 @@ type Embedder interface {
 //     Mutable state is internally synchronised; per-call state lives
 //     in `ctx` and the supplied `Quadruple`, never on the driver.
 type SkillStore interface {
+	SkillReader
+
 	// Upsert inserts or updates `skill` under the identity-scoped
 	// `(tenant, user, session, scope, name)` key. Conflict policy
 	// (RFC §6.7):
@@ -263,23 +295,6 @@ type SkillStore interface {
 	//   - otherwise: last-write-wins; emit `skill.upserted` with
 	//     `idempotent=false`.
 	Upsert(ctx context.Context, id identity.Quadruple, skill Skill) error
-
-	// Get returns the skill identified by `name` under the supplied
-	// identity. Missing → `ErrSkillNotFound`.
-	Get(ctx context.Context, id identity.Quadruple, name string) (Skill, error)
-
-	// List returns the filtered, paged skills under the supplied
-	// identity. Ordering is deterministic: `(UpdatedAt DESC,
-	// Name ASC)`.
-	List(ctx context.Context, id identity.Quadruple, filter ListFilter) ([]Skill, error)
-
-	// Search returns up to `limit` skills ranked by the FTS5 →
-	// regex → exact ladder. `limit == 0` falls back
-	// to 20. The driver picks the first path that returns rows;
-	// later paths run only when earlier ones produced nothing.
-	// Emits `skill.search_executed` with the path that produced the
-	// result.
-	Search(ctx context.Context, id identity.Quadruple, query string, limit int) ([]RankedSkill, error)
 
 	// Delete removes the named skill under the identity, at the target
 	// `scope`. The scope makes the DESTRUCTIVE op RUNG-PRECISE so an
