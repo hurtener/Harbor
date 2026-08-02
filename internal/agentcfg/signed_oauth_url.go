@@ -22,7 +22,7 @@ var ErrInvalidOAuthMCPURL = errors.New("agentcfg: invalid signed oauth mcp url")
 // CanonicalOAuthMCPURL returns the one byte representation used for signed
 // OAuth MCP capability matching, pair fingerprints, and downstream bearer
 // sink enforcement. It deliberately does not use url.URL.String: its escaping
-// choices are not the D-401 wire contract.
+// choices are not the signed-capability wire contract.
 //
 // The result is absolute HTTPS with an explicit canonical port; sink is the
 // corresponding HTTPS origin. Query order, duplicate keys, and a terminal

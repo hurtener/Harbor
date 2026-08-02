@@ -267,7 +267,7 @@ type RunLoopDriverOptions struct {
 	// of a removal re-installs). OPTIONAL — nil means no provider reconcile.
 	// Owner-scoped exactly like the connection reconcile.
 	OAuthProviderReconciler projection.OAuthProviderReconciler
-	// SignedOAuthMCPReconciler is the D-401 bounded durable recovery seam.
+	// SignedOAuthMCPReconciler is the bounded durable recovery seam.
 	// It runs before generic provider/connection projection so a fenced pair
 	// cannot be mistaken for an ordinary declared connection.
 	SignedOAuthMCPReconciler interface {

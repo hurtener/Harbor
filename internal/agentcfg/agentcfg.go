@@ -643,7 +643,7 @@ type OAuthProvidersSection struct {
 }
 
 // SignedOAuthMCPConnectionDescriptor is the deliberately closed, non-secret
-// connection half of a D-401 signed capability pair. Unlike the generic MCP
+// connection half of a signed capability pair. Unlike the generic MCP
 // descriptor it cannot carry a transport selector, headers, discovery policy,
 // injection mapping, command, environment, or a credential sink list. The
 // production registration verb is its sole author.
@@ -657,7 +657,7 @@ type SignedOAuthMCPConnectionDescriptor struct {
 }
 
 // SignedOAuthMCPPair is immutable server-authored desired state for one
-// D-401 OAuth provider and MCP connection. It deliberately stores only the
+// signed OAuth provider and MCP connection. It deliberately stores only the
 // verified, canonical binding facts; the untrusted authority envelope is never
 // projected from a revision or copied into audit/event payloads.
 type SignedOAuthMCPPair struct {
@@ -668,6 +668,7 @@ type SignedOAuthMCPPair struct {
 	CapabilityRevision string                             `json:"capability_revision"`
 	URLDigest          string                             `json:"url_digest"`
 	Sink               string                             `json:"sink"`
+	SinkDigest         string                             `json:"sink_digest"`
 	Connection         SignedOAuthMCPConnectionDescriptor `json:"connection"`
 	AuthorityIssuer    string                             `json:"authority_issuer"`
 	AuthorityKeyID     string                             `json:"authority_key_id"`
@@ -679,7 +680,9 @@ type SignedOAuthMCPPair struct {
 	// OwnerAgentID is the signed agent binding retained only for internal
 	// receipt validation. agent_id remains a runtime entity key, not an
 	// isolation principal.
-	OwnerAgentID string `json:"owner_agent_id"`
+	OwnerAgentID   string `json:"owner_agent_id"`
+	OwnerUserID    string `json:"owner_user_id"`
+	OwnerSessionID string `json:"owner_session_id"`
 }
 
 // RunCompletionHook is the durable, versioned run-completion hook

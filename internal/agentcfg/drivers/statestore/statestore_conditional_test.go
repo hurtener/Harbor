@@ -193,7 +193,7 @@ func TestSetRevision_ConditionalWrite_NoActiveRevisionRefused(t *testing.T) {
 }
 
 // TestSignedOAuthMCPActivationFence_HidesCandidateAndRejectsForeignWriters
-// proves the D-401 fence at the real Registry boundary. The candidate pointer
+// proves the signed-capability fence at the real Registry boundary. The candidate pointer
 // is physically durable before publication, yet Active exposes only the prior
 // authority and every unmarked writer fails closed across that interval.
 func TestSignedOAuthMCPActivationFence_HidesCandidateAndRejectsForeignWriters(t *testing.T) {
@@ -235,6 +235,51 @@ func TestSignedOAuthMCPActivationFence_HidesCandidateAndRejectsForeignWriters(t 
 	visible, set, err = reg.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent)
 	if err != nil || !set || visible.RevisionID != candidate.RevisionID {
 		t.Fatalf("committed Active = (%q, %v, %v), want candidate %q", visible.RevisionID, set, err, candidate.RevisionID)
+	}
+}
+
+func TestSignedOAuthMCPPair_GenericWritesCarryForwardAndRollbackCannotMutate(t *testing.T) {
+	ctx := context.Background()
+	reg, _ := newRegistryWithStore(t)
+	q := agentQuad(condAgent)
+	prior, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("prior"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair := &agentcfg.SignedOAuthMCPPair{
+		ProviderName: "provider", Broker: "broker", Audience: "audience", CapabilityRevision: "v1",
+		URLDigest: "url-digest", SinkDigest: "sink-digest", Sink: "https://mcp.example.test:8443",
+		Connection:   agentcfg.SignedOAuthMCPConnectionDescriptor{Name: "server", URL: "https://mcp.example.test:8443/mcp", ToolAllowlist: []string{"read"}},
+		OwnerAgentID: condAgent, OwnerUserID: q.UserID, OwnerSessionID: q.SessionID, AuthorityOperationKind: "pair-operation",
+	}
+	pairPayload := condPayload("paired")
+	pairPayload.SignedOAuthMCPPair = pair
+	pairRevision, err := reg.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, condAgent, agentcfg.ConfigScopeAgent, pairPayload, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed pair: %v", err)
+	}
+	carried, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("generic-edit"), agentcfg.SetOptions{})
+	if err != nil || !reflect.DeepEqual(carried.Payload.SignedOAuthMCPPair, pair) {
+		t.Fatalf("generic omission did not carry immutable pair: pair=%+v err=%v", carried.Payload.SignedOAuthMCPPair, err)
+	}
+	altered := carried.Payload
+	mutated := *pair
+	mutated.CapabilityRevision = "v2"
+	altered.SignedOAuthMCPPair = &mutated
+	if _, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, altered, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
+		t.Fatalf("generic pair alteration = %v, want replay refusal", err)
+	}
+	if _, err := reg.Rollback(ctx, q, condAgent, prior.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
+		t.Fatalf("generic rollback removed pair: %v", err)
+	}
+	removedPayload := carried.Payload
+	removedPayload.SignedOAuthMCPPair = nil
+	removed, err := reg.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, condAgent, agentcfg.ConfigScopeAgent, removedPayload, agentcfg.SetOptions{})
+	if err != nil || removed.Payload.SignedOAuthMCPPair != nil {
+		t.Fatalf("paired removal: pair=%+v err=%v", removed.Payload.SignedOAuthMCPPair, err)
+	}
+	if _, err := reg.Rollback(ctx, q, condAgent, pairRevision.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
+		t.Fatalf("generic rollback resurrected pair: %v", err)
 	}
 }
 

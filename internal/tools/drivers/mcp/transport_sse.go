@@ -165,7 +165,11 @@ func buildHTTPClient(cfg Config) *http.Client {
 	// forms (including `_meta`, whose credential rides the redirected body).
 	switch {
 	case cfg.OAuthProvider != nil:
-		client.CheckRedirect = redirectGuardFor(cfg.OAuthProvider.AllowedDownstreamHosts())
+		if strict, ok := cfg.OAuthProvider.(interface{ RefuseRedirects() bool }); ok && strict.RefuseRedirects() {
+			client.CheckRedirect = refuseEveryCredentialRedirect
+		} else {
+			client.CheckRedirect = redirectGuardFor(cfg.OAuthProvider.AllowedDownstreamHosts())
+		}
 	case cfg.Injection != nil:
 		client.CheckRedirect = redirectGuardFor(cfg.Injection.Provider.AllowedDownstreamHosts())
 	}
@@ -176,6 +180,10 @@ func buildHTTPClient(cfg Config) *http.Client {
 // refuses a redirect with when the redirect target host is not in the bound
 // provider's downstream-sink allow-list. Callers compare with errors.Is.
 var ErrRedirectToUnlistedHost = errors.New("mcp: redirect target host is not in the bound provider's allowed_downstream_hosts")
+
+func refuseEveryCredentialRedirect(req *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("%w: signed credential binding refuses redirect to %q", ErrRedirectToUnlistedHost, req.URL.String())
+}
 
 // redirectGuardFor builds an http.Client CheckRedirect that refuses any
 // redirect whose target host is not in allowList (normalised via the ONE

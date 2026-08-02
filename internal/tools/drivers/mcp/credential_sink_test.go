@@ -114,3 +114,39 @@ func TestMCPBearerClient_RefusesRedirectToUnlistedHost(t *testing.T) {
 		t.Fatalf("unlisted redirect target received a request (bearer=%q) — the exchanged bearer egressed", gotBearer)
 	}
 }
+
+type strictRedirectProvider struct{ *stubOAuthProvider }
+
+func (strictRedirectProvider) RefuseRedirects() bool { return true }
+
+func TestMCPBearerClient_SignedBindingRefusesEvenSameOriginRedirect(t *testing.T) {
+	gotTarget := false
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, server.URL+"/target", http.StatusTemporaryRedirect)
+	})
+	mux.HandleFunc("/target", func(w http.ResponseWriter, _ *http.Request) {
+		gotTarget = true
+		w.WriteHeader(http.StatusOK)
+	})
+	provider := strictRedirectProvider{&stubOAuthProvider{
+		token: "signed-bearer", allowedHosts: []string{config.NormalizeDownstreamHost(server.URL)},
+	}}
+	client := buildHTTPClient(Config{OAuthProvider: provider})
+	req, err := http.NewRequestWithContext(withBearer(context.Background(), "signed-bearer"), http.MethodGet, server.URL+"/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, ErrRedirectToUnlistedHost) {
+		t.Fatalf("signed redirect was not refused: %v", err)
+	}
+	if gotTarget {
+		t.Fatal("signed bearer followed a same-origin redirect")
+	}
+}

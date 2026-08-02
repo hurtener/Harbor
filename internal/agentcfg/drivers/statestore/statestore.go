@@ -251,11 +251,6 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	if err := r.guardSignedOAuthMCPFenceWriter(ctx, id, agentID, scope); err != nil {
 		return agentcfg.Revision{}, err
 	}
-	norm := agentcfg.NormalizePayload(payload)
-	hash, err := agentcfg.ContentHash(norm)
-	if err != nil {
-		return agentcfg.Revision{}, err
-	}
 	q := keys.quad
 	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys, opts)
 	if err != nil {
@@ -267,6 +262,17 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	// publication, so a concurrent Runtime cannot turn this read into a
 	// lost update. The per-owner write lock only reduces same-process churn.
 	active, hasActive, err := r.loadActiveRevision(ctx, q, keys.activeKind, keys.revPfx)
+	if err != nil {
+		return agentcfg.Revision{}, err
+	}
+	if scope == agentcfg.ConfigScopeAgent {
+		payload, err = preserveSignedOAuthMCPPair(ctx, active, hasActive, payload)
+		if err != nil {
+			return agentcfg.Revision{}, err
+		}
+	}
+	norm := agentcfg.NormalizePayload(payload)
+	hash, err := agentcfg.ContentHash(norm)
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
@@ -346,6 +352,38 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	return rev, nil
 }
 
+func preserveSignedOAuthMCPPair(ctx context.Context, active agentcfg.Revision, hasActive bool, payload agentcfg.ConfigPayload) (agentcfg.ConfigPayload, error) {
+	operation := agentcfg.SignedOAuthMCPFenceOperation(ctx)
+	var current *agentcfg.SignedOAuthMCPPair
+	if hasActive {
+		current = active.Payload.SignedOAuthMCPPair
+	}
+	requested := payload.SignedOAuthMCPPair
+	switch {
+	case current == nil && requested == nil:
+		return payload, nil
+	case current == nil && requested != nil:
+		if operation == "" || operation != requested.AuthorityOperationKind {
+			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: generic writer cannot add signed capability pair", agentcfg.ErrSignedCapabilityReplay)
+		}
+		return payload, nil
+	case current != nil && requested == nil:
+		if operation == current.AuthorityOperationKind {
+			return payload, nil
+		}
+		payload.SignedOAuthMCPPair = current
+		return payload, nil
+	default:
+		currentNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: current}).SignedOAuthMCPPair
+		requestedNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: requested}).SignedOAuthMCPPair
+		if !reflect.DeepEqual(currentNorm, requestedNorm) {
+			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: generic writer cannot alter signed capability pair", agentcfg.ErrSignedCapabilityReplay)
+		}
+		payload.SignedOAuthMCPPair = current
+		return payload, nil
+	}
+}
+
 func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
 	if err := r.validate(id, agentID); err != nil {
 		return agentcfg.Revision{}, false, err
@@ -367,6 +405,25 @@ func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID st
 		return active, set, err
 	}
 	return r.applySignedOAuthMCPFence(ctx, id, agentID, keys, active, set)
+}
+
+// PhysicalActive returns the revision named by the durable pointer without
+// applying the activation-fence visibility projection. It is intentionally a
+// recovery-only seam: ordinary authorization callers use Active, while the
+// signed-capability reconciler must inspect the hidden candidate in order to
+// commit or neutralize that exact revision after a crash.
+func (r *registry) PhysicalActive(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
+	if err := r.validate(id, agentID); err != nil {
+		return agentcfg.Revision{}, false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return agentcfg.Revision{}, false, err
+	}
+	keys, err := keysFor(scope, id, agentID)
+	if err != nil {
+		return agentcfg.Revision{}, false, err
+	}
+	return r.loadActiveRevision(ctx, keys.quad, keys.activeKind, keys.revPfx)
 }
 
 // DeactivateIfActive advances the physical active-pointer slot to an inactive
@@ -536,6 +593,18 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	if aerr == nil && hasActive {
 		fromID = active.RevisionID
 	}
+	if scope == agentcfg.ConfigScopeAgent && aerr == nil {
+		operation := agentcfg.SignedOAuthMCPFenceOperation(ctx)
+		currentPair := active.Payload.SignedOAuthMCPPair
+		targetPair := target.Payload.SignedOAuthMCPPair
+		if currentPair != nil && operation == currentPair.AuthorityOperationKind {
+			// Paired removal/expiry compensation may repoint through the exact
+			// frozen operation. No other internal marker authorizes this path.
+		} else if !reflect.DeepEqual(agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: currentPair}).SignedOAuthMCPPair,
+			agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: targetPair}).SignedOAuthMCPPair) {
+			return agentcfg.Revision{}, fmt.Errorf("%w: rollback would alter immutable signed capability pair", agentcfg.ErrSignedCapabilityReplay)
+		}
+	}
 	// The precondition, on the pointer-move door: the CURRENTLY-ACTIVE
 	// revision must still carry the expected content or the repoint is
 	// refused and the pointer is left where it was. Evaluated before the
@@ -612,7 +681,7 @@ func (r *registry) Close(_ context.Context) error {
 
 // --- internal helpers ---
 
-// guardSignedOAuthMCPFenceWriter is the cross-runtime half of D-401's
+// guardSignedOAuthMCPFenceWriter is the cross-runtime half of the signed
 // activation fence. Every Registry pointer-mutating door reaches this driver,
 // so a generic writer cannot race a pending first-install candidate into
 // authority. Only the internally-marked exact operation may write while the
@@ -635,15 +704,14 @@ func (r *registry) guardSignedOAuthMCPFenceWriter(ctx context.Context, id identi
 // receipt. A physical active pointer is not authority until the receipt and
 // fence both commit; callers observe the prior revision (or no active state).
 func (r *registry) applySignedOAuthMCPFence(ctx context.Context, id identity.Quadruple, agentID string, keys scopeKeys, active agentcfg.Revision, set bool) (agentcfg.Revision, bool, error) {
-	if !set || active.Payload.SignedOAuthMCPPair == nil {
+	if !set {
 		return active, set, nil
 	}
 	fence, fenceSet, err := r.signedOAuthMCPFence(ctx, id.TenantID, agentID)
 	if err != nil || !fenceSet || fence.Phase != agentcfg.SignedOAuthMCPFencePending {
 		return active, set, err
 	}
-	pair := active.Payload.SignedOAuthMCPPair
-	if pair.AuthorityOperationKind != fence.OperationKind || active.ContentHash != fence.CandidateContentHash ||
+	if active.ContentHash != fence.CandidateContentHash ||
 		(fence.CandidateRevisionID != "" && active.RevisionID != fence.CandidateRevisionID) {
 		return active, set, nil
 	}

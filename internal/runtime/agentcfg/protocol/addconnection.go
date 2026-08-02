@@ -117,11 +117,11 @@ type ProviderPreparer interface {
 }
 
 // SignedCapabilityProviderPreparer constructs the pair-owned provider used by
-// D-401. It deliberately has no Publish-to-ProviderSet operation: the MCP
+// signed capability flow. It deliberately has no Publish-to-ProviderSet operation: the MCP
 // prepared connection receives the private binding directly and its catalog
 // activation is the sole data-plane publication point.
 type SignedCapabilityProviderPreparer interface {
-	PrepareSignedCapabilityProvider(ctx context.Context, tenant, agentID, name, broker, audience, sink string, scopes []string) (PreparedOAuthProvider, error)
+	PrepareSignedCapabilityProvider(ctx context.Context, broker string, binding toolauth.SignedCapabilityExchangeBinding, scopes []string) (PreparedOAuthProvider, error)
 }
 
 // PreparedOAuthProvider owns one unpublished provider instance.
@@ -175,6 +175,13 @@ type ConnectionDetacher interface {
 	DetachConnection(ctx context.Context, tenant, agentID, name string) error
 }
 
+// ExactConnectionDetacher is the mandatory teardown seam for a signed pair.
+// The complete descriptor fingerprint is proved at the registry/catalog
+// linearization point before any source is withdrawn.
+type ExactConnectionDetacher interface {
+	DetachExactConnection(ctx context.Context, tenant, agentID, name, descriptorFingerprint string) error
+}
+
 // AttachRequest is the input to a ConnectionAttacher. It carries the
 // non-secret descriptor PLUS the optional operator-supplied auth headers
 // used ONLY for the live transport — the attacher never persists them.
@@ -207,6 +214,22 @@ type AttachRequest struct {
 	// this private preparation. It never enters the shared provider set until
 	// the durable desired state has landed.
 	OAuthProviderOverride toolauth.OAuthProvider
+	// OwnOAuthProvider transfers teardown ownership of OAuthProviderOverride to
+	// the prepared MCP connection. It is used only for a pair-private binding.
+	OwnOAuthProvider bool
+	// ToolAllowlist and ToolDenylist restrict the server-side tool names that
+	// may be projected into the live catalog. Empty allowlist means all except
+	// explicitly denied names.
+	ToolAllowlist []string
+	ToolDenylist  []string
+	// ConnectTimeoutMS bounds connect plus initial discovery. RequestTimeoutMS
+	// becomes the default per-request tool policy for the live connection.
+	ConnectTimeoutMS int
+	RequestTimeoutMS int
+	// DescriptorFingerprint, when set by a server-owned signed pair, commits the
+	// complete connection policy. Generic connections derive their fingerprint
+	// from the ordinary descriptor fields.
+	DescriptorFingerprint string
 	// MetaAnnotations is the non-secret operator `_meta` annotation set the
 	// attacher carries onto the live connection's per-call `_meta`.
 	MetaAnnotations map[string]string

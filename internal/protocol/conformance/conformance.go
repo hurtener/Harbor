@@ -692,8 +692,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 124 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 124 (including D-401 signed OAuth MCP capability registration)", len(got))
+	if len(got) != 125 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 125 (including signed OAuth MCP capability registration and paired removal)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -817,6 +817,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodAgentConfigSetMCPDiscoveryOrigins:     {},
 		methods.MethodAgentConfigSetOAuthProvider:           {},
 		methods.MethodAgentConfigRegisterOAuthMCPCapability: {},
+		methods.MethodAgentConfigRemoveOAuthMCPCapability:   {},
 		methods.MethodAgentConfigRemoveOAuthProvider:        {},
 		methods.MethodAgentConfigSetLLMProvider:             {},
 		methods.MethodAgentConfigSessionSetUserPrompt:       {},

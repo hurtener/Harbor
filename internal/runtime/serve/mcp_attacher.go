@@ -355,6 +355,9 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 		ArtifactByteEligible: req.ArtifactByteEligible,
 		ArtifactParams:       config.MCPArtifactParams(cloneArtifactParams(req.ArtifactParams)),
 	}
+	if req.RequestTimeoutMS > 0 {
+		ms.Policy = &config.ToolPolicyConfig{TimeoutMS: req.RequestTimeoutMS}
+	}
 
 	// Serialise adds: the per-add closer slice is merged into the master
 	// chain under the lock, and serialising the whole attach keeps two
@@ -363,7 +366,22 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 	a.mu.Lock()
 
 	var local []func(context.Context) error
-	prepared, err := mcpdrv.Prepare(ctx, ms, mcpdrv.AttachDeps{
+	prepareCtx := ctx
+	var cancel context.CancelFunc
+	if req.ConnectTimeoutMS > 0 {
+		prepareCtx, cancel = context.WithTimeout(ctx, time.Duration(req.ConnectTimeoutMS)*time.Millisecond)
+		defer cancel()
+	}
+	descriptorFingerprint := req.DescriptorFingerprint
+	if descriptorFingerprint == "" {
+		descriptorFingerprint = agentcfg.MCPConnectionFingerprint(agentcfg.MCPConnectionDescriptor{
+			Name: req.Name, Transport: req.Transport, Command: append([]string(nil), req.Command...), URL: req.URL,
+			OAuthProvider: req.OAuthProvider, MetaAnnotations: cloneAnnotationsForReattach(req.MetaAnnotations),
+			OAuthDiscoveryAllowedOrigins: append([]string(nil), req.OAuthDiscoveryAllowedOrigins...), Injection: req.Injection.Clone(),
+			ArtifactByteEligible: req.ArtifactByteEligible, ArtifactParams: cloneArtifactParams(req.ArtifactParams),
+		})
+	}
+	prepared, err := mcpdrv.Prepare(prepareCtx, ms, mcpdrv.AttachDeps{
 		Catalog:               a.catalog,
 		Registry:              a.registry,
 		Bus:                   a.bus,
@@ -373,24 +391,16 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 		OAuthProviders:        a.oauthProviders,
 		OAuthProviderSet:      a.oauthProviderSet,
 		OAuthProviderOverride: req.OAuthProviderOverride,
+		OwnOAuthProvider:      req.OwnOAuthProvider,
+		ToolAllowlist:         append([]string(nil), req.ToolAllowlist...),
+		ToolDenylist:          append([]string(nil), req.ToolDenylist...),
 		// Capture app tool contexts on this connection exactly as the
 		// boot-config attach path does, so a `ui://` app declared by a tool on
 		// a runtime-added server renders with its real data instead of an
 		// empty shell.
-		ToolContext: a.toolContext,
-		Owner:       owner,
-		DescriptorFingerprint: agentcfg.MCPConnectionFingerprint(agentcfg.MCPConnectionDescriptor{
-			Name:                         req.Name,
-			Transport:                    req.Transport,
-			Command:                      append([]string(nil), req.Command...),
-			URL:                          req.URL,
-			OAuthProvider:                req.OAuthProvider,
-			MetaAnnotations:              cloneAnnotationsForReattach(req.MetaAnnotations),
-			OAuthDiscoveryAllowedOrigins: append([]string(nil), req.OAuthDiscoveryAllowedOrigins...),
-			Injection:                    req.Injection.Clone(),
-			ArtifactByteEligible:         req.ArtifactByteEligible,
-			ArtifactParams:               cloneArtifactParams(req.ArtifactParams),
-		}),
+		ToolContext:           a.toolContext,
+		Owner:                 owner,
+		DescriptorFingerprint: descriptorFingerprint,
 		// The deployment's egress ceiling. Zero leaves mcpdrv.Attach on
 		// config.DefaultMCPArtifactEgressMaxBytes — a real ceiling, never an
 		// unbounded one.
@@ -517,6 +527,17 @@ func (a *MCPConnectionAttacher) DetachConnection(ctx context.Context, tenant, ag
 	}
 	return detachSource(ctx, a.catalog, a.registry, name, owner, a.logger,
 		"mcp: detached runtime-added server after its revision write failed")
+}
+
+// DetachExactConnection tears down only the registration whose owner and
+// complete descriptor fingerprint match the signed pair's frozen identity.
+func (a *MCPConnectionAttacher) DetachExactConnection(ctx context.Context, tenant, agentID, name, descriptorFingerprint string) error {
+	owner := toolauth.Owner{Tenant: tenant, Agent: agentID}
+	if owner.IsZero() || descriptorFingerprint == "" {
+		return fmt.Errorf("%w: exact detach requires owner and descriptor fingerprint", ErrRuntimeAddOwnerMissing)
+	}
+	return detachSourceExpected(ctx, a.catalog, a.registry, name, owner, descriptorFingerprint, a.logger,
+		"mcp: detached exact signed capability source")
 }
 
 // Close drains every runtime-added server's transport in reverse order. Wired

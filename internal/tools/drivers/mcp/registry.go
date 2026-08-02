@@ -696,6 +696,33 @@ func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner
 	return nil
 }
 
+// DeregisterExact removes one live registration only after atomically proving
+// its owner and complete descriptor fingerprint. withdrawCatalog runs while
+// the registry write lock holds the name against replacement, so catalog
+// withdrawal can never race a same-name registration from another owner.
+func (r *Registry) DeregisterExact(ctx context.Context, name string, owner auth.Owner, descriptorFingerprint string, withdrawCatalog func() int) (int, error) {
+	if owner.IsZero() || descriptorFingerprint == "" || withdrawCatalog == nil {
+		return 0, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	r.mu.Lock()
+	if _, staged := r.pending[name]; staged {
+		r.mu.Unlock()
+		return 0, fmt.Errorf("mcp: deregister %q refused while an exact replacement is staged", name)
+	}
+	e, ok := r.servers[name]
+	if !ok || e.owner != owner || e.descriptorFingerprint != descriptorFingerprint {
+		r.mu.Unlock()
+		return 0, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	removed := withdrawCatalog()
+	delete(r.servers, name)
+	r.mu.Unlock()
+	if err := e.provider.Close(ctx); err != nil {
+		return removed, fmt.Errorf("mcp: deregister %q: close transport: %w", name, err)
+	}
+	return removed, nil
+}
+
 // OwnerOf returns the (tenant, agent) owner tag of the named registration and
 // whether a registration by that name currently exists. It is the read the
 // same-name replace consults to keep an atomic upsert scoped to the caller's

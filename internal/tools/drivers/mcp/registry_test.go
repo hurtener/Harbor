@@ -66,6 +66,40 @@ func TestRegistrationSwap_PrivateReservationPreventsCommitInvalidation(t *testin
 	}
 }
 
+func TestRegistry_DeregisterExact_StaleSameNameCannotWithdrawReplacement(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	first := &stubProvider{id: "same"}
+	if err := reg.Register(ctx, ServerRegistration{Provider: first, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "fingerprint-a"}); err != nil {
+		t.Fatal(err)
+	}
+	second := &stubProvider{id: "same"}
+	if err := reg.Register(ctx, ServerRegistration{Provider: second, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "fingerprint-b"}); err != nil {
+		t.Fatal(err)
+	}
+	withdrawals := 0
+	if _, err := reg.DeregisterExact(ctx, "same", owner, "fingerprint-a", func() int {
+		withdrawals++
+		return 1
+	}); !errors.Is(err, ErrServerNotFound) {
+		t.Fatalf("stale exact detach = %v, want not found", err)
+	}
+	if withdrawals != 0 {
+		t.Fatal("stale teardown withdrew replacement catalog tools")
+	}
+	second.mu.Lock()
+	closed := second.closed
+	second.mu.Unlock()
+	if closed != 0 {
+		t.Fatalf("replacement provider closed %d times", closed)
+	}
+	gotOwner, fingerprint, ok := reg.RegistrationIdentity("same")
+	if !ok || gotOwner != owner || fingerprint != "fingerprint-b" {
+		t.Fatalf("replacement registration changed: ok=%v owner=%+v fingerprint=%q", ok, gotOwner, fingerprint)
+	}
+}
+
 func (p *stubProvider) SourceID() tools.ToolSourceID { return p.id }
 
 func (p *stubProvider) Close(_ context.Context) error {

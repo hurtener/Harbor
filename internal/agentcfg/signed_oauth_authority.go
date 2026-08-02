@@ -14,7 +14,7 @@ import (
 
 var (
 	// ErrSignedCapabilityAuthority rejects an absent, malformed, expired, or
-	// non-asymmetrically-signed D-401 authority envelope.
+	// non-asymmetrically-signed capability authority envelope.
 	ErrSignedCapabilityAuthority = errors.New("agentcfg: signed oauth mcp capability authority rejected")
 	// ErrSignedCapabilityBinding rejects a valid envelope that does not bind the
 	// exact registration request presented to Harbor.
@@ -25,31 +25,39 @@ var (
 )
 
 // SignedOAuthMCPBinding is the server-derived, non-secret registration binding
-// that must exactly match a verified D-401 authority envelope. URLDigest must
+// that must exactly match a verified signed-capability authority envelope. URLDigest must
 // come from CanonicalOAuthMCPURL, never raw request text.
 type SignedOAuthMCPBinding struct {
 	TenantID           string
+	UserID             string
+	SessionID          string
 	AgentID            string
 	Broker             string
 	ProviderName       string
 	CapabilityRevision string
 	URLDigest          string
+	SinkDigest         string
 	Audience           string
 	Scopes             []string
+	Connection         SignedOAuthMCPConnectionDescriptor
 }
 
-// SignedOAuthMCPAuthorityClaims is the JWT payload accepted for D-401. The
+// SignedOAuthMCPAuthorityClaims is the JWT payload accepted for signed capability registration. The
 // issuer/key selection occurs at the boot trust-anchor boundary; this type only
 // verifies the exact bounded claim once that trusted verifier has been chosen.
 type SignedOAuthMCPAuthorityClaims struct {
-	TenantID           string   `json:"tenant_id"`
-	AgentID            string   `json:"agent_id"`
-	Broker             string   `json:"broker"`
-	ProviderName       string   `json:"provider_name"`
-	CapabilityRevision string   `json:"capability_revision"`
-	URLDigest          string   `json:"url_digest"`
-	Audience           string   `json:"audience"`
-	Scopes             []string `json:"scopes"`
+	TenantID           string                             `json:"tenant_id"`
+	UserID             string                             `json:"user_id"`
+	SessionID          string                             `json:"session_id"`
+	AgentID            string                             `json:"agent_id"`
+	Broker             string                             `json:"broker"`
+	ProviderName       string                             `json:"provider_name"`
+	CapabilityRevision string                             `json:"capability_revision"`
+	URLDigest          string                             `json:"url_digest"`
+	SinkDigest         string                             `json:"sink_digest"`
+	Audience           string                             `json:"audience"`
+	Scopes             []string                           `json:"scopes"`
+	Connection         SignedOAuthMCPConnectionDescriptor `json:"connection"`
 	jwt.RegisteredClaims
 }
 
@@ -79,7 +87,7 @@ func CanonicalScopes(in []string) ([]string, error) {
 
 // VerifySignedOAuthMCPAuthority verifies one JWT against a selected boot
 // trust-anchor key, permits only Harbor's asymmetric JWT algorithms, checks
-// issuer/key ID/timing, and compares every D-401 binding field exactly.
+// issuer/key ID/timing, and compares every signed-capability binding field exactly.
 //
 // key and issuer are construction-time trust-anchor inputs. They are never
 // read from the request or its unverified JWT claims.
@@ -104,6 +112,12 @@ func VerifySignedOAuthMCPAuthority(raw, issuer, keyID string, key any, now time.
 	}
 	if strings.TrimSpace(claims.ID) == "" || claims.IssuedAt == nil || claims.ExpiresAt == nil || !claims.ExpiresAt.After(now) {
 		return SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: jti or bounded timing missing", ErrSignedCapabilityAuthority)
+	}
+	// Expiry is intentionally strict (the parser and the explicit check above
+	// apply no leeway). Issued-at permits only a small, documented clock-skew
+	// window; a token minted farther in the future is not current authority.
+	if claims.IssuedAt.After(now.Add(SignedOAuthMCPAuthorityClockSkew)) {
+		return SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: authority issued in the future", ErrSignedCapabilityAuthority)
 	}
 	if err := matchSignedOAuthMCPBinding(claims, expected); err != nil {
 		return SignedOAuthMCPAuthorityClaims{}, err
@@ -142,7 +156,7 @@ func VerifySignedOAuthMCPAuthorityBounded(raw, issuer, keyID string, key any, no
 	if err != nil {
 		return SignedOAuthMCPAuthorityClaims{}, err
 	}
-	if claims.IssuedAt == nil || claims.ExpiresAt == nil || claims.ExpiresAt.Before(claims.IssuedAt.Time) || claims.ExpiresAt.Sub(claims.IssuedAt.Time) > maxLifetime {
+	if claims.IssuedAt == nil || claims.ExpiresAt == nil || !claims.ExpiresAt.After(claims.IssuedAt.Time) || claims.ExpiresAt.Sub(claims.IssuedAt.Time) > maxLifetime {
 		return SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: authority lifetime exceeds boot maximum", ErrSignedCapabilityAuthority)
 	}
 	return claims, nil
@@ -157,12 +171,28 @@ func matchSignedOAuthMCPBinding(claims SignedOAuthMCPAuthorityClaims, expected S
 	if err != nil {
 		return err
 	}
-	if claims.TenantID != expected.TenantID || claims.AgentID != expected.AgentID || claims.Broker != expected.Broker ||
+	if claims.TenantID != expected.TenantID || claims.UserID != expected.UserID || claims.SessionID != expected.SessionID ||
+		claims.AgentID != expected.AgentID || claims.Broker != expected.Broker ||
 		claims.ProviderName != expected.ProviderName || claims.CapabilityRevision != expected.CapabilityRevision ||
-		claims.URLDigest != expected.URLDigest || claims.Audience != expected.Audience || !sameStrings(claimedScopes, expectedScopes) {
+		claims.URLDigest != expected.URLDigest || claims.SinkDigest != expected.SinkDigest || claims.Audience != expected.Audience ||
+		!sameStrings(claimedScopes, expectedScopes) || !sameSignedOAuthMCPConnection(claims.Connection, expected.Connection) {
 		return ErrSignedCapabilityBinding
 	}
 	return nil
+}
+
+// SignedOAuthMCPAuthorityClockSkew is the sole issued-at skew allowance. It is
+// not applied to expiry or maximum lifetime checks.
+const SignedOAuthMCPAuthorityClockSkew = 30 * time.Second
+
+func sameSignedOAuthMCPConnection(left, right SignedOAuthMCPConnectionDescriptor) bool {
+	leftAllow, leftAllowErr := CanonicalScopes(left.ToolAllowlist)
+	rightAllow, rightAllowErr := CanonicalScopes(right.ToolAllowlist)
+	leftDeny, leftDenyErr := CanonicalScopes(left.ToolDenylist)
+	rightDeny, rightDenyErr := CanonicalScopes(right.ToolDenylist)
+	return leftAllowErr == nil && rightAllowErr == nil && leftDenyErr == nil && rightDenyErr == nil &&
+		left.Name == right.Name && left.URL == right.URL && left.ConnectTimeoutMS == right.ConnectTimeoutMS &&
+		left.RequestTimeoutMS == right.RequestTimeoutMS && sameStrings(leftAllow, rightAllow) && sameStrings(leftDeny, rightDeny)
 }
 
 func sameStrings(left, right []string) bool {
@@ -186,13 +216,35 @@ func SignedOAuthMCPPairFingerprint(binding SignedOAuthMCPBinding) string {
 		// values rather than silently dropping an invalid scope from a binding.
 		canonicalScopes = append([]string(nil), binding.Scopes...)
 	}
-	parts := make([]string, 0, 7+len(canonicalScopes))
-	parts = append(parts, binding.TenantID, binding.AgentID, binding.Broker, binding.ProviderName, binding.CapabilityRevision, binding.URLDigest, binding.Audience)
+	allow, allowErr := CanonicalScopes(binding.Connection.ToolAllowlist)
+	if allowErr != nil {
+		allow = append([]string(nil), binding.Connection.ToolAllowlist...)
+	}
+	deny, denyErr := CanonicalScopes(binding.Connection.ToolDenylist)
+	if denyErr != nil {
+		deny = append([]string(nil), binding.Connection.ToolDenylist...)
+	}
+	parts := make([]string, 0, 20+len(canonicalScopes)+len(allow)+len(deny))
+	parts = append(parts, binding.TenantID, binding.UserID, binding.SessionID, binding.AgentID, binding.Broker, binding.ProviderName, binding.CapabilityRevision,
+		binding.URLDigest, binding.SinkDigest, binding.Audience, binding.Connection.Name, binding.Connection.URL,
+		fmt.Sprintf("%d", binding.Connection.ConnectTimeoutMS), fmt.Sprintf("%d", binding.Connection.RequestTimeoutMS),
+		"scopes", fmt.Sprintf("%d", len(canonicalScopes)))
 	parts = append(parts, canonicalScopes...)
+	parts = append(parts, "tool_allowlist", fmt.Sprintf("%d", len(allow)))
+	parts = append(parts, allow...)
+	parts = append(parts, "tool_denylist", fmt.Sprintf("%d", len(deny)))
+	parts = append(parts, deny...)
 	h := sha256.New()
 	for _, part := range parts {
 		_, _ = fmt.Fprintf(h, "%d:", len(part))
 		_, _ = h.Write([]byte(part))
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// SignedOAuthMCPConnectionFingerprint identifies the complete immutable
+// signed connection descriptor, including restrictive tool policy and bounds.
+func SignedOAuthMCPConnectionFingerprint(connection SignedOAuthMCPConnectionDescriptor) string {
+	binding := SignedOAuthMCPBinding{Connection: connection}
+	return SignedOAuthMCPPairFingerprint(binding)
 }

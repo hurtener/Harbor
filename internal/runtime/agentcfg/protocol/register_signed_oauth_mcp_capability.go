@@ -6,15 +6,18 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
-// RegisterOAuthMCPCapability is D-401's bounded production registration
+// RegisterOAuthMCPCapability is the bounded production registration
 // operation. The provider is prepared privately and handed directly to MCP
 // preparation; it is never installed in the generic ProviderSet.
 func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest) (prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse, error) {
@@ -64,10 +67,16 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if _, _, err := jwt.NewParser().ParseUnverified(req.AuthorityEnvelope, &unsafe); err != nil || strings.TrimSpace(unsafe.CapabilityRevision) == "" {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: malformed authority envelope", agentcfg.ErrSignedCapabilityAuthority)
 	}
+	domainConnection := agentcfg.SignedOAuthMCPConnectionDescriptor{
+		Name: connection.Name, URL: canonicalURL, ToolAllowlist: connection.ToolAllowlist,
+		ToolDenylist: connection.ToolDenylist, ConnectTimeoutMS: connection.ConnectTimeoutMS,
+		RequestTimeoutMS: connection.RequestTimeoutMS,
+	}
 	binding := agentcfg.SignedOAuthMCPBinding{
-		TenantID: id.TenantID, AgentID: req.AgentID, Broker: broker,
+		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, AgentID: req.AgentID, Broker: broker,
 		ProviderName: providerName, CapabilityRevision: unsafe.CapabilityRevision,
-		URLDigest: agentcfg.OAuthMCPURLDigest(canonicalURL), Audience: audience, Scopes: scopes,
+		URLDigest: agentcfg.OAuthMCPURLDigest(canonicalURL), SinkDigest: agentcfg.OAuthMCPURLDigest(sink),
+		Audience: audience, Scopes: scopes, Connection: domainConnection,
 	}
 	claims, err := authority.Verify(req.AuthorityEnvelope, s.now().UTC(), binding)
 	if err != nil {
@@ -130,13 +139,18 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 		}
 	}
-	preparedProvider, err := providerPreparer.PrepareSignedCapabilityProvider(ctx, id.TenantID, req.AgentID, providerName, broker, audience, sink, scopes)
+	exchangeBinding := signedCapabilityExchangeBinding(binding, sink)
+	preparedProvider, err := providerPreparer.PrepareSignedCapabilityProvider(ctx, broker, exchangeBinding, scopes)
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
-	preparedConnection, err := s.preparer.PrepareConnection(ctx, AttachRequest{
+	attachCtx := tools.WithInvokingAgent(ctx, req.AgentID)
+	preparedConnection, err := s.preparer.PrepareConnection(attachCtx, AttachRequest{
 		Identity: id, AgentID: req.AgentID, Name: connection.Name, Transport: agentcfg.MCPTransportHTTP,
-		URL: canonicalURL, OAuthProvider: providerName, OAuthProviderOverride: preparedProvider.Binding(),
+		URL: canonicalURL, OAuthProvider: providerName, OAuthProviderOverride: preparedProvider.Binding(), OwnOAuthProvider: true,
+		ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist,
+		ConnectTimeoutMS: connection.ConnectTimeoutMS, RequestTimeoutMS: connection.RequestTimeoutMS,
+		DescriptorFingerprint: agentcfg.SignedOAuthMCPConnectionFingerprint(domainConnection),
 	})
 	if err != nil {
 		_ = preparedProvider.Close(context.WithoutCancel(ctx))
@@ -149,10 +163,10 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	}
 	pair := &agentcfg.SignedOAuthMCPPair{
 		ProviderName: providerName, Broker: broker, Audience: audience, Scopes: scopes,
-		CapabilityRevision: claims.CapabilityRevision, URLDigest: binding.URLDigest, Sink: sink,
-		Connection:      agentcfg.SignedOAuthMCPConnectionDescriptor{Name: connection.Name, URL: canonicalURL, ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist, ConnectTimeoutMS: connection.ConnectTimeoutMS, RequestTimeoutMS: connection.RequestTimeoutMS},
+		CapabilityRevision: claims.CapabilityRevision, URLDigest: binding.URLDigest, Sink: sink, SinkDigest: binding.SinkDigest,
+		Connection:      domainConnection,
 		AuthorityIssuer: claims.Issuer, AuthorityKeyID: kid, AuthorityJTIHash: signedCapabilityJTIHash(claims.ID),
-		AuthorityOperationKind: operationKind, OwnerAgentID: req.AgentID,
+		AuthorityOperationKind: operationKind, OwnerAgentID: req.AgentID, OwnerUserID: id.UserID, OwnerSessionID: id.SessionID,
 	}
 	var rev agentcfg.Revision
 	if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed {
@@ -210,16 +224,25 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	// No ProviderSet publication occurs. Commit records that the private
 	// provider's ownership has moved to the activated MCP connection.
 	preparedProvider.Commit(ctx)
-	if _, err := s.signedOAuthMCPOperations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhasePublished, rev.RevisionID); err != nil {
+	publishedOp, err := s.signedOAuthMCPOperations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhasePublished, rev.RevisionID)
+	if err != nil {
 		// Data-plane publication is already visible. Returning the checkpoint
 		// error preserves recovery: the exact JTI resumes by proving the active
 		// pair and only writes the missing durable phase.
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
-	if err := s.commitSignedOAuthMCPFence(ctx, id.TenantID, req.AgentID, operationKind, agentcfg.SignedOAuthMCPOperation{Fingerprint: op.Fingerprint, RevisionID: rev.RevisionID, Phase: agentcfg.SignedOAuthMCPPhasePublished}); err != nil {
+	if err := s.commitSignedOAuthMCPFence(ctx, id.TenantID, req.AgentID, operationKind, publishedOp); err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
 	return signedCapabilityResponse(rev, providerName, connection.Name), nil
+}
+
+func signedCapabilityExchangeBinding(binding agentcfg.SignedOAuthMCPBinding, sink string) toolauth.SignedCapabilityExchangeBinding {
+	return toolauth.SignedCapabilityExchangeBinding{
+		TenantID: binding.TenantID, UserID: binding.UserID, SessionID: binding.SessionID, AgentID: binding.AgentID, ProviderName: binding.ProviderName,
+		CapabilityRevision: binding.CapabilityRevision, PairFingerprint: agentcfg.SignedOAuthMCPPairFingerprint(binding),
+		URLDigest: binding.URLDigest, SinkDigest: binding.SinkDigest, Audience: binding.Audience, Resource: sink,
+	}
 }
 
 func (s *Service) commitSignedOAuthMCPFence(ctx context.Context, tenant, agentID, operationKind string, op agentcfg.SignedOAuthMCPOperation) error {
@@ -236,7 +259,7 @@ func (s *Service) commitSignedOAuthMCPFence(ctx context.Context, tenant, agentID
 		}
 		return nil
 	}
-	revision, err := s.registry.Get(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "__agentcfg__", SessionID: "__signed_oauth_mcp__"}}, agentID, op.RevisionID, agentcfg.ConfigScopeAgent)
+	revision, err := s.registry.Get(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: op.Binding.UserID, SessionID: op.Binding.SessionID}}, agentID, op.RevisionID, agentcfg.ConfigScopeAgent)
 	if err != nil || revision.ContentHash != fence.CandidateContentHash {
 		return fmt.Errorf("%w: published operation candidate cannot be verified", agentcfg.ErrSignedCapabilityPending)
 	}
@@ -253,18 +276,19 @@ func signedCapabilityPairMatches(pair *agentcfg.SignedOAuthMCPPair, tenant strin
 		return false
 	}
 	return agentcfg.SignedOAuthMCPPairFingerprint(agentcfg.SignedOAuthMCPBinding{
-		TenantID: tenant, AgentID: binding.AgentID, Broker: pair.Broker,
+		TenantID: tenant, UserID: pair.OwnerUserID, SessionID: pair.OwnerSessionID, AgentID: binding.AgentID, Broker: pair.Broker,
 		ProviderName: pair.ProviderName, CapabilityRevision: pair.CapabilityRevision,
-		URLDigest: pair.URLDigest, Audience: pair.Audience, Scopes: pair.Scopes,
+		URLDigest: pair.URLDigest, SinkDigest: pair.SinkDigest, Audience: pair.Audience, Scopes: pair.Scopes, Connection: pair.Connection,
 	}) == agentcfg.SignedOAuthMCPPairFingerprint(binding)
 }
 
 func normalizeSignedCapabilityConnection(in prototypes.SignedOAuthMCPConnectionDescriptor, canonicalURL string) (prototypes.SignedOAuthMCPConnectionDescriptor, error) {
+	const maxSignedCapabilityTimeoutMS = int((5 * time.Minute) / time.Millisecond)
 	out := in
 	out.Name = strings.TrimSpace(out.Name)
 	out.URL = canonicalURL
-	if out.Name == "" || out.ConnectTimeoutMS < 0 || out.RequestTimeoutMS < 0 {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: name is required and timeouts must be non-negative", ErrInvalidSignedCapabilityDescriptor)
+	if out.Name == "" || out.ConnectTimeoutMS < 0 || out.RequestTimeoutMS < 0 || out.ConnectTimeoutMS > maxSignedCapabilityTimeoutMS || out.RequestTimeoutMS > maxSignedCapabilityTimeoutMS {
+		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: name is required and timeouts must be between 0 and %d ms", ErrInvalidSignedCapabilityDescriptor, maxSignedCapabilityTimeoutMS)
 	}
 	var err error
 	if out.ToolAllowlist, err = agentcfg.CanonicalScopes(out.ToolAllowlist); err != nil {

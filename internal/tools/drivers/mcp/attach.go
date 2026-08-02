@@ -106,6 +106,13 @@ type AttachDeps struct {
 	// OAuthProviderOverride is a privately prepared provider used for this
 	// attachment's named binding before it is published to the shared set.
 	OAuthProviderOverride auth.OAuthProvider
+	// OwnOAuthProvider transfers teardown ownership of the override to the MCP
+	// provider. General provider-set bindings leave this false.
+	OwnOAuthProvider bool
+	// ToolAllowlist/ToolDenylist project a signed restrictive policy onto the
+	// discovered tool descriptors before catalog publication.
+	ToolAllowlist []string
+	ToolDenylist  []string
 	// ArtifactEgressMaxBytes bounds ONE substituted artifact value on one
 	// outbound call for connections this attach wires. Sourced by the boot
 	// loader (and the runtime attacher) from the deployment-level
@@ -387,6 +394,7 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 		HostDisplayModes:   append([]string(nil), deps.HostDisplayModes...),
 		ToolContext:        deps.ToolContext,
 		OAuthProvider:      oauthProvider,
+		OwnOAuthProvider:   deps.OAuthProviderOverride != nil && ms.OAuthProvider != "" && deps.OwnOAuthProvider,
 		ToolOAuthProviders: toolProviders,
 		Injection:          injection,
 		MetaAnnotations:    cloneHeaderMap(ms.MetaAnnotations),
@@ -424,10 +432,44 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 		cancel()
 		return nil, errors.Join(fmt.Errorf("provider.Discover: %w", discoverErr), observations.authRequired(), cleanupErr)
 	}
+	descriptors = filterDiscoveredTools(descriptors, ms.Name, deps.ToolAllowlist, deps.ToolDenylist)
 	return &PreparedAttachment{
 		ms: ms, deps: deps, mode: mode, defaultPolicy: defaultPolicy,
 		provider: provider, closeFn: provider.Close, descriptors: descriptors, observations: observations,
 	}, nil
+}
+
+func filterDiscoveredTools(descriptors []tools.ToolDescriptor, source string, allowlist, denylist []string) []tools.ToolDescriptor {
+	if len(allowlist) == 0 && len(denylist) == 0 {
+		return descriptors
+	}
+	allowed := make(map[string]struct{}, len(allowlist))
+	denied := make(map[string]struct{}, len(denylist))
+	for _, name := range allowlist {
+		allowed[name] = struct{}{}
+	}
+	for _, name := range denylist {
+		denied[name] = struct{}{}
+	}
+	prefix := source + "_"
+	out := make([]tools.ToolDescriptor, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		if descriptor.Tool.Form != tools.ToolFormTool {
+			out = append(out, descriptor)
+			continue
+		}
+		name := strings.TrimPrefix(descriptor.Tool.Name, prefix)
+		if _, deniedName := denied[name]; deniedName {
+			continue
+		}
+		if len(allowed) > 0 {
+			if _, allowedName := allowed[name]; !allowedName {
+				continue
+			}
+		}
+		out = append(out, descriptor)
+	}
+	return out
 }
 
 // Activate privately reserves the reversible registry replacement first, then

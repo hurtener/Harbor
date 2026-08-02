@@ -392,7 +392,7 @@ type AgentConfigOAuthProvidersDiff struct {
 	Removed []string `json:"removed,omitempty"`
 }
 
-// SignedOAuthMCPConnectionDescriptor is the closed D-401 registration input.
+// SignedOAuthMCPConnectionDescriptor is the closed signed-capability registration input.
 // It is intentionally distinct from AgentConfigMCPConnectionDescriptor: a
 // signed capability never accepts a general MCP descriptor or its credential,
 // injection, discovery, stdio, header, or host-list fields.
@@ -406,7 +406,7 @@ type SignedOAuthMCPConnectionDescriptor struct {
 }
 
 // AgentConfigSignedOAuthMCPPair is the read-only projection of immutable
-// server-owned D-401 pair state. It excludes the raw authority envelope and
+// server-owned signed-capability pair state. It excludes the raw authority envelope and
 // JTI, which are never exposed through revisions, events, or audit.
 type AgentConfigSignedOAuthMCPPair struct {
 	ProviderName       string                             `json:"provider_name"`
@@ -1279,7 +1279,7 @@ type AgentConfigSetOAuthProviderResponse struct {
 	ProtocolVersion string `json:"protocol_version"`
 }
 
-// AgentConfigRegisterOAuthMCPCapabilityRequest is D-401's sole production
+// AgentConfigRegisterOAuthMCPCapabilityRequest is the sole production
 // creator for an OAuth-fronted MCP pair. The raw signed authority is accepted
 // only here and is never echoed in a response or revision projection.
 type AgentConfigRegisterOAuthMCPCapabilityRequest struct {
@@ -1303,7 +1303,7 @@ type AgentConfigRegisterOAuthMCPCapabilityResponse struct {
 	ProtocolVersion string                  `json:"protocol_version"`
 }
 
-// AgentConfigRemoveOAuthMCPCapabilityRequest is the only D-401 paired-removal
+// AgentConfigRemoveOAuthMCPCapabilityRequest is the only signed-capability paired-removal
 // verb. It carries no authority envelope or credential material: Harbor looks
 // up the frozen, owner-bound lifetime receipt from immutable pair history.
 type AgentConfigRemoveOAuthMCPCapabilityRequest struct {

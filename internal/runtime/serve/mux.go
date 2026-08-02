@@ -142,7 +142,7 @@ type MuxInput struct {
 	// remove_oauth_provider (the Protocol-installed, zero-URL broker-pull
 	// provider). Built caller-side; nil leaves the install verbs unwired (→ 501).
 	OAuthProviderInstaller agentcfgprotocol.ProviderInstaller
-	// SignedOAuthMCPCapabilityAuthorities are boot-built D-401 verifier
+	// SignedOAuthMCPCapabilityAuthorities are boot-built verifier
 	// anchors, keyed by broker name. Empty leaves signed registration disabled.
 	SignedOAuthMCPCapabilityAuthorities map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority
 	// BootDeclaredOAuth is the set of boot-declared OAuth provider names

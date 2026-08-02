@@ -438,12 +438,12 @@ const (
 	// requires the `auth.ScopeAdmin` claim. The wire-transport route is
 	// `POST /v1/agent_config/set_oauth_provider`.
 	MethodAgentConfigSetOAuthProvider Method = "agent_config.set_oauth_provider"
-	// MethodAgentConfigRegisterOAuthMCPCapability is D-401's sole
+	// MethodAgentConfigRegisterOAuthMCPCapability is the sole
 	// production creator for one signed OAuth provider plus one MCP
 	// connection. It is admin-only and cannot be composed from generic
 	// provider/connection writes.
 	MethodAgentConfigRegisterOAuthMCPCapability Method = "agent_config.register_oauth_mcp_capability"
-	// MethodAgentConfigRemoveOAuthMCPCapability is D-401's sole paired-removal
+	// MethodAgentConfigRemoveOAuthMCPCapability is the sole paired-removal
 	// verb. It resumes the same frozen JTI receipt and is admin-only.
 	MethodAgentConfigRemoveOAuthMCPCapability Method = "agent_config.remove_oauth_mcp_capability"
 

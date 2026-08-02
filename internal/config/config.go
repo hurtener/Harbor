@@ -1543,7 +1543,7 @@ type ToolOAuthCredentialBrokerConfig struct {
 	// default.
 	Timeout time.Duration `yaml:"timeout,omitempty"`
 	// SignedOAuthMCPCapabilityAuthority is the optional, boot-only trust anchor
-	// for D-401 signed OAuth MCP capability registration. Its presence does not
+	// for signed OAuth MCP capability registration. Its presence does not
 	// by itself enable the Protocol write: Enabled must be true. The issuer,
 	// verifier source, and maximum authority lifetime are all fixed at boot;
 	// none is ever derived from a Protocol request.
@@ -1567,7 +1567,7 @@ type ToolOAuthCredentialBrokerConfig struct {
 //	        max_authority_lifetime: 10m
 //
 // Config/file-only and restart-required. The explicit lifetime is required:
-// D-401 requires a bounded envelope, but deliberately does not impose a
+// Signed capability registration requires a bounded envelope, but deliberately does not impose a
 // product-wide lifetime on every deployment.
 type ToolSignedOAuthMCPCapabilityAuthorityConfig struct {
 	// Enabled is the explicit production opt-in. False is fail-closed.

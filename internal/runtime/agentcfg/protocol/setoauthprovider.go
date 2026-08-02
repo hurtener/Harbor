@@ -2,9 +2,12 @@ package protocol
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/events"
@@ -150,13 +153,34 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 		prevActiveRevID = active.RevisionID
 	}
 	payload := s.rebuildWithOAuthProvider(active, hasActive, prior, desc)
+	writeCtx := ctx
+	var activationFence agentcfg.SignedOAuthMCPActivationFence
+	if !hasActive {
+		if s.signedOAuthMCPFences == nil {
+			return prototypes.AgentConfigSetOAuthProviderResponse{}, fmt.Errorf("%w: first provider install requires durable activation fencing", ErrProviderInstallUnavailable)
+		}
+		candidateHash, hashErr := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
+		if hashErr != nil {
+			return prototypes.AgentConfigSetOAuthProviderResponse{}, hashErr
+		}
+		sum := sha256.Sum256([]byte(id.TenantID + "\x00" + req.AgentID + "\x00" + candidateHash))
+		operationKind := "agentcfg.oauth_provider.first_install." + hex.EncodeToString(sum[:])
+		activationFence, err = s.signedOAuthMCPFences.Begin(ctx, id.TenantID, req.AgentID, operationKind, candidateHash, candidateHash, "")
+		if err != nil {
+			return prototypes.AgentConfigSetOAuthProviderResponse{}, err
+		}
+		writeCtx = agentcfg.WithSignedOAuthMCPFenceOperation(ctx, operationKind)
+	}
 
 	var rev agentcfg.Revision
 	applyErr, emitErr := adminwrite.Apply(
 		func() (revert func() error, err error) {
-			written, recErr := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,
+			written, recErr := s.registry.SetRevision(writeCtx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,
 				agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 			if recErr != nil {
+				if !hasActive {
+					return nil, s.compensateFirstProviderInstall(ctx, q, req.AgentID, activationFence, desc.Name, recErr)
+				}
 				return nil, recErr
 			}
 			rev = written
@@ -169,7 +193,7 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 						return nil, fmt.Errorf("provider install failed AND revision rollback failed (state may be inconsistent): %w", errors.Join(instErr, rbErr))
 					}
 				}
-				return nil, instErr
+				return nil, s.compensateFirstProviderInstall(ctx, q, req.AgentID, activationFence, desc.Name, instErr)
 			}
 			revert = func() error {
 				var errs []error
@@ -181,16 +205,7 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 						errs = append(errs, e)
 					}
 				} else {
-					// No prior revision exists. A forward empty revision is NOT a
-					// safe compensation: another Runtime can observe and authorise the
-					// candidate between the write and that new revision. Deactivate only
-					// if the physical pointer still names OUR exact candidate.
-					deactivated, e := s.registry.DeactivateIfActive(ctx, q, req.AgentID, rev.RevisionID, agentcfg.ConfigScopeAgent)
-					if e != nil {
-						errs = append(errs, e)
-					} else if !deactivated {
-						errs = append(errs, fmt.Errorf("first-install compensation did not own active revision %q", rev.RevisionID))
-					}
+					errs = append(errs, s.compensateFirstProviderInstall(ctx, q, req.AgentID, activationFence, desc.Name, nil))
 				}
 				return errors.Join(errs...)
 			}
@@ -206,11 +221,71 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 	if emitErr != nil {
 		return prototypes.AgentConfigSetOAuthProviderResponse{}, emitErr
 	}
+	if !hasActive {
+		committed, commitErr := s.signedOAuthMCPFences.Advance(ctx, activationFence, agentcfg.SignedOAuthMCPFenceCommitted, rev.RevisionID)
+		if commitErr != nil {
+			latest, loadErr := s.signedOAuthMCPFences.Load(context.WithoutCancel(ctx), id.TenantID, req.AgentID)
+			if loadErr != nil || latest.Phase != agentcfg.SignedOAuthMCPFenceCommitted || latest.CandidateRevisionID != rev.RevisionID {
+				compErr := s.compensateFirstProviderInstall(ctx, q, req.AgentID, activationFence, desc.Name, commitErr)
+				return prototypes.AgentConfigSetOAuthProviderResponse{}, errors.Join(commitErr, compErr, loadErr)
+			}
+		} else {
+			activationFence = committed
+		}
+	}
 	return prototypes.AgentConfigSetOAuthProviderResponse{
 		Revision:        revisionToWire(rev),
 		Name:            desc.Name,
 		ProtocolVersion: prototypes.ProtocolVersion,
 	}, nil
+}
+
+func (s *Service) compensateFirstProviderInstall(ctx context.Context, q identity.Quadruple, agentID string, fence agentcfg.SignedOAuthMCPActivationFence, providerName string, cause error) error {
+	if fence.OperationKind == "" || s.signedOAuthMCPFences == nil {
+		return cause
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	var errs []error
+	if providerName != "" {
+		if err := s.providerInstaller.UninstallProvider(cleanupCtx, q.TenantID, agentID, providerName); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	history, err := s.registry.ListRevisions(cleanupCtx, q, agentID, agentcfg.ConfigScopeAgent, 0)
+	if err != nil {
+		errs = append(errs, err)
+	} else {
+		for _, candidate := range history {
+			if candidate.ContentHash != fence.CandidateContentHash {
+				continue
+			}
+			fenceCtx := agentcfg.WithSignedOAuthMCPFenceOperation(cleanupCtx, fence.OperationKind)
+			if _, deactivateErr := s.registry.DeactivateIfActive(fenceCtx, q, agentID, candidate.RevisionID, agentcfg.ConfigScopeAgent); deactivateErr != nil {
+				errs = append(errs, deactivateErr)
+			}
+			break
+		}
+	}
+	latest, loadErr := s.signedOAuthMCPFences.Load(cleanupCtx, q.TenantID, agentID)
+	if loadErr != nil {
+		errs = append(errs, loadErr)
+	} else if latest.Phase == agentcfg.SignedOAuthMCPFencePending && latest.OperationKind == fence.OperationKind {
+		candidateID := ""
+		for _, candidate := range history {
+			if candidate.ContentHash == fence.CandidateContentHash {
+				candidateID = candidate.RevisionID
+				break
+			}
+		}
+		if _, abortErr := s.signedOAuthMCPFences.Advance(cleanupCtx, latest, agentcfg.SignedOAuthMCPFenceAborted, candidateID); abortErr != nil {
+			errs = append(errs, abortErr)
+		}
+	}
+	if cause != nil {
+		errs = append([]error{cause}, errs...)
+	}
+	return errors.Join(errs...)
 }
 
 // validateOAuthProviderDescriptor validates + normalises the wire descriptor,

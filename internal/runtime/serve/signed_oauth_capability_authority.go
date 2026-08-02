@@ -10,7 +10,7 @@ import (
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 )
 
-// SignedOAuthMCPCapabilityAuthoritiesFromConfig constructs D-401's fixed
+// SignedOAuthMCPCapabilityAuthoritiesFromConfig constructs the fixed
 // broker trust anchors at boot. A configured anchor fetches/parses its JWKS
 // synchronously, so a bad issuer/key source cannot leave the registration
 // surface half-enabled. Brokers without the explicit opt-in are deliberately

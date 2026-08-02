@@ -44,6 +44,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -115,18 +116,18 @@ var (
 	// for a duplicate, BOTH offending positions.
 	ErrInvalidExtraSystemBlocks = errors.New("agentcfg/protocol: invalid extra system blocks section")
 	// ErrSignedCapabilityPairReadOnly rejects every generic authoring door for
-	// immutable D-401 signed-pair state. It is a client error, not a silently
+	// immutable signed-pair state. It is a client error, not a silently
 	// ignored field: callers must use register_oauth_mcp_capability.
 	ErrSignedCapabilityPairReadOnly = errors.New("agentcfg/protocol: signed oauth mcp capability pair is server-owned and read-only")
 	// ErrSignedCapabilityUnavailable means this Runtime was not booted with an
-	// explicitly enabled D-401 trust anchor or private preparation seams.
+	// explicitly enabled signed-capability trust anchor or private preparation seams.
 	ErrSignedCapabilityUnavailable = errors.New("agentcfg/protocol: signed oauth mcp capability registration is not wired or boot-authorized")
 	// ErrSignedCapabilityPairExists rejects a second pair for an agent until the
 	// paired-removal lifecycle lands; generic provider/connection writers never
 	// compose with a signed pair.
 	ErrSignedCapabilityPairExists = errors.New("agentcfg/protocol: signed oauth mcp capability pair already exists")
 	// ErrInvalidSignedCapabilityDescriptor is the closed descriptor validation
-	// failure for D-401's HTTP-only MCP connection shape.
+	// failure for the signed capability's HTTP-only MCP connection shape.
 	ErrInvalidSignedCapabilityDescriptor = errors.New("agentcfg/protocol: invalid signed oauth mcp capability descriptor")
 )
 
@@ -271,18 +272,18 @@ type Service struct {
 	// flag) OR (the HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR boot env), computed at the
 	// cmd/harbor + devstack boundary and injected here — never Protocol-writable.
 	allowWireOAuthDescriptor bool
-	// signedOAuthMCPCapabilityAuthorities is the boot-only D-401 trust-anchor
+	// signedOAuthMCPCapabilityAuthorities is the boot-only trust-anchor
 	// map, keyed by broker name. A nil/empty map leaves signed capability
 	// registration fail-closed; ordinary OAuth provider verbs never consult it.
 	signedOAuthMCPCapabilityAuthorities map[string]SignedOAuthMCPCapabilityAuthority
 	// signedOAuthMCPOperations is the tenant-scoped durable replay and recovery
-	// ledger for the pair lifecycle. Nil deliberately leaves the D-401 write
+	// ledger for the pair lifecycle. Nil deliberately leaves the signed-capability write
 	// unavailable: accepting an authority without its anti-replay store would
 	// turn a restart into a second registration attempt.
 	signedOAuthMCPOperations *agentcfg.SignedOAuthMCPOperationStore
 	// signedOAuthMCPFences hides a first-install physical pointer until the
 	// exact pair-lifetime receipt is published. It is mandatory with the
-	// operation store; nil leaves the D-401 surface fail-closed.
+	// operation store; nil leaves the signed-capability surface fail-closed.
 	signedOAuthMCPFences *agentcfg.SignedOAuthMCPActivationFenceStore
 	// allowWireInjection is the effective DEV-ONLY, fail-closed opt-in that
 	// permits add_mcp_connection to carry a per-user credential-INJECTION mapping
@@ -663,7 +664,7 @@ func WithAllowWireOAuthDescriptor(allow bool) Option {
 }
 
 // WithSignedOAuthMCPCapabilityAuthorities wires the immutable boot-declared
-// D-401 trust anchors. The map is copied, so callers cannot mutate a compiled
+// signed-capability trust anchors. The map is copied, so callers cannot mutate a compiled
 // Service after construction. An empty map is the fail-closed default.
 func WithSignedOAuthMCPCapabilityAuthorities(authorities map[string]SignedOAuthMCPCapabilityAuthority) Option {
 	return func(s *Service) {
@@ -963,11 +964,21 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
-	// D-401 pair state is server-owned. A generic whole-payload write must not
-	// be able to manufacture, alter, clear, or replay it; the dedicated signed
-	// registration lifecycle is the single authoring door.
+	// Signed pair state is server-owned. An omitted value is carried forward by
+	// the registry. A supplied read-only projection must equal the active pair;
+	// it is never trusted as an authoring input.
 	if req.Payload.SignedOAuthMCPPair != nil {
-		return prototypes.AgentConfigSetRevisionResponse{}, fmt.Errorf("%w: signed_oauth_mcp_pair is read-only", ErrSignedCapabilityPairReadOnly)
+		active, set, activeErr := s.registry.Active(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent)
+		if activeErr != nil {
+			return prototypes.AgentConfigSetRevisionResponse{}, activeErr
+		}
+		var current *prototypes.AgentConfigSignedOAuthMCPPair
+		if set {
+			current = revisionToWire(active).Payload.SignedOAuthMCPPair
+		}
+		if current == nil || !reflect.DeepEqual(current, req.Payload.SignedOAuthMCPPair) {
+			return prototypes.AgentConfigSetRevisionResponse{}, fmt.Errorf("%w: signed_oauth_mcp_pair differs from active immutable state", ErrSignedCapabilityPairReadOnly)
+		}
 	}
 	// A full-payload set that pins per-agent LLM params is validated at set
 	// time (parity with set_llm_params / the tenant model-swap) so an invalid

@@ -42,13 +42,10 @@
 // 30s window with loud failures in between, never one exchange + one
 // audit event per tool call.
 //
-// Cache granularity: the subject_token presented to the broker carries
-// the full verified (tenant, user, session) triple, but the cache and
-// single-flight key deliberately scope by (binding scope, tenant,
-// user, source) — the user-bound granularity. Two sessions of the same
-// (tenant, user) share the cached credential by design; a broker that
-// scopes grants per-session should advertise a short expiry (the cache
-// never outlives it).
+// Cache granularity: the general profile scopes by (binding scope, tenant,
+// user, source), so two sessions of the same user share the cached credential.
+// The signed-capability profile is deliberately stricter: its key also carries
+// session plus a digest of the complete immutable capability binding.
 //
 // # Fail loud, one mode per source
 //
@@ -108,7 +105,9 @@ package tokenexchange
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -204,7 +203,8 @@ const (
 	// actor_token — a Harbor-defined URN mirroring the identity-triple
 	// subject-token-type. The broker's AS binds/cross-checks the subject
 	// (requesting principal) against this acting principal.
-	actorTokenTypeInvokingAgent = "urn:harbor:oauth:token-type:invoking-agent" //nolint:gosec // G101 false positive: actor-token-type URN, not a credential
+	actorTokenTypeInvokingAgent    = "urn:harbor:oauth:token-type:invoking-agent"            //nolint:gosec // G101 false positive: actor-token-type URN, not a credential
+	actorTokenTypeSignedCapability = "urn:harbor:oauth:token-type:signed-capability-binding" //nolint:gosec // G101 false positive: actor-token-type URN, not a credential
 )
 
 // init self-registers the `tokenexchange` driver under its canonical
@@ -349,6 +349,26 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 	if clock == nil {
 		clock = time.Now
 	}
+	var signedBinding *auth.SignedCapabilityExchangeBinding
+	var signedBindingDigest string
+	if cfg.SignedCapability != nil {
+		binding := *cfg.SignedCapability
+		if binding.TenantID == "" || binding.UserID == "" || binding.SessionID == "" || binding.AgentID == "" || binding.ProviderName != cfg.Name || binding.CapabilityRevision == "" ||
+			binding.PairFingerprint == "" || binding.URLDigest == "" || binding.SinkDigest == "" || binding.Audience == "" ||
+			binding.Resource == "" || binding.Audience != audience || binding.Resource != strings.TrimSpace(cfg.ResourceIndicator) {
+			return nil, fmt.Errorf("%w (provider name=%q): incomplete or inconsistent signed capability exchange binding", auth.ErrExchangeFailed, cfg.Name)
+		}
+		digest, err := digestSignedCapabilityBinding(binding)
+		if err != nil {
+			return nil, fmt.Errorf("%w (provider name=%q): encode signed capability exchange binding: %w", auth.ErrExchangeFailed, cfg.Name, err)
+		}
+		signedBinding = &binding
+		signedBindingDigest = digest
+	}
+	// A provider owns detached single-flight workers whose caller values must
+	// survive caller cancellation. This lifecycle context has no request values;
+	// it exists solely so Close can cancel and join those unmanaged workers.
+	closeCtx, closeCancel := context.WithCancel(context.Background())
 
 	return &provider{
 		name:                   cfg.Name,
@@ -360,9 +380,14 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 		audience:               audience,
 		resourceIndicator:      strings.TrimSpace(cfg.ResourceIndicator),
 		includeActorToken:      cfg.IncludeActorToken,
+		signedBinding:          signedBinding,
+		signedBindingDigest:    signedBindingDigest,
+		refuseRedirects:        cfg.RefuseDownstreamRedirects,
 		allowedDownstreamHosts: append([]string(nil), cfg.AllowedDownstreamHosts...),
 		cacheTTLCap:            cacheTTLCap,
 		httpClient:             httpClient,
+		closeCtx:               closeCtx,
+		closeCancel:            closeCancel,
 		now:                    clock,
 		bus:                    deps.Bus,
 		redactor:               deps.Redactor,
@@ -540,6 +565,11 @@ type provider struct {
 	// acting principal (agent_id) as an RFC 8693 actor_token. Set once at
 	// construction; read-only.
 	includeActorToken bool
+	// signedBinding is the immutable strict exchange contract for a private
+	// signed capability. Nil preserves the general token-exchange behavior.
+	signedBinding       *auth.SignedCapabilityExchangeBinding
+	signedBindingDigest string
+	refuseRedirects     bool
 	// allowedDownstreamHosts is the boot-declared sink allow-list — the
 	// downstream connection hosts the exchanged bearer may be injected
 	// into. Set once at construction; the MCP southbound binding refuses a
@@ -579,6 +609,12 @@ type provider struct {
 	flight   map[string]*exchangeCall
 
 	closed atomic.Bool
+	// lifecycleMu makes Close a barrier: Token calls admitted before closure
+	// finish before Close returns, and calls arriving after closure fail before
+	// they can observe a cache entry or start an exchange.
+	lifecycleMu sync.RWMutex
+	closeCtx    context.Context
+	closeCancel context.CancelFunc
 }
 
 // cachedToken is one in-memory brokered token plus its serve horizon
@@ -614,6 +650,8 @@ func (e *consentError) Error() string { return "auth/tokenexchange: broker requi
 // retargeted onto the operator-configured source (the V1 one-provider-
 // one-attachment model, mirroring the oauth2 driver).
 func (p *provider) Token(ctx context.Context, _ tools.ToolSourceID) (auth.Token, error) {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
 	if p.closed.Load() {
 		return auth.Token{}, auth.ErrProviderClosed
 	}
@@ -622,6 +660,9 @@ func (p *provider) Token(ctx context.Context, _ tools.ToolSourceID) (auth.Token,
 	}
 	id, err := p.identityFromCtx(ctx)
 	if err != nil {
+		return auth.Token{}, err
+	}
+	if err := p.validateSignedCapabilityCaller(ctx, id); err != nil {
 		return auth.Token{}, err
 	}
 	key := p.cacheKey(id)
@@ -707,6 +748,8 @@ func (p *provider) runExchange(callerCtx context.Context, id identity.Identity, 
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(callerCtx), timeout)
 	defer cancel()
+	stopCloseCancel := context.AfterFunc(p.closeCtx, cancel)
+	defer stopCloseCancel()
 
 	now := p.now()
 	p.cacheMu.Lock()
@@ -786,6 +829,10 @@ type brokerResponse struct {
 	TokenType       string `json:"token_type"`
 	ExpiresIn       int    `json:"expires_in"`
 	Scope           string `json:"scope"`
+	// Audience and Resource are response extensions required by the strict
+	// signed-capability profile. Generic RFC 8693 providers ignore them.
+	Audience string `json:"audience"`
+	Resource string `json:"resource"`
 }
 
 // brokerError is the RFC 6749 §5.2 error body shape.
@@ -853,7 +900,15 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 	// acting principal against the subject. Absent either → byte-identical to
 	// today (no actor_token sent).
 	var actorAsserted bool
-	if p.includeActorToken {
+	if p.signedBinding != nil {
+		actorToken, encodeErr := encodeSignedCapabilityActor(*p.signedBinding)
+		if encodeErr != nil {
+			return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: encode signed capability actor: %w", auth.ErrExchangeFailed, encodeErr)
+		}
+		form.Set("actor_token", actorToken)
+		form.Set("actor_token_type", actorTokenTypeSignedCapability)
+		actorAsserted = true
+	} else if p.includeActorToken {
 		if agentID, ok := tools.InvokingAgentFrom(ctx); ok && agentID != "" {
 			form.Set("actor_token", agentID)
 			form.Set("actor_token_type", actorTokenTypeInvokingAgent)
@@ -897,6 +952,10 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 	}
 	if br.AccessToken == "" {
 		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: empty access_token in broker response", auth.ErrExchangeFailed)
+	}
+	if p.signedBinding != nil && (br.Audience != p.signedBinding.Audience || br.Resource != p.signedBinding.Resource) {
+		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: broker response destination mismatch (audience=%q resource=%q)",
+			auth.ErrExchangeFailed, br.Audience, br.Resource)
 	}
 
 	// Best-effort audience verification (confused-deputy defence). When a
@@ -1122,6 +1181,8 @@ func (p *provider) PendingFlow(_ context.Context, _ string) (auth.PendingFlowInf
 // (revocation there is the broker's concern; the serve horizon bounds
 // our staleness).
 func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
 	if p.closed.Load() {
 		return auth.ErrProviderClosed
 	}
@@ -1132,6 +1193,9 @@ func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
 	if err != nil {
 		return err
 	}
+	if err := p.validateSignedCapabilityCaller(ctx, id); err != nil {
+		return err
+	}
 	key := p.cacheKey(id)
 	p.cacheMu.Lock()
 	p.gens[key]++
@@ -1140,11 +1204,41 @@ func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
 	return nil
 }
 
-// Close implements auth.OAuthProvider.Close. Idempotent.
-func (p *provider) Close(_ context.Context) error {
+// Close implements auth.OAuthProvider.Close. It is an idempotent lifecycle
+// barrier: no admitted Token call or detached exchange worker remains, and no
+// cached credential remains reachable when it returns successfully.
+func (p *provider) Close(ctx context.Context) error {
 	p.closed.Store(true)
+	p.closeCancel()
+	// Wait until every Token/Revoke call that passed the closed check has
+	// returned. Cancelling the provider worker context first ensures a caller
+	// waiting on a detached exchange is released promptly.
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
+	p.flightMu.Lock()
+	done := make([]<-chan struct{}, 0, len(p.flight))
+	for _, call := range p.flight {
+		done = append(done, call.done)
+	}
+	p.flightMu.Unlock()
+	for _, finished := range done {
+		select {
+		case <-finished:
+		case <-ctx.Done():
+			return fmt.Errorf("auth/tokenexchange: Close cancelled while draining exchanges: %w", ctx.Err())
+		}
+	}
+	p.cacheMu.Lock()
+	clear(p.cache)
+	clear(p.gens)
+	p.cacheMu.Unlock()
 	return nil
 }
+
+// RefuseRedirects reports whether the downstream transport must reject every
+// redirect for this credential binding.
+func (p *provider) RefuseRedirects() bool { return p.refuseRedirects }
 
 // AllowedDownstreamHosts implements auth.OAuthProvider — the boot-declared
 // sink allow-list for the exchanged bearer. A copy is returned so callers
@@ -1182,13 +1276,24 @@ func encodeSubjectToken(id identity.Identity) (string, error) {
 }
 
 // cacheKey composes the cache / single-flight / revocation key for the
-// verified ctx identity: (binding scope, tenant, user, source) — the
-// same composite the sealed token store keys by. Components are
+// verified ctx identity. The general profile uses (binding scope, tenant,
+// user, source), while a signed capability additionally binds session and the
+// complete capability digest. Components are
 // length-prefixed so external-input IDs containing separator bytes
 // cannot collide two keys (tenant "a;1" + user "b" vs tenant "a" +
-// user "1;b"). The session is deliberately NOT part of the key —
-// ScopeUser granularity; see the package godoc.
+// user "1;b").
 func (p *provider) cacheKey(id identity.Identity) string {
+	if p.signedBinding != nil {
+		scope := string(auth.ScopeUser)
+		src := string(p.source)
+		return fmt.Sprintf("%d:%s;%d:%s;%d:%s;%d:%s;%d:%s;%d:%s",
+			len(scope), scope,
+			len(id.TenantID), id.TenantID,
+			len(id.UserID), id.UserID,
+			len(id.SessionID), id.SessionID,
+			len(src), src,
+			len(p.signedBindingDigest), p.signedBindingDigest)
+	}
 	scope := string(auth.ScopeUser)
 	src := string(p.source)
 	return fmt.Sprintf("%d:%s;%d:%s;%d:%s;%d:%s",
@@ -1196,6 +1301,37 @@ func (p *provider) cacheKey(id identity.Identity) string {
 		len(id.TenantID), id.TenantID,
 		len(id.UserID), id.UserID,
 		len(src), src)
+}
+
+func (p *provider) validateSignedCapabilityCaller(ctx context.Context, id identity.Identity) error {
+	if p.signedBinding == nil {
+		return nil
+	}
+	if id.TenantID != p.signedBinding.TenantID || id.UserID != p.signedBinding.UserID || id.SessionID != p.signedBinding.SessionID {
+		return fmt.Errorf("%w: signed capability subject mismatch", auth.ErrIdentityRequired)
+	}
+	agentID, ok := tools.InvokingAgentFrom(ctx)
+	if !ok || agentID == "" || agentID != p.signedBinding.AgentID {
+		return fmt.Errorf("%w: signed capability acting agent mismatch", auth.ErrIdentityRequired)
+	}
+	return nil
+}
+
+func digestSignedCapabilityBinding(binding auth.SignedCapabilityExchangeBinding) (string, error) {
+	raw, err := json.Marshal(binding)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func encodeSignedCapabilityActor(binding auth.SignedCapabilityExchangeBinding) (string, error) {
+	raw, err := json.Marshal(binding)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 // isConsentRequired reports whether an OAuth error code is a

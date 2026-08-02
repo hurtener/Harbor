@@ -16,8 +16,8 @@ func TestVerifySignedOAuthMCPAuthority_ExactBindingAndScopeCeiling(t *testing.T)
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
-	binding := SignedOAuthMCPBinding{TenantID: "tenant", AgentID: "agent", Broker: "boot-broker", ProviderName: "github", CapabilityRevision: "1", URLDigest: "digest", Audience: "api", Scopes: []string{"repo:read", "user:read"}}
-	claims := SignedOAuthMCPAuthorityClaims{TenantID: binding.TenantID, AgentID: binding.AgentID, Broker: binding.Broker, ProviderName: binding.ProviderName, CapabilityRevision: binding.CapabilityRevision, URLDigest: binding.URLDigest, Audience: binding.Audience, Scopes: []string{"user:read", "repo:read"}, RegisteredClaims: jwt.RegisteredClaims{Issuer: "issuer", ID: "jti", IssuedAt: jwt.NewNumericDate(now.Add(-time.Minute)), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute))}}
+	binding := SignedOAuthMCPBinding{TenantID: "tenant", UserID: "user", SessionID: "session", AgentID: "agent", Broker: "boot-broker", ProviderName: "github", CapabilityRevision: "1", URLDigest: "digest", SinkDigest: "sink-digest", Audience: "api", Scopes: []string{"repo:read", "user:read"}, Connection: SignedOAuthMCPConnectionDescriptor{Name: "server", URL: "https://mcp.example.test/mcp", ToolAllowlist: []string{"read"}, ConnectTimeoutMS: 1000}}
+	claims := SignedOAuthMCPAuthorityClaims{TenantID: binding.TenantID, UserID: binding.UserID, SessionID: binding.SessionID, AgentID: binding.AgentID, Broker: binding.Broker, ProviderName: binding.ProviderName, CapabilityRevision: binding.CapabilityRevision, URLDigest: binding.URLDigest, SinkDigest: binding.SinkDigest, Audience: binding.Audience, Scopes: []string{"user:read", "repo:read"}, Connection: binding.Connection, RegisteredClaims: jwt.RegisteredClaims{Issuer: "issuer", ID: "jti", IssuedAt: jwt.NewNumericDate(now.Add(-time.Minute)), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute))}}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = "key-1"
 	raw, err := token.SignedString(key)
@@ -29,6 +29,35 @@ func TestVerifySignedOAuthMCPAuthority_ExactBindingAndScopeCeiling(t *testing.T)
 	}
 	if _, err := VerifySignedOAuthMCPAuthority(raw, "issuer", "key-1", &key.PublicKey, now, binding, []string{"repo:read"}); !errors.Is(err, ErrSignedCapabilityScopeWidening) {
 		t.Fatalf("scope ceiling err = %v, want ErrSignedCapabilityScopeWidening", err)
+	}
+	mutatedPolicy := binding
+	mutatedPolicy.Connection.ToolAllowlist = []string{"write"}
+	if _, err := VerifySignedOAuthMCPAuthority(raw, "issuer", "key-1", &key.PublicKey, now, mutatedPolicy, []string{"repo:read", "user:read"}); !errors.Is(err, ErrSignedCapabilityBinding) {
+		t.Fatalf("connection policy mutation err = %v, want binding refusal", err)
+	}
+}
+
+func TestVerifySignedOAuthMCPAuthority_RefusesFutureIssuedAtBeyondSkew(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	binding := SignedOAuthMCPBinding{TenantID: "t", UserID: "u", SessionID: "s", AgentID: "a", Broker: "b", ProviderName: "p", CapabilityRevision: "v1", URLDigest: "url", SinkDigest: "sink", Audience: "aud"}
+	claims := SignedOAuthMCPAuthorityClaims{
+		TenantID: binding.TenantID, UserID: binding.UserID, SessionID: binding.SessionID, AgentID: binding.AgentID,
+		Broker: binding.Broker, ProviderName: binding.ProviderName, CapabilityRevision: binding.CapabilityRevision,
+		URLDigest: binding.URLDigest, SinkDigest: binding.SinkDigest, Audience: binding.Audience,
+		RegisteredClaims: jwt.RegisteredClaims{Issuer: "issuer", ID: "jti", IssuedAt: jwt.NewNumericDate(now.Add(SignedOAuthMCPAuthorityClockSkew + time.Second)), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute))},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = "kid"
+	raw, err := token.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifySignedOAuthMCPAuthority(raw, "issuer", "kid", &key.PublicKey, now, binding, nil); !errors.Is(err, ErrSignedCapabilityAuthority) {
+		t.Fatalf("future iat error = %v, want authority refusal", err)
 	}
 }
 

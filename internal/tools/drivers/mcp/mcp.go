@@ -195,6 +195,10 @@ type Config struct {
 	// request (initialize / discovery) predates any per-call identity and so
 	// carries only the static Headers — a documented limitation.
 	OAuthProvider auth.OAuthProvider
+	// OwnOAuthProvider transfers teardown ownership of OAuthProvider to this
+	// connection. It is reserved for a privately prepared signed capability;
+	// ordinary boot/shared providers remain owned by their provider set.
+	OwnOAuthProvider bool
 
 	// MetaAnnotations is a static, non-secret set of operator-declared
 	// key/values merged into the `_meta` map on every identity-stamped
@@ -1564,13 +1568,18 @@ func (p *Provider) Close(ctx context.Context) error {
 	session := p.session
 	p.session = nil
 	p.mu.Unlock()
-	if session == nil {
-		return nil
+	var errs []error
+	if session != nil {
+		if err := session.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("mcp: close session: %w", err))
+		}
 	}
-	if err := session.Close(); err != nil {
-		return fmt.Errorf("mcp: close session: %w", err)
+	if p.cfg.OwnOAuthProvider && p.cfg.OAuthProvider != nil {
+		if err := p.cfg.OAuthProvider.Close(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("mcp: close private oauth provider: %w", err))
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // buildIdentityMeta builds the `_meta` map the MCP wire format

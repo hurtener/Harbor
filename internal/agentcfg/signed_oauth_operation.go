@@ -42,7 +42,7 @@ var (
 	// ErrSignedCapabilityReplay is returned when an authority JTI has already
 	// claimed a different immutable capability fingerprint.
 	ErrSignedCapabilityReplay = errors.New("agentcfg: signed oauth mcp capability replay")
-	// ErrSignedCapabilityTransition marks a transition that is not in D-401's
+	// ErrSignedCapabilityTransition marks a transition that is not in the
 	// one pair-lifetime operation graph.
 	ErrSignedCapabilityTransition = errors.New("agentcfg: invalid signed oauth mcp capability operation transition")
 	// ErrSignedCapabilityPending is returned when a foreign writer observes a
@@ -88,7 +88,7 @@ type SignedOAuthMCPOperation struct {
 	EventID     state.EventID                `json:"-"`
 }
 
-// SignedOAuthMCPOperationStore persists D-401's tenant-scoped anti-replay
+// SignedOAuthMCPOperationStore persists the signed-capability tenant-scoped anti-replay
 // operation record through the mandatory StateStore SaveIf primitive.
 type SignedOAuthMCPOperationStore struct{ state state.StateStore }
 
@@ -118,7 +118,7 @@ type SignedOAuthMCPActivationFence struct {
 	EventID              state.EventID                      `json:"-"`
 }
 
-// SignedOAuthMCPActivationFenceStore is the durable D-401 security fence.
+// SignedOAuthMCPActivationFenceStore is the durable signed-capability security fence.
 type SignedOAuthMCPActivationFenceStore struct{ state state.StateStore }
 
 const signedOAuthMCPActivationFenceKind = "agentcfg.signed_oauth_mcp.activation_fence"
@@ -302,6 +302,41 @@ func (s *SignedOAuthMCPOperationStore) Load(ctx context.Context, key SignedOAuth
 	return op, nil
 }
 
+// ScanTenantPage returns one bounded page of operation receipts for a tenant.
+// This is a maintenance-only recovery read; callers must still match the
+// complete signed subject and agent before acting on a record.
+func (s *SignedOAuthMCPOperationStore) ScanTenantPage(ctx context.Context, tenant string, limit int, continuation string) ([]SignedOAuthMCPOperation, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	if strings.TrimSpace(tenant) == "" {
+		return nil, "", fmt.Errorf("%w: tenant is empty", ErrSignedCapabilityAuthority)
+	}
+	const operationPrefix = "agentcfg.signed_oauth_mcp."
+	page, err := s.state.ScanKindForTenant(ctx, state.ListScope{MaintenanceScoped: true}, tenant, operationPrefix, limit, continuation)
+	if err != nil {
+		return nil, "", fmt.Errorf("scan signed capability operations: %w", err)
+	}
+	out := make([]SignedOAuthMCPOperation, 0, len(page.Records))
+	for _, record := range page.Records {
+		if record.Kind == signedOAuthMCPActivationFenceKind {
+			continue
+		}
+		var op SignedOAuthMCPOperation
+		if err := json.Unmarshal(record.Bytes, &op); err != nil {
+			return nil, "", fmt.Errorf("%w: decode tenant operation %q", ErrSignedCapabilityReplay, record.Kind)
+		}
+		_, expectedKind, err := signedOAuthMCPOperationSlot(op.ReplayKey)
+		if err != nil || expectedKind != record.Kind || op.ReplayKey.TenantID != tenant || op.Binding.TenantID != tenant ||
+			op.Fingerprint != SignedOAuthMCPPairFingerprint(op.Binding) || !signedOAuthMCPOperationPhaseKnown(op.Phase) {
+			return nil, "", fmt.Errorf("%w: corrupt tenant operation %q", ErrSignedCapabilityReplay, record.Kind)
+		}
+		op.EventID = record.ID
+		out = append(out, op)
+	}
+	return out, page.Continuation, nil
+}
+
 // LoadForPair returns the frozen pair-lifetime receipt without recovering the
 // raw JTI. The opaque operation kind is persisted in immutable pair history,
 // so a removal can resume after the registration envelope has expired or its
@@ -321,8 +356,10 @@ func (s *SignedOAuthMCPOperationStore) LoadForPair(ctx context.Context, tenant s
 	if op.ReplayKey.TenantID != tenant || op.Fingerprint == "" || !signedOAuthMCPOperationPhaseKnown(op.Phase) ||
 		op.Binding.Broker != pair.Broker || op.Binding.ProviderName != pair.ProviderName ||
 		op.Binding.CapabilityRevision != pair.CapabilityRevision || op.Binding.URLDigest != pair.URLDigest ||
-		op.Binding.Audience != pair.Audience || op.Binding.AgentID != pair.OwnerAgentID ||
-		op.Fingerprint != SignedOAuthMCPPairFingerprint(SignedOAuthMCPBinding{TenantID: tenant, AgentID: pair.OwnerAgentID, Broker: pair.Broker, ProviderName: pair.ProviderName, CapabilityRevision: pair.CapabilityRevision, URLDigest: pair.URLDigest, Audience: pair.Audience, Scopes: pair.Scopes}) {
+		op.Binding.SinkDigest != pair.SinkDigest || op.Binding.Audience != pair.Audience || op.Binding.AgentID != pair.OwnerAgentID ||
+		op.Binding.UserID != pair.OwnerUserID || op.Binding.SessionID != pair.OwnerSessionID ||
+		!sameSignedOAuthMCPConnection(op.Binding.Connection, pair.Connection) ||
+		op.Fingerprint != SignedOAuthMCPPairFingerprint(SignedOAuthMCPBinding{TenantID: tenant, UserID: pair.OwnerUserID, SessionID: pair.OwnerSessionID, AgentID: pair.OwnerAgentID, Broker: pair.Broker, ProviderName: pair.ProviderName, CapabilityRevision: pair.CapabilityRevision, URLDigest: pair.URLDigest, SinkDigest: pair.SinkDigest, Audience: pair.Audience, Scopes: pair.Scopes, Connection: pair.Connection}) {
 		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: corrupt or foreign signed-pair operation receipt", ErrSignedCapabilityReplay)
 	}
 	return op, nil
@@ -334,7 +371,7 @@ func (s *SignedOAuthMCPOperationStore) Kind(key SignedOAuthMCPReplayKey) (string
 	return kind, err
 }
 
-// Advance atomically records the next legal D-401 recovery phase. The caller
+// Advance atomically records the next legal signed-capability recovery phase. The caller
 // must use the returned value for any subsequent transition; stale writers lose
 // on the exact operation EventID rather than overwriting one another.
 func (s *SignedOAuthMCPOperationStore) Advance(ctx context.Context, current SignedOAuthMCPOperation, next SignedOAuthMCPOperationPhase, revisionID string) (SignedOAuthMCPOperation, error) {

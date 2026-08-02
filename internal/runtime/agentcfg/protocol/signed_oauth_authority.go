@@ -18,7 +18,7 @@ type SignedOAuthMCPKeySet interface {
 	KeyByID(kid string) (crypto.PublicKey, string, error)
 }
 
-// SignedOAuthMCPCapabilityAuthority is one immutable boot-declared D-401
+// SignedOAuthMCPCapabilityAuthority is one immutable boot-declared
 // trust anchor. Broker is the request-visible selector, but all authority is
 // fixed by this construction-time value.
 type SignedOAuthMCPCapabilityAuthority struct {

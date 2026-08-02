@@ -52,21 +52,22 @@ func (capabilityInstaller) InstallProvider(context.Context, string, string, agen
 func (capabilityInstaller) UninstallProvider(context.Context, string, string, string) error {
 	return nil
 }
-func (capabilityInstaller) PrepareSignedCapabilityProvider(context.Context, string, string, string, string, string, string, []string) (agentcfgprotocol.PreparedOAuthProvider, error) {
+func (capabilityInstaller) PrepareSignedCapabilityProvider(context.Context, string, toolauth.SignedCapabilityExchangeBinding, []string) (agentcfgprotocol.PreparedOAuthProvider, error) {
 	return capabilityPreparedProvider{}, nil
 }
 
 type capabilityPreparer struct {
-	mu          sync.Mutex
-	activations int
-	detaches    int
-	live        map[string]string
-	failDetach  error
+	mu           sync.Mutex
+	activations  int
+	detaches     int
+	live         map[string]string
+	failActivate error
+	failDetach   error
 }
 
 // capabilityLandedThenErroredRegistry models the production-shaped ambiguous
 // acknowledgement: the immutable revision and active pointer commit, but the
-// caller receives an error. The D-401 recovery path must exact-reread the
+// caller receives an error. The signed-capability recovery path must exact-reread the
 // candidate and continue with THAT revision, never the stale predecessor.
 type capabilityLandedThenErroredRegistry struct {
 	agentcfg.Registry
@@ -98,13 +99,103 @@ type capabilityPreparedConnection struct {
 
 func (p capabilityPreparedConnection) Activate(context.Context) error {
 	p.parent.mu.Lock()
+	if p.parent.failActivate != nil {
+		err := p.parent.failActivate
+		p.parent.mu.Unlock()
+		return err
+	}
 	p.parent.activations++
 	if p.parent.live == nil {
 		p.parent.live = make(map[string]string)
 	}
-	p.parent.live[p.req.Identity.TenantID+"/"+p.req.AgentID+"/"+p.req.Name] = agentcfg.MCPConnectionFingerprint(agentcfg.MCPConnectionDescriptor{Name: p.req.Name, Transport: p.req.Transport, URL: p.req.URL, OAuthProvider: p.req.OAuthProvider})
+	p.parent.live[p.req.Identity.TenantID+"/"+p.req.AgentID+"/"+p.req.Name] = p.req.DescriptorFingerprint
 	p.parent.mu.Unlock()
 	return nil
+}
+
+func TestSignedOAuthMCPReconciler_HistoricalPublishedPairCannotReattach(t *testing.T) {
+	now := time.Now().UTC()
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-historical", "aud-historical")); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, ok, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !ok || active.Payload.SignedOAuthMCPPair == nil {
+		t.Fatalf("active pair: ok=%v err=%v rev=%+v", ok, err, active)
+	}
+	pair := active.Payload.SignedOAuthMCPPair
+	removedPayload := active.Payload
+	removedPayload.SignedOAuthMCPPair = nil
+	removeCtx := agentcfg.WithSignedOAuthMCPFenceOperation(context.Background(), pair.AuthorityOperationKind)
+	if _, err := reg.SetRevision(removeCtx, q, testAgentID, agentcfg.ConfigScopeAgent, removedPayload, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("land removal revision before receipt checkpoint: %v", err)
+	}
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	preparer.mu.Lock()
+	activations, live := preparer.activations, len(preparer.live)
+	preparer.mu.Unlock()
+	if activations != 1 || live != 0 {
+		t.Fatalf("historical published pair was dispatched: activations=%d live=%d", activations, live)
+	}
+	ops, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := ops.LoadForPair(context.Background(), q.TenantID, pair)
+	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhaseRemoved {
+		t.Fatalf("removal recovery phase=%q err=%v", op.Phase, err)
+	}
+}
+
+func TestSignedOAuthMCPReconciler_ExpiredIncompleteNeutralizesCandidate(t *testing.T) {
+	authorityNow := time.Now().UTC().Add(-2 * time.Hour)
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, authorityNow)
+	preparer.mu.Lock()
+	preparer.failActivate = errors.New("injected activation failure")
+	preparer.mu.Unlock()
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, authorityNow, "jti-expired-incomplete", "aud-expired")); err == nil {
+		t.Fatal("registration activation fault did not fail")
+	}
+	history, err := reg.ListRevisions(context.Background(), identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, testAgentID, agentcfg.ConfigScopeAgent, 0)
+	if err != nil || len(history) != 1 || history[0].Payload.SignedOAuthMCPPair == nil {
+		t.Fatalf("candidate history: %+v err=%v", history, err)
+	}
+	pair := history[0].Payload.SignedOAuthMCPPair
+	preparer.mu.Lock()
+	preparer.failActivate = nil
+	preparer.mu.Unlock()
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("expire reconcile: %v", err)
+	}
+	if active, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); err != nil || set {
+		t.Fatalf("expired candidate remained active: set=%v rev=%+v err=%v", set, active, err)
+	}
+	ops, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := ops.LoadForPair(context.Background(), q.TenantID, pair)
+	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhaseExpiredIncomplete {
+		t.Fatalf("expired receipt phase=%q err=%v", op.Phase, err)
+	}
+	preparer.mu.Lock()
+	deactivations := preparer.activations
+	preparer.mu.Unlock()
+	if deactivations != 0 {
+		t.Fatalf("expired candidate was published: activations=%d", deactivations)
+	}
 }
 func (capabilityPreparedConnection) Close(context.Context) error { return nil }
 
@@ -118,6 +209,21 @@ func (p *capabilityPreparer) DetachConnection(_ context.Context, tenant, agentID
 	p.detaches++
 	delete(p.live, tenant+"/"+agentID+"/"+name)
 	p.mu.Unlock()
+	return nil
+}
+
+func (p *capabilityPreparer) DetachExactConnection(_ context.Context, tenant, agentID, name, fingerprint string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.failDetach != nil {
+		return p.failDetach
+	}
+	key := tenant + "/" + agentID + "/" + name
+	if live, ok := p.live[key]; ok && live != fingerprint {
+		return fmt.Errorf("exact detach fingerprint mismatch")
+	}
+	p.detaches++
+	delete(p.live, key)
 	return nil
 }
 
@@ -367,13 +473,14 @@ func signedCapabilityRequest(t *testing.T, key *rsa.PrivateKey, now time.Time, j
 
 func signedCapabilityRequestFor(t *testing.T, key *rsa.PrivateKey, now time.Time, scope prototypes.IdentityScope, agentID, jti, audience, connectionName string) prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest {
 	t.Helper()
-	canonical, _, err := agentcfg.CanonicalOAuthMCPURL("https://example.test/mcp")
+	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://example.test/mcp")
 	if err != nil {
 		t.Fatal(err)
 	}
 	claims := agentcfg.SignedOAuthMCPAuthorityClaims{
-		TenantID: scope.Tenant, AgentID: agentID, Broker: "broker", ProviderName: "provider", CapabilityRevision: "v1",
-		URLDigest: agentcfg.OAuthMCPURLDigest(canonical), Audience: audience, Scopes: []string{"read"},
+		TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session, AgentID: agentID, Broker: "broker", ProviderName: "provider", CapabilityRevision: "v1",
+		URLDigest: agentcfg.OAuthMCPURLDigest(canonical), SinkDigest: agentcfg.OAuthMCPURLDigest(sink), Audience: audience, Scopes: []string{"read"},
+		Connection:       agentcfg.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonical},
 		RegisteredClaims: jwt.RegisteredClaims{Issuer: "issuer", ID: jti, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(30 * time.Minute))},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)

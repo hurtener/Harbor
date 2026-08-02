@@ -226,9 +226,10 @@ func TestConditionalWrite_AllSeventeenDoorsAcceptTheToken(t *testing.T) {
 			return err
 		}},
 		{"agent_config.set_oauth_provider", func(t *testing.T) error {
-			reg := newRegistry(t)
+			reg, st := newRegistryWithState(t)
 			s, err := agentcfgprotocol.NewService(reg,
-				agentcfgprotocol.WithProviderInstaller(newFakeInstaller()))
+				agentcfgprotocol.WithProviderInstaller(newFakeInstaller()),
+				agentcfgprotocol.WithSignedOAuthMCPOperationState(st))
 			if err != nil {
 				t.Fatalf("NewService: %v", err)
 			}
@@ -241,9 +242,10 @@ func TestConditionalWrite_AllSeventeenDoorsAcceptTheToken(t *testing.T) {
 			return err
 		}},
 		{"agent_config.remove_oauth_provider", func(t *testing.T) error {
-			reg := newRegistry(t)
+			reg, st := newRegistryWithState(t)
 			s, err := agentcfgprotocol.NewService(reg,
-				agentcfgprotocol.WithProviderInstaller(newFakeInstaller()))
+				agentcfgprotocol.WithProviderInstaller(newFakeInstaller()),
+				agentcfgprotocol.WithSignedOAuthMCPOperationState(st))
 			if err != nil {
 				t.Fatalf("NewService: %v", err)
 			}

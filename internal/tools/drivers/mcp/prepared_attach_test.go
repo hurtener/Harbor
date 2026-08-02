@@ -98,6 +98,47 @@ func TestPreparedAttachment_PrepareDoesNotPublishAndCloseIsIdempotent(t *testing
 	}
 }
 
+func TestPreparedAttachment_SignedToolProjectionAppliesAllowAndDenyBeforePublication(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		allow []string
+		deny  []string
+		want  bool
+	}{
+		{name: "allow exact tool", allow: []string{"echo"}, want: true},
+		{name: "allow excludes tool", allow: []string{"other"}, want: false},
+		{name: "deny overrides allow", allow: []string{"echo"}, deny: []string{"echo"}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mockSrv := newMockServer()
+			handler := mcpsdk.NewSSEHandler(func(*http.Request) *mcpsdk.Server { return mockSrv.server }, nil)
+			server := httptest.NewServer(handler)
+			t.Cleanup(server.Close)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cat := tools.NewCatalog()
+			reg := NewRegistry()
+			closers := []func(context.Context) error{}
+			prepared, err := Prepare(ctx, config.MCPServerConfig{Name: "signed", TransportMode: string(TransportSSE), URL: server.URL}, AttachDeps{
+				Catalog: cat, Registry: reg, Bus: newTestBus(t), DefaultIdentity: defaultIdentity(), Closers: &closers,
+				Owner: auth.Owner{Tenant: "tenant", Agent: "agent"}, DescriptorFingerprint: "signed-descriptor",
+				ToolAllowlist: tc.allow, ToolDenylist: tc.deny,
+			})
+			if err != nil {
+				t.Fatalf("prepare: %v", err)
+			}
+			t.Cleanup(func() { _ = prepared.Close(context.Background()) })
+			if err := prepared.Activate(ctx); err != nil {
+				t.Fatalf("activate: %v", err)
+			}
+			_, got := cat.Resolve("signed_echo")
+			if got != tc.want {
+				t.Fatalf("published echo=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPreparedAttachment_SameOwnerOldRegistrationLivesUntilActivation(t *testing.T) {
 	ctx := context.Background()
 	cat := tools.NewCatalog()

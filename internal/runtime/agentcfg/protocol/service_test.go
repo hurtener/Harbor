@@ -36,6 +36,11 @@ func scope() prototypes.IdentityScope {
 }
 
 func newRegistry(t *testing.T) agentcfg.Registry {
+	reg, _ := newRegistryWithState(t)
+	return reg
+}
+
+func newRegistryWithState(t *testing.T) (agentcfg.Registry, state.StateStore) {
 	t.Helper()
 	bus, err := eventsinmem.New(config.EventsConfig{
 		Driver: "inmem", MaxSubscribersPerSession: 8, SubscriberBufferSize: 32,
@@ -53,7 +58,7 @@ func newRegistry(t *testing.T) agentcfg.Registry {
 		t.Fatalf("agentcfg.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = reg.Close(context.Background()); _ = bus.Close(context.Background()) })
-	return reg
+	return reg, st
 }
 
 func newSkills(t *testing.T) skills.SkillStore {

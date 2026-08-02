@@ -95,6 +95,15 @@ type ProviderConfig struct {
 	// run's verified acting principal (`agent_id`, when present on ctx) as an
 	// RFC 8693 `actor_token`. Default false. Ignored by `oauth2`.
 	IncludeActorToken bool
+	// SignedCapability, when non-nil, enables the strict production exchange
+	// contract for one privately owned capability. The immutable value binds
+	// cache entries and every exchange to the verified subject's tenant, the
+	// acting agent, the provider revision, and the exact connection fingerprint.
+	// It is construction-time server state and has no wire/config projection.
+	SignedCapability *SignedCapabilityExchangeBinding
+	// RefuseDownstreamRedirects marks a credential-bearing connection whose
+	// transport must refuse every redirect, including same-origin redirects.
+	RefuseDownstreamRedirects bool
 	// AllowPrivateTokenURL is the per-provider DEV-ONLY opt-in that permits
 	// the `tokenexchange` driver's credential-bearing exchange POST to dial a
 	// PRIVATE-range / link-local resolved address for THIS provider's own
@@ -108,6 +117,24 @@ type ProviderConfig struct {
 	// env; the global env is the alternative surface for the same opt-in.
 	// Ignored by the interactive `oauth2` driver.
 	AllowPrivateTokenURL bool
+}
+
+// SignedCapabilityExchangeBinding is the bounded, non-secret context a signed
+// capability carries to its boot-pinned token-exchange broker. PairFingerprint
+// commits to the complete connection descriptor and policy; Resource is the
+// exact canonical downstream origin, including a non-default port.
+type SignedCapabilityExchangeBinding struct {
+	TenantID           string `json:"tenant_id"`
+	UserID             string `json:"user_id"`
+	SessionID          string `json:"session_id"`
+	AgentID            string `json:"agent_id"`
+	ProviderName       string `json:"provider_name"`
+	CapabilityRevision string `json:"capability_revision"`
+	PairFingerprint    string `json:"pair_fingerprint"`
+	URLDigest          string `json:"url_digest"`
+	SinkDigest         string `json:"sink_digest"`
+	Audience           string `json:"audience"`
+	Resource           string `json:"resource"`
 }
 
 // FactoryDeps bundles the shared collaborators every OAuth provider

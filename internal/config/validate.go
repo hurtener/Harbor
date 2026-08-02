@@ -1841,7 +1841,7 @@ func (c *Config) validateTools() error {
 			}
 			if authority.MaxAuthorityLifetime <= 0 {
 				return fieldError(authorityPrefix+".max_authority_lifetime",
-					"must be > 0 (D-401 signed authority envelopes require an explicit bounded lifetime)")
+					"must be > 0 (signed authority envelopes require an explicit bounded lifetime)")
 			}
 		}
 	}

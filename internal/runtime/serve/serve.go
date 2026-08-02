@@ -566,7 +566,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 			oauthProviderReconciler = concrete
 		}
 	}
-	// D-401's verifier map is built at boot from the explicit broker trust
+	// The verifier map is built at boot from the explicit broker trust
 	// anchors. A configured JWKS fetch failure aborts boot rather than leaving a
 	// partially enabled registration surface.
 	signedOAuthMCPCapabilityAuthorities, err := SignedOAuthMCPCapabilityAuthoritiesFromConfig(ctx, cfg, opts.Logger)
@@ -574,7 +574,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		closeAll(ctx)
 		return nil, err
 	}
-	// D-401 recovery is deliberately one bounded reconciler shared by boot and
+	// Signed-capability recovery is deliberately one bounded reconciler shared by boot and
 	// every run start. It can enumerate only the configured bootstrap identity
 	// here; tenant/user/session-specific recovery happens when that exact run
 	// starts, never through a cross-tenant maintenance sweep.

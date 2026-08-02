@@ -178,9 +178,32 @@ func detachSource(ctx context.Context, catalog tools.ToolCatalog, registry *mcpd
 	}
 	if err := registry.Deregister(ctx, source, owner); err != nil {
 		if errors.Is(err, mcpdrv.ErrServerNotFound) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func detachSourceExpected(ctx context.Context, catalog tools.ToolCatalog, registry *mcpdrv.Registry, source string, owner toolauth.Owner, fingerprint string, logger *slog.Logger, reason string) error {
+	if registry == nil || fingerprint == "" {
+		return errors.New("mcp: exact teardown requires registry and descriptor fingerprint")
+	}
+	dc, ok := catalog.(tools.CatalogSourceDeregisterer)
+	if !ok {
+		return errors.New("mcp: exact teardown requires catalog source deregistration")
+	}
+	removed, err := registry.DeregisterExact(ctx, source, owner, fingerprint, func() int {
+		return dc.DeregisterSource(tools.ToolSourceID(source))
+	})
+	if err != nil {
+		if errors.Is(err, mcpdrv.ErrServerNotFound) {
 			return nil // already detached — idempotent.
 		}
 		return err
+	}
+	if logger != nil {
+		logger.InfoContext(ctx, reason, slog.String("source", source), slog.Int("tools_deregistered", removed))
 	}
 	return nil
 }
