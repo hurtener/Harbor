@@ -84,6 +84,8 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/sessions"
+	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/drivers/localdb"
 	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -129,6 +131,18 @@ func waveV111DevStack(t *testing.T, binPath string, override planner.Planner) *d
 		t.Fatal("devstack: AgentConfig / Catalog / MCPRegistry nil — wiring broken")
 	}
 	return stack
+}
+
+// waveV111LegacySkillStore supplies the pre-overlay session-scope store the
+// erasure legs exercise. The general devstack does not assemble a SkillStore.
+func waveV111LegacySkillStore(t *testing.T, bus events.EventBus) skills.SkillStore {
+	t.Helper()
+	store, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:"}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("open legacy skill store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	return store
 }
 
 // waveV111ConnService builds an agent-config Protocol Service over the
@@ -655,6 +669,7 @@ func TestE2E_WaveV111_ErasureAuditIntegrity(t *testing.T) {
 	t.Parallel()
 	binPath := buildMCPTestServer(t)
 	stack := waveV111DevStack(t, binPath, nil)
+	legacySkills := waveV111LegacySkillStore(t, stack.Bus)
 
 	id := waveV111ID("wave-v111-erase", "gwen", "s-erase")
 	waveV111SeedSession(t, stack, id)
@@ -686,7 +701,7 @@ func TestE2E_WaveV111_ErasureAuditIntegrity(t *testing.T) {
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
 		Registry: stack.Sessions, State: stack.State, Memory: stack.Memory,
-		Artifacts: stack.Artifacts, Bus: flaky, Redactor: stack.Audit,
+		Artifacts: stack.Artifacts, Skills: legacySkills, Bus: flaky, Redactor: stack.Audit,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -765,6 +780,7 @@ func TestE2E_WaveV111_ConcurrencyStress(t *testing.T) {
 	baseline := goruntime.NumGoroutine()
 	binPath := buildMCPTestServer(t)
 	stack := waveV111DevStack(t, binPath, nil)
+	legacySkills := waveV111LegacySkillStore(t, stack.Bus)
 	svc, detacher := waveV111ConnService(t, stack, binPath)
 	agentID := stack.AgentConfigID
 
@@ -807,7 +823,7 @@ func TestE2E_WaveV111_ConcurrencyStress(t *testing.T) {
 	// One shared, concurrent-safe eraser (D-025 compiled artifact).
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
 		Registry: stack.Sessions, State: stack.State, Memory: stack.Memory,
-		Artifacts: stack.Artifacts, Bus: stack.Bus, Redactor: stack.Audit,
+		Artifacts: stack.Artifacts, Skills: legacySkills, Bus: stack.Bus, Redactor: stack.Audit,
 	})
 	if err != nil {
 		t.Fatalf("stress eraser: %v", err)

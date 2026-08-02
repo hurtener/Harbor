@@ -102,6 +102,12 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 		defer h.Cleanup()
 		testDeleteRungIndependence(t, h)
 	})
+
+	t.Run("delete_session_scope", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testDeleteSessionScope(t, h)
+	})
 }
 
 // fixtureID is the identity quadruple every subtest uses by default;
@@ -456,6 +462,80 @@ func testDeleteRungIndependence(t *testing.T, h Harness) {
 	}
 	if got, err := h.Store.Get(ctx, sessionB, "durable-only"); err != nil || got.Scope != skills.ScopeUser {
 		t.Fatalf("session delete destroyed a durable-only skill: got=%+v err=%v", got, err)
+	}
+}
+
+// testDeleteSessionScope pins the session-erasure-only destructive surface:
+// it sweeps only exact ScopeSession rows, is idempotent, and cannot cross a
+// session, user, or tenant boundary or delete the durable ScopeUser rung.
+func testDeleteSessionScope(t *testing.T, h Harness) {
+	ctx := context.Background()
+	sessionA := fixtureID
+	sessionB := fixtureID
+	sessionB.SessionID = "s-conformance-B"
+	otherUser := fixtureID
+	otherUser.UserID = "u-conformance-other"
+	otherUser.SessionID = sessionA.SessionID
+	otherTenant := fixtureID
+	otherTenant.TenantID = "t-conformance-other"
+
+	mk := func(name string, scope skills.Scope) skills.Skill {
+		s := newSkill(name)
+		s.Scope = scope
+		s.ContentHash = skills.CanonicalContentHash(s)
+		return s
+	}
+	seed := []struct {
+		id    identity.Quadruple
+		skill skills.Skill
+	}{
+		{sessionA, mk("erase-session", skills.ScopeSession)},
+		{sessionA, mk("retain-user", skills.ScopeUser)},
+		{sessionA, mk("retain-project", skills.ScopeProject)},
+		{sessionB, mk("retain-other-session", skills.ScopeSession)},
+		{otherUser, mk("retain-other-user", skills.ScopeSession)},
+		{otherTenant, mk("retain-other-tenant", skills.ScopeSession)},
+	}
+	for _, row := range seed {
+		if err := h.Store.Upsert(ctx, row.id, row.skill); err != nil {
+			t.Fatalf("seed %s/%s: %v", row.id.SessionID, row.skill.Name, err)
+		}
+	}
+
+	if err := h.Store.DeleteSessionScope(ctx, sessionA); err != nil {
+		t.Fatalf("DeleteSessionScope: %v", err)
+	}
+	// A retried completed sweep must stay successful, including when no rows
+	// remain; this is the ledger-recovery contract session erasure relies on.
+	if err := h.Store.DeleteSessionScope(ctx, sessionA); err != nil {
+		t.Fatalf("DeleteSessionScope retry: %v", err)
+	}
+	if _, err := h.Store.Get(ctx, sessionA, "erase-session"); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("erased session row: err=%v, want ErrSkillNotFound", err)
+	}
+	for _, row := range []struct {
+		id   identity.Quadruple
+		name string
+	}{
+		{sessionA, "retain-user"},
+		{sessionA, "retain-project"},
+		{sessionB, "retain-other-session"},
+		{otherUser, "retain-other-user"},
+		{otherTenant, "retain-other-tenant"},
+	} {
+		if _, err := h.Store.Get(ctx, row.id, row.name); err != nil {
+			t.Fatalf("retained %s/%s: %v", row.id.SessionID, row.name, err)
+		}
+	}
+
+	bad := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u"}}
+	if err := h.Store.DeleteSessionScope(ctx, bad); err == nil {
+		t.Fatal("DeleteSessionScope missing session: err=nil, want identity error")
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := h.Store.DeleteSessionScope(canceled, sessionA); err == nil {
+		t.Fatal("DeleteSessionScope canceled context: err=nil")
 	}
 }
 

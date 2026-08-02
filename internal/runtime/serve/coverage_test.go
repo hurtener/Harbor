@@ -815,8 +815,13 @@ func TestSessionEnsurerAdapter_SentinelTranslation(t *testing.T) {
 		t.Fatalf("artifacts.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = arts.Close(ctxBg) })
+	skillStore, err := skills.Open(ctxBg, skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:"}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("skills.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = skillStore.Close(ctxBg) })
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: st, Memory: mem, Artifacts: arts, Bus: bus, Redactor: red,
+		Registry: reg, State: st, Memory: mem, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)

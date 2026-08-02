@@ -57,6 +57,10 @@ func (f *failingUpsertStore) Delete(ctx context.Context, id identity.Quadruple, 
 	return f.inner.Delete(ctx, id, name, scope)
 }
 
+func (f *failingUpsertStore) DeleteSessionScope(context.Context, identity.Quadruple) error {
+	return nil
+}
+
 func (f *failingUpsertStore) Close(ctx context.Context) error {
 	return f.inner.Close(ctx)
 }

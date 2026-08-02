@@ -36,10 +36,10 @@ import (
 
 // fakeSkillStore is a minimal identity-checking SkillStore for the
 // unit-level delegation tests (the integration E2E uses the real
-// localdb driver). Keyed by (tenant, name); concurrent-safe.
+// localdb driver). Keyed by the full identity triple plus name; concurrent-safe.
 type fakeSkillStore struct {
 	mu    sync.RWMutex
-	rows  map[string]skills.Skill // key: tenant + "/" + name
+	rows  map[string]skills.Skill // key: tenant + "/" + user + "/" + session + "/" + name
 	bus   events.EventBus
 	limit int
 }
@@ -49,7 +49,11 @@ func newFakeSkillStore(bus events.EventBus) *fakeSkillStore {
 }
 
 func (f *fakeSkillStore) key(q identity.Quadruple, name string) string {
-	return q.TenantID + "/" + name
+	return q.TenantID + "/" + q.UserID + "/" + q.SessionID + "/" + name
+}
+
+func (f *fakeSkillStore) identityPrefix(q identity.Quadruple) string {
+	return q.TenantID + "/" + q.UserID + "/" + q.SessionID + "/"
 }
 
 func (f *fakeSkillStore) Upsert(ctx context.Context, q identity.Quadruple, s skills.Skill) error {
@@ -83,7 +87,7 @@ func (f *fakeSkillStore) List(ctx context.Context, q identity.Quadruple, _ skill
 	defer f.mu.RUnlock()
 	out := make([]skills.Skill, 0, len(f.rows))
 	for k, s := range f.rows {
-		if strings.HasPrefix(k, q.TenantID+"/") {
+		if strings.HasPrefix(k, f.identityPrefix(q)) {
 			out = append(out, s)
 		}
 	}
@@ -101,7 +105,7 @@ func (f *fakeSkillStore) Search(ctx context.Context, q identity.Quadruple, query
 	defer f.mu.RUnlock()
 	out := make([]skills.RankedSkill, 0, len(f.rows))
 	for k, s := range f.rows {
-		if !strings.HasPrefix(k, q.TenantID+"/") {
+		if !strings.HasPrefix(k, f.identityPrefix(q)) {
 			continue
 		}
 		if query == "" || strings.Contains(strings.ToLower(s.Title+s.Trigger+s.Name), strings.ToLower(query)) {
@@ -125,6 +129,20 @@ func (f *fakeSkillStore) Delete(ctx context.Context, q identity.Quadruple, name 
 		return skills.ErrSkillNotFound
 	}
 	delete(f.rows, k)
+	return nil
+}
+
+func (f *fakeSkillStore) DeleteSessionScope(ctx context.Context, q identity.Quadruple) error {
+	if err := skills.ValidateIdentity(q); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for key, skill := range f.rows {
+		if skill.Scope == skills.ScopeSession && strings.HasPrefix(key, f.identityPrefix(q)) {
+			delete(f.rows, key)
+		}
+	}
 	return nil
 }
 

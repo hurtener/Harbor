@@ -206,6 +206,10 @@ func assembleWaveV17(t *testing.T) *waveV17Assembly {
 	if err != nil {
 		t.Fatalf("artifacts.Open: %v", err)
 	}
+	legacySkillStore, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:"}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("legacy skills localdb.New: %v", err)
+	}
 	taskReg, err := tasks.Open(ctx, tasks.Dependencies{
 		Store: store, Bus: bus, Redactor: audit.Redactor(red),
 		Cfg: config.TasksConfig{Driver: "inprocess"},
@@ -232,7 +236,7 @@ func assembleWaveV17(t *testing.T) *waveV17Assembly {
 		t.Fatalf("sessions.New: %v", err)
 	}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: store, Memory: mem, Artifacts: arts, Bus: bus, Redactor: red,
+		Registry: reg, State: store, Memory: mem, Artifacts: arts, Skills: legacySkillStore, Bus: bus, Redactor: red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -360,6 +364,7 @@ func assembleWaveV17(t *testing.T) *waveV17Assembly {
 			func() { _ = reg.CloseRegistry(ctx) },
 			func() { _ = acReg.Close(ctx) },
 			func() { _ = skillStore.Close(ctx) },
+			func() { _ = legacySkillStore.Close(ctx) },
 			func() { _ = acState.Close(ctx) },
 			func() { _ = taskReg.Close(ctx) },
 			func() { _ = mem.Close(ctx) },

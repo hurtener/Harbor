@@ -271,7 +271,7 @@ func TestCascadeEraser_FenceError_FailsLoud_NothingDeleted_RetrySafe(t *testing.
 	flaky := &flakyFencerBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: flaky,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: flaky,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -369,7 +369,7 @@ func TestCascadeEraser_NonFencerBus_Erase_Succeeds_WarnOnly(t *testing.T) {
 	}
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills,
 		Bus: &nonFencerBus{inner: f.bus},
 	})
 	if err != nil {

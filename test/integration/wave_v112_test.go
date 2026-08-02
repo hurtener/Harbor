@@ -99,6 +99,7 @@ func waveV112SessionsService(t *testing.T, stack *devstack.DevStack) *sessionspr
 		State:     stack.State,
 		Memory:    stack.Memory,
 		Artifacts: stack.Artifacts,
+		Skills:    stack.Skills,
 		Bus:       stack.Bus,
 		Redactor:  stack.Audit,
 	})

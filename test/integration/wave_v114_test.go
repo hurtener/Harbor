@@ -60,6 +60,8 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
+	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/drivers/localdb"
 	"github.com/hurtener/Harbor/internal/state"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -125,6 +127,11 @@ func newWaveV114Stack(t *testing.T) *waveV114Stack {
 	if err != nil {
 		t.Fatalf("artifacts.Open: %v", err)
 	}
+	skillStore, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:"}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("skills localdb.New: %v", err)
+	}
+	t.Cleanup(func() { _ = skillStore.Close(ctx) })
 	t.Cleanup(func() { _ = arts.Close(ctx) })
 
 	taskReg, err := tasks.Open(ctx, tasks.Dependencies{
@@ -145,7 +152,7 @@ func newWaveV114Stack(t *testing.T) *waveV114Stack {
 	t.Cleanup(func() { _ = reg.CloseRegistry(ctx) })
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: store, Memory: mem, Artifacts: arts, Bus: bus, Redactor: red,
+		Registry: reg, State: store, Memory: mem, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)

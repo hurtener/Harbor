@@ -18,6 +18,8 @@ import (
 	"github.com/hurtener/Harbor/internal/memory"
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/sessions"
+	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/drivers/localdb"
 	"github.com/hurtener/Harbor/internal/state"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 
@@ -33,6 +35,7 @@ type erasureFixture struct {
 	store  state.StateStore
 	mem    memory.MemoryStore
 	arts   artifacts.ArtifactStore
+	skills skills.SkillStore
 	bus    events.EventBus
 	reg    *sessions.Registry
 	eraser *sessions.CascadeEraser
@@ -80,6 +83,12 @@ func newErasureFixture(t *testing.T, probe sessions.RunningProbe) erasureFixture
 	}
 	t.Cleanup(func() { _ = arts.Close(ctx) })
 
+	skillStore, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:"}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("skills localdb.New: %v", err)
+	}
+	t.Cleanup(func() { _ = skillStore.Close(ctx) })
+
 	opts := []sessions.Option{}
 	if probe != nil {
 		opts = append(opts, sessions.WithGCPolicy(sessions.GCPolicy{RunningProbe: probe}))
@@ -97,13 +106,14 @@ func newErasureFixture(t *testing.T, probe sessions.RunningProbe) erasureFixture
 		State:     store,
 		Memory:    mem,
 		Artifacts: arts,
+		Skills:    skillStore,
 		Bus:       bus,
 		Redactor:  red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
 	}
-	return erasureFixture{store: store, mem: mem, arts: arts, bus: bus, reg: reg, eraser: eraser}
+	return erasureFixture{store: store, mem: mem, arts: arts, skills: skillStore, bus: bus, reg: reg, eraser: eraser}
 }
 
 // TestCascadeEraser_FullErasure_CascadesAndAudits is the cascade's
@@ -221,6 +231,66 @@ func TestCascadeEraser_FullErasure_CascadesAndAudits(t *testing.T) {
 	}
 }
 
+// TestCascadeEraser_LegacySessionSkills_ExactSweepBeforeStateClear proves the
+// Phase 233a consumer for SkillStore.DeleteSessionScope with real stores. The
+// erasure must remove only the legacy session tier for the erased triple;
+// durable user and non-session rows, a sibling session, and another tenant
+// are all outside its destructive authority.
+func TestCascadeEraser_LegacySessionSkills_ExactSweepBeforeStateClear(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-skill-erase", "u-skill-erase", "s-skill-erase")
+	otherSession := id
+	otherSession.SessionID = "s-skill-keep"
+	otherTenant := id
+	otherTenant.TenantID = "t-skill-other"
+	ictx := ctxFor(id)
+	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	mk := func(name string, scope skills.Scope) skills.Skill {
+		return skills.Skill{
+			Name: name, Trigger: "trigger " + name, Steps: []string{"step"},
+			Origin: skills.OriginGenerated, Scope: scope,
+		}
+	}
+	for _, row := range []struct {
+		id    identity.Quadruple
+		skill skills.Skill
+	}{
+		{identity.Quadruple{Identity: id}, mk("erase-me", skills.ScopeSession)},
+		{identity.Quadruple{Identity: id}, mk("retain-user", skills.ScopeUser)},
+		{identity.Quadruple{Identity: id}, mk("retain-project", skills.ScopeProject)},
+		{identity.Quadruple{Identity: otherSession}, mk("retain-session", skills.ScopeSession)},
+		{identity.Quadruple{Identity: otherTenant}, mk("retain-tenant", skills.ScopeSession)},
+	} {
+		if err := f.skills.Upsert(ctx, row.id, row.skill); err != nil {
+			t.Fatalf("seed %s: %v", row.skill.Name, err)
+		}
+	}
+
+	if _, err := f.eraser.Erase(ctx, id); err != nil {
+		t.Fatalf("Erase: %v", err)
+	}
+	if _, err := f.skills.Get(ctx, identity.Quadruple{Identity: id}, "erase-me"); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("erased legacy session skill: err=%v, want ErrSkillNotFound", err)
+	}
+	for _, row := range []struct {
+		id   identity.Quadruple
+		name string
+	}{
+		{identity.Quadruple{Identity: id}, "retain-user"},
+		{identity.Quadruple{Identity: id}, "retain-project"},
+		{identity.Quadruple{Identity: otherSession}, "retain-session"},
+		{identity.Quadruple{Identity: otherTenant}, "retain-tenant"},
+	} {
+		if _, err := f.skills.Get(ctx, row.id, row.name); err != nil {
+			t.Fatalf("retained %s: %v", row.name, err)
+		}
+	}
+}
+
 // TestCascadeEraser_RunningTask_Refused_TouchesNothing pins the fail-loud
 // refusal: a session with a RUNNING task is refused with ErrSessionRunning
 // and NO store is touched (the artifact + memory + state survive).
@@ -302,7 +372,7 @@ func TestCascadeEraser_MidCascadeError_LoudAndRetrySafe(t *testing.T) {
 	flaky := &flakyArts{ArtifactStore: f.arts, fail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
 		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: flaky,
-		Bus: busOf(t, f),
+		Skills: f.skills, Bus: busOf(t, f),
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -339,7 +409,7 @@ func TestNewCascadeEraser_Misconfigured_FailsLoud(t *testing.T) {
 	f := newErasureFixture(t, nil)
 	bus := busOf(t, f)
 	full := sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: bus,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: bus,
 	}
 	cases := map[string]func(d *sessions.CascadeEraserDeps){
 		"nil registry":  func(d *sessions.CascadeEraserDeps) { d.Registry = nil },

@@ -187,6 +187,23 @@ func (m *memStore) Delete(_ context.Context, id identity.Quadruple, name string,
 	return nil
 }
 
+func (m *memStore) DeleteSessionScope(_ context.Context, id identity.Quadruple) error {
+	if err := identity.Validate(id.Identity); err != nil {
+		return errors.New("memStore: identity rejected")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rows := m.skillsByIdent[id.Identity]
+	kept := rows[:0:0]
+	for _, skill := range rows {
+		if skill.Scope != skills.ScopeSession {
+			kept = append(kept, skill)
+		}
+	}
+	m.skillsByIdent[id.Identity] = kept
+	return nil
+}
+
 func (m *memStore) Close(_ context.Context) error { return nil }
 
 // makeSkill is a convenience constructor that fills in the

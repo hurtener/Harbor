@@ -504,6 +504,25 @@ func (d *driver) Delete(ctx context.Context, id identity.Quadruple, name string,
 	return nil
 }
 
+// DeleteSessionScope implements skills.SkillStore. It intentionally does not
+// share Delete's not-found result: session erasure needs a completed sweep to
+// be safely retryable after an interrupted checkpoint.
+func (d *driver) DeleteSessionScope(ctx context.Context, id identity.Quadruple) error {
+	if d.closed.Load() {
+		return skills.ErrStoreClosed
+	}
+	if skills.ValidateIdentity(id) != nil {
+		return skills.EmitIdentityRejected(ctx, d.bus, id, "DeleteSessionScope")
+	}
+	if _, err := d.db.ExecContext(ctx, `
+		DELETE FROM skills
+		WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND scope = $4`,
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeSession)); err != nil {
+		return fmt.Errorf("skills/postgres: DeleteSessionScope exec: %w", err)
+	}
+	return nil
+}
+
 // Close implements skills.SkillStore. Idempotent.
 func (d *driver) Close(_ context.Context) error {
 	// CompareAndSwap is the once-only guard: the goroutine that flips

@@ -221,6 +221,8 @@ func (s *spyStore) Delete(ctx context.Context, id identity.Quadruple, name strin
 	return nil
 }
 
+func (s *spyStore) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }
+
 func (s *spyStore) Close(ctx context.Context) error {
 	return nil
 }

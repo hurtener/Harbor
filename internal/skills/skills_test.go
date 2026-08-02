@@ -55,7 +55,8 @@ func (stubStore) Search(context.Context, identity.Quadruple, string, int) ([]ski
 func (stubStore) Delete(context.Context, identity.Quadruple, string, skills.Scope) error {
 	return nil
 }
-func (stubStore) Close(context.Context) error { return nil }
+func (stubStore) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }
+func (stubStore) Close(context.Context) error                                  { return nil }
 
 func validSkill() skills.Skill {
 	return skills.Skill{

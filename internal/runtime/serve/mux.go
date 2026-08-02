@@ -534,6 +534,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 				State:     in.State,
 				Memory:    in.Memory,
 				Artifacts: in.Artifacts,
+				Skills:    in.Skills,
 				Bus:       bus,
 				Redactor:  red,
 				Logger:    logger,

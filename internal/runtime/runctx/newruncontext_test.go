@@ -113,6 +113,13 @@ func (s *paritySkillStore) Delete(_ context.Context, id identity.Quadruple, _ st
 	return nil
 }
 
+func (s *paritySkillStore) DeleteSessionScope(_ context.Context, id identity.Quadruple) error {
+	if err := identity.Validate(id.Identity); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *paritySkillStore) Close(_ context.Context) error { return nil }
 
 // parityDirectory builds a skills Directory over a store seeded with one

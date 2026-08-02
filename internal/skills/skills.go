@@ -299,6 +299,14 @@ type SkillStore interface {
 	// Missing → `ErrSkillNotFound`. Emits `skill.deleted` on success.
 	Delete(ctx context.Context, id identity.Quadruple, name string, scope Scope) error
 
+	// DeleteSessionScope removes every legacy ScopeSession row under exactly
+	// `id`'s (tenant, user, session) triple. It is idempotent: a completed
+	// sweep, including one that found no rows, returns nil. It never lists or
+	// deletes ScopeUser or any other shared scope. Session erasure calls this
+	// destructive operation before clearing the StateStore scope so an
+	// interrupted cascade can retry to convergence without widening identity.
+	DeleteSessionScope(ctx context.Context, id identity.Quadruple) error
+
 	// Close releases the driver's resources. Subsequent method
 	// calls return `ErrStoreClosed`. Close is idempotent.
 	Close(ctx context.Context) error

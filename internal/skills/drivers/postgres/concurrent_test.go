@@ -82,7 +82,7 @@ func TestConcurrentReuse_D025(t *testing.T) {
 			i := 0
 			for time.Now().Before(deadline) {
 				i++
-				op := i % 4
+				op := i % 5
 				switch op {
 				case 0:
 					sk := skills.Skill{
@@ -126,6 +126,12 @@ func TestConcurrentReuse_D025(t *testing.T) {
 					if err != nil && localCtx.Err() == nil {
 						errCount.Add(1)
 						t.Errorf("g%d List: %v", gid, err)
+						return
+					}
+				case 4:
+					if err := store.DeleteSessionScope(localCtx, myID); err != nil && localCtx.Err() == nil {
+						errCount.Add(1)
+						t.Errorf("g%d DeleteSessionScope: %v", gid, err)
 						return
 					}
 				}

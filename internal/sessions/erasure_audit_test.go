@@ -112,7 +112,7 @@ func TestCascadeEraser_LedgerCumulative_InterruptedAfterArtifacts_ReinvokeSumsCo
 	fail.Store(true)
 	flakyMem := &flakyMemory{MemoryStore: f.mem, fail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: flakyMem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: f.store, Memory: flakyMem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -323,7 +323,7 @@ func TestCascadeEraser_FinalEmitPublishFailure_FailsLoud_ReinvokeConverges(t *te
 	flaky := &flakyPublishBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: flaky,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: flaky,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -422,7 +422,7 @@ func TestCascadeEraser_RedactorRefusal_FailsLoud_ReinvokeConverges(t *testing.T)
 	fail.Store(true)
 	flaky := &flakyRedactor{inner: passthroughRedactor{}, fail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: f.bus, Redactor: flaky,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus, Redactor: flaky,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -547,7 +547,7 @@ func TestCascadeEraser_StaleLedger_EmitsOldLifecycleBeforeDeletingCheckpoint(t *
 		<-release
 	}}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -593,7 +593,7 @@ func TestCascadeEraser_StaleLedger_DeleteFailureRetryDoesNotDuplicateOldRecord(t
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, deleteFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -640,7 +640,7 @@ func TestCascadeEraser_StaleLedger_EmitFailureRetainsCheckpointAndLiveSession(t 
 	fail.Store(true)
 	bus := &flakyPublishBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: bus,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -692,7 +692,7 @@ func TestCascadeEraser_FailedErase_ReopenBlocked_ReinvokeConverges(t *testing.T)
 	fail.Store(true)
 	flaky := &flakyPublishBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
 	failEraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: flaky,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: flaky,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -827,7 +827,7 @@ func TestCascadeEraser_LedgerLoadFailure_FailsLoud_TouchesNothing(t *testing.T) 
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, loadFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -896,7 +896,7 @@ func TestCascadeEraser_LedgerSaveFailure_LoudAndRetrySafe(t *testing.T) {
 	skip.Store(1)
 	flaky := &flakyLedgerStore{StateStore: f.store, saveFail: &fail, saveSkip: &skip}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -991,7 +991,7 @@ func TestCascadeEraser_DeleteScopeFailure_LoudAndRetrySafe(t *testing.T) {
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, deleteScopeFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -1042,7 +1042,7 @@ func TestCascadeEraser_LedgerCleanupFailure_SucceedsWithWarn(t *testing.T) {
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, deleteFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -1090,7 +1090,7 @@ func TestCascadeEraser_ReinvokeAfterCleanupFailure_ExactlyOneEmit(t *testing.T) 
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, deleteFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -1180,7 +1180,7 @@ func TestCascadeEraser_ReemitGuardScanFailure_EmitsAnyway(t *testing.T) {
 		t.Fatalf("fixture bus must implement events.HistoryReplayer")
 	}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills,
 		Bus: &windowErrBus{EventBus: f.bus, fencer: fencer, hr: hr},
 	})
 	if err != nil {

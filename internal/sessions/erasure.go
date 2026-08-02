@@ -15,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -200,6 +201,7 @@ type CascadeEraser struct {
 	state    state.StateStore
 	memory   memory.MemoryStore
 	arts     artifacts.ArtifactStore
+	skills   skills.SkillStore
 	bus      events.EventBus
 	redactor audit.Redactor // optional — defence-in-depth before the emit
 	clock    Clock
@@ -223,13 +225,15 @@ type CascadeEraser struct {
 const eraseLockShards = 256
 
 // CascadeEraserDeps bundles the seams the CascadeEraser drives. Registry,
-// State, Memory, Artifacts, and Bus are mandatory; Redactor, Clock, and
-// Logger are optional.
+// State, Memory, Artifacts, and Bus are mandatory; Skills is optional when a
+// runtime has no configured legacy SkillStore. Redactor, Clock, and Logger are
+// optional.
 type CascadeEraserDeps struct {
 	Registry  *Registry
 	State     state.StateStore
 	Memory    memory.MemoryStore
 	Artifacts artifacts.ArtifactStore
+	Skills    skills.SkillStore
 	Bus       events.EventBus
 	Redactor  audit.Redactor
 	Clock     Clock
@@ -285,6 +289,7 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 		state:    deps.State,
 		memory:   deps.Memory,
 		arts:     deps.Artifacts,
+		skills:   deps.Skills,
 		bus:      deps.Bus,
 		redactor: deps.Redactor,
 		clock:    clock,
@@ -327,14 +332,15 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 //     durably checkpoint the cumulative count (issue #410).
 //  4. memory: flush the session's memory to a clean state, then
 //     checkpoint.
-//  5. state: kind-agnostic scope delete (the session-lifecycle record,
+//  5. legacy session skills: exact ScopeSession sweep, then checkpoint.
+//  6. state: kind-agnostic scope delete (the session-lifecycle record,
 //     run-scoped trajectories, planner checkpoints, and the durable event
 //     stream all live under the triple and all go) — THE irreversible
 //     clear — then checkpoint the final cumulative count. Because steps
-//     3-5 each checkpoint before the NEXT step runs, the ledger is
+//     3-6 each checkpoint before the NEXT step runs, the ledger is
 //     always durably complete strictly before this step's clear takes
 //     effect ("record before the irreversible clear" ordering).
-//  6. complete: clear the registry's in-memory catalogs, build the
+//  7. complete: clear the registry's in-memory catalogs, build the
 //     redacted content-free `session.erased` payload from the ledger's
 //     cumulative counts, publish it (skipping idempotently when a record
 //     for this session+lifecycle already exists — recordAlreadyEmitted),
@@ -488,7 +494,22 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 		return zero, fmt.Errorf("sessions: erase ledger checkpoint (memory): %w", err)
 	}
 
-	// 5. State scope delete (removes the session-lifecycle record + every
+	// 5. Legacy SkillStore session sweep. This is deliberately exact to the
+	//    erased triple and ScopeSession: ScopeUser is a durable shared rung and
+	//    must survive erasure of one session. A runtime with no configured
+	//    SkillStore has no legacy rows to sweep; otherwise a successful no-row
+	//    sweep is a completed, retry-safe destructive step.
+	if e.skills != nil {
+		if err := e.skills.DeleteSessionScope(ctx, identity.Quadruple{Identity: id}); err != nil {
+			return zero, fmt.Errorf("sessions: erase legacy session skills: %w", err)
+		}
+	}
+	ledger.LegacySessionSkillsDeleted = true
+	if err := e.saveLedger(ctx, id, ledger); err != nil {
+		return zero, fmt.Errorf("sessions: erase ledger checkpoint (legacy session skills): %w", err)
+	}
+
+	// 6. State scope delete (removes the session-lifecycle record + every
 	//    kind/run under the triple, including the durable event stream) —
 	//    the irreversible clear. The ledger already durably holds every
 	//    count up to and including this step's result BEFORE Erase ever
@@ -509,7 +530,7 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 		return zero, fmt.Errorf("sessions: erase ledger checkpoint (state): %w", err)
 	}
 
-	// 6. Complete: registry clear + redacted record-of-fact emit + ledger
+	// 7. Complete: registry clear + redacted record-of-fact emit + ledger
 	//    cleanup.
 	return e.completeErasure(ctx, id, ledger)
 }
@@ -736,9 +757,13 @@ func (e *CascadeEraser) eraseArtifacts(ctx context.Context, id identity.Identity
 // content — bounded counts and a bool, the same shape as
 // SessionErasedPayload minus the timestamp.
 type erasureLedgerRecord struct {
-	ArtifactsDeleted    int  `json:"artifacts_deleted"`
-	MemoryPurged        bool `json:"memory_purged"`
-	StateRecordsDeleted int  `json:"state_records_deleted"`
+	ArtifactsDeleted int  `json:"artifacts_deleted"`
+	MemoryPurged     bool `json:"memory_purged"`
+	// LegacySessionSkillsDeleted records completion of the exact legacy
+	// SkillStore ScopeSession sweep. It carries no body/count data and is
+	// checkpointed before StateStore.DeleteScope can remove session fences.
+	LegacySessionSkillsDeleted bool `json:"legacy_session_skills_deleted"`
+	StateRecordsDeleted        int  `json:"state_records_deleted"`
 	// SessionOpenedAt is the erased session lifecycle's OpenedAt stamp
 	// (unix nanoseconds) — the lifecycle discriminator. A leftover ledger
 	// whose stamp mismatches the LIVE session's OpenedAt belongs to an

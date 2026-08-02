@@ -75,6 +75,8 @@ func (s *fakeStore) Delete(ctx context.Context, id identity.Quadruple, name stri
 	return errors.New("fakeStore: Delete not used")
 }
 
+func (s *fakeStore) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }
+
 func (s *fakeStore) Close(ctx context.Context) error {
 	return nil
 }
