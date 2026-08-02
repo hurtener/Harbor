@@ -539,6 +539,29 @@ type conditionFailedWinnerStore struct {
 	once        sync.Once
 }
 
+func marshalCutoverRecord(t *testing.T, record sessionoverlay.CutoverRecord) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal cutover record: %v", err)
+	}
+	return encoded
+}
+
+func cutoverCursor(t *testing.T, tenantID, prefix string) string {
+	t.Helper()
+	cursor, err := state.EncodeStateScanContinuation(
+		state.StateScanCursor{UserID: "user", SessionID: "session", Kind: prefix + "agent-a"},
+		tenantID,
+		prefix,
+		state.ListScope{MaintenanceScoped: true},
+	)
+	if err != nil {
+		t.Fatalf("encode cutover cursor: %v", err)
+	}
+	return cursor
+}
+
 func (s *conditionFailedWinnerStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
 	injected := false
 	var seedErr error
@@ -563,6 +586,7 @@ func (s *conditionFailedWinnerStore) SaveIf(ctx context.Context, expectations []
 
 func TestCutoverController_EnsureValidatesConditionFailedWinner(t *testing.T) {
 	declaration := config.SessionPersonalCutoverTenant{TenantID: "tenant", Epoch: "epoch", RosterDigest: "digest", LegacyWritersDrained: true}
+	badCursorWinner := marshalCutoverRecord(t, sessionoverlay.CutoverRecord{Schema: 1, Mode: sessionoverlay.CutoverDualRead, Epoch: "epoch", RosterDigest: "digest", Continuation: "not-a-cursor", Generation: 1})
 	for _, tc := range []struct {
 		name        string
 		winnerBytes []byte
@@ -571,6 +595,9 @@ func TestCutoverController_EnsureValidatesConditionFailedWinner(t *testing.T) {
 		{name: "exact winner"},
 		{name: "malformed winner", winnerBytes: []byte(`{"schema":`), wantErr: true},
 		{name: "mismatched winner", winnerBytes: []byte(`{"schema":1,"mode":"dual_read","epoch":"different","roster_digest":"digest","copied":0,"generation":0}`), wantErr: true},
+		{name: "unknown field winner", winnerBytes: []byte(`{"schema":1,"mode":"state_only","epoch":"epoch","roster_digest":"digest","copied":0,"generation":2,"authority":true}`), wantErr: true},
+		{name: "trailing document winner", winnerBytes: []byte(`{"schema":1,"mode":"state_only","epoch":"epoch","roster_digest":"digest","copied":0,"generation":2}{}`), wantErr: true},
+		{name: "bad cursor winner", winnerBytes: badCursorWinner, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := newDurableState(t)
@@ -585,6 +612,81 @@ func TestCutoverController_EnsureValidatesConditionFailedWinner(t *testing.T) {
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("Ensure exact winner: %v", err)
+			}
+		})
+	}
+}
+
+func TestCutoverController_StrictCheckpointValidationNeverAuthorizes(t *testing.T) {
+	declaration := config.SessionPersonalCutoverTenant{TenantID: "tenant", Epoch: "epoch", RosterDigest: "digest", LegacyWritersDrained: true}
+	valid := sessionoverlay.CutoverRecord{Schema: 1, Mode: sessionoverlay.CutoverDualRead, Epoch: "epoch", RosterDigest: "digest"}
+	validStateOnly := valid
+	validStateOnly.Mode = sessionoverlay.CutoverStateOnly
+	validStateOnly.Generation = 2
+	oversizedStateOnly := append(marshalCutoverRecord(t, validStateOnly), []byte(strings.Repeat(" ", sessionoverlay.MaxSessionPersonalCutoverRecordBytes))...)
+	validCursor := cutoverCursor(t, declaration.TenantID, sessionoverlay.LegacyOverlayPrefix())
+	mismatchedCursor := cutoverCursor(t, "other-tenant", sessionoverlay.LegacyOverlayPrefix())
+	with := func(mutate func(*sessionoverlay.CutoverRecord)) []byte {
+		record := valid
+		mutate(&record)
+		return marshalCutoverRecord(t, record)
+	}
+	for _, tc := range []struct {
+		name  string
+		bytes []byte
+	}{
+		{name: "unknown field state only", bytes: []byte(`{"schema":1,"mode":"state_only","epoch":"epoch","roster_digest":"digest","copied":0,"generation":2,"authority":true}`)},
+		{name: "trailing document state only", bytes: append(marshalCutoverRecord(t, validStateOnly), []byte(`{}`)...)},
+		{name: "oversized state only", bytes: oversizedStateOnly},
+		{name: "invalid cursor", bytes: with(func(record *sessionoverlay.CutoverRecord) {
+			record.Continuation = "not-a-cursor"
+			record.Generation = 1
+		})},
+		{name: "mismatched cursor", bytes: with(func(record *sessionoverlay.CutoverRecord) {
+			record.Continuation = mismatchedCursor
+			record.Generation = 1
+		})},
+		{name: "state only continuation", bytes: with(func(record *sessionoverlay.CutoverRecord) {
+			record.Mode = sessionoverlay.CutoverStateOnly
+			record.Continuation = validCursor
+			record.Generation = 2
+		})},
+		{name: "negative copied", bytes: with(func(record *sessionoverlay.CutoverRecord) { record.Copied = -1 })},
+		{name: "negative generation", bytes: with(func(record *sessionoverlay.CutoverRecord) { record.Generation = -1 })},
+		{name: "overflow copied", bytes: []byte(fmt.Sprintf(`{"schema":1,"mode":"dual_read","epoch":"epoch","roster_digest":"digest","copied":%d,"generation":1}`, int64(sessionoverlay.MaxSessionPersonalCutoverCounter)+1))},
+		{name: "overflow generation", bytes: []byte(fmt.Sprintf(`{"schema":1,"mode":"dual_read","epoch":"epoch","roster_digest":"digest","copied":0,"generation":%d}`, int64(sessionoverlay.MaxSessionPersonalCutoverCounter)+1))},
+		{name: "initial checkpoint with progress", bytes: with(func(record *sessionoverlay.CutoverRecord) { record.Copied = 1 })},
+		{name: "state only before terminal generation", bytes: with(func(record *sessionoverlay.CutoverRecord) {
+			record.Mode = sessionoverlay.CutoverStateOnly
+			record.Generation = 1
+		})},
+		{name: "invalid mode", bytes: with(func(record *sessionoverlay.CutoverRecord) { record.Mode = "authority" })},
+		{name: "future schema", bytes: with(func(record *sessionoverlay.CutoverRecord) { record.Schema = 2 })},
+		{name: "declaration mismatch", bytes: with(func(record *sessionoverlay.CutoverRecord) { record.RosterDigest = "other" })},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newDurableState(t)
+			controller, err := sessionoverlay.NewCutoverController(st, []config.SessionPersonalCutoverTenant{declaration})
+			if err != nil {
+				t.Fatal(err)
+			}
+			q, err := sessionoverlay.CutoverScope(declaration.TenantID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kind, err := sessionoverlay.CutoverKind(declaration.Epoch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: tc.bytes}); err != nil {
+				t.Fatal(err)
+			}
+			mode, err := controller.Mode(context.Background(), declaration.TenantID)
+			if mode != sessionoverlay.CutoverDualRead || !errors.Is(err, sessionoverlay.ErrCutoverRecordInvalid) {
+				t.Fatalf("Mode = (%q, %v), want dual_read ErrCutoverRecordInvalid", mode, err)
+			}
+			if err := controller.Ensure(context.Background()); !errors.Is(err, sessionoverlay.ErrCutoverRecordInvalid) {
+				t.Fatalf("Ensure = %v, want ErrCutoverRecordInvalid", err)
 			}
 		})
 	}

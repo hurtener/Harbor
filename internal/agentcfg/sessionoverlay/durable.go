@@ -1,6 +1,7 @@
 package sessionoverlay
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -31,6 +33,12 @@ const (
 	// MaxSessionPersonalCopyEpochBytes bounds the operator-declared copy epoch
 	// stamped onto records copied from schema-1 overlays.
 	MaxSessionPersonalCopyEpochBytes = 128
+	// MaxSessionPersonalCutoverRecordBytes bounds the durable controller
+	// checkpoint, including its opaque canonical tenant-scan continuation.
+	MaxSessionPersonalCutoverRecordBytes = 4 * 1024
+	// MaxSessionPersonalCutoverCounter bounds copied-row and checkpoint
+	// generations so corrupt durable values cannot overflow later increments.
+	MaxSessionPersonalCutoverCounter = 1<<31 - 1
 )
 
 const (
@@ -648,10 +656,16 @@ func (c *CutoverController) Advance(ctx context.Context, tenantID string, limit 
 		if err != nil {
 			return CutoverDualRead, err
 		}
+		if n < 0 || n > MaxSessionPersonalCutoverCounter-copied {
+			return CutoverDualRead, fmt.Errorf("%w: copied-row delta is outside the bounded counter", ErrCutoverRecordInvalid)
+		}
 		copied += n
 	}
 	next := record
 	next.Continuation = page.Continuation
+	if copied > MaxSessionPersonalCutoverCounter-next.Copied || next.Generation == MaxSessionPersonalCutoverCounter {
+		return CutoverDualRead, fmt.Errorf("%w: checkpoint counters exhausted", ErrCutoverRecordInvalid)
+	}
 	next.Copied += copied
 	next.Generation++
 	if err := c.saveRecord(ctx, q, slot, next); err != nil {
@@ -698,6 +712,9 @@ func (c *CutoverController) Advance(ctx context.Context, tenantID string, limit 
 	}
 	if fresh.Continuation != "" {
 		return CutoverDualRead, nil
+	}
+	if fresh.Generation == MaxSessionPersonalCutoverCounter {
+		return CutoverDualRead, fmt.Errorf("%w: checkpoint generation exhausted", ErrCutoverRecordInvalid)
 	}
 	fresh.Mode = CutoverStateOnly
 	fresh.Generation++
@@ -752,30 +769,33 @@ func (c *CutoverController) loadWithSlot(ctx context.Context, declaration config
 	if err != nil {
 		return CutoverRecord{}, state.SlotExpectation{}, fmt.Errorf("%w: expected initialized cutover record: %w", ErrCutoverRecordInvalid, err)
 	}
-	var record CutoverRecord
-	if err := json.Unmarshal(rec.Bytes, &record); err != nil {
-		return CutoverRecord{}, state.SlotExpectation{}, fmt.Errorf("%w: decode: %w", ErrCutoverRecordInvalid, err)
-	}
-	if err := validateCutoverRecord(record, declaration); err != nil {
+	record, err := decodeCutoverRecord(rec.Bytes, declaration)
+	if err != nil {
 		return CutoverRecord{}, state.SlotExpectation{}, err
 	}
 	return record, state.SlotExpectation{Identity: q, Kind: kind, ExpectedEventID: rec.ID}, nil
 }
 
 func (c *CutoverController) saveRecord(ctx context.Context, q identity.Quadruple, slot state.SlotExpectation, record CutoverRecord) error {
+	declaration, found := c.declarations[strings.ToLower(q.TenantID)]
+	if !found {
+		return fmt.Errorf("%w: no static declaration for checkpoint tenant", ErrCutoverRecordInvalid)
+	}
+	if err := validateCutoverRecord(record, declaration); err != nil {
+		return err
+	}
 	bytes, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("agentcfg/sessionoverlay: marshal cutover: %w", err)
+	}
+	if len(bytes) > MaxSessionPersonalCutoverRecordBytes {
+		return fmt.Errorf("%w: encoded checkpoint is %d bytes, maximum is %d", ErrCutoverRecordInvalid, len(bytes), MaxSessionPersonalCutoverRecordBytes)
 	}
 	next := state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: slot.Kind, Bytes: bytes}
 	err = c.state.SaveIf(ctx, []state.SlotExpectation{slot}, next)
 	if err != nil {
 		if errors.Is(err, state.ErrConditionFailed) {
 			return err
-		}
-		declaration, found := c.declarations[strings.ToLower(q.TenantID)]
-		if !found {
-			return fmt.Errorf("%w: no static declaration for checkpoint tenant", ErrCutoverRecordInvalid)
 		}
 		ok, reconcileErr := c.exactCutover(ctx, next, declaration)
 		if reconcileErr == nil && ok {
@@ -797,11 +817,7 @@ func (c *CutoverController) exactCutover(ctx context.Context, expected state.Sta
 	if actual.ID != expected.ID || string(actual.Bytes) != string(expected.Bytes) {
 		return false, nil
 	}
-	var record CutoverRecord
-	if err := json.Unmarshal(actual.Bytes, &record); err != nil {
-		return false, err
-	}
-	if err := validateCutoverRecord(record, declaration); err != nil {
+	if _, err := decodeCutoverRecord(actual.Bytes, declaration); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -823,19 +839,50 @@ func (c *CutoverController) load(ctx context.Context, declaration config.Session
 	if err != nil {
 		return CutoverRecord{}, false, fmt.Errorf("%w: load cutover: %w", ErrStateUnavailable, err)
 	}
-	var record CutoverRecord
-	if err := json.Unmarshal(rec.Bytes, &record); err != nil {
-		return CutoverRecord{}, false, fmt.Errorf("%w: decode: %w", ErrCutoverRecordInvalid, err)
-	}
-	if err := validateCutoverRecord(record, declaration); err != nil {
+	record, err := decodeCutoverRecord(rec.Bytes, declaration)
+	if err != nil {
 		return CutoverRecord{}, false, err
 	}
 	return record, true, nil
 }
 
+func decodeCutoverRecord(data []byte, declaration config.SessionPersonalCutoverTenant) (CutoverRecord, error) {
+	if len(data) == 0 || len(data) > MaxSessionPersonalCutoverRecordBytes {
+		return CutoverRecord{}, fmt.Errorf("%w: checkpoint size %d is outside 1..%d", ErrCutoverRecordInvalid, len(data), MaxSessionPersonalCutoverRecordBytes)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var record CutoverRecord
+	if err := decoder.Decode(&record); err != nil {
+		return CutoverRecord{}, fmt.Errorf("%w: decode: %w", ErrCutoverRecordInvalid, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return CutoverRecord{}, fmt.Errorf("%w: trailing JSON document", ErrCutoverRecordInvalid)
+	}
+	if err := validateCutoverRecord(record, declaration); err != nil {
+		return CutoverRecord{}, err
+	}
+	return record, nil
+}
+
 func validateCutoverRecord(record CutoverRecord, declaration config.SessionPersonalCutoverTenant) error {
-	if record.Schema != 1 || (record.Mode != CutoverDualRead && record.Mode != CutoverStateOnly) || record.Epoch != declaration.Epoch || record.RosterDigest != declaration.RosterDigest || record.Generation < 0 || record.Copied < 0 {
+	if record.Schema != 1 || (record.Mode != CutoverDualRead && record.Mode != CutoverStateOnly) || record.Epoch != declaration.Epoch || record.RosterDigest != declaration.RosterDigest || record.Generation < 0 || record.Generation > MaxSessionPersonalCutoverCounter || record.Copied < 0 || record.Copied > MaxSessionPersonalCutoverCounter {
 		return fmt.Errorf("%w: declaration mismatch", ErrCutoverRecordInvalid)
+	}
+	if record.Generation == 0 && (record.Copied != 0 || record.Continuation != "") {
+		return fmt.Errorf("%w: initial checkpoint cannot carry progress", ErrCutoverRecordInvalid)
+	}
+	if record.Mode == CutoverStateOnly {
+		if record.Continuation != "" || record.Generation < 2 {
+			return fmt.Errorf("%w: state-only checkpoint must be terminal", ErrCutoverRecordInvalid)
+		}
+		return nil
+	}
+	if record.Continuation != "" {
+		scope := state.ListScope{MaintenanceScoped: true}
+		if _, err := state.DecodeStateScanContinuation(record.Continuation, declaration.TenantID, LegacyOverlayPrefix(), scope); err != nil {
+			return fmt.Errorf("%w: continuation is not bound to the declared legacy scan: %w", ErrCutoverRecordInvalid, err)
+		}
 	}
 	return nil
 }
