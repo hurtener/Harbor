@@ -15,6 +15,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 )
@@ -96,6 +97,56 @@ func TestPreparedAttachment_PrepareDoesNotPublishAndCloseIsIdempotent(t *testing
 	}
 	if err := p.Activate(context.Background()); err == nil {
 		t.Fatal("Activate succeeded after Close")
+	}
+}
+
+func TestPreparedAttachment_PostPublicationAdmissionErrorRetainsLiveGeneration(t *testing.T) {
+	ctx := context.Background()
+	cat := tools.NewCatalog()
+	reg := NewRegistry()
+	p := preparedFixture(t, "post-publish", cat, reg, auth.Owner{Tenant: "tenant", Agent: "agent"})
+	var logs bytes.Buffer
+	p.deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	originalClose := p.closeFn
+	closeCalls := 0
+	p.closeFn = func(closeCtx context.Context) error {
+		closeCalls++
+		return originalClose(closeCtx)
+	}
+	releaseErr := errors.New("injected fence transaction release error")
+	if err := p.ActivateUnder(ctx, func(_ context.Context, publish func() error) error {
+		if err := publish(); err != nil {
+			return err
+		}
+		return releaseErr
+	}); err != nil {
+		t.Fatalf("ActivateUnder after irreversible publication = %v, want success", err)
+	}
+	descriptor, ok := cat.Resolve("post-publish_echo")
+	if !ok {
+		t.Fatal("post-publication admission error withdrew the live catalog generation")
+	}
+	invokeCtx, err := identity.With(ctx, defaultIdentity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := descriptor.Invoke(invokeCtx, json.RawMessage(`{"text":"still live"}`)); err != nil {
+		t.Fatalf("live descriptor invoke after admission error: %v", err)
+	}
+	if _, _, ok := reg.RegistrationIdentity("post-publish"); !ok {
+		t.Fatal("post-publication admission error withdrew the live registry handle")
+	}
+	if !p.activated || !bytes.Contains(logs.Bytes(), []byte(releaseErr.Error())) {
+		t.Fatalf("post-publication ambiguity was not retained and warned: activated=%t logs=%s", p.activated, logs.String())
+	}
+	if err := p.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := p.Close(ctx); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("activated provider close calls = %d, want one", closeCalls)
 	}
 }
 

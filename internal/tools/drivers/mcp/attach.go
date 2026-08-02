@@ -563,6 +563,18 @@ func (p *PreparedAttachment) ActivateUnder(ctx context.Context, admit func(conte
 		return nil
 	})
 	if admitErr != nil {
+		if published {
+			// Catalog and registry publication is the irreversible local commit.
+			// A durable read-only fence may still report a transaction-release
+			// error afterwards; treating that ambiguity as pre-publication would
+			// close a handle that is already dispatchable. Preserve the live
+			// generation and let durable reconciliation resolve the receipt.
+			p.activated = true
+			if p.deps.Logger != nil {
+				p.deps.Logger.Warn("mcp: server activated despite post-publication admission error", slog.String("name", p.ms.Name), slog.String("error", admitErr.Error()))
+			}
+			return nil
+		}
 		rollbackErr := p.registrySwap.Rollback()
 		return errors.Join(admitErr, rollbackErr)
 	}

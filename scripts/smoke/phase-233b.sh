@@ -60,6 +60,7 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestSignedOAuthMCPReconciler_RecoversRemovalAfterDetachFault \
     TestRemoveOAuthMCPCapability_DefinitiveCASFailureRollsBackAdmissionAndSurfacesFenceCleanup \
     TestRemoveOAuthMCPCapability_PairAbsentCheckpointFailureDirectRetryCompletes \
+    TestRemoveOAuthMCPCapability_RemovalAdmittedCarriesNewerSamePairSiblings \
     TestSignedOAuthMCPReconciler_ConcurrentReuseN128_CancellationDoesNotLeak \
     TestSetOAuthProvider_FirstInstallCommitThenErrorRestoresUnsetAgent \
     TestSetOAuthProvider_BootLifecycleCommitThenErrorRestoresExactPrior
@@ -78,6 +79,7 @@ assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./intern
     TestPreparedAttachment_AuthorityLostBeforeReservationNeverPublishes \
     TestPreparedAttachment_ExactRemovalAfterReservationInvalidatesPublication \
     TestPreparedAttachment_RegistryStagesBeforeCatalogDispatchLinearization \
+    TestPreparedAttachment_PostPublicationAdmissionErrorRetainsLiveGeneration \
     TestProvider_CloseRetriesPairOwnedOAuthUntilPositiveReceipt \
     TestProvider_CloseOwnedTransport_ClosesIdleConnectionAndIsIdempotent \
     TestProvider_CloseOwnedTransport_CancelsAndJoinsActiveExchange \

@@ -1390,6 +1390,51 @@ func TestRemoveOAuthMCPCapability_PairAbsentCheckpointFailureDirectRetryComplete
 	}
 }
 
+func TestRemoveOAuthMCPCapability_RemovalAdmittedCarriesNewerSamePairSiblings(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	svc, key, reg, st, _ := signedCapabilityServiceWithRegistry(t, now)
+	registered, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-admitted-sibling", "aud-a"))
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.Payload.SignedOAuthMCPPair == nil {
+		t.Fatalf("active pair: set=%t active=%+v err=%v", set, active, err)
+	}
+	operations, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := operations.LoadForPair(context.Background(), q.TenantID, active.Payload.SignedOAuthMCPPair)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := operations.Advance(context.Background(), op, agentcfg.SignedOAuthMCPPhaseRemovalAdmitted, active.RevisionID); err != nil {
+		t.Fatal(err)
+	}
+	siblingPayload := active.Payload
+	siblingPayload.ExtraSystemBlocks = &agentcfg.ExtraSystemBlocks{Blocks: []agentcfg.NamedBlock{{Name: "operator", Body: "preserve me"}}}
+	sibling, err := reg.SetRevision(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, siblingPayload, agentcfg.SetOptions{ExpectedContentHash: active.ContentHash})
+	if err != nil {
+		t.Fatalf("same-pair sibling writer: %v", err)
+	}
+	removed, err := svc.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
+		Identity: scope(), AgentID: testAgentID, ExpectedContentHash: registered.Revision.ContentHash,
+	})
+	if err != nil || removed.OperationPhase != string(agentcfg.SignedOAuthMCPPhaseRemoved) {
+		t.Fatalf("remove after same-pair sibling = phase=%q err=%v", removed.OperationPhase, err)
+	}
+	current, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || current.Payload.SignedOAuthMCPPair != nil || current.ParentRevisionID != sibling.RevisionID {
+		t.Fatalf("removed sibling revision: set=%t current=%+v sibling=%+v err=%v", set, current, sibling, err)
+	}
+	blocks := current.Payload.ExtraSystemBlockList()
+	if len(blocks) != 1 || blocks[0].Name != "operator" || blocks[0].Body != "preserve me" {
+		t.Fatalf("same-pair sibling content was not preserved: %+v", blocks)
+	}
+}
+
 func TestRemoveOAuthMCPCapability_DefinitiveCASFailureRollsBackAdmissionAndSurfacesFenceCleanup(t *testing.T) {
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	baseService, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)

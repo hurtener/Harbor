@@ -97,7 +97,19 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 	}()
 
 	if op.Phase == agentcfg.SignedOAuthMCPPhaseRemovalAdmitted {
-		payload := carrySiblingsForward(targetRevision, true)
+		removalBase := targetRevision
+		if active.Payload.SignedOAuthMCPPair != nil {
+			// Admission freezes the pair lifetime, not unrelated sibling
+			// sections. A generic writer may have carried the exact immutable
+			// operation-bound pair into a newer revision while removal was
+			// admitted. Preserve those current siblings and CAS that generation;
+			// a foreign or replacement pair remains a hard conflict.
+			if !signedCapabilityPairMatchesOperation(active.Payload.SignedOAuthMCPPair, id.TenantID, op.Binding, pair.AuthorityOperationKind) {
+				return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: removal target changed after admission", agentcfg.ErrRevisionConflict)
+			}
+			removalBase = active
+		}
+		payload := carrySiblingsForward(removalBase, true)
 		payload.SignedOAuthMCPPair = nil
 		candidateHash, hashErr := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
 		if hashErr != nil {
@@ -109,20 +121,16 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 			}
 			removalRevision = active
 		} else {
-			if active.RevisionID != targetRevision.RevisionID || active.ContentHash != expectedContentHash ||
-				active.Payload.SignedOAuthMCPPair.AuthorityOperationKind != pair.AuthorityOperationKind {
-				return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: removal target changed after admission", agentcfg.ErrRevisionConflict)
-			}
 			removalCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind)
 			removalRevision, err = s.registry.SetRevision(removalCtx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,
-				agentcfg.SetOptions{ExpectedContentHash: expectedContentHash})
+				agentcfg.SetOptions{ExpectedContentHash: removalBase.ContentHash})
 			if err != nil {
 				// An unknown SaveIf result can have committed the exact desired removal.
 				// Re-read only the pair absence, then let the receipt CAS decide whether
 				// this caller is permitted to advance the lifetime graph.
 				current, currentSet, readErr := s.registry.Active(context.WithoutCancel(ctx), q, req.AgentID, agentcfg.ConfigScopeAgent)
-				if readErr == nil && currentSet && current.Payload.SignedOAuthMCPPair != nil && current.ContentHash == expectedContentHash &&
-					current.Payload.SignedOAuthMCPPair.AuthorityOperationKind == pair.AuthorityOperationKind {
+				if readErr == nil && currentSet && current.ContentHash == removalBase.ContentHash &&
+					signedCapabilityPairMatchesOperation(current.Payload.SignedOAuthMCPPair, id.TenantID, op.Binding, pair.AuthorityOperationKind) {
 					_, rollbackErr := s.signedOAuthMCPOperations.Advance(context.WithoutCancel(ctx), op, agentcfg.SignedOAuthMCPPhasePublished, targetRevision.RevisionID)
 					return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, errors.Join(err, rollbackErr)
 				}
