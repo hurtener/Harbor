@@ -733,6 +733,17 @@ func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID st
 		if current.Retirement.OperationID != operationID {
 			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: durable operation differs", agentcfg.ErrRetirementConflict)
 		}
+		// The operation id alone is not a replay authority. The original
+		// precondition identifies the retired slot too: a config-backed
+		// tombstone replays only with its exact prior hash, while a
+		// first-retirement tombstone replays only with the no-active sentinel.
+		expected := current.Retirement.PriorContentHash
+		if expected == "" {
+			expected = agentcfg.ExpectNoActiveRevision
+		}
+		if req.ExpectedContentHash != expected {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: replay expected content hash differs", agentcfg.ErrRetirementConflict)
+		}
 		return r.ackRetirementEvent(ctx, id, agentID, q)
 	}
 
@@ -947,6 +958,13 @@ func (r *registry) CompleteRetirementStep(ctx context.Context, id identity.Quadr
 	}
 	if !found || current.Retirement == nil || current.Retirement.OperationID != operationID {
 		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: lifecycle operation changed", agentcfg.ErrRetirementConflict)
+	}
+	// One persisted event checkpoint is the ordering barrier for the entire
+	// cleanup manifest. A later step may not overwrite a failed earlier
+	// progress/completed event: flush it first, and make the caller retry this
+	// step after the prior transition is acknowledged.
+	if current.Retirement.PendingEvent != nil {
+		return r.ackRetirementEvent(ctx, id, agentID, q)
 	}
 	step := -1
 	for i := range current.Retirement.Cleanup {

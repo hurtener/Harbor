@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 143 canonical event types a Harbor Runtime can publish, read from the live
+The 146 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -174,6 +174,51 @@ Payload `OAuthProviderSetPayload` — safe payload (delivered typed, verbatim).
 | `ProviderName` | `string` |  |
 | `CredentialBroker` | `string` |  |
 | `RevisionID` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `agent_config.retirement.completed`
+
+Payload `RetirementEventPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `AgentID` | `string` |  |
+| `OperationHash` | `string` |  |
+| `Stage` | `string` |  |
+| `class` | `string` | optional (`omitempty`) |
+| `Completed` | `int` |  |
+| `Total` | `int` |  |
+| `Generation` | `uint64` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `agent_config.retirement.progress`
+
+Payload `RetirementEventPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `AgentID` | `string` |  |
+| `OperationHash` | `string` |  |
+| `Stage` | `string` |  |
+| `class` | `string` | optional (`omitempty`) |
+| `Completed` | `int` |  |
+| `Total` | `int` |  |
+| `Generation` | `uint64` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `agent_config.retirement.started`
+
+Payload `RetirementEventPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `AgentID` | `string` |  |
+| `OperationHash` | `string` |  |
+| `Stage` | `string` |  |
+| `class` | `string` | optional (`omitempty`) |
+| `Completed` | `int` |  |
+| `Total` | `int` |  |
+| `Generation` | `uint64` |  |
 | `OccurredAt` | `time.Time` |  |
 
 ## `artifacts.deleted`

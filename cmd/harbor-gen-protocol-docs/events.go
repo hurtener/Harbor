@@ -102,6 +102,9 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	agentcfg.EventTypeOAuthProviderInstalled:      {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.OAuthProviderSetPayload{})}},
 	agentcfg.EventTypeOAuthProviderRemoved:        {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.OAuthProviderSetPayload{})}},
 	agentcfg.EventTypeLLMProviderInstalled:        {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.LLMProviderSetPayload{})}},
+	agentcfg.EventTypeRetirementStarted:           {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.RetirementEventPayload{})}},
+	agentcfg.EventTypeRetirementProgress:          {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.RetirementEventPayload{})}},
+	agentcfg.EventTypeRetirementCompleted:         {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.RetirementEventPayload{})}},
 
 	// --- Dev-draft lifecycle (harbor dev's dynamic agent scaffolding).
 	devdraft.EventTypeDraftCreated:   {Payloads: []reflect.Type{reflect.TypeOf(devdraft.DraftCreatedPayload{})}},

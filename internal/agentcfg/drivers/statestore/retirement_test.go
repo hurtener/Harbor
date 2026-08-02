@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -97,8 +98,38 @@ func TestRetirement_TerminalHistoryAndReplay(t *testing.T) {
 	if replay, err := retirer.Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "retire-a", ExpectedContentHash: first.ContentHash}); err != nil || replay.Generation != status.Generation {
 		t.Fatalf("same-operation replay = (%+v,%v), want stored status", replay, err)
 	}
+	for _, wrongExpectation := range []string{"different-hash", agentcfg.ExpectNoActiveRevision} {
+		if _, err := retirer.Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "retire-a", ExpectedContentHash: wrongExpectation}); !errors.Is(err, agentcfg.ErrRetirementConflict) {
+			t.Fatalf("same operation with expectation %q = %v, want ErrRetirementConflict", wrongExpectation, err)
+		}
+	}
 	if _, err := retirer.Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "retire-b", ExpectedContentHash: first.ContentHash}); !errors.Is(err, agentcfg.ErrRetirementConflict) {
 		t.Fatalf("different operation = %v, want ErrRetirementConflict", err)
+	}
+}
+
+// TestRetirement_NoActiveSentinelReplay pins retirement's base-case replay
+// identity. A tombstone installed with the no-active sentinel accepts only
+// that same sentinel on retry; a hash-shaped expectation cannot borrow its
+// operation id to resume cleanup.
+func TestRetirement_NoActiveSentinelReplay(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	retirer := reg.(agentcfg.RetirementRegistry)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-empty", UserID: "admin", SessionID: "control"}}
+	const agent = "agent-empty"
+	status, err := retirer.Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "empty-op", ExpectedContentHash: agentcfg.ExpectNoActiveRevision})
+	if err != nil {
+		t.Fatalf("retire empty active slot: %v", err)
+	}
+	if !status.Completed || status.PriorRevisionID != "" || status.PriorContentHash != "" {
+		t.Fatalf("empty-slot status=%+v, want completed sentinel tombstone", status)
+	}
+	if _, err := retirer.Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "empty-op", ExpectedContentHash: agentcfg.ExpectNoActiveRevision}); err != nil {
+		t.Fatalf("same sentinel replay: %v", err)
+	}
+	if _, err := retirer.Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "empty-op", ExpectedContentHash: "not-the-sentinel"}); !errors.Is(err, agentcfg.ErrRetirementConflict) {
+		t.Fatalf("hash-shaped replay against sentinel tombstone = %v, want ErrRetirementConflict", err)
 	}
 }
 
@@ -138,6 +169,69 @@ func TestRetirement_ConcurrentSameOperationAndTenantIsolation(t *testing.T) {
 	}
 	if _, ok, err := r.Active(ctx, idB, agent, agentcfg.ConfigScopeAgent); err != nil || !ok {
 		t.Fatalf("tenant b bled from tenant a retirement: active=%v err=%v", ok, err)
+	}
+}
+
+// TestRetirement_ConcurrentStaleWriterRollbackAndUserRefusal proves stale
+// durable writers cannot resurrect either the agent or user revision spine
+// after the terminal CAS wins. The shared registry is deliberately hit by
+// concurrent set/rollback calls so the race detector covers the permanent
+// fence rather than only a serial postcondition.
+func TestRetirement_ConcurrentStaleWriterRollbackAndUserRefusal(t *testing.T) {
+	ctx := context.Background()
+	r := newRegistry(t)
+	retirer := r.(agentcfg.RetirementRegistry)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-stale", UserID: "writer", SessionID: "control"}}
+	const agent = "agent-stale"
+	agentRevision, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, skills("agent-before"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed agent revision: %v", err)
+	}
+	userRevision, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("user-before"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed user revision: %v", err)
+	}
+	if _, err := retirer.Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "retire-stale", ExpectedContentHash: agentRevision.ContentHash}); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	operations := []func() error{
+		func() error {
+			_, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, skills("late-agent"), agentcfg.SetOptions{})
+			return err
+		},
+		func() error {
+			_, err := r.Rollback(ctx, id, agent, agentRevision.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{})
+			return err
+		},
+		func() error {
+			_, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("late-user"), agentcfg.SetOptions{})
+			return err
+		},
+		func() error {
+			_, err := r.Rollback(ctx, id, agent, userRevision.RevisionID, agentcfg.ConfigScopeUser, agentcfg.SetOptions{})
+			return err
+		},
+	}
+	errs := make(chan error, 100)
+	var wg sync.WaitGroup
+	for i := range 100 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- operations[i%len(operations)]()
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if !errors.Is(err, agentcfg.ErrAgentRetired) {
+			t.Fatalf("stale concurrent operation error=%v, want ErrAgentRetired", err)
+		}
+	}
+	for _, scope := range []agentcfg.ConfigScope{agentcfg.ConfigScopeAgent, agentcfg.ConfigScopeUser} {
+		if _, _, err := r.Active(ctx, id, agent, scope); !errors.Is(err, agentcfg.ErrAgentRetired) {
+			t.Fatalf("active %v after stale writers=%v, want ErrAgentRetired", scope, err)
+		}
 	}
 }
 
@@ -270,6 +364,23 @@ func TestRetirement_CommitThenAckLossConverges(t *testing.T) {
 			t.Fatalf("progress status=%+v, want completed frozen cleanup", status)
 		}
 	})
+
+	for _, failAt := range []int64{2, 3, 4} {
+		t.Run(fmt.Sprintf("empty-lifecycle-ack-%d", failAt), func(t *testing.T) {
+			base := newSharedStore(t)
+			reg := newRegistryOnStore(t, &retirementCommitAckFaultStore{StateStore: base, failAt: failAt})
+			status, err := reg.(agentcfg.RetirementRegistry).Retire(ctx, id, fmt.Sprintf("agent-empty-%d", failAt), agentcfg.RetirementRequest{
+				OperationID:         fmt.Sprintf("op-empty-%d", failAt),
+				ExpectedContentHash: agentcfg.ExpectNoActiveRevision,
+			})
+			if err != nil {
+				t.Fatalf("retire after committed-but-errored empty lifecycle ack %d: %v", failAt, err)
+			}
+			if !status.Completed {
+				t.Fatalf("empty lifecycle status=%+v, want completed", status)
+			}
+		})
+	}
 }
 
 // TestRetirement_EventPublishFailureStaysCheckpointed proves a failed
@@ -309,6 +420,45 @@ func TestRetirement_EventPublishFailureStaysCheckpointed(t *testing.T) {
 	}
 	if !status.Completed || !status.Cleanup[0].Completed {
 		t.Fatalf("completed retry status=%+v, want acknowledged cleanup", status)
+	}
+}
+
+// TestRetirement_PendingProgressMustFlushBeforeLaterStep proves a failed
+// progress publication cannot be overwritten by a later cleanup completion.
+// The second caller first replays/acknowledges the original progress event and
+// must retry its own step after that ordered checkpoint has cleared.
+func TestRetirement_PendingProgressMustFlushBeforeLaterStep(t *testing.T) {
+	ctx := context.Background()
+	bus := &retirementFailOnceBus{EventBus: newBus(t)}
+	reg := newRegistryOnBus(t, bus)
+	retirer := reg.(agentcfg.RetirementRegistry)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-order", UserID: "admin", SessionID: "control"}}
+	const agent = "agent-order"
+	payload := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{{Name: "one"}, {Name: "two"}}}}
+	rev, err := reg.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := retirer.Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "order-op", ExpectedContentHash: rev.ContentHash}); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	bus.armed.Store(true)
+	if _, err := retirer.CompleteRetirementStep(ctx, id, agent, "order-op", "mcp_connection", "one"); !errors.Is(err, agentcfg.ErrStateUnavailable) {
+		t.Fatalf("first completion with failed progress publish = %v, want ErrStateUnavailable", err)
+	}
+	status, err := retirer.CompleteRetirementStep(ctx, id, agent, "order-op", "mcp_connection", "two")
+	if err != nil {
+		t.Fatalf("second completion should flush pending progress: %v", err)
+	}
+	if status.Completed || len(status.Cleanup) != 2 || !status.Cleanup[0].Completed || status.Cleanup[1].Completed {
+		t.Fatalf("later completion overwrote pending progress: %+v", status)
+	}
+	status, err = retirer.CompleteRetirementStep(ctx, id, agent, "order-op", "mcp_connection", "two")
+	if err != nil {
+		t.Fatalf("retry later completion after progress acknowledgement: %v", err)
+	}
+	if !status.Completed || !status.Cleanup[0].Completed || !status.Cleanup[1].Completed {
+		t.Fatalf("ordered cleanup did not finish: %+v", status)
 	}
 }
 

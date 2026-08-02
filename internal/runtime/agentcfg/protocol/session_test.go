@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -226,8 +227,25 @@ func (s *skillStoreSpy) Delete(ctx context.Context, id identity.Quadruple, name 
 // sessionSvc builds a Service with distinct shared-skill and agent-owned
 // session-personal authorities.
 func sessionSvc(t *testing.T) *agentcfgprotocol.Service {
+	return sessionSvcFor(t, newRegistry(t))
+}
+
+// sessionSvcFor wires all five session projections over the supplied durable
+// registry, so lifecycle tests exercise the same tombstone each projection
+// consults before it mutates or reads ephemeral state.
+func sessionSvcFor(t *testing.T, reg agentcfg.Registry) *agentcfgprotocol.Service {
 	t.Helper()
-	s, _, _, _ := sessionSvcWithController(t, newSessionPersonalSkillController())
+	overlay := newSessionOverlay()
+	legacy := &skillStoreSpy{SkillStore: newSkills(t)}
+	controller := newSessionPersonalSkillController()
+	s, err := agentcfgprotocol.NewService(reg,
+		agentcfgprotocol.WithSkillStore(legacy),
+		agentcfgprotocol.WithSessionOverlay(overlay),
+		agentcfgprotocol.WithSessionPersonalSkillController(controller),
+	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
 	return s
 }
 
@@ -244,6 +262,55 @@ func sessionSvcWithController(t *testing.T, controller *fakeSessionPersonalSkill
 		t.Fatalf("NewService: %v", err)
 	}
 	return s, legacy, overlay, controller
+}
+
+// TestSession_RetiredAgentRefusesAllFiveProjections keeps the lower session
+// tier behind the same terminal lifecycle fence as durable config. A
+// tombstone must prevent both overlay mutation and personal-skill reads: the
+// latter could otherwise expose a live projection after the config retired.
+func TestSession_RetiredAgentRefusesAllFiveProjections(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	s := sessionSvcFor(t, reg)
+	retirer := reg.(agentcfg.RetirementRegistry)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	if _, err := retirer.Retire(ctx, q, testAgentID, agentcfg.RetirementRequest{
+		OperationID: "retire-session-census", ExpectedContentHash: agentcfg.ExpectNoActiveRevision,
+	}); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	checks := []struct {
+		name string
+		call func() error
+	}{
+		{"set-user-prompt", func() error {
+			_, err := s.SessionSetUserPrompt(ctx, prototypes.AgentConfigSessionSetUserPromptRequest{Identity: scope(), AgentID: testAgentID, UserPrompt: "x"})
+			return err
+		}},
+		{"set-source-disables", func() error {
+			_, err := s.SessionSetSourceDisables(ctx, prototypes.AgentConfigSessionSetSourceDisablesRequest{Identity: scope(), AgentID: testAgentID, DisabledServers: []string{"mcp"}})
+			return err
+		}},
+		{"skills-list", func() error {
+			_, err := s.SessionSkillsList(ctx, prototypes.AgentConfigSessionSkillsListRequest{Identity: scope(), AgentID: testAgentID})
+			return err
+		}},
+		{"skills-upsert", func() error {
+			_, err := s.SessionSkillsUpsert(ctx, prototypes.AgentConfigSessionSkillsUpsertRequest{Identity: scope(), AgentID: testAgentID, Skill: prototypes.AgentConfigSkillInput{Name: "late", Trigger: "x", Steps: []string{"x"}}})
+			return err
+		}},
+		{"skills-delete", func() error {
+			_, err := s.SessionSkillsDelete(ctx, prototypes.AgentConfigSessionSkillsDeleteRequest{Identity: scope(), AgentID: testAgentID, Name: "late"})
+			return err
+		}},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			if err := check.call(); !errors.Is(err, agentcfg.ErrAgentRetired) {
+				t.Fatalf("%s error=%v, want ErrAgentRetired", check.name, err)
+			}
+		})
+	}
 }
 
 // TestSessionSetUserPrompt_RecordsOverlay proves the session user prompt is

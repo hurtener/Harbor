@@ -429,7 +429,7 @@ func (s *Service) lockAgent(tenant, agentID string) func() {
 // skill bodies). Revision reads/writes get the same refusal directly from the
 // registry; this guard keeps those sibling projections from remaining mutable
 // after the durable terminal envelope wins. Historical List/Diff deliberately
-// do not call it (D-399 preserves them).
+// do not call it because immutable audit history remains readable.
 func (s *Service) ensureNotRetired(ctx context.Context, q identity.Quadruple, agentID string) error {
 	retiring, ok := s.registry.(agentcfg.RetirementRegistry)
 	if !ok {
