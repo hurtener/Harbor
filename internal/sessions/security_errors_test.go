@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/config"
@@ -25,9 +24,10 @@ func TestRegistry_NewMissingDependenciesFailsLoud(t *testing.T) {
 	}
 }
 
-func TestErasureFenceSlots_StayOutsideErasedScope(t *testing.T) {
+func TestErasureFenceSlots_ExactReservedContract(t *testing.T) {
 	t.Parallel()
 	id := identity.Quadruple{Identity: ident("tenant-a", "user-a", "session-a"), RunID: "run-a"}
+	wantScope := identity.Quadruple{Identity: ident("tenant-a", "user-a", "<erasure-audit>")}
 
 	pendingScope, pendingKind, err := sessions.ErasurePendingSlot(id)
 	if err != nil {
@@ -38,21 +38,41 @@ func TestErasureFenceSlots_StayOutsideErasedScope(t *testing.T) {
 		t.Fatalf("ErasureTombstoneSlot: %v", err)
 	}
 
-	for name, scope := range map[string]identity.Quadruple{
-		"pending": pendingScope, "tombstone": tombstoneScope,
-	} {
-		if scope.TenantID != id.TenantID || scope.UserID != id.UserID {
-			t.Errorf("%s scope owner = (%q,%q), want (%q,%q)", name, scope.TenantID, scope.UserID, id.TenantID, id.UserID)
-		}
-		if scope.SessionID == id.SessionID || scope.RunID != "" {
-			t.Errorf("%s scope = %+v, must survive erased session/run scope", name, scope)
-		}
+	if pendingScope != wantScope {
+		t.Errorf("pending scope = %+v, want exact reserved scope %+v", pendingScope, wantScope)
 	}
-	if !strings.Contains(pendingKind, id.SessionID) || !strings.Contains(tombstoneKind, id.SessionID) {
-		t.Fatalf("fence kinds do not bind session id: pending=%q tombstone=%q", pendingKind, tombstoneKind)
+	if tombstoneScope != wantScope {
+		t.Errorf("tombstone scope = %+v, want exact reserved scope %+v", tombstoneScope, wantScope)
 	}
-	if pendingKind == tombstoneKind {
-		t.Fatalf("pending and terminal fence kinds alias: %q", pendingKind)
+	if pendingKind != "session.erasure.pending.session-a" {
+		t.Errorf("pending kind = %q, want %q", pendingKind, "session.erasure.pending.session-a")
+	}
+	if tombstoneKind != "session.erasure.tombstone.session-a" {
+		t.Errorf("tombstone kind = %q, want %q", tombstoneKind, "session.erasure.tombstone.session-a")
+	}
+}
+
+func TestErasureFenceSlots_MalformedIdentityFailsClosed(t *testing.T) {
+	t.Parallel()
+	malformed := map[string]identity.Identity{
+		"tenant_empty":  ident("", "user-a", "session-a"),
+		"user_empty":    ident("tenant-a", "", "session-a"),
+		"session_empty": ident("tenant-a", "user-a", ""),
+	}
+	slotters := map[string]func(identity.Quadruple) (identity.Quadruple, string, error){
+		"pending":   sessions.ErasurePendingSlot,
+		"tombstone": sessions.ErasureTombstoneSlot,
+	}
+	for malformedName, malformedID := range malformed {
+		for slotName, slot := range slotters {
+			scope, kind, err := slot(identity.Quadruple{Identity: malformedID, RunID: "run-a"})
+			if !errors.Is(err, identity.ErrIdentityIncomplete) {
+				t.Errorf("%s %s = %v, want ErrIdentityIncomplete", slotName, malformedName, err)
+			}
+			if scope != (identity.Quadruple{}) || kind != "" {
+				t.Errorf("%s %s leaked slot on rejection: scope=%+v kind=%q", slotName, malformedName, scope, kind)
+			}
+		}
 	}
 }
 
@@ -216,7 +236,8 @@ func TestRegistry_CorruptStoredJSONFailsLoud(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed corrupt session: %v", err)
 	}
-	if _, err := reg.Get(ctxFor(id), id.SessionID); err == nil || !strings.Contains(err.Error(), "unmarshal") {
+	var syntaxErr *json.SyntaxError
+	if _, err := reg.Get(ctxFor(id), id.SessionID); err == nil || !errors.As(err, &syntaxErr) {
 		t.Fatalf("Get corrupt JSON = %v, want fail-loud unmarshal error", err)
 	}
 }
