@@ -287,7 +287,7 @@ func TestProvider_ConcurrentTokenClose_N128NoBleedOrLeak(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -295,7 +295,7 @@ func TestProvider_ConcurrentTokenClose_N128NoBleedOrLeak(t *testing.T) {
 			errs <- tokenErr
 		}()
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		select {
 		case <-coord.entered:
 		case <-time.After(5 * time.Second):
