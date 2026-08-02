@@ -35,7 +35,7 @@ func (s *Service) retireSignedOAuthMCPPair(ctx context.Context, tenant, agentID,
 	}
 	ownerCtx, err := identity.With(ctx, owner.Identity)
 	if err != nil {
-		return fmt.Errorf("%w: restore signed capability retirement owner: %v", agentcfg.ErrRetirementConflict, err)
+		return fmt.Errorf("%w: restore signed capability retirement owner: %w", agentcfg.ErrRetirementConflict, err)
 	}
 	if op.Phase == agentcfg.SignedOAuthMCPPhaseRemoved || op.Phase == agentcfg.SignedOAuthMCPPhaseExpiredIncomplete {
 		return nil
