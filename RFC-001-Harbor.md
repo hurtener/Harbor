@@ -1189,14 +1189,25 @@ the same scan without inventing a collection transaction.
 The schema-1 legacy transition is fleet-wide and operator-controlled without
 inventing a runtime-membership subsystem. Static boot configuration contains a
 bounded, unique tenant declaration list: `{tenant_id, epoch, roster_digest,
-legacy_writers_drained}`. An unlisted tenant, or an invalid/false declaration,
-is `dual_read`. Boot iterates only admitted tenants and CASes each declaration
-into `agentcfg.session_personal.cutover.<base64url(epoch)>` under its reserved
-complete tenant control triple; there is no unknown-tenant discovery. That
-record is bounded to mode, epoch, digest, current scan continuation, counters,
-and generation. It never embeds per-overlay results: the owned personal
-record itself is the per-name copy marker (epoch plus legacy content hash),
-and retirement/erasure status is derived from their durable terminal fences.
+legacy_writers_drained}`. Syntactically or structurally invalid configuration
+(an empty or invalid field, duplicate tenant, or over-bound list) fails boot
+loud; it is not an implicit `dual_read` declaration. An unlisted tenant, or a
+valid declaration whose `legacy_writers_drained` is false, is `dual_read`.
+Boot iterates only admitted tenants and CASes each declaration into
+`agentcfg.session_personal.cutover.<base64url(epoch)>` under
+`CutoverScope(tenant)`, exactly `{TenantID: tenant, UserID: "__agentcfg__",
+SessionID: "__session_personal_cutover__", RunID: ""}`; there is no
+unknown-tenant discovery. A malformed or declaration-mismatched durable
+cutover record never authorizes `state_only`: readers stay mutation-refusing
+`dual_read` and surface a bounded loud diagnostic/error. The reserved user is
+already rejected for verified real user-scope config by `ErrReservedUser`; an
+agent ID equal to the cutover session sentinel cannot alias this record because
+the cutover Kind namespace is disjoint from lifecycle/config Kinds, which
+tests pin. The cutover record is bounded to mode, epoch, digest, current scan
+continuation, counters, and generation. It never embeds per-overlay results:
+the owned personal record itself is the per-name copy marker (epoch plus legacy
+content hash), and retirement/erasure status is derived from their durable
+terminal fences.
 
 After the drained assertion, migration walks paged `ScanKindForTenant` results
 for the common schema-1 overlay prefix. It copies each currently eligible

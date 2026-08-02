@@ -114,12 +114,21 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   legacy migration-eligibility input.
 - [ ] `skills.session_personal_cutover.tenants` is a bounded unique static
   declaration list of `{tenant_id, epoch, roster_digest,
-  legacy_writers_drained}`. Boot iterates only declared tenants; an unlisted,
-  malformed, or false declaration stays read-only `dual_read`. It creates no
-  runtime-membership or unknown-tenant discovery subsystem. Boot CASes each
-  declaration to `agentcfg.session_personal.cutover.<base64url(epoch)>` under
-  exported `CutoverScope(tenant)`. That bounded record has only mode, epoch,
-  digest, current opaque scan continuation, counters, and generation.
+  legacy_writers_drained}`. Empty/invalid fields, duplicate tenants, and an
+  over-bound list fail boot loud. Boot iterates only valid declared tenants;
+  an unlisted tenant or valid `legacy_writers_drained=false` declaration stays
+  read-only `dual_read`. It creates no runtime-membership or unknown-tenant
+  discovery subsystem. Boot CASes each declaration to
+  `agentcfg.session_personal.cutover.<base64url(epoch)>` under exported
+  `CutoverScope(tenant)`, exactly `{TenantID: tenant, UserID:
+  "__agentcfg__", SessionID: "__session_personal_cutover__", RunID: ""}`.
+  A malformed or declaration-mismatched durable cutover record never
+  authorizes `state_only`: it remains mutation-refusing `dual_read` and emits
+  a bounded loud diagnostic/error. The existing `ErrReservedUser` guard
+  rejects a verified real `__agentcfg__` user; an agent ID equal to the
+  session sentinel cannot alias the cutover record because the Kind namespace
+  is disjoint from lifecycle/config Kinds. That bounded record has only mode,
+  epoch, digest, current opaque scan continuation, counters, and generation.
 - [ ] The migration consumes mandatory `StateStore.ScanKindForTenant` rather
   than `ListKind`: storage-side tenant and literal `agentcfg.session_overlay.`
   filtering, bounded page limit, stable lexicographic composite-slot cursor,
@@ -218,7 +227,10 @@ safe rolling cutover from legacy `ScopeSession` bodies.
 - `ScanKindForTenant` and its opaque continuation/page types as a mandatory
   StateStore API.
 - `skills.session_personal_cutover.tenants` plus `CutoverScope(tenant)` and a
-  bounded typed cutover record; no Protocol method or response field is added.
+  bounded typed cutover record. `CutoverScope(tenant)` is exactly
+  `{TenantID: tenant, UserID: "__agentcfg__", SessionID:
+  "__session_personal_cutover__", RunID: ""}`; no Protocol method or response
+  field is added.
 - Read-only `SessionSkillResolver` and immutable `RunSkillSnapshot` injection
   seam for Directory and generic skill tools.
 - `ErrSessionSkillCutoverPending` and canonical
@@ -232,6 +244,11 @@ safe rolling cutover from legacy `ScopeSession` bodies.
 
 - **Unit:** Kind encode/decode/collision guards; shared slot/fence helper
   identities and Kinds; body/name/request bounds;
+  static cutover configuration rejects empty/invalid fields, duplicate tenants,
+  and over-bound lists at boot; a malformed or declaration-mismatched durable
+  cutover record remains mutation-refusing `dual_read` with a loud diagnostic;
+  `CutoverScope(tenant)` has the exact reserved quadruple and its disjoint Kind
+  namespace prevents an agent ID equal to the session sentinel from aliasing;
   overlay and personal four-slot expectation construction; tombstone
   precedence; single-`SaveIf` personal mutation with no overlay mutation;
   before/after read-generation retry/fail-closed rows; lexical ranking,
@@ -242,9 +259,14 @@ safe rolling cutover from legacy `ScopeSession` bodies.
 - **Integration:** real in-memory/SQLite StateStore plus real SkillStore and
   session erasure ledger prove owned writes, schema-1 fallback/copy, restart,
   exact legacy sweep, identity propagation, and one forced condition/error
-  path under `-race`. Missing/invalid/false cutover configuration remains
-  `dual_read`; a valid epoch/digest/drained declaration is persisted and
-  restart-stable. A fault/restart during the deterministic paged tenant scan
+  path under `-race`. Missing and valid-but-undrained cutover declarations
+  remain `dual_read`; empty/invalid/duplicate/over-bound declarations fail
+  boot. A malformed or declaration-mismatched durable record stays
+  mutation-refusing `dual_read` with a loud diagnostic/error; a valid
+  epoch/digest/drained declaration is persisted and restart-stable. A
+  scope/key-collision row pins the exact control quadruple and proves an agent
+  ID equal to its session sentinel cannot alias the disjoint cutover Kind.
+  A fault/restart during the deterministic paged tenant scan
   proves continuation validation, no duplicate/missed copy, and no snapshot
   assumption. A final fresh verification pass proves all currently eligible
   schema-1 references copied or terminal before `state_only`. Commit-then-

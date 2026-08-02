@@ -7,5 +7,10 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-skip "phase 233a: pending durable session-overlay and personal-skill implementation"
+assert_grep_present 'Empty/invalid fields, duplicate tenants, and an' \
+    'docs/plans/phase-233a-durable-session-overlay-personal-skills.md' \
+    'phase 233a pins fail-loud static cutover validation'
+assert_grep_present '__session_personal_cutover__' \
+    'RFC-001-Harbor.md' \
+    'phase 233a pins the reserved cutover control scope'
 smoke_summary

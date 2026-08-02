@@ -249,6 +249,17 @@ are restart-resumable but are not a restart-surviving database snapshot;
 cutover must make the source quiescent and finish with a fresh verification
 pass. D-400.
 
+**Session-personal cutover control scope** — the reserved complete StateStore
+quadruple returned by `CutoverScope(tenant)`: `{TenantID: tenant, UserID:
+"__agentcfg__", SessionID: "__session_personal_cutover__", RunID: ""}`. It
+holds only the admitted tenant's bounded cutover progress record. Invalid
+static declarations fail boot; a malformed or declaration-mismatched durable
+record never authorizes `state_only` and remains mutation-refusing `dual_read`
+with a loud diagnostic/error. A verified real user-scope config named
+`__agentcfg__` is already rejected by `ErrReservedUser`; an equal agent ID
+cannot alias this scope because its Kind namespace is disjoint from
+lifecycle/config Kinds. D-400.
+
 **Co-launched TUI** — the explicit `harbor serve --tui` or generated-binary
 `--tui` posture where one foreground command owns both an ordinary authenticated
 Protocol server and the native TUI client attached to its bound listener. It is
