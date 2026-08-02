@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
@@ -289,8 +290,10 @@ func (b *ProviderBuilder) BuildWire(ctx context.Context, desc WireProviderDescri
 // BuildSignedCapability constructs the signed-capability production exception. The token
 // endpoint and credential source remain pinned by the named boot broker; only
 // the audience and downstream sink already authenticated by the signed
-// authority vary. It deliberately does not consult the development-only wire
-// descriptor gate.
+// authority vary. Requested scopes must already be a subset of the boot scope
+// ceiling; this path refuses widening instead of relying on the general
+// token-exchange driver's silent intersection. It deliberately does not consult
+// the development-only wire descriptor gate.
 func (b *ProviderBuilder) BuildSignedCapability(ctx context.Context, brokerName string, binding SignedCapabilityExchangeBinding, scopes []string) (OAuthProvider, error) {
 	u, err := url.Parse(binding.Resource)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
@@ -299,10 +302,36 @@ func (b *ProviderBuilder) BuildSignedCapability(ctx context.Context, brokerName 
 	if binding.ProviderName == "" || binding.Audience == "" || binding.Resource == "" {
 		return nil, fmt.Errorf("auth: signed capability exchange binding is incomplete")
 	}
+	broker, ok := b.brokers[brokerName]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q (declared: %v)", ErrUnknownBroker, brokerName, b.BrokerNames())
+	}
+	if err := requireSignedCapabilityScopeSubset(scopes, broker.ScopeCeiling); err != nil {
+		return nil, fmt.Errorf("%w: broker %q: %w", ErrConfigInvalid, brokerName, err)
+	}
 	return b.buildBrokerPull(ctx, binding.ProviderName, brokerName, scopes, brokerPullOverride{
 		override: true, audience: binding.Audience, resourceIndicator: binding.Resource, allowedHosts: []string{u.Host},
 		signedCapability: &binding, refuseRedirects: true,
 	})
+}
+
+func requireSignedCapabilityScopeSubset(requested, ceiling []string) error {
+	allowed := make(map[string]struct{}, len(ceiling))
+	for _, scope := range ceiling {
+		if normalized := strings.TrimSpace(scope); normalized != "" {
+			allowed[normalized] = struct{}{}
+		}
+	}
+	for _, scope := range requested {
+		normalized := strings.TrimSpace(scope)
+		if normalized == "" {
+			return fmt.Errorf("signed capability requested an empty scope")
+		}
+		if _, ok := allowed[normalized]; !ok {
+			return fmt.Errorf("signed capability requested scope %q outside the boot ceiling", normalized)
+		}
+	}
+	return nil
 }
 
 // brokerPullOverride carries the wire-supplied per-server OAuth params that

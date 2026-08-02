@@ -236,8 +236,7 @@ func bearerFrom(ctx context.Context) string {
 // ctx carries a per-call bearer (see withBearer). It holds NO mutable state —
 // the token rides req.Context(), so one shared transport serves N concurrent
 // identities with no token bleed (the concurrent-reuse contract). A request
-// whose ctx carries no bearer passes through untouched (the unbound-call and
-// connect-time paths).
+// whose ctx carries no bearer passes through untouched (the unbound-call path).
 type bearerInjectingTransport struct {
 	base http.RoundTripper
 }
@@ -246,8 +245,9 @@ type bearerInjectingTransport struct {
 func (b *bearerInjectingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	tok := bearerFrom(req.Context())
 	if tok == "" {
-		// No per-call identity (connect-time request, or an unbound call) —
-		// pass through so static Headers remain the only auth.
+		// An unbound call carries no bearer; pass through so static Headers
+		// remain the only auth. Pair-owned initialize/discovery paths resolve
+		// before reaching this transport.
 		return b.base.RoundTrip(req)
 	}
 	// Clone so we never mutate the caller's request (the SDK may reuse it

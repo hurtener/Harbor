@@ -590,10 +590,18 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	}
 	fromID := ""
 	active, hasActive, aerr := r.loadActiveRevision(ctx, q, keys.activeKind, keys.revPfx)
-	if aerr == nil && hasActive {
+	if aerr != nil {
+		// The pointer generation above is only half of the rollback decision:
+		// pair immutability and the emitted from-revision require the active
+		// revision content too. An unreadable active revision is never treated
+		// as an empty one, even for an unconditional caller, and no SaveIf is
+		// attempted from partial knowledge.
+		return agentcfg.Revision{}, aerr
+	}
+	if hasActive {
 		fromID = active.RevisionID
 	}
-	if scope == agentcfg.ConfigScopeAgent && aerr == nil {
+	if scope == agentcfg.ConfigScopeAgent {
 		operation := agentcfg.SignedOAuthMCPFenceOperation(ctx)
 		currentPair := active.Payload.SignedOAuthMCPPair
 		targetPair := target.Payload.SignedOAuthMCPPair
@@ -610,14 +618,7 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	// refused and the pointer is left where it was. Evaluated before the
 	// save, against the same read the from-pointer uses.
 	//
-	// The unconditional path keeps its historical tolerance of a failed
-	// active read (fromID stays empty and the repoint proceeds); a
-	// CONDITIONAL caller cannot be answered from a read that failed, so
-	// the error is surfaced instead of swallowed.
 	if opts.ExpectedContentHash != "" {
-		if aerr != nil {
-			return agentcfg.Revision{}, aerr
-		}
 		if err := agentcfg.CheckExpectedRevision(opts, active, hasActive); err != nil {
 			return agentcfg.Revision{}, err
 		}

@@ -283,6 +283,58 @@ func TestSignedOAuthMCPPair_GenericWritesCarryForwardAndRollbackCannotMutate(t *
 	}
 }
 
+func TestRollback_ActiveRevisionReadFailureAbortsBeforePointerMutation(t *testing.T) {
+	ctx := context.Background()
+	base := newSharedStore(t)
+	seed := newRegistryOnStore(t, base)
+	q := agentQuad(condAgent)
+	prior, err := seed.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("prior"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed prior: %v", err)
+	}
+	pair := &agentcfg.SignedOAuthMCPPair{
+		ProviderName: "provider", Broker: "broker", Audience: "audience", CapabilityRevision: "v1",
+		URLDigest: "url-digest", SinkDigest: "sink-digest", Sink: "https://mcp.example.test",
+		Connection:   agentcfg.SignedOAuthMCPConnectionDescriptor{Name: "server", URL: "https://mcp.example.test/mcp"},
+		OwnerAgentID: condAgent, OwnerUserID: q.UserID, OwnerSessionID: q.SessionID, AuthorityOperationKind: "rollback-operation",
+	}
+	pairedPayload := condPayload("paired")
+	pairedPayload.SignedOAuthMCPPair = pair
+	paired, err := seed.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, condAgent, agentcfg.ConfigScopeAgent, pairedPayload, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed paired revision: %v", err)
+	}
+
+	injected := errors.New("active revision payload unavailable")
+	fault := &rollbackActiveReadFaultStore{StateStore: base, err: injected}
+	reg := newRegistryOnStore(t, fault)
+	_, err = reg.Rollback(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, condAgent, prior.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{})
+	if !errors.Is(err, injected) {
+		t.Fatalf("Rollback = %v, want injected active-read failure", err)
+	}
+	activeLoads, saveIfCalls := fault.counts()
+	if activeLoads != 2 {
+		t.Fatalf("active loads = %d, want expectation capture plus active revision read", activeLoads)
+	}
+	if saveIfCalls != 0 {
+		t.Fatalf("SaveIf calls = %d, want zero after active revision read failure", saveIfCalls)
+	}
+
+	active, set, err := seed.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent)
+	if err != nil || !set {
+		t.Fatalf("Active after refusal: set=%v err=%v", set, err)
+	}
+	if active.RevisionID != paired.RevisionID {
+		t.Fatalf("active revision = %q, want unchanged paired revision %q", active.RevisionID, paired.RevisionID)
+	}
+	if !reflect.DeepEqual(active.Payload.SignedOAuthMCPPair, pair) {
+		t.Fatalf("active pair changed: got %+v want %+v", active.Payload.SignedOAuthMCPPair, pair)
+	}
+	if active.RevisionID == prior.RevisionID {
+		t.Fatal("rollback target became active despite failed active-revision read")
+	}
+}
+
 // TestSignedOAuthMCPActivationFence_SQLiteTwoRuntimeRecovery pins the restart
 // contract against two independent real SQLite handles. The second runtime
 // cannot observe or mutate the physically-landed candidate until the first
@@ -926,6 +978,41 @@ type loadFaultStore struct {
 
 func (s *loadFaultStore) Load(context.Context, identity.Quadruple, string) (state.StateRecord, error) {
 	return state.StateRecord{}, s.err
+}
+
+type rollbackActiveReadFaultStore struct {
+	state.StateStore
+	mu              sync.Mutex
+	activeLoadCount int
+	saveIfCount     int
+	err             error
+}
+
+func (s *rollbackActiveReadFaultStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
+	s.mu.Lock()
+	if kind == "agentcfg.active" {
+		s.activeLoadCount++
+		if s.activeLoadCount == 2 {
+			err := s.err
+			s.mu.Unlock()
+			return state.StateRecord{}, err
+		}
+	}
+	s.mu.Unlock()
+	return s.StateStore.Load(ctx, q, kind)
+}
+
+func (s *rollbackActiveReadFaultStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	s.mu.Lock()
+	s.saveIfCount++
+	s.mu.Unlock()
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
+func (s *rollbackActiveReadFaultStore) counts() (activeLoads, saveIfCalls int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeLoadCount, s.saveIfCount
 }
 
 func (s *expectationRecordingStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {

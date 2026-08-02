@@ -49,6 +49,15 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestSignedOAuthMCPReconciler_RecoversRemovalAfterDetachFault \
     TestSignedOAuthMCPReconciler_ConcurrentReuseN128_CancellationDoesNotLeak
 
+assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./internal/agentcfg/drivers/statestore ./internal/tools/auth ./internal/protocol/types ./internal/protocol/transports/stream ./internal/runtime/serve' \
+    'phase 233b: authenticated preparation, rollback, scope, and closed-wire regressions execute under race' \
+    TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDiscovery \
+    TestRollback_ActiveRevisionReadFailureAbortsBeforePointerMutation \
+    TestBuildSignedCapability_RequestedScopeOutsideBootCeilingRejected \
+    TestRegisterOAuthMCPCapabilityWire_FieldSetsAreClosed \
+    TestRegisterOAuthMCPCapabilityWire_HasNoCredentialOrSinkConfigurationField \
+    TestAgentConfigHandler_RegisterOAuthMCPCapabilityRejectsForbiddenFieldsWithoutSideEffects
+
 if [ -n "${HARBOR_PG_DSN:-}" ]; then
     assert_go_tests_pass "${P233B_TMP}/postgres-reconcile.log" '-race -count=1 ./internal/runtime/agentcfg/protocol' \
         'phase 233b: configured real Postgres two-runtime reconciler executes' \
