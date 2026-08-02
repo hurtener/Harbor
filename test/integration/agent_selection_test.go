@@ -70,6 +70,10 @@ const (
 	// config revisions under the same tenant.
 	selAlpha = "sel-e2e-alpha"
 	selBravo = "sel-e2e-bravo"
+	// selUnknown is deliberately in this fixture's signed reach but absent
+	// from every tenant's config. The foreign-vs-unknown assertion below
+	// compares selection results only after authority has admitted both ids.
+	selUnknown = "never-existed-agent"
 )
 
 // selRig is the assembled end-to-end stack.
@@ -222,7 +226,7 @@ func selCtx(t *testing.T, id identity.Identity) context.Context {
 	if err != nil {
 		t.Fatalf("identity.WithVerified: %v", err)
 	}
-	return protocolauth.WithAgentReach(ctx, []string{selBoot, selAlpha, selBravo})
+	return protocolauth.WithAgentReach(ctx, []string{selBoot, selAlpha, selBravo, selUnknown})
 }
 
 // selWriteAgent pins an admin (ConfigScopeAgent) revision.
@@ -401,9 +405,11 @@ func TestE2E_AgentSelection_ForeignTenantRefusedAndNoTaskWritten(t *testing.T) {
 		t.Fatalf("task count %d → %d: a refused start MUST NOT write a task row", len(before), len(after))
 	}
 
-	// The refusal is not an existence oracle: a never-existing id is
-	// refused with the identical message.
-	_, unknownErr := rig.selStart(t, intruder, "never-existed-agent", "e2e-unknown")
+	// The refusal is not an existence oracle: an unknown id that is also
+	// authorized by this fixture's signed reach is refused with the identical
+	// selection message. Missing or excluded reach is covered separately by
+	// the Phase 232 recording-resolver tests.
+	_, unknownErr := rig.selStart(t, intruder, selUnknown, "e2e-unknown")
 	if unknownErr == nil {
 		t.Fatal("an unknown agent id was accepted")
 	}
