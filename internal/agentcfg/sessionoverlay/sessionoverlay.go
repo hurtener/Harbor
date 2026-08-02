@@ -43,6 +43,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/state"
 )
@@ -225,6 +226,9 @@ func (s *store) validate(id identity.Quadruple, agentID string) error {
 	}
 	if id.TenantID == "" || id.UserID == "" || id.SessionID == "" {
 		return fmt.Errorf("%w: (tenant=%q user=%q session=%q)", ErrIdentityRequired, id.TenantID, id.UserID, id.SessionID)
+	}
+	if id.UserID == agentcfg.ReservedAgentConfigUser {
+		return fmt.Errorf("%w: user_id=%q", agentcfg.ErrReservedUser, id.UserID)
 	}
 	if agentID == "" {
 		return fmt.Errorf("%w: agent id is empty", ErrIdentityRequired)

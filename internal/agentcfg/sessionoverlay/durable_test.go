@@ -40,6 +40,68 @@ func durableSkill(name string) skills.Skill {
 	return skills.Skill{Name: name, Trigger: "when needed", Steps: []string{"do it"}, Origin: skills.OriginGenerated, Scope: skills.ScopeSession}
 }
 
+type entryTokenContextKey struct{}
+
+func withEntryToken(ctx context.Context, token int) context.Context {
+	return context.WithValue(ctx, entryTokenContextKey{}, token)
+}
+
+// contextEntryBarrierStore stops each tagged invocation at its first actual
+// StateStore read. Tests can therefore prove all calls entered the shared
+// artifact before canceling selected runs and releasing the survivors.
+type contextEntryBarrierStore struct {
+	state.StateStore
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	seen    sync.Map
+	current atomic.Int32
+	maximum atomic.Int32
+}
+
+func newContextEntryBarrierStore(st state.StateStore, calls int) *contextEntryBarrierStore {
+	return &contextEntryBarrierStore{StateStore: st, entered: make(chan struct{}, calls), release: make(chan struct{})}
+}
+
+func (s *contextEntryBarrierStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
+	token, tagged := ctx.Value(entryTokenContextKey{}).(int)
+	if tagged {
+		if _, loaded := s.seen.LoadOrStore(token, struct{}{}); !loaded {
+			current := s.current.Add(1)
+			for {
+				maximum := s.maximum.Load()
+				if current <= maximum || s.maximum.CompareAndSwap(maximum, current) {
+					break
+				}
+			}
+			s.entered <- struct{}{}
+			select {
+			case <-s.release:
+			case <-ctx.Done():
+				s.current.Add(-1)
+				return state.StateRecord{}, ctx.Err()
+			}
+			s.current.Add(-1)
+		}
+	}
+	return s.StateStore.Load(ctx, q, kind)
+}
+
+func (s *contextEntryBarrierStore) waitForAll(t *testing.T) {
+	t.Helper()
+	for range cap(s.entered) {
+		select {
+		case <-s.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for every concurrent invocation to enter StateStore")
+		}
+	}
+}
+
+func (s *contextEntryBarrierStore) releaseAll() { s.once.Do(func() { close(s.release) }) }
+
+func (s *contextEntryBarrierStore) maximumOverlap() int { return int(s.maximum.Load()) }
+
 func activate(t *testing.T, st state.StateStore, id identity.Quadruple) {
 	t.Helper()
 	q, kind, err := agentcfg.LifecycleSlot(id.TenantID, "agent-a")
@@ -133,31 +195,49 @@ func TestDurableStore_PersonalRecordCASAndTombstone(t *testing.T) {
 	}
 }
 
-func TestDurableStore_LifecycleEnvelopeStrictlyAuthorizesOnlyActiveCompatibilityShape(t *testing.T) {
+func TestDurableStore_LifecycleEnvelopePreservesMissingTerminalAndCorruptStates(t *testing.T) {
 	validTimestamp := `"updated_at":"2026-08-02T00:00:00Z"`
 	for _, tc := range []struct {
-		name  string
-		bytes []byte
+		name    string
+		present bool
+		bytes   []byte
+		want    error
 	}{
-		{name: "terminal empty pointer", bytes: []byte(`{"schema":1,"revision_id":"",` + validTimestamp + `}`)},
-		{name: "retired marker", bytes: []byte(`{"schema":1,"revision_id":"active","retired":true,` + validTimestamp + `}`)},
-		{name: "unknown field", bytes: []byte(`{"schema":1,"revision_id":"active","authority":true,` + validTimestamp + `}`)},
-		{name: "trailing document", bytes: []byte(`{"schema":1,"revision_id":"active",` + validTimestamp + `}{}`)},
-		{name: "future schema", bytes: []byte(`{"schema":2,"revision_id":"active",` + validTimestamp + `}`)},
-		{name: "whitespace revision", bytes: []byte(`{"schema":1,"revision_id":" active ",` + validTimestamp + `}`)},
-		{name: "malformed", bytes: []byte(`{"schema":1`)},
-		{name: "oversized", bytes: []byte(strings.Repeat("x", sessionoverlay.MaxAgentLifecycleFenceBytes+1))},
+		{name: "missing", want: sessionoverlay.ErrAgentLifecycleInactive},
+		{name: "terminal empty pointer", present: true, bytes: []byte(`{"schema":1,"revision_id":"",` + validTimestamp + `}`), want: agentcfg.ErrAgentRetired},
+		{name: "unknown retired marker", present: true, bytes: []byte(`{"schema":1,"revision_id":"active","retired":true,` + validTimestamp + `}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "unknown field", present: true, bytes: []byte(`{"schema":1,"revision_id":"active","authority":true,` + validTimestamp + `}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "trailing document", present: true, bytes: []byte(`{"schema":1,"revision_id":"active",` + validTimestamp + `}{}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "future schema", present: true, bytes: []byte(`{"schema":2,"revision_id":"active",` + validTimestamp + `}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "whitespace revision", present: true, bytes: []byte(`{"schema":1,"revision_id":" active ",` + validTimestamp + `}`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "malformed", present: true, bytes: []byte(`{"schema":1`), want: sessionoverlay.ErrAgentLifecycleCorrupt},
+		{name: "oversized", present: true, bytes: []byte(strings.Repeat("x", sessionoverlay.MaxAgentLifecycleFenceBytes+1)), want: sessionoverlay.ErrAgentLifecycleCorrupt},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := newDurableState(t)
 			id := durableID("session-a")
-			saveLifecycle(t, st, id, tc.bytes)
+			if tc.present {
+				saveLifecycle(t, st, id, tc.bytes)
+			}
 			store, err := sessionoverlay.NewDurableStore(st, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.SavePersonal(context.Background(), id, "agent-a", durableSkill("one"), "", ""); !errors.Is(err, sessionoverlay.ErrAgentLifecycleInactive) {
-				t.Fatalf("SavePersonal = %v, want ErrAgentLifecycleInactive", err)
+			operations := []struct {
+				name string
+				run  func() error
+			}{
+				{name: "save", run: func() error {
+					_, err := store.SavePersonal(context.Background(), id, "agent-a", durableSkill("one"), "", "")
+					return err
+				}},
+				{name: "load", run: func() error { _, _, err := store.LoadPersonal(context.Background(), id, "agent-a", "one"); return err }},
+				{name: "delete", run: func() error { _, err := store.DeletePersonal(context.Background(), id, "agent-a", "one"); return err }},
+			}
+			for _, operation := range operations {
+				if err := operation.run(); !errors.Is(err, tc.want) {
+					t.Errorf("%s = %v, want %v", operation.name, err, tc.want)
+				}
 			}
 		})
 	}
@@ -175,6 +255,31 @@ func TestDurableStore_LifecycleEnvelopeStrictlyAuthorizesOnlyActiveCompatibility
 		}
 		if _, err := store.SavePersonal(context.Background(), id, "agent-a", durableSkill("one"), "", ""); err != nil {
 			t.Fatalf("known active compatibility shape refused: %v", err)
+		}
+	}
+}
+
+func TestDurableStore_ReservedAgentConfigUserRejectedAtEveryPersonalBoundary(t *testing.T) {
+	st := newDurableState(t)
+	store, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: agentcfg.ReservedAgentConfigUser, SessionID: "session-a"}}
+	operations := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "save", run: func() error {
+			_, err := store.SavePersonal(context.Background(), id, "agent-a", durableSkill("one"), "", "")
+			return err
+		}},
+		{name: "load", run: func() error { _, _, err := store.LoadPersonal(context.Background(), id, "agent-a", "one"); return err }},
+		{name: "delete", run: func() error { _, err := store.DeletePersonal(context.Background(), id, "agent-a", "one"); return err }},
+	}
+	for _, operation := range operations {
+		if err := operation.run(); !errors.Is(err, agentcfg.ErrReservedUser) {
+			t.Errorf("%s = %v, want ErrReservedUser", operation.name, err)
 		}
 	}
 }
@@ -592,32 +697,37 @@ func TestDurableStore_LoadPersonalHonorsCancellationAndDeadlineOnAttempts(t *tes
 
 func TestDurableStore_ConcurrentIsolation(t *testing.T) {
 	baseline := runtime.NumGoroutine()
-	st := newDurableState(t)
-	store, err := sessionoverlay.NewDurableStore(st, nil)
+	base := newDurableState(t)
+	activate(t, base, durableID("seed"))
+	const n = 128
+	barrier := newContextEntryBarrierStore(base, n)
+	store, err := sessionoverlay.NewDurableStore(barrier, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	activate(t, st, durableID("seed"))
-	const n = 128
 	errs := make(chan error, n)
 	var wg sync.WaitGroup
+	contexts := make([]context.Context, n)
+	cancels := make([]context.CancelFunc, n)
+	for i := range n {
+		contexts[i], cancels[i] = context.WithCancel(withEntryToken(context.Background(), i))
+	}
 	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			id := durableID(fmt.Sprintf("session-%03d", i))
 			name := fmt.Sprintf("skill-%03d", i)
-			ctx := context.Background()
-			if i%2 == 0 {
-				canceled, cancel := context.WithCancel(ctx)
-				cancel()
-				if _, err := store.SavePersonal(canceled, id, "agent-a", durableSkill(name), "", ""); !errors.Is(err, context.Canceled) {
-					errs <- fmt.Errorf("session %d canceled write = %w", i, err)
+			ctx := contexts[i]
+			if _, err := store.SavePersonal(ctx, id, "agent-a", durableSkill(name), "", ""); err != nil {
+				if i%2 == 0 && errors.Is(err, context.Canceled) {
+					return
 				}
+				errs <- fmt.Errorf("session %d save: %w", i, err)
 				return
 			}
-			if _, err := store.SavePersonal(ctx, id, "agent-a", durableSkill(name), "", ""); err != nil {
-				errs <- err
+			if i%2 == 0 {
+				errs <- fmt.Errorf("session %d canceled write completed", i)
 				return
 			}
 			got, found, err := store.LoadPersonal(ctx, id, "agent-a", name)
@@ -626,18 +736,40 @@ func TestDurableStore_ConcurrentIsolation(t *testing.T) {
 			}
 		}(i)
 	}
+	barrier.waitForAll(t)
+	for i := 0; i < n; i += 2 {
+		cancels[i]()
+	}
+	barrier.releaseAll()
 	wg.Wait()
+	for _, cancel := range cancels {
+		cancel()
+	}
 	close(errs)
 	for err := range errs {
 		t.Error(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for runtime.NumGoroutine() > baseline+2 && time.Now().Before(deadline) {
-		runtime.Gosched()
+	if got := barrier.maximumOverlap(); got != n {
+		t.Errorf("actual durable-store overlap = %d, want %d", got, n)
 	}
-	if got := runtime.NumGoroutine(); got > baseline+2 {
-		t.Errorf("goroutine baseline not restored: got=%d baseline=%d", got, baseline)
+	for i := range n {
+		id := durableID(fmt.Sprintf("session-%03d", i))
+		name := fmt.Sprintf("skill-%03d", i)
+		record, found, err := store.LoadPersonal(context.Background(), id, "agent-a", name)
+		if err != nil {
+			t.Fatalf("verify session %d: %v", i, err)
+		}
+		if i%2 == 0 {
+			if found {
+				t.Errorf("canceled session %d persisted %+v", i, record)
+			}
+			continue
+		}
+		if !found || record.CanonicalName != name || record.Skill.Name != name {
+			t.Errorf("session %d identity bleed: found=%v record=%+v", i, found, record)
+		}
 	}
+	assertGoroutinesRestored(t, baseline)
 }
 
 type saveIfBarrierStore struct {
@@ -817,7 +949,7 @@ func TestCutoverController_MalformedLegacyRowsBlockStateOnly(t *testing.T) {
 		{name: "trailing document", id: durableID("trailing"), bytes: append(append([]byte(nil), valid...), []byte(`{}`)...)},
 		{name: "oversized", id: durableID("oversized"), bytes: []byte(strings.Repeat("x", sessionoverlay.MaxLegacySessionOverlayRecordBytes+1))},
 		{name: "reserved control user", id: identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "__agentcfg__", SessionID: "ordinary"}}, bytes: valid},
-		{name: "reserved control session", id: identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "__session_personal_cutover__"}}, bytes: valid},
+		{name: "exact reserved control identity", id: identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "__agentcfg__", SessionID: "__session_personal_cutover__"}}, bytes: valid},
 		{name: "noncanonical overlay set", id: durableID("duplicate"), bytes: []byte(`{"schema":1,"overlay":{"personal_skills":["same","same"]},"updated_at":"2026-08-01T00:00:00Z"}`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -842,6 +974,32 @@ func TestCutoverController_MalformedLegacyRowsBlockStateOnly(t *testing.T) {
 				t.Fatalf("Mode after rejected row = (%q, %v), want dual_read", mode, err)
 			}
 		})
+	}
+}
+
+func TestCutoverController_OrdinaryUserMayUseCutoverSessionSentinel(t *testing.T) {
+	st := newDurableState(t)
+	declaration := config.SessionPersonalCutoverTenant{TenantID: "tenant", Epoch: "epoch", RosterDigest: "digest", LegacyWritersDrained: true}
+	controller, err := sessionoverlay.NewCutoverController(st, []config.SessionPersonalCutoverTenant{declaration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "ordinary-user", SessionID: "__session_personal_cutover__"}}
+	if err := st.Save(context.Background(), state.StateRecord{
+		ID:       state.NewEventID(),
+		Identity: id,
+		Kind:     sessionoverlay.LegacyOverlayKind("agent-a"),
+		Bytes:    []byte(`{"schema":1,"overlay":{},"updated_at":"2026-08-01T00:00:00Z"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	migrator := &recordingMigrator{}
+	mode, err := controller.Advance(context.Background(), "tenant", 8, migrator)
+	if err != nil || mode != sessionoverlay.CutoverStateOnly {
+		t.Fatalf("Advance ordinary sentinel session = (%q, %v)", mode, err)
+	}
+	if len(migrator.copied) != 1 || len(migrator.verified) != 1 {
+		t.Fatalf("ordinary sentinel session was not migrated: copied=%v verified=%v", migrator.copied, migrator.verified)
 	}
 }
 
@@ -1043,59 +1201,86 @@ func TestCutoverController_TenantIDsAreExactOpaqueKeys(t *testing.T) {
 
 func TestCutoverController_ConcurrentReuseIdentityCancellationAndLeak(t *testing.T) {
 	baseline := runtime.NumGoroutine()
-	st := newDurableState(t)
-	declarations := []config.SessionPersonalCutoverTenant{
-		{TenantID: "TenantA", Epoch: "upper", RosterDigest: "upper-digest", LegacyWritersDrained: true},
-		{TenantID: "tenanta", Epoch: "lower", RosterDigest: "lower-digest", LegacyWritersDrained: false},
+	base := newDurableState(t)
+	const n = 128
+	declarations := make([]config.SessionPersonalCutoverTenant, n)
+	for i := range n {
+		declarations[i] = config.SessionPersonalCutoverTenant{
+			TenantID:             fmt.Sprintf("tenant-%03d", i),
+			Epoch:                fmt.Sprintf("epoch-%03d", i),
+			RosterDigest:         fmt.Sprintf("digest-%03d", i),
+			LegacyWritersDrained: true,
+		}
 	}
-	controller, err := sessionoverlay.NewCutoverController(st, declarations)
+	seed, err := sessionoverlay.NewCutoverController(base, declarations)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode, err := controller.Advance(context.Background(), "TenantA", 8, &recordingMigrator{}); err != nil || mode != sessionoverlay.CutoverStateOnly {
-		t.Fatalf("setup Advance = (%q, %v)", mode, err)
+	if err := seed.Ensure(context.Background()); err != nil {
+		t.Fatalf("seed cutover records: %v", err)
 	}
-	const n = 128
+	barrier := newContextEntryBarrierStore(base, n)
+	controller, err := sessionoverlay.NewCutoverController(barrier, declarations)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
+	contexts := make([]context.Context, n)
+	cancels := make([]context.CancelFunc, n)
+	for i := range n {
+		contexts[i], cancels[i] = context.WithCancel(withEntryToken(context.Background(), i))
+	}
 	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if i%2 == 0 {
-				ctx, cancel := context.WithCancel(context.Background())
-				cancel()
-				if _, err := controller.Mode(ctx, "TenantA"); !errors.Is(err, context.Canceled) {
-					errs <- fmt.Errorf("canceled Mode %d = %w", i, err)
+			tenantID := declarations[i].TenantID
+			mode, err := controller.Advance(contexts[i], tenantID, 8, &recordingMigrator{})
+			if err != nil {
+				if i%2 == 0 && errors.Is(err, context.Canceled) {
+					return
 				}
+				errs <- fmt.Errorf("Advance(%q): %w", tenantID, err)
 				return
 			}
-			tenant := "TenantA"
-			want := sessionoverlay.CutoverStateOnly
-			if i%4 == 3 {
-				tenant = "tenanta"
-				want = sessionoverlay.CutoverDualRead
-			}
-			mode, err := controller.Mode(context.Background(), tenant)
-			if err != nil {
-				errs <- fmt.Errorf("Mode(%q): %w", tenant, err)
-			} else if mode != want {
-				errs <- fmt.Errorf("Mode(%q) = %q, want %q", tenant, mode, want)
+			if i%2 == 0 {
+				errs <- fmt.Errorf("canceled Advance(%q) completed", tenantID)
+			} else if mode != sessionoverlay.CutoverStateOnly {
+				errs <- fmt.Errorf("Advance(%q) = %q, want state_only", tenantID, mode)
 			}
 		}(i)
 	}
+	barrier.waitForAll(t)
+	for i := 0; i < n; i += 2 {
+		cancels[i]()
+	}
+	barrier.releaseAll()
 	wg.Wait()
+	for _, cancel := range cancels {
+		cancel()
+	}
 	close(errs)
 	for err := range errs {
 		t.Error(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for runtime.NumGoroutine() > baseline+2 && time.Now().Before(deadline) {
-		runtime.Gosched()
+	if got := barrier.maximumOverlap(); got != n {
+		t.Errorf("actual cutover-controller overlap = %d, want %d", got, n)
 	}
-	if got := runtime.NumGoroutine(); got > baseline+2 {
-		t.Errorf("goroutine baseline not restored: got=%d baseline=%d", got, baseline)
+	for i, declaration := range declarations {
+		mode, err := controller.Mode(context.Background(), declaration.TenantID)
+		if err != nil {
+			t.Fatalf("verify Mode(%q): %v", declaration.TenantID, err)
+		}
+		want := sessionoverlay.CutoverStateOnly
+		if i%2 == 0 {
+			want = sessionoverlay.CutoverDualRead
+		}
+		if mode != want {
+			t.Errorf("Mode(%q) = %q, want %q", declaration.TenantID, mode, want)
+		}
 	}
+	assertGoroutinesRestored(t, baseline)
 }
 
 func TestCutoverController_ExactScopeAndMismatchedRecordFailSafe(t *testing.T) {

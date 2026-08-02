@@ -68,6 +68,11 @@ var (
 	// to the reserved internal sentinel ("__agentcfg__"); fails closed so the
 	// per-user key space can never alias onto the agent-level chain.
 	ErrReservedUser = errors.New("agentcfg: user id collides with the reserved internal slot")
+	// ErrAgentRetired — the durable lifecycle slot is a valid terminal
+	// tombstone. Callers must preserve this distinction from an absent agent
+	// and from a malformed lifecycle record so Protocol can map it to the
+	// canonical agent_retired response when that surface lands.
+	ErrAgentRetired = errors.New("agentcfg: agent is retired")
 	// ErrRevisionConflict — a conditional write declared an expected
 	// content hash (SetOptions.ExpectedContentHash) and the agent's active
 	// revision no longer carries it, or there is no active revision at all.

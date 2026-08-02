@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -54,6 +57,30 @@ func TestStore_IdentityRequired(t *testing.T) {
 	}
 	if _, err := s.SetUserPrompt(ctx, quad("t", "u", "s"), "", "x"); !errors.Is(err, sessionoverlay.ErrIdentityRequired) {
 		t.Fatalf("empty agent id should fail closed, got %v", err)
+	}
+}
+
+func TestStore_ReservedAgentConfigUserRejectedAtEveryControlBoundary(t *testing.T) {
+	s := newOverlay(t)
+	ctx := context.Background()
+	id := quad("t", agentcfg.ReservedAgentConfigUser, "ordinary-session")
+	operations := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "get", run: func() error { _, _, err := s.Get(ctx, id, overlayAgentID); return err }},
+		{name: "set prompt", run: func() error { _, err := s.SetUserPrompt(ctx, id, overlayAgentID, "prompt"); return err }},
+		{name: "set disables", run: func() error {
+			_, err := s.SetSourceDisables(ctx, id, overlayAgentID, []string{"server"}, nil)
+			return err
+		}},
+		{name: "add personal", run: func() error { _, err := s.AddPersonalSkill(ctx, id, overlayAgentID, "skill"); return err }},
+		{name: "remove personal", run: func() error { _, err := s.RemovePersonalSkill(ctx, id, overlayAgentID, "skill"); return err }},
+	}
+	for _, operation := range operations {
+		if err := operation.run(); !errors.Is(err, agentcfg.ErrReservedUser) {
+			t.Errorf("%s = %v, want ErrReservedUser", operation.name, err)
+		}
 	}
 }
 
@@ -144,19 +171,37 @@ func TestStore_CrossSessionIsolation(t *testing.T) {
 // store and asserts no cross-session bleed under -race (the concurrent-reuse
 // contract + §6 cross-session isolation).
 func TestStore_ConcurrentReuse(t *testing.T) {
-	s := newOverlay(t)
-	const n = 120
+	baseline := runtime.NumGoroutine()
+	base := newState(t)
+	barrier := newContextEntryBarrierStore(base, 128)
+	s, err := sessionoverlay.NewStore(barrier, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 128
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
+	contexts := make([]context.Context, n)
+	cancels := make([]context.CancelFunc, n)
+	for i := range n {
+		contexts[i], cancels[i] = context.WithCancel(withEntryToken(context.Background(), i))
+	}
 	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			ctx := context.Background()
+			ctx := contexts[i]
 			id := quad("t", "u", fmt.Sprintf("sess-%d", i))
 			want := fmt.Sprintf("prompt-%d", i)
 			if _, err := s.SetUserPrompt(ctx, id, overlayAgentID, want); err != nil {
-				errs <- err
+				if i%2 == 0 && errors.Is(err, context.Canceled) {
+					return
+				}
+				errs <- fmt.Errorf("session %d set: %w", i, err)
+				return
+			}
+			if i%2 == 0 {
+				errs <- fmt.Errorf("session %d canceled write completed", i)
 				return
 			}
 			if _, err := s.AddPersonalSkill(ctx, id, overlayAgentID, fmt.Sprintf("sk-%d", i)); err != nil {
@@ -177,11 +222,39 @@ func TestStore_ConcurrentReuse(t *testing.T) {
 			}
 		}(i)
 	}
+	barrier.waitForAll(t)
+	for i := 0; i < n; i += 2 {
+		cancels[i]()
+	}
+	barrier.releaseAll()
 	wg.Wait()
+	for _, cancel := range cancels {
+		cancel()
+	}
 	close(errs)
 	for err := range errs {
 		t.Error(err)
 	}
+	if got := barrier.maximumOverlap(); got != n {
+		t.Errorf("actual store overlap = %d, want %d", got, n)
+	}
+	for i := range n {
+		id := quad("t", "u", fmt.Sprintf("sess-%d", i))
+		ov, found, err := s.Get(context.Background(), id, overlayAgentID)
+		if err != nil {
+			t.Fatalf("verify session %d: %v", i, err)
+		}
+		if i%2 == 0 {
+			if found {
+				t.Errorf("canceled session %d persisted %+v", i, ov)
+			}
+			continue
+		}
+		if !found || ov.UserPrompt != fmt.Sprintf("prompt-%d", i) || len(ov.PersonalSkills) != 1 || ov.PersonalSkills[0] != fmt.Sprintf("sk-%d", i) {
+			t.Errorf("session %d identity bleed: found=%v overlay=%+v", i, found, ov)
+		}
+	}
+	assertGoroutinesRestored(t, baseline)
 }
 
 func mustGet(t *testing.T, s sessionoverlay.Store, id identity.Quadruple) (sessionoverlay.Overlay, bool, error) {
@@ -205,14 +278,18 @@ func TestStore_ConcurrentSameSessionMutations_NoLostUpdate(t *testing.T) {
 	s := newOverlay(t)
 	ctx := context.Background()
 	id := quad("t", "u", "s")
-	const n = 120
+	const n = 128
 
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
+	entered := make(chan struct{}, n)
+	release := make(chan struct{})
 	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			entered <- struct{}{}
+			<-release
 			var err error
 			switch i % 3 {
 			case 0:
@@ -227,6 +304,10 @@ func TestStore_ConcurrentSameSessionMutations_NoLostUpdate(t *testing.T) {
 			}
 		}(i)
 	}
+	for range n {
+		<-entered
+	}
+	close(release)
 	wg.Wait()
 	close(errs)
 	for err := range errs {
@@ -243,10 +324,27 @@ func TestStore_ConcurrentSameSessionMutations_NoLostUpdate(t *testing.T) {
 	if o.UserPrompt == "" {
 		t.Error("user prompt lost under concurrent same-session mutation (lost-update race)")
 	}
-	if len(o.PersonalSkills) == 0 {
-		t.Error("personal skills lost under concurrent same-session mutation (lost-update race)")
+	wantPersonal := 0
+	for i := range n {
+		if i%3 == 0 {
+			wantPersonal++
+		}
+	}
+	if len(o.PersonalSkills) != wantPersonal {
+		t.Errorf("personal skills lost under concurrent same-session mutation: got=%d want=%d", len(o.PersonalSkills), wantPersonal)
 	}
 	if len(o.DisabledServers) == 0 {
 		t.Error("disabled servers lost under concurrent same-session mutation (lost-update race)")
+	}
+}
+
+func assertGoroutinesRestored(t *testing.T, baseline int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if got := runtime.NumGoroutine(); got > baseline {
+		t.Errorf("goroutine baseline not restored: got=%d baseline=%d", got, baseline)
 	}
 }

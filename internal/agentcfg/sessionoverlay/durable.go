@@ -65,9 +65,14 @@ var (
 	// present and refuses an overlay or personal-skill operation.
 	ErrSessionErased = errors.New("agentcfg/sessionoverlay: session is being erased or was erased")
 	// ErrAgentLifecycleInactive means the durable lifecycle slot is absent or
-	// not the active compatibility envelope. Session-owned state must never
-	// create authority for an unresolvable agent.
+	// otherwise unresolvable. Session-owned state must never create authority
+	// for an agent with no lifecycle record.
 	ErrAgentLifecycleInactive = errors.New("agentcfg/sessionoverlay: agent lifecycle is not active")
+	// ErrAgentLifecycleCorrupt means a lifecycle slot exists but its durable
+	// envelope is malformed, oversized, unknown, or otherwise incompatible.
+	// It must remain distinct from both an absent agent and a valid terminal
+	// tombstone so public callers fail loud instead of reporting retirement.
+	ErrAgentLifecycleCorrupt = errors.New("agentcfg/sessionoverlay: agent lifecycle record is corrupt")
 	// ErrPersonalRecordInvalid means a stored personal record did not prove the
 	// identity encoded by its key and is therefore unsafe to use.
 	ErrPersonalRecordInvalid = errors.New("agentcfg/sessionoverlay: personal skill record invalid")
@@ -162,8 +167,8 @@ func (s *DurableStore) LoadPersonal(ctx context.Context, id identity.Quadruple, 
 		if fences.erased() {
 			return PersonalSkillRecord{}, false, ErrSessionErased
 		}
-		if !fences.active {
-			return PersonalSkillRecord{}, false, ErrAgentLifecycleInactive
+		if err := fences.lifecycleError(); err != nil {
+			return PersonalSkillRecord{}, false, err
 		}
 		record, found, err := s.loadPersonal(ctx, id, kind, agentID, name)
 		if err != nil {
@@ -211,8 +216,8 @@ func (s *DurableStore) SavePersonal(ctx context.Context, id identity.Quadruple, 
 	if fences.erased() {
 		return PersonalSkillRecord{}, ErrSessionErased
 	}
-	if !fences.active {
-		return PersonalSkillRecord{}, ErrAgentLifecycleInactive
+	if err := fences.lifecycleError(); err != nil {
+		return PersonalSkillRecord{}, err
 	}
 	target, err := slotExpectation(ctx, s.state, durableSessionQuad(id), kind)
 	if err != nil {
@@ -263,8 +268,8 @@ func (s *DurableStore) DeletePersonal(ctx context.Context, id identity.Quadruple
 	if fences.erased() {
 		return PersonalSkillRecord{}, ErrSessionErased
 	}
-	if !fences.active {
-		return PersonalSkillRecord{}, ErrAgentLifecycleInactive
+	if err := fences.lifecycleError(); err != nil {
+		return PersonalSkillRecord{}, err
 	}
 	target, err := slotExpectation(ctx, s.state, durableSessionQuad(id), kind)
 	if err != nil {
@@ -308,7 +313,10 @@ func (s *DurableStore) exactPersonal(ctx context.Context, id identity.Quadruple,
 	if err != nil {
 		return PersonalSkillRecord{}, false, err
 	}
-	if !after.active || after.erased() || !before.equal(after) {
+	if err := after.lifecycleError(); err != nil {
+		return PersonalSkillRecord{}, false, err
+	}
+	if after.erased() || !before.equal(after) {
 		return PersonalSkillRecord{}, false, nil
 	}
 	return decodePersonal(rec.Bytes, agentID, canonicalName)
@@ -417,7 +425,7 @@ type fences struct {
 	lifecycle state.SlotExpectation
 	pending   state.SlotExpectation
 	tombstone state.SlotExpectation
-	active    bool
+	state     lifecycleEnvelopeState
 }
 
 func loadFences(ctx context.Context, st state.StateStore, id identity.Quadruple, agentID string) (fences, error) {
@@ -451,7 +459,11 @@ func loadFences(ctx context.Context, st state.StateStore, id identity.Quadruple,
 	if err != nil {
 		return fences{}, err
 	}
-	return fences{lifecycle: lifecycle, pending: pending, tombstone: tombstone, active: activeLifecycleEnvelope(lifecycleBytes)}, nil
+	lifecycleState := lifecycleEnvelopeMissing
+	if lifecycle.ExpectedEventID != "" {
+		lifecycleState = decodeLifecycleEnvelope(lifecycleBytes)
+	}
+	return fences{lifecycle: lifecycle, pending: pending, tombstone: tombstone, state: lifecycleState}, nil
 }
 
 func (f fences) expectations() []state.SlotExpectation {
@@ -461,7 +473,21 @@ func (f fences) erased() bool {
 	return f.pending.ExpectedEventID != "" || f.tombstone.ExpectedEventID != ""
 }
 func (f fences) equal(other fences) bool {
-	return f.active == other.active && f.lifecycle.ExpectedEventID == other.lifecycle.ExpectedEventID && f.pending.ExpectedEventID == other.pending.ExpectedEventID && f.tombstone.ExpectedEventID == other.tombstone.ExpectedEventID
+	return f.state == other.state && f.lifecycle.ExpectedEventID == other.lifecycle.ExpectedEventID && f.pending.ExpectedEventID == other.pending.ExpectedEventID && f.tombstone.ExpectedEventID == other.tombstone.ExpectedEventID
+}
+func (f fences) lifecycleError() error {
+	switch f.state {
+	case lifecycleEnvelopeActive:
+		return nil
+	case lifecycleEnvelopeMissing:
+		return ErrAgentLifecycleInactive
+	case lifecycleEnvelopeTerminal:
+		return agentcfg.ErrAgentRetired
+	case lifecycleEnvelopeInvalid:
+		return ErrAgentLifecycleCorrupt
+	default:
+		return fmt.Errorf("%w: unknown lifecycle classification %d", ErrAgentLifecycleCorrupt, f.state)
+	}
 }
 func (f fences) stable(ctx context.Context, st state.StateStore) (bool, error) {
 	for _, before := range f.expectations() {
@@ -501,20 +527,11 @@ func slotExpectationWithBytes(ctx context.Context, st state.StateStore, q identi
 type lifecycleEnvelopeState uint8
 
 const (
-	lifecycleEnvelopeInvalid lifecycleEnvelopeState = iota
+	lifecycleEnvelopeMissing lifecycleEnvelopeState = iota
 	lifecycleEnvelopeActive
 	lifecycleEnvelopeTerminal
+	lifecycleEnvelopeInvalid
 )
-
-// activeLifecycleEnvelope is the compatibility reader for the established
-// active-pointer envelope. Only one bounded JSON document containing the
-// known schema/revision/timestamp fields can establish active authority.
-// Empty compatible pointers are terminal; malformed, retired-shaped, future,
-// unknown-field, oversized, and trailing-document records are invalid. Both
-// terminal and invalid states fail closed here.
-func activeLifecycleEnvelope(bytes []byte) bool {
-	return decodeLifecycleEnvelope(bytes) == lifecycleEnvelopeActive
-}
 
 func decodeLifecycleEnvelope(data []byte) lifecycleEnvelopeState {
 	if len(data) == 0 || len(data) > MaxAgentLifecycleFenceBytes {
@@ -558,6 +575,9 @@ func durableSessionQuad(id identity.Quadruple) identity.Quadruple {
 func validateSessionInput(id identity.Quadruple, agentID string) error {
 	if err := identity.Validate(id.Identity); err != nil {
 		return fmt.Errorf("%w: %w", ErrIdentityRequired, err)
+	}
+	if id.UserID == agentcfg.ReservedAgentConfigUser {
+		return fmt.Errorf("%w: user_id=%q", agentcfg.ErrReservedUser, id.UserID)
 	}
 	if strings.TrimSpace(agentID) == "" {
 		return fmt.Errorf("%w: agent id is empty", ErrIdentityRequired)
@@ -835,7 +855,7 @@ func validateLegacyOverlayCandidate(candidate state.StateRecord, tenantID string
 	if err := state.ValidateRecord(candidate); err != nil {
 		return fmt.Errorf("%w: record shape: %w", ErrLegacyOverlayInvalid, err)
 	}
-	if candidate.Identity.TenantID != tenantID || candidate.Identity.RunID != "" || candidate.Identity.UserID == cutoverUser || candidate.Identity.SessionID == cutoverSession {
+	if candidate.Identity.TenantID != tenantID || candidate.Identity.RunID != "" || candidate.Identity.UserID == cutoverUser {
 		return fmt.Errorf("%w: legacy identity must be the exact tenant session scope with empty run id", ErrLegacyOverlayInvalid)
 	}
 	if len(candidate.Bytes) == 0 || len(candidate.Bytes) > MaxLegacySessionOverlayRecordBytes {
