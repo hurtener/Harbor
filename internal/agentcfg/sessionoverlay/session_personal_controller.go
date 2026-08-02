@@ -12,6 +12,17 @@ import (
 	"github.com/hurtener/Harbor/internal/state"
 )
 
+// MaxSessionPersonalResponseSkills bounds every session-personal response and
+// its dynamic overlay-name projection. It matches the per-run resolver's
+// owned-record admission ceiling, keeping one session from turning a
+// controller read into an unbounded allocation.
+const MaxSessionPersonalResponseSkills = skills.SnapshotSemanticCandidateCap
+
+// ErrSessionSkillResultLimit reports that an authoritative session-personal
+// tier exceeds the bounded response contract. Callers receive no partial or
+// silently truncated view.
+var ErrSessionSkillResultLimit = errors.New("agentcfg/sessionoverlay: session skill result exceeds response limit")
+
 // SessionPersonalController is the production read and mutation authority for
 // one selected agent's session-personal skill tier. It is immutable after
 // construction and safe for concurrent reuse.
@@ -196,6 +207,9 @@ func (c *SessionPersonalController) loadLegacyTier(ctx context.Context, id ident
 	if err != nil {
 		return nil, err
 	}
+	if len(overlay.PersonalSkills) > MaxSessionPersonalResponseSkills {
+		return nil, sessionSkillResultLimitError(len(overlay.PersonalSkills))
+	}
 	byName := make(map[string]skills.Skill, len(overlay.PersonalSkills))
 	for _, name := range overlay.PersonalSkills {
 		if err := ctx.Err(); err != nil {
@@ -227,9 +241,12 @@ func (c *SessionPersonalController) loadOwnedTier(ctx context.Context, id identi
 		return nil, err
 	}
 	q := durableSessionQuad(id)
-	records, err := c.personal.state.ListKindForIdentity(ctx, q, prefix)
+	records, err := c.personal.state.ListKindForIdentityBounded(ctx, q, prefix, MaxSessionPersonalResponseSkills+1)
 	if err != nil {
 		return nil, fmt.Errorf("%w: list owned personal records: %w", ErrStateUnavailable, err)
+	}
+	if len(records) > MaxSessionPersonalResponseSkills {
+		return nil, sessionSkillResultLimitError(len(records))
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].Kind < records[j].Kind })
 	byName := make(map[string]skills.Skill, len(records))
@@ -258,6 +275,10 @@ func (c *SessionPersonalController) loadOwnedTier(ctx context.Context, id identi
 		byName[personal.CanonicalName] = cloned
 	}
 	return sortedControllerSkills(byName), nil
+}
+
+func sessionSkillResultLimitError(count int) error {
+	return fmt.Errorf("%w: %d records, maximum is %d", ErrSessionSkillResultLimit, count, MaxSessionPersonalResponseSkills)
 }
 
 func decodeControllerPersonal(record state.StateRecord, agentID string) (PersonalSkillRecord, error) {

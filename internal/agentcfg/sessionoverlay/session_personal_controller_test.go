@@ -30,6 +30,24 @@ type sessionPersonalControllerContract interface {
 
 var _ sessionPersonalControllerContract = (*sessionoverlay.SessionPersonalController)(nil)
 
+// boundedControllerStore makes an accidental unbounded controller enumeration
+// fail the test while preserving all other StateStore behavior.
+type boundedControllerStore struct {
+	state.StateStore
+	boundedLimits  []int
+	unboundedCalls int
+}
+
+func (s *boundedControllerStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
+	s.unboundedCalls++
+	return nil, errors.New("controller must use bounded identity enumeration")
+}
+
+func (s *boundedControllerStore) ListKindForIdentityBounded(ctx context.Context, id identity.Quadruple, prefix string, limit int) ([]state.StateRecord, error) {
+	s.boundedLimits = append(s.boundedLimits, limit)
+	return s.StateStore.ListKindForIdentityBounded(ctx, id, prefix, limit)
+}
+
 type controllerModeReader struct {
 	mode sessionoverlay.CutoverMode
 	err  error
@@ -145,6 +163,54 @@ func TestSessionPersonalController_DualReadExactAgentTripleAndImmutableBodies(t 
 		if err != nil || len(other) != 0 {
 			t.Fatalf("cross-tuple %+v SessionSkills = (%v, %v), want empty", otherTuple, skillNames(other), err)
 		}
+	}
+}
+
+func TestSessionPersonalController_ResponseLimitFailsLoudlyWithoutUnboundedEnumeration(t *testing.T) {
+	base := newDurableState(t)
+	id := durableID("controller-response-limit")
+	activateAgent(t, base, id, "agent-a")
+	st := &boundedControllerStore{StateStore: base}
+	controller, personal := newSessionPersonalController(t, st, sessionoverlay.CutoverStateOnly, &exactLegacyReader{})
+
+	for i := 0; i <= sessionoverlay.MaxSessionPersonalResponseSkills; i++ {
+		if _, err := personal.SavePersonal(t.Context(), id, "agent-a", durableSkill(fmt.Sprintf("owned-%03d", i)), "", ""); err != nil {
+			t.Fatalf("seed owned record %d: %v", i, err)
+		}
+	}
+
+	if _, err := controller.SessionSkills(t.Context(), id, "agent-a"); !errors.Is(err, sessionoverlay.ErrSessionSkillResultLimit) {
+		t.Fatalf("SessionSkills error = %v, want ErrSessionSkillResultLimit", err)
+	}
+	if st.unboundedCalls != 0 {
+		t.Fatalf("unbounded identity enumeration calls = %d, want 0", st.unboundedCalls)
+	}
+	if got, want := st.boundedLimits, sessionoverlay.MaxSessionPersonalResponseSkills+1; len(got) != 1 || got[0] != want {
+		t.Fatalf("bounded enumeration limits = %v, want one call at %d", got, want)
+	}
+}
+
+func TestSessionPersonalController_DualReadResponseLimitRejectsBeforeLegacyMaterialization(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("legacy-response-limit")
+	activateAgent(t, st, id, "agent-a")
+	names := make([]string, 0, sessionoverlay.MaxSessionPersonalResponseSkills+1)
+	for i := 0; i <= sessionoverlay.MaxSessionPersonalResponseSkills; i++ {
+		names = append(names, fmt.Sprintf("legacy-%03d", i))
+	}
+	legacyID := id
+	legacyID.RunID = ""
+	if err := st.Save(t.Context(), legacyCandidate(t, legacyID, "agent-a", names...)); err != nil {
+		t.Fatalf("save oversized legacy overlay: %v", err)
+	}
+	reader := &exactLegacyReader{}
+	controller, _ := newSessionPersonalController(t, st, sessionoverlay.CutoverDualRead, reader)
+
+	if _, err := controller.SessionSkills(t.Context(), id, "agent-a"); !errors.Is(err, sessionoverlay.ErrSessionSkillResultLimit) {
+		t.Fatalf("SessionSkills error = %v, want ErrSessionSkillResultLimit", err)
+	}
+	if reader.scopeCalls != 0 {
+		t.Fatalf("legacy exact-scope reads = %d, want 0 after oversized overlay rejection", reader.scopeCalls)
 	}
 }
 

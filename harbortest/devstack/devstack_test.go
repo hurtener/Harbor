@@ -12,6 +12,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -165,6 +166,19 @@ func TestAssemble_DefaultOpts_BuildsEveryLayer(t *testing.T) {
 	}
 	if stack.Handler == nil {
 		t.Error("Handler nil")
+	}
+}
+
+func TestTryAssembleContext_CancelledFailsWithCallerContext(t *testing.T) {
+	cfg := minimalConfig(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	stack, err := devstack.TryAssembleContext(ctx, cfg, devstack.AssembleOpts{})
+	if stack != nil {
+		stack.Close()
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("TryAssembleContext error = %v, want context.Canceled", err)
 	}
 }
 

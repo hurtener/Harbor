@@ -474,6 +474,23 @@ func TestSessionSkills_ControllerSentinelsPassThrough(t *testing.T) {
 			t.Fatalf("list error = %v, want ErrSessionSkillReadUnstable", err)
 		}
 	})
+	t.Run("response limit list and dynamic projections", func(t *testing.T) {
+		controller := newSessionPersonalSkillController()
+		controller.listErr = sessionoverlay.ErrSessionSkillResultLimit
+		s, _, _, _ := sessionSvcWithController(t, controller)
+		if _, err := s.SessionSkillsList(ctx, prototypes.AgentConfigSessionSkillsListRequest{Identity: scope(), AgentID: testAgentID}); !errors.Is(err, sessionoverlay.ErrSessionSkillResultLimit) {
+			t.Fatalf("list error = %v, want ErrSessionSkillResultLimit", err)
+		}
+		if _, err := s.SessionSkillsUpsert(ctx, prototypes.AgentConfigSessionSkillsUpsertRequest{
+			Identity: scope(), AgentID: testAgentID,
+			Skill: prototypes.AgentConfigSkillInput{Name: "owned", Trigger: "t", Steps: []string{"s"}, Origin: "generated"},
+		}); !errors.Is(err, sessionoverlay.ErrSessionSkillResultLimit) {
+			t.Fatalf("upsert projection error = %v, want ErrSessionSkillResultLimit", err)
+		}
+		if _, err := s.SessionSkillsDelete(ctx, prototypes.AgentConfigSessionSkillsDeleteRequest{Identity: scope(), AgentID: testAgentID, Name: "owned"}); !errors.Is(err, sessionoverlay.ErrSessionSkillResultLimit) {
+			t.Fatalf("delete projection error = %v, want ErrSessionSkillResultLimit", err)
+		}
+	})
 }
 
 // TestSession_IdentityRequired proves an incomplete identity triple fails

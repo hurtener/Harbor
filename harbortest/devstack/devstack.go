@@ -77,6 +77,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -524,7 +525,7 @@ func (k *devKeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
 // package init exactly once regardless of how many importers).
 func Assemble(t *testing.T, cfg *config.Config, opts AssembleOpts) *DevStack {
 	t.Helper()
-	stack, err := assembleWith(cfg, opts)
+	stack, err := assembleWith(t.Context(), cfg, opts)
 	if err != nil {
 		if stack != nil {
 			stack.Close()
@@ -545,7 +546,10 @@ func Assemble(t *testing.T, cfg *config.Config, opts AssembleOpts) *DevStack {
 // Returns a partial DevStack on error so the caller's deferred Close
 // drains every subsystem that was successfully opened before the
 // failure (the assemble package carries the same contract).
-func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
+func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
+	if ctx == nil {
+		return nil, errors.New("assemble context is required")
+	}
 	if cfg == nil {
 		return nil, fmt.Errorf("cfg is required (call config.Load + Validate or build a minimal cfg by hand)")
 	}
@@ -570,7 +574,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	// exercising the SAME MetricsRegistry + bridge + Snapshot code path
 	// production runs (production resolves a metrics exporter through
 	// the §4.4 driver registry instead).
-	core, err := assemble.Assemble(context.Background(), cfg, assemble.Options{
+	core, err := assemble.Assemble(ctx, cfg, assemble.Options{
 		Logger:           opts.Logger,
 		LLMSnapshot:      opts.LLMConfigSnapshot,
 		PlannerOverride:  opts.PlannerOverride,
@@ -652,7 +656,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	var tenantPolicy *governance.TenantOverridePolicy
 	var setPosturePolicy *governance.SetPosturePolicy
 	if core.State != nil {
-		reg, regErr := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: core.State, Bus: bus})
+		reg, regErr := agentcfg.Open(ctx, agentcfg.Config{}, agentcfg.Deps{State: core.State, Bus: bus})
 		if regErr != nil {
 			return stack, fmt.Errorf("agent-config registry: %w", regErr)
 		}
@@ -672,7 +676,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		stack.closeFns = append(stack.closeFns, ovStore.Close)
 		if stack.Skills != nil {
 			authority, authorityErr := serve.NewSessionPersonalSkillAuthority(
-				context.Background(),
+				ctx,
 				core.State,
 				stack.Skills,
 				cfg.Skills.SessionPersonalCutover.Tenants,
@@ -865,7 +869,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
 			}
-			if startErr := driver.Start(context.Background()); startErr != nil {
+			if startErr := driver.Start(ctx); startErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver start: %w", startErr)
 			}
 			stack.RunLoopDriver = driver
@@ -981,7 +985,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				inferenceBrokerNames = concrete.BrokerNames()
 				stack.closeFns = append(stack.closeFns, concrete.Close)
 				if cfg.LLM.CredentialSource == "remote" {
-					if cErr := concrete.BootConnectPrimary(context.Background(), cfg.LLM.InferenceBroker); cErr != nil {
+					if cErr := concrete.BootConnectPrimary(ctx, cfg.LLM.InferenceBroker); cErr != nil {
 						return nil, fmt.Errorf("llm brokered primary: %w", cErr)
 					}
 				}

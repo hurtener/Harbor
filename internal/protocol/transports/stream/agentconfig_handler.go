@@ -1046,6 +1046,12 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// concurrent transition settles.
 		return protoerrors.CodeSessionSkillReadUnstable, http.StatusConflict,
 			m + ": session-skill read was unstable; retry after concurrent state settles"
+	case errors.Is(err, sessionoverlay.ErrSessionSkillResultLimit):
+		// Session-personal projections have a hard bounded response contract.
+		// Do not serialize a partial dynamic overlay or treat one tenant's
+		// oversized personal tier as a server fault.
+		return protoerrors.CodeRequestTooLarge, http.StatusRequestEntityTooLarge,
+			m + ": session-personal skill result exceeds the response limit"
 	case errors.Is(err, agentcfg.ErrRevisionNotFound), errors.Is(err, skills.ErrSkillNotFound):
 		return protoerrors.CodeNotFound, http.StatusNotFound,
 			m + ": " + err.Error()

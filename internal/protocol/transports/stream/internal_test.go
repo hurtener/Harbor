@@ -436,3 +436,13 @@ func TestClassifyAgentConfigError_SessionSkillCutoverStates409(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyAgentConfigError_SessionSkillResultLimit413(t *testing.T) {
+	code, status, _ := classifyAgentConfigError(
+		methods.MethodAgentConfigSessionSkillsList,
+		fmt.Errorf("wrapped: %w", sessionoverlay.ErrSessionSkillResultLimit),
+	)
+	if code != protoerrors.CodeRequestTooLarge || status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("classifyAgentConfigError = (%q, %d), want (%q, 413)", code, status, protoerrors.CodeRequestTooLarge)
+	}
+}

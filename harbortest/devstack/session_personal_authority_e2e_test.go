@@ -193,9 +193,10 @@ func runDevstackSkillSnapshot(t *testing.T, stack *DevStack, probe *devstackSkil
 // TestDevStack_RunSkillSnapshotAuthority_SelectedAgentEmptyMembershipAndRestart
 // assembles the real devstack graph twice over durable stores. It proves the
 // caller-selected agent, not the boot agent, supplies admin membership; the
-// Directory and all three skill tools consume one authority; an explicit empty
-// admin membership retains only the user/session personal tiers; and that
-// exact result survives process reconstruction.
+// Directory and all three skill tools consume one authority; agent and full
+// identity-triple foreign session rows cannot bleed into that view; an explicit
+// empty admin membership retains only the user/session personal tiers; and
+// that exact result survives process reconstruction.
 func TestDevStack_RunSkillSnapshotAuthority_SelectedAgentEmptyMembershipAndRestart(t *testing.T) {
 	root := t.TempDir()
 	cfg := devstackSessionCfg()
@@ -203,13 +204,17 @@ func TestDevStack_RunSkillSnapshotAuthority_SelectedAgentEmptyMembershipAndResta
 	cfg.Skills = config.SkillsConfig{
 		Driver: "localdb",
 		DSN:    filepath.Join(root, "skills.sqlite"),
-		SessionPersonalCutover: config.SessionPersonalCutoverConfig{Tenants: []config.SessionPersonalCutoverTenant{{
-			TenantID: DefaultDevTenant, Epoch: "phase-233a", RosterDigest: "empty-legacy-roster", LegacyWritersDrained: true,
-		}}},
+		SessionPersonalCutover: config.SessionPersonalCutoverConfig{Tenants: []config.SessionPersonalCutoverTenant{
+			{TenantID: DefaultDevTenant, Epoch: "phase-233a", RosterDigest: "empty-legacy-roster", LegacyWritersDrained: true},
+			{TenantID: "foreign-tenant", Epoch: "phase-233a", RosterDigest: "empty-legacy-roster", LegacyWritersDrained: true},
+		}},
 	}
 	id := identity.Identity{TenantID: DefaultDevTenant, UserID: DefaultDevUser, SessionID: DefaultDevSession}
 	q := identity.Quadruple{Identity: id}
-	const selectedAgent = "selected-snapshot-agent"
+	const (
+		selectedAgent = "selected-snapshot-agent"
+		otherAgent    = "foreign-snapshot-agent"
+	)
 	firstProbe := newDevstackSkillSnapshotProbe()
 	first := Assemble(t, cfg, AssembleOpts{PlannerOverride: firstProbe})
 	if first.SessionPersonalSkillAuthority == nil {
@@ -239,6 +244,29 @@ func TestDevStack_RunSkillSnapshotAuthority_SelectedAgentEmptyMembershipAndResta
 	if err := first.SessionPersonalSkillAuthority.Controller.UpsertSessionSkill(
 		t.Context(), q, selectedAgent, devstackAuthoritySkill("session-personal", skills.ScopeSession)); err != nil {
 		t.Fatalf("session personal upsert: %v", err)
+	}
+	foreignRows := []struct {
+		identity identity.Identity
+		agentID  string
+		name     string
+	}{
+		{identity: id, agentID: otherAgent, name: "foreign-agent-session"},
+		{identity: identity.Identity{TenantID: DefaultDevTenant, UserID: DefaultDevUser, SessionID: "foreign-session"}, agentID: selectedAgent, name: "foreign-session-personal"},
+		{identity: identity.Identity{TenantID: DefaultDevTenant, UserID: "foreign-user", SessionID: DefaultDevSession}, agentID: selectedAgent, name: "foreign-user-personal"},
+		{identity: identity.Identity{TenantID: "foreign-tenant", UserID: DefaultDevUser, SessionID: DefaultDevSession}, agentID: selectedAgent, name: "foreign-tenant-personal"},
+	}
+	for _, foreign := range foreignRows {
+		foreignQ := identity.Quadruple{Identity: foreign.identity}
+		if foreign.agentID != selectedAgent || foreign.identity.TenantID != DefaultDevTenant {
+			if _, err := first.AgentConfig.SetRevision(t.Context(), foreignQ, foreign.agentID, agentcfg.ConfigScopeAgent,
+				agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{}}}, agentcfg.SetOptions{}); err != nil {
+				t.Fatalf("foreign lifecycle %s/%s: %v", foreign.identity.TenantID, foreign.agentID, err)
+			}
+		}
+		if err := first.SessionPersonalSkillAuthority.Controller.UpsertSessionSkill(
+			t.Context(), foreignQ, foreign.agentID, devstackAuthoritySkill(foreign.name, skills.ScopeSession)); err != nil {
+			t.Fatalf("foreign session upsert %s: %v", foreign.name, err)
+		}
 	}
 	runDevstackSkillSnapshot(t, first, firstProbe, id, selectedAgent,
 		"selected-admin", "session-personal", "user-personal")
