@@ -395,8 +395,10 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 - **Coverage evidence:** sessionoverlay is 90.3%; LocalDB is 85.4%
   (`SearchSnapshot` 94.1%); the shared conformance harness is 86.7% in a
   combined profile across its real LocalDB happy paths and adversarial
-  contract-rejection self-tests. PostgreSQL remains measured by its
-  `HARBOR_PG_DSN` real-driver CI job.
+  contract-rejection self-tests. The `HARBOR_PG_DSN` service job now refuses a
+  skipped/no-match two-instance sessionoverlay Postgres race and enforces the
+  Postgres SkillStore's binding 85% package floor. That authoritative cloud
+  result is pending; no local Postgres execution is claimed.
 
 ### Phase 233b — Signed OAuth MCP capability registration (HA-50)
 

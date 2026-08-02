@@ -334,8 +334,11 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   `-coverpkg=./internal/skills/conformancetest` profile. The adversarial matrix
   injects contract violations and asserts the harness rejects each one, so its
   failure-reporting branches are exercised without accepting a broken driver.
-  PostgreSQL coverage remains CI-only: without `HARBOR_PG_DSN`, its
-  real-driver tests skip and direct local coverage is not representative.
+  PostgreSQL remains CI-only: without `HARBOR_PG_DSN`, its real-driver tests
+  skip and direct local coverage is not representative. The Postgres service
+  job now refuses a skipped/no-match two-instance sessionoverlay race and
+  enforces the SkillStore driver's binding 85% package floor; its authoritative
+  cloud result is pending.
 
 ## Dependencies
 
@@ -372,16 +375,18 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   skipped per maintainer process
 - [x] `make check-mirror` passes
 - [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [x] Coverage on touched packages >= stated target; sessionoverlay is 90.3%,
-  LocalDB is 85.4% (`SearchSnapshot` 94.1%), and the conformance harness is
-  86.7% across its real-driver and adversarial self-tests. PostgreSQL is
-  measured only in its real-driver CI job.
+- [ ] Coverage on touched packages >= stated target; local evidence is
+  sessionoverlay 90.3%, LocalDB 85.4% (`SearchSnapshot` 94.1%), and the
+  conformance harness 86.7% across its real-driver and adversarial self-tests.
+  The PostgreSQL >=85% cloud gate is configured and authoritative execution is
+  pending.
 - [x] If multi-isolation paths changed: cross-session isolation test passes
 - [x] Reusable overlay/resolver concurrent-reuse test passes — N>=100 shared
   invocations under `-race`, with no data races, context bleed, cancellation
   cross-talk, or goroutine leak
-- [x] Real-driver integration test covers identity, restart, erasure-ledger,
-  and condition-failed behavior
+- [ ] Real-driver integration test covers identity, restart, erasure-ledger,
+  and condition-failed behavior; SQLite and local compile/selection gates pass,
+  while authoritative execution of the Postgres two-instance leg is pending CI
 - [x] If new vocabulary: glossary updated
 - [x] If a brief finding was departed from: N/A; no brief departure is recorded
   above

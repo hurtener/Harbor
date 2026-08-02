@@ -25,6 +25,27 @@ assert_grep_present 'session_personal_cutover:' \
 assert_grep_present '^- No migration edits,' \
     'docs/plans/phase-233a-durable-session-overlay-personal-skills.md' \
     'phase 233a retains the no-migration-files design constraint'
+assert_grep_present 'TestRealDrivers_TwoIndependentSessionPersonalRaceContract[$]/[\^]postgres[$]' \
+    '.github/workflows/ci.yml' \
+    'phase 233a CI selects the exact two-instance Postgres race subtest'
+assert_grep_present 'PASS: TestRealDrivers_TwoIndependentSessionPersonalRaceContract/postgres' \
+    '.github/workflows/ci.yml' \
+    'phase 233a CI refuses a skipped or no-match Postgres race selection'
+assert_grep_present 'coverprofile="\$\{coverage_file\}"' \
+    '.github/workflows/ci.yml' \
+    'phase 233a CI measures the real Postgres SkillStore package'
+assert_grep_present 'minimum_coverage=85' \
+    '.github/workflows/ci.yml' \
+    'phase 233a CI enforces the binding Postgres SkillStore coverage floor'
+assert_grep_present 'CREATE SCHEMA' \
+    'internal/agentcfg/sessionoverlay/real_driver_two_instance_race_test.go' \
+    'phase 233a Postgres race allocates an isolated schema'
+assert_grep_present 'DROP SCHEMA .* CASCADE' \
+    'internal/agentcfg/sessionoverlay/real_driver_two_instance_race_test.go' \
+    'phase 233a Postgres race cleans its isolated schema'
+assert_grep_present 'freshSchema\(t, baseDSN\)' \
+    'internal/skills/drivers/postgres' \
+    'phase 233a Postgres SkillStore coverage uses per-test isolated schemas'
 
 # D-400 stores overlays, owned skills, and cutover progress in the existing
 # StateStore record envelope. A SQL migration for any of those names would be
