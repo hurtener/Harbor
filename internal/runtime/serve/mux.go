@@ -684,6 +684,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithAllowWireOAuthDescriptor(in.AllowWireOAuthDescriptor),
 			agentcfgprotocol.WithAllowWireInjection(in.AllowWireInjection),
 			agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(in.SignedOAuthMCPCapabilityAuthorities),
+			agentcfgprotocol.WithSignedOAuthMCPOperationState(in.State),
 		}
 		if in.MCPAttacher != nil {
 			if preparer, ok := in.MCPAttacher.(agentcfgprotocol.ConnectionPreparer); ok {

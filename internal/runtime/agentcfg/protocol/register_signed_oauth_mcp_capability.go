@@ -28,6 +28,9 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if s.preparer == nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
 	}
+	if s.signedOAuthMCPOperations == nil {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
+	}
 	providerPreparer, ok := s.providerInstaller.(SignedCapabilityProviderPreparer)
 	if !ok || providerPreparer == nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
@@ -75,14 +78,41 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
 
+	operationKey := agentcfg.SignedOAuthMCPReplayKey{
+		TenantID: id.TenantID, TrustAnchorName: broker, Issuer: claims.Issuer,
+		KeyID: kid, JTI: claims.ID,
+	}
+	op, _, err := s.signedOAuthMCPOperations.Claim(ctx, operationKey, binding, claims.ExpiresAt.Time)
+	if err != nil {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+	}
+
 	defer s.lockAgent(id.TenantID, req.AgentID)()
 	q := identity.Quadruple{Identity: id}
 	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
-	if hasActive && active.Payload.SignedOAuthMCPPair != nil {
+	if !op.ExpiresAt.After(s.now().UTC()) && (op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed || op.Phase == agentcfg.SignedOAuthMCPPhaseRevisionCommitted) {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: incomplete authority operation has expired", agentcfg.ErrSignedCapabilityAuthority)
+	}
+	if op.Phase == agentcfg.SignedOAuthMCPPhasePublished {
+		if hasActive && signedCapabilityPairMatches(active.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
+			return signedCapabilityResponse(active, providerName, connection.Name), nil
+		}
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: published operation does not match active pair", agentcfg.ErrSignedCapabilityReplay)
+	}
+	if op.Phase != agentcfg.SignedOAuthMCPPhaseClaimed && op.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: operation is terminal in phase %q", agentcfg.ErrSignedCapabilityReplay, op.Phase)
+	}
+	if hasActive && active.Payload.SignedOAuthMCPPair != nil && !signedCapabilityPairMatches(active.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityPairExists
+	}
+	if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed && hasActive && signedCapabilityPairMatches(active.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
+		op, err = s.signedOAuthMCPOperations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhaseRevisionCommitted, active.RevisionID)
+		if err != nil {
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+		}
 	}
 	preparedProvider, err := providerPreparer.PrepareSignedCapabilityProvider(ctx, id.TenantID, req.AgentID, providerName, broker, audience, sink, scopes)
 	if err != nil {
@@ -107,26 +137,63 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		Connection:      agentcfg.SignedOAuthMCPConnectionDescriptor{Name: connection.Name, URL: canonicalURL, ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist, ConnectTimeoutMS: connection.ConnectTimeoutMS, RequestTimeoutMS: connection.RequestTimeoutMS},
 		AuthorityIssuer: claims.Issuer, AuthorityKeyID: kid, AuthorityJTIHash: signedCapabilityJTIHash(claims.ID),
 	}
-	payload := carrySiblingsForward(active, hasActive)
-	payload.SignedOAuthMCPPair = pair
-	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
-	if err != nil {
-		closePrepared()
-		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+	var rev agentcfg.Revision
+	if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed {
+		payload := carrySiblingsForward(active, hasActive)
+		payload.SignedOAuthMCPPair = pair
+		rev, err = s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
+		if err != nil {
+			// A StateStore acknowledgement can be lost after the pointer commits.
+			// Exact immutable pair equality, never a same-name heuristic, is the
+			// recovery proof that allows this operation to continue.
+			active, hasActive, readErr := s.registry.Active(context.WithoutCancel(ctx), q, req.AgentID, agentcfg.ConfigScopeAgent)
+			if readErr != nil || !hasActive || !signedCapabilityPairMatches(active.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
+				closePrepared()
+				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+			}
+			rev = active
+		}
+		op, err = s.signedOAuthMCPOperations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhaseRevisionCommitted, rev.RevisionID)
+		if err != nil {
+			closePrepared()
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+		}
+	} else {
+		if !hasActive || !signedCapabilityPairMatches(active.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
+			closePrepared()
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: revision-committed operation has no matching desired pair", agentcfg.ErrSignedCapabilityReplay)
+		}
+		rev = active
 	}
 	if err := preparedConnection.Activate(ctx); err != nil {
 		closePrepared()
-		if hasActive {
-			_, _ = s.registry.Rollback(context.WithoutCancel(ctx), q, req.AgentID, active.RevisionID, agentcfg.ConfigScopeAgent, compensatingWrite())
-		} else {
-			_, _ = s.registry.DeactivateIfActive(context.WithoutCancel(ctx), q, req.AgentID, rev.RevisionID, agentcfg.ConfigScopeAgent)
-		}
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
 	// No ProviderSet publication occurs. Commit records that the private
 	// provider's ownership has moved to the activated MCP connection.
 	preparedProvider.Commit(ctx)
-	return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{Revision: revisionToWire(rev), ProviderName: providerName, ConnectionName: connection.Name, ProtocolVersion: prototypes.ProtocolVersion}, nil
+	if _, err := s.signedOAuthMCPOperations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhasePublished, rev.RevisionID); err != nil {
+		// Data-plane publication is already visible. Returning the checkpoint
+		// error preserves recovery: the exact JTI resumes by proving the active
+		// pair and only writes the missing durable phase.
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+	}
+	return signedCapabilityResponse(rev, providerName, connection.Name), nil
+}
+
+func signedCapabilityResponse(rev agentcfg.Revision, providerName, connectionName string) prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse {
+	return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{Revision: revisionToWire(rev), ProviderName: providerName, ConnectionName: connectionName, ProtocolVersion: prototypes.ProtocolVersion}
+}
+
+func signedCapabilityPairMatches(pair *agentcfg.SignedOAuthMCPPair, tenant string, binding agentcfg.SignedOAuthMCPBinding) bool {
+	if pair == nil {
+		return false
+	}
+	return agentcfg.SignedOAuthMCPPairFingerprint(agentcfg.SignedOAuthMCPBinding{
+		TenantID: tenant, AgentID: binding.AgentID, Broker: pair.Broker,
+		ProviderName: pair.ProviderName, CapabilityRevision: pair.CapabilityRevision,
+		URLDigest: pair.URLDigest, Audience: pair.Audience, Scopes: pair.Scopes,
+	}) == agentcfg.SignedOAuthMCPPairFingerprint(binding)
 }
 
 func normalizeSignedCapabilityConnection(in prototypes.SignedOAuthMCPConnectionDescriptor, canonicalURL string) (prototypes.SignedOAuthMCPConnectionDescriptor, error) {

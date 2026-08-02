@@ -104,6 +104,27 @@ func (s *SignedOAuthMCPOperationStore) Claim(ctx context.Context, key SignedOAut
 	return existing, false, nil
 }
 
+// Load returns the exact tenant-scoped operation record. It is intentionally a
+// narrow recovery read: callers must already hold the signed replay key and
+// must still compare its immutable fingerprint before resuming a phase.
+func (s *SignedOAuthMCPOperationStore) Load(ctx context.Context, key SignedOAuthMCPReplayKey) (SignedOAuthMCPOperation, error) {
+	if err := ctx.Err(); err != nil {
+		return SignedOAuthMCPOperation{}, err
+	}
+	quad, kind, err := signedOAuthMCPOperationSlot(key)
+	if err != nil {
+		return SignedOAuthMCPOperation{}, err
+	}
+	op, err := s.load(ctx, quad, kind)
+	if err != nil {
+		return SignedOAuthMCPOperation{}, err
+	}
+	if op.ReplayKey != key || op.Fingerprint == "" || !signedOAuthMCPOperationPhaseKnown(op.Phase) {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: corrupt signed capability operation", ErrSignedCapabilityReplay)
+	}
+	return op, nil
+}
+
 // Advance atomically records the next legal D-401 recovery phase. The caller
 // must use the returned value for any subsequent transition; stale writers lose
 // on the exact operation EventID rather than overwriting one another.
@@ -182,6 +203,18 @@ func signedOAuthMCPTransitionAllowed(from, to SignedOAuthMCPOperationPhase) bool
 		return to == SignedOAuthMCPPhaseTeardownReceipted
 	case SignedOAuthMCPPhaseTeardownReceipted:
 		return to == SignedOAuthMCPPhaseRemoved
+	default:
+		return false
+	}
+}
+
+func signedOAuthMCPOperationPhaseKnown(phase SignedOAuthMCPOperationPhase) bool {
+	switch phase {
+	case SignedOAuthMCPPhaseClaimed, SignedOAuthMCPPhaseRevisionCommitted,
+		SignedOAuthMCPPhasePublished, SignedOAuthMCPPhaseRemovalRevisionCommitted,
+		SignedOAuthMCPPhaseCatalogUnpublished, SignedOAuthMCPPhaseTeardownReceipted,
+		SignedOAuthMCPPhaseRemoved, SignedOAuthMCPPhaseExpiredIncomplete:
+		return true
 	default:
 		return false
 	}

@@ -55,6 +55,7 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/state"
 )
 
 // Sentinel errors the Service returns. The wire handler maps each onto a
@@ -274,6 +275,11 @@ type Service struct {
 	// map, keyed by broker name. A nil/empty map leaves signed capability
 	// registration fail-closed; ordinary OAuth provider verbs never consult it.
 	signedOAuthMCPCapabilityAuthorities map[string]SignedOAuthMCPCapabilityAuthority
+	// signedOAuthMCPOperations is the tenant-scoped durable replay and recovery
+	// ledger for the pair lifecycle. Nil deliberately leaves the D-401 write
+	// unavailable: accepting an authority without its anti-replay store would
+	// turn a restart into a second registration attempt.
+	signedOAuthMCPOperations *agentcfg.SignedOAuthMCPOperationStore
 	// allowWireInjection is the effective DEV-ONLY, fail-closed opt-in that
 	// permits add_mcp_connection to carry a per-user credential-INJECTION mapping
 	// (the `injection` object) for a receiver-style MCP server over the wire,
@@ -665,6 +671,21 @@ func WithSignedOAuthMCPCapabilityAuthorities(authorities map[string]SignedOAuthM
 			copied[broker] = authority
 		}
 		s.signedOAuthMCPCapabilityAuthorities = copied
+	}
+}
+
+// WithSignedOAuthMCPOperationState wires the runtime StateStore into the
+// signed-capability recovery ledger. A missing or invalid store leaves the
+// production registration surface fail-closed.
+func WithSignedOAuthMCPOperationState(store state.StateStore) Option {
+	return func(s *Service) {
+		if store == nil {
+			return
+		}
+		ops, err := agentcfg.NewSignedOAuthMCPOperationStore(store)
+		if err == nil {
+			s.signedOAuthMCPOperations = ops
+		}
 	}
 }
 
