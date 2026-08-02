@@ -11997,6 +11997,11 @@ production opt-in for signed capability authority. A configured static host or
 audience allow-list remains valid, but is not the mechanism for this dynamic
 capability path.
 
+The anchor's bounded-expiry ceiling is a required positive boot-only
+`max_authority_lifetime`; it is not a hidden global default and never rides the
+Protocol request. The signed envelope carries only `iat`/`exp`; exactly-boundary
+lifetimes are valid and any over-ceiling envelope fails closed.
+
 The sole production registration/creation write is admin-only
 `agent_config.register_oauth_mcp_capability`. It is production-safe only when
 the boot broker/trust anchor's explicit signed-capability opt-in and verifier

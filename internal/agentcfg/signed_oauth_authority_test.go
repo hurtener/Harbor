@@ -50,3 +50,29 @@ func TestVerifySignedOAuthMCPAuthority_RefusesRequestMismatch(t *testing.T) {
 		t.Fatalf("mismatch err = %v, want ErrSignedCapabilityBinding", err)
 	}
 }
+
+func TestVerifySignedOAuthMCPAuthorityBounded_ExpiryBoundaryAndOverLifetime(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	binding := SignedOAuthMCPBinding{TenantID: "t", AgentID: "a", Broker: "b", ProviderName: "p", CapabilityRevision: "1", URLDigest: "digest", Audience: "aud", Scopes: []string{"read"}}
+	sign := func(expiry time.Time) string {
+		t.Helper()
+		claims := SignedOAuthMCPAuthorityClaims{TenantID: binding.TenantID, AgentID: binding.AgentID, Broker: binding.Broker, ProviderName: binding.ProviderName, CapabilityRevision: binding.CapabilityRevision, URLDigest: binding.URLDigest, Audience: binding.Audience, Scopes: binding.Scopes, RegisteredClaims: jwt.RegisteredClaims{Issuer: "issuer", ID: "jti", IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(expiry)}}
+		token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+		token.Header["kid"] = "kid"
+		raw, signErr := token.SignedString(key)
+		if signErr != nil {
+			t.Fatal(signErr)
+		}
+		return raw
+	}
+	if _, err := VerifySignedOAuthMCPAuthorityBounded(sign(now.Add(10*time.Minute)), "issuer", "kid", &key.PublicKey, now, binding, []string{"read"}, 10*time.Minute); err != nil {
+		t.Fatalf("exact expiry boundary must pass: %v", err)
+	}
+	if _, err := VerifySignedOAuthMCPAuthorityBounded(sign(now.Add(10*time.Minute+time.Second)), "issuer", "kid", &key.PublicKey, now, binding, []string{"read"}, 10*time.Minute); !errors.Is(err, ErrSignedCapabilityAuthority) {
+		t.Fatalf("over-lifetime err = %v, want ErrSignedCapabilityAuthority", err)
+	}
+}

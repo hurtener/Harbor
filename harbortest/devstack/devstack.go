@@ -1029,7 +1029,11 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		// which closes the drift the mirror carried: the kit now GAINS the
 		// agents / auth-rotate / governance-override / governance-key-rotate
 		// surfaces the mirror omitted.
-		built, bErr := serve.BuildMux(serve.MuxInput{
+		signedOAuthMCPCapabilityAuthorities, authorityErr := serve.SignedOAuthMCPCapabilityAuthoritiesFromConfig(context.Background(), cfg, opts.Logger)
+		if authorityErr != nil {
+			return stack, authorityErr
+		}
+		muxInput := serve.MuxInput{
 			Cfg:                            cfg,
 			Surface:                        stack.Surface,
 			Bus:                            bus,
@@ -1077,7 +1081,9 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			BuildVersion:                   "devstack",
 			BuildCommit:                    "devstack",
 			TopologyAvailable:              false,
-		})
+		}
+		muxInput.SignedOAuthMCPCapabilityAuthorities = signedOAuthMCPCapabilityAuthorities
+		built, bErr := serve.BuildMux(muxInput)
 		if bErr != nil {
 			return stack, bErr
 		}

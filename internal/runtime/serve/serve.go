@@ -566,6 +566,14 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 			oauthProviderReconciler = concrete
 		}
 	}
+	// D-401's verifier map is built at boot from the explicit broker trust
+	// anchors. A configured JWKS fetch failure aborts boot rather than leaving a
+	// partially enabled registration surface.
+	signedOAuthMCPCapabilityAuthorities, err := SignedOAuthMCPCapabilityAuthoritiesFromConfig(ctx, cfg, opts.Logger)
+	if err != nil {
+		closeAll(ctx)
+		return nil, err
+	}
 
 	// The Protocol-installed inference provider installer (set_llm_provider),
 	// plus the boot-connect of a config-declared brokered primary. Wired
@@ -671,7 +679,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		}
 	}
 
-	built, err := BuildMux(MuxInput{
+	muxInput := MuxInput{
 		Cfg:                            cfg,
 		Surface:                        surface,
 		Bus:                            bus,
@@ -719,7 +727,9 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		BuildVersion:                   opts.BuildVersion,
 		BuildCommit:                    opts.BuildCommit,
 		TopologyAvailable:              false,
-	})
+	}
+	muxInput.SignedOAuthMCPCapabilityAuthorities = signedOAuthMCPCapabilityAuthorities
+	built, err := BuildMux(muxInput)
 	if err != nil {
 		closeAll(ctx)
 		return nil, err

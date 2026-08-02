@@ -128,6 +128,26 @@ func VerifySignedOAuthMCPAuthority(raw, issuer, keyID string, key any, now time.
 	return claims, nil
 }
 
+// VerifySignedOAuthMCPAuthorityBounded applies the boot trust anchor's
+// required maximum envelope lifetime after [VerifySignedOAuthMCPAuthority]
+// has verified the signature, issuer, exact binding, and current expiry. The
+// ceiling itself is config-only; only iat/exp travel in the signed envelope.
+// An exact-boundary lifetime is valid, while an unset/invalid ceiling fails
+// closed rather than acquiring a hidden product-wide default.
+func VerifySignedOAuthMCPAuthorityBounded(raw, issuer, keyID string, key any, now time.Time, expected SignedOAuthMCPBinding, scopeCeiling []string, maxLifetime time.Duration) (SignedOAuthMCPAuthorityClaims, error) {
+	if maxLifetime <= 0 {
+		return SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: boot maximum authority lifetime is not positive", ErrSignedCapabilityAuthority)
+	}
+	claims, err := VerifySignedOAuthMCPAuthority(raw, issuer, keyID, key, now, expected, scopeCeiling)
+	if err != nil {
+		return SignedOAuthMCPAuthorityClaims{}, err
+	}
+	if claims.IssuedAt == nil || claims.ExpiresAt == nil || claims.ExpiresAt.Time.Before(claims.IssuedAt.Time) || claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time) > maxLifetime {
+		return SignedOAuthMCPAuthorityClaims{}, fmt.Errorf("%w: authority lifetime exceeds boot maximum", ErrSignedCapabilityAuthority)
+	}
+	return claims, nil
+}
+
 func matchSignedOAuthMCPBinding(claims SignedOAuthMCPAuthorityClaims, expected SignedOAuthMCPBinding) error {
 	claimedScopes, err := CanonicalScopes(claims.Scopes)
 	if err != nil {

@@ -1339,6 +1339,26 @@ restart-required (NOT a Protocol surface). Each entry:
 - `cache_ttl` — optional; caps the in-memory serve horizon (Go duration).
 - `timeout` — optional; bounds a single broker exchange (Go duration).
 
+#### tools.oauth_credential_brokers[].signed_oauth_mcp_capability_authority
+
+Optional boot-only D-401 trust-anchor block for the production
+`agent_config.register_oauth_mcp_capability` path. Omitting it leaves that
+broker unable to authorize signed capability registration. It is not a
+Protocol field and never exposes verifier material, an endpoint, credential
+source, host list, or the lifetime ceiling to an administrator.
+
+- `enabled` — required `true` when the block is present; the explicit
+  production opt-in. `false` is rejected so a partially filled block cannot be
+  mistaken for an enabled authority.
+- `issuer` — required exact issuer for authority envelopes.
+- exactly one of `jwks_url` (HTTPS except localhost fixtures) or `jwks_file`
+  — required fixed public-key verifier source. It is fetched during boot; an
+  opted-in but unavailable or invalid keyset fails boot loud.
+- `max_authority_lifetime` — required positive Go duration. It caps signed
+  `exp - iat`; an envelope exactly on the ceiling is accepted, one over it is
+  refused. This is an operator-selected boot ceiling, not a hidden global
+  default, and does not ride the wire.
+
 ### tools.oauth_token_kek_env
 
 Env-var name holding the 32-byte hex-encoded key-encryption key

@@ -48,6 +48,10 @@ explicit signed-capability production opt-in; it is not enabled by default.
   endpoint, credential pull, runtime broker credential, KEK, true scope
   ceiling, verifier issuer/key material, and an explicit production opt-in
   permitting signed capability authority.
+- The trust anchor's bounded-expiry policy is an explicit, required positive
+  boot `max_authority_lifetime` (not an inferred product-wide default). The
+  envelope supplies only signed `iat`/`exp`; `exp - iat` may equal but may not
+  exceed that configured ceiling.
 - Accept only a signed envelope that exactly binds tenant, agent, broker,
   provider/capability identifier and revision, canonical connection URL digest,
   audience, normalized scope set, issuer/key ID, issue/expiry, and anti-replay

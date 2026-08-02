@@ -256,6 +256,10 @@ type Service struct {
 	// flag) OR (the HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR boot env), computed at the
 	// cmd/harbor + devstack boundary and injected here — never Protocol-writable.
 	allowWireOAuthDescriptor bool
+	// signedOAuthMCPCapabilityAuthorities is the boot-only D-401 trust-anchor
+	// map, keyed by broker name. A nil/empty map leaves signed capability
+	// registration fail-closed; ordinary OAuth provider verbs never consult it.
+	signedOAuthMCPCapabilityAuthorities map[string]SignedOAuthMCPCapabilityAuthority
 	// allowWireInjection is the effective DEV-ONLY, fail-closed opt-in that
 	// permits add_mcp_connection to carry a per-user credential-INJECTION mapping
 	// (the `injection` object) for a receiver-style MCP server over the wire,
@@ -631,6 +635,22 @@ func WithBootDeclaredOAuthProviders(names []string) Option {
 func WithAllowWireOAuthDescriptor(allow bool) Option {
 	return func(s *Service) {
 		s.allowWireOAuthDescriptor = allow
+	}
+}
+
+// WithSignedOAuthMCPCapabilityAuthorities wires the immutable boot-declared
+// D-401 trust anchors. The map is copied, so callers cannot mutate a compiled
+// Service after construction. An empty map is the fail-closed default.
+func WithSignedOAuthMCPCapabilityAuthorities(authorities map[string]SignedOAuthMCPCapabilityAuthority) Option {
+	return func(s *Service) {
+		if len(authorities) == 0 {
+			return
+		}
+		copied := make(map[string]SignedOAuthMCPCapabilityAuthority, len(authorities))
+		for broker, authority := range authorities {
+			copied[broker] = authority
+		}
+		s.signedOAuthMCPCapabilityAuthorities = copied
 	}
 }
 

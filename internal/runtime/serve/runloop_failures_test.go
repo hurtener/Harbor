@@ -88,6 +88,10 @@ func (r *countingFailRegistry) Diff(context.Context, identity.Quadruple, string,
 	return agentcfg.Diff{}, errInjected
 }
 
+func (r *countingFailRegistry) DeactivateIfActive(context.Context, identity.Quadruple, string, string, agentcfg.ConfigScope) (bool, error) {
+	return false, errInjected
+}
+
 func (r *countingFailRegistry) Close(context.Context) error { return nil }
 
 // failDriverEnv bundles the minimal real-driver env the failure tests share.
