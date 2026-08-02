@@ -1,6 +1,7 @@
 package statestore_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionfence"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -473,7 +475,14 @@ func TestRetirement_OccupiedOrdinalReplaysStoredSuccessorAfterSourceDeletion(t *
 					t.Fatal(err)
 				}
 				deletedQ := identity.Quadruple{Identity: identity.Identity{TenantID: target.TenantID, UserID: target.UserID, SessionID: target.SessionID}}
-				if err := base.Delete(ctx, deletedQ, target.Kind); err != nil {
+				fenceQ, fenceKind, err := sessionfence.PendingSlot(deletedQ)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := base.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: fenceQ, Kind: fenceKind, Bytes: []byte(`{"schema":1,"stage":"pending"}`)}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := base.DeleteScope(ctx, deletedQ.Identity); err != nil {
 					t.Fatal(err)
 				}
 				_ = first.Close(ctx)
@@ -523,6 +532,134 @@ func TestRetirement_OccupiedOrdinalReplaysStoredSuccessorAfterSourceDeletion(t *
 			})
 		}
 	}
+}
+
+func TestRetirement_UnfencedAbsentFrozenPersonalTargetFailsClosedAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "unfenced-absent.db")
+	base, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := newRegistryOnStore(t, base)
+	admin := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-unfenced", UserID: "admin", SessionID: "control"}}
+	missing := identity.Quadruple{Identity: identity.Identity{TenantID: admin.TenantID, UserID: "a-missing-user", SessionID: "a-missing-session"}}
+	sibling := missing
+	other := identity.Quadruple{Identity: identity.Identity{TenantID: admin.TenantID, UserID: "z-survivor-user", SessionID: "z-survivor-session"}}
+	const agent = "a"
+	const siblingAgent = "ab"
+	const operation = "unfenced-absent-operation"
+
+	revision, err := first.SetRevision(ctx, admin, agent, agentcfg.ConfigScopeAgent, skills("history"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.SetRevision(ctx, admin, siblingAgent, agentcfg.ConfigScopeAgent, skills("sibling-history"), agentcfg.SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	personal, err := sessionoverlay.NewDurableStore(base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := personal.SavePersonal(ctx, missing, agent, retirementPersonalSkill("missing"), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := personal.SavePersonal(ctx, sibling, siblingAgent, retirementPersonalSkill("sibling"), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := personal.SavePersonal(ctx, other, agent, retirementPersonalSkill("other"), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	missingKind, _ := sessionoverlay.PersonalSkillKind(agent, "missing")
+	siblingKind, _ := sessionoverlay.PersonalSkillKind(siblingAgent, "sibling")
+	otherKind, _ := sessionoverlay.PersonalSkillKind(agent, "other")
+	siblingBefore, err := base.Load(ctx, sibling, siblingKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherBefore, err := base.Load(ctx, other, otherKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := first.(agentcfg.RetirementRegistry).Retire(ctx, admin, agent, agentcfg.RetirementRequest{OperationID: operation, ExpectedContentHash: revision.ContentHash})
+	if err != nil || len(status.Cleanup) != 1 || status.Cleanup[0].Class != "session_personal" {
+		t.Fatalf("frozen status=(%+v,%v)", status, err)
+	}
+	lifecycleQ, lifecycleKind, _ := agentcfg.LifecycleSlot(admin.TenantID, agent)
+	lifecycleBefore, err := base.Load(ctx, lifecycleQ, lifecycleKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoint struct {
+		Retirement struct {
+			CleanupCompleted uint64 `json:"cleanup_completed"`
+			ScrubCompleted   uint64 `json:"scrub_completed"`
+		} `json:"retirement"`
+	}
+	if err := json.Unmarshal(lifecycleBefore.Bytes, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.Retirement.CleanupCompleted != 0 || checkpoint.Retirement.ScrubCompleted != 0 {
+		t.Fatalf("initial cursors cleanup=%d scrub=%d", checkpoint.Retirement.CleanupCompleted, checkpoint.Retirement.ScrubCompleted)
+	}
+	if err := base.Delete(ctx, missing, missingKind); err != nil {
+		t.Fatal(err)
+	}
+	for _, slot := range []func(identity.Quadruple) (identity.Quadruple, string, error){sessionfence.PendingSlot, sessionfence.TombstoneSlot} {
+		q, kind, err := slot(missing)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := base.Load(ctx, q, kind); !errors.Is(err, state.ErrNotFound) {
+			t.Fatalf("unexpected erasure fence %q: %v", kind, err)
+		}
+	}
+
+	step := status.Cleanup[0]
+	if _, err := first.(agentcfg.RetirementRegistry).CompleteRetirementStep(ctx, admin, agent, operation, step.Class, step.Resource); !errors.Is(err, sessionoverlay.ErrStateUnavailable) {
+		t.Fatalf("unfenced cleanup error=%v, want ErrStateUnavailable", err)
+	}
+	_, found, err := first.(agentcfg.RetirementRegistry).RetirementStatus(ctx, admin, agent)
+	if !errors.Is(err, sessionoverlay.ErrStateUnavailable) || !found {
+		t.Fatalf("status after refusal=(found=%v,error=%v), want found ErrStateUnavailable", found, err)
+	}
+	assertUnchanged := func(store state.StateStore) {
+		t.Helper()
+		lifecycleAfter, err := store.Load(ctx, lifecycleQ, lifecycleKind)
+		if err != nil || lifecycleAfter.ID != lifecycleBefore.ID || !bytes.Equal(lifecycleAfter.Bytes, lifecycleBefore.Bytes) {
+			t.Fatalf("lifecycle changed after refusal: before=%s after=%s err=%v", lifecycleBefore.Bytes, lifecycleAfter.Bytes, err)
+		}
+		for _, survivor := range []state.StateRecord{siblingBefore, otherBefore} {
+			got, err := store.Load(ctx, survivor.Identity, survivor.Kind)
+			if err != nil || got.ID != survivor.ID || !bytes.Equal(got.Bytes, survivor.Bytes) {
+				t.Fatalf("survivor changed: got=(%+v,%v) want=%+v", got, err, survivor)
+			}
+		}
+		if _, err := store.Load(ctx, missing, missingKind); !errors.Is(err, state.ErrNotFound) {
+			t.Fatalf("missing target changed: %v", err)
+		}
+	}
+	assertUnchanged(base)
+
+	_ = first.Close(ctx)
+	if err := base.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close(ctx)
+	restarted := newRegistryOnStore(t, reopened)
+	_, found, err = restarted.(agentcfg.RetirementRegistry).RetirementStatus(ctx, admin, agent)
+	if !errors.Is(err, sessionoverlay.ErrStateUnavailable) || !found {
+		t.Fatalf("restarted status=(found=%v,error=%v), want found ErrStateUnavailable", found, err)
+	}
+	if _, err := restarted.(agentcfg.RetirementRegistry).CompleteRetirementStep(ctx, admin, agent, operation, step.Class, step.Resource); !errors.Is(err, sessionoverlay.ErrStateUnavailable) {
+		t.Fatalf("restarted unfenced cleanup error=%v, want ErrStateUnavailable", err)
+	}
+	assertUnchanged(reopened)
 }
 
 func TestRetirement_SQLiteScrubOrderingRestartsAtEveryBoundary(t *testing.T) {

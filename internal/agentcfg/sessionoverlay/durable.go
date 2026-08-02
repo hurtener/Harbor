@@ -203,46 +203,8 @@ func InspectRetirementLegacyCandidate(candidate state.StateRecord, tenantID, age
 // ordinary delete path it requires a terminal lifecycle generation and can
 // therefore resume after retirement without reopening normal mutation.
 func (s *DurableStore) RetirePersonalCandidate(ctx context.Context, target identity.Quadruple, kind, tenantID, agentID, canonicalName string) error {
-	if target.TenantID != tenantID || target.UserID == agentcfg.ReservedAgentConfigUser || target.UserID == "" || target.SessionID == "" || target.RunID != "" {
-		return fmt.Errorf("%w: retirement target identity is outside the tenant/session scope", ErrPersonalRecordInvalid)
-	}
-	expectedKind, err := PersonalSkillKind(agentID, canonicalName)
-	if err != nil || kind != expectedKind {
-		return fmt.Errorf("%w: retirement target kind does not match agent/name", ErrPersonalRecordInvalid)
-	}
-	fenceState, err := loadFences(ctx, s.state, target, agentID)
-	if err != nil {
-		return err
-	}
-	if fenceState.state != lifecycleEnvelopeTerminal {
-		if lifecycleErr := fenceState.lifecycleError(); lifecycleErr != nil {
-			return lifecycleErr
-		}
-		return fmt.Errorf("%w: retirement cleanup requires terminal lifecycle", ErrAgentLifecycleCorrupt)
-	}
-	rec, err := s.state.Load(ctx, durableSessionQuad(target), kind)
-	if fenceState.erased() {
-		if errors.Is(err, state.ErrNotFound) {
-			// Pending or terminal erasure plus the terminal agent lifecycle is a
-			// durable two-fence proof that this exact absent row cannot reactivate.
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("%w: load erased retirement personal target: %w", ErrStateUnavailable, err)
-		}
-		return ErrSessionErased
-	}
-	if errors.Is(err, state.ErrNotFound) {
-		// Session erasure may have physically removed a row after discovery.
-		// The terminal lifecycle still prevents resurrection, so absence is a
-		// converged cleanup outcome rather than a reason to invent a record.
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("%w: load retirement personal target: %w", ErrStateUnavailable, err)
-	}
-	current, found, err := decodePersonal(rec.Bytes, agentID, canonicalNameFor(canonicalName))
-	if err != nil || !found {
+	rec, current, fenceState, converged, err := s.retirementPersonalCandidate(ctx, target, kind, tenantID, agentID, canonicalName)
+	if err != nil || converged {
 		return err
 	}
 	if current.Deleted {
@@ -270,6 +232,61 @@ func (s *DurableStore) RetirePersonalCandidate(ctx context.Context, target ident
 		return fmt.Errorf("%w: conditional retirement personal tombstone: %w", ErrStateUnavailable, err)
 	}
 	return nil
+}
+
+// InspectRetirementPersonalCandidate validates that the exact frozen personal
+// target still exists or has disappeared under this session's pending or
+// terminal erasure fence. It performs no mutation and lets status projection
+// fail before dispatching any retirement side effect.
+func (s *DurableStore) InspectRetirementPersonalCandidate(ctx context.Context, target identity.Quadruple, kind, tenantID, agentID, canonicalName string) error {
+	_, _, _, _, err := s.retirementPersonalCandidate(ctx, target, kind, tenantID, agentID, canonicalName)
+	return err
+}
+
+func (s *DurableStore) retirementPersonalCandidate(ctx context.Context, target identity.Quadruple, kind, tenantID, agentID, canonicalName string) (state.StateRecord, PersonalSkillRecord, fences, bool, error) {
+	if target.TenantID != tenantID || target.UserID == agentcfg.ReservedAgentConfigUser || target.UserID == "" || target.SessionID == "" || target.RunID != "" {
+		return state.StateRecord{}, PersonalSkillRecord{}, fences{}, false, fmt.Errorf("%w: retirement target identity is outside the tenant/session scope", ErrPersonalRecordInvalid)
+	}
+	expectedKind, err := PersonalSkillKind(agentID, canonicalName)
+	if err != nil || kind != expectedKind {
+		return state.StateRecord{}, PersonalSkillRecord{}, fences{}, false, fmt.Errorf("%w: retirement target kind does not match agent/name", ErrPersonalRecordInvalid)
+	}
+	fenceState, err := loadFences(ctx, s.state, target, agentID)
+	if err != nil {
+		return state.StateRecord{}, PersonalSkillRecord{}, fences{}, false, err
+	}
+	if fenceState.state != lifecycleEnvelopeTerminal {
+		if lifecycleErr := fenceState.lifecycleError(); lifecycleErr != nil {
+			return state.StateRecord{}, PersonalSkillRecord{}, fences{}, false, lifecycleErr
+		}
+		return state.StateRecord{}, PersonalSkillRecord{}, fences{}, false, fmt.Errorf("%w: retirement cleanup requires terminal lifecycle", ErrAgentLifecycleCorrupt)
+	}
+	rec, err := s.state.Load(ctx, durableSessionQuad(target), kind)
+	if fenceState.erased() {
+		if errors.Is(err, state.ErrNotFound) {
+			// Pending or terminal erasure plus the terminal agent lifecycle is a
+			// durable two-fence proof that this exact absent row cannot reactivate.
+			return state.StateRecord{}, PersonalSkillRecord{}, fenceState, true, nil
+		}
+		if err != nil {
+			return state.StateRecord{}, PersonalSkillRecord{}, fences{}, false, fmt.Errorf("%w: load erased retirement personal target: %w", ErrStateUnavailable, err)
+		}
+		return state.StateRecord{}, PersonalSkillRecord{}, fences{}, false, ErrSessionErased
+	}
+	if errors.Is(err, state.ErrNotFound) {
+		return state.StateRecord{}, PersonalSkillRecord{}, fences{}, false, fmt.Errorf("%w: retirement personal target disappeared without an exact session-erasure fence", ErrStateUnavailable)
+	}
+	if err != nil {
+		return state.StateRecord{}, PersonalSkillRecord{}, fences{}, false, fmt.Errorf("%w: load retirement personal target: %w", ErrStateUnavailable, err)
+	}
+	current, found, err := decodePersonal(rec.Bytes, agentID, canonicalNameFor(canonicalName))
+	if err != nil {
+		return state.StateRecord{}, PersonalSkillRecord{}, fences{}, false, err
+	}
+	if !found {
+		return state.StateRecord{}, PersonalSkillRecord{}, fences{}, false, fmt.Errorf("%w: retirement personal target content does not match its frozen identity", ErrPersonalRecordInvalid)
+	}
+	return rec, current, fenceState, false, nil
 }
 
 // LoadPersonal returns a stable personal record for id/agent/name.

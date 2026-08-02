@@ -516,6 +516,57 @@ func TestDurableStore_UsesExactlyFourExpectedSlots(t *testing.T) {
 	}
 }
 
+func TestRetirePersonalCandidate_MissingWithoutExactErasureFenceFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	st := newDurableState(t)
+	target := durableID("missing-session")
+	sibling := durableID("sibling-session")
+	other := identity.Quadruple{Identity: identity.Identity{TenantID: "other-tenant", UserID: target.UserID, SessionID: target.SessionID}}
+	saveLifecycle(t, st, target, []byte(`{"schema":1,"revision_id":"","updated_at":"2026-08-02T00:00:00Z"}`))
+
+	seed := func(id identity.Quadruple, name string) state.StateRecord {
+		t.Helper()
+		kind, err := sessionoverlay.PersonalSkillKind("agent-a", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: kind, Bytes: []byte(`{"schema":1,"agent_id":"agent-a","canonical_name":"` + name + `","deleted":false,"updated_at":"2026-08-02T00:00:00Z"}`)}
+		if err := st.Save(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+		return record
+	}
+	siblingRecord := seed(sibling, "sibling")
+	otherRecord := seed(other, "other")
+
+	store, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingKind, err := sessionoverlay.PersonalSkillKind("agent-a", "missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RetirePersonalCandidate(ctx, target, missingKind, target.TenantID, "agent-a", "missing"); !errors.Is(err, sessionoverlay.ErrStateUnavailable) {
+		t.Fatalf("unfenced absent retirement target error=%v, want ErrStateUnavailable", err)
+	}
+	for _, survivor := range []state.StateRecord{siblingRecord, otherRecord} {
+		got, err := st.Load(ctx, survivor.Identity, survivor.Kind)
+		if err != nil || got.ID != survivor.ID || string(got.Bytes) != string(survivor.Bytes) {
+			t.Fatalf("survivor changed: got=(%+v,%v) want=%+v", got, err, survivor)
+		}
+	}
+	for _, slot := range []func(identity.Quadruple) (identity.Quadruple, string, error){sessionfence.PendingSlot, sessionfence.TombstoneSlot} {
+		q, kind, err := slot(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.Load(ctx, q, kind); !errors.Is(err, state.ErrNotFound) {
+			t.Fatalf("unexpected erasure fence %q: %v", kind, err)
+		}
+	}
+}
+
 func (s *commitThenErrorStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
 	if err := s.StateStore.SaveIf(ctx, expectations, next); err != nil {
 		return err

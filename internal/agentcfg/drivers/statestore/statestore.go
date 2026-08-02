@@ -1383,9 +1383,10 @@ func cloneRetirement(in *retirementRecord) *retirementRecord {
 	return &out
 }
 
-// RetirementStatus reads only the lifecycle envelope. It is intentionally
-// available after retirement so a same-operation caller can resume cleanup;
-// it does not reveal config content.
+// RetirementStatus reads the lifecycle envelope, its next frozen manifest
+// item, and that item's exact personal target/fences when applicable. It is
+// intentionally available after retirement so a same-operation caller can
+// resume cleanup; it does not reveal config content.
 func (r *registry) RetirementStatus(ctx context.Context, id identity.Quadruple, agentID string) (agentcfg.RetirementStatus, bool, error) {
 	if err := r.validate(id, agentID); err != nil {
 		return agentcfg.RetirementStatus{}, false, err
@@ -1619,6 +1620,24 @@ func (r *registry) completeSessionRetirementStep(ctx context.Context, tenantID, 
 	}
 }
 
+func (r *registry) inspectSessionRetirementStep(ctx context.Context, tenantID, agentID, class, resource string) error {
+	if class != retirementCleanupSessionPersonal {
+		return nil
+	}
+	target, err := decodeRetirementSessionTarget(resource)
+	if err != nil {
+		return err
+	}
+	if target.TenantID != tenantID || target.AgentID != agentID || target.RunID != "" || target.CanonicalName == "" {
+		return fmt.Errorf("%w: personal cleanup target crossed retirement scope or lacks canonical name", agentcfg.ErrRetirementConflict)
+	}
+	personal, err := sessionoverlay.NewDurableStore(r.state, r.clock)
+	if err != nil {
+		return err
+	}
+	return personal.InspectRetirementPersonalCandidate(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: target.TenantID, UserID: target.UserID, SessionID: target.SessionID}, RunID: target.RunID}, target.Kind, tenantID, agentID, target.CanonicalName)
+}
+
 func (r *registry) ensureNotRetired(ctx context.Context, id identity.Quadruple, agentID string) error {
 	rec, _, _, err := r.loadActiveRecord(ctx, syntheticQuad(id.TenantID, agentID))
 	if err != nil {
@@ -1681,6 +1700,9 @@ func (r *registry) retirementStatus(ctx context.Context, q identity.Quadruple, i
 	}
 	item, err := r.verifiedRetirementCleanupItem(ctx, q, in)
 	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if err := r.inspectSessionRetirementStep(ctx, q.TenantID, q.SessionID, item.Class, item.Resource); err != nil {
 		return agentcfg.RetirementStatus{}, err
 	}
 	out.Cleanup = []agentcfg.CleanupStep{{Class: item.Class, Resource: item.Resource}}

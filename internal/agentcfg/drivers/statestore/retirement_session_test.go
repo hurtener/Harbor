@@ -178,9 +178,6 @@ func TestRetirement_ErasureFenceAndAbsentFrozenPersonalTargetConverges(t *testin
 				t.Fatalf("frozen status=(%+v,%v)", status, err)
 			}
 			targetKind, _ := sessionoverlay.PersonalSkillKind(agent, "erased-canonical")
-			if err := st.Delete(ctx, target, targetKind); err != nil {
-				t.Fatal(err)
-			}
 			var fenceQ identity.Quadruple
 			var fenceKind string
 			if fence == "pending" {
@@ -192,6 +189,9 @@ func TestRetirement_ErasureFenceAndAbsentFrozenPersonalTargetConverges(t *testin
 				t.Fatal(err)
 			}
 			if err := st.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: fenceQ, Kind: fenceKind, Bytes: []byte(`{"fence":true}`)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Delete(ctx, target, targetKind); err != nil {
 				t.Fatal(err)
 			}
 			step := status.Cleanup[0]
