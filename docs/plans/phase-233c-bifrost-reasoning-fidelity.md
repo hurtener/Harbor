@@ -46,6 +46,8 @@ restart reconstruction.
   raw value, including empty and whitespace-only fragments.
 - Keep raw reasoning callbacks immediate while preventing synthesized details
   from overriding or duplicating the final raw trace.
+- Match unary response selection: choice index 0 is the only completion choice
+  Harbor consumes; all fields and callbacks from other choices are ignored.
 - For details-only responses, preserve semantic blocks and exact fragment bytes
   without a trim, normalization, or per-fragment separator.
 - Prove byte parity through the adapter, planner decision, live task
@@ -58,35 +60,43 @@ restart reconstruction.
   mode change.
 - No consumer-side whitespace repair, presentation-layer workaround, or
   provider-native thinking-block replay.
-- No change to D-148's encrypted/content-only block exclusion or to the
-  `never` / `text` operator replay modes.
+- No change to D-147's encrypted/content-only provider-capture exclusion or to
+  D-148's `never` / `text` operator replay modes.
 
 ## Acceptance criteria
 
-- [ ] Per completion choice, observing any non-nil raw `delta.Reasoning`
+- [ ] For selected response choice index 0, observing any non-nil raw `delta.Reasoning`
   selects raw-source mode even if that value is empty. The completed reasoning
   is the exact ordered concatenation of all raw values; `ReasoningDetails` do
   not override, append to, trim, or otherwise transform it.
 - [ ] Raw reasoning invokes `OnReasoning` immediately with each observed value.
   Details-only reasoning remains final-only, so a later raw delta cannot cause
-  duplicate callback delivery.
+  duplicate callback delivery. For a single non-nil empty raw delta, the exact
+  callback sequence is `("", false)` then `("", true)`; terminal delivery
+  tests `rawObserved`, not accumulated length.
+- [ ] Streaming and unary completion both consume choice index 0 only. Content,
+  reasoning, reasoning details, tool calls, and callbacks belonging to any
+  non-zero choice are ignored and cannot contaminate selected-choice output.
 - [ ] Details-only fragments coalesce by non-empty stable block ID, otherwise
-  by `(choice index, type, index)`. An initial ID-bearing fragment aliases its
+  by `(type, index)` within selected choice 0. An initial ID-bearing fragment aliases its
   fallback identity so later ID-less fragments join it. Within a block bytes
   concatenate exactly; exactly one literal `\n\n` separates distinct emitted
   blocks in first-seen order. No path trims intentional whitespace. Encrypted
-  and content-only blocks remain excluded under D-148.
+  and content-only blocks remain excluded under D-147's provider-capture
+  boundary and provider-native deferral.
 - [ ] A decoded JSON/SSE regression—not directly assembled Go structs—uses
-  `["**Preparing to send email**", "\\n\\n", "I", " need", " to", " compose"]`
+  `["**Preparing to send email**", "\n\n", "I", " need", " to", " compose"]`
   and asserts the exact result `**Preparing to send email**\n\nI need to compose`
-  in the callback stream and completed response.
+  in the callback stream and completed response. The JSON source has the
+  standard `\n\n` escape and the decoder-produced middle delta is asserted as
+  exact bytes `0x0a,0x0a`, never literal backslash-plus-letter bytes.
 - [ ] The same fixture asserts byte-identical reasoning in
   `planner.decision.ReasoningTrace`, the live `tasks.get` trajectory, and
   durable `state.history` after a runtime restart. The restart oracle is the
   durable planner-decision history because live task trajectory is in-memory.
 - [ ] Details-only multi-fragment/single-block and multi-block regressions
-  remain, including choice separation, ID-to-fallback aliasing, intentional
-  whitespace, and excluded encrypted/content blocks.
+  remain, including non-selected-choice rejection, ID-to-fallback aliasing,
+  intentional whitespace, and excluded encrypted/content blocks.
 - [ ] Console history/reopen tests render exactly the persisted newline bytes;
   no CSS or client-side coalescing is accepted as a repair.
 - [ ] The shared Bifrost driver passes N>=100 concurrent identity-distinct,
@@ -115,9 +125,11 @@ restart reconstruction.
 
 ## Test plan
 
-- **Unit:** raw observed/empty/whitespace precedence; no raw fallback; stable
-  ID and `(choice,type,index)` grouping; ID-to-fallback alias; within-block
-  exact concatenation; distinct-block separation; encrypted/content exclusion.
+- **Unit:** raw observed/empty/whitespace precedence; exact empty-only callback
+  lifecycle; choice-0 selection with all non-selected fields/callbacks ignored;
+  no raw fallback; stable ID and `(type,index)` grouping; ID-to-fallback alias;
+  within-block exact concatenation; distinct-block separation;
+  encrypted/content exclusion.
 - **Integration:** decoded Bifrost JSON/SSE through a real runtime and durable
   state driver, asserting callback/final/planner/live-task/restart-history
   parity plus an identity-distinct negative case.
@@ -149,8 +161,8 @@ restart reconstruction.
 ## Risks / open questions
 
 - Upstream may expose provider details with incomplete IDs or multiple choices;
-  fallback identity and per-choice ownership must stay explicit and must never
-  merge unrelated blocks.
+  fallback identity applies only within selected choice 0, and non-zero choices
+  are ignored consistently with the existing unary contract.
 - A test that builds delta structs directly can bypass Bifrost's decoder
   synthesis and falsely prove the fix. The decoded JSON/SSE fixture is binding.
 - `tasks.get` cannot prove post-restart parity because its trajectory is

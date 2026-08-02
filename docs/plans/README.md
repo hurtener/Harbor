@@ -446,8 +446,11 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
   precedence without changing the action schema or replay modes. If any
   non-nil raw `delta.Reasoning` occurs, completed reasoning is the exact raw
   concatenation, including whitespace/empty fragments, and synthesized details
-  cannot override it. Raw callbacks remain immediate. Details-only providers
-  instead coalesce exact fragments by non-empty ID or `(choice,type,index)`,
+  cannot override it. Raw callbacks remain immediate, including empty deltas;
+  terminal callback delivery keys on observation rather than byte length.
+  Choice index 0 is the only consumed choice, matching unary; all fields and
+  callbacks from other choices are ignored. Details-only providers
+  instead coalesce exact fragments by non-empty ID or `(type,index)`,
   alias ID to fallback identity, and use one separator only between distinct
   blocks. The decoded JSON/SSE fixture proves identical bytes through callback,
   final response, planner decision, live task trajectory, durable restart
