@@ -91,10 +91,11 @@ func TestInternal_ErrorCodeMatrix_AllCanonical(t *testing.T) {
 	// CodePresignUnsupported + CodeRequestTooLarge + the sessions
 	// CodeSessionRunning (D-262) + the sessions CodeSessionErased (D-312) +
 	// the agent-config CodeRevisionConflict (the expected-revision token) +
-	// the session-skill cutover-pending and unstable-read codes = 16 canonical
-	// codes at Protocol 0.1.0.
-	if len(errorCodeMatrix) != 16 {
-		t.Errorf("errorCodeMatrix size = %d, want 16 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
+	// session-skill cutover-pending and unstable-read codes + terminal agent
+	// retirement and retirement-replay conflict = 18 canonical codes at
+	// Protocol 0.1.0.
+	if len(errorCodeMatrix) != 18 {
+		t.Errorf("errorCodeMatrix size = %d, want 18 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
 	}
 }
 

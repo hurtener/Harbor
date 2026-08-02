@@ -325,4 +325,11 @@ func WithAgentReachAuthorizer(a auth.AgentReachAuthorizer) Option {
 // former is where `start` lands, the latter is where the nine control
 // methods land. Fails closed (CLAUDE.md §5) rather than building a
 // surface that would nil-panic on the first Dispatch.
-var ErrMisconfigured = stderrors.New("protocol: ControlSurface missing a mandatory dependency")
+var (
+	ErrMisconfigured = stderrors.New("protocol: ControlSurface missing a mandatory dependency")
+	// ErrAgentRetired is returned by a protocol-owned agent resolver after
+	// reach has already authorized the selected target. It lets the Control
+	// surface preserve the terminal-state wire contract without importing the
+	// agent-config implementation package.
+	ErrAgentRetired = stderrors.New("protocol: agent retired")
+)

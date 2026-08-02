@@ -79,6 +79,9 @@ var (
 	// NOTHING is persisted: no revision record, no active-pointer move, no
 	// emitted event. The caller re-reads the active revision and retries.
 	ErrRevisionConflict = errors.New("agentcfg: revision conflict")
+	// ErrRetirementConflict marks a replay whose operation identity or exact
+	// active-content precondition does not match the durable tombstone.
+	ErrRetirementConflict = errors.New("agentcfg: retirement conflict")
 )
 
 // ExpectNoActiveRevision is the reserved [SetOptions.ExpectedContentHash]
@@ -794,6 +797,50 @@ type Revision struct {
 	CreatedAt time.Time
 	// Payload is the config envelope this revision pins.
 	Payload ConfigPayload
+}
+
+// RetirementRequest describes the one terminal lifecycle operation. The
+// operation id is durable replay identity, not an idempotency hint: the same
+// id resumes the stored operation and any other id conflicts forever.
+type RetirementRequest struct {
+	OperationID         string
+	ExpectedContentHash string
+}
+
+// CleanupStep is a bounded, immutable cleanup manifest entry. It carries no
+// secret or credential material; resource identity is only a durable owner
+// label captured before the tombstone wins.
+type CleanupStep struct {
+	Class     string
+	Resource  string
+	Completed bool
+}
+
+// RetirementStatus is the durable tombstone projection. Prior revision data
+// remains addressable through Get/List/Diff; Active and every mutation return
+// ErrAgentRetired instead.
+type RetirementStatus struct {
+	OperationID      string
+	RetiredAt        time.Time
+	PriorRevisionID  string
+	PriorContentHash string
+	Generation       uint64
+	Cleanup          []CleanupStep
+	Completed        bool
+}
+
+// RetirementRegistry is the lifecycle extension of Registry. Keeping the
+// extension explicit preserves compatibility for narrow test doubles while
+// every shipped Registry driver is required to implement it.
+type RetirementRegistry interface {
+	Registry
+	Retire(context.Context, identity.Quadruple, string, RetirementRequest) (RetirementStatus, error)
+	RetirementStatus(context.Context, identity.Quadruple, string) (RetirementStatus, bool, error)
+	// CompleteRetirementStep durably acknowledges one exact item from the
+	// tombstone's frozen cleanup manifest. Implementations must use the active
+	// lifecycle slot as their CAS target so a replay can never acknowledge a
+	// resource belonging to another operation.
+	CompleteRetirementStep(context.Context, identity.Quadruple, string, string, string, string) (RetirementStatus, error)
 }
 
 // SkillsDiff is the structured set-diff of the skills membership across

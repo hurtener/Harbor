@@ -199,6 +199,12 @@ const (
 	// erasure changes. Harbor returns no partial view; the caller may retry
 	// after the concurrent writer settles. Maps to HTTP 409 (Conflict).
 	CodeSessionSkillReadUnstable Code = "session_skill_read_unstable"
+	// CodeAgentRetired marks an authorized operation targeting a terminal
+	// agent lifecycle. Maps to 409; callers must choose a different agent.
+	CodeAgentRetired Code = "agent_retired"
+	// CodeAgentRetirementConflict marks a bad retirement precondition or a
+	// replay under a different operation identity. Maps to 409.
+	CodeAgentRetirementConflict Code = "agent_retirement_conflict"
 )
 
 // canonicalCodes is the registered set — a fixed package-level map. A
@@ -221,6 +227,8 @@ var canonicalCodes = map[Code]struct{}{
 	CodeRevisionConflict:           {},
 	CodeSessionSkillCutoverPending: {},
 	CodeSessionSkillReadUnstable:   {},
+	CodeAgentRetired:               {},
+	CodeAgentRetirementConflict:    {},
 }
 
 // IsValidCode reports whether c is one of the canonical Protocol error

@@ -17,6 +17,8 @@ Clients branch on `code` (stable across Runtime refactors — RFC §5.3), never 
 
 | Code | HTTP | When it fires | Should you retry? |
 |---|---|---|---|
+| `agent_retired` | 409 | An authorized agent-addressed operation selected a terminally retired agent configuration. | No — choose a different agent; retirement is terminal. |
+| `agent_retirement_conflict` | 409 | A retirement request used a stale active-content hash or a different operation id from the durable replay identity. | Only with the exact original operation id after re-reading retirement status. |
 | `auth_rejected` | 401 | A bearer token was present but failed verification: malformed, an algorithm outside the asymmetric allowlist, bad signature, expired / not-yet-valid, unknown `kid`, audience or issuer mismatch. | Only after obtaining a fresh valid token. |
 | `identity_required` | 401 | The request resolved no complete `(tenant, user, session)` identity scope — a missing bearer, a missing session (no `X-Harbor-Session` header and no default claim), or a body identity that contradicts the verified token. Identity is mandatory and fails closed. | No — attach a token / session first ([Auth & identity](./auth-and-identity.md)). |
 | `identity_scope_required` | 403 | The request is authenticated and identified, but the requested cross-tenant fan-in (e.g. `events.subscribe?admin=1`) or admin verb needs a verified `admin` / `console:fleet` scope claim the token does not carry. | No — re-authenticate with a scope-bearing token. |

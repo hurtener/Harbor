@@ -77,6 +77,20 @@ func (a *AgentResolverAdapter) ResolveAgent(ctx context.Context, ident identity.
 	if agentID == "" {
 		return false, nil
 	}
+	// A boot default remains a valid selection without a tenant revision, but
+	// it is never allowed to bypass the terminal lifecycle record. The
+	// retirement query is intentionally before the default acceptance and is
+	// reached only after ControlSurface's signed-reach gate.
+	if retiring, ok := a.reg.(agentcfg.RetirementRegistry); ok {
+		_, retired, err := retiring.RetirementStatus(ctx,
+			identity.Quadruple{Identity: ident}, agentID)
+		if err != nil {
+			return false, fmt.Errorf("agent-config retirement lookup: %w", err)
+		}
+		if retired {
+			return false, fmt.Errorf("%w: %s", protocol.ErrAgentRetired, agentID)
+		}
+	}
 	if a.defaultID != "" && agentID == a.defaultID {
 		if a.ensure != nil {
 			if err := a.ensure(ctx, ident, agentID); err != nil {

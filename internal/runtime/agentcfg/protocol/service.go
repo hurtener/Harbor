@@ -424,6 +424,27 @@ func (s *Service) lockAgent(tenant, agentID string) func() {
 	return s.lockOwner(agentcfg.ConfigScopeAgent, tenant, "", agentID)
 }
 
+// ensureNotRetired is the protocol-side lifecycle fence for operations whose
+// backing store is not the agent active slot itself (session overlays and
+// skill bodies). Revision reads/writes get the same refusal directly from the
+// registry; this guard keeps those sibling projections from remaining mutable
+// after the durable terminal envelope wins. Historical List/Diff deliberately
+// do not call it (D-399 preserves them).
+func (s *Service) ensureNotRetired(ctx context.Context, q identity.Quadruple, agentID string) error {
+	retiring, ok := s.registry.(agentcfg.RetirementRegistry)
+	if !ok {
+		return nil
+	}
+	_, retired, err := retiring.RetirementStatus(ctx, q, agentID)
+	if err != nil {
+		return err
+	}
+	if retired {
+		return agentcfg.ErrAgentRetired
+	}
+	return nil
+}
+
 // lockOwner acquires the scope-aware per-owner write lock and returns the
 // release func. The key includes the scope so the two tiers are never treated
 // as the same owner: a ConfigScopeAgent write keys by (scope, tenant, agent) —
@@ -1120,6 +1141,88 @@ func (s *Service) Rollback(ctx context.Context, req prototypes.AgentConfigRollba
 		Revision:        revisionToWire(rev),
 		ProtocolVersion: prototypes.ProtocolVersion,
 	}, nil
+}
+
+// Retire installs or replays the terminal agent lifecycle tombstone. It is an
+// admin control-plane operation; data-plane reach is intentionally not part of
+// this service contract and is therefore never inferred from the request.
+func (s *Service) Retire(ctx context.Context, req prototypes.AgentConfigRetireRequest) (prototypes.AgentConfigRetireResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return prototypes.AgentConfigRetireResponse{}, err
+	}
+	id, err := identityFromScope(req.Identity, req.AgentID)
+	if err != nil {
+		return prototypes.AgentConfigRetireResponse{}, err
+	}
+	reg, ok := s.registry.(agentcfg.RetirementRegistry)
+	if !ok {
+		return prototypes.AgentConfigRetireResponse{}, fmt.Errorf("%w: configured registry lacks terminal lifecycle support", ErrMisconfigured)
+	}
+	defer s.lockAgent(id.TenantID, req.AgentID)()
+	status, err := reg.Retire(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.RetirementRequest{
+		OperationID:         req.OperationID,
+		ExpectedContentHash: req.ExpectedContentHash,
+	})
+	if err != nil {
+		return prototypes.AgentConfigRetireResponse{}, err
+	}
+	status, err = s.completeRetirementCleanup(ctx, reg, identity.Quadruple{Identity: id}, req.AgentID, status)
+	if err != nil {
+		return prototypes.AgentConfigRetireResponse{}, err
+	}
+	return prototypes.AgentConfigRetireResponse{Status: retirementStatusToWire(status), ProtocolVersion: prototypes.ProtocolVersion}, nil
+}
+
+// completeRetirementCleanup replays only the tombstone's frozen owner-scoped
+// manifest. Both injected teardown seams are idempotent, so a crash after a
+// side effect and before its CAS acknowledgement is safe to retry. No current
+// reach token is consulted: retirement must finish after authority expiry.
+func (s *Service) completeRetirementCleanup(ctx context.Context, reg agentcfg.RetirementRegistry, q identity.Quadruple, agentID string, status agentcfg.RetirementStatus) (agentcfg.RetirementStatus, error) {
+	for _, step := range status.Cleanup {
+		if step.Completed {
+			continue
+		}
+		switch step.Class {
+		case "mcp_connection":
+			if s.detacher == nil {
+				return agentcfg.RetirementStatus{}, fmt.Errorf("%w: retirement cleanup requires MCP connection detacher", ErrMisconfigured)
+			}
+			if err := s.detacher.DetachConnection(ctx, q.TenantID, agentID, step.Resource); err != nil {
+				return agentcfg.RetirementStatus{}, fmt.Errorf("retirement cleanup detach MCP connection %q: %w", step.Resource, err)
+			}
+		case "oauth_provider":
+			if s.providerInstaller == nil {
+				return agentcfg.RetirementStatus{}, fmt.Errorf("%w: retirement cleanup requires OAuth provider installer", ErrMisconfigured)
+			}
+			if err := s.providerInstaller.UninstallProvider(ctx, q.TenantID, agentID, step.Resource); err != nil {
+				return agentcfg.RetirementStatus{}, fmt.Errorf("retirement cleanup uninstall OAuth provider %q: %w", step.Resource, err)
+			}
+		default:
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: unknown frozen cleanup class %q", agentcfg.ErrRetirementConflict, step.Class)
+		}
+		var err error
+		status, err = reg.CompleteRetirementStep(ctx, q, agentID, status.OperationID, step.Class, step.Resource)
+		if err != nil {
+			return agentcfg.RetirementStatus{}, err
+		}
+	}
+	return status, nil
+}
+
+func retirementStatusToWire(status agentcfg.RetirementStatus) prototypes.AgentConfigRetirementStatus {
+	out := prototypes.AgentConfigRetirementStatus{
+		OperationID:      status.OperationID,
+		RetiredAt:        status.RetiredAt,
+		PriorRevisionID:  status.PriorRevisionID,
+		PriorContentHash: status.PriorContentHash,
+		Generation:       status.Generation,
+		Completed:        status.Completed,
+		Cleanup:          make([]prototypes.AgentConfigRetirementCleanupStep, 0, len(status.Cleanup)),
+	}
+	for _, step := range status.Cleanup {
+		out.Cleanup = append(out.Cleanup, prototypes.AgentConfigRetirementCleanupStep{Class: step.Class, Resource: step.Resource, Completed: step.Completed})
+	}
+	return out
 }
 
 // identityFromScope validates a wire IdentityScope + agent id into an

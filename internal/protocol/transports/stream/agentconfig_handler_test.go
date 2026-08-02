@@ -1,11 +1,13 @@
 package stream_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
+	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
 
 // agentconfig_handler_test.go — the three-tier scope gate on the agent-config
@@ -13,6 +15,52 @@ import (
 // errCode) lives in agentconfig_session_handler_test.go.
 
 const userBody = `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"` + acAgent + `","payload":{"user_prompt":"be terse","disabled_servers":["weather"]}}`
+
+// TestAgentConfigHandler_Retire_AdminReplayAndTerminalRefusal proves the
+// lifecycle verb is an admin-only control-plane operation (no reach
+// requirement), preserves exact replay, and closes the existing active read.
+func TestAgentConfigHandler_Retire_AdminReplayAndTerminalRefusal(t *testing.T) {
+	h := sessionHandler(t)
+	seed := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"` + acAgent + `","payload":{"skills":{"names":["before"]}}}`
+	code, body := acReq(t, h, "set_revision", seed, acID(), []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusOK {
+		t.Fatalf("seed set_revision status=%d body=%s", code, body)
+	}
+	var seeded prototypes.AgentConfigSetRevisionResponse
+	if err := json.Unmarshal(body, &seeded); err != nil {
+		t.Fatalf("decode seed response: %v body=%s", err, body)
+	}
+	retire := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"` + acAgent + `","operation_id":"retire-wire-1","expected_content_hash":"` + seeded.Revision.ContentHash + `"}`
+	code, body = acReqReach(t, h, "retire", retire, acID(), []auth.Scope{auth.ScopeAdmin}, nil)
+	if code != http.StatusOK {
+		t.Fatalf("retire status=%d body=%s", code, body)
+	}
+	var retired prototypes.AgentConfigRetireResponse
+	if err := json.Unmarshal(body, &retired); err != nil {
+		t.Fatalf("decode retirement response: %v body=%s", err, body)
+	}
+	if retired.Status.OperationID != "retire-wire-1" || retired.Status.PriorContentHash != seeded.Revision.ContentHash {
+		t.Fatalf("retirement status=%+v, want stored operation and prior hash", retired.Status)
+	}
+	code, body = acReqReach(t, h, "retire", retire, acID(), []auth.Scope{auth.ScopeAdmin}, nil)
+	if code != http.StatusOK {
+		t.Fatalf("same-operation replay status=%d body=%s", code, body)
+	}
+	conflict := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"` + acAgent + `","operation_id":"retire-wire-2","expected_content_hash":"` + seeded.Revision.ContentHash + `"}`
+	code, body = acReq(t, h, "retire", conflict, acID(), []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusConflict || errCode(t, body) != protoerrors.CodeAgentRetirementConflict {
+		t.Fatalf("different-operation retire = (%d,%s), want 409 agent_retirement_conflict", code, body)
+	}
+	get := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"` + acAgent + `"}`
+	code, body = acReq(t, h, "get", get, acID(), []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusConflict || errCode(t, body) != protoerrors.CodeAgentRetired {
+		t.Fatalf("active get after retire = (%d,%s), want 409 agent_retired", code, body)
+	}
+	code, body = acReq(t, h, "retire", retire, acID(), []auth.Scope{auth.ScopeAgentConfigUser})
+	if code != http.StatusForbidden || errCode(t, body) != protoerrors.CodeScopeMismatch {
+		t.Fatalf("non-admin retire = (%d,%s), want 403 scope_mismatch", code, body)
+	}
+}
 
 // TestAgentConfigHandler_UserRoute_WithUserScopeAllowed proves a caller
 // carrying the agent_config:user scope reaches a user-tier route.

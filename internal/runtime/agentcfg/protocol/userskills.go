@@ -62,7 +62,11 @@ func (s *Service) UserSkillsList(ctx context.Context, req prototypes.AgentConfig
 	if err != nil {
 		return prototypes.AgentConfigUserSkillsListResponse{}, err
 	}
-	list, err := s.skills.List(ctx, identity.Quadruple{Identity: id}, skills.ListFilter{Scope: skills.ScopeUser})
+	q := identity.Quadruple{Identity: id}
+	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
+		return prototypes.AgentConfigUserSkillsListResponse{}, err
+	}
+	list, err := s.skills.List(ctx, q, skills.ListFilter{Scope: skills.ScopeUser})
 	if err != nil {
 		return prototypes.AgentConfigUserSkillsListResponse{}, err
 	}
@@ -92,6 +96,9 @@ func (s *Service) UserSkillsUpsert(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
 	}
 	q := identity.Quadruple{Identity: id}
+	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
+		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
+	}
 	release := s.lockOwner(agentcfg.ConfigScopeUser, q.TenantID, q.UserID, req.AgentID)
 	defer release()
 	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
@@ -143,6 +150,9 @@ func (s *Service) UserSkillsDelete(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigUserSkillsDeleteResponse{}, fmt.Errorf("%w: skill name is empty", ErrIdentityRequired)
 	}
 	q := identity.Quadruple{Identity: id}
+	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
+		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err
+	}
 	release := s.lockOwner(agentcfg.ConfigScopeUser, q.TenantID, q.UserID, req.AgentID)
 	defer release()
 	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}

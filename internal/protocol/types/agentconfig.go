@@ -847,6 +847,44 @@ type AgentConfigRollbackResponse struct {
 	ProtocolVersion string                  `json:"protocol_version"`
 }
 
+// AgentConfigRetirementCleanupStep is one redacted, bounded cleanup manifest
+// entry. It deliberately carries no URL, secret, credential, or raw runtime
+// descriptor.
+type AgentConfigRetirementCleanupStep struct {
+	Class     string `json:"class"`
+	Resource  string `json:"resource"`
+	Completed bool   `json:"completed"`
+}
+
+// AgentConfigRetirementStatus is the replay-safe terminal lifecycle view.
+// The raw operation id is returned only to the authenticated admin caller who
+// supplied it; lifecycle events use its hash instead.
+type AgentConfigRetirementStatus struct {
+	OperationID      string                             `json:"operation_id"`
+	RetiredAt        time.Time                          `json:"retired_at"`
+	PriorRevisionID  string                             `json:"prior_revision_id,omitempty"`
+	PriorContentHash string                             `json:"prior_content_hash,omitempty"`
+	Generation       uint64                             `json:"generation"`
+	Cleanup          []AgentConfigRetirementCleanupStep `json:"cleanup,omitempty"`
+	Completed        bool                               `json:"completed"`
+}
+
+// AgentConfigRetireRequest terminally retires one agent configuration. It is
+// admin control-plane authority and intentionally has no agent-reach field.
+type AgentConfigRetireRequest struct {
+	Identity            IdentityScope `json:"identity"`
+	AgentID             string        `json:"agent_id"`
+	OperationID         string        `json:"operation_id"`
+	ExpectedContentHash string        `json:"expected_content_hash"`
+}
+
+// AgentConfigRetireResponse returns the stored operation status. An exact
+// same-operation retry returns this response and resumes only its manifest.
+type AgentConfigRetireResponse struct {
+	Status          AgentConfigRetirementStatus `json:"status"`
+	ProtocolVersion string                      `json:"protocol_version"`
+}
+
 // AgentConfigSetToolExposureRequest is the admin-scoped
 // `agent_config.set_tool_exposure` request — set the agent's MCP-exposure /
 // per-tool policy as a desired-state REPLACE of the tool-exposure section

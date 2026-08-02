@@ -123,6 +123,8 @@ func HTTPStatus(code protoerrors.Code) int {
 		// changing on every attempt. No partial result is returned; retry
 		// after the concurrent transition settles.
 		return http.StatusConflict // 409
+	case protoerrors.CodeAgentRetired, protoerrors.CodeAgentRetirementConflict:
+		return http.StatusConflict // 409
 	default:
 		// An unmapped Code is a Protocol-surface bug, not a client
 		// error. Surface it loud as a 500 rather than masking it

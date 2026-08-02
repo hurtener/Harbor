@@ -37,6 +37,7 @@ import (
 	"log/slog"
 	"reflect"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -133,9 +134,23 @@ const recordSchema = 1
 
 // activeRecord is the JSON-encoded active-pointer record.
 type activeRecord struct {
-	Schema     int       `json:"schema"`
-	RevisionID string    `json:"revision_id"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	Schema     int               `json:"schema"`
+	RevisionID string            `json:"revision_id"`
+	UpdatedAt  time.Time         `json:"updated_at"`
+	Retirement *retirementRecord `json:"retirement,omitempty"`
+}
+
+// retirementRecord is deliberately embedded in the active slot rather than
+// placed beside it: all legacy writers already condition that exact slot, so
+// a terminal transition cannot be bypassed by an older config writer.
+type retirementRecord struct {
+	OperationID      string                 `json:"operation_id"`
+	RetiredAt        time.Time              `json:"retired_at"`
+	PriorRevisionID  string                 `json:"prior_revision_id,omitempty"`
+	PriorContentHash string                 `json:"prior_content_hash,omitempty"`
+	Generation       uint64                 `json:"generation"`
+	Cleanup          []agentcfg.CleanupStep `json:"cleanup,omitempty"`
+	Completed        bool                   `json:"completed"`
 }
 
 // revisionRecord is the JSON-encoded immutable revision record. Parent
@@ -247,6 +262,9 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	if err := r.guardSignedOAuthMCPFenceWriter(ctx, id, agentID, scope); err != nil {
 		return agentcfg.Revision{}, err
 	}
+	if err := r.ensureNotRetired(ctx, id, agentID); err != nil {
+		return agentcfg.Revision{}, err
+	}
 	q := keys.quad
 	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys, opts)
 	if err != nil {
@@ -312,6 +330,9 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	}
 	if err := r.saveActiveIf(ctx, expectations, q, keys.activeKind, revID, now); err != nil {
 		if errors.Is(err, state.ErrConditionFailed) {
+			if retiredErr := r.ensureNotRetired(ctx, id, agentID); retiredErr != nil {
+				return agentcfg.Revision{}, retiredErr
+			}
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensationTimeout)
 			defer cancel()
 			if deleteErr := r.state.Delete(cleanupCtx, q, keys.revPfx+revID); deleteErr != nil {
@@ -395,6 +416,9 @@ func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID st
 		if err := r.validatePresentLifecycle(ctx, syntheticQuad(id.TenantID, agentID), kindActive); err != nil {
 			return agentcfg.Revision{}, false, err
 		}
+	}
+	if err := r.ensureNotRetired(ctx, id, agentID); err != nil {
+		return agentcfg.Revision{}, false, err
 	}
 	active, set, err := r.loadActiveRevision(ctx, keys.quad, keys.activeKind, keys.revPfx)
 	if err != nil || scope != agentcfg.ConfigScopeAgent {
@@ -566,6 +590,9 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	if err := r.guardSignedOAuthMCPFenceWriter(ctx, id, agentID, scope); err != nil {
 		return agentcfg.Revision{}, err
 	}
+	if err := r.ensureNotRetired(ctx, id, agentID); err != nil {
+		return agentcfg.Revision{}, err
+	}
 	q := keys.quad
 	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys, opts)
 	if err != nil {
@@ -616,6 +643,9 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	now := r.clock().UTC()
 	if err := r.saveActiveIf(ctx, expectations, q, keys.activeKind, revisionID, now); err != nil {
 		if errors.Is(err, state.ErrConditionFailed) {
+			if retiredErr := r.ensureNotRetired(ctx, id, agentID); retiredErr != nil {
+				return agentcfg.Revision{}, retiredErr
+			}
 			return agentcfg.Revision{}, fmt.Errorf("%w: active pointer changed during rollback", agentcfg.ErrRevisionConflict)
 		}
 		return agentcfg.Revision{}, err
@@ -668,6 +698,245 @@ func (r *registry) Diff(ctx context.Context, id identity.Quadruple, agentID, fro
 func (r *registry) Close(_ context.Context) error {
 	r.closed.Store(true)
 	return nil
+}
+
+// Retire CAS-replaces the agent active slot with the terminal lifecycle
+// envelope. It never deletes a revision: the prior id/hash are a durable
+// replay/audit anchor and immutable history continues to use its existing
+// record kinds.
+func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID string, req agentcfg.RetirementRequest) (agentcfg.RetirementStatus, error) {
+	if err := r.validate(id, agentID); err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	operationID := strings.TrimSpace(req.OperationID)
+	if operationID == "" || len(operationID) > 128 {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: operation id must be 1..128 bytes", agentcfg.ErrRetirementConflict)
+	}
+	if req.ExpectedContentHash == "" {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: expected active content hash is required", agentcfg.ErrRetirementConflict)
+	}
+	q := syntheticQuad(id.TenantID, agentID)
+	current, eventID, found, err := r.loadActiveRecord(ctx, q, kindActive)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if current.Retirement != nil {
+		if current.Retirement.OperationID != operationID {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: durable operation differs", agentcfg.ErrRetirementConflict)
+		}
+		return retirementStatus(current.Retirement), nil
+	}
+
+	var prior agentcfg.Revision
+	hasPrior := false
+	if current.RevisionID != "" {
+		rr, loadErr := r.loadRevision(ctx, q, kindRevisionPfx, current.RevisionID)
+		if loadErr != nil {
+			return agentcfg.RetirementStatus{}, loadErr
+		}
+		prior, hasPrior = rr.toRevision(), true
+	}
+	if err := agentcfg.CheckExpectedRevision(agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}, prior, hasPrior); err != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: %v", agentcfg.ErrRetirementConflict, err)
+	}
+	t := &retirementRecord{
+		OperationID: operationID,
+		RetiredAt:   r.clock().UTC(),
+		Generation:  1,
+	}
+	if hasPrior {
+		t.PriorRevisionID = prior.RevisionID
+		t.PriorContentHash = prior.ContentHash
+		t.Cleanup = cleanupManifest(prior)
+	}
+	t.Completed = len(t.Cleanup) == 0
+	next := activeRecord{Schema: recordSchema, UpdatedAt: t.RetiredAt, Retirement: t}
+	buf, err := json.Marshal(next)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("agentcfg/statestore: marshal retirement tombstone: %w", err)
+	}
+	expected := state.EventID("")
+	if found {
+		expected = eventID
+	}
+	err = r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kindActive, ExpectedEventID: expected}}, state.StateRecord{
+		ID:        state.NewEventID(),
+		Identity:  q,
+		Kind:      kindActive,
+		Bytes:     buf,
+		UpdatedAt: t.RetiredAt,
+	})
+	if err == nil {
+		return retirementStatus(t), nil
+	}
+	if !errors.Is(err, state.ErrConditionFailed) {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement tombstone: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	// A competing retire or an unknown acknowledgement is resolved only by an
+	// exact reread. Never infer that a condition failure means our operation
+	// lost: a process may have committed the same bytes and lost its response.
+	landed, _, _, rereadErr := r.loadActiveRecord(ctx, q, kindActive)
+	if rereadErr != nil {
+		return agentcfg.RetirementStatus{}, rereadErr
+	}
+	if landed.Retirement != nil && landed.Retirement.OperationID == operationID {
+		return retirementStatus(landed.Retirement), nil
+	}
+	return agentcfg.RetirementStatus{}, fmt.Errorf("%w: active slot moved", agentcfg.ErrRetirementConflict)
+}
+
+// RetirementStatus reads only the lifecycle envelope. It is intentionally
+// available after retirement so a same-operation caller can resume cleanup;
+// it does not reveal config content.
+func (r *registry) RetirementStatus(ctx context.Context, id identity.Quadruple, agentID string) (agentcfg.RetirementStatus, bool, error) {
+	if err := r.validate(id, agentID); err != nil {
+		return agentcfg.RetirementStatus{}, false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return agentcfg.RetirementStatus{}, false, err
+	}
+	rec, _, _, err := r.loadActiveRecord(ctx, syntheticQuad(id.TenantID, agentID), kindActive)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, false, err
+	}
+	if rec.Retirement == nil {
+		return agentcfg.RetirementStatus{}, false, nil
+	}
+	return retirementStatus(rec.Retirement), true, nil
+}
+
+// CompleteRetirementStep records completion only after the owner-scoped live
+// teardown has succeeded. The frozen manifest is the authority: callers
+// cannot invent an item, and a stale process cannot acknowledge a newer
+// lifecycle generation.
+func (r *registry) CompleteRetirementStep(ctx context.Context, id identity.Quadruple, agentID, operationID, class, resource string) (agentcfg.RetirementStatus, error) {
+	if err := r.validate(id, agentID); err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	q := syntheticQuad(id.TenantID, agentID)
+	current, eventID, found, err := r.loadActiveRecord(ctx, q, kindActive)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, err
+	}
+	if !found || current.Retirement == nil || current.Retirement.OperationID != operationID {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: lifecycle operation changed", agentcfg.ErrRetirementConflict)
+	}
+	step := -1
+	for i := range current.Retirement.Cleanup {
+		if current.Retirement.Cleanup[i].Class == class && current.Retirement.Cleanup[i].Resource == resource {
+			step = i
+			break
+		}
+	}
+	if step < 0 {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: cleanup item is not in the frozen manifest", agentcfg.ErrRetirementConflict)
+	}
+	if current.Retirement.Cleanup[step].Completed {
+		return retirementStatus(current.Retirement), nil
+	}
+	next := current
+	next.Retirement = &retirementRecord{
+		OperationID:      current.Retirement.OperationID,
+		RetiredAt:        current.Retirement.RetiredAt,
+		PriorRevisionID:  current.Retirement.PriorRevisionID,
+		PriorContentHash: current.Retirement.PriorContentHash,
+		Generation:       current.Retirement.Generation + 1,
+		Cleanup:          append([]agentcfg.CleanupStep(nil), current.Retirement.Cleanup...),
+	}
+	next.Retirement.Cleanup[step].Completed = true
+	next.Retirement.Completed = true
+	for _, item := range next.Retirement.Cleanup {
+		if !item.Completed {
+			next.Retirement.Completed = false
+			break
+		}
+	}
+	next.UpdatedAt = r.clock().UTC()
+	buf, err := json.Marshal(next)
+	if err != nil {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("agentcfg/statestore: marshal retirement progress: %w", err)
+	}
+	err = r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kindActive, ExpectedEventID: eventID}}, state.StateRecord{
+		ID: state.NewEventID(), Identity: q, Kind: kindActive, Bytes: buf, UpdatedAt: next.UpdatedAt,
+	})
+	if err == nil {
+		return retirementStatus(next.Retirement), nil
+	}
+	if !errors.Is(err, state.ErrConditionFailed) {
+		return agentcfg.RetirementStatus{}, fmt.Errorf("%w: save retirement progress: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	// A commit followed by a lost acknowledgement converges by exact reread;
+	// any other movement is a conflict, never a blind retry over new state.
+	landed, _, _, rereadErr := r.loadActiveRecord(ctx, q, kindActive)
+	if rereadErr != nil {
+		return agentcfg.RetirementStatus{}, rereadErr
+	}
+	if landed.Retirement != nil && landed.Retirement.OperationID == operationID {
+		for _, item := range landed.Retirement.Cleanup {
+			if item.Class == class && item.Resource == resource && item.Completed {
+				return retirementStatus(landed.Retirement), nil
+			}
+		}
+	}
+	return agentcfg.RetirementStatus{}, fmt.Errorf("%w: cleanup progress moved", agentcfg.ErrRetirementConflict)
+}
+
+func (r *registry) ensureNotRetired(ctx context.Context, id identity.Quadruple, agentID string) error {
+	rec, _, _, err := r.loadActiveRecord(ctx, syntheticQuad(id.TenantID, agentID), kindActive)
+	if err != nil {
+		return err
+	}
+	if rec.Retirement != nil {
+		return fmt.Errorf("%w: operation=%q", agentcfg.ErrAgentRetired, rec.Retirement.OperationID)
+	}
+	return nil
+}
+
+func (r *registry) loadActiveRecord(ctx context.Context, q identity.Quadruple, kind string) (activeRecord, state.EventID, bool, error) {
+	rec, err := r.state.Load(ctx, q, kind)
+	if errors.Is(err, state.ErrNotFound) {
+		return activeRecord{}, "", false, nil
+	}
+	if err != nil {
+		return activeRecord{}, "", false, fmt.Errorf("%w: load active pointer: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	var out activeRecord
+	if len(rec.Bytes) > 0 {
+		if err := json.Unmarshal(rec.Bytes, &out); err != nil {
+			return activeRecord{}, "", false, fmt.Errorf("%w: unmarshal active pointer: %w", agentcfg.ErrStateUnavailable, err)
+		}
+		if out.Schema != 0 && out.Schema != recordSchema {
+			return activeRecord{}, "", false, fmt.Errorf("%w: active pointer schema=%d, runtime supports %d", agentcfg.ErrStateUnavailable, out.Schema, recordSchema)
+		}
+	}
+	return out, rec.ID, true, nil
+}
+
+func cleanupManifest(prior agentcfg.Revision) []agentcfg.CleanupStep {
+	var out []agentcfg.CleanupStep
+	if prior.Payload.Connections != nil {
+		for _, c := range prior.Payload.Connections.Servers {
+			out = append(out, agentcfg.CleanupStep{Class: "mcp_connection", Resource: c.Name})
+		}
+	}
+	if prior.Payload.OAuthProviders != nil {
+		for _, p := range prior.Payload.OAuthProviders.Providers {
+			out = append(out, agentcfg.CleanupStep{Class: "oauth_provider", Resource: p.Name})
+		}
+	}
+	return out
+}
+
+func retirementStatus(in *retirementRecord) agentcfg.RetirementStatus {
+	out := agentcfg.RetirementStatus{OperationID: in.OperationID, RetiredAt: in.RetiredAt, PriorRevisionID: in.PriorRevisionID, PriorContentHash: in.PriorContentHash, Generation: in.Generation, Completed: in.Completed}
+	out.Cleanup = append([]agentcfg.CleanupStep(nil), in.Cleanup...)
+	return out
 }
 
 // --- internal helpers ---
@@ -760,6 +1029,12 @@ func (r *registry) loadActiveRevision(ctx context.Context, q identity.Quadruple,
 	}
 	if ar.Schema != 0 && ar.Schema != recordSchema {
 		return agentcfg.Revision{}, false, fmt.Errorf("%w: active pointer schema=%d, runtime supports %d", agentcfg.ErrStateUnavailable, ar.Schema, recordSchema)
+	}
+	if ar.Retirement != nil {
+		if strings.TrimSpace(ar.Retirement.OperationID) == "" {
+			return agentcfg.Revision{}, false, fmt.Errorf("%w: malformed retirement tombstone", agentcfg.ErrStateUnavailable)
+		}
+		return agentcfg.Revision{}, false, fmt.Errorf("%w: operation=%q", agentcfg.ErrAgentRetired, ar.Retirement.OperationID)
 	}
 	if ar.RevisionID == "" {
 		return agentcfg.Revision{}, false, nil
