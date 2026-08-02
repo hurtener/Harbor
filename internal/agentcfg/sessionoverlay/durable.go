@@ -25,6 +25,15 @@ import (
 const MaxSessionSkillReadAttempts = 3
 
 const (
+	// MaxSessionPersonalRecordBytes bounds one durable personal-skill record
+	// before storage and after retrieval.
+	MaxSessionPersonalRecordBytes = 256 * 1024
+	// MaxSessionPersonalCopyEpochBytes bounds the operator-declared copy epoch
+	// stamped onto records copied from schema-1 overlays.
+	MaxSessionPersonalCopyEpochBytes = 128
+)
+
+const (
 	personalKindPrefix = "agentcfg.session_personal.v1."
 	cutoverKindPrefix  = "agentcfg.session_personal.cutover."
 	legacyKindPrefix   = "agentcfg.session_overlay."
@@ -52,6 +61,10 @@ var (
 	// ErrCutoverPending means a tenant has not completed the declared durable
 	// migration and session-personal mutation must remain refused.
 	ErrCutoverPending = errors.New("agentcfg/sessionoverlay: session skill cutover pending")
+	// ErrLegacyOverlayInvalid means a row returned by the schema-1 legacy scan
+	// does not prove the exact session-scoped envelope it claims to represent.
+	// Cutover must remain dual-read rather than silently skipping the row.
+	ErrLegacyOverlayInvalid = errors.New("agentcfg/sessionoverlay: legacy overlay invalid")
 )
 
 // PersonalSkillRecord is one agent-owned durable session-personal body. A
@@ -164,6 +177,9 @@ func (s *DurableStore) SavePersonal(ctx context.Context, id identity.Quadruple, 
 	if skill.Scope != skills.ScopeSession {
 		return PersonalSkillRecord{}, fmt.Errorf("%w: session personal skill scope must be %q", ErrInvalidInput, skills.ScopeSession)
 	}
+	if err := validateCopyMarkers(copyEpoch, legacyContentHash); err != nil {
+		return PersonalSkillRecord{}, fmt.Errorf("%w: %w", ErrInvalidInput, err)
+	}
 	canonicalName := canonicalNameFor(skill.Name)
 	kind, err := PersonalSkillKind(agentID, canonicalName)
 	if err != nil {
@@ -188,6 +204,9 @@ func (s *DurableStore) SavePersonal(ctx context.Context, id identity.Quadruple, 
 	bytes, err := json.Marshal(record)
 	if err != nil {
 		return PersonalSkillRecord{}, fmt.Errorf("agentcfg/sessionoverlay: marshal personal skill: %w", err)
+	}
+	if len(bytes) > MaxSessionPersonalRecordBytes {
+		return PersonalSkillRecord{}, fmt.Errorf("%w: personal skill record is %d bytes, maximum is %d", ErrInvalidInput, len(bytes), MaxSessionPersonalRecordBytes)
 	}
 	next := state.StateRecord{ID: state.NewEventID(), Identity: durableSessionQuad(id), Kind: kind, Bytes: bytes, UpdatedAt: record.UpdatedAt}
 	expectations := append([]state.SlotExpectation{target}, fences.expectations()...)
@@ -236,6 +255,9 @@ func (s *DurableStore) DeletePersonal(ctx context.Context, id identity.Quadruple
 	bytes, err := json.Marshal(record)
 	if err != nil {
 		return PersonalSkillRecord{}, fmt.Errorf("agentcfg/sessionoverlay: marshal personal tombstone: %w", err)
+	}
+	if len(bytes) > MaxSessionPersonalRecordBytes {
+		return PersonalSkillRecord{}, fmt.Errorf("%w: personal tombstone is %d bytes, maximum is %d", ErrInvalidInput, len(bytes), MaxSessionPersonalRecordBytes)
 	}
 	next := state.StateRecord{ID: state.NewEventID(), Identity: durableSessionQuad(id), Kind: kind, Bytes: bytes, UpdatedAt: record.UpdatedAt}
 	expectations := append([]state.SlotExpectation{target}, fences.expectations()...)
@@ -286,12 +308,18 @@ func (s *DurableStore) loadPersonal(ctx context.Context, id identity.Quadruple, 
 }
 
 func decodePersonal(bytes []byte, agentID, canonicalName string) (PersonalSkillRecord, bool, error) {
+	if len(bytes) == 0 || len(bytes) > MaxSessionPersonalRecordBytes {
+		return PersonalSkillRecord{}, false, fmt.Errorf("%w: record size %d is outside 1..%d", ErrPersonalRecordInvalid, len(bytes), MaxSessionPersonalRecordBytes)
+	}
 	var record PersonalSkillRecord
 	if err := json.Unmarshal(bytes, &record); err != nil {
 		return PersonalSkillRecord{}, false, fmt.Errorf("%w: decode: %w", ErrPersonalRecordInvalid, err)
 	}
 	if record.Schema != 1 || record.AgentID != agentID || record.CanonicalName != canonicalName {
 		return PersonalSkillRecord{}, false, fmt.Errorf("%w: key/payload mismatch", ErrPersonalRecordInvalid)
+	}
+	if err := validateCopyMarkers(record.CopyEpoch, record.LegacyContentHash); err != nil {
+		return PersonalSkillRecord{}, false, fmt.Errorf("%w: %w", ErrPersonalRecordInvalid, err)
 	}
 	if record.Deleted {
 		return record, true, nil
@@ -300,6 +328,27 @@ func decodePersonal(bytes []byte, agentID, canonicalName string) (PersonalSkillR
 		return PersonalSkillRecord{}, false, fmt.Errorf("%w: body validation failed", ErrPersonalRecordInvalid)
 	}
 	return record, true, nil
+}
+
+func validateCopyMarkers(copyEpoch, legacyContentHash string) error {
+	if (copyEpoch == "") != (legacyContentHash == "") {
+		return errors.New("copy epoch and legacy content hash must both be present or both be absent")
+	}
+	if copyEpoch != "" && !validCutoverToken(copyEpoch, MaxSessionPersonalCopyEpochBytes) {
+		return fmt.Errorf("copy epoch must be canonical printable ASCII bounded to %d bytes", MaxSessionPersonalCopyEpochBytes)
+	}
+	if legacyContentHash != "" && !validCanonicalSHA256(legacyContentHash) {
+		return errors.New("legacy content hash must be canonical lowercase SHA-256 hex")
+	}
+	return nil
+}
+
+func validCanonicalSHA256(value string) bool {
+	if len(value) != sha256.Size*2 || value != strings.ToLower(value) {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 type fences struct {
@@ -535,6 +584,16 @@ func (c *CutoverController) Ensure(ctx context.Context) error {
 		err = c.state.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kind}}, next)
 		if err != nil {
 			if errors.Is(err, state.ErrConditionFailed) {
+				winner, found, loadErr := c.load(ctx, declaration)
+				if loadErr != nil {
+					return fmt.Errorf("%w: initialize cutover concurrent winner: %w", ErrCutoverRecordInvalid, loadErr)
+				}
+				if !found {
+					return fmt.Errorf("%w: initialize cutover condition failed without a durable winner", ErrCutoverRecordInvalid)
+				}
+				if err := validateCutoverRecord(winner, declaration); err != nil {
+					return fmt.Errorf("%w: initialize cutover concurrent winner: %w", ErrCutoverRecordInvalid, err)
+				}
 				continue
 			}
 			ok, reconcileErr := c.exactCutover(ctx, next, declaration)
@@ -582,8 +641,8 @@ func (c *CutoverController) Advance(ctx context.Context, tenantID string, limit 
 	}
 	copied := 0
 	for _, candidate := range page.Records {
-		if !isExactLegacyOverlayCandidate(candidate) {
-			continue
+		if err := validateLegacyOverlayCandidate(candidate, declaration.TenantID); err != nil {
+			return CutoverDualRead, err
 		}
 		n, err := migrator.CopyLegacyOverlay(ctx, candidate, declaration)
 		if err != nil {
@@ -613,8 +672,8 @@ func (c *CutoverController) Advance(ctx context.Context, tenantID string, limit 
 			return CutoverDualRead, fmt.Errorf("%w: verify legacy overlays: %w", ErrStateUnavailable, err)
 		}
 		for _, candidate := range page.Records {
-			if !isExactLegacyOverlayCandidate(candidate) {
-				continue
+			if err := validateLegacyOverlayCandidate(candidate, declaration.TenantID); err != nil {
+				return CutoverDualRead, err
 			}
 			complete, err := migrator.VerifyLegacyOverlay(ctx, candidate, declaration)
 			if err != nil {
@@ -648,17 +707,36 @@ func (c *CutoverController) Advance(ctx context.Context, tenantID string, limit 
 	return CutoverStateOnly, nil
 }
 
-func isExactLegacyOverlayCandidate(candidate state.StateRecord) bool {
+func validateLegacyOverlayCandidate(candidate state.StateRecord, tenantID string) error {
+	if err := state.ValidateRecord(candidate); err != nil {
+		return fmt.Errorf("%w: record shape: %w", ErrLegacyOverlayInvalid, err)
+	}
+	if candidate.Identity.TenantID != tenantID || candidate.Identity.RunID != "" {
+		return fmt.Errorf("%w: legacy identity must be the exact tenant session scope with empty run id", ErrLegacyOverlayInvalid)
+	}
 	if !strings.HasPrefix(candidate.Kind, legacyKindPrefix) {
-		return false
+		return fmt.Errorf("%w: kind %q is outside the legacy prefix", ErrLegacyOverlayInvalid, candidate.Kind)
 	}
-	var payload struct {
-		AgentID string `json:"agent_id"`
+	agentID := strings.TrimPrefix(candidate.Kind, legacyKindPrefix)
+	if !validCutoverToken(agentID, 128) || candidate.Kind != LegacyOverlayKind(agentID) {
+		return fmt.Errorf("%w: invalid raw agent suffix", ErrLegacyOverlayInvalid)
 	}
-	if err := json.Unmarshal(candidate.Bytes, &payload); err != nil || !validCutoverToken(payload.AgentID, 128) {
-		return false
+	var envelope struct {
+		Schema    int             `json:"schema"`
+		Overlay   json.RawMessage `json:"overlay"`
+		UpdatedAt *time.Time      `json:"updated_at"`
 	}
-	return candidate.Kind == LegacyOverlayKind(payload.AgentID)
+	if err := json.Unmarshal(candidate.Bytes, &envelope); err != nil {
+		return fmt.Errorf("%w: decode schema-1 envelope: %w", ErrLegacyOverlayInvalid, err)
+	}
+	if envelope.Schema != recordSchema || len(envelope.Overlay) == 0 || string(envelope.Overlay) == "null" || envelope.UpdatedAt == nil {
+		return fmt.Errorf("%w: incompatible schema-1 envelope", ErrLegacyOverlayInvalid)
+	}
+	var overlay Overlay
+	if err := json.Unmarshal(envelope.Overlay, &overlay); err != nil {
+		return fmt.Errorf("%w: decode overlay body: %w", ErrLegacyOverlayInvalid, err)
+	}
+	return nil
 }
 
 func (c *CutoverController) loadWithSlot(ctx context.Context, declaration config.SessionPersonalCutoverTenant) (CutoverRecord, state.SlotExpectation, error) {

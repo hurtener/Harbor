@@ -2,8 +2,10 @@ package sessionoverlay_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -84,7 +86,8 @@ func TestDurableStore_PersonalRecordCASAndTombstone(t *testing.T) {
 	}
 	id := durableID("session-a")
 	activate(t, st, id)
-	first, err := store.SavePersonal(context.Background(), id, "agent-a", durableSkill("Alpha"), "epoch-1", "legacy-hash")
+	skill := durableSkill("Alpha")
+	first, err := store.SavePersonal(context.Background(), id, "agent-a", skill, "epoch-1", skills.CanonicalContentHash(skill))
 	if err != nil {
 		t.Fatalf("SavePersonal: %v", err)
 	}
@@ -102,6 +105,80 @@ func TestDurableStore_PersonalRecordCASAndTombstone(t *testing.T) {
 	loaded, found, err = store.LoadPersonal(context.Background(), id, "agent-a", "alpha")
 	if err != nil || !found || !loaded.Deleted {
 		t.Fatalf("tombstone LoadPersonal = (%+v, %v, %v)", loaded, found, err)
+	}
+}
+
+func TestDurableStore_RejectsInvalidCopyMarkersAndRecordSize(t *testing.T) {
+	st := newDurableState(t)
+	store, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := durableID("session-a")
+	activate(t, st, id)
+	skill := durableSkill("bounded")
+	validHash := skills.CanonicalContentHash(skill)
+	for _, tc := range []struct {
+		name  string
+		epoch string
+		hash  string
+	}{
+		{name: "epoch only", epoch: "epoch"},
+		{name: "hash only", hash: validHash},
+		{name: "whitespace epoch", epoch: " epoch", hash: validHash},
+		{name: "oversized epoch", epoch: strings.Repeat("e", sessionoverlay.MaxSessionPersonalCopyEpochBytes+1), hash: validHash},
+		{name: "short hash", epoch: "epoch", hash: "abcd"},
+		{name: "uppercase hash", epoch: "epoch", hash: strings.ToUpper(validHash)},
+		{name: "nonhex hash", epoch: "epoch", hash: strings.Repeat("z", 64)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.SavePersonal(context.Background(), id, "agent-a", skill, tc.epoch, tc.hash); !errors.Is(err, sessionoverlay.ErrInvalidInput) {
+				t.Fatalf("SavePersonal = %v, want ErrInvalidInput", err)
+			}
+		})
+	}
+
+	oversized := durableSkill("oversized")
+	oversized.Description = strings.Repeat("x", sessionoverlay.MaxSessionPersonalRecordBytes)
+	if _, err := store.SavePersonal(context.Background(), id, "agent-a", oversized, "", ""); !errors.Is(err, sessionoverlay.ErrInvalidInput) {
+		t.Fatalf("oversized SavePersonal = %v, want ErrInvalidInput", err)
+	}
+
+	canonicalName := "stored-oversized"
+	kind, err := sessionoverlay.PersonalSkillKind("agent-a", canonicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: kind, Bytes: []byte(strings.Repeat("x", sessionoverlay.MaxSessionPersonalRecordBytes+1))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.LoadPersonal(context.Background(), id, "agent-a", canonicalName); !errors.Is(err, sessionoverlay.ErrPersonalRecordInvalid) {
+		t.Fatalf("oversized LoadPersonal = %v, want ErrPersonalRecordInvalid", err)
+	}
+
+	badSkill := durableSkill("stored-bad-marker")
+	badRecord := sessionoverlay.PersonalSkillRecord{
+		Schema:            1,
+		AgentID:           "agent-a",
+		CanonicalName:     "stored-bad-marker",
+		ContentHash:       skills.CanonicalContentHash(badSkill),
+		Skill:             badSkill,
+		CopyEpoch:         "epoch",
+		LegacyContentHash: strings.ToUpper(skills.CanonicalContentHash(badSkill)),
+	}
+	badBytes, err := json.Marshal(badRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badKind, err := sessionoverlay.PersonalSkillKind("agent-a", badRecord.CanonicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: badKind, Bytes: badBytes}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.LoadPersonal(context.Background(), id, "agent-a", badRecord.CanonicalName); !errors.Is(err, sessionoverlay.ErrPersonalRecordInvalid) {
+		t.Fatalf("invalid marker LoadPersonal = %v, want ErrPersonalRecordInvalid", err)
 	}
 }
 
@@ -362,7 +439,11 @@ func TestCutoverController_CommitThenErrorConvergesInitProgressAndFinal(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := base.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: durableID("session-a"), Kind: sessionoverlay.LegacyOverlayKind("agent-a"), Bytes: []byte(`{"agent_id":"agent-a"}`)}); err != nil {
+	legacy, err := sessionoverlay.NewStore(base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.SetUserPrompt(context.Background(), durableID("session-a"), "agent-a", "legacy"); err != nil {
 		t.Fatal(err)
 	}
 	mode, err := controller.Advance(context.Background(), "tenant", 8, &recordingMigrator{})
@@ -387,16 +468,15 @@ func TestCutoverController_ResumesLiteralTenantScanAndFreshVerifies(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	legacy, err := sessionoverlay.NewStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, agent := range []string{"a", "ab", "%", "_", `\\`} {
 		id := durableID("session-" + agent)
-		body := []byte(fmt.Sprintf(`{"agent_id":%q}`, agent))
-		if err := st.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: sessionoverlay.LegacyOverlayKind(agent), Bytes: body}); err != nil {
+		if _, err := legacy.SetUserPrompt(context.Background(), id, agent, "legacy "+agent); err != nil {
 			t.Fatal(err)
 		}
-	}
-	// A kind/payload mismatch must never copy the a record as ab (or vice versa).
-	if err := st.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: durableID("mismatch"), Kind: sessionoverlay.LegacyOverlayKind("a"), Bytes: []byte(`{"agent_id":"ab"}`)}); err != nil {
-		t.Fatal(err)
 	}
 	migrator := &recordingMigrator{}
 	mode, err := controller.Advance(context.Background(), "tenant", 1, migrator)
@@ -417,6 +497,96 @@ func TestCutoverController_ResumesLiteralTenantScanAndFreshVerifies(t *testing.T
 	}
 	if len(migrator.copied) != 5 || len(migrator.verified) != 5 {
 		t.Fatalf("copied=%v verified=%v", migrator.copied, migrator.verified)
+	}
+}
+
+func TestCutoverController_MalformedLegacyRowsBlockStateOnly(t *testing.T) {
+	declaration := config.SessionPersonalCutoverTenant{TenantID: "tenant", Epoch: "epoch", RosterDigest: "digest", LegacyWritersDrained: true}
+	for _, tc := range []struct {
+		name  string
+		id    identity.Quadruple
+		bytes []byte
+	}{
+		{name: "malformed json", id: durableID("bad-json"), bytes: []byte(`{"schema":`)},
+		{name: "future schema", id: durableID("future"), bytes: []byte(`{"schema":2,"overlay":{},"updated_at":"2026-08-01T00:00:00Z"}`)},
+		{name: "missing envelope field", id: durableID("missing"), bytes: []byte(`{"schema":1,"updated_at":"2026-08-01T00:00:00Z"}`)},
+		{name: "run scoped", id: identity.Quadruple{Identity: durableID("run").Identity, RunID: "run-a"}, bytes: []byte(`{"schema":1,"overlay":{},"updated_at":"2026-08-01T00:00:00Z"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newDurableState(t)
+			controller, err := sessionoverlay.NewCutoverController(st, []config.SessionPersonalCutoverTenant{declaration})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: tc.id, Kind: sessionoverlay.LegacyOverlayKind("agent-a"), Bytes: tc.bytes}); err != nil {
+				t.Fatal(err)
+			}
+			mode, err := controller.Advance(context.Background(), "tenant", 8, &recordingMigrator{})
+			if mode != sessionoverlay.CutoverDualRead || !errors.Is(err, sessionoverlay.ErrLegacyOverlayInvalid) {
+				t.Fatalf("Advance = (%q, %v), want dual_read ErrLegacyOverlayInvalid", mode, err)
+			}
+			mode, err = controller.Mode(context.Background(), "tenant")
+			if err != nil || mode != sessionoverlay.CutoverDualRead {
+				t.Fatalf("Mode after rejected row = (%q, %v), want dual_read", mode, err)
+			}
+		})
+	}
+}
+
+type conditionFailedWinnerStore struct {
+	state.StateStore
+	winnerBytes []byte
+	once        sync.Once
+}
+
+func (s *conditionFailedWinnerStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	injected := false
+	var seedErr error
+	s.once.Do(func() {
+		injected = true
+		winner := next
+		winner.ID = state.NewEventID()
+		winner.Bytes = append([]byte(nil), s.winnerBytes...)
+		if len(winner.Bytes) == 0 {
+			winner.Bytes = append([]byte(nil), next.Bytes...)
+		}
+		seedErr = s.Save(ctx, winner)
+	})
+	if injected {
+		if seedErr != nil {
+			return seedErr
+		}
+		return state.ErrConditionFailed
+	}
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
+func TestCutoverController_EnsureValidatesConditionFailedWinner(t *testing.T) {
+	declaration := config.SessionPersonalCutoverTenant{TenantID: "tenant", Epoch: "epoch", RosterDigest: "digest", LegacyWritersDrained: true}
+	for _, tc := range []struct {
+		name        string
+		winnerBytes []byte
+		wantErr     bool
+	}{
+		{name: "exact winner"},
+		{name: "malformed winner", winnerBytes: []byte(`{"schema":`), wantErr: true},
+		{name: "mismatched winner", winnerBytes: []byte(`{"schema":1,"mode":"dual_read","epoch":"different","roster_digest":"digest","copied":0,"generation":0}`), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := newDurableState(t)
+			st := &conditionFailedWinnerStore{StateStore: base, winnerBytes: tc.winnerBytes}
+			controller, err := sessionoverlay.NewCutoverController(st, []config.SessionPersonalCutoverTenant{declaration})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = controller.Ensure(context.Background())
+			if tc.wantErr && !errors.Is(err, sessionoverlay.ErrCutoverRecordInvalid) {
+				t.Fatalf("Ensure = %v, want ErrCutoverRecordInvalid", err)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Ensure exact winner: %v", err)
+			}
+		})
 	}
 }
 
