@@ -228,6 +228,14 @@ func (s *spyStore) Search(ctx context.Context, id identity.Quadruple, query stri
 	return out, nil
 }
 
+func (s *spyStore) SearchSnapshot(ctx context.Context, id identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
+	if err := identity.Validate(id.Identity); err != nil {
+		return nil, fmt.Errorf("%w: %w", skills.ErrIdentityRequired, err)
+	}
+	s.recordIdentity(id)
+	return skills.SearchSnapshotRegexExact(ctx, query, candidates, limit)
+}
+
 func (s *spyStore) Delete(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
 	return nil
 }

@@ -222,14 +222,9 @@ func TestRunOne_SkillsProjectionError_FailsRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sessionoverlay.NewDurableStore: %v", err)
 	}
-	searcher, err := skills.NewSnapshotCandidateSearcher(skills.RetrievalDefault, nil)
-	if err != nil {
-		t.Fatalf("skills.NewSnapshotCandidateSearcher: %v", err)
-	}
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
 		o.SkillsDirectory = skillsDir
-		o.SkillReader = skillStore
-		o.SkillSnapshotSearcher = searcher
+		o.SkillStore = skillStore
 		o.SessionPersonalSkills = personal
 		o.SessionSkillCutover = runSnapshotModeReader{}
 		o.AgentConfig = &countingFailRegistry{failAt: 1}

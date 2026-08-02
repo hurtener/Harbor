@@ -350,6 +350,38 @@ func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple,
 	return out, nil
 }
 
+// ListKindForIdentityBounded implements StateStore's bounded identity-local
+// admission read. Map iteration may inspect more keys, but it never copies or
+// returns more than limit matching records to the caller.
+func (d *driver) ListKindForIdentityBounded(ctx context.Context, id identity.Quadruple, kindPrefix string, limit int) ([]state.StateRecord, error) {
+	if d.closed.Load() {
+		return nil, state.ErrStoreClosed
+	}
+	if err := state.ValidateListKindForIdentityBounded(id, kindPrefix, limit); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	out := make([]state.StateRecord, 0, limit)
+	for key, rec := range d.records {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if key.Tenant != id.TenantID || key.User != id.UserID || key.Session != id.SessionID || key.Run != id.RunID || !strings.HasPrefix(key.Kind, kindPrefix) {
+			continue
+		}
+		rec.Bytes = cloneBytes(rec.Bytes)
+		out = append(out, rec)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 // ScanKindForTenant implements StateStore's deterministic tenant-bounded
 // maintenance scan. The in-memory map is unordered, so it copies matching
 // records and sorts their composite tuple before applying the keyset cursor.

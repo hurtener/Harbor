@@ -583,6 +583,49 @@ func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple,
 	return out, nil
 }
 
+// ListKindForIdentityBounded implements StateStore's bounded identity-local
+// admission read. Storage applies the limit so callers never materialize an
+// unbounded matching prefix before rejecting it.
+func (d *driver) ListKindForIdentityBounded(ctx context.Context, id identity.Quadruple, kindPrefix string, limit int) ([]state.StateRecord, error) {
+	if d.closed.Load() {
+		return nil, state.ErrStoreClosed
+	}
+	if err := state.ValidateListKindForIdentityBounded(id, kindPrefix, limit); err != nil {
+		return nil, err
+	}
+	const q1 = `
+		SELECT tenant_id, user_id, session_id, run_id, kind, event_id, version, bytes, updated_at
+		FROM state_records
+		WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND run_id = $4
+		  AND left(kind, char_length($5)) COLLATE "C" = $5 COLLATE "C"
+		ORDER BY kind ASC
+		LIMIT $6
+	`
+	rows, err := d.db.QueryContext(ctx, q1, id.TenantID, id.UserID, id.SessionID, id.RunID, kindPrefix, limit)
+	if err != nil {
+		return nil, d.translateErr(err, "postgres: bounded list kind for identity")
+	}
+	defer rows.Close()
+	out := make([]state.StateRecord, 0, limit)
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var tenantID, userID, sessionID, runID, kind, eventID string
+		var version int
+		var buf []byte
+		var updatedAt time.Time
+		if err := rows.Scan(&tenantID, &userID, &sessionID, &runID, &kind, &eventID, &version, &buf, &updatedAt); err != nil {
+			return nil, d.translateErr(err, "postgres: bounded list kind for identity scan")
+		}
+		out = append(out, state.StateRecord{ID: state.EventID(eventID), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenantID, UserID: userID, SessionID: sessionID}, RunID: runID}, Kind: kind, Version: version, Bytes: buf, UpdatedAt: updatedAt})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, d.translateErr(err, "postgres: bounded list kind for identity rows")
+	}
+	return out, nil
+}
+
 // ScanKindForTenant implements the bounded deterministic maintenance scan.
 // The tenant and literal prefix are filtered in Postgres; keyset pagination
 // uses the same explicit lexicographic tuple as the cursor contract.

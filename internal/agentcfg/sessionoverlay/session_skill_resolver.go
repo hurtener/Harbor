@@ -14,7 +14,10 @@ import (
 	"github.com/hurtener/Harbor/internal/state"
 )
 
-const maxSessionSkillResolverBaseRows = 1000
+const (
+	maxSessionSkillResolverBaseRows  = 1000
+	maxSessionSkillResolverOwnedRows = skills.SnapshotSemanticCandidateCap
+)
 
 // ErrInvalidSessionSkillResolver means a resolver was built without the
 // complete run-start authority needed to compose the session skill tier.
@@ -44,12 +47,10 @@ type SessionSkillMembership struct {
 type SessionSkillResolverConfig struct {
 	Run     identity.Quadruple
 	AgentID string
-	Base    skills.SkillReader
-	// Searcher is the immutable candidate-search policy captured alongside the
-	// run view. It must preserve the configured lexical ladder or semantic
-	// Embedder policy over exactly the composed candidates; the resolver never
-	// substitutes an ad-hoc lexical fallback.
-	Searcher   skills.SnapshotCandidateSearcher
+	// Base is the configured production SkillStore. It supplies both the
+	// durable shared-rung reader and its mandatory driver-owned frozen-candidate
+	// search policy, so the resolver cannot substitute a portable scorer.
+	Base       skills.SkillStore
 	Personal   *DurableStore
 	Cutover    CutoverModeReader
 	Membership SessionSkillMembership
@@ -128,8 +129,8 @@ func validateResolverConfig(cfg SessionSkillResolverConfig) error {
 	if strings.TrimSpace(cfg.AgentID) == "" {
 		return fmt.Errorf("%w: selected agent ID is required", ErrInvalidSessionSkillResolver)
 	}
-	if cfg.Base == nil || cfg.Searcher == nil || cfg.Personal == nil || cfg.Personal.state == nil || cfg.Cutover == nil {
-		return fmt.Errorf("%w: base reader, candidate searcher, durable store, and cutover reader are required", ErrInvalidSessionSkillResolver)
+	if cfg.Base == nil || cfg.Personal == nil || cfg.Personal.state == nil || cfg.Cutover == nil {
+		return fmt.Errorf("%w: base SkillStore, durable store, and cutover reader are required", ErrInvalidSessionSkillResolver)
 	}
 	return nil
 }
@@ -165,6 +166,9 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 	}
 	baseByScope := make(map[skills.Scope]map[string]skills.Skill)
 	for _, skill := range base {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if err := validateResolverSkill(skill); err != nil {
 			return nil, err
 		}
@@ -187,6 +191,9 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 		}
 	}
 	for name := range user {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		skill, err := cfg.Base.GetScope(ctx, cfg.Run, name, skills.ScopeUser)
 		if err != nil {
 			// D-345 membership is only a selection hint for an independently
@@ -231,7 +238,7 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 	if len(session) > 0 {
 		byScope[skills.ScopeSession] = cloneSkillMap(session)
 	}
-	return &SessionSkillResolver{run: cfg.Run, agentID: cfg.AgentID, searcher: cfg.Searcher, all: all, byScope: byScope, session: cloneSkillMap(session)}, nil
+	return &SessionSkillResolver{run: cfg.Run, agentID: cfg.AgentID, searcher: cfg.Base, all: all, byScope: byScope, session: cloneSkillMap(session)}, nil
 }
 
 func loadLegacySessionTier(ctx context.Context, cfg SessionSkillResolverConfig) (map[string]skills.Skill, error) {
@@ -248,6 +255,9 @@ func loadLegacySessionTier(ctx context.Context, cfg SessionSkillResolverConfig) 
 	}
 	result := make(map[string]skills.Skill, len(overlay.PersonalSkills))
 	for _, name := range overlay.PersonalSkills {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		skill, err := cfg.Base.GetScope(ctx, cfg.Run, name, skills.ScopeSession)
 		if err != nil {
 			return nil, fmt.Errorf("%w: exact legacy session skill %q: %w", ErrLegacySkillInvalid, name, err)
@@ -299,13 +309,19 @@ func loadOwnedSessionTier(ctx context.Context, cfg SessionSkillResolverConfig) (
 	if err != nil {
 		return nil, err
 	}
-	records, err := cfg.Personal.state.ListKindForIdentity(ctx, durableSessionQuad(cfg.Run), prefix)
+	records, err := cfg.Personal.state.ListKindForIdentityBounded(ctx, durableSessionQuad(cfg.Run), prefix, maxSessionSkillResolverOwnedRows+1)
 	if err != nil {
 		return nil, fmt.Errorf("%w: list owned personal records: %w", ErrStateUnavailable, err)
+	}
+	if len(records) > maxSessionSkillResolverOwnedRows {
+		return nil, fmt.Errorf("%w: owned personal enumeration exceeds %d rows", ErrInvalidSessionSkillResolver, maxSessionSkillResolverOwnedRows)
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].Kind < records[j].Kind })
 	result := make(map[string]skills.Skill, len(records))
 	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		personal, err := decodeResolverPersonal(record, cfg.AgentID)
 		if err != nil {
 			return nil, err

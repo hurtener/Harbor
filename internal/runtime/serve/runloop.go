@@ -138,15 +138,13 @@ type RunLoopDriverOptions struct {
 	SkillsDirectory *skills.Directory
 	PlanningHints   *planner.PlanningHints
 
-	// SkillReader, SkillSnapshotSearcher, SessionPersonalSkills, and
-	// SessionSkillCutover are the
-	// all-or-none run-start snapshot authority. SkillReader is the shared base
-	// reader for non-session rungs; SkillSnapshotSearcher preserves its
-	// configured retrieval policy over the frozen authorized candidates;
-	// SessionPersonalSkills owns agent-selected session records; and
-	// SessionSkillCutover supplies the declared tenant mode.
-	SkillReader           skills.SkillReader
-	SkillSnapshotSearcher skills.SnapshotCandidateSearcher
+	// SkillStore, SessionPersonalSkills, and SessionSkillCutover are the
+	// all-or-none run-start snapshot authority. SkillStore is the shared base
+	// reader for non-session rungs AND the mandatory driver-owned search policy
+	// for the frozen authorized candidates; SessionPersonalSkills owns
+	// agent-selected session records; and SessionSkillCutover supplies the
+	// declared tenant mode.
+	SkillStore            skills.SkillStore
 	SessionPersonalSkills *sessionoverlay.DurableStore
 	SessionSkillCutover   sessionoverlay.CutoverModeReader
 
@@ -320,8 +318,7 @@ type RunLoopDriver struct {
 	memoryRecall          memory.RecallSettings
 	skillsDirectory       *skills.Directory
 	planningHints         *planner.PlanningHints
-	skillReader           skills.SkillReader
-	skillSnapshotSearcher skills.SnapshotCandidateSearcher
+	skillStore            skills.SkillStore
 	sessionPersonalSkills *sessionoverlay.DurableStore
 	sessionSkillCutover   sessionoverlay.CutoverModeReader
 
@@ -425,12 +422,12 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		return nil, fmt.Errorf("%w: tasks is nil", ErrRunLoopDriverMisconfigured)
 	}
 	snapshotDeps := 0
-	for _, present := range []bool{opts.SkillReader != nil, opts.SkillSnapshotSearcher != nil, opts.SessionPersonalSkills != nil, opts.SessionSkillCutover != nil} {
+	for _, present := range []bool{opts.SkillStore != nil, opts.SessionPersonalSkills != nil, opts.SessionSkillCutover != nil} {
 		if present {
 			snapshotDeps++
 		}
 	}
-	if snapshotDeps != 0 && snapshotDeps != 4 {
+	if snapshotDeps != 0 && snapshotDeps != 3 {
 		return nil, fmt.Errorf("%w: skill snapshot dependencies must be wired together", ErrRunLoopDriverMisconfigured)
 	}
 	if opts.Logger == nil {
@@ -451,8 +448,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		memoryRecall:          opts.MemoryRecall,
 		skillsDirectory:       opts.SkillsDirectory,
 		planningHints:         opts.PlanningHints,
-		skillReader:           opts.SkillReader,
-		skillSnapshotSearcher: opts.SkillSnapshotSearcher,
+		skillStore:            opts.SkillStore,
 		sessionPersonalSkills: opts.SessionPersonalSkills,
 		sessionSkillCutover:   opts.SessionSkillCutover,
 		catalog:               opts.Catalog,
@@ -726,7 +722,7 @@ func (d *RunLoopDriver) projectAgentConfigSkills(ctx context.Context, agentID st
 // the valid no-skills subsystem shape; partial wiring is rejected by
 // NewRunLoopDriver.
 func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAgentID string, q identity.Quadruple) (skills.RunSkillReaderSnapshot, bool, error) {
-	if d.skillReader == nil {
+	if d.skillStore == nil {
 		return skills.RunSkillReaderSnapshot{}, false, nil
 	}
 	membership, err := projection.ActiveSessionSkillMembership(ctx, d.agentConfig, effectiveAgentID, q)
@@ -736,8 +732,7 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 	resolver, err := sessionoverlay.NewSessionSkillResolver(ctx, sessionoverlay.SessionSkillResolverConfig{
 		Run:        q,
 		AgentID:    effectiveAgentID,
-		Base:       d.skillReader,
-		Searcher:   d.skillSnapshotSearcher,
+		Base:       d.skillStore,
 		Personal:   d.sessionPersonalSkills,
 		Cutover:    d.sessionSkillCutover,
 		Membership: membership,

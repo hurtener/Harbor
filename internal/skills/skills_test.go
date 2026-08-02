@@ -55,6 +55,9 @@ func (stubStore) List(context.Context, identity.Quadruple, skills.ListFilter) ([
 func (stubStore) Search(context.Context, identity.Quadruple, string, int) ([]skills.RankedSkill, error) {
 	return nil, nil
 }
+func (stubStore) SearchSnapshot(context.Context, identity.Quadruple, string, []skills.Skill, int) ([]skills.RankedSkill, error) {
+	return nil, nil
+}
 func (stubStore) Delete(context.Context, identity.Quadruple, string, skills.Scope) error {
 	return nil
 }

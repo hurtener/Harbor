@@ -53,6 +53,10 @@ func (f *failingUpsertStore) Search(ctx context.Context, id identity.Quadruple, 
 	return f.inner.Search(ctx, id, q, limit)
 }
 
+func (f *failingUpsertStore) SearchSnapshot(ctx context.Context, id identity.Quadruple, q string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
+	return f.inner.SearchSnapshot(ctx, id, q, candidates, limit)
+}
+
 func (f *failingUpsertStore) Delete(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
 	f.deleteCalls++
 	if f.deleteErr != nil {

@@ -145,6 +145,13 @@ func (f *faultyStateStore) ListKindForIdentity(ctx context.Context, id identity.
 	return f.inner.ListKindForIdentity(ctx, id, kindPrefix)
 }
 
+func (f *faultyStateStore) ListKindForIdentityBounded(ctx context.Context, id identity.Quadruple, kindPrefix string, limit int) ([]state.StateRecord, error) {
+	if f.faulted() {
+		return nil, errStateDisconnected
+	}
+	return f.inner.ListKindForIdentityBounded(ctx, id, kindPrefix, limit)
+}
+
 func (f *faultyStateStore) ScanKindForTenant(ctx context.Context, scope state.ListScope, tenantID, kindPrefix string, limit int, continuation string) (state.StateScanPage, error) {
 	if f.faulted() {
 		return state.StateScanPage{}, errStateDisconnected

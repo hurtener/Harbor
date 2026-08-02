@@ -70,6 +70,12 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 		testIdentityRejection(t, h)
 	})
 
+	t.Run("snapshot_search", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testSnapshotSearch(t, h)
+	})
+
 	t.Run("not_found", func(t *testing.T) {
 		h := factory(t)
 		defer h.Cleanup()
@@ -278,6 +284,10 @@ func testIdentityRejection(t *testing.T, h Harness) {
 		{"GetScope", func() error { _, err := h.Store.GetScope(ctx, bad, "x", skills.ScopeSession); return err }},
 		{"List", func() error { _, err := h.Store.List(ctx, bad, skills.ListFilter{}); return err }},
 		{"Search", func() error { _, err := h.Store.Search(ctx, bad, "x", 5); return err }},
+		{"SearchSnapshot", func() error {
+			_, err := h.Store.SearchSnapshot(ctx, bad, "x", []skills.Skill{newSkill("x")}, 5)
+			return err
+		}},
 		{"Delete", func() error { return h.Store.Delete(ctx, bad, "x", skills.ScopeSession) }},
 	}
 	for _, c := range cases {
@@ -285,6 +295,23 @@ func testIdentityRejection(t *testing.T, h Harness) {
 		if err == nil {
 			t.Fatalf("%s: expected ErrIdentityRequired, got nil", c.name)
 		}
+	}
+}
+
+// testSnapshotSearch pins the mandatory driver-owned frozen-candidate search
+// seam. The candidate is intentionally not stored: a compliant implementation
+// must rank exactly the supplied run snapshot, not silently re-read its mutable
+// backing catalog.
+func testSnapshotSearch(t *testing.T, h Harness) {
+	candidate := newSkill("snapshot-target")
+	candidate.Description = "frozen snapshot harborneedle"
+	candidate.UpdatedAt = time.Unix(10, 0).UTC()
+	result, err := h.Store.SearchSnapshot(context.Background(), fixtureID, "harborneedle", []skills.Skill{candidate}, 5)
+	if err != nil {
+		t.Fatalf("SearchSnapshot: %v", err)
+	}
+	if len(result) != 1 || result[0].Skill.Name != candidate.Name || result[0].Path != skills.PathFTS5 || result[0].Score != 1 {
+		t.Fatalf("SearchSnapshot result = %+v, want only configured-driver full-text frozen candidate", result)
 	}
 }
 

@@ -147,6 +147,13 @@ func (f *fakeSkillStore) Search(ctx context.Context, q identity.Quadruple, query
 	return out, nil
 }
 
+func (f *fakeSkillStore) SearchSnapshot(ctx context.Context, q identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
+	if err := skills.ValidateIdentity(q); err != nil {
+		return nil, err
+	}
+	return skills.SearchSnapshotRegexExact(ctx, query, candidates, limit)
+}
+
 func (f *fakeSkillStore) Delete(ctx context.Context, q identity.Quadruple, name string, scope skills.Scope) error {
 	if err := skills.ValidateIdentity(q); err != nil {
 		return err

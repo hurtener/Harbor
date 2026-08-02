@@ -167,6 +167,16 @@ func (s *paritySkillStore) Search(_ context.Context, id identity.Quadruple, _ st
 	return nil, nil
 }
 
+func (s *paritySkillStore) SearchSnapshot(ctx context.Context, id identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := skills.ValidateIdentity(id); err != nil {
+		return nil, err
+	}
+	return skills.SearchSnapshotRegexExact(ctx, query, candidates, limit)
+}
+
 func (s *paritySkillStore) Delete(_ context.Context, id identity.Quadruple, _ string, _ skills.Scope) error {
 	if err := identity.Validate(id.Identity); err != nil {
 		return err

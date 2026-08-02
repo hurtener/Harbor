@@ -43,6 +43,12 @@ func (f *fakeStore) ListKind(context.Context, state.ListScope, string) ([]state.
 func (f *fakeStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
 	return f.listRecs, f.listErr
 }
+func (f *fakeStore) ListKindForIdentityBounded(_ context.Context, _ identity.Quadruple, _ string, limit int) ([]state.StateRecord, error) {
+	if len(f.listRecs) > limit {
+		return f.listRecs[:limit], f.listErr
+	}
+	return f.listRecs, f.listErr
+}
 func (f *fakeStore) ScanKindForTenant(context.Context, state.ListScope, string, string, int, string) (state.StateScanPage, error) {
 	return state.StateScanPage{Records: f.listRecs}, f.listErr
 }

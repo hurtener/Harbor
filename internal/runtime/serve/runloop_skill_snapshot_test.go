@@ -98,6 +98,22 @@ func (*runSnapshotReader) Search(context.Context, identity.Quadruple, string, in
 	return nil, errors.New("run snapshot must use its frozen candidate searcher")
 }
 
+func (*runSnapshotReader) SearchSnapshot(ctx context.Context, id identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
+	if err := skills.ValidateIdentity(id); err != nil {
+		return nil, err
+	}
+	return skills.SearchSnapshotRegexExact(ctx, query, candidates, limit)
+}
+
+func (*runSnapshotReader) Upsert(context.Context, identity.Quadruple, skills.Skill) error {
+	return errors.New("not used")
+}
+func (*runSnapshotReader) Delete(context.Context, identity.Quadruple, string, skills.Scope) error {
+	return errors.New("not used")
+}
+func (*runSnapshotReader) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }
+func (*runSnapshotReader) Close(context.Context) error                                  { return nil }
+
 func runSnapshotSkill(q identity.Quadruple, name string, scope skills.Scope) skills.Skill {
 	return skills.Skill{
 		Name: name, Title: name, Trigger: name, Steps: []string{"use " + name}, Origin: skills.OriginGenerated,
@@ -129,18 +145,14 @@ func activateRunSnapshotAgent(t *testing.T, st state.StateStore, q identity.Quad
 	}
 }
 
-func newRunSnapshotDriver(t *testing.T, reg agentcfg.Registry, base skills.SkillReader, st state.StateStore, bootAgent string) (*RunLoopDriver, *sessionoverlay.DurableStore) {
+func newRunSnapshotDriver(t *testing.T, reg agentcfg.Registry, base skills.SkillStore, st state.StateStore, bootAgent string) (*RunLoopDriver, *sessionoverlay.DurableStore) {
 	t.Helper()
 	personal, err := sessionoverlay.NewDurableStore(st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	searcher, err := skills.NewSnapshotCandidateSearcher(skills.RetrievalDefault, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	return &RunLoopDriver{
-		agentConfig: reg, agentConfigID: bootAgent, skillReader: base, skillSnapshotSearcher: searcher,
+		agentConfig: reg, agentConfigID: bootAgent, skillStore: base,
 		sessionPersonalSkills: personal, sessionSkillCutover: runSnapshotModeReader{},
 	}, personal
 }

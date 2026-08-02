@@ -74,6 +74,7 @@ type Factory func() (state.StateStore, func())
 //   - ScanKindForTenant_BoundedKeysetAndFailClosed
 //   - ScanKindForTenant_ConcurrentReuse_NoCrossTalk
 //   - ListKindForIdentity_IsolatedAndFailClosed
+//   - ListKindForIdentityBounded_IsolatedAndFailClosed
 //   - ListKindForIdentity_ConcurrentReuse_NoCrossTalk
 //   - Save_AfterClose_Errors
 //   - Concurrent_SaveLoad_NoRace
@@ -966,6 +967,22 @@ func Run(t *testing.T, factory Factory) {
 			if rec.Identity != tripleA() {
 				t.Fatalf("ListKindForIdentity leaked %+v, want only %+v", rec.Identity, tripleA())
 			}
+		}
+		bounded, err := s.ListKindForIdentityBounded(ctx, tripleA(), "agentcfg.revision.", 1)
+		if err != nil || len(bounded) != 1 || bounded[0].Identity != tripleA() {
+			t.Fatalf("ListKindForIdentityBounded = (%+v, %v), want one exact identity row", bounded, err)
+		}
+		if _, err := s.ListKindForIdentityBounded(ctx, identity.Quadruple{}, "agentcfg.revision.", 1); !errors.Is(err, state.ErrIdentityRequired) {
+			t.Fatalf("bounded incomplete identity err=%v, want ErrIdentityRequired", err)
+		}
+		if _, err := s.ListKindForIdentityBounded(ctx, tripleA(), "", 1); !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("bounded empty prefix err=%v, want ErrInvalidRecord", err)
+		}
+		if _, err := s.ListKindForIdentityBounded(ctx, tripleA(), "agentcfg.revision.", 0); !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("bounded zero limit err=%v, want ErrInvalidRecord", err)
+		}
+		if _, err := s.ListKindForIdentityBounded(ctx, tripleA(), "agentcfg.revision.", state.MaxStateIdentityListLimit+1); !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("bounded oversized limit err=%v, want ErrInvalidRecord", err)
 		}
 		if _, err := s.ListKindForIdentity(ctx, identity.Quadruple{}, "agentcfg.revision."); !errors.Is(err, state.ErrIdentityRequired) {
 			t.Fatalf("incomplete identity err=%v, want ErrIdentityRequired", err)

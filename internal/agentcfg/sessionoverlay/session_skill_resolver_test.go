@@ -23,8 +23,9 @@ func (r resolverModeReader) Mode(context.Context, string) (sessionoverlay.Cutove
 }
 
 type resolverReader struct {
-	mu   sync.RWMutex
-	rows map[string]skills.Skill
+	mu        sync.RWMutex
+	rows      map[string]skills.Skill
+	searchErr error
 }
 
 func resolverKey(id identity.Quadruple, name string, scope skills.Scope) string {
@@ -100,20 +101,13 @@ func (r *resolverReader) Search(context.Context, identity.Quadruple, string, int
 	return nil, errors.New("resolver must rank the composed view itself")
 }
 
-// resolverSearcher is the test stand-in for the boot-configured snapshot
-// search policy. Production supplies a policy that retains its configured
-// full-text or semantic retrieval strategy; the resolver only owns the frozen
-// candidate set and validates the returned rows.
-type resolverSearcher struct {
-	err error
-}
-
-func (s resolverSearcher) SearchSnapshot(ctx context.Context, _ identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
+// SearchSnapshot is this test store's configured frozen-candidate policy.
+func (r *resolverReader) SearchSnapshot(ctx context.Context, _ identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if s.err != nil {
-		return nil, s.err
+	if r.searchErr != nil {
+		return nil, r.searchErr
 	}
 	needle := strings.TrimSpace(query)
 	if needle == "" {
@@ -137,6 +131,15 @@ func (s resolverSearcher) SearchSnapshot(ctx context.Context, _ identity.Quadrup
 	return result, nil
 }
 
+func (*resolverReader) Upsert(context.Context, identity.Quadruple, skills.Skill) error {
+	return errors.New("not used")
+}
+func (*resolverReader) Delete(context.Context, identity.Quadruple, string, skills.Scope) error {
+	return errors.New("not used")
+}
+func (*resolverReader) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }
+func (*resolverReader) Close(context.Context) error                                  { return nil }
+
 func resolverSkill(id identity.Quadruple, name string, scope skills.Scope) skills.Skill {
 	skill := durableSkill(name)
 	skill.Scope = scope
@@ -149,9 +152,9 @@ func resolverSkill(id identity.Quadruple, name string, scope skills.Scope) skill
 	return skill
 }
 
-func resolverConfig(id identity.Quadruple, personal *sessionoverlay.DurableStore, base skills.SkillReader, mode sessionoverlay.CutoverMode, membership sessionoverlay.SessionSkillMembership) sessionoverlay.SessionSkillResolverConfig {
+func resolverConfig(id identity.Quadruple, personal *sessionoverlay.DurableStore, base skills.SkillStore, mode sessionoverlay.CutoverMode, membership sessionoverlay.SessionSkillMembership) sessionoverlay.SessionSkillResolverConfig {
 	return sessionoverlay.SessionSkillResolverConfig{
-		Run: id, AgentID: "agent-a", Base: base, Searcher: resolverSearcher{}, Personal: personal, Cutover: resolverModeReader{mode: mode}, Membership: membership,
+		Run: id, AgentID: "agent-a", Base: base, Personal: personal, Cutover: resolverModeReader{mode: mode}, Membership: membership,
 	}
 }
 
@@ -223,14 +226,14 @@ func TestSessionSkillResolver_SearchPolicyIsRequiredAndFailuresPassThrough(t *te
 	base.add(id, resolverSkill(id, "searchable", skills.ScopeGlobal))
 
 	missing := resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{})
-	missing.Searcher = nil
+	missing.Base = nil
 	if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), missing); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
 		t.Fatalf("missing configured search policy = %v, want ErrInvalidSessionSkillResolver", err)
 	}
 
 	semanticFailure := errors.New("embedder unavailable")
 	configured := resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{})
-	configured.Searcher = resolverSearcher{err: semanticFailure}
+	base.searchErr = semanticFailure
 	resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), configured)
 	if err != nil {
 		t.Fatal(err)
@@ -325,6 +328,17 @@ func TestSessionSkillResolver_FailsLoudOnBaseOverflowAndCanonicalAliasConflict(t
 		}
 		if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{})); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
 			t.Fatalf("base overflow = %v, want resolver error", err)
+		}
+	})
+	t.Run("state-only owned overflow", func(t *testing.T) {
+		for i := range skills.SnapshotSemanticCandidateCap + 1 {
+			name := fmt.Sprintf("owned-%04d", i)
+			if _, err := personal.SavePersonal(context.Background(), id, "agent-a", durableSkill(name), "", ""); err != nil {
+				t.Fatalf("SavePersonal(%q): %v", name, err)
+			}
+		}
+		if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, &resolverReader{}, sessionoverlay.CutoverStateOnly, sessionoverlay.SessionSkillMembership{})); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+			t.Fatalf("state-only owned overflow = %v, want ErrInvalidSessionSkillResolver", err)
 		}
 	})
 	t.Run("same scope canonical aliases", func(t *testing.T) {

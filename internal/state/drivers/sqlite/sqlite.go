@@ -778,6 +778,47 @@ func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple,
 	return out, nil
 }
 
+// ListKindForIdentityBounded implements StateStore's bounded identity-local
+// admission read. SQLite applies the limit before records leave the driver.
+func (d *driver) ListKindForIdentityBounded(ctx context.Context, id identity.Quadruple, kindPrefix string, limit int) ([]state.StateRecord, error) {
+	if d.closed.Load() {
+		return nil, fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateListKindForIdentityBounded(id, kindPrefix, limit); err != nil {
+		return nil, err
+	}
+	const sel = `
+        SELECT tenant, user, session, run, kind, event_id, version, bytes, updated_at
+        FROM state_records
+        WHERE tenant = ? AND user = ? AND session = ? AND run = ?
+          AND substr(kind, 1, length(?)) = ? COLLATE BINARY
+        ORDER BY kind ASC
+        LIMIT ?`
+	rows, err := d.db.QueryContext(ctx, sel, id.TenantID, id.UserID, id.SessionID, id.RunID, kindPrefix, kindPrefix, limit)
+	if err != nil {
+		return nil, fmt.Errorf("state/sqlite: bounded list kind for identity: %w", err)
+	}
+	defer rows.Close()
+	out := make([]state.StateRecord, 0, limit)
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var tenant, user, session, run, kind, eventID string
+		var version int
+		var data []byte
+		var updatedAt time.Time
+		if err := rows.Scan(&tenant, &user, &session, &run, &kind, &eventID, &version, &data, &updatedAt); err != nil {
+			return nil, fmt.Errorf("state/sqlite: bounded list kind for identity scan: %w", err)
+		}
+		out = append(out, state.StateRecord{ID: state.EventID(eventID), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: user, SessionID: session}, RunID: run}, Kind: kind, Version: version, Bytes: data, UpdatedAt: updatedAt})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state/sqlite: bounded list kind for identity rows: %w", err)
+	}
+	return out, nil
+}
+
 // ScanKindForTenant implements the bounded deterministic maintenance scan.
 // SQLite evaluates the literal prefix and tenant predicate in storage, orders
 // by the complete cursor tuple, and asks for limit+1 rows solely to decide

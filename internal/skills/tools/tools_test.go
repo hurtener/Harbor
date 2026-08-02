@@ -82,6 +82,13 @@ func (s *fakeStore) Search(ctx context.Context, id identity.Quadruple, query str
 	return out, nil
 }
 
+func (s *fakeStore) SearchSnapshot(ctx context.Context, id identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
+	if err := identity.Validate(id.Identity); err != nil {
+		return nil, skills.EmitIdentityRejected(ctx, s.bus, id, "SearchSnapshot")
+	}
+	return skills.SearchSnapshotRegexExact(ctx, query, candidates, limit)
+}
+
 func (s *fakeStore) Delete(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
 	return errors.New("fakeStore: Delete not used")
 }

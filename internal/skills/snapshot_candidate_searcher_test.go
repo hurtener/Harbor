@@ -3,6 +3,7 @@ package skills_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,22 @@ func (e failingSnapshotEmbedder) Embed(context.Context, []string) ([][]float32, 
 	return nil, e.err
 }
 
+type countingSnapshotEmbedder struct {
+	mu    sync.Mutex
+	batch int
+}
+
+func (e *countingSnapshotEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	e.mu.Lock()
+	e.batch = len(texts)
+	e.mu.Unlock()
+	result := make([][]float32, len(texts))
+	for i := range result {
+		result[i] = []float32{1, 0}
+	}
+	return result, nil
+}
+
 func snapshotCandidate(name, description string, updated time.Time) skills.Skill {
 	return skills.Skill{
 		Name: name, Description: description, Trigger: "when " + name,
@@ -29,67 +46,50 @@ func snapshotIdentity() identity.Quadruple {
 	return identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}, RunID: "run"}
 }
 
-func TestSnapshotCandidateSearcher_LexicalUsesFullTextFirstAndKeepsCandidateView(t *testing.T) {
+func TestSearchSnapshotRegexExact_UsesCanonicalTailWithoutClaimingFTS(t *testing.T) {
 	t.Parallel()
-	searcher, err := skills.NewSnapshotCandidateSearcher(skills.RetrievalDefault, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidates := []skills.Skill{
-		snapshotCandidate("deploy-harbor", "deploy Harbor safely", time.Unix(10, 0)),
-		snapshotCandidate("harbor-only", "Harbor diagnostics", time.Unix(20, 0)),
-	}
-	result, err := searcher.SearchSnapshot(context.Background(), snapshotIdentity(), "harbor deploy", candidates, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result) != 1 || result[0].Skill.Name != "deploy-harbor" || result[0].Path != skills.PathFTS5 || result[0].Score != 1 {
-		t.Fatalf("full-text first result = %+v", result)
-	}
-	if result[0].Skill.Name != candidates[0].Name {
-		t.Fatalf("search returned a candidate outside frozen view: %+v", result[0])
-	}
-
-	regex, err := searcher.SearchSnapshot(context.Background(), snapshotIdentity(), "^.$", []skills.Skill{snapshotCandidate("x", "single letter", time.Unix(1, 0))}, 1)
+	regex, err := skills.SearchSnapshotRegexExact(context.Background(), "^.$", []skills.Skill{snapshotCandidate("x", "single letter", time.Unix(1, 0))}, 1)
 	if err != nil || len(regex) != 1 || regex[0].Path != skills.PathRegex || regex[0].Score != 0.95 {
-		t.Fatalf("regex fallback = (%+v, %v)", regex, err)
+		t.Fatalf("regex tail = (%+v, %v)", regex, err)
 	}
-	exact, err := searcher.SearchSnapshot(context.Background(), snapshotIdentity(), "[", []skills.Skill{snapshotCandidate("[", "punctuation name", time.Unix(1, 0))}, 1)
+	exact, err := skills.SearchSnapshotRegexExact(context.Background(), "[", []skills.Skill{snapshotCandidate("[", "punctuation name", time.Unix(1, 0))}, 1)
 	if err != nil || len(exact) != 1 || exact[0].Path != skills.PathExact || exact[0].Score != 1 {
-		t.Fatalf("exact fallback = (%+v, %v)", exact, err)
+		t.Fatalf("exact tail = (%+v, %v)", exact, err)
 	}
 }
 
-func TestSnapshotCandidateSearcher_SemanticRequiresEmbedderAndFailsLoud(t *testing.T) {
+func TestSearchSnapshotSemantic_RequiresEmbedderAndFailsLoud(t *testing.T) {
 	t.Parallel()
-	if _, err := skills.NewSnapshotCandidateSearcher(skills.RetrievalSemantic, nil); err == nil {
-		t.Fatal("semantic construction without Embedder succeeded")
-	}
 	want := errors.New("embed offline")
-	searcher, err := skills.NewSnapshotCandidateSearcher(skills.RetrievalSemantic, failingSnapshotEmbedder{err: want})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := searcher.SearchSnapshot(context.Background(), snapshotIdentity(), "dock boat", []skills.Skill{snapshotCandidate("dock", "dock a boat", time.Now())}, 1); !errors.Is(err, want) {
+	if _, err := skills.SearchSnapshotSemantic(context.Background(), snapshotIdentity(), "dock boat", []skills.Skill{snapshotCandidate("dock", "dock a boat", time.Now())}, 1, failingSnapshotEmbedder{err: want}); !errors.Is(err, want) {
 		t.Fatalf("semantic embed failure = %v, want %v", err, want)
 	}
 }
 
-func TestSnapshotCandidateSearcher_SemanticRanksOnlyFrozenCandidates(t *testing.T) {
+func TestSearchSnapshotSemantic_UsesMostRecentCapAndOnlyFrozenCandidates(t *testing.T) {
 	t.Parallel()
-	searcher, err := skills.NewSnapshotCandidateSearcher(skills.RetrievalSemantic, embeddingstest.New())
+	candidates := make([]skills.Skill, 0, skills.SnapshotSemanticCandidateCap+10)
+	for i := range skills.SnapshotSemanticCandidateCap + 10 {
+		candidates = append(candidates, snapshotCandidate("candidate-"+time.Unix(int64(i), 0).UTC().Format("150405"), "candidate", time.Unix(int64(i), 0)))
+	}
+	embedder := &countingSnapshotEmbedder{}
+	result, err := skills.SearchSnapshotSemantic(context.Background(), snapshotIdentity(), "dock a boat", candidates, skills.SnapshotSemanticCandidateCap, embedder)
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidates := []skills.Skill{
-		snapshotCandidate("dock", "how to dock a boat at a pier", time.Unix(10, 0)),
-		snapshotCandidate("invoice", "how to issue an invoice", time.Unix(20, 0)),
+	if len(result) != skills.SnapshotSemanticCandidateCap {
+		t.Fatalf("result count=%d want=%d", len(result), skills.SnapshotSemanticCandidateCap)
 	}
-	result, err := searcher.SearchSnapshot(context.Background(), snapshotIdentity(), "dock a boat", candidates, 2)
-	if err != nil {
-		t.Fatal(err)
+	embedder.mu.Lock()
+	batch := embedder.batch
+	embedder.mu.Unlock()
+	if batch != skills.SnapshotSemanticCandidateCap+1 {
+		t.Fatalf("billed batch=%d want=%d", batch, skills.SnapshotSemanticCandidateCap+1)
 	}
-	if len(result) != 2 || result[0].Path != skills.PathSemantic || result[0].Skill.Name != "dock" {
-		t.Fatalf("semantic result = %+v", result)
+	if result[0].Skill.UpdatedAt.Before(result[len(result)-1].Skill.UpdatedAt) {
+		t.Fatalf("most-recent candidate ordering was not retained: first=%s last=%s", result[0].Skill.UpdatedAt, result[len(result)-1].Skill.UpdatedAt)
+	}
+	if _, err := skills.SearchSnapshotSemantic(context.Background(), snapshotIdentity(), "dock a boat", []skills.Skill{snapshotCandidate("dock", "how to dock a boat", time.Now())}, 1, embeddingstest.New()); err != nil {
+		t.Fatalf("frozen candidate semantic search: %v", err)
 	}
 }

@@ -12,68 +12,17 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
-// SnapshotCandidateSearcher is an immutable search policy over a caller-owned
-// run snapshot. The zero value is not usable; construct it with
-// NewSnapshotCandidateSearcher.
-type snapshotCandidateSearcher struct {
-	retrieval RetrievalMode
-	embedder  Embedder
-}
+// SnapshotSemanticCandidateCap is the maximum number of frozen skills a
+// semantic snapshot search may embed. One billed request therefore contains at
+// most this many candidate texts plus the query text.
+const SnapshotSemanticCandidateCap = 256
 
-const defaultSnapshotSearchLimit = 20
-
-// NewSnapshotCandidateSearcher captures the configured skill retrieval policy
-// for an immutable candidate view. Default retrieval retains the lexical
-// full-text -> regex -> exact ladder. Semantic retrieval requires an Embedder
-// at construction and never falls back to lexical ranking when embedding fails.
-func NewSnapshotCandidateSearcher(retrieval RetrievalMode, embedder Embedder) (SnapshotCandidateSearcher, error) {
-	switch retrieval {
-	case RetrievalDefault:
-		return snapshotCandidateSearcher{retrieval: retrieval}, nil
-	case RetrievalSemantic:
-		if embedder == nil {
-			return nil, fmt.Errorf("skills: Embedder is required for snapshot retrieval mode %q (no stub fallback)", RetrievalSemantic)
-		}
-		return snapshotCandidateSearcher{retrieval: retrieval, embedder: embedder}, nil
-	default:
-		return nil, fmt.Errorf("skills: unknown snapshot retrieval mode %q (expected \"\" or %q)", retrieval, RetrievalSemantic)
-	}
-}
-
-// SearchSnapshot implements SnapshotCandidateSearcher. Candidates are never
-// mutated or re-read from storage, so ranking observes exactly the run-start
-// composed view supplied by the caller.
-func (s snapshotCandidateSearcher) SearchSnapshot(ctx context.Context, id identity.Quadruple, query string, candidates []Skill, limit int) ([]RankedSkill, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := ValidateIdentity(id); err != nil {
-		return nil, err
-	}
-	if limit < 0 || limit > 1000 {
-		return nil, fmt.Errorf("skills: invalid snapshot search limit %d", limit)
-	}
-	if limit == 0 {
-		limit = defaultSnapshotSearchLimit
-	}
-	switch s.retrieval {
-	case RetrievalDefault:
-		return searchSnapshotLexical(ctx, query, candidates, limit)
-	case RetrievalSemantic:
-		if s.embedder == nil {
-			return nil, fmt.Errorf("skills: snapshot semantic retrieval is missing Embedder (no stub fallback)")
-		}
-		return searchSnapshotSemantic(ctx, id, query, candidates, limit, s.embedder)
-	default:
-		return nil, fmt.Errorf("skills: unknown snapshot retrieval mode %q", s.retrieval)
-	}
-}
-
-// searchSnapshotLexical preserves the public ladder's selection semantics:
-// full-text first (strict-AND, then OR-of-tokens), regex only when full-text
-// returned no rows, then exact only when regex returned no rows. All candidate
-// ordering is stable at score DESC, UpdatedAt DESC, Name ASC.
-func searchSnapshotLexical(ctx context.Context, query string, candidates []Skill, limit int) ([]RankedSkill, error) {
+// SearchSnapshotRegexExact applies the canonical non-full-text tail of the
+// lexical ladder to a frozen candidate view. Driver-owned SearchSnapshot
+// implementations call it only after their configured full-text tier was
+// unavailable or returned no candidate rows; it never represents this result
+// as FTS5.
+func SearchSnapshotRegexExact(ctx context.Context, query string, candidates []Skill, limit int) ([]RankedSkill, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return []RankedSkill{}, nil
@@ -81,109 +30,68 @@ func searchSnapshotLexical(ctx context.Context, query string, candidates []Skill
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if result := searchSnapshotFullText(query, candidates); len(result) > 0 {
+	if result, err := searchSnapshotRegex(ctx, query, candidates); err != nil {
+		return nil, err
+	} else if len(result) > 0 {
 		return truncateSnapshotResults(result, limit), nil
 	}
-	if result := searchSnapshotRegex(query, candidates); len(result) > 0 {
-		return truncateSnapshotResults(result, limit), nil
+	result, err := searchSnapshotExact(ctx, query, candidates)
+	if err != nil {
+		return nil, err
 	}
-	return truncateSnapshotResults(searchSnapshotExact(query, candidates), limit), nil
+	return truncateSnapshotResults(result, limit), nil
 }
 
 var snapshotSearchTokenRE = regexp.MustCompile(`[A-Za-z0-9]+`)
 
-func searchSnapshotFullText(query string, candidates []Skill) []RankedSkill {
-	tokens := snapshotSearchTokenRE.FindAllString(strings.ToLower(query), -1)
-	if len(tokens) == 0 {
-		return nil
-	}
-	result := snapshotFullTextMatches(tokens, candidates, true)
-	if len(result) == 0 && len(tokens) > 1 {
-		result = snapshotFullTextMatches(tokens, candidates, false)
-	}
-	if len(result) == 0 {
-		return nil
-	}
-
-	// Match the configured full-text paths' normalised 0..1 scoring contract.
-	minRaw, maxRaw := result[0].Score, result[0].Score
-	for _, hit := range result[1:] {
-		if hit.Score < minRaw {
-			minRaw = hit.Score
-		}
-		if hit.Score > maxRaw {
-			maxRaw = hit.Score
-		}
-	}
-	for i := range result {
-		if maxRaw == minRaw {
-			result[i].Score = 1
-		} else {
-			result[i].Score = (result[i].Score - minRaw) / (maxRaw - minRaw)
-		}
-		result[i].Path = PathFTS5
-	}
-	sortSnapshotResults(result)
-	return result
+// SnapshotSearchTokens returns the safe full-text tokens shared by the
+// backends' normal Search paths. User bytes never reach an FTS parser as raw
+// syntax.
+func SnapshotSearchTokens(query string) []string {
+	return snapshotSearchTokenRE.FindAllString(strings.ToLower(query), -1)
 }
 
-func snapshotFullTextMatches(tokens []string, candidates []Skill, requireAll bool) []RankedSkill {
-	result := make([]RankedSkill, 0, len(candidates))
-	for _, skill := range candidates {
-		text := strings.ToLower(snapshotSearchText(skill))
-		matched := 0
-		for _, token := range tokens {
-			if strings.Contains(text, token) {
-				matched++
-			}
-		}
-		if (requireAll && matched != len(tokens)) || (!requireAll && matched == 0) {
-			continue
-		}
-		// A deterministic relevance proxy for the portable frozen candidate
-		// view. It preserves the full-text tier's monotonic rank + normalised
-		// score contract without consulting mutable backing storage.
-		score := float64(matched) / float64(len(tokens))
-		score += float64(strings.Count(text, tokens[0])) / float64(len(text)+1)
-		result = append(result, RankedSkill{Skill: skill, Score: score})
-	}
-	return result
-}
-
-func searchSnapshotRegex(query string, candidates []Skill) []RankedSkill {
-	re, err := snapshotSearchRegex(query)
-	if err != nil {
-		return nil
+func searchSnapshotRegex(ctx context.Context, query string, candidates []Skill) ([]RankedSkill, error) {
+	re := snapshotSearchRegex(query)
+	if re == nil {
+		return []RankedSkill{}, nil // invalid regex is the canonical exact-tail fallthrough.
 	}
 	result := make([]RankedSkill, 0, len(candidates))
 	for _, skill := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if score := snapshotRegexScore(re, skill); score > 0 {
 			result = append(result, RankedSkill{Skill: skill, Score: score, Path: PathRegex})
 		}
 	}
-	sortSnapshotResults(result)
-	return result
+	SortSnapshotResults(result)
+	return result, nil
 }
 
-func snapshotSearchRegex(query string) (*regexp.Regexp, error) {
+func snapshotSearchRegex(query string) *regexp.Regexp {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
-		return nil, errors.New("empty regex")
+		return nil
 	}
 	if !strings.ContainsAny(q, " \t\n") {
 		if re, err := regexp.Compile("(?i)" + q); err == nil {
-			return re, nil
+			return re
 		}
 	}
-	tokens := snapshotSearchTokenRE.FindAllString(q, -1)
+	tokens := SnapshotSearchTokens(q)
 	if len(tokens) == 0 {
-		return nil, errors.New("no regex tokens")
+		return nil
 	}
 	escaped := make([]string, len(tokens))
 	for i, token := range tokens {
 		escaped[i] = regexp.QuoteMeta(token)
 	}
-	return regexp.Compile("(?i)(" + strings.Join(escaped, "|") + ")")
+	re, err := regexp.Compile("(?i)(" + strings.Join(escaped, "|") + ")")
+	if err != nil {
+		return nil
+	}
+	return re
 }
 
 func snapshotRegexScore(re *regexp.Regexp, skill Skill) float64 {
@@ -203,31 +111,40 @@ func snapshotRegexScore(re *regexp.Regexp, skill Skill) float64 {
 	return 0
 }
 
-func searchSnapshotExact(query string, candidates []Skill) []RankedSkill {
+func searchSnapshotExact(ctx context.Context, query string, candidates []Skill) ([]RankedSkill, error) {
 	needle := strings.ToLower(strings.TrimSpace(query))
 	if needle == "" {
-		return nil
+		return nil, nil
 	}
 	result := make([]RankedSkill, 0, len(candidates))
 	for _, skill := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if strings.EqualFold(strings.TrimSpace(skill.Name), needle) || strings.EqualFold(strings.TrimSpace(skill.Title), needle) || strings.EqualFold(strings.TrimSpace(skill.Trigger), needle) || snapshotExactTag(skill.Tags, needle) {
 			result = append(result, RankedSkill{Skill: skill, Score: 1, Path: PathExact})
 		}
 	}
-	sortSnapshotResults(result)
-	return result
+	SortSnapshotResults(result)
+	return result, nil
 }
 
 func snapshotExactTag(tags []string, needle string) bool {
 	for _, tag := range tags {
-		if strings.EqualFold(strings.TrimSpace(tag), needle) {
+		// The configured SQLite and PostgreSQL drivers both use their
+		// tags_text LIKE fallback, so the frozen-candidate tail retains that
+		// established matching behavior rather than narrowing it to tag
+		// equality.
+		if strings.Contains(strings.ToLower(tag), needle) {
 			return true
 		}
 	}
 	return false
 }
 
-func sortSnapshotResults(result []RankedSkill) {
+// SortSnapshotResults applies the canonical result ordering shared by the
+// driver-owned frozen-candidate paths.
+func SortSnapshotResults(result []RankedSkill) {
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].Score != result[j].Score {
 			return result[i].Score > result[j].Score
@@ -239,22 +156,51 @@ func sortSnapshotResults(result []RankedSkill) {
 	})
 }
 
-func truncateSnapshotResults(result []RankedSkill, limit int) []RankedSkill {
+// TruncateSnapshotResults returns at most limit ranked rows. A zero limit is
+// already normalized by the caller's public Search contract.
+func TruncateSnapshotResults(result []RankedSkill, limit int) []RankedSkill {
 	if len(result) > limit {
-		result = result[:limit]
+		return result[:limit]
 	}
 	return result
 }
 
-func searchSnapshotSemantic(ctx context.Context, id identity.Quadruple, query string, candidates []Skill, limit int, embedder Embedder) ([]RankedSkill, error) {
+func truncateSnapshotResults(result []RankedSkill, limit int) []RankedSkill {
+	return TruncateSnapshotResults(result, limit)
+}
+
+// SearchSnapshotSemantic ranks the most-recent 256 frozen candidates using
+// one query-plus-candidates embedding batch. It is shared by driver-owned
+// semantic paths so semantic snapshot behavior preserves the configured
+// backend policy while never exceeding the established billed-call bound.
+func SearchSnapshotSemantic(ctx context.Context, id identity.Quadruple, query string, candidates []Skill, limit int, embedder Embedder) ([]RankedSkill, error) {
 	query = strings.TrimSpace(query)
 	if query == "" || len(candidates) == 0 {
 		return []RankedSkill{}, nil
 	}
-	texts := make([]string, 0, len(candidates)+1)
+	if embedder == nil {
+		return nil, errors.New("skills: snapshot semantic retrieval is missing Embedder")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ordered := append([]Skill(nil), candidates...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if !ordered[i].UpdatedAt.Equal(ordered[j].UpdatedAt) {
+			return ordered[i].UpdatedAt.After(ordered[j].UpdatedAt)
+		}
+		return ordered[i].Name < ordered[j].Name
+	})
+	if len(ordered) > SnapshotSemanticCandidateCap {
+		ordered = ordered[:SnapshotSemanticCandidateCap]
+	}
+	texts := make([]string, 0, len(ordered)+1)
 	texts = append(texts, query)
-	for _, skill := range candidates {
-		texts = append(texts, snapshotSearchText(skill))
+	for _, skill := range ordered {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		texts = append(texts, SnapshotSearchText(skill))
 	}
 	embeddingCtx, err := snapshotEmbeddingIdentityContext(ctx, id)
 	if err != nil {
@@ -267,16 +213,19 @@ func searchSnapshotSemantic(ctx context.Context, id identity.Quadruple, query st
 	if len(vectors) != len(texts) {
 		return nil, fmt.Errorf("skills: snapshot embedder returned %d vectors for %d texts", len(vectors), len(texts))
 	}
-	result := make([]RankedSkill, 0, len(candidates))
-	for i, skill := range candidates {
+	result := make([]RankedSkill, 0, len(ordered))
+	for i, skill := range ordered {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		cosine, err := embeddings.Cosine(vectors[0], vectors[i+1])
 		if err != nil {
 			return nil, fmt.Errorf("skills: snapshot semantic rank %q: %w", skill.Name, err)
 		}
 		result = append(result, RankedSkill{Skill: skill, Score: (cosine + 1) / 2, Path: PathSemantic})
 	}
-	sortSnapshotResults(result)
-	return truncateSnapshotResults(result, limit), nil
+	SortSnapshotResults(result)
+	return TruncateSnapshotResults(result, limit), nil
 }
 
 func snapshotEmbeddingIdentityContext(ctx context.Context, id identity.Quadruple) (context.Context, error) {
@@ -301,7 +250,9 @@ func snapshotEmbeddingIdentityContext(ctx context.Context, id identity.Quadruple
 	return withIdentity, nil
 }
 
-func snapshotSearchText(skill Skill) string {
+// SnapshotSearchText is the same planner-visible text surface all current
+// driver full-text and semantic search paths index.
+func SnapshotSearchText(skill Skill) string {
 	parts := make([]string, 0, 5)
 	for _, value := range []string{skill.Name, skill.Title, skill.Trigger, skill.Description, strings.Join(skill.Tags, " ")} {
 		if strings.TrimSpace(value) != "" {
@@ -310,5 +261,3 @@ func snapshotSearchText(skill Skill) string {
 	}
 	return strings.Join(parts, "\n")
 }
-
-var _ SnapshotCandidateSearcher = snapshotCandidateSearcher{}

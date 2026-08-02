@@ -189,9 +189,9 @@ type RankedSkill struct {
 }
 
 // SnapshotCandidateSearcher ranks one immutable, already-authorized candidate
-// view. It is the search-policy seam for per-run composite readers: the
-// implementation preserves the configured lexical ladder or opt-in semantic
-// mode while the caller owns membership and snapshot isolation.
+// view. It is implemented by every configured SkillStore driver, rather than
+// by an ad-hoc portable scorer: a frozen composed view must retain the base
+// driver's actual full-text availability and ranking semantics.
 //
 // Candidates are complete copies from a single run-start view. Implementations
 // MUST rank only those candidates, preserve their configured retrieval policy,
@@ -294,6 +294,7 @@ type SkillReader interface {
 //     in `ctx` and the supplied `Quadruple`, never on the driver.
 type SkillStore interface {
 	SkillReader
+	SnapshotCandidateSearcher
 
 	// Upsert inserts or updates `skill` under the identity-scoped
 	// `(tenant, user, session, scope, name)` key. Conflict policy
