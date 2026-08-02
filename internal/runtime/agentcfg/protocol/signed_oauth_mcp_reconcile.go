@@ -29,8 +29,9 @@ type SignedOAuthMCPReconciler struct {
 	providers     SignedCapabilityProviderPreparer
 	matcher       connectionMatcher
 	gate          chan struct{}
-	// continuations is internally synchronized by gate; each exact subject and
-	// agent advances a bounded tenant maintenance page independently.
+	// continuations is internally synchronized by gate; each tenant and agent
+	// advances one bounded maintenance page independently. Pair lifetime is
+	// tenant+agent scoped even though acting authority remains subject-scoped.
 	continuations map[string]string
 }
 
@@ -95,14 +96,14 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 			return err
 		}
 	}
-	cursorKey := strings.Join([]string{q.TenantID, q.UserID, q.SessionID, agentID}, "\x00")
+	cursorKey := strings.Join([]string{q.TenantID, agentID}, "\x00")
 	ops, continuation, err := r.operations.ScanTenantPage(ctx, q.TenantID, state.MaxStateScanLimit, r.continuations[cursorKey])
 	if err != nil {
 		return err
 	}
 	r.continuations[cursorKey] = continuation
 	for _, op := range ops {
-		if op.Binding.UserID != q.UserID || op.Binding.SessionID != q.SessionID || op.Binding.AgentID != agentID {
+		if op.Binding.AgentID != agentID {
 			continue
 		}
 		kind, kindErr := r.operations.Kind(op.ReplayKey)
@@ -112,6 +113,7 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 		if kind == activeOperationKind {
 			continue
 		}
+		sameSubject := op.Binding.UserID == q.UserID && op.Binding.SessionID == q.SessionID
 		switch op.Phase {
 		case agentcfg.SignedOAuthMCPPhaseClaimed:
 			if signedCapabilityOperationExpired(op) {
@@ -134,6 +136,9 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 			// the current physical desired state has no pair, the paired removal
 			// revision landed before its receipt checkpoint; continue teardown.
 			if hasActive && active.Payload.SignedOAuthMCPPair == nil {
+				if !sameSubject {
+					return fmt.Errorf("%w: prior subject signed capability pair lifetime is awaiting removal recovery", agentcfg.ErrSignedCapabilityPending)
+				}
 				op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, active.RevisionID)
 				if err != nil {
 					return err
@@ -143,6 +148,9 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 				}
 			}
 		case agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, agentcfg.SignedOAuthMCPPhaseCatalogUnpublished, agentcfg.SignedOAuthMCPPhaseTeardownReceipted:
+			if !sameSubject {
+				return fmt.Errorf("%w: prior subject signed capability pair lifetime is still %q", agentcfg.ErrSignedCapabilityPending, op.Phase)
+			}
 			if hasActive && active.Payload.SignedOAuthMCPPair != nil {
 				return fmt.Errorf("%w: stale removal cannot detach the active pair", agentcfg.ErrSignedCapabilityReplay)
 			}
@@ -199,7 +207,7 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 				return err
 			}
 		}
-		if err := r.publish(ctx, q, agentID, pair, op); err != nil {
+		if err := r.publish(ctx, q, agentID, pair, op, revision); err != nil {
 			return err
 		}
 		latest, err := r.operations.LoadForPair(ctx, q.TenantID, pair)
@@ -218,7 +226,7 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 		if err := r.commitFence(ctx, q.TenantID, agentID, op, revision); err != nil {
 			return err
 		}
-		return r.ensureAttached(ctx, q, agentID, pair)
+		return r.ensureAttached(ctx, q, agentID, pair, revision, op)
 	case agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted:
 		if err := r.detach(ctx, q, agentID, pair); err != nil {
 			return err
@@ -310,8 +318,8 @@ func (r *SignedOAuthMCPReconciler) commitFence(ctx context.Context, tenant, agen
 	return err
 }
 
-func (r *SignedOAuthMCPReconciler) publish(ctx context.Context, q identity.Quadruple, agentID string, pair *agentcfg.SignedOAuthMCPPair, op agentcfg.SignedOAuthMCPOperation) error {
-	if err := r.ensureAttached(ctx, q, agentID, pair); err != nil {
+func (r *SignedOAuthMCPReconciler) publish(ctx context.Context, q identity.Quadruple, agentID string, pair *agentcfg.SignedOAuthMCPPair, op agentcfg.SignedOAuthMCPOperation, revision agentcfg.Revision) error {
+	if err := r.ensureAttached(ctx, q, agentID, pair, revision, op); err != nil {
 		return err
 	}
 	_, err := r.operations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhasePublished, op.RevisionID)
@@ -321,7 +329,10 @@ func (r *SignedOAuthMCPReconciler) publish(ctx context.Context, q identity.Quadr
 	return err
 }
 
-func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identity.Quadruple, agentID string, pair *agentcfg.SignedOAuthMCPPair) error {
+func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identity.Quadruple, agentID string, pair *agentcfg.SignedOAuthMCPPair, revision agentcfg.Revision, op agentcfg.SignedOAuthMCPOperation) error {
+	if err := r.revalidateAttachmentAuthority(ctx, q, agentID, revision, pair, op); err != nil {
+		return err
+	}
 	owner := toolauth.Owner{Tenant: q.TenantID, Agent: agentID}
 	fingerprint := signedCapabilityPairAttachmentFingerprint(pair)
 	if r.matcher.ConnectionMatches(owner, pair.Connection.Name, fingerprint) {
@@ -344,10 +355,67 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 	if err != nil {
 		return errors.Join(err, closePreparedSignedCapability(ctx, nil, provider))
 	}
+	// Preparation performs network I/O and can outlive the active-pointer read
+	// that selected this pair. Removal or replacement may have completed while
+	// the connection was private. Re-prove the exact physical revision,
+	// operation generation/phase, and activation fence immediately before the
+	// sole catalog publication point.
+	if err := r.revalidateAttachmentAuthority(ctx, q, agentID, revision, pair, op); err != nil {
+		return errors.Join(err, closePreparedSignedCapability(ctx, prepared, provider))
+	}
 	if err := prepared.Activate(ctx); err != nil {
 		return errors.Join(err, closePreparedSignedCapability(ctx, prepared, provider))
 	}
+	// Close the just-activated private attachment if teardown raced the final
+	// pre-activation proof. This second proof prevents the narrow read/Activate
+	// window from leaving a stale catalog/provider generation behind.
+	if err := r.revalidateAttachmentAuthority(ctx, q, agentID, revision, pair, op); err != nil {
+		return errors.Join(err, closePreparedSignedCapability(ctx, prepared, provider))
+	}
 	provider.Commit(ctx)
+	return nil
+}
+
+func (r *SignedOAuthMCPReconciler) revalidateAttachmentAuthority(ctx context.Context, q identity.Quadruple, agentID string, revision agentcfg.Revision, pair *agentcfg.SignedOAuthMCPPair, expected agentcfg.SignedOAuthMCPOperation) error {
+	physical, err := requirePhysicalActiveRevision(ctx, r.physical, q, agentID, revision.RevisionID, revision.ContentHash)
+	if err != nil {
+		return errors.Join(
+			fmt.Errorf("%w: attachment candidate is no longer physically active", agentcfg.ErrSignedCapabilityPending),
+			err,
+		)
+	}
+	kind, err := r.operations.Kind(expected.ReplayKey)
+	if err != nil {
+		return err
+	}
+	if !signedCapabilityPairMatchesOperation(physical.Payload.SignedOAuthMCPPair, q.TenantID, expected.Binding, kind) ||
+		!signedCapabilityPairMatchesOperation(pair, q.TenantID, expected.Binding, kind) {
+		return fmt.Errorf("%w: attachment candidate no longer binds the exact pair lifetime", agentcfg.ErrSignedCapabilityPending)
+	}
+	latest, err := r.operations.LoadForPair(ctx, q.TenantID, pair)
+	if err != nil {
+		return err
+	}
+	if latest.EventID != expected.EventID || latest.Fingerprint != expected.Fingerprint || latest.RevisionID != expected.RevisionID || latest.Phase != expected.Phase {
+		return fmt.Errorf("%w: attachment pair lifetime advanced from %q", agentcfg.ErrSignedCapabilityPending, expected.Phase)
+	}
+	wantFencePhase := agentcfg.SignedOAuthMCPFencePending
+	if expected.Phase == agentcfg.SignedOAuthMCPPhasePublished {
+		wantFencePhase = agentcfg.SignedOAuthMCPFenceCommitted
+	} else if expected.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted {
+		return fmt.Errorf("%w: operation phase %q cannot publish an attachment", agentcfg.ErrSignedCapabilityPending, expected.Phase)
+	}
+	fence, err := r.fences.Load(ctx, q.TenantID, agentID)
+	if err != nil {
+		return err
+	}
+	candidateRevisionMismatch := fence.CandidateRevisionID != "" && fence.CandidateRevisionID != revision.RevisionID
+	if wantFencePhase == agentcfg.SignedOAuthMCPFenceCommitted {
+		candidateRevisionMismatch = fence.CandidateRevisionID != revision.RevisionID
+	}
+	if fence.Phase != wantFencePhase || fence.OperationKind != kind || fence.Fingerprint != expected.Fingerprint || fence.CandidateContentHash != revision.ContentHash || candidateRevisionMismatch {
+		return fmt.Errorf("%w: attachment fence no longer binds the exact pair lifetime", agentcfg.ErrSignedCapabilityPending)
+	}
 	return nil
 }
 

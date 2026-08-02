@@ -181,8 +181,21 @@ explicit signed-capability production opt-in; it is not enabled by default.
 - [x] Live attachment and exact teardown are generation-bound to the durable
   operation identity as well as the connection descriptor. A new registration
   cannot replace a pair while an older lifetime is `published` without an
-  active pair or is in any removal subphase. Sequential and independent-runtime
-  races therefore cannot let an old teardown detach a same-named replacement.
+  active pair or is in any removal subphase. That exclusion and maintenance
+  scan are tenant+agent scoped across Service instances and user/session
+  subjects; subject ownership checks remain exact and a foreign subject gains
+  no teardown authority. Catalog withdrawal hides the exact generation from
+  dispatch, while a private retryable closing receipt retains its provider
+  handle and name reservation until transport/provider close or revoke returns
+  success. Absent-after-error cannot advance teardown. Sequential and
+  independent-runtime races therefore cannot let an old teardown detach a
+  same-named replacement or publish one before the old generation is closed.
+- [x] Restart reconciliation revalidates the exact physical active revision,
+  operation generation/phase, and activation fence after private preparation
+  and immediately around catalog activation. If removal/replacement completed
+  after the initial read, prepared connection/provider resources close and no
+  pair, catalog source, provider handle, or cache is resurrected. Tenant+agent
+  exclusion remains tenant-isolated.
 - [x] Every post-prepare refusal uses one bounded cleanup context, attempts both
   connection and pair-owned provider cleanup, and joins every cleanup failure
   with the primary error. Erroring-close tests prove no catalog publication,
@@ -290,6 +303,10 @@ explicit signed-capability production opt-in; it is not enabled by default.
   preparer invocations under `-race`; competing registration/removal/rollback/
   retirement and commit-then-error cases prove one winner, no incorrect
   compensation, cancellation cross-talk, identity bleed, or goroutine leak.
+  Token-exchange providers drain and join the idle connections of only the
+  transport they construct; a caller-supplied client/transport remains shared
+  and untouched across providers. Close is idempotent, cancels and joins an
+  active exchange, and retains independent session/provider teardown receipts.
 
 ## Smoke script additions
 

@@ -501,6 +501,13 @@ type Provider struct {
 	mu      sync.RWMutex
 	session *mcpsdk.ClientSession
 	closed  bool
+	// closeMu serializes teardown retries. closed blocks new dispatch as soon as
+	// teardown begins; session and oauthProviderClosed are the independent
+	// positive receipts. A failed Close keeps the outstanding handle so the
+	// exact registry generation can retry it instead of observing a false
+	// idempotent success.
+	closeMu             sync.Mutex
+	oauthProviderClosed bool
 
 	// selectedMode is the actual transport mode chosen by
 	// selectTransport — useful for tests and observability.
@@ -1593,27 +1600,38 @@ func (p *Provider) onResourceUpdated(ctx context.Context, req *mcpsdk.ResourceUp
 	}
 }
 
-// Close shuts the session down idempotently and joins any
-// in-flight SDK goroutines. Safe to call multiple times.
+// Close shuts the session and pair-owned OAuth provider down idempotently and
+// joins any in-flight SDK goroutines. A failure is retryable: successful legs
+// retain their receipt while failed legs keep their exact handle for the next
+// call. Safe to call multiple times.
 func (p *Provider) Close(ctx context.Context) error {
+	p.closeMu.Lock()
+	defer p.closeMu.Unlock()
+
 	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return nil
-	}
 	p.closed = true
 	session := p.session
-	p.session = nil
+	oauthProviderClosed := p.oauthProviderClosed
 	p.mu.Unlock()
 	var errs []error
 	if session != nil {
 		if err := session.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("mcp: close session: %w", err))
+		} else {
+			p.mu.Lock()
+			if p.session == session {
+				p.session = nil
+			}
+			p.mu.Unlock()
 		}
 	}
-	if p.cfg.OwnOAuthProvider && p.cfg.OAuthProvider != nil {
+	if p.cfg.OwnOAuthProvider && p.cfg.OAuthProvider != nil && !oauthProviderClosed {
 		if err := p.cfg.OAuthProvider.Close(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("mcp: close private oauth provider: %w", err))
+		} else {
+			p.mu.Lock()
+			p.oauthProviderClosed = true
+			p.mu.Unlock()
 		}
 	}
 	return errors.Join(errs...)

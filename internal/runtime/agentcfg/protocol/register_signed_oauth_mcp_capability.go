@@ -330,7 +330,12 @@ func (s *Service) rejectIncompletePriorSignedPairLifetime(ctx context.Context, i
 			if err != nil {
 				return err
 			}
-			if kind == operationKind || operation.Binding.UserID != id.UserID || operation.Binding.SessionID != id.SessionID || operation.Binding.AgentID != agentID {
+			// Pair lifetime exclusivity is tenant+agent scoped. User/session remain
+			// frozen ownership fields for authorization and exchange, but a second
+			// subject cannot use a different Service/process lock to replace the
+			// process-global attachment while the prior generation is published or
+			// closing.
+			if kind == operationKind || operation.Binding.AgentID != agentID {
 				continue
 			}
 			switch operation.Phase {

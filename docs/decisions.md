@@ -12079,9 +12079,25 @@ alone linearizes data-plane dispatch. Protocol projections derive from the
 immutable signed-pair revision, not a live provider map; generic provider
 resolution cannot bind the pair. A pair-owned live registry may retain only
 close/reconcile receipts, never authority/projection/dispatch. General bare-name
-collision checking remains. Prepare is never durable and closes on failure or
-restart; teardown closes transport+provider as one receipt. Generic revision
-writers remain closed against a pair. Paired removal continues the same
+collision checking remains. Catalog withdrawal is the dispatch linearization
+point for teardown, but the exact generation/provider handle remains in a
+private, non-dispatchable `closing` state until every owned transport/provider
+close or revoke returns success. A close error retains that handle and name
+reservation for a genuine retry; absent-after-error is never a teardown receipt,
+and replacement remains blocked. Prepare is never durable and closes on failure
+or restart; teardown closes transport+provider as one receipt. Generic revision
+writers remain closed against a pair. Pair-lifetime exclusion and removal
+maintenance are tenant+agent scoped even when a second caller has another
+user/session or Service instance; the frozen user/session fields remain the
+authorization and exchange subject and are not widened into teardown authority.
+Restart reconciliation treats its initial active-pair read as advisory: after
+private provider/connection preparation it re-reads the exact physical active
+revision, pair-lifetime operation generation and phase, and activation fence
+immediately before activation, then verifies them again before transferring
+provider ownership. A completed removal or replacement closes the prepared
+private resources and publishes nothing; immutable history cannot resurrect a
+removed pair.
+Paired removal continues the same
 pair-lifetime JTI record; it is never a second operation. It is the durable
 exact-EventID `SaveIf` sequence `removal_revision_committed` (desired pair absent by revision
 CAS), `catalog_unpublished`, `teardown_receipted` (close+revoke from frozen
@@ -12204,6 +12220,13 @@ failure remain loud. All drivers run the same conformance suite, and durable
 drivers additionally race independent clients through conditional delete versus
 replacement and verify the one CAS winner after reopen. This is one mandatory
 interface, not an optional capability.
+
+The shared invalid-expectation row pins the exact canonical sentinels:
+incomplete identity returns `ErrIdentityRequired`; empty Kind or EventID returns
+`ErrInvalidRecord`. Every refusal returns `changed=false` and a byte-for-byte
+reload proves the original generation, version, timestamp, and content remain
+unchanged. Direct validator tests remain a separate structural unit guard, not
+a substitute for exercising every driver boundary.
 
 The first consumer is `agentcfg.Registry.DeactivateIfActive`. A compensation
 whose pre-operation lifecycle slot was truly absent removes only its exact

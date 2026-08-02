@@ -41,6 +41,8 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestSignedOAuthMCPActivationFenceStore_TerminalFenceYieldsToNextOperation \
     TestRegisterOAuthMCPCapability_DurableReplayResumesPublishedOperation \
     TestRegisterOAuthMCPCapability_CommittedRevisionThenError_RecoversExactCandidate \
+    TestRegisterOAuthMCPCapability_PointerAndCompensationFailure_DoesNotPublishMatchingOrphan \
+    TestRegisterOAuthMCPCapability_CrossSessionServiceCannotReplaceDuringRemoval \
     TestRegisterOAuthMCPCapability_ConcurrentReplaySharesOnePublication \
     TestRegisterOAuthMCPCapability_ConcurrentMixedIdentityN128 \
     TestRemoveOAuthMCPCapability_ContinuesPairLifetimeReceipt \
@@ -48,16 +50,25 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestSignedOAuthMCPReconciler_SQLiteRestart_ReattachesPublishedPair \
     TestSignedOAuthMCPReconciler_ExpiredIncompleteNeutralizesCandidate \
     TestSignedOAuthMCPReconciler_ExpiredIncompleteRestoresBootLifecycle \
+    TestSignedOAuthMCPReconciler_HistoricalPublishedPairCannotReattach \
+    TestSignedOAuthMCPReconciler_RemovalDuringPrepareCannotRepublish \
     TestSignedOAuthMCPReconciler_RecoversRemovalAfterDetachFault \
     TestSignedOAuthMCPReconciler_ConcurrentReuseN128_CancellationDoesNotLeak \
     TestSetOAuthProvider_FirstInstallCommitThenErrorRestoresUnsetAgent \
     TestSetOAuthProvider_BootLifecycleCommitThenErrorRestoresExactPrior
 
-assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./internal/agentcfg/drivers/statestore ./internal/tools/auth ./internal/tools/drivers/mcp ./internal/protocol/types ./internal/protocol/transports/stream ./internal/runtime/serve' \
+assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./internal/agentcfg/drivers/statestore ./internal/tools/auth ./internal/tools/auth/drivers/tokenexchange ./internal/tools/drivers/mcp ./internal/protocol/types ./internal/protocol/transports/stream ./internal/runtime/serve' \
     'phase 233b: authenticated preparation, selective discovery errors, rollback, scope, and closed-wire regressions execute under race' \
     TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDiscovery \
     TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors \
     TestIsJSONRPCMethodNotFound_OnlyCanonicalTypedError \
+    TestDetachSourceExpected_CloseFailureIsRetryableAndNeverAbsentSuccess \
+    TestRegistry_DeregisterExact_CloseFailureRetainsExactRetryReceiptAndBlocksReplacement \
+    TestRegistry_DeregisterExact_PersistentCloseFailureNeverBecomesAbsentSuccess \
+    TestProvider_CloseRetriesPairOwnedOAuthUntilPositiveReceipt \
+    TestProvider_CloseOwnedTransport_ClosesIdleConnectionAndIsIdempotent \
+    TestProvider_CloseOwnedTransport_CancelsAndJoinsActiveExchange \
+    TestProvider_CloseSuppliedTransport_DoesNotCrossProviders \
     TestRollback_ActiveRevisionReadFailureAbortsBeforePointerMutation \
     TestDeactivateIfActive_RestoresAbsentAndSurvivesRestart \
     TestDeactivateIfActive_TerminalOrCorruptFailsClosed \

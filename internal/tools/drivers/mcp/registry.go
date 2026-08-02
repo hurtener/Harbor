@@ -301,6 +301,12 @@ type serverStats struct {
 type Registry struct {
 	mu      sync.RWMutex
 	servers map[string]*serverEntry
+	// closing holds exact registrations after catalog withdrawal has made them
+	// unreachable to dispatch but before their owned transport/provider Close
+	// has returned success. The entry remains generation-addressable so an
+	// exact teardown retry closes the same handle instead of mistaking absence
+	// for a receipt, and its name remains reserved against replacement.
+	closing map[string]*serverEntry
 	// pending reserves names for reversible registrations without exposing the
 	// staged provider to ordinary reads. A receipt remains here until Commit or
 	// Rollback, so no concurrent register/deregister can invalidate the exact
@@ -326,6 +332,7 @@ func WithRegistryClock(now func() time.Time) RegistryOption {
 func NewRegistry(opts ...RegistryOption) *Registry {
 	r := &Registry{
 		servers: map[string]*serverEntry{},
+		closing: map[string]*serverEntry{},
 		pending: map[string]*RegistrationSwap{},
 		clock:   time.Now,
 	}
@@ -423,7 +430,10 @@ type ServerRegistration struct {
 func (r *Registry) CheckServerIDUnambiguous(name string) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return ambiguousAgainst(r.servers, name)
+	if err := ambiguousAgainst(r.servers, name); err != nil {
+		return err
+	}
+	return ambiguousAgainst(r.closing, name)
 }
 
 // ambiguousAgainst is the lock-free core of CheckServerIDUnambiguous. The
@@ -567,6 +577,14 @@ func (r *Registry) StageRegistration(reg ServerRegistration, descs []tools.ToolD
 		r.mu.Unlock()
 		return nil, err
 	}
+	if err := ambiguousAgainst(r.closing, name); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
+	if _, closing := r.closing[name]; closing {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("mcp: registration for %q refused while its exact prior generation is closing", name)
+	}
 	for pendingName := range r.pending {
 		if pendingName == name {
 			r.mu.Unlock()
@@ -696,10 +714,14 @@ func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner
 	return nil
 }
 
-// DeregisterExact removes one live registration only after atomically proving
-// its owner and complete descriptor fingerprint. withdrawCatalog runs while
-// the registry write lock holds the name against replacement, so catalog
-// withdrawal can never race a same-name registration from another owner.
+// DeregisterExact withdraws one live registration from dispatch only after
+// atomically proving its owner and complete descriptor fingerprint. The exact
+// provider handle then remains in a private retryable closing state until
+// Close returns success. withdrawCatalog runs while the registry write lock
+// holds the name against replacement, so catalog withdrawal can never race a
+// same-name registration from another owner. A retry addresses the same
+// closing generation and never converts an absent-after-error observation into
+// a teardown receipt.
 func (r *Registry) DeregisterExact(ctx context.Context, name string, owner auth.Owner, descriptorFingerprint string, withdrawCatalog func() int) (int, error) {
 	if owner.IsZero() || descriptorFingerprint == "" || withdrawCatalog == nil {
 		return 0, fmt.Errorf("%w: %q", ErrServerNotFound, name)
@@ -709,17 +731,33 @@ func (r *Registry) DeregisterExact(ctx context.Context, name string, owner auth.
 		r.mu.Unlock()
 		return 0, fmt.Errorf("mcp: deregister %q refused while an exact replacement is staged", name)
 	}
-	e, ok := r.servers[name]
-	if !ok || e.owner != owner || e.descriptorFingerprint != descriptorFingerprint {
-		r.mu.Unlock()
-		return 0, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	e, retryingClose := r.closing[name]
+	removed := 0
+	if retryingClose {
+		if e.owner != owner || e.descriptorFingerprint != descriptorFingerprint {
+			r.mu.Unlock()
+			return 0, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+		}
+	} else {
+		var ok bool
+		e, ok = r.servers[name]
+		if !ok || e.owner != owner || e.descriptorFingerprint != descriptorFingerprint {
+			r.mu.Unlock()
+			return 0, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+		}
+		removed = withdrawCatalog()
+		delete(r.servers, name)
+		r.closing[name] = e
 	}
-	removed := withdrawCatalog()
-	delete(r.servers, name)
 	r.mu.Unlock()
 	if err := e.provider.Close(ctx); err != nil {
 		return removed, fmt.Errorf("mcp: deregister %q: close transport: %w", name, err)
 	}
+	r.mu.Lock()
+	if r.closing[name] == e {
+		delete(r.closing, name)
+	}
+	r.mu.Unlock()
 	return removed, nil
 }
 

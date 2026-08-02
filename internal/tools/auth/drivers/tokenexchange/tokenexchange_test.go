@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -66,6 +67,10 @@ type fakeBroker struct {
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
+	return newFakeBrokerWithConnState(t, nil)
+}
+
+func newFakeBrokerWithConnState(t *testing.T, observe func(net.Conn, http.ConnState)) *fakeBroker {
 	t.Helper()
 	b := &fakeBroker{
 		expiresIn:  3600,
@@ -74,7 +79,9 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 	b.posture.Store("grant")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth2/token", b.handleToken)
-	b.server = httptest.NewServer(mux)
+	b.server = httptest.NewUnstartedServer(mux)
+	b.server.Config.ConnState = observe
+	b.server.Start()
 	t.Cleanup(b.server.Close)
 	return b
 }
@@ -301,7 +308,7 @@ func mkDeps(t *testing.T) (auth.FactoryDeps, pauseresume.Coordinator, events.Eve
 		Bus:         bus,
 		Redactor:    red,
 		Coordinator: coord,
-		HTTPClient:  &http.Client{Timeout: 5 * time.Second},
+		HTTPClient:  nil, // exercise the provider-owned hardened transport by default
 		Clock:       time.Now,
 	}, coord, bus
 }

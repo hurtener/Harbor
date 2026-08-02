@@ -22,6 +22,8 @@ type stubOAuthProvider struct {
 	calls        int
 	lastSrc      tools.ToolSourceID
 	allowedHosts []string
+	closeCalls   int
+	closeErrs    []error
 }
 
 func (s *stubOAuthProvider) Token(_ context.Context, source tools.ToolSourceID) (auth.Token, error) {
@@ -45,12 +47,41 @@ func (s *stubOAuthProvider) DenyFlow(context.Context, string, string) error { re
 func (s *stubOAuthProvider) Revoke(context.Context, tools.ToolSourceID) error {
 	return nil
 }
-func (s *stubOAuthProvider) Close(context.Context) error { return nil }
+func (s *stubOAuthProvider) Close(context.Context) error {
+	s.closeCalls++
+	if len(s.closeErrs) == 0 {
+		return nil
+	}
+	err := s.closeErrs[0]
+	s.closeErrs = s.closeErrs[1:]
+	return err
+}
 func (s *stubOAuthProvider) AllowedDownstreamHosts() []string {
 	return append([]string(nil), s.allowedHosts...)
 }
 
 var _ auth.OAuthProvider = (*stubOAuthProvider)(nil)
+
+func TestProvider_CloseRetriesPairOwnedOAuthUntilPositiveReceipt(t *testing.T) {
+	closeFault := errors.New("injected private provider close fault")
+	oauth := &stubOAuthProvider{closeErrs: []error{closeFault, nil}}
+	provider := &Provider{cfg: Config{OAuthProvider: oauth, OwnOAuthProvider: true}}
+	if err := provider.Close(context.Background()); !errors.Is(err, closeFault) {
+		t.Fatalf("first Close = %v, want private provider fault", err)
+	}
+	if err := provider.Close(context.Background()); err != nil {
+		t.Fatalf("retry Close: %v", err)
+	}
+	if oauth.closeCalls != 2 {
+		t.Fatalf("private provider Close calls = %d, want a genuine retry", oauth.closeCalls)
+	}
+	if err := provider.Close(context.Background()); err != nil {
+		t.Fatalf("receipt-idempotent Close: %v", err)
+	}
+	if oauth.closeCalls != 2 {
+		t.Fatalf("positive close receipt was not retained: calls=%d", oauth.closeCalls)
+	}
+}
 
 func testIdentityCtx(t *testing.T, id identity.Identity) context.Context {
 	t.Helper()

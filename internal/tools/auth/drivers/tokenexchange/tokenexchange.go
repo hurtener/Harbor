@@ -344,7 +344,7 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 	// token_url, so the env widens WHICH providers may reach a private
 	// address, never WHICH address any of them dials.
 	allowPrivate := cfg.AllowPrivateTokenURL || allowPrivateExchangeCaptured()
-	httpClient := hardenTokenExchangeClient(deps.HTTPClient, clientTimeout, allowPrivate)
+	httpClient, ownedHTTPTransport := hardenTokenExchangeClient(deps.HTTPClient, clientTimeout, allowPrivate)
 	clock := deps.Clock
 	if clock == nil {
 		clock = time.Now
@@ -386,6 +386,7 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 		allowedDownstreamHosts: append([]string(nil), cfg.AllowedDownstreamHosts...),
 		cacheTTLCap:            cacheTTLCap,
 		httpClient:             httpClient,
+		ownedHTTPTransport:     ownedHTTPTransport,
 		closeCtx:               closeCtx,
 		closeCancel:            closeCancel,
 		now:                    clock,
@@ -442,11 +443,11 @@ var ErrPrivateDialRefused = errors.New("auth/tokenexchange: dial to a private/li
 // does NOT relax the unspecified-address block (never a valid coordinator),
 // does NOT touch the loopback carve-out (still allowed), and does NOT touch
 // the redirect refusal (still absolute).
-func hardenTokenExchangeClient(supplied *http.Client, timeout time.Duration, allowPrivate bool) *http.Client {
+func hardenTokenExchangeClient(supplied *http.Client, timeout time.Duration, allowPrivate bool) (*http.Client, *http.Transport) {
 	if supplied != nil {
 		clone := *supplied
 		clone.CheckRedirect = refuseTokenEndpointRedirect
-		return &clone
+		return &clone, nil
 	}
 	dialer := &net.Dialer{Timeout: timeout}
 	// Control runs AFTER DNS resolution with the resolved ip:port — the
@@ -469,14 +470,15 @@ func hardenTokenExchangeClient(supplied *http.Client, timeout time.Duration, all
 		}
 		return nil
 	}
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			Proxy:       nil, // never route the credential POST through a proxy
-			DialContext: dialer.DialContext,
-		},
-		CheckRedirect: refuseTokenEndpointRedirect,
+	transport := &http.Transport{
+		Proxy:       nil, // never route the credential POST through a proxy
+		DialContext: dialer.DialContext,
 	}
+	return &http.Client{
+		Timeout:       timeout,
+		Transport:     transport,
+		CheckRedirect: refuseTokenEndpointRedirect,
+	}, transport
 }
 
 // refuseTokenEndpointRedirect is the CheckRedirect hook: it refuses every
@@ -577,10 +579,14 @@ type provider struct {
 	allowedDownstreamHosts []string
 	cacheTTLCap            time.Duration
 	httpClient             *http.Client
-	now                    func() time.Time
-	bus                    events.EventBus
-	redactor               audit.Redactor
-	coordinator            pauseresume.Coordinator
+	// ownedHTTPTransport is non-nil only when this provider constructed the
+	// transport. A supplied client's transport remains caller-owned and may be
+	// shared by other providers, so Close must never drain or close it.
+	ownedHTTPTransport *http.Transport
+	now                func() time.Time
+	bus                events.EventBus
+	redactor           audit.Redactor
+	coordinator        pauseresume.Coordinator
 
 	// store is the shared TokenStore. Held only to honour the
 	// FactoryDeps mandatory-dep contract; brokered tokens live in the
@@ -1233,6 +1239,12 @@ func (p *provider) Close(ctx context.Context) error {
 	clear(p.cache)
 	clear(p.gens)
 	p.cacheMu.Unlock()
+	if p.ownedHTTPTransport != nil {
+		// Every admitted call and detached exchange has joined above, so only
+		// this provider's idle keep-alive connections remain. Close exactly
+		// that private pool; caller-supplied/shared transports are untouched.
+		p.ownedHTTPTransport.CloseIdleConnections()
+	}
 	return nil
 }
 

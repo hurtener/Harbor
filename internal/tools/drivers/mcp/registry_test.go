@@ -30,6 +30,7 @@ type stubProvider struct {
 	resourceErr  error
 	closed       int
 	closeErr     error
+	closeErrs    []error
 }
 
 func TestRegistrationSwap_PrivateReservationPreventsCommitInvalidation(t *testing.T) {
@@ -100,12 +101,99 @@ func TestRegistry_DeregisterExact_StaleSameNameCannotWithdrawReplacement(t *test
 	}
 }
 
+func TestRegistry_DeregisterExact_CloseFailureRetainsExactRetryReceiptAndBlocksReplacement(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	closeFault := errors.New("injected close fault")
+	provider := &stubProvider{id: "retry-close", closeErrs: []error{closeFault, nil}}
+	if err := reg.Register(ctx, ServerRegistration{Provider: provider, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-a"}); err != nil {
+		t.Fatal(err)
+	}
+	withdrawals := 0
+	withdraw := func() int {
+		withdrawals++
+		return 3
+	}
+	removed, err := reg.DeregisterExact(ctx, "retry-close", owner, "generation-a", withdraw)
+	if !errors.Is(err, closeFault) || removed != 3 {
+		t.Fatalf("first exact close = (removed=%d, err=%v), want catalog receipt plus close fault", removed, err)
+	}
+	if got := reg.SourceIDs(); len(got) != 0 {
+		t.Fatalf("closing generation remained dispatch-visible: %v", got)
+	}
+	if _, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "retry-close"}, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-b"}, nil); err == nil {
+		t.Fatal("replacement staged while prior exact generation was closing")
+	}
+	if _, err := reg.DeregisterExact(ctx, "retry-close", auth.Owner{Tenant: "tenant", Agent: "other-agent"}, "generation-a", withdraw); !errors.Is(err, ErrServerNotFound) {
+		t.Fatalf("wrong owner closing retry = %v, want ErrServerNotFound", err)
+	}
+	if _, err := reg.DeregisterExact(ctx, "retry-close", owner, "generation-b", withdraw); !errors.Is(err, ErrServerNotFound) {
+		t.Fatalf("wrong fingerprint closing retry = %v, want ErrServerNotFound", err)
+	}
+	removed, err = reg.DeregisterExact(ctx, "retry-close", owner, "generation-a", withdraw)
+	if err != nil || removed != 0 {
+		t.Fatalf("retry exact close = (removed=%d, err=%v), want close receipt without repeated withdrawal", removed, err)
+	}
+	provider.mu.Lock()
+	closeCalls := provider.closed
+	provider.mu.Unlock()
+	if closeCalls != 2 || withdrawals != 1 {
+		t.Fatalf("retry accounting: close_calls=%d withdrawals=%d, want 2/1", closeCalls, withdrawals)
+	}
+	swap, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "retry-close"}, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-b"}, nil)
+	if err != nil {
+		t.Fatalf("replacement remained blocked after positive close receipt: %v", err)
+	}
+	if err := swap.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRegistry_DeregisterExact_PersistentCloseFailureNeverBecomesAbsentSuccess(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	closeFault := errors.New("persistent close fault")
+	provider := &stubProvider{id: "persistent-close", closeErr: closeFault}
+	if err := reg.Register(ctx, ServerRegistration{Provider: provider, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-a"}); err != nil {
+		t.Fatal(err)
+	}
+	withdrawals := 0
+	for attempt := range 3 {
+		_, err := reg.DeregisterExact(ctx, "persistent-close", owner, "generation-a", func() int {
+			withdrawals++
+			return 1
+		})
+		if !errors.Is(err, closeFault) {
+			t.Fatalf("attempt %d = %v, want persistent close fault", attempt, err)
+		}
+		if _, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "persistent-close"}, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-b"}, nil); err == nil {
+			t.Fatalf("attempt %d allowed replacement before close receipt", attempt)
+		}
+	}
+	if withdrawals != 1 {
+		t.Fatalf("catalog withdrawn %d times, want exactly once", withdrawals)
+	}
+	provider.mu.Lock()
+	closeCalls := provider.closed
+	provider.mu.Unlock()
+	if closeCalls != 3 {
+		t.Fatalf("persistent failure close calls = %d, want one genuine retry per attempt", closeCalls)
+	}
+}
+
 func (p *stubProvider) SourceID() tools.ToolSourceID { return p.id }
 
 func (p *stubProvider) Close(_ context.Context) error {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.closed++
-	p.mu.Unlock()
+	if len(p.closeErrs) > 0 {
+		err := p.closeErrs[0]
+		p.closeErrs = p.closeErrs[1:]
+		return err
+	}
 	return p.closeErr
 }
 

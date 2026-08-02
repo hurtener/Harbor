@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -53,6 +54,7 @@ type Factory func() (state.StateStore, func())
 //   - SaveIf_MatchingStaleAbsentAndMultiSlot
 //   - SaveIf_ConcurrentOneWinner
 //   - DeleteIf_ExactStaleAndAbsent
+//   - DeleteIf_InvalidExpectationFailsLoud
 //   - DeleteIf_ConcurrentReplacementNeverDeleted
 //   - DeleteIf_CancelledAndClosedFailLoud
 //   - Load_NotFound
@@ -167,6 +169,63 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if changed, err := s.DeleteIf(ctx, state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind, ExpectedEventID: rec.ID}); err != nil || changed {
 			t.Fatalf("absent DeleteIf = changed=%t err=%v, want false nil", changed, err)
+		}
+	})
+
+	t.Run("DeleteIf_InvalidExpectationFailsLoud", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		rec := state.StateRecord{
+			ID:        "01HABXXX00000000DI",
+			Identity:  tripleA(),
+			Kind:      "conditional.delete.invalid",
+			Version:   17,
+			Bytes:     []byte("original-generation-content"),
+			UpdatedAt: time.Unix(1_725_000_000, 123_000_000).UTC(),
+		}
+		if err := s.Save(ctx, rec); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		before, err := s.Load(ctx, rec.Identity, rec.Kind)
+		if err != nil {
+			t.Fatalf("load seed: %v", err)
+		}
+		cases := []struct {
+			name        string
+			expectation state.SlotExpectation
+			wantErr     error
+		}{
+			{
+				name:        "incomplete identity",
+				expectation: state.SlotExpectation{Kind: rec.Kind, ExpectedEventID: rec.ID},
+				wantErr:     state.ErrIdentityRequired,
+			},
+			{
+				name:        "empty kind",
+				expectation: state.SlotExpectation{Identity: rec.Identity, ExpectedEventID: rec.ID},
+				wantErr:     state.ErrInvalidRecord,
+			},
+			{
+				name:        "empty event id",
+				expectation: state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind},
+				wantErr:     state.ErrInvalidRecord,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				changed, err := s.DeleteIf(ctx, tc.expectation)
+				if changed || !errors.Is(err, tc.wantErr) {
+					t.Fatalf("DeleteIf = changed=%t err=%v, want false %v", changed, err, tc.wantErr)
+				}
+				after, loadErr := s.Load(ctx, rec.Identity, rec.Kind)
+				if loadErr != nil {
+					t.Fatalf("Load after invalid DeleteIf: %v", loadErr)
+				}
+				if !reflect.DeepEqual(after, before) {
+					t.Fatalf("invalid DeleteIf mutated original record:\n before=%+v\n after=%+v", before, after)
+				}
+			})
 		}
 	})
 

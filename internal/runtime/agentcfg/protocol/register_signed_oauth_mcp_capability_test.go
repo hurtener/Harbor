@@ -57,6 +57,44 @@ func (capabilityInstaller) PrepareSignedCapabilityProvider(context.Context, stri
 	return capabilityPreparedProvider{}, nil
 }
 
+type reconcileTrackingProvider struct {
+	mu        sync.Mutex
+	resources int
+	closes    int
+	commits   int
+}
+
+func (*reconcileTrackingProvider) Binding() toolauth.OAuthProvider { return nil }
+func (*reconcileTrackingProvider) Publish(context.Context) error   { return nil }
+func (p *reconcileTrackingProvider) Commit(context.Context) {
+	p.mu.Lock()
+	p.commits++
+	p.mu.Unlock()
+}
+func (*reconcileTrackingProvider) Rollback(context.Context) error { return nil }
+func (p *reconcileTrackingProvider) Close(context.Context) error {
+	p.mu.Lock()
+	p.closes++
+	p.resources = 0
+	p.mu.Unlock()
+	return nil
+}
+
+type reconcileTrackingInstaller struct{ provider *reconcileTrackingProvider }
+
+func (reconcileTrackingInstaller) InstallProvider(context.Context, string, string, agentcfg.OAuthProviderDescriptor) error {
+	return nil
+}
+func (reconcileTrackingInstaller) UninstallProvider(context.Context, string, string, string) error {
+	return nil
+}
+func (i reconcileTrackingInstaller) PrepareSignedCapabilityProvider(context.Context, string, toolauth.SignedCapabilityExchangeBinding, []string) (agentcfgprotocol.PreparedOAuthProvider, error) {
+	i.provider.mu.Lock()
+	i.provider.resources++
+	i.provider.mu.Unlock()
+	return i.provider, nil
+}
+
 var (
 	errCapabilityConnectionClose = errors.New("injected prepared connection close failure")
 	errCapabilityProviderClose   = errors.New("injected prepared provider close failure")
@@ -140,14 +178,18 @@ func (c *cleanupCapabilityConnection) Close(ctx context.Context) error {
 }
 
 type capabilityPreparer struct {
-	mu            sync.Mutex
-	activations   int
-	detaches      int
-	live          map[string]string
-	failActivate  error
-	failDetach    error
-	detachEntered chan struct{}
-	detachRelease <-chan struct{}
+	mu                 sync.Mutex
+	activations        int
+	detaches           int
+	preparedCloses     int
+	live               map[string]string
+	failActivate       error
+	failDetach         error
+	detachEntered      chan struct{}
+	detachRelease      <-chan struct{}
+	prepareBlockTenant string
+	prepareEntered     chan struct{}
+	prepareRelease     <-chan struct{}
 }
 
 // capabilityLandedThenErroredRegistry models the production-shaped ambiguous
@@ -207,7 +249,24 @@ func (r *capabilityLandedThenErroredRegistry) SetRevision(ctx context.Context, i
 	return rev, nil
 }
 
-func (p *capabilityPreparer) PrepareConnection(_ context.Context, req agentcfgprotocol.AttachRequest) (agentcfgprotocol.PreparedConnection, error) {
+func (p *capabilityPreparer) PrepareConnection(ctx context.Context, req agentcfgprotocol.AttachRequest) (agentcfgprotocol.PreparedConnection, error) {
+	p.mu.Lock()
+	block := p.prepareBlockTenant == req.Identity.TenantID
+	entered, release := p.prepareEntered, p.prepareRelease
+	p.mu.Unlock()
+	if block && entered != nil {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+	}
+	if block && release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return capabilityPreparedConnection{parent: p, req: req}, nil
 }
 
@@ -270,6 +329,105 @@ func TestSignedOAuthMCPReconciler_HistoricalPublishedPairCannotReattach(t *testi
 	op, err := ops.LoadForPair(context.Background(), q.TenantID, pair)
 	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhaseRemoved {
 		t.Fatalf("removal recovery phase=%q err=%v", op.Phase, err)
+	}
+}
+
+func TestSignedOAuthMCPReconciler_RemovalDuringPrepareCannotRepublish(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	registered, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-stale-reconcile", "aud-stale-reconcile"))
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.Payload.SignedOAuthMCPPair == nil {
+		t.Fatalf("active pair before reconcile: set=%t active=%+v err=%v", set, active, err)
+	}
+	pair := active.Payload.SignedOAuthMCPPair
+
+	prepareEntered := make(chan struct{}, 1)
+	prepareRelease := make(chan struct{})
+	preparer.mu.Lock()
+	delete(preparer.live, "t/"+testAgentID+"/"+pair.Connection.Name) // simulate process-local loss before restart reconciliation
+	preparer.prepareBlockTenant = "t"
+	preparer.prepareEntered = prepareEntered
+	preparer.prepareRelease = prepareRelease
+	preparer.mu.Unlock()
+	trackingProvider := &reconcileTrackingProvider{}
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, reconcileTrackingInstaller{provider: trackingProvider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconcileErr := make(chan error, 1)
+	go func() {
+		reconcileErr <- reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID)
+	}()
+	select {
+	case <-prepareEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconcile did not pause after its initial active read")
+	}
+
+	otherSubject := prototypes.IdentityScope{Tenant: "t", User: "other-user", Session: "other-session"}
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequestFor(t, key, now, otherSubject, testAgentID, "jti-same-tenant-replacement", "aud-replacement", "cap-replacement")); !errors.Is(err, agentcfgprotocol.ErrSignedCapabilityPairExists) && !errors.Is(err, agentcfg.ErrSignedCapabilityPending) {
+		close(prepareRelease)
+		t.Fatalf("same-tenant replacement during stale reconcile = %v, want pair-exists/pending refusal", err)
+	}
+	otherTenant := prototypes.IdentityScope{Tenant: "other-tenant", User: "other-user", Session: "other-session"}
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequestFor(t, key, now, otherTenant, testAgentID, "jti-other-tenant", "aud-other-tenant", "cap-other-tenant")); err != nil {
+		close(prepareRelease)
+		t.Fatalf("cross-tenant registration was not isolated from stale reconcile: %v", err)
+	}
+	removed, err := svc.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
+		Identity: scope(), AgentID: testAgentID, ExpectedContentHash: registered.Revision.ContentHash,
+	})
+	if err != nil || removed.OperationPhase != string(agentcfg.SignedOAuthMCPPhaseRemoved) {
+		close(prepareRelease)
+		t.Fatalf("remove while reconcile paused: phase=%q err=%v", removed.OperationPhase, err)
+	}
+	close(prepareRelease)
+	if err := <-reconcileErr; !errors.Is(err, agentcfg.ErrSignedCapabilityPending) {
+		t.Fatalf("stale reconcile after completed removal = %v, want pending refusal", err)
+	}
+
+	if current, currentSet, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); err != nil || !currentSet || current.Payload.SignedOAuthMCPPair != nil {
+		t.Fatalf("removed desired state was resurrected: set=%t current=%+v err=%v", currentSet, current, err)
+	}
+	ops, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := ops.LoadForPair(context.Background(), q.TenantID, pair)
+	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhaseRemoved {
+		t.Fatalf("pair lifetime after stale reconcile: phase=%q err=%v", op.Phase, err)
+	}
+	preparer.mu.Lock()
+	activations, preparedCloses := preparer.activations, preparer.preparedCloses
+	_, staleLive := preparer.live["t/"+testAgentID+"/"+pair.Connection.Name]
+	_, isolatedLive := preparer.live["other-tenant/"+testAgentID+"/cap-other-tenant"]
+	preparer.mu.Unlock()
+	if activations != 2 || preparedCloses != 1 || staleLive || !isolatedLive {
+		t.Fatalf("stale publication cleanup: activations=%d closes=%d stale_live=%t isolated_live=%t", activations, preparedCloses, staleLive, isolatedLive)
+	}
+	trackingProvider.mu.Lock()
+	resources, closes, commits := trackingProvider.resources, trackingProvider.closes, trackingProvider.commits
+	trackingProvider.mu.Unlock()
+	if resources != 0 || closes != 1 || commits != 0 {
+		t.Fatalf("stale private provider cleanup: resources=%d closes=%d commits=%d", resources, closes, commits)
+	}
+
+	restarted, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, reconcileTrackingInstaller{provider: trackingProvider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("restart after completed removal: %v", err)
+	}
+	preparer.mu.Lock()
+	defer preparer.mu.Unlock()
+	if preparer.activations != activations {
+		t.Fatalf("restart resurrected removed pair: activations=%d want %d", preparer.activations, activations)
 	}
 }
 
@@ -354,7 +512,12 @@ func TestSignedOAuthMCPReconciler_ExpiredIncompleteRestoresBootLifecycle(t *test
 		t.Fatalf("expired candidate was republished: activations=%d live=%d", preparer.activations, len(preparer.live))
 	}
 }
-func (capabilityPreparedConnection) Close(context.Context) error { return nil }
+func (c capabilityPreparedConnection) Close(context.Context) error {
+	c.parent.mu.Lock()
+	c.parent.preparedCloses++
+	c.parent.mu.Unlock()
+	return nil
+}
 
 func (p *capabilityPreparer) DetachConnection(_ context.Context, tenant, agentID, name string) error {
 	p.mu.Lock()
@@ -545,14 +708,45 @@ func TestSignedOAuthMCPReconciler_RecoversRemovalAfterDetachFault(t *testing.T) 
 	if err == nil {
 		t.Fatal("remove without detach fault error")
 	}
-	preparer.mu.Lock()
-	preparer.failDetach = nil
-	preparer.mu.Unlock()
+	ops, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	history, err := reg.ListRevisions(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, 0)
+	var pair *agentcfg.SignedOAuthMCPPair
+	for _, revision := range history {
+		if revision.Payload.SignedOAuthMCPPair != nil {
+			pair = revision.Payload.SignedOAuthMCPPair
+			break
+		}
+	}
+	if err != nil || pair == nil {
+		t.Fatalf("pair history after removal fault: %+v err=%v", history, err)
+	}
+	assertRemovalPhase := func(want agentcfg.SignedOAuthMCPOperationPhase) {
+		t.Helper()
+		op, loadErr := ops.LoadForPair(context.Background(), q.TenantID, pair)
+		if loadErr != nil || op.Phase != want {
+			t.Fatalf("removal phase = %q err=%v, want %q", op.Phase, loadErr, want)
+		}
+	}
+	assertRemovalPhase(agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted)
 	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
 	if err != nil {
 		t.Fatalf("NewSignedOAuthMCPReconciler: %v", err)
 	}
-	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err == nil {
+		t.Fatal("persistent close fault became a reconciler teardown receipt")
+	}
+	assertRemovalPhase(agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted)
+	if _, err := svc.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{Identity: scope(), AgentID: testAgentID, ExpectedContentHash: registered.Revision.ContentHash}); err == nil {
+		t.Fatal("persistent close fault became a Service retry teardown receipt")
+	}
+	assertRemovalPhase(agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted)
+	preparer.mu.Lock()
+	preparer.failDetach = nil
+	preparer.mu.Unlock()
 	for range 3 {
 		if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
 			t.Fatalf("reconcile: %v", err)
@@ -795,6 +989,59 @@ func TestRegisterOAuthMCPCapability_ConcurrentRemovalBlocksReplacement(t *testin
 	}
 	if _, err := second.RegisterOAuthMCPCapability(context.Background(), replacement); err != nil {
 		t.Fatalf("same claimed replacement retry after concurrent removal: %v", err)
+	}
+}
+
+func TestRegisterOAuthMCPCapability_CrossSessionServiceCannotReplaceDuringRemoval(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	firstService, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	secondService, err := agentcfgprotocol.NewService(reg,
+		agentcfgprotocol.WithClock(func() time.Time { return now }),
+		agentcfgprotocol.WithConnectionPreparer(preparer),
+		agentcfgprotocol.WithConnectionDetacher(preparer),
+		agentcfgprotocol.WithProviderInstaller(capabilityInstaller{}),
+		agentcfgprotocol.WithSignedOAuthMCPOperationState(st),
+		agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority{
+			"broker": {Broker: "broker", Issuer: "issuer", Keys: capabilityKeySet{key: &key.PublicKey}, ScopeCeiling: []string{"read"}, MaxAuthorityLifetime: time.Hour},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := firstService.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-cross-session-a", "aud-a"))
+	if err != nil {
+		t.Fatalf("register A: %v", err)
+	}
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	preparer.mu.Lock()
+	preparer.detachEntered = entered
+	preparer.detachRelease = release
+	preparer.mu.Unlock()
+	removeErr := make(chan error, 1)
+	go func() {
+		_, removeErrValue := firstService.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
+			Identity: scope(), AgentID: testAgentID, ExpectedContentHash: first.Revision.ContentHash,
+		})
+		removeErr <- removeErrValue
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("removal did not reach exact teardown")
+	}
+	otherSubject := prototypes.IdentityScope{Tenant: "t", User: "other-user", Session: "other-session"}
+	replacement := signedCapabilityRequestFor(t, key, now, otherSubject, testAgentID, "jti-cross-session-b", "aud-b", "cap")
+	if _, err := secondService.RegisterOAuthMCPCapability(context.Background(), replacement); !errors.Is(err, agentcfg.ErrSignedCapabilityPending) {
+		close(release)
+		t.Fatalf("cross-session replacement during removal = %v, want pending", err)
+	}
+	close(release)
+	if err := <-removeErr; err != nil {
+		t.Fatalf("remove A: %v", err)
+	}
+	if _, err := secondService.RegisterOAuthMCPCapability(context.Background(), replacement); err != nil {
+		t.Fatalf("cross-session replacement after terminal removal: %v", err)
 	}
 }
 

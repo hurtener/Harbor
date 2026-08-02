@@ -110,16 +110,17 @@ func TestValidateDeleteIf_Cases(t *testing.T) {
 		t.Fatalf("valid exact generation: %v", err)
 	}
 	for _, tc := range []struct {
-		name string
-		want state.SlotExpectation
+		name    string
+		want    state.SlotExpectation
+		wantErr error
 	}{
-		{name: "incomplete identity", want: state.SlotExpectation{Kind: "slot", ExpectedEventID: "01HABXXX"}},
-		{name: "empty kind", want: state.SlotExpectation{Identity: q, ExpectedEventID: "01HABXXX"}},
-		{name: "empty event id", want: state.SlotExpectation{Identity: q, Kind: "slot"}},
+		{name: "incomplete identity", want: state.SlotExpectation{Kind: "slot", ExpectedEventID: "01HABXXX"}, wantErr: state.ErrIdentityRequired},
+		{name: "empty kind", want: state.SlotExpectation{Identity: q, ExpectedEventID: "01HABXXX"}, wantErr: state.ErrInvalidRecord},
+		{name: "empty event id", want: state.SlotExpectation{Identity: q, Kind: "slot"}, wantErr: state.ErrInvalidRecord},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := state.ValidateDeleteIf(tc.want); !errors.Is(err, state.ErrInvalidRecord) && !errors.Is(err, state.ErrIdentityRequired) {
-				t.Fatalf("ValidateDeleteIf = %v, want validation sentinel", err)
+			if err := state.ValidateDeleteIf(tc.want); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("ValidateDeleteIf = %v, want %v", err, tc.wantErr)
 			}
 		})
 	}
