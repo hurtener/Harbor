@@ -193,7 +193,7 @@ func detachSourceExpected(ctx context.Context, catalog tools.ToolCatalog, regist
 	if !ok {
 		return errors.New("mcp: exact teardown requires catalog source deregistration")
 	}
-	removed, err := registry.DeregisterExact(ctx, source, owner, fingerprint, func() int {
+	removed, err := registry.DeregisterExactPublisher(ctx, source, owner, fingerprint, func() int {
 		return dc.DeregisterSource(tools.ToolSourceID(source))
 	})
 	if err != nil {

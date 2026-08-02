@@ -778,7 +778,10 @@ func (p *capabilityPreparer) DetachExactConnection(ctx context.Context, tenant, 
 	defer p.mu.Unlock()
 	key := tenant + "/" + agentID + "/" + name
 	if live, ok := p.live[key]; ok && live != fingerprint {
-		return fmt.Errorf("exact detach fingerprint mismatch")
+		// Another runtime owns the durable current epoch. This process-local
+		// handle is stale and must remain untouched; durable removal already
+		// makes it inert.
+		return nil
 	}
 	p.detaches++
 	delete(p.live, key)
@@ -1528,7 +1531,7 @@ func TestRegisterOAuthMCPCapability_PublishedReplayAcceptsCarriedPairSiblingRevi
 	}
 }
 
-func TestRegisterOAuthMCPCapability_PostPrepareFailureJoinsBoundedCleanupErrorsWithoutResidue(t *testing.T) {
+func TestRegisterOAuthMCPCapability_RevisionCASRefusalAllocatesNoCredentialResources(t *testing.T) {
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
 	if err != nil {
@@ -1569,8 +1572,8 @@ func TestRegisterOAuthMCPCapability_PostPrepareFailureJoinsBoundedCleanupErrorsW
 	req := signedCapabilityRequest(t, key, now, "jti-cleanup-errors", "aud-cleanup")
 	req.ExpectedContentHash = strings.Repeat("a", 64)
 	_, err = svc.RegisterOAuthMCPCapability(context.Background(), req)
-	if !errors.Is(err, agentcfg.ErrRevisionConflict) || !errors.Is(err, errCapabilityConnectionClose) || !errors.Is(err, errCapabilityProviderClose) {
-		t.Fatalf("registration error = %v, want primary plus both cleanup failures", err)
+	if !errors.Is(err, agentcfg.ErrRevisionConflict) {
+		t.Fatalf("registration error = %v, want revision conflict", err)
 	}
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
 	if active, set, activeErr := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); activeErr != nil || set {
@@ -1585,10 +1588,10 @@ func TestRegisterOAuthMCPCapability_PostPrepareFailureJoinsBoundedCleanupErrorsW
 	provider.mu.Lock()
 	providerCloseCalls, resources, providerDeadline := provider.closeCalls, provider.resources, provider.observedDeadline
 	provider.mu.Unlock()
-	if connectionCloseCalls != 1 || activations != 0 || workers != 0 || !connectionDeadline {
+	if connectionCloseCalls != 0 || activations != 0 || workers != 0 || connectionDeadline {
 		t.Fatalf("connection cleanup state: closes=%d activations=%d workers=%d deadline=%t", connectionCloseCalls, activations, workers, connectionDeadline)
 	}
-	if providerCloseCalls != 1 || resources != 0 || !providerDeadline {
+	if providerCloseCalls != 0 || resources != 0 || providerDeadline {
 		t.Fatalf("provider cleanup state: closes=%d resources=%d deadline=%t", providerCloseCalls, resources, providerDeadline)
 	}
 }

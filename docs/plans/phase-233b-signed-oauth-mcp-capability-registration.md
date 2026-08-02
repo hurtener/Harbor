@@ -133,6 +133,16 @@ explicit signed-capability production opt-in; it is not enabled by default.
   collision-checks the general bare namespace. Prepare is never durable and
   closes on refusal/failure/restart; teardown closes transport and provider as
   one receipt.
+- [x] Every local publication is bound to an opaque publisher epoch CAS-minted
+  in the durable operation only after `revision_committed`. The epoch is absent
+  from Protocol, immutable revisions, broker actor assertions, and audit.
+  Independent-runtime reconcile CAS-takes a new epoch before preparation and
+  makes all older provider/cache/MCP handles inert. Pair-owned token exchange
+  checks exact tenant+operation+phase+epoch before cache lookup, after exchange,
+  and before cached return; the bearer RoundTripper rechecks immediately before
+  downstream send. The internal preparation marker authorizes only
+  `revision_committed`; normal dispatch requires `published` and cannot inherit
+  it. Missing, malformed, or stale epoch/operation state fails closed.
 - [x] The provider token endpoint stays boot-pinned. One named shared
   canonical-URL helper supplies signer/verifier request matching, fingerprinting,
   transport enforcement, and restart/reconcile. It requires absolute HTTPS;
@@ -170,13 +180,17 @@ explicit signed-capability production opt-in; it is not enabled by default.
   closed, while an exact terminal retry returns that pair lifetime's original
   removal receipt and cannot select a replacement. Its exact EventID `SaveIf`
   subphases are `removal_admitted` (the operation generation won the mandatory
-  StateStore publication fence before desired-state mutation),
+  StateStore publication fence and durably denied every publisher epoch before
+  desired-state mutation),
   `removal_revision_committed` (desired pair absent by revision CAS),
   `catalog_unpublished`, `teardown_receipted`
   (transport/provider close+revoke from frozen fingerprint), then terminal
   `removed` checkpoint. Each commit-then-error or unknown outcome exact-rereads
   the operation EventID/phase, desired revision, catalog source, and close/revoke
-  receipt; retry resumes the missing phase idempotently. Expiry, key revocation,
+  receipt; retry resumes the missing phase idempotently. An empty-runtime
+  remover may advance once durable admission denies every epoch; exact local
+  teardown closes only the matching epoch, while stale handles elsewhere stay
+  network-inert and close on reconcile. Expiry, key revocation,
   or lost verifier never block this teardown. It cannot report `removed` while
   authority remains live, and retirement's terminal manifest invokes this same
   state machine rather than a second teardown path.
@@ -290,6 +304,8 @@ explicit signed-capability production opt-in; it is not enabled by default.
 
 - **Unit:** strict wire decoding; claim matching; JTI operation Kind/payload
   construction; every operation/fence phase, EventID CAS, unknown-outcome reread,
+  publisher-epoch CAS takeover and stale-epoch/removal denial at token cache and
+  bearer transport (including bearer-present and empty-bearer teardown),
   full legal JTI graph, expiry/skew incomplete-only cleanup, published
   pair-lifetime retention through authority expiry/key revocation, removed
   anti-replay tombstone retention, remove terminality, and
@@ -301,7 +317,9 @@ explicit signed-capability production opt-in; it is not enabled by default.
   catalog-only dispatch; and first-write pending-fence commit/abort/uncertain
   cross-runtime reader and foreign-mutator conflict cases.
 - **Integration:** real SQLite/Postgres operation-state recovery through every
-  phase and restart/fault point; token exchange assertion capture; exact
+  phase and restart/fault point; three independent SQLite runtime graphs prove
+  cached-token epoch takeover, empty-runtime removal, zero broker/downstream
+  calls from stale handles, and exact terminal cleanup; token exchange assertion capture; exact
   pair-owned catalog dispatch/no generic-provider binding; cross-language URL
   signer fixtures; no-redirect enforcement; paired removal/retirement after
   authority expiry/key rotation/revocation and unknown outcomes; and

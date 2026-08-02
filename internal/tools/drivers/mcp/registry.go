@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -683,6 +684,44 @@ func (r *Registry) BeginExactRemoval(name string, owner auth.Owner, descriptorFi
 	return &ExactRemovalFence{registry: r, name: name, reservation: reservation}, nil
 }
 
+// BeginExactPublisherRemoval is the durable-publisher variant used only after
+// the shared operation record has entered removal_admitted. A runtime may hold
+// an older same-owner publisher epoch while another runtime owns the durable
+// current epoch. That stale handle is already bearer-inert, so it is not a
+// local mismatch that may block durable teardown; a foreign owner still fails
+// closed. A matching local generation retains the exact close behavior of
+// [BeginExactRemoval].
+func (r *Registry) BeginExactPublisherRemoval(name string, owner auth.Owner, descriptorFingerprint string) (*ExactRemovalFence, error) {
+	fence, err := r.BeginExactRemoval(name, owner, descriptorFingerprint)
+	if err == nil || !errors.Is(err, ErrServerNotFound) {
+		return fence, err
+	}
+	if name == "" || owner.IsZero() || descriptorFingerprint == "" {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if reservation := r.removing[name]; reservation != nil {
+		if reservation.owner != owner || reservation.descriptorFingerprint != descriptorFingerprint {
+			return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+		}
+		reservation.holders++
+		return &ExactRemovalFence{registry: r, name: name, reservation: reservation}, nil
+	}
+	if e := r.closing[name]; e != nil && e.owner != owner {
+		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	if staged := r.pending[name]; staged != nil && staged.staged.owner != owner {
+		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	if e := r.servers[name]; e != nil && e.owner != owner {
+		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	reservation := &exactRemovalReservation{owner: owner, descriptorFingerprint: descriptorFingerprint, holders: 1}
+	r.removing[name] = reservation
+	return &ExactRemovalFence{registry: r, name: name, reservation: reservation}, nil
+}
+
 // Seal keeps the admission fence installed after desired pair absence commits.
 // Exact teardown removes it only after the exact transport has closed.
 func (f *ExactRemovalFence) Seal() {
@@ -968,6 +1007,35 @@ func (r *Registry) DeregisterExact(ctx context.Context, name string, owner auth.
 	}
 	r.mu.Unlock()
 	return removed, nil
+}
+
+// DeregisterExactPublisher closes a matching current publisher generation. If
+// this process has only an older same-owner epoch, it leaves that already-inert
+// handle untouched and returns success: the durable removal phase, not local
+// absence, is the security revocation receipt. Foreign-owner state still fails
+// closed and a matching generation retains retryable exact-close semantics.
+func (r *Registry) DeregisterExactPublisher(ctx context.Context, name string, owner auth.Owner, descriptorFingerprint string, withdrawCatalog func() int) (int, error) {
+	removed, err := r.DeregisterExact(ctx, name, owner, descriptorFingerprint, withdrawCatalog)
+	if err == nil || !errors.Is(err, ErrServerNotFound) {
+		return removed, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	reservation := r.removing[name]
+	if reservation == nil || reservation.owner != owner || reservation.descriptorFingerprint != descriptorFingerprint || !reservation.sealed {
+		return 0, err
+	}
+	if e := r.closing[name]; e != nil && e.owner != owner {
+		return 0, err
+	}
+	if staged := r.pending[name]; staged != nil && staged.staged.owner != owner {
+		return 0, err
+	}
+	if e := r.servers[name]; e != nil && e.owner != owner {
+		return 0, err
+	}
+	delete(r.removing, name)
+	return 0, nil
 }
 
 // reservationState is a test/diagnostic snapshot of one exact name. It is

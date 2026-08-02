@@ -567,7 +567,7 @@ func (a *MCPConnectionAttacher) BeginExactConnectionTeardown(tenant, agentID, na
 	if a.registry == nil {
 		return nil, errors.New("mcp: exact teardown fence requires registry")
 	}
-	return a.registry.BeginExactRemoval(name, toolauth.Owner{Tenant: tenant, Agent: agentID}, descriptorFingerprint)
+	return a.registry.BeginExactPublisherRemoval(name, toolauth.Owner{Tenant: tenant, Agent: agentID}, descriptorFingerprint)
 }
 
 // Close drains every runtime-added server's transport in reverse order. Wired

@@ -1791,7 +1791,7 @@ func (p *Provider) resolvePreparationBearerCtx(ctx context.Context) (context.Con
 	if !p.cfg.OwnOAuthProvider {
 		return ctx, nil
 	}
-	return p.resolveBearerCtx(ctx, "")
+	return p.resolveBearerCtx(auth.WithSignedCapabilityPreparation(ctx), "")
 }
 
 // resolveInjection sources the acting principal's credential from the bound

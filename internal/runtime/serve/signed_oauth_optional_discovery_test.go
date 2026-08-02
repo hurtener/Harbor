@@ -31,6 +31,12 @@ import (
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
+type allowSignedCapabilityUse struct{}
+
+func (allowSignedCapabilityUse) AuthorizeSignedCapabilityUse(context.Context, string, string, string, bool) error {
+	return nil
+}
+
 type signedDiscoveryFault string
 
 const (
@@ -205,6 +211,7 @@ func TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors(t *testing.T
 				ProviderName: connectionName + "-provider", CapabilityRevision: "revision", PairFingerprint: fingerprint,
 				URLDigest: agentcfg.OAuthMCPURLDigest(canonicalURL), SinkDigest: agentcfg.OAuthMCPURLDigest(sink),
 				Audience: "audience", Resource: sink,
+				AuthorityOperationKind: "operation", PublisherEpoch: "publisher", UseAuthorizer: allowSignedCapabilityUse{},
 			}
 			provider, err := builder.BuildSignedCapability(context.Background(), "broker", binding, []string{"read"})
 			if err != nil {

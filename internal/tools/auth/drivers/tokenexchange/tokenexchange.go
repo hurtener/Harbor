@@ -678,6 +678,9 @@ func (p *provider) Token(ctx context.Context, _ tools.ToolSourceID) (auth.Token,
 	if err := p.validateSignedCapabilityCaller(ctx, id); err != nil {
 		return auth.Token{}, err
 	}
+	if err := p.authorizeSignedCapabilityUse(ctx); err != nil {
+		return auth.Token{}, err
+	}
 	key := p.cacheKey(id)
 
 	// Hot path: fresh cache hit → return immediately, emit nothing.
@@ -686,6 +689,9 @@ func (p *provider) Token(ctx context.Context, _ tools.ToolSourceID) (auth.Token,
 	if ok && p.now().Before(ct.serveUntil) {
 		tok := ct.token
 		p.cacheMu.Unlock()
+		if err := p.authorizeSignedCapabilityUse(ctx); err != nil {
+			return auth.Token{}, err
+		}
 		return tok, nil
 	}
 	p.cacheMu.Unlock()
@@ -794,6 +800,10 @@ func (p *provider) runExchange(callerCtx context.Context, id identity.Identity, 
 		call.err = err
 		return
 	}
+	if err := p.authorizeSignedCapabilityUse(ctx); err != nil {
+		call.err = err
+		return
+	}
 
 	// Audit the ACTUAL exchange before caching. A redaction / emit
 	// failure fails loud (§7 external-credential posture): the token is
@@ -871,6 +881,9 @@ type exchangeMeta struct {
 // exchange performs one RFC-8693 token-exchange POST against the broker
 // and maps the outcome onto (token / *consentError / ErrExchangeFailed).
 func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Token, exchangeMeta, error) {
+	if err := p.authorizeSignedCapabilityUse(ctx); err != nil {
+		return auth.Token{}, exchangeMeta{}, err
+	}
 	// Resolve the runtime's OWN broker client credential through the
 	// §4.4 credential-source seam. For the env source this returns the
 	// boot-resolved value (zero behavior change); for the remote source
@@ -1383,6 +1396,27 @@ func (p *provider) validateSignedCapabilityCaller(ctx context.Context, id identi
 	agentID, ok := tools.InvokingAgentFrom(ctx)
 	if !ok || agentID == "" || agentID != p.signedBinding.AgentID {
 		return fmt.Errorf("%w: signed capability acting agent mismatch", auth.ErrIdentityRequired)
+	}
+	return nil
+}
+
+// AuthorizeUse lets the MCP transport revalidate the durable publisher epoch
+// immediately before it injects a bearer into an outbound request. This is a
+// local-only capability of pair-owned providers; general OAuth providers do
+// not implement it.
+func (p *provider) AuthorizeUse(ctx context.Context) error {
+	return p.authorizeSignedCapabilityUse(ctx)
+}
+
+func (p *provider) authorizeSignedCapabilityUse(ctx context.Context) error {
+	if p.signedBinding == nil {
+		return nil
+	}
+	if p.signedBinding.UseAuthorizer == nil || p.signedBinding.AuthorityOperationKind == "" || p.signedBinding.PublisherEpoch == "" {
+		return fmt.Errorf("%w: signed capability publisher authority is incomplete", auth.ErrExchangeFailed)
+	}
+	if err := p.signedBinding.UseAuthorizer.AuthorizeSignedCapabilityUse(ctx, p.signedBinding.TenantID, p.signedBinding.AuthorityOperationKind, p.signedBinding.PublisherEpoch, auth.IsSignedCapabilityPreparation(ctx)); err != nil {
+		return fmt.Errorf("%w: durable publisher authorization: %w", auth.ErrExchangeFailed, err)
 	}
 	return nil
 }

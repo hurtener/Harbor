@@ -80,13 +80,14 @@ type SignedOAuthMCPReplayKey struct {
 // SignedOAuthMCPOperation is the bounded durable recovery record. EventID is
 // the StateStore generation used by Advance's exact SaveIf predicate.
 type SignedOAuthMCPOperation struct {
-	ReplayKey   SignedOAuthMCPReplayKey      `json:"replay_key"`
-	Binding     SignedOAuthMCPBinding        `json:"binding"`
-	Fingerprint string                       `json:"fingerprint"`
-	ExpiresAt   time.Time                    `json:"expires_at"`
-	Phase       SignedOAuthMCPOperationPhase `json:"phase"`
-	RevisionID  string                       `json:"revision_id,omitempty"`
-	EventID     state.EventID                `json:"-"`
+	ReplayKey      SignedOAuthMCPReplayKey      `json:"replay_key"`
+	Binding        SignedOAuthMCPBinding        `json:"binding"`
+	Fingerprint    string                       `json:"fingerprint"`
+	ExpiresAt      time.Time                    `json:"expires_at"`
+	Phase          SignedOAuthMCPOperationPhase `json:"phase"`
+	RevisionID     string                       `json:"revision_id,omitempty"`
+	PublisherEpoch string                       `json:"publisher_epoch,omitempty"`
+	EventID        state.EventID                `json:"-"`
 }
 
 // SignedOAuthMCPOperationStore persists the signed-capability tenant-scoped anti-replay
@@ -402,6 +403,73 @@ func (s *SignedOAuthMCPOperationStore) Advance(ctx context.Context, current Sign
 		return SignedOAuthMCPOperation{}, fmt.Errorf("advance signed capability operation: %w", err)
 	}
 	return nextRecord, nil
+}
+
+// AcquirePublisher CAS-mints one opaque publisher epoch for an operation whose
+// desired revision is committed or already published. A successor runtime
+// takes over by replacing the epoch under the exact operation EventID; every
+// provider and connection from an older epoch becomes inert on its next
+// durable authorization check. The epoch is internal recovery state only: it
+// never rides a revision, Protocol response, broker actor assertion, or audit.
+func (s *SignedOAuthMCPOperationStore) AcquirePublisher(ctx context.Context, current SignedOAuthMCPOperation) (SignedOAuthMCPOperation, error) {
+	if err := ctx.Err(); err != nil {
+		return SignedOAuthMCPOperation{}, err
+	}
+	if current.Phase != SignedOAuthMCPPhaseRevisionCommitted && current.Phase != SignedOAuthMCPPhasePublished {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: phase %q cannot acquire a publisher", ErrSignedCapabilityTransition, current.Phase)
+	}
+	quad, kind, err := signedOAuthMCPOperationSlot(current.ReplayKey)
+	if err != nil {
+		return SignedOAuthMCPOperation{}, err
+	}
+	next := current
+	next.PublisherEpoch = string(state.NewEventID())
+	next.EventID = state.NewEventID()
+	encoded, err := json.Marshal(next)
+	if err != nil {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("marshal signed capability publisher epoch: %w", err)
+	}
+	err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: kind, ExpectedEventID: current.EventID}}, state.StateRecord{ID: next.EventID, Identity: quad, Kind: kind, Bytes: encoded})
+	if errors.Is(err, state.ErrConditionFailed) {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: publisher changed concurrently", ErrSignedCapabilityReplay)
+	}
+	if err != nil {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("acquire signed capability publisher: %w", err)
+	}
+	return next, nil
+}
+
+// AuthorizeSignedCapabilityUse exact-loads the durable pair-lifetime record
+// before a pair-owned provider returns or uses a bearer. Normal data-plane use
+// requires the published phase. The narrowly marked private preparation path
+// may additionally run while the desired revision is committed; claimed and
+// every removal/terminal phase always deny. A missing, malformed, stale, or
+// unreadable epoch fails closed.
+func (s *SignedOAuthMCPOperationStore) AuthorizeSignedCapabilityUse(ctx context.Context, tenant, operationKind, publisherEpoch string, preparation bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(tenant) == "" || strings.TrimSpace(operationKind) == "" || strings.TrimSpace(publisherEpoch) == "" {
+		return fmt.Errorf("%w: signed capability publisher binding is incomplete", ErrSignedCapabilityPending)
+	}
+	quad := identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "__agentcfg__", SessionID: "__signed_oauth_mcp__"}}
+	op, err := s.load(ctx, quad, operationKind)
+	if err != nil {
+		return err
+	}
+	expectedKind, err := s.Kind(op.ReplayKey)
+	if err != nil || expectedKind != operationKind || op.ReplayKey.TenantID != tenant || op.Binding.TenantID != tenant ||
+		op.Fingerprint == "" || op.Fingerprint != SignedOAuthMCPPairFingerprint(op.Binding) || !signedOAuthMCPOperationPhaseKnown(op.Phase) ||
+		op.PublisherEpoch == "" || op.PublisherEpoch != publisherEpoch {
+		return fmt.Errorf("%w: signed capability publisher is stale or corrupt", ErrSignedCapabilityPending)
+	}
+	if op.Phase == SignedOAuthMCPPhasePublished {
+		return nil
+	}
+	if preparation && op.Phase == SignedOAuthMCPPhaseRevisionCommitted {
+		return nil
+	}
+	return fmt.Errorf("%w: signed capability phase %q denies bearer use", ErrSignedCapabilityPending, op.Phase)
 }
 
 // FencePublication holds the StateStore's exact operation-slot lock while fn

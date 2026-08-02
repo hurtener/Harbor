@@ -135,6 +135,34 @@ type SignedCapabilityExchangeBinding struct {
 	SinkDigest         string `json:"sink_digest"`
 	Audience           string `json:"audience"`
 	Resource           string `json:"resource"`
+	// AuthorityOperationKind and PublisherEpoch bind this process-local
+	// provider to one durable publisher generation. They are deliberately
+	// excluded from the broker actor assertion and every wire projection.
+	AuthorityOperationKind string                        `json:"-"`
+	PublisherEpoch         string                        `json:"-"`
+	UseAuthorizer          SignedCapabilityUseAuthorizer `json:"-"`
+}
+
+// SignedCapabilityUseAuthorizer is the fail-closed durable read performed
+// before a pair-owned provider returns or uses a bearer. The boolean is true
+// only for MCP's private initialize/discovery path; normal dispatch always
+// passes false.
+type SignedCapabilityUseAuthorizer interface {
+	AuthorizeSignedCapabilityUse(ctx context.Context, tenant, operationKind, publisherEpoch string, preparation bool) error
+}
+
+type signedCapabilityPreparationContextKey struct{}
+
+// WithSignedCapabilityPreparation marks only private pair preparation. It is
+// an internal context capability, never a Protocol or configuration field.
+func WithSignedCapabilityPreparation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, signedCapabilityPreparationContextKey{}, true)
+}
+
+// IsSignedCapabilityPreparation reports the private preparation marker.
+func IsSignedCapabilityPreparation(ctx context.Context) bool {
+	prepared, _ := ctx.Value(signedCapabilityPreparationContextKey{}).(bool)
+	return prepared
 }
 
 // FactoryDeps bundles the shared collaborators every OAuth provider

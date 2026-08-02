@@ -29,6 +29,12 @@ import (
 
 type signedCapabilityProviderAdapter struct{ provider toolauth.OAuthProvider }
 
+type allowSignedCapabilityUse struct{}
+
+func (allowSignedCapabilityUse) AuthorizeSignedCapabilityUse(context.Context, string, string, string, bool) error {
+	return nil
+}
+
 func (*signedCapabilityProviderAdapter) SourceID() tools.ToolSourceID { return "provider" }
 func (*signedCapabilityProviderAdapter) Discover(context.Context) ([]tools.ToolDescriptor, error) {
 	return nil, nil
@@ -105,6 +111,7 @@ func TestBuildSignedCapability_ProductionBuilder_BindsExchangeAndCloseKillsCache
 		TenantID: "tenant", UserID: "user", SessionID: "session", AgentID: "agent", ProviderName: "provider",
 		CapabilityRevision: "cap-rev-7", PairFingerprint: "pair-fingerprint", URLDigest: agentcfg.OAuthMCPURLDigest(canonicalURL),
 		SinkDigest: agentcfg.OAuthMCPURLDigest(sink), Audience: "capability-audience", Resource: sink,
+		AuthorityOperationKind: "operation", PublisherEpoch: "publisher", UseAuthorizer: allowSignedCapabilityUse{},
 	}
 	provider, err := builder.BuildSignedCapability(context.Background(), "broker", binding, []string{"read"})
 	if err != nil {
@@ -155,8 +162,12 @@ func TestBuildSignedCapability_ProductionBuilder_BindsExchangeAndCloseKillsCache
 	}
 	var actor toolauth.SignedCapabilityExchangeBinding
 	decode("actor_token", &actor)
-	if actor != binding {
-		t.Fatalf("actor binding = %+v, want %+v", actor, binding)
+	wantActor := binding
+	wantActor.AuthorityOperationKind = ""
+	wantActor.PublisherEpoch = ""
+	wantActor.UseAuthorizer = nil
+	if actor != wantActor {
+		t.Fatalf("actor binding = %+v, want public fields %+v", actor, wantActor)
 	}
 	if actor.AgentID != "agent" || actor.CapabilityRevision != "cap-rev-7" || actor.URLDigest != agentcfg.OAuthMCPURLDigest(canonicalURL) {
 		t.Fatalf("actor omitted exact agent/revision/normalized URL digest: %+v", actor)

@@ -27,6 +27,7 @@ assert_grep_present 'pending-activation/compensation fence' "docs/plans/phase-23
 assert_grep_present 'IDNA2008' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "canonical URL algorithm is pinned"
 assert_grep_present 'RFC5952' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "IPv6 canonical form is pinned"
 assert_grep_present 'foreign operation' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "activation fence rejects foreign authority mutators"
+assert_grep_present 'opaque publisher epoch' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "durable publisher takeover is internal and fail-closed"
 assert_grep_present 'redirects' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "bearer redirects are fail-closed"
 assert_grep_present 'CanonicalOAuthMCPURL' internal/runtime/agentcfg/protocol/register_signed_oauth_mcp_capability.go "registration derives its URL bytes and sink through the canonical helper"
 assert_grep_present 'ActivateUnder' internal/runtime/agentcfg/protocol/register_signed_oauth_mcp_capability.go "initial registration proves authority under the exact staged publication receipt"
@@ -41,6 +42,7 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestVerifySignedOAuthMCPAuthority_ExactBindingAndScopeCeiling \
     TestSignedOAuthMCPOperationStore_ClaimsTenantScopedReplayAndTransitions \
     TestSignedOAuthMCPActivationFenceStore_TerminalFenceYieldsToNextOperation \
+    TestSignedOAuthMCPOperationStore_PublisherEpochCASAndRemovalFenceUse \
     TestRegisterOAuthMCPCapability_DurableReplayResumesPublishedOperation \
     TestRegisterOAuthMCPCapability_CommittedRevisionThenError_RecoversExactCandidate \
     TestRegisterOAuthMCPCapability_PointerAndCompensationFailure_DoesNotPublishMatchingOrphan \
@@ -68,6 +70,7 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
 assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./internal/agentcfg/drivers/statestore ./internal/tools/auth ./internal/tools/auth/drivers/tokenexchange ./internal/tools/drivers/mcp ./internal/protocol/types ./internal/protocol/transports/stream ./internal/runtime/serve' \
     'phase 233b: authenticated preparation, selective discovery errors, rollback, scope, and closed-wire regressions execute under race' \
     TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDiscovery \
+    TestBearerInjectingTransport_StaleSignedPublisherNeverReachesNetwork \
     TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors \
     TestIsJSONRPCMethodNotFound_OnlyCanonicalTypedError \
     TestDetachSourceExpected_CloseFailureIsRetryableAndNeverAbsentSuccess \

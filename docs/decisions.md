@@ -12074,6 +12074,19 @@ Token/cache assertions include the subject plus agent, capability revision,
 audience, and URL digest. Requested scope outside the true boot ceiling rejects
 loudly; silent scope intersection is forbidden for this path.
 
+One opaque `publisher_epoch` lives only in the durable pair-lifetime operation
+record. After the desired revision reaches `revision_committed`, a publisher
+must exact-EventID CAS-mint an epoch before private provider/MCP preparation.
+Reconcile in another runtime CAS-takes a new epoch, immediately making every
+older provider, cache entry, bearer, and local MCP handle inert. The epoch never
+rides the wire, immutable agent-config revision, broker actor assertion, or
+audit. Every pair-owned token path authorizes exact tenant, operation kind,
+phase, and epoch before cache lookup, after exchange, and before cached return;
+the bearer RoundTripper repeats that authorization immediately before any
+downstream request. Only a private preparation context may authorize
+`revision_committed`; normal dispatch requires `published` and cannot inherit
+the preparation marker.
+
 The signed provider is pair-owned and outside general `ProviderSet`; private MCP
 prepare binds directly to that exact provider instance. Before the final
 durable-authority proof, activation installs an exact owner/fingerprint/
@@ -12110,10 +12123,15 @@ removed pair.
 Paired removal continues the same
 pair-lifetime JTI record; it is never a second operation. It first exact-EventID
 `SaveIf`-advances to `removal_admitted`, serializing with the exact operation-slot
-publication fence before desired-state mutation. It then advances through
+publication fence before desired-state mutation and denying every publisher
+epoch before local teardown. It then advances through
 `removal_revision_committed` (desired pair absent by revision CAS),
 `catalog_unpublished`, `teardown_receipted` (close+revoke from frozen
-fingerprint), then terminal `removed`. A definitive desired-state refusal rolls
+fingerprint for the exact local epoch when present), then terminal `removed`.
+An empty remover may advance because durable removal admission is the authority
+receipt; a stale handle in another runtime remains network-inert and its owning
+runtime closes it on reconcile. `teardown_receipted` therefore never infers
+bearer authority from process-local presence or absence. A definitive desired-state refusal rolls
 the admission back to `published`; commit-then-error or unknown outcomes
 exact-reread the operation phase/EventID, desired revision, catalog source, and
 receipt, then resume only the missing phase. Expiry, key revocation, or a lost
@@ -12244,6 +12262,15 @@ publication completes before admission or a stale publisher fails before a
 bearer-capable handle becomes dispatchable. Context cancellation is checked at
 admission; once this irreversible callback starts, cancellation is not evidence
 that publication did not occur.
+
+D-401 additionally CAS-mints a durable publisher epoch on that same operation
+slot after desired-state commit. Publication and every credential/cache/
+downstream use compare the exact epoch; a second runtime's takeover invalidates
+old local handles without trusting process memory. `removal_admitted` changes
+the operation phase under exact EventID before teardown, so all epochs fail
+closed even when the remover has no local handle. Exact local close still names
+the matching epoch; an older local generation may remain only as inert cleanup
+state and can never satisfy or bypass the durable authority receipt.
 
 The shared invalid-expectation row pins the exact canonical sentinels:
 incomplete identity returns `ErrIdentityRequired`; empty Kind or EventID returns

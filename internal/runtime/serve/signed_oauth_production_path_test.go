@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -31,7 +32,7 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
-	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	statesqlite "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	_ "github.com/hurtener/Harbor/internal/tools/auth/credsource/drivers/remote"
@@ -119,11 +120,13 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 
 	var exchangeMu sync.Mutex
 	var exchangeForms []url.Values
+	var credentialRequests atomic.Int64
 	var emptyToken atomic.Bool
 	brokerMux := http.NewServeMux()
 	brokerServer := httptest.NewServer(brokerMux)
 	t.Cleanup(brokerServer.Close)
 	brokerMux.HandleFunc("/credential", func(w http.ResponseWriter, req *http.Request) {
+		credentialRequests.Add(1)
 		if req.Header.Get("Authorization") != "Bearer fixture-broker-auth" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -159,7 +162,8 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = bus.Close(context.Background()) })
-	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	dsn := filepath.Join(t.TempDir(), "signed-publisher-runtime.sqlite")
+	store, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,14 +173,15 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = registry.Close(context.Background()) })
-	builder, err := toolauth.NewProviderBuilder(context.Background(), config.ToolsConfig{
+	providerBuilderConfig := config.ToolsConfig{
 		OAuthTokenKEKEnv: "HARBOR_SIGNED_PRODUCTION_KEK",
 		OAuthCredentialBrokers: []config.ToolOAuthCredentialBrokerConfig{{
 			Name: "broker", TokenURL: brokerServer.URL + "/token", CredentialURL: brokerServer.URL + "/credential",
 			AuthTokenEnv: "HARBOR_SIGNED_PRODUCTION_BROKER_AUTH", ScopeCeiling: []string{"read"},
 			AllowedDownstreamHosts: []string{"boot-ceiling.invalid"},
 		}},
-	}, toolauth.BuildDeps{
+	}
+	builder, err := toolauth.NewProviderBuilder(context.Background(), providerBuilderConfig, toolauth.BuildDeps{
 		State: store, Bus: bus, Redactor: redactor, Coordinator: pauseresume.New(pauseresume.WithBus(bus)),
 	})
 	if err != nil {
@@ -219,18 +224,19 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		Scopes: []string{"read"}, Connection: prototypes.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL},
 		AuthorityEnvelope: envelope,
 	}
+	authorities := map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority{
+		"broker": {
+			Broker: "broker", Issuer: "issuer", Keys: productionSignedCapabilityKeySet{key: &key.PublicKey},
+			ScopeCeiling: []string{"read"}, MaxAuthorityLifetime: 10 * time.Minute,
+		},
+	}
 	service, err := agentcfgprotocol.NewService(registry,
 		agentcfgprotocol.WithBus(bus),
 		agentcfgprotocol.WithConnectionPreparer(attacher),
 		agentcfgprotocol.WithConnectionDetacher(attacher),
 		agentcfgprotocol.WithProviderInstaller(installer),
 		agentcfgprotocol.WithSignedOAuthMCPOperationState(store),
-		agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority{
-			"broker": {
-				Broker: "broker", Issuer: "issuer", Keys: productionSignedCapabilityKeySet{key: &key.PublicKey},
-				ScopeCeiling: []string{"read"}, MaxAuthorityLifetime: 10 * time.Minute,
-			},
-		}),
+		agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(authorities),
 		agentcfgprotocol.WithClock(func() time.Time { return now }),
 	)
 	if err != nil {
@@ -260,6 +266,27 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	if _, err := service.RegisterOAuthMCPCapability(verifiedCtx, wrongAgent); err == nil {
 		t.Fatal("wrong agent unexpectedly passed signed binding verification")
 	}
+	operationStore, err := agentcfg.NewSignedOAuthMCPOperationStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations, _, err := operationStore.ScanTenantPage(context.Background(), id.TenantID, 16, "")
+	if err != nil {
+		t.Fatalf("scan rejected requests: %v", err)
+	}
+	if len(operations) != 0 {
+		t.Fatalf("rejected identity/agent persisted operations: %+v", operations)
+	}
+	if revisions, listErr := registry.ListRevisions(context.Background(), identity.Quadruple{Identity: id}, agentID, agentcfg.ConfigScopeAgent, 16); listErr != nil || len(revisions) != 0 {
+		t.Fatalf("rejected identity/agent mutated revision history: revisions=%+v err=%v", revisions, listErr)
+	}
+	fences, err := agentcfg.NewSignedOAuthMCPActivationFenceStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, fenceErr := fences.Load(context.Background(), id.TenantID, agentID); fenceErr == nil {
+		t.Fatal("rejected identity/agent persisted an activation fence")
+	}
 	if got := mcpRequests.Load(); got != 0 {
 		t.Fatalf("wrong identity/agent reached MCP: requests=%d", got)
 	}
@@ -273,12 +300,24 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	emptyToken.Store(true)
 	if _, err := service.RegisterOAuthMCPCapability(verifiedCtx, req); err == nil {
 		t.Fatal("empty downstream token unexpectedly prepared an MCP connection")
+	} else {
+		t.Logf("failed preparation: %v", err)
 	}
 	if got := mcpRequests.Load(); got != 0 {
 		t.Fatalf("empty token reached MCP: requests=%d", got)
 	}
 	if _, ok := catalog.Resolve(connectionName + "_echo"); ok {
 		t.Fatal("catalog published after failed private preparation")
+	}
+	failedPreparation, err := operationStore.Load(context.Background(), agentcfg.SignedOAuthMCPReplayKey{
+		TenantID: id.TenantID, TrustAnchorName: "broker", Issuer: claims.Issuer,
+		KeyID: "kid", JTI: claims.ID,
+	})
+	if err != nil {
+		t.Fatalf("load failed preparation operation: %v", err)
+	}
+	if failedPreparation.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted || failedPreparation.PublisherEpoch == "" {
+		t.Fatalf("failed preparation receipt = phase %q epoch %q, want revision_committed with publisher epoch", failedPreparation.Phase, failedPreparation.PublisherEpoch)
 	}
 
 	emptyToken.Store(false)
@@ -351,23 +390,171 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		t.Fatalf("actor binding lost exact signed authority: %+v", actor)
 	}
 
-	// Remove on the next instruction after registration. A successful register
-	// response is the publication receipt: exact teardown must already be able
-	// to see and detach the real MCP handle, never race a later registry commit.
-	removed, err := service.RemoveOAuthMCPCapability(verifiedCtx, prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
+	dispatchCtx, err := identity.With(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchCtx = tools.WithInvokingAgent(dispatchCtx, agentID)
+	runtimeATool, ok := catalog.Resolve(connectionName + "_echo")
+	if !ok {
+		t.Fatal("runtime A tool is not published")
+	}
+	if _, err := runtimeATool.Invoke(dispatchCtx, json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("runtime A cached-bearer dispatch: %v", err)
+	}
+	operationKey := agentcfg.SignedOAuthMCPReplayKey{
+		TenantID: id.TenantID, TrustAnchorName: "broker", Issuer: claims.Issuer,
+		KeyID: "kid", JTI: claims.ID,
+	}
+	runtimeAOperation, err := operationStore.Load(context.Background(), operationKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeAOperation.Phase != agentcfg.SignedOAuthMCPPhasePublished || runtimeAOperation.PublisherEpoch == "" {
+		t.Fatalf("runtime A operation = phase %q epoch %q", runtimeAOperation.Phase, runtimeAOperation.PublisherEpoch)
+	}
+
+	// Runtime B opens an independent SQLite handle and local provider/catalog
+	// graph. Its reconciliation CAS-takes the durable publisher epoch; the
+	// already-cached runtime-A token and descriptor must become inert without a
+	// broker call or downstream request.
+	secondStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = secondStore.Close(context.Background()) })
+	secondRegistry, err := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: secondStore, Bus: bus})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = secondRegistry.Close(context.Background()) })
+	secondBuilder, err := toolauth.NewProviderBuilder(context.Background(), providerBuilderConfig, toolauth.BuildDeps{
+		State: secondStore, Bus: bus, Redactor: redactor, Coordinator: pauseresume.New(pauseresume.WithBus(bus)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondCatalog := tools.NewCatalog()
+	secondProviderSet := toolauth.NewProviderSet(nil)
+	secondMCPRegistry := mcpdrv.NewRegistry()
+	secondAttacher := NewMCPConnectionAttacher(secondCatalog, secondMCPRegistry, bus,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), id, nil, secondProviderSet, nil)
+	t.Cleanup(func() { _ = secondAttacher.Close(context.Background()) })
+	secondInstaller := NewOAuthProviderInstaller(secondBuilder, secondProviderSet, false, nil)
+	secondReconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(secondRegistry, secondStore, secondAttacher, secondAttacher, secondInstaller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quad := identity.Quadruple{Identity: id}
+	if err := secondReconciler.ReconcileSignedOAuthMCPCapability(dispatchCtx, quad, agentID); err != nil {
+		t.Fatalf("runtime B reconcile/takeover: %v", err)
+	}
+	runtimeBOperation, err := operationStore.Load(context.Background(), operationKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeBOperation.PublisherEpoch == "" || runtimeBOperation.PublisherEpoch == runtimeAOperation.PublisherEpoch {
+		t.Fatalf("runtime B did not take over publisher epoch: A=%q B=%q", runtimeAOperation.PublisherEpoch, runtimeBOperation.PublisherEpoch)
+	}
+	runtimeBTool, ok := secondCatalog.Resolve(connectionName + "_echo")
+	if !ok {
+		t.Fatal("runtime B tool is not published after reconcile")
+	}
+	if _, err := runtimeBTool.Invoke(dispatchCtx, json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("runtime B dispatch: %v", err)
+	}
+	exchangeMu.Lock()
+	beforeStaleExchange := len(exchangeForms)
+	exchangeMu.Unlock()
+	beforeStaleCredential := credentialRequests.Load()
+	beforeStaleDownstream := mcpRequests.Load()
+	if _, err := runtimeATool.Invoke(dispatchCtx, json.RawMessage(`{}`)); err == nil {
+		t.Fatal("runtime A cached descriptor remained usable after runtime B publisher takeover")
+	}
+	exchangeMu.Lock()
+	afterStaleExchange := len(exchangeForms)
+	exchangeMu.Unlock()
+	if afterStaleExchange != beforeStaleExchange || credentialRequests.Load() != beforeStaleCredential || mcpRequests.Load() != beforeStaleDownstream {
+		t.Fatalf("stale runtime A reached credential/downstream planes: exchange %d->%d credential %d->%d downstream %d->%d",
+			beforeStaleExchange, afterStaleExchange, beforeStaleCredential, credentialRequests.Load(), beforeStaleDownstream, mcpRequests.Load())
+	}
+
+	// Runtime C has no local provider or MCP handle. Durable removal admission
+	// still fences runtime B immediately; teardown succeeds from the empty local
+	// graph, and both cached descriptors stay network-inert until their owning
+	// runtimes reconcile local cleanup.
+	thirdStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = thirdStore.Close(context.Background()) })
+	thirdRegistry, err := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: thirdStore, Bus: bus})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = thirdRegistry.Close(context.Background()) })
+	thirdBuilder, err := toolauth.NewProviderBuilder(context.Background(), providerBuilderConfig, toolauth.BuildDeps{
+		State: thirdStore, Bus: bus, Redactor: redactor, Coordinator: pauseresume.New(pauseresume.WithBus(bus)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdCatalog := tools.NewCatalog()
+	thirdProviderSet := toolauth.NewProviderSet(nil)
+	thirdMCPRegistry := mcpdrv.NewRegistry()
+	thirdAttacher := NewMCPConnectionAttacher(thirdCatalog, thirdMCPRegistry, bus,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), id, nil, thirdProviderSet, nil)
+	t.Cleanup(func() { _ = thirdAttacher.Close(context.Background()) })
+	thirdInstaller := NewOAuthProviderInstaller(thirdBuilder, thirdProviderSet, false, nil)
+	thirdService, err := agentcfgprotocol.NewService(thirdRegistry,
+		agentcfgprotocol.WithBus(bus),
+		agentcfgprotocol.WithConnectionPreparer(thirdAttacher),
+		agentcfgprotocol.WithConnectionDetacher(thirdAttacher),
+		agentcfgprotocol.WithProviderInstaller(thirdInstaller),
+		agentcfgprotocol.WithSignedOAuthMCPOperationState(thirdStore),
+		agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(authorities),
+		agentcfgprotocol.WithClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed, err := thirdService.RemoveOAuthMCPCapability(verifiedCtx, prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
 		Identity: req.Identity, AgentID: agentID, ExpectedContentHash: response.Revision.ContentHash,
 	})
 	if err != nil {
-		t.Fatalf("immediate production removal: %v", err)
+		t.Fatalf("empty-runtime production removal: %v", err)
 	}
 	if removed.OperationPhase != string(agentcfg.SignedOAuthMCPPhaseRemoved) {
-		t.Fatalf("immediate removal phase = %q, want removed", removed.OperationPhase)
+		t.Fatalf("empty-runtime removal phase = %q, want removed", removed.OperationPhase)
 	}
-	if _, ok := catalog.Resolve(connectionName + "_echo"); ok {
-		t.Fatal("immediate removal left catalog dispatch live")
+	if _, ok := thirdCatalog.Resolve(connectionName + "_echo"); ok {
+		t.Fatal("empty remover unexpectedly acquired a local catalog handle")
 	}
-	if _, _, ok := mcpRegistry.RegistrationIdentity(connectionName); ok {
-		t.Fatal("immediate removal did not detach the published registry handle")
+	exchangeMu.Lock()
+	beforeRemovedExchange := len(exchangeForms)
+	exchangeMu.Unlock()
+	beforeRemovedCredential := credentialRequests.Load()
+	beforeRemovedDownstream := mcpRequests.Load()
+	for runtimeName, descriptor := range map[string]tools.ToolDescriptor{"runtime A": runtimeATool, "runtime B": runtimeBTool} {
+		if _, err := descriptor.Invoke(dispatchCtx, json.RawMessage(`{}`)); err == nil {
+			t.Fatalf("%s cached descriptor remained usable after durable removal", runtimeName)
+		}
+	}
+	exchangeMu.Lock()
+	afterRemovedExchange := len(exchangeForms)
+	exchangeMu.Unlock()
+	if afterRemovedExchange != beforeRemovedExchange || credentialRequests.Load() != beforeRemovedCredential || mcpRequests.Load() != beforeRemovedDownstream {
+		t.Fatalf("removed cached descriptors reached credential/downstream planes: exchange %d->%d credential %d->%d downstream %d->%d",
+			beforeRemovedExchange, afterRemovedExchange, beforeRemovedCredential, credentialRequests.Load(), beforeRemovedDownstream, mcpRequests.Load())
+	}
+	if err := secondReconciler.ReconcileSignedOAuthMCPCapability(dispatchCtx, quad, agentID); err != nil {
+		t.Fatalf("runtime B terminal cleanup reconcile: %v", err)
+	}
+	if _, ok := secondCatalog.Resolve(connectionName + "_echo"); ok {
+		t.Fatal("runtime B terminal reconcile left catalog dispatch visible")
+	}
+	if _, _, ok := secondMCPRegistry.RegistrationIdentity(connectionName); ok {
+		t.Fatal("runtime B terminal reconcile left matching publisher handle registered")
 	}
 }
 

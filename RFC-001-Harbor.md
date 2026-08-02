@@ -1567,8 +1567,9 @@ tenant-control-scope record uses a canonical length-prefixed tuple-hash Kind and
 stores bounded tuple fields/hashes, exact pair fingerprint, expiry, phase, and
 revision identity. One pair-lifetime operation record has exactly one normal
 graph: `claimed -> revision_committed -> published ->
-removal_revision_committed -> catalog_unpublished -> teardown_receipted ->
-removed`. Every phase transition compares its exact operation EventID. There is
+removal_admitted -> removal_revision_committed -> catalog_unpublished ->
+teardown_receipted -> removed`. Every phase transition compares its exact
+operation EventID. There is
 no generic `aborted` phase: a prepared-but-incomplete claim retries its current
 phase until it becomes terminal. Only `claimed` or `revision_committed` may
 transition to terminal `expired_incomplete`, after safe close/compensation and
@@ -1603,11 +1604,27 @@ prepare binds directly to it, and only catalog source swap makes data-plane
 dispatch visible. Protocol projections come from immutable pair revision;
 generic provider resolution cannot bind it. A pair-owned registry holds only
 close/reconcile receipts. Generic writers remain closed against pair halves.
-Paired removal is the latter four transitions of that same pair-lifetime record,
+Each local publication is additionally bound to one opaque, durable publisher
+epoch CAS-minted only after the desired revision commits. The epoch is internal:
+it appears in no Protocol request/response, revision, broker actor assertion, or
+audit payload. A restart or second runtime must CAS-take a new epoch before it
+prepares/publishes; every prior provider, cached bearer, and MCP handle then
+fails closed. Token exchange authorizes the exact operation phase+epoch before
+cache lookup, after exchange, and before cached return, while the bearer
+RoundTripper repeats the check immediately before downstream send. The only
+pre-publication exception is an internal preparation marker, accepted solely in
+`revision_committed`; ordinary dispatch cannot carry it.
+
+Paired removal is the latter five transitions of that same pair-lifetime record,
 not a second operation. It is a durable `SaveIf` recovery sequence:
+`removal_admitted` (all publisher epochs durably denied before local teardown),
 `removal_revision_committed` (desired pair absent by revision CAS),
 `catalog_unpublished`, `teardown_receipted` (transport/provider close+revoke
-from frozen fingerprint), then `removed`. A commit-then-error or unknown
+for the exact local epoch when present; absence is safe because durable
+revocation already made every remote/stale epoch inert), then `removed`. A
+runtime with no local handle may therefore advance teardown from the durable
+receipt; stale processes can retain only non-dispatchable handles and clean them
+on reconcile. A commit-then-error or unknown
 outcome exact-rereads the operation EventID/phase, desired revision, catalog
 source, and teardown receipt, and resumes only the missing phase. Expiry, key
 revocation, or a lost verifier never block teardown; retirement invokes this

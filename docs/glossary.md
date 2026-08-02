@@ -1452,7 +1452,11 @@ durable exact-EventID `SaveIf` sequence `removal_revision_committed`,
 outcomes reread and resume the missing phase from its frozen fingerprint.
 Its provider is pair-owned outside the general ProviderSet; catalog source swap
 alone exposes dispatch, while Protocol projection comes from the immutable
-revision. Its broker retains all credential custody. It does not change the
+revision. Each local publisher holds one opaque durable epoch; a second runtime
+CAS-takes a new epoch and immediately fences older providers, cached bearers,
+and MCP handles. Removal admission denies all epochs before local cleanup, so an
+empty remover is safe and stale processes retain only inert cleanup state. Its
+broker retains all credential custody. It does not change the
 process-global bare-name catalog namespace; collisions fail loudly. Phase 233b,
 D-401.
 
@@ -1463,7 +1467,9 @@ revision, canonical URL digest, audience, normalized scopes, issuer/key ID,
 issued-at/expiry, and a durable one-time replay ID (JTI). Its tenant-scoped
 operation key is `(tenant_id, trust_anchor_name, issuer, kid, jti)` and has a
 canonical length-prefixed tuple-hash control record containing bounded tuple
-fields/hashes, pair fingerprint, expiry, revision, phase, and exact EventID.
+fields/hashes, pair fingerprint, expiry, revision, phase, opaque publisher
+epoch, and exact EventID. The epoch is internal and never rides the wire,
+revision, broker actor assertion, or audit.
 Its sole normal pair-lifetime graph is `claimed -> revision_committed ->
 published -> removal_revision_committed -> catalog_unpublished ->
 teardown_receipted -> removed`, all by exact-EventID `SaveIf`; only incomplete

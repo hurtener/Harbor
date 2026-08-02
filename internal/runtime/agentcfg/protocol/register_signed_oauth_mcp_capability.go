@@ -30,6 +30,9 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
+	if verified, ok := identity.FromVerified(ctx); ok && verified != id {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: signed capability identity does not match verified caller", ErrIdentityRequired)
+	}
 	if s.preparer == nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
 	}
@@ -115,12 +118,13 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
 	q := identity.Quadruple{Identity: id}
+	operationCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, operationKind)
 	if op.Phase == agentcfg.SignedOAuthMCPPhasePublished {
 		if err := s.commitSignedOAuthMCPFence(ctx, id.TenantID, req.AgentID, operationKind, op); err != nil {
 			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 		}
 	}
-	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
+	active, hasActive, err := s.registry.Active(operationCtx, q, req.AgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
@@ -153,25 +157,6 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 		}
 	}
-	exchangeBinding := signedCapabilityExchangeBinding(binding, sink)
-	preparedProvider, err := providerPreparer.PrepareSignedCapabilityProvider(ctx, broker, exchangeBinding, scopes)
-	if err != nil {
-		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
-	}
-	attachCtx := tools.WithInvokingAgent(ctx, req.AgentID)
-	preparedConnection, err := s.preparer.PrepareConnection(attachCtx, AttachRequest{
-		Identity: id, AgentID: req.AgentID, Name: connection.Name, Transport: agentcfg.MCPTransportHTTP,
-		URL: canonicalURL, OAuthProvider: providerName, OAuthProviderOverride: preparedProvider.Binding(), OwnOAuthProvider: true,
-		ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist,
-		ConnectTimeoutMS: connection.ConnectTimeoutMS, RequestTimeoutMS: connection.RequestTimeoutMS,
-		DescriptorFingerprint: signedCapabilityAttachmentFingerprint(domainConnection, operationKind),
-	})
-	if err != nil {
-		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closePreparedSignedCapability(ctx, nil, preparedProvider))
-	}
-	closePrepared := func() error {
-		return closePreparedSignedCapability(ctx, preparedConnection, preparedProvider)
-	}
 	pair := &agentcfg.SignedOAuthMCPPair{
 		ProviderName: providerName, Broker: broker, Audience: audience, Scopes: scopes,
 		CapabilityRevision: claims.CapabilityRevision, URLDigest: binding.URLDigest, Sink: sink, SinkDigest: binding.SinkDigest,
@@ -186,14 +171,14 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		normalized := agentcfg.NormalizePayload(payload)
 		candidateHash, hashErr := agentcfg.ContentHash(normalized)
 		if hashErr != nil {
-			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(hashErr, closePrepared())
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, hashErr
 		}
 		priorRevisionID := ""
 		if hasActive {
 			priorRevisionID = active.RevisionID
 		}
 		if _, err := s.signedOAuthMCPFences.Begin(ctx, id.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID); err != nil {
-			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closePrepared())
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 		}
 		fenceCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, operationKind)
 		rev, err = s.registry.SetRevision(fenceCtx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
@@ -211,7 +196,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 				}
 			}
 			if readErr != nil || rev.RevisionID == "" {
-				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, readErr, closePrepared())
+				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, readErr)
 			}
 		}
 		physicalRevision, physicalErr := requirePhysicalActiveRevision(context.WithoutCancel(ctx), physical, q, req.AgentID, rev.RevisionID, candidateHash)
@@ -219,19 +204,42 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			if physicalErr == nil {
 				physicalErr = fmt.Errorf("%w: physical active candidate does not bind signed pair", agentcfg.ErrSignedCapabilityPending)
 			}
-			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, physicalErr, closePrepared())
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, physicalErr)
 		}
 		rev = physicalRevision
 		op, err = s.signedOAuthMCPOperations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhaseRevisionCommitted, rev.RevisionID)
 		if err != nil {
-			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closePrepared())
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 		}
 	} else {
 		physicalRevision, physicalErr := requirePhysicalActiveRevision(ctx, physical, q, req.AgentID, op.RevisionID, "")
 		if physicalErr != nil || !signedCapabilityPairMatches(physicalRevision.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
-			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(fmt.Errorf("%w: revision-committed operation has no matching physical desired pair", agentcfg.ErrSignedCapabilityReplay), physicalErr, closePrepared())
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(fmt.Errorf("%w: revision-committed operation has no matching physical desired pair", agentcfg.ErrSignedCapabilityReplay), physicalErr)
 		}
 		rev = physicalRevision
+	}
+	op, err = s.signedOAuthMCPOperations.AcquirePublisher(ctx, op)
+	if err != nil {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+	}
+	exchangeBinding := signedCapabilityExchangeBinding(binding, sink, operationKind, op, s.signedOAuthMCPOperations)
+	preparedProvider, err := providerPreparer.PrepareSignedCapabilityProvider(ctx, broker, exchangeBinding, scopes)
+	if err != nil {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+	}
+	attachCtx := tools.WithInvokingAgent(ctx, req.AgentID)
+	preparedConnection, err := s.preparer.PrepareConnection(attachCtx, AttachRequest{
+		Identity: id, AgentID: req.AgentID, Name: connection.Name, Transport: agentcfg.MCPTransportHTTP,
+		URL: canonicalURL, OAuthProvider: providerName, OAuthProviderOverride: preparedProvider.Binding(), OwnOAuthProvider: true,
+		ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist,
+		ConnectTimeoutMS: connection.ConnectTimeoutMS, RequestTimeoutMS: connection.RequestTimeoutMS,
+		DescriptorFingerprint: signedCapabilityPublisherAttachmentFingerprint(domainConnection, operationKind, op.PublisherEpoch),
+	})
+	if err != nil {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closePreparedSignedCapability(ctx, nil, preparedProvider))
+	}
+	closePrepared := func() error {
+		return closePreparedSignedCapability(ctx, preparedConnection, preparedProvider)
 	}
 	physicalRevision, err := requirePhysicalActiveRevision(ctx, physical, q, req.AgentID, rev.RevisionID, rev.ContentHash)
 	if err != nil || !signedCapabilityPairMatches(physicalRevision.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
@@ -272,11 +280,12 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	return signedCapabilityResponse(rev, providerName, connection.Name), nil
 }
 
-func signedCapabilityExchangeBinding(binding agentcfg.SignedOAuthMCPBinding, sink string) toolauth.SignedCapabilityExchangeBinding {
+func signedCapabilityExchangeBinding(binding agentcfg.SignedOAuthMCPBinding, sink, operationKind string, op agentcfg.SignedOAuthMCPOperation, authorizer toolauth.SignedCapabilityUseAuthorizer) toolauth.SignedCapabilityExchangeBinding {
 	return toolauth.SignedCapabilityExchangeBinding{
 		TenantID: binding.TenantID, UserID: binding.UserID, SessionID: binding.SessionID, AgentID: binding.AgentID, ProviderName: binding.ProviderName,
 		CapabilityRevision: binding.CapabilityRevision, PairFingerprint: agentcfg.SignedOAuthMCPPairFingerprint(binding),
 		URLDigest: binding.URLDigest, SinkDigest: binding.SinkDigest, Audience: binding.Audience, Resource: sink,
+		AuthorityOperationKind: operationKind, PublisherEpoch: op.PublisherEpoch, UseAuthorizer: authorizer,
 	}
 }
 
@@ -385,11 +394,17 @@ func signedCapabilityAttachmentFingerprint(connection agentcfg.SignedOAuthMCPCon
 	return hex.EncodeToString(sum[:])
 }
 
-func signedCapabilityPairAttachmentFingerprint(pair *agentcfg.SignedOAuthMCPPair) string {
-	if pair == nil {
+func signedCapabilityPublisherAttachmentFingerprint(connection agentcfg.SignedOAuthMCPConnectionDescriptor, operationKind, publisherEpoch string) string {
+	base := signedCapabilityAttachmentFingerprint(connection, operationKind)
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%s%d:%s", len(base), base, len(publisherEpoch), publisherEpoch)))
+	return hex.EncodeToString(sum[:])
+}
+
+func signedCapabilityPairAttachmentFingerprint(pair *agentcfg.SignedOAuthMCPPair, publisherEpoch string) string {
+	if pair == nil || publisherEpoch == "" {
 		return ""
 	}
-	return signedCapabilityAttachmentFingerprint(pair.Connection, pair.AuthorityOperationKind)
+	return signedCapabilityPublisherAttachmentFingerprint(pair.Connection, pair.AuthorityOperationKind, publisherEpoch)
 }
 
 func normalizeSignedCapabilityConnection(in prototypes.SignedOAuthMCPConnectionDescriptor, canonicalURL string) (prototypes.SignedOAuthMCPConnectionDescriptor, error) {

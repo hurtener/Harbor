@@ -57,6 +57,69 @@ func TestSignedOAuthMCPOperationStore_TenantSeparatesIdenticalJTI(t *testing.T) 
 	}
 }
 
+func TestSignedOAuthMCPOperationStore_PublisherEpochCASAndRemovalFenceUse(t *testing.T) {
+	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	ops, err := NewSignedOAuthMCPOperationStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := SignedOAuthMCPReplayKey{TenantID: "tenant-a", TrustAnchorName: "anchor", Issuer: "issuer", KeyID: "kid", JTI: "publisher-jti"}
+	binding := SignedOAuthMCPBinding{TenantID: "tenant-a", UserID: "user", SessionID: "session", AgentID: "agent", Broker: "broker", ProviderName: "provider", CapabilityRevision: "1", URLDigest: "url", SinkDigest: "sink", Audience: "aud"}
+	claimed, _, err := ops.Claim(context.Background(), key, binding, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := ops.Advance(context.Background(), claimed, SignedOAuthMCPPhaseRevisionCommitted, "revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := ops.AcquirePublisher(context.Background(), committed)
+	if err != nil || first.PublisherEpoch == "" {
+		t.Fatalf("first publisher = %+v err=%v", first, err)
+	}
+	if _, err := ops.AcquirePublisher(context.Background(), committed); !errors.Is(err, ErrSignedCapabilityReplay) {
+		t.Fatalf("stale publisher CAS = %v, want replay refusal", err)
+	}
+	kind, err := ops.Kind(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ops.AuthorizeSignedCapabilityUse(context.Background(), key.TenantID, kind, first.PublisherEpoch, false); !errors.Is(err, ErrSignedCapabilityPending) {
+		t.Fatalf("normal use before published = %v, want pending", err)
+	}
+	if err := ops.AuthorizeSignedCapabilityUse(context.Background(), key.TenantID, kind, first.PublisherEpoch, true); err != nil {
+		t.Fatalf("private preparation after revision commit: %v", err)
+	}
+	published, err := ops.Advance(context.Background(), first, SignedOAuthMCPPhasePublished, "revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ops.AuthorizeSignedCapabilityUse(context.Background(), key.TenantID, kind, first.PublisherEpoch, false); err != nil {
+		t.Fatalf("published use: %v", err)
+	}
+	second, err := ops.AcquirePublisher(context.Background(), published)
+	if err != nil || second.PublisherEpoch == first.PublisherEpoch {
+		t.Fatalf("takeover = %+v err=%v", second, err)
+	}
+	if err := ops.AuthorizeSignedCapabilityUse(context.Background(), key.TenantID, kind, first.PublisherEpoch, false); !errors.Is(err, ErrSignedCapabilityPending) {
+		t.Fatalf("old publisher after takeover = %v, want pending", err)
+	}
+	removing, err := ops.Advance(context.Background(), second, SignedOAuthMCPPhaseRemovalAdmitted, "revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ops.AuthorizeSignedCapabilityUse(context.Background(), key.TenantID, kind, second.PublisherEpoch, false); !errors.Is(err, ErrSignedCapabilityPending) {
+		t.Fatalf("current publisher after removal admission = %v, want pending", err)
+	}
+	if err := ops.AuthorizeSignedCapabilityUse(context.Background(), key.TenantID, kind, removing.PublisherEpoch, true); !errors.Is(err, ErrSignedCapabilityPending) {
+		t.Fatalf("preparation marker widened removal = %v, want pending", err)
+	}
+}
+
 func TestSignedOAuthMCPActivationFenceStore_TerminalFenceYieldsToNextOperation(t *testing.T) {
 	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
 	if err != nil {

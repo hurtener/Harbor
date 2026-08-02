@@ -180,9 +180,11 @@ type captureRoundTripper struct {
 	lastAuth      string
 	sawAuthorized bool
 	staticHeader  string
+	calls         int
 }
 
 func (c *captureRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.calls++
 	c.lastAuth = req.Header.Get("Authorization")
 	c.staticHeader = req.Header.Get("X-Static")
 	if c.lastAuth != "" {
@@ -194,6 +196,53 @@ func (c *captureRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		Header:     make(http.Header),
 		Request:    req,
 	}, nil
+}
+
+type refusingBearerUseAuthorizer struct{ err error }
+
+func (a refusingBearerUseAuthorizer) AuthorizeUse(context.Context) error { return a.err }
+
+func TestBearerInjectingTransport_StaleSignedPublisherNeverReachesNetwork(t *testing.T) {
+	authorityErr := errors.New("publisher epoch is stale")
+	for _, tc := range []struct {
+		name       string
+		method     string
+		bearer     string
+		wantStatus int
+		wantErr    bool
+	}{
+		{name: "bearer_present_data_plane", method: http.MethodPost, bearer: "cached-token", wantErr: true},
+		{name: "bearer_present_teardown", method: http.MethodDelete, bearer: "cached-token", wantStatus: http.StatusNoContent},
+		{name: "empty_bearer_teardown", method: http.MethodDelete, wantStatus: http.StatusNoContent},
+		{name: "empty_bearer_data_plane", method: http.MethodGet, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := &captureRoundTripper{}
+			transport := &bearerInjectingTransport{base: base, authorizer: refusingBearerUseAuthorizer{err: authorityErr}}
+			ctx := context.Background()
+			if tc.bearer != "" {
+				ctx = withBearer(ctx, tc.bearer)
+			}
+			req, err := http.NewRequestWithContext(ctx, tc.method, "http://downstream.invalid/mcp", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := transport.RoundTrip(req)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("stale signed publisher request succeeded")
+				}
+			} else {
+				if err != nil || resp == nil || resp.StatusCode != tc.wantStatus {
+					t.Fatalf("local teardown response = %+v err=%v, want status %d", resp, err, tc.wantStatus)
+				}
+				_ = resp.Body.Close()
+			}
+			if base.calls != 0 {
+				t.Fatalf("stale signed publisher reached downstream %d times", base.calls)
+			}
+		})
+	}
 }
 
 func TestBearerInjectingTransport_CtxTokenToHeader(t *testing.T) {

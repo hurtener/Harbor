@@ -82,7 +82,7 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 		}
 	}
 
-	descriptorFingerprint := signedCapabilityPairAttachmentFingerprint(pair)
+	descriptorFingerprint := signedCapabilityPairAttachmentFingerprint(pair, op.PublisherEpoch)
 	teardownFence, err := exactFencer.BeginExactConnectionTeardown(id.TenantID, req.AgentID, pair.Connection.Name, descriptorFingerprint)
 	if err != nil {
 		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
