@@ -386,6 +386,9 @@ jobs:
           trap 'rm -f "${test_log}"' EXIT
           go test -v -race -count=1 -timeout 240s ./test/integration -run '^TestE2E_WaveV126$/^postgres$' | tee "${test_log}"
           grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres' "${test_log}"
+          grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres/retirement_config_user_rollback_second_retirement' "${test_log}"
+          grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres/retirement_signed_registration_removal' "${test_log}"
+          grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres/erasure_overlay_personal' "${test_log}"
 
   memory-postgres:
     name: memory/postgres conformance (postgres:16)

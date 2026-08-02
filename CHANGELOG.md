@@ -46,11 +46,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Fixed
 
-- The in-progress authority and lifecycle checkpoint adds a named composed
-  suite for signed-agent reach, conditional configuration writes,
-  signed-capability restart/reconciliation/removal, session erasure,
-  retirement restart, reasoning durability, and mixed-identity cancellation
-  isolation. It is not release-gate completion and does not announce a release.
+- The in-progress authority and lifecycle release checkpoint now composes
+  signed-agent reach, conditional configuration writes, signed-capability
+  publisher takeover and removal, session erasure, inflight-run retirement
+  drain, cleanup restart, reasoning durability, and mixed-identity cancellation
+  isolation. Isolated-schema Postgres races cover the conflicting authority,
+  lifecycle, overlay, and personal-record transitions. This is implementation
+  evidence, not release-gate completion or a release announcement.
 
 - Bifrost reasoning now preserves the selected response's exact observed
   bytes. Any non-nil raw reasoning delta, including an empty one, makes the raw
