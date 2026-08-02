@@ -51,7 +51,7 @@ const driverName = "statestore"
 
 // Record kinds and the reserved synthetic-identity user slot.
 const (
-	kindActive      = "agentcfg.active"
+	kindActive      = agentcfg.ActiveSlotKind
 	kindRevisionPfx = "agentcfg.revision."
 	// The DISTINCT per-user record kinds. The user variant persists under
 	// the caller's REAL (tenant, user) identity AND these kinds, so the two
@@ -66,7 +66,7 @@ const (
 	// config persists under. The double-underscore prefix is reserved for
 	// runtime-internal scopes (matches the governance __governance__
 	// convention); no real session collides with it.
-	agentCfgUser = "__agentcfg__"
+	agentCfgUser = agentcfg.ReservedAgentConfigUser
 )
 
 // scopeKeys is the resolved keying for one (scope, identity, agent) tuple:
@@ -195,6 +195,9 @@ func init() {
 // persist under. The caller's verified tenant is the isolation boundary;
 // agent_id is the per-agent key in the session slot.
 func syntheticQuad(tenant, agentID string) identity.Quadruple {
+	// The registry validates tenant and agentID before constructing scope
+	// keys. Keep the construction total here rather than returning a zero
+	// identity on an impossible violated precondition.
 	return identity.Quadruple{Identity: identity.Identity{
 		TenantID:  tenant,
 		UserID:    agentCfgUser,

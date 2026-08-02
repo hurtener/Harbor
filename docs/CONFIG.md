@@ -649,6 +649,19 @@ filtering, redaction, and the budgeter apply unchanged on top.
 Default: empty. Validation: empty or `semantic`; `semantic` requires
 the `embeddings` block and `skills.driver` to be set.
 
+### skills.session_personal_cutover.tenants
+
+Optional, restart-required declarations for the durable session-personal-skill
+cutover. Each entry carries `tenant_id`, `epoch`, `roster_digest`, and
+`legacy_writers_drained`. Tenant IDs must be unique; the list is bounded to
+256 entries, and empty identifiers, epochs, or digests fail boot.
+
+An omitted tenant, or a declaration with `legacy_writers_drained: false`,
+stays in read-only `dual_read` mode. A drained declaration permits only its
+durable checkpointed migration; it does not discover tenants or writers at
+runtime. Set it true only after older writers have drained and the roster has
+been attested.
+
 ---
 
 ## Tasks

@@ -1084,6 +1084,9 @@ var skillsDriversRequiringDSN = map[string]struct{}{
 // When the operator HAS supplied any skills field, the validator
 // enforces driver-allowlist + driver-requires-DSN.
 func (c *Config) validateSkills() error {
+	if err := c.validateSessionPersonalCutover(); err != nil {
+		return err
+	}
 	// Directory shape-validation runs unconditionally so a typo'd
 	// `skills.directory` block fails at load time even when the
 	// parent store fields are empty.
@@ -1126,6 +1129,52 @@ func (c *Config) validateSkills() error {
 		}
 	}
 	return nil
+}
+
+const maxSessionPersonalCutoverTenants = 256
+
+const (
+	maxSessionPersonalCutoverTenantID = 128
+	maxSessionPersonalCutoverEpoch    = 128
+	maxSessionPersonalCutoverDigest   = 256
+)
+
+func (c *Config) validateSessionPersonalCutover() error {
+	declarations := c.Skills.SessionPersonalCutover.Tenants
+	if len(declarations) > maxSessionPersonalCutoverTenants {
+		return fieldError("skills.session_personal_cutover.tenants", fmt.Sprintf("must contain at most %d declarations", maxSessionPersonalCutoverTenants))
+	}
+	seen := make(map[string]struct{}, len(declarations))
+	for i, declaration := range declarations {
+		path := fmt.Sprintf("skills.session_personal_cutover.tenants[%d]", i)
+		if !validSessionPersonalCutoverToken(declaration.TenantID, maxSessionPersonalCutoverTenantID) {
+			return fieldError(path+".tenant_id", "must be a trimmed bounded token")
+		}
+		if !validSessionPersonalCutoverToken(declaration.Epoch, maxSessionPersonalCutoverEpoch) {
+			return fieldError(path+".epoch", "must be a trimmed bounded token")
+		}
+		if !validSessionPersonalCutoverToken(declaration.RosterDigest, maxSessionPersonalCutoverDigest) {
+			return fieldError(path+".roster_digest", "must be a trimmed bounded token")
+		}
+		canonicalTenant := strings.ToLower(declaration.TenantID)
+		if _, ok := seen[canonicalTenant]; ok {
+			return fieldError(path+".tenant_id", fmt.Sprintf("duplicates tenant %q", declaration.TenantID))
+		}
+		seen[canonicalTenant] = struct{}{}
+	}
+	return nil
+}
+
+func validSessionPersonalCutoverToken(value string, maximum int) bool {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > maximum {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x21 || r > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 // allowedSkillsDirectorySelections mirrors the `skills.Selection`
