@@ -420,6 +420,11 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		return nil, fmt.Errorf("agent-config registry: %w", err)
 	}
 	closers = append(closers, agentConfigRegistry.Close)
+	if lifecycleErr := EnsureBootAgentLifecycle(ctx, stack.State, agentConfigRegistry,
+		resolveMCPAttachIdentity(opts.MCPDefaultIdentity), devAgentConfigID); lifecycleErr != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("boot agent lifecycle: %w", lifecycleErr)
+	}
 
 	// The session-scoped safe-subset overlay store (the non-admin lower tier).
 	sessionOverlayStore, err := sessionoverlay.NewStore(stack.State, nil)

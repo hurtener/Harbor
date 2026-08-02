@@ -146,6 +146,9 @@ const (
 	DefaultDevTenant  = "dev"
 	DefaultDevUser    = "dev"
 	DefaultDevSession = "dev"
+	// devAgentConfigID is the synthetic boot agent selected by the devstack
+	// run-loop and granted by the minted dev bearer.
+	devAgentConfigID = "harbor-dev-agent"
 
 	// DefaultKID is the kid header the in-test ES256 signer stamps
 	// on tokens. Matches `cmd/harbor`'s DevKID convention.
@@ -648,7 +651,6 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 	// is handed to the run-loop driver (run-start skills projection) and the
 	// mounted `agent_config.*` Protocol service, so a skills edit lands on
 	// the next run. Built whenever the assembly opened a StateStore.
-	const devAgentConfigID = "harbor-dev-agent"
 	// tenantPolicy is the admin-set tenant-default LLM-override policy — ONE
 	// instance shared by the run-loop driver (consume at run start) and the
 	// mounted governance surface (set/get), mirroring production. Built
@@ -663,6 +665,15 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		stack.AgentConfig = reg
 		stack.AgentConfigID = devAgentConfigID
 		stack.closeFns = append(stack.closeFns, reg.Close)
+		// The synthetic boot agent is a real selected agent for the devstack's
+		// token identity. Phase 233a's durable session-personal resolver uses
+		// the agent-level active slot as its lifecycle fence, so materialise an
+		// empty first revision only when that slot is truly absent. Existing
+		// slots are deliberately untouched: in particular a terminal tombstone
+		// must remain terminal across a reconstructed stack.
+		if lifecycleErr := serve.EnsureBootAgentLifecycle(ctx, core.State, reg, resolveDevIdentity(opts), devAgentConfigID); lifecycleErr != nil {
+			return stack, fmt.Errorf("devstack synthetic agent lifecycle: %w", lifecycleErr)
+		}
 
 		// The SESSION-scoped safe-subset overlay store (the non-admin lower
 		// tier) reuses the SAME StateStore for session-keyed identity

@@ -11,6 +11,7 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
+	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -40,13 +41,20 @@ func gateCatalog(t *testing.T) tools.ToolCatalog {
 
 func gateRegistry(t *testing.T) agentcfg.Registry {
 	t.Helper()
+	reg, _ := gateRegistryWithState(t)
+	return reg
+}
+
+func gateRegistryWithState(t *testing.T) (agentcfg.Registry, state.StateStore) {
+	t.Helper()
+	st := newAppsState(t)
 	reg, err := agentcfg.Open(context.Background(), agentcfg.Config{},
-		agentcfg.Deps{State: newAppsState(t), Bus: newAppsBus(t)})
+		agentcfg.Deps{State: st, Bus: newAppsBus(t)})
 	if err != nil {
 		t.Fatalf("agentcfg.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = reg.Close(context.Background()) })
-	return reg
+	return reg, st
 }
 
 // gateID is the identity the idCtx fixture carries (t-1/u-1/s-1).
@@ -127,8 +135,15 @@ func TestAppCallGate_DisabledTool_Rejected(t *testing.T) {
 func TestAppCallGate_SessionOverlayDisable_Rejected(t *testing.T) {
 	ctx := idCtx(t)
 	cat := gateCatalog(t)
-	reg := gateRegistry(t)
-	ov, err := sessionoverlay.NewStore(newAppsState(t), nil)
+	reg, st := gateRegistryWithState(t)
+	// A session-owned overlay is allowed only for a materialized agent
+	// lifecycle. The shared StateStore is intentional: using a second test
+	// store would fabricate an absent lifecycle fence that production cannot
+	// observe.
+	if _, err := reg.SetRevision(ctx, gateID(), gateAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("materialize agent lifecycle: %v", err)
+	}
+	ov, err := sessionoverlay.NewStore(st, nil)
 	if err != nil {
 		t.Fatalf("overlay store: %v", err)
 	}
