@@ -258,7 +258,7 @@ func (m *ExactLegacyMigrator) loadLegacyBodies(ctx context.Context, id identity.
 		canonicalName := canonicalNameFor(name)
 		skill, err := m.reader.GetScope(ctx, id, name, skills.ScopeSession)
 		if errors.Is(err, skills.ErrSkillNotFound) {
-			continue
+			return nil, fmt.Errorf("%w: exact ScopeSession body missing for reference %q: %w", ErrLegacySkillInvalid, name, err)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("agentcfg/sessionoverlay: exact legacy skill read %q: %w", name, err)

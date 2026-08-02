@@ -359,6 +359,37 @@ func TestExactLegacyMigrator_CommitThenErrorConvergesAndRestartResumes(t *testin
 	})
 }
 
+func TestCutoverController_MissingLegacyBodyFailsClosedWithoutPersonalWrite(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("missing-body")
+	activateAgent(t, st, id, "agent-a")
+	candidate := legacyCandidate(t, id, "agent-a", "missing")
+	if err := st.Save(context.Background(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	declaration := legacyDeclaration()
+	controller, err := sessionoverlay.NewCutoverController(st, []config.SessionPersonalCutoverTenant{declaration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrator, _ := newLegacyMigrator(t, st, &exactLegacyReader{})
+	mode, err := controller.Advance(context.Background(), declaration.TenantID, 1, migrator)
+	if mode != sessionoverlay.CutoverDualRead || !errors.Is(err, sessionoverlay.ErrLegacySkillInvalid) {
+		t.Fatalf("Advance with missing exact body = (%q, %v), want dual_read ErrLegacySkillInvalid", mode, err)
+	}
+	mode, err = controller.Mode(context.Background(), declaration.TenantID)
+	if err != nil || mode != sessionoverlay.CutoverDualRead {
+		t.Fatalf("Mode after missing exact body = (%q, %v), want dual_read nil", mode, err)
+	}
+	personalKind, err := sessionoverlay.PersonalSkillKind("agent-a", "missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Load(context.Background(), id, personalKind); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("missing exact body wrote a personal record: %v", err)
+	}
+}
+
 func TestExactLegacyMigrator_ExactRawKindsAndStrictEnvelope(t *testing.T) {
 	st := newDurableState(t)
 	idA := durableID("kind-a")
