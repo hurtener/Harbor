@@ -377,6 +377,15 @@ jobs:
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
         run: go test -race -count=1 -timeout 240s ./internal/runtime/agentcfg/protocol -run '^TestRegisterOAuthMCPCapability_PostgresTwoIndependentRuntimes$'
+      - name: Run v1.26 production OAuth and retirement paths
+        run: |
+          set -euo pipefail
+          test_log="$(mktemp "${RUNNER_TEMP}/phase-235-production.XXXXXX.log")"
+          trap 'rm -f "${test_log}"' EXIT
+          go test -v -race -count=1 -timeout 240s ./internal/runtime/serve \
+            -run '^(TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDiscovery|TestRunLoopDriver_RetirementTombstonesNewStartsAndDrainsAdmittedRunBeforeCleanup)$' | tee "${test_log}"
+          grep -Fq -- '--- PASS: TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDiscovery' "${test_log}"
+          grep -Fq -- '--- PASS: TestRunLoopDriver_RetirementTombstonesNewStartsAndDrainsAdmittedRunBeforeCleanup' "${test_log}"
       - name: Run v1.26 agent authority/lifecycle checkpoint against postgres:16
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
@@ -387,8 +396,14 @@ jobs:
           go test -v -race -count=1 -timeout 240s ./test/integration -run '^TestE2E_WaveV126$/^postgres$' | tee "${test_log}"
           grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres' "${test_log}"
           grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres/retirement_config_user_rollback_second_retirement' "${test_log}"
+          grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres/retirement_config_user_rollback_second_retirement/user_config' "${test_log}"
+          grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres/retirement_config_user_rollback_second_retirement/second_retirement' "${test_log}"
           grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres/retirement_signed_registration_removal' "${test_log}"
+          grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres/retirement_signed_registration_removal/registration' "${test_log}"
+          grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres/retirement_signed_registration_removal/removal' "${test_log}"
           grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres/erasure_overlay_personal' "${test_log}"
+          grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres/erasure_overlay_personal/personal_upsert' "${test_log}"
+          grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres/erasure_overlay_personal/personal_delete' "${test_log}"
 
   memory-postgres:
     name: memory/postgres conformance (postgres:16)

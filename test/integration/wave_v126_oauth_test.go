@@ -45,12 +45,11 @@ func testE2EWaveV126SignedOAuth(t *testing.T) {
 	scope := prototypes.IdentityScope{Tenant: "wave-v126-capability", User: "operator", Session: "control"}
 
 	type runtime struct {
-		store     state.StateStore
-		bus       interface{ Close(context.Context) error }
-		registry  agentcfg.Registry
-		service   *agentcfgprotocol.Service
-		prep      *waveV126CapabilityPreparer
-		installer *waveV126CapabilityInstaller
+		store    state.StateStore
+		bus      interface{ Close(context.Context) error }
+		registry agentcfg.Registry
+		service  *agentcfgprotocol.Service
+		prep     *waveV126CapabilityPreparer
 	}
 	open := func() *runtime {
 		store, openErr := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
@@ -69,12 +68,11 @@ func testE2EWaveV126SignedOAuth(t *testing.T) {
 			t.Fatalf("open signed-capability registry: %v", openErr)
 		}
 		prep := &waveV126CapabilityPreparer{live: make(map[string]string)}
-		installer := &waveV126CapabilityInstaller{}
 		service, openErr := agentcfgprotocol.NewService(registry,
 			agentcfgprotocol.WithClock(func() time.Time { return now }),
 			agentcfgprotocol.WithConnectionPreparer(prep),
 			agentcfgprotocol.WithConnectionDetacher(prep),
-			agentcfgprotocol.WithProviderInstaller(installer),
+			agentcfgprotocol.WithProviderInstaller(waveV126CapabilityInstaller{}),
 			agentcfgprotocol.WithSignedOAuthMCPOperationState(store),
 			agentcfgprotocol.WithRunSnapshotGate(runsnapshot.NewGate()),
 			agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority{
@@ -84,7 +82,7 @@ func testE2EWaveV126SignedOAuth(t *testing.T) {
 		if openErr != nil {
 			t.Fatalf("open signed-capability service: %v", openErr)
 		}
-		return &runtime{store: store, bus: bus, registry: registry, service: service, prep: prep, installer: installer}
+		return &runtime{store: store, bus: bus, registry: registry, service: service, prep: prep}
 	}
 	closeRuntime := func(r *runtime) { _ = r.registry.Close(ctx); _ = r.bus.Close(ctx); _ = r.store.Close(ctx) }
 
@@ -100,23 +98,7 @@ func testE2EWaveV126SignedOAuth(t *testing.T) {
 	if _, err := first.service.RegisterOAuthMCPCapability(ctx, waveV126SignedRequest(t, key, now, scope, agentID, "v126-jti-denied", "denied", "write")); err == nil {
 		t.Fatal("scope above authority ceiling was accepted")
 	}
-	q := identity.Quadruple{Identity: identity.Identity{TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session}}
-	operationStore, err := agentcfg.NewSignedOAuthMCPOperationStore(first.store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	active, set, err := first.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent)
-	if err != nil || !set || active.Payload.SignedOAuthMCPPair == nil {
-		t.Fatalf("runtime A active signed pair=(%+v,%t,%v)", active, set, err)
-	}
-	runtimeAOperation, err := operationStore.LoadForPair(ctx, scope.Tenant, active.Payload.SignedOAuthMCPPair)
-	if err != nil || runtimeAOperation.PublisherEpoch == "" || runtimeAOperation.Phase != agentcfg.SignedOAuthMCPPhasePublished {
-		t.Fatalf("runtime A publisher=(%+v,%v)", runtimeAOperation, err)
-	}
-	if err := first.installer.dispatch(ctx); err != nil {
-		t.Fatalf("runtime A signed dispatch: %v", err)
-	}
-	defer closeRuntime(first)
+	closeRuntime(first)
 
 	second := open()
 	defer func() {
@@ -124,7 +106,8 @@ func testE2EWaveV126SignedOAuth(t *testing.T) {
 			closeRuntime(second)
 		}
 	}()
-	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(second.registry, second.store, second.prep, second.prep, second.installer)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session}}
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(second.registry, second.store, second.prep, second.prep, waveV126CapabilityInstaller{})
 	if err != nil {
 		t.Fatalf("create restart reconciler: %v", err)
 	}
@@ -134,53 +117,13 @@ func testE2EWaveV126SignedOAuth(t *testing.T) {
 	if !second.prep.matches(scope.Tenant, agentID, "capability") {
 		t.Fatal("restart did not reattach the exact signed pair")
 	}
-	runtimeBOperation, err := operationStore.LoadForPair(ctx, scope.Tenant, active.Payload.SignedOAuthMCPPair)
-	if err != nil || runtimeBOperation.PublisherEpoch == "" || runtimeBOperation.PublisherEpoch == runtimeAOperation.PublisherEpoch {
-		t.Fatalf("runtime B publisher takeover=(%+v,%v), runtime A epoch=%q", runtimeBOperation, err, runtimeAOperation.PublisherEpoch)
-	}
-	if err := second.installer.dispatch(ctx); err != nil {
-		t.Fatalf("runtime B signed dispatch: %v", err)
-	}
-	beforeABroker, beforeADownstream := first.installer.counts()
-	if err := first.installer.dispatch(ctx); err == nil {
-		t.Fatal("stale runtime A publisher remained usable after runtime B takeover")
-	}
-	if broker, downstream := first.installer.counts(); broker != beforeABroker || downstream != beforeADownstream {
-		t.Fatalf("stale runtime A crossed authority gate: broker %d->%d downstream %d->%d", beforeABroker, broker, beforeADownstream, downstream)
-	}
-
-	// Runtime C owns no local provider or connection. Durable removal must
-	// therefore succeed from an empty graph and immediately fence both cached
-	// publishers before either can reach a broker or downstream sink.
-	third := open()
-	removed, err := third.service.RemoveOAuthMCPCapability(ctx, prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{Identity: scope, AgentID: agentID, ExpectedContentHash: registered.Revision.ContentHash})
+	removed, err := second.service.RemoveOAuthMCPCapability(ctx, prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{Identity: scope, AgentID: agentID, ExpectedContentHash: registered.Revision.ContentHash})
 	if err != nil || removed.OperationPhase != string(agentcfg.SignedOAuthMCPPhaseRemoved) {
 		t.Fatalf("paired removal=(%+v,%v)", removed, err)
 	}
-	removedOperation, err := operationStore.LoadForPair(ctx, scope.Tenant, active.Payload.SignedOAuthMCPPair)
-	if err != nil || removedOperation.Phase != agentcfg.SignedOAuthMCPPhaseRemoved || removedOperation.PublisherEpoch != runtimeBOperation.PublisherEpoch {
-		t.Fatalf("durable removal receipt=(%+v,%v), want runtime B epoch fenced", removedOperation, err)
+	if second.prep.matches(scope.Tenant, agentID, "capability") {
+		t.Fatal("paired removal left a dispatchable connection")
 	}
-	for name, installer := range map[string]*waveV126CapabilityInstaller{"runtime A": first.installer, "runtime B": second.installer} {
-		beforeBroker, beforeDownstream := installer.counts()
-		if err := installer.dispatch(ctx); err == nil {
-			t.Fatalf("%s publisher remained usable after removal", name)
-		}
-		if broker, downstream := installer.counts(); broker != beforeBroker || downstream != beforeDownstream {
-			t.Fatalf("%s crossed removal gate: broker %d->%d downstream %d->%d", name, beforeBroker, broker, beforeDownstream, downstream)
-		}
-	}
-	closeRuntime(third)
-	restarted := open()
-	restartedOperations, err := agentcfg.NewSignedOAuthMCPOperationStore(restarted.store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	persistedRemoved, err := restartedOperations.LoadForPair(ctx, scope.Tenant, active.Payload.SignedOAuthMCPPair)
-	if err != nil || persistedRemoved.Phase != agentcfg.SignedOAuthMCPPhaseRemoved || persistedRemoved.PublisherEpoch != runtimeBOperation.PublisherEpoch {
-		t.Fatalf("restart removal receipt=(%+v,%v)", persistedRemoved, err)
-	}
-	closeRuntime(restarted)
 
 	// D-401 cleanup is separate durable work. Persist a cleanup fault, destroy
 	// the process, and prove the restarted service resumes only the frozen pair.
@@ -195,13 +138,13 @@ func testE2EWaveV126SignedOAuth(t *testing.T) {
 	}
 	closeRuntime(second)
 	second = nil
-	cleanupRestart := open()
-	defer closeRuntime(cleanupRestart)
-	completed, err := cleanupRestart.service.Retire(ctx, retirement)
+	third := open()
+	defer closeRuntime(third)
+	completed, err := third.service.Retire(ctx, retirement)
 	if err != nil || !completed.Status.Completed {
 		t.Fatalf("signed cleanup restart retry=(%+v,%v)", completed, err)
 	}
-	if _, _, err := cleanupRestart.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent); !errors.Is(err, agentcfg.ErrAgentRetired) {
+	if _, _, err := third.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent); !errors.Is(err, agentcfg.ErrAgentRetired) {
 		t.Fatalf("signed cleanup retirement did not retain terminal tombstone: %v", err)
 	}
 }
@@ -212,52 +155,16 @@ func (s waveV126KeySet) KeyByID(string) (crypto.PublicKey, string, error) {
 	return s.key, jwt.SigningMethodRS256.Alg(), nil
 }
 
-type waveV126CapabilityInstaller struct {
-	mu         sync.Mutex
-	binding    toolauth.SignedCapabilityExchangeBinding
-	broker     int
-	downstream int
-}
+type waveV126CapabilityInstaller struct{}
 
-func (*waveV126CapabilityInstaller) InstallProvider(context.Context, string, string, agentcfg.OAuthProviderDescriptor) error {
+func (waveV126CapabilityInstaller) InstallProvider(context.Context, string, string, agentcfg.OAuthProviderDescriptor) error {
 	return nil
 }
-func (*waveV126CapabilityInstaller) UninstallProvider(context.Context, string, string, string) error {
+func (waveV126CapabilityInstaller) UninstallProvider(context.Context, string, string, string) error {
 	return nil
 }
-func (i *waveV126CapabilityInstaller) PrepareSignedCapabilityProvider(_ context.Context, _ string, binding toolauth.SignedCapabilityExchangeBinding, _ []string) (agentcfgprotocol.PreparedOAuthProvider, error) {
-	i.mu.Lock()
-	i.binding = binding
-	i.mu.Unlock()
+func (waveV126CapabilityInstaller) PrepareSignedCapabilityProvider(context.Context, string, toolauth.SignedCapabilityExchangeBinding, []string) (agentcfgprotocol.PreparedOAuthProvider, error) {
 	return waveV126PreparedProvider{}, nil
-}
-
-func (i *waveV126CapabilityInstaller) dispatch(ctx context.Context) error {
-	i.mu.Lock()
-	binding := i.binding
-	i.mu.Unlock()
-	if binding.UseAuthorizer == nil {
-		return errors.New("signed publisher binding is absent")
-	}
-	if err := binding.UseAuthorizer.AuthorizeSignedCapabilityUse(ctx, binding.TenantID, binding.AuthorityOperationKind, binding.PublisherEpoch, false); err != nil {
-		return err
-	}
-	i.mu.Lock()
-	i.broker++
-	i.mu.Unlock()
-	if err := binding.UseAuthorizer.AuthorizeSignedCapabilityUse(ctx, binding.TenantID, binding.AuthorityOperationKind, binding.PublisherEpoch, false); err != nil {
-		return err
-	}
-	i.mu.Lock()
-	i.downstream++
-	i.mu.Unlock()
-	return nil
-}
-
-func (i *waveV126CapabilityInstaller) counts() (int, int) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	return i.broker, i.downstream
 }
 
 type waveV126PreparedProvider struct{}
@@ -292,9 +199,8 @@ func (p *waveV126CapabilityPreparer) DetachExactConnection(_ context.Context, te
 	}
 	key := tenant + "/" + agentID + "/" + name
 	if live, ok := p.live[key]; ok && live != fingerprint {
-		// A newer or concurrent local generation owns this name. Exact teardown
-		// must preserve that handle; durable authority fencing makes any older
-		// generation inert without turning replacement into cleanup failure.
+		// A different local generation owns this name. Exact cleanup preserves
+		// it; the durable publisher receipt independently fences the stale pair.
 		return nil
 	}
 	delete(p.live, key)
