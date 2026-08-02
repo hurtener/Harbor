@@ -1197,6 +1197,10 @@ func (s *Service) completeRetirementCleanup(ctx context.Context, reg agentcfg.Re
 			if err := s.providerInstaller.UninstallProvider(ctx, q.TenantID, agentID, step.Resource); err != nil {
 				return agentcfg.RetirementStatus{}, fmt.Errorf("retirement cleanup uninstall OAuth provider %q: %w", step.Resource, err)
 			}
+		case "session_personal", "legacy_session_overlay":
+			// Registry-owned StateStore cleanup executes under the target row's
+			// exact identity and the four-slot lifecycle/erasure fence when the
+			// durable progress acknowledgement below is attempted.
 		default:
 			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: unknown frozen cleanup class %q", agentcfg.ErrRetirementConflict, step.Class)
 		}

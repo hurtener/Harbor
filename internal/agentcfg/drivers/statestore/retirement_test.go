@@ -248,6 +248,10 @@ func TestRetirement_SharedSQLiteTwoRegistries_N100(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	userRevision, err := b.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("user-seed"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed user revision: %v", err)
+	}
 	var wg sync.WaitGroup
 	errs := make(chan error, 100)
 	for i := range 100 {
@@ -272,6 +276,45 @@ func TestRetirement_SharedSQLiteTwoRegistries_N100(t *testing.T) {
 	status, found, err := a.(agentcfg.RetirementRegistry).RetirementStatus(ctx, id, agent)
 	if err != nil || !found || status.OperationID != "shared-op" || !status.Completed {
 		t.Fatalf("durable status=(%+v,%v,%v)", status, found, err)
+	}
+	// Exercise stale agent writers, agent rollbacks, user writers, and user
+	// rollbacks across both Runtime instances after the terminal generation.
+	operations := []func(agentcfg.Registry) error{
+		func(r agentcfg.Registry) error {
+			_, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, skills("late-agent"), agentcfg.SetOptions{})
+			return err
+		},
+		func(r agentcfg.Registry) error {
+			_, err := r.Rollback(ctx, id, agent, rev.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{})
+			return err
+		},
+		func(r agentcfg.Registry) error {
+			_, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("late-user"), agentcfg.SetOptions{})
+			return err
+		},
+		func(r agentcfg.Registry) error {
+			_, err := r.Rollback(ctx, id, agent, userRevision.RevisionID, agentcfg.ConfigScopeUser, agentcfg.SetOptions{})
+			return err
+		},
+	}
+	errAfter := make(chan error, 100)
+	for i := range 100 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			runtime := a
+			if i%2 == 1 {
+				runtime = b
+			}
+			errAfter <- operations[i%len(operations)](runtime)
+		}(i)
+	}
+	wg.Wait()
+	close(errAfter)
+	for err := range errAfter {
+		if !errors.Is(err, agentcfg.ErrAgentRetired) {
+			t.Fatalf("two-runtime stale mutation=%v, want ErrAgentRetired", err)
+		}
 	}
 }
 

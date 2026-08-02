@@ -40,6 +40,9 @@ assert_go_tests_pass "${P234_TMP}/retirement.log" '-race -count=1 ./cmd/harbor .
 	TestRetirement_PendingProgressMustFlushBeforeLaterStep \
 	TestRetirement_EventsAreOrderedAndRedacted \
 	TestRetirement_SQLiteRestartRetainsTerminalLifecycle \
+	TestRetirement_SQLiteRestartResumesFourSlotPersonalTombstones \
+	TestRetirement_Phase233aManifestExactAndFourSlotCleanup \
+	TestRetirement_Phase233aN100StalePersonalCAS \
 	TestSession_RetiredAgentRefusesAllFiveProjections \
 	TestDeregister_IndependentOfAgentConfigRetirement \
 	TestDevComposition_RetiredDefaultRefusesExplicitAndImplicitStartBeforeSpawn \

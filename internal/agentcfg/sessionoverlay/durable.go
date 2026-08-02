@@ -151,6 +151,119 @@ func PersonalSkillPrefix(agentID string) (string, error) {
 	return personalKindPrefix + base64.RawURLEncoding.EncodeToString([]byte(agentID)) + ".", nil
 }
 
+// InspectRetirementPersonalCandidate validates one tenant-scan result as an
+// exact agent-owned personal record and returns its canonical name. Retirement
+// callers must use this before admitting a scanned row to a frozen manifest.
+func InspectRetirementPersonalCandidate(candidate state.StateRecord, tenantID, agentID string) (string, error) {
+	prefix, err := PersonalSkillPrefix(agentID)
+	if err != nil {
+		return "", err
+	}
+	if candidate.Identity.TenantID != tenantID || candidate.Identity.UserID == agentcfg.ReservedAgentConfigUser || candidate.Identity.UserID == "" || candidate.Identity.SessionID == "" || candidate.Identity.RunID != "" || !strings.HasPrefix(candidate.Kind, prefix) {
+		return "", fmt.Errorf("%w: retirement candidate key is outside the exact tenant/agent session scope", ErrPersonalRecordInvalid)
+	}
+	var key struct {
+		CanonicalName *string `json:"canonical_name"`
+	}
+	if err := rejectDuplicateJSONObjectFields(candidate.Bytes); err != nil {
+		return "", fmt.Errorf("%w: retirement candidate duplicate/trailing fields: %w", ErrPersonalRecordInvalid, err)
+	}
+	if err := json.Unmarshal(candidate.Bytes, &key); err != nil || key.CanonicalName == nil {
+		return "", fmt.Errorf("%w: retirement candidate lacks canonical name", ErrPersonalRecordInvalid)
+	}
+	canonicalName := canonicalNameFor(*key.CanonicalName)
+	expectedKind, err := PersonalSkillKind(agentID, canonicalName)
+	if err != nil || candidate.Kind != expectedKind {
+		return "", fmt.Errorf("%w: retirement candidate key/payload mismatch", ErrPersonalRecordInvalid)
+	}
+	if _, found, err := decodePersonal(candidate.Bytes, agentID, canonicalName); err != nil || !found {
+		if err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("%w: retirement candidate is absent", ErrPersonalRecordInvalid)
+	}
+	return canonicalName, nil
+}
+
+// InspectRetirementLegacyCandidate validates one schema-1 overlay returned by
+// the common-prefix scan. Exact Kind equality is intentional: agent "a" must
+// never claim agent "ab" rows.
+func InspectRetirementLegacyCandidate(candidate state.StateRecord, tenantID, agentID string) error {
+	if candidate.Identity.TenantID != tenantID || candidate.Identity.UserID == agentcfg.ReservedAgentConfigUser || candidate.Identity.UserID == "" || candidate.Identity.SessionID == "" || candidate.Identity.RunID != "" || candidate.Kind != LegacyOverlayKind(agentID) {
+		return fmt.Errorf("%w: retirement candidate key is outside the exact tenant/agent session scope", ErrLegacyOverlayInvalid)
+	}
+	if _, err := decodeOverlayRecord(candidate.Bytes); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RetirePersonalCandidate writes the logical personal tombstone under the
+// exact target+lifecycle+pending-erasure+terminal-erasure CAS. Unlike the
+// ordinary delete path it requires a terminal lifecycle generation and can
+// therefore resume after retirement without reopening normal mutation.
+func (s *DurableStore) RetirePersonalCandidate(ctx context.Context, target identity.Quadruple, kind, tenantID, agentID, canonicalName string) error {
+	if target.TenantID != tenantID || target.UserID == agentcfg.ReservedAgentConfigUser || target.UserID == "" || target.SessionID == "" || target.RunID != "" {
+		return fmt.Errorf("%w: retirement target identity is outside the tenant/session scope", ErrPersonalRecordInvalid)
+	}
+	expectedKind, err := PersonalSkillKind(agentID, canonicalName)
+	if err != nil || kind != expectedKind {
+		return fmt.Errorf("%w: retirement target kind does not match agent/name", ErrPersonalRecordInvalid)
+	}
+	fenceState, err := loadFences(ctx, s.state, target, agentID)
+	if err != nil {
+		return err
+	}
+	if fenceState.state != lifecycleEnvelopeTerminal {
+		if lifecycleErr := fenceState.lifecycleError(); lifecycleErr != nil {
+			return lifecycleErr
+		}
+		return fmt.Errorf("%w: retirement cleanup requires terminal lifecycle", ErrAgentLifecycleCorrupt)
+	}
+	if fenceState.erased() {
+		return ErrSessionErased
+	}
+	rec, err := s.state.Load(ctx, durableSessionQuad(target), kind)
+	if errors.Is(err, state.ErrNotFound) {
+		// Session erasure may have physically removed a row after discovery.
+		// The terminal lifecycle still prevents resurrection, so absence is a
+		// converged cleanup outcome rather than a reason to invent a record.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: load retirement personal target: %w", ErrStateUnavailable, err)
+	}
+	current, found, err := decodePersonal(rec.Bytes, agentID, canonicalNameFor(canonicalName))
+	if err != nil || !found {
+		return err
+	}
+	if current.Deleted {
+		return nil
+	}
+	now := s.clock().UTC()
+	tombstone := PersonalSkillRecord{Schema: 1, AgentID: agentID, CanonicalName: canonicalNameFor(canonicalName), Deleted: true, UpdatedAt: now}
+	encoded, err := json.Marshal(tombstone)
+	if err != nil {
+		return fmt.Errorf("agentcfg/sessionoverlay: marshal retirement personal tombstone: %w", err)
+	}
+	next := state.StateRecord{ID: state.NewEventID(), Identity: durableSessionQuad(target), Kind: kind, Bytes: encoded, UpdatedAt: now}
+	expectations := append([]state.SlotExpectation{{Identity: next.Identity, Kind: kind, ExpectedEventID: rec.ID}}, fenceState.expectations()...)
+	if err := s.state.SaveIf(ctx, expectations, next); err != nil {
+		landed, loadErr := s.state.Load(ctx, next.Identity, kind)
+		if loadErr == nil {
+			decoded, ok, decodeErr := decodePersonal(landed.Bytes, agentID, tombstone.CanonicalName)
+			if decodeErr == nil && ok && decoded.Deleted {
+				return nil
+			}
+		}
+		if errors.Is(err, state.ErrConditionFailed) {
+			return err
+		}
+		return fmt.Errorf("%w: conditional retirement personal tombstone: %w", ErrStateUnavailable, err)
+	}
+	return nil
+}
+
 // LoadPersonal returns a stable personal record for id/agent/name.
 func (s *DurableStore) LoadPersonal(ctx context.Context, id identity.Quadruple, agentID, name string) (PersonalSkillRecord, bool, error) {
 	kind, err := PersonalSkillKind(agentID, name)

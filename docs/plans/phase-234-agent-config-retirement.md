@@ -127,6 +127,15 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 
 - 232, 233, 233a, 233b.
 
+Delivery note (2026-08-02): this branch is based on the shipped Phase 233a
+four-slot session overlay/personal-state work. Phase 233b is not present on
+this base, so the D-401 signed OAuth capability-pair manifest item remains
+explicitly deferred; this delivery does not infer, scan, or revoke that pair.
+The existing owner-scoped MCP-connection and OAuth-provider cleanup remains,
+and the Phase 233a personal/legacy cleanup is integrated here. The combined
+cleanup acceptance criterion above and Phase 234's master-plan status remain
+open until Phase 233b lands and the pair path is integrated and verified.
+
 ## Risks / open questions
 
 - In-flight projection preservation requires cleanup to avoid destructive process-global teardown until no pre-retirement snapshot can reference it; the cleaner records a deferred step rather than violating that boundary.
