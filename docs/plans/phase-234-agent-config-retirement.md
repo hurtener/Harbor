@@ -2,7 +2,7 @@
 
 ## Summary
 
-Add a durable CAS retirement verb that makes an agent terminally unresolvable for new runs while preserving immutable revision history. The tombstone retains the exact pre-retirement hash, operation ID, cleanup manifest, and progress so a same-operation retry resumes after any interruption.
+Add a durable CAS retirement verb that makes an agent terminally unresolvable for new runs while preserving immutable revision history. The tombstone retains the exact pre-retirement hash, operation ID, cleanup manifest, and progress so a same-operation retry resumes after any interruption; durable session records use Phase 233a's lifecycle-and-erasure fence composition rather than process-local compensation.
 
 ## RFC anchor
 
@@ -32,9 +32,10 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 ## Goals
 
 - Install a terminal lifecycle tombstone by exact StateStore compare-and-swap.
-- Freeze every agent- and user-tier durable mutation after retirement and make every session overlay inaccessible, compensating a local write when retirement wins concurrently.
+- Freeze every agent- and user-tier durable mutation after retirement and make every session overlay/personal record inaccessible through the four-slot lifecycle, pending-erasure, tombstone-erasure, and target-record CAS composition.
 - Deny explicit and defaulted new-run selection while preserving already-acquired run snapshots.
-- Resume a fixed, idempotent, owner-scoped cleanup manifest for the same operation only.
+- Resume a fixed, idempotent, owner-scoped cleanup manifest for the same
+  operation only, through a deterministic paged scan after the tombstone wins.
 
 ## Non-goals
 
@@ -48,17 +49,25 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 - [ ] `agent_config.retire` requires admin scope, exact identity, non-empty bounded operation ID, and expected active content hash (or `ExpectNoActiveRevision`).
 - [ ] The agent active slot becomes a backward-compatible lifecycle envelope; a tombstone contains prior revision ID/hash, operation/time, fixed cleanup manifest, and per-step progress.
 - [ ] Initial retirement and every progress update use `SaveIf`; a stale writer, rollback, or user-tier writer cannot resurrect or mutate the tombstoned agent.
-- [ ] Each process-local session mutator reads the lifecycle before and after its local write, compensates the exact write when retirement wins between them, and every later overlay read/write refuses the tombstone; an already-completed remote-process overlay is inaccessible rather than falsely claimed erased.
+- [ ] Overlay and agent-owned personal-record mutation builds four exact `SaveIf` expectations (target, lifecycle, pending erasure, terminal erasure) and writes only the target; retirement or erasure wins with no local compensation fiction, and every later read/write refuses the corresponding terminal state.
+- [ ] Uncertain retirement tombstone/progress writes reread lifecycle target
+  plus operation/progress expectations; cleanup-item writes reread item target
+  plus applicable session fences. Only each class's intended event/content is
+  accepted, and cleanup never performs unconditional compensation or delete.
+- [ ] Overlay/personal/composite reads use Phase 233a's before/after lifecycle
+  and erasure-fence generation check, retrying or failing closed on a changed
+  generation so retirement's postcondition includes read inaccessibility.
 - [ ] Same-operation retries resume; different operation IDs return a typed conflict; landed-but-unacknowledged writes converge by exact reread.
 - [ ] `Active` and every mutation return `ErrAgentRetired`; historical Get/List/Diff remain available to authorized admin/audit callers.
 - [ ] Both explicit and omitted/default `control.start` fail before new work; a run whose immutable start snapshot predates the tombstone may finish unchanged.
-- [ ] Cleanup detaches only manifest-listed runtime-added MCP connections and uninstalls only durably owner-scoped providers; it removes local session overlays through identity-scoped enumeration, retains user and agent revision history, and never touches boot/global, remote-process memory, or unattributable credentials.
+- [ ] Cleanup detaches only manifest-listed runtime-added MCP connections and uninstalls only durably owner-scoped providers; after the lifecycle tombstone freezes the owned keyset, its fixed manifest uses `ScanKindForTenant`. New encoded personal records use a collision-safe exact per-agent prefix; raw schema-1 overlays use the common overlay prefix plus exact `LegacyOverlayKind(agentID)` equality (including an `a`/`ab` no-overmatch test). Every result is mutated only under its own identity. It retains user and agent revision history plus `ScopeUser` skills, never touches boot/global, remote-process memory, shared/unattributable legacy bodies, or credentials, and makes no unconditional `Delete`. Schema-1 overlay records remain compatibility-readable and need no separate retirement tombstone because the lifecycle fence is terminal.
 - [ ] Tombstone and progress survive restart on SQLite/Postgres; fault injection after every side effect/progress boundary converges on same-operation retry.
 - [ ] `agents.deregister` neither installs nor deletes a tombstone, and retirement does not remove the fleet record.
 
 ## Files added or changed
 
-- `internal/agentcfg/` and `internal/agentcfg/drivers/statestore/`
+- `internal/agentcfg/`, `internal/agentcfg/drivers/statestore/`, the Phase
+  233a session-record ownership resolver, and StateStore scan conformance
 - `internal/runtime/agentcfg/` and `internal/runtime/serve/`
 - `internal/protocol/{types,methods,errors,singlesource}/`
 - `internal/protocol/transports/stream/agentconfig_handler.go`
@@ -75,14 +84,24 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 
 ## Test plan
 
-- **Unit:** lifecycle decoding, CAS install, operation replay/conflict, freeze matrix, resolver/default behavior, manifest construction, and typed Protocol mapping.
-- **Integration:** real StateStore registry + runtime projection + mux, restart durability, explicit/default start refusal, history preservation, and `agents.deregister` independence.
+- **Unit:** lifecycle decoding, CAS install, operation replay/conflict, freeze
+  matrix, resolver/default behavior, manifest construction, raw legacy Kind
+  equality (`a`/`ab`), class-specific uncertain-write convergence, and typed
+  Protocol mapping.
+- **Integration:** real StateStore registry + Phase 233a composite resolver +
+  runtime projection + mux, restart durability, explicit/default start
+  refusal, history preservation, exact paged owned-record cleanup after
+  tombstone, and `agents.deregister` independence.
 - **Conformance:** all agentcfg drivers implement terminal lifecycle and same-operation replay; the 17 spine writes plus five session writes are held in a closed refusal census.
-- **Concurrency / leak:** stale writer/rollback/user/session-overlay writer versus retirement, including after-write/before-recheck compensation; two retirees; N≥100 reads/retries; cancellation, restart, and goroutine baseline under `-race`.
+- **Concurrency / leak:** stale writer/rollback/user/overlay/personal-record
+  writer versus retirement and erasure across two instances; four-slot
+  condition failures, commit-then-error recovery, exact paged cleanup replay,
+  two retirees, N≥100 reads/retries, cancellation, restart, and goroutine
+  baseline under `-race`.
 
 ## Smoke script additions
 
-- Retire the dev agent, assert explicit/default start refusal, immutable history, retry status, operation conflict, and separate fleet deregistration behavior.
+- Retire the dev agent, assert explicit/default start refusal, immutable history, replay/conflict, fenced session-record refusal, exact owned cleanup, and separate fleet deregistration behavior.
 - Run every cleanup fault boundary and require at least one real live-server assertion.
 
 ## Coverage target
@@ -91,7 +110,7 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 
 ## Dependencies
 
-- 232, 233.
+- 232, 233, 233a.
 
 ## Risks / open questions
 

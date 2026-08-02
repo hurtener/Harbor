@@ -30,12 +30,15 @@ Add one mandatory multi-slot conditional-save primitive to the StateStore interf
 - Atomically compare exact current event IDs for one or more identity-scoped slots and write one next record.
 - Give absence a precise expectation and return one comparable condition-failed sentinel.
 - Upgrade agent-config conditional agent/user writes to use the durable primitive.
+- Add the tenant-bounded deterministic paged maintenance scan consumed by
+  Phase 233a cutover and Phase 234 retirement.
 
 ## Non-goals
 
 - No general SQL transaction callback, distributed lock service, or optional driver capability.
 - No mutation of applied `0001` migrations.
-- No attempt to include process-local session overlays in a StateStore transaction; Phase 234 fences those mutators with before/after lifecycle reads and exact local compensation.
+- No session-overlay, personal-skill, session-erasure, or retirement consumer
+  work; Phase 233a composes this primitive over durable session records.
 
 ## Acceptance criteria
 
@@ -45,6 +48,12 @@ Add one mandatory multi-slot conditional-save primitive to the StateStore interf
 - [ ] Every StateStore wrapper/fake forwards or faults `SaveIf` explicitly; the driver registry and conformance census hold the triad closed.
 - [ ] Agent-tier SetRevision/Rollback condition the active pointer; user-tier writes condition both the user pointer and agent lifecycle slot so retirement can win terminally.
 - [ ] Shared SQLite and environment-gated real Postgres races prove one winner across two registry instances; N≥100 reuse, cancellation, close, and leak checks pass under `-race`.
+- [ ] `ScanKindForTenant` is mandatory across in-memory, SQLite, and Postgres:
+  storage-side tenant plus literal-prefix filtering, bounded limit, stable
+  lexicographic composite-slot order, opaque validated continuation, and no
+  snapshot claim across restart. Its conformance rows reject missing scope,
+  malformed continuation, empty prefix, wrong tenant, over-limit results, and
+  wildcard/overmatch behavior.
 
 ## Files added or changed
 
@@ -53,6 +62,7 @@ Add one mandatory multi-slot conditional-save primitive to the StateStore interf
 - `internal/state/drivers/sqlite/`
 - `internal/state/drivers/postgres/`
 - `internal/state/conformancetest/`
+- every StateStore wrapper/fake that must forward `ScanKindForTenant`
 - StateStore wrappers/fakes across `internal/`
 - `internal/agentcfg/drivers/statestore/`
 - `scripts/smoke/phase-233.sh`
@@ -61,12 +71,17 @@ Add one mandatory multi-slot conditional-save primitive to the StateStore interf
 
 - `StateStore.SaveIf(ctx context.Context, expectations []SlotExpectation, next StateRecord) error`
 - `SlotExpectation` and `ErrConditionFailed`.
+- `StateStore.ScanKindForTenant(ctx context.Context, scope ListScope, tenantID,
+  literalKindPrefix string, limit int, continuation string) (StateScanPage,
+  error)`, where an empty next continuation is the only end marker.
 
 ## Test plan
 
 - **Unit:** validation, matching/stale/absent expectations, idempotency order, cancellation, and closed-store behavior.
 - **Integration:** two independent agent-config registries over shared SQLite and Postgres exercise cross-process-equivalent conditional writes.
-- **Conformance:** every registered StateStore driver passes the same matching, stale, multi-slot, identity, and race rows.
+- **Conformance:** every registered StateStore driver passes the same matching,
+  stale, multi-slot, identity, race, tenant scan ordering/pagination,
+  continuation-validation, and literal-prefix rows.
 - **Concurrency / leak:** N≥100 calls on one driver plus two-client winner tests under `-race`; goroutine baseline restored.
 
 ## Smoke script additions

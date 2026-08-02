@@ -217,6 +217,38 @@ never stops the server. Phase 182, D-318.
 
 ## C
 
+**Agent-owned session personal skill record** — one StateStore record carrying
+a complete validated session-scope Skill body for one agent within one
+`(tenant, user, session)` triple. The agent ID is encoded only as ownership
+metadata in the record Kind; it is not an isolation principal. A logical
+tombstone suppresses legacy fallback, and lifecycle plus pending/terminal
+erasure expectations fence each write. This replaces new shared-SkillStore
+session-body writes while preserving durable `ScopeUser` skills. RFC §6.7 /
+§6.9 / §6.11 / §6.16, D-400.
+
+**Legacy session overlay Kind** — the schema-1 raw key
+`agentcfg.session_overlay.` concatenated directly with the agent ID. It has no
+delimiter or encoding and therefore is not a collision-safe per-agent prefix:
+maintenance scans use the tenant-bounded common overlay prefix then require
+exact `LegacyOverlayKind(agentID)` equality. New encoded personal-record Kinds
+are distinct and may use collision-safe exact per-agent prefixes. The `a`/`ab`
+adjacency case is mandatory coverage. D-400.
+
+**Composite skill resolver** — the trusted per-run reader that composes
+agent-owned session-personal records, eligible legacy session rows during
+rolling cutover, and the existing shared skill rungs. Directory plus
+`skill_get`, `skill_list`, and `skill_search` use this one resolver so their
+lexical and opt-in semantic results agree; it never lets a session record
+delete or widen a `ScopeUser` skill. D-400.
+
+**Tenant-bounded StateStore scan** — the mandatory, maintenance-scoped
+`ScanKindForTenant` page API. It storage-filters a named tenant plus a literal
+Kind prefix, returns at most the declared limit in stable lexicographic
+composite-slot order, and carries an opaque validated continuation. Its pages
+are restart-resumable but are not a restart-surviving database snapshot;
+cutover must make the source quiescent and finish with a fresh verification
+pass. D-400.
+
 **Co-launched TUI** — the explicit `harbor serve --tui` or generated-binary
 `--tui` posture where one foreground command owns both an ordinary authenticated
 Protocol server and the native TUI client attached to its bound listener. It is
