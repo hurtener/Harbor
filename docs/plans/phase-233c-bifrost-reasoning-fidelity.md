@@ -65,41 +65,41 @@ restart reconstruction.
 
 ## Acceptance criteria
 
-- [ ] For selected response choice index 0, observing any non-nil raw `delta.Reasoning`
+- [x] For selected response choice index 0, observing any non-nil raw `delta.Reasoning`
   selects raw-source mode even if that value is empty. The completed reasoning
   is the exact ordered concatenation of all raw values; `ReasoningDetails` do
   not override, append to, trim, or otherwise transform it.
-- [ ] Raw reasoning invokes `OnReasoning` immediately with each observed value.
+- [x] Raw reasoning invokes `OnReasoning` immediately with each observed value.
   Details-only reasoning remains final-only, so a later raw delta cannot cause
   duplicate callback delivery. For a single non-nil empty raw delta, the exact
   callback sequence is `("", false)` then `("", true)`; terminal delivery
   tests `rawObserved`, not accumulated length.
-- [ ] Streaming and unary completion both consume choice index 0 only. Content,
+- [x] Streaming and unary completion both consume choice index 0 only. Content,
   reasoning, reasoning details, tool calls, and callbacks belonging to any
   non-zero choice are ignored and cannot contaminate selected-choice output.
-- [ ] Details-only fragments coalesce by non-empty stable block ID, otherwise
+- [x] Details-only fragments coalesce by non-empty stable block ID, otherwise
   by `(type, index)` within selected choice 0. An initial ID-bearing fragment aliases its
   fallback identity so later ID-less fragments join it. Within a block bytes
   concatenate exactly; exactly one literal `\n\n` separates distinct emitted
   blocks in first-seen order. No path trims intentional whitespace. Encrypted
   and content-only blocks remain excluded under D-147's provider-capture
   boundary and provider-native deferral.
-- [ ] A decoded JSON/SSE regression—not directly assembled Go structs—uses
+- [x] A decoded JSON/SSE regression—not directly assembled Go structs—uses
   `["**Preparing to send email**", "\n\n", "I", " need", " to", " compose"]`
   and asserts the exact result `**Preparing to send email**\n\nI need to compose`
   in the callback stream and completed response. The JSON source has the
   standard `\n\n` escape and the decoder-produced middle delta is asserted as
   exact bytes `0x0a,0x0a`, never literal backslash-plus-letter bytes.
-- [ ] The same fixture asserts byte-identical reasoning in
+- [x] The same fixture asserts byte-identical reasoning in
   `planner.decision.ReasoningTrace`, the live `tasks.get` trajectory, and
   durable `state.history` after a runtime restart. The restart oracle is the
   durable planner-decision history because live task trajectory is in-memory.
-- [ ] Details-only multi-fragment/single-block and multi-block regressions
+- [x] Details-only multi-fragment/single-block and multi-block regressions
   remain, including non-selected-choice rejection, ID-to-fallback aliasing,
   intentional whitespace, and excluded encrypted/content blocks.
-- [ ] Console history/reopen tests render exactly the persisted newline bytes;
+- [x] Console history/reopen tests render exactly the persisted newline bytes;
   no CSS or client-side coalescing is accepted as a repair.
-- [ ] The shared Bifrost driver passes N>=100 concurrent identity-distinct,
+- [x] The shared Bifrost driver passes N>=100 concurrent identity-distinct,
   cancellation-varied calls under `-race`: no race, response/callback byte
   bleed, cancellation cross-talk, or goroutine leak.
 
@@ -173,16 +173,33 @@ restart reconstruction.
 - None — this phase narrows the existing reasoning channel and reasoning trace
   terms rather than introducing a new public concept.
 
+## As shipped / release evidence
+
+- The Bifrost package reports 90.5% statement coverage. Its focused
+  callback/choice/details/concurrency suite passed under `-race -count=20`;
+  the decoded-wire regression passed under `-race -count=5`; and the shared
+  driver concurrent-reuse fixture exercises 128 identity-distinct calls.
+- The real SQLite-backed runtime integration passed under `-race`, including
+  durable restart reconstruction and identity-negative behavior, and passed
+  three consecutive repetitions. The Console history/reopen suite passed all
+  18 tests. `scripts/smoke/phase-233c.sh` reported 15 OK, 0 SKIP, 0 FAIL.
+- No Protocol type, method, error, event, manifest, or version changed. Protocol
+  lockstep and documentation-generation checks remained clean.
+- Local markdown, lint, drift, mirror, diff, focused race, Console, and smoke
+  checks passed. Per maintainer policy, the full local preflight was not
+  duplicated; PR-to-main cloud preflight remains the authoritative pending
+  release gate.
+
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] Focused local race, smoke, lint, mirror, and diff checks pass; cloud
+- [x] `make drift-audit` passes
+- [x] Focused local race, smoke, lint, mirror, and diff checks pass; cloud
   PR-to-main preflight remains authoritative and is not duplicated locally
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages >= stated target
-- [ ] N>=100 driver concurrent-reuse test passes under `-race`
-- [ ] Real-driver integration proves identity, restart, and failure behavior
-- [ ] Console history byte-parity test passes
-- [ ] Zero wire diff verified by protocol lockstep/doc generation checks
-- [ ] If a brief finding was departed from: justified above + D-402 filed
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages >= stated target
+- [x] N>=100 driver concurrent-reuse test passes under `-race`
+- [x] Real-driver integration proves identity, restart, and failure behavior
+- [x] Console history byte-parity test passes
+- [x] Zero wire diff verified by protocol lockstep/doc generation checks
+- [x] If a brief finding was departed from: justified above + D-402 filed

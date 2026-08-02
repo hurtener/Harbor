@@ -38,6 +38,18 @@ Two versions move independently in Harbor (RFC §5.3):
   SkillStore body. The declaration requires a configured SkillStore; malformed,
   duplicate, over-bound, or unwired declarations fail boot loud.
 
+### Fixed
+
+- Bifrost reasoning now preserves the selected response's exact observed
+  bytes. Any non-nil raw reasoning delta, including an empty one, makes the raw
+  stream authoritative; details-only responses coalesce fragments by stable
+  block identity without trimming or rewriting whitespace. Only choice index 0
+  contributes content, reasoning, tool calls, or callbacks. The same bytes are
+  verified through live callbacks, completed responses, planner decisions,
+  task trajectory, durable restart history, and Console history rendering
+  (HA-51, D-402, Phase 233c). This is an internal fidelity correction with no
+  Protocol type, method, event, error, manifest, or version change.
+
 ## [1.25.0] — 2026-08-01
 
 One release-closure slice: the original **prompt-composition surface**, the

@@ -376,7 +376,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |233 | StateStore conditional save (D-398): mandatory atomic multi-slot `SaveIf` plus deterministic tenant-bounded paged maintenance scan across inmem/SQLite/Postgres, with exact event-ID/absence expectations and agent/user config consumers closing D-366's cross-process residual | state triad + conformance + agentcfg statestore | §6.11, §6.16, §9 | 130, 221, 230 | state 96.3%, inmem 88.0%, SQLite 87.1%; agentcfg 83.8% §4.3 deviation | Shipped (v1.26) |
 |233a | Durable session overlay and personal-skill correction (D-400): four-slot lifecycle/erasure/record CAS, agent-owned StateStore personal bodies, admitted-tenant verified cutover, composite resolver, canonical 409 pending error, and ledgered exact legacy sweep | sessionoverlay + skills + sessions + agentcfg runtime + Protocol | §6.7, §6.9, §6.11, §6.13, §6.16 | 130, 221, 230, 233 | 85–90% | Shipped (v1.26) |
 |233b | Signed OAuth MCP capability registration (HA-50, D-401): production-safe boot-authorized closed descriptor registration with durable tenant-scoped JTI and paired-removal recovery, pair-owned provider/catalog-only dispatch, a committed agent activation fence, and canonical HTTPS URL bytes/sink | agentcfg + Protocol + tools/auth + MCP serve + config | §4, §5.5, §6.4, §6.11, §6.16 | 233 | 85–90% | Pending (v1.26) |
-|233c | Bifrost reasoning fidelity (HA-51, D-402): raw observed reasoning is byte-exact and authoritative; details-only blocks coalesce by stable identity without whitespace rewriting, with live/planner/task/durable-history/Console parity | Bifrost LLM driver + planner/task/history + Console | §6.2, §6.5, §6.8, §6.13 | 33, 83e, 83m, 165 | 85–90% | Pending (v1.26) |
+|233c | Bifrost reasoning fidelity (HA-51, D-402): raw observed reasoning is byte-exact and authoritative; details-only blocks coalesce by stable identity without whitespace rewriting, with live/planner/task/durable-history/Console parity | Bifrost LLM driver + planner/task/history + Console | §6.2, §6.5, §6.8, §6.13 | 33, 83e, 83m, 165 | 85–90% | Shipped (v1.26) |
 |234 | Agent-config retirement (D-399/D-400/D-401): terminal CAS tombstone, immutable history, exact pre-retirement hash and operation identity, deterministic paged owner-scoped cleanup after tombstone, four-slot session-write freeze, signed OAuth pair cleanup, and explicit/default new-run refusal; `agents.deregister` remains fleet-only | agentcfg + runtime projection/serve + Protocol/Console lockstep | §5.5, §6.11, §6.13, §6.16 | 232, 233, 233a, 233b | 85–90% | Pending (v1.26) |
 |235 | Agent authority/lifecycle wave E2E + v1.26 checkpoint: real SQLite/Postgres composition of signed OAuth capability registration, session records, erasure, retirement, and byte-exact reasoning durability; two-runtime write races, N≥10 mixed-identity stress, read-only §17.5 audit and corrective gate before release | test/integration + scripts/smoke + release docs | §4, §5.5, §6.2, §6.4, §6.5, §6.8, §6.9, §6.11, §6.13, §6.16, §9 | 232, 233, 233a, 233b, 233c, 234 | inherited floors | Pending (v1.26) |
 
@@ -458,7 +458,15 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
   coverage is release-required. No Protocol or wire version change.
 - **Ordering:** independent of 233a/233b; Phase 235 consumes its durable
   reasoning evidence and therefore depends on 233c.
-- **Decision:** D-402. **Status:** Pending (v1.26).
+- **Evidence:** Bifrost coverage is 90.5%; focused callback/choice/details/
+  concurrency tests passed under `-race -count=20`, the decoded-wire fixture
+  under `-race -count=5`, and the durable SQLite integration under `-race` and
+  three consecutive repetitions. The shared-driver fixture uses 128
+  identity-distinct calls. Console history passed 18/18; phase smoke reported
+  15 OK, 0 SKIP, 0 FAIL. Protocol lockstep/doc-generation checks and the wire
+  diff are clean. Local preflight was intentionally not duplicated; PR-to-main
+  cloud preflight remains the authoritative pending release gate.
+- **Decision:** D-402. **Status:** Shipped (v1.26).
 
 ### 233 — StateStore conditional save (D-398)
 

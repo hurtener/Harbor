@@ -12110,7 +12110,7 @@ D-396, D-398, D-399. RFC §4, §5.5, §6.4, §6.11, §6.16. Plan:
 
 **Date:** 2026-08-02
 
-**Status:** Settled (shipping with Phase 233c / HA-51).
+**Status:** Settled and shipped with Phase 233c / HA-51.
 
 **Decision.** Reasoning is an ordered provider-output byte stream, not prose
 that Harbor may normalize. During one Bifrost completion, the first observed
@@ -12167,6 +12167,16 @@ non-zero choices are absent. The shared driver is exercised by N>=100
 concurrent/cancelled identity-distinct calls under `-race`, with no byte,
 identity, cancellation, or goroutine leak cross-talk. Console history rendering
 asserts the same exact newline bytes.
+
+**As shipped.** The Bifrost package measures 90.5% statement coverage. Focused
+callback/choice/details/concurrency tests pass under `-race -count=20`, the
+decoded-wire regression under `-race -count=5`, and the durable SQLite runtime
+integration under `-race` and three consecutive repetitions. The shared-driver
+fixture uses 128 identity-distinct calls; Console history passes 18/18 and the
+phase smoke reports 15 OK, 0 SKIP, 0 FAIL. Protocol lockstep and documentation
+generation remain clean with no wire or Protocol-version change. Per
+maintainer policy, PR-to-main cloud preflight is the authoritative remaining
+release gate and was not duplicated locally.
 
 **Cross-references.** D-025, D-147, D-148, D-298. RFC §6.2, §6.5, §6.8,
 §6.13. Plan: `docs/plans/phase-233c-bifrost-reasoning-fidelity.md`.
