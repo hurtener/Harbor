@@ -1542,6 +1542,45 @@ type ToolOAuthCredentialBrokerConfig struct {
 	// Timeout bounds a single broker exchange. Optional; zero = driver
 	// default.
 	Timeout time.Duration `yaml:"timeout,omitempty"`
+	// SignedOAuthMCPCapabilityAuthority is the optional, boot-only trust anchor
+	// for signed OAuth MCP capability registration. Its presence does not
+	// by itself enable the Protocol write: Enabled must be true. The issuer,
+	// verifier source, and maximum authority lifetime are all fixed at boot;
+	// none is ever derived from a Protocol request.
+	SignedOAuthMCPCapabilityAuthority *ToolSignedOAuthMCPCapabilityAuthorityConfig `yaml:"signed_oauth_mcp_capability_authority,omitempty"`
+}
+
+// ToolSignedOAuthMCPCapabilityAuthorityConfig is the verifier/opt-in portion
+// of a boot-declared OAuth credential broker. It is intentionally nested
+// beneath that broker: the request may name a broker, but it cannot select an
+// arbitrary issuer, key source, or credential sink.
+//
+// Layout in YAML:
+//
+//	tools:
+//	  oauth_credential_brokers:
+//	    - name: m365-broker
+//	      signed_oauth_mcp_capability_authority:
+//	        enabled: true
+//	        issuer: https://authority.example.com
+//	        jwks_url: https://authority.example.com/.well-known/jwks.json
+//	        max_authority_lifetime: 10m
+//
+// Config/file-only and restart-required. The explicit lifetime is required:
+// Signed capability registration requires a bounded envelope, but deliberately does not impose a
+// product-wide lifetime on every deployment.
+type ToolSignedOAuthMCPCapabilityAuthorityConfig struct {
+	// Enabled is the explicit production opt-in. False is fail-closed.
+	Enabled bool `yaml:"enabled,omitempty"`
+	// Issuer is the exact JWT issuer the broker accepts.
+	Issuer string `yaml:"issuer"`
+	// JWKSURL or JWKSFile selects the fixed public-key source. Exactly one is
+	// required when Enabled.
+	JWKSURL  string `yaml:"jwks_url,omitempty"`
+	JWKSFile string `yaml:"jwks_file,omitempty"`
+	// MaxAuthorityLifetime caps exp-issued-at for signed envelopes. Required
+	// and positive when Enabled; an unset value is never silently defaulted.
+	MaxAuthorityLifetime time.Duration `yaml:"max_authority_lifetime"`
 }
 
 // ToolOAuthRemoteConfig declares the coordinator-served credential

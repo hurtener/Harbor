@@ -2,7 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +33,7 @@ type stubProvider struct {
 	resourceErr  error
 	closed       int
 	closeErr     error
+	closeErrs    []error
 }
 
 func TestRegistrationSwap_PrivateReservationPreventsCommitInvalidation(t *testing.T) {
@@ -66,12 +70,296 @@ func TestRegistrationSwap_PrivateReservationPreventsCommitInvalidation(t *testin
 	}
 }
 
+func TestRegistry_DeregisterExact_StaleSameNameCannotWithdrawReplacement(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	first := &stubProvider{id: "same"}
+	if err := reg.Register(ctx, ServerRegistration{Provider: first, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "fingerprint-a"}); err != nil {
+		t.Fatal(err)
+	}
+	second := &stubProvider{id: "same"}
+	if err := reg.Register(ctx, ServerRegistration{Provider: second, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "fingerprint-b"}); err != nil {
+		t.Fatal(err)
+	}
+	withdrawals := 0
+	if _, err := reg.DeregisterExact(ctx, "same", owner, "fingerprint-a", func() int {
+		withdrawals++
+		return 1
+	}); !errors.Is(err, ErrServerNotFound) {
+		t.Fatalf("stale exact detach = %v, want not found", err)
+	}
+	if withdrawals != 0 {
+		t.Fatal("stale teardown withdrew replacement catalog tools")
+	}
+	second.mu.Lock()
+	closed := second.closed
+	second.mu.Unlock()
+	if closed != 0 {
+		t.Fatalf("replacement provider closed %d times", closed)
+	}
+	gotOwner, fingerprint, ok := reg.RegistrationIdentity("same")
+	if !ok || gotOwner != owner || fingerprint != "fingerprint-b" {
+		t.Fatalf("replacement registration changed: ok=%v owner=%+v fingerprint=%q", ok, gotOwner, fingerprint)
+	}
+}
+
+func TestRegistry_DeregisterExact_CloseFailureRetainsExactRetryReceiptAndBlocksReplacement(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	closeFault := errors.New("injected close fault")
+	provider := &stubProvider{id: "retry-close", closeErrs: []error{closeFault, nil}}
+	if err := reg.Register(ctx, ServerRegistration{Provider: provider, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-a"}); err != nil {
+		t.Fatal(err)
+	}
+	withdrawals := 0
+	withdraw := func() int {
+		withdrawals++
+		return 3
+	}
+	removed, err := reg.DeregisterExact(ctx, "retry-close", owner, "generation-a", withdraw)
+	if !errors.Is(err, closeFault) || removed != 3 {
+		t.Fatalf("first exact close = (removed=%d, err=%v), want catalog receipt plus close fault", removed, err)
+	}
+	if got := reg.SourceIDs(); len(got) != 0 {
+		t.Fatalf("closing generation remained dispatch-visible: %v", got)
+	}
+	if _, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "retry-close"}, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-b"}, nil); err == nil {
+		t.Fatal("replacement staged while prior exact generation was closing")
+	}
+	if _, err := reg.DeregisterExact(ctx, "retry-close", auth.Owner{Tenant: "tenant", Agent: "other-agent"}, "generation-a", withdraw); !errors.Is(err, ErrServerNotFound) {
+		t.Fatalf("wrong owner closing retry = %v, want ErrServerNotFound", err)
+	}
+	if _, err := reg.DeregisterExact(ctx, "retry-close", owner, "generation-b", withdraw); !errors.Is(err, ErrServerNotFound) {
+		t.Fatalf("wrong fingerprint closing retry = %v, want ErrServerNotFound", err)
+	}
+	removed, err = reg.DeregisterExact(ctx, "retry-close", owner, "generation-a", withdraw)
+	if err != nil || removed != 0 {
+		t.Fatalf("retry exact close = (removed=%d, err=%v), want close receipt without repeated withdrawal", removed, err)
+	}
+	provider.mu.Lock()
+	closeCalls := provider.closed
+	provider.mu.Unlock()
+	if closeCalls != 2 || withdrawals != 1 {
+		t.Fatalf("retry accounting: close_calls=%d withdrawals=%d, want 2/1", closeCalls, withdrawals)
+	}
+	swap, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "retry-close"}, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-b"}, nil)
+	if err != nil {
+		t.Fatalf("replacement remained blocked after positive close receipt: %v", err)
+	}
+	if err := swap.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRegistry_DeregisterExact_PersistentCloseFailureNeverBecomesAbsentSuccess(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	closeFault := errors.New("persistent close fault")
+	provider := &stubProvider{id: "persistent-close", closeErr: closeFault}
+	if err := reg.Register(ctx, ServerRegistration{Provider: provider, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-a"}); err != nil {
+		t.Fatal(err)
+	}
+	withdrawals := 0
+	for attempt := range 3 {
+		_, err := reg.DeregisterExact(ctx, "persistent-close", owner, "generation-a", func() int {
+			withdrawals++
+			return 1
+		})
+		if !errors.Is(err, closeFault) {
+			t.Fatalf("attempt %d = %v, want persistent close fault", attempt, err)
+		}
+		if _, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "persistent-close"}, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-b"}, nil); err == nil {
+			t.Fatalf("attempt %d allowed replacement before close receipt", attempt)
+		}
+	}
+	if withdrawals != 1 {
+		t.Fatalf("catalog withdrawn %d times, want exactly once", withdrawals)
+	}
+	provider.mu.Lock()
+	closeCalls := provider.closed
+	provider.mu.Unlock()
+	if closeCalls != 3 {
+		t.Fatalf("persistent failure close calls = %d, want one genuine retry per attempt", closeCalls)
+	}
+}
+
+func TestRegistry_DeregisterExact_StagedCloseFailureRetainsSameHandleAndBlocksPublish(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	closeFault := errors.New("staged close fault")
+	provider := &stubProvider{id: "staged-close", closeErrs: []error{closeFault, nil}}
+	swap, err := reg.StageRegistration(ServerRegistration{Provider: provider, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-a"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withdrawals := 0
+	removed, err := reg.DeregisterExact(ctx, "staged-close", owner, "generation-a", func() int {
+		withdrawals++
+		return 1
+	})
+	if !errors.Is(err, closeFault) || removed != 0 || withdrawals != 0 {
+		t.Fatalf("first staged teardown = removed=%d withdrawals=%d err=%v, want 0/0/close fault", removed, withdrawals, err)
+	}
+	if published, err := swap.Publish(ctx, nil); err == nil || published {
+		t.Fatalf("invalidated staged receipt published=%t err=%v, want false/error", published, err)
+	}
+	if _, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "staged-close"}, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-b"}, nil); err == nil {
+		t.Fatal("replacement staged before the invalidated handle had a positive close receipt")
+	}
+	removed, err = reg.DeregisterExact(ctx, "staged-close", owner, "generation-a", func() int {
+		withdrawals++
+		return 1
+	})
+	if err != nil || removed != 0 || withdrawals != 0 {
+		t.Fatalf("staged close retry = removed=%d withdrawals=%d err=%v, want 0/0/nil", removed, withdrawals, err)
+	}
+	provider.mu.Lock()
+	closeCalls := provider.closed
+	provider.mu.Unlock()
+	if closeCalls != 2 {
+		t.Fatalf("staged provider close calls = %d, want exact retry on same handle", closeCalls)
+	}
+}
+
+func TestRegistry_ExactRemovalFence_CancelCloseFailureRetainsReservationForRetry(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	closeFault := errors.New("staged cancel close fault")
+	provider := &stubProvider{id: "cancel-close", closeErrs: []error{closeFault, nil}}
+	swap, err := reg.StageRegistration(ServerRegistration{Provider: provider, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-a"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := reg.BeginExactRemoval("cancel-close", owner, "generation-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fence.Cancel(ctx); !errors.Is(err, closeFault) {
+		t.Fatalf("first Cancel = %v, want close fault", err)
+	}
+	if published, err := swap.Publish(ctx, nil); err == nil || published {
+		t.Fatalf("invalidated stage published=%t err=%v after failed Cancel", published, err)
+	}
+	if _, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "cancel-close"}, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-b"}, nil); err == nil {
+		t.Fatal("replacement staged while failed Cancel retained reservation")
+	}
+	if err := fence.Cancel(ctx); err != nil {
+		t.Fatalf("retry Cancel: %v", err)
+	}
+	replacement, err := reg.StageRegistration(ServerRegistration{Provider: &stubProvider{id: "cancel-close"}, Transport: "http+sse", Owner: owner, DescriptorFingerprint: "generation-b"}, nil)
+	if err != nil {
+		t.Fatalf("replacement remained blocked after positive Cancel receipt: %v", err)
+	}
+	if err := replacement.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRegistry_ExactStagedPublishVsRemoval_ConcurrentReuseN128(t *testing.T) {
+	const n = 128
+	ctx := context.Background()
+	reg := NewRegistry()
+	cat := tools.NewCatalog()
+	deregister := cat.(tools.CatalogSourceDeregisterer)
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	type fixture struct {
+		name        string
+		fingerprint string
+		toolName    string
+		provider    *stubProvider
+		swap        *RegistrationSwap
+	}
+	fixtures := make([]fixture, 0, n)
+	for i := range n {
+		name := fmt.Sprintf("race-%03d", i)
+		fingerprint := fmt.Sprintf("generation-%03d", i)
+		provider := &stubProvider{id: tools.ToolSourceID(name)}
+		swap, err := reg.StageRegistration(ServerRegistration{Provider: provider, Transport: "http+sse", Owner: owner, DescriptorFingerprint: fingerprint}, nil)
+		if err != nil {
+			t.Fatalf("stage %s: %v", name, err)
+		}
+		fixtures = append(fixtures, fixture{name: name, fingerprint: fingerprint, toolName: name + "_echo", provider: provider, swap: swap})
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, n*2)
+	for i, f := range fixtures {
+		wg.Add(2)
+		go func(i int, f fixture) {
+			defer wg.Done()
+			<-start
+			for range i % 7 {
+				runtime.Gosched()
+			}
+			published, err := f.swap.Publish(ctx, func() error {
+				catalogSwap, stageErr := cat.StageSource(tools.ToolSourceID(f.name), []tools.ToolDescriptor{{
+					Tool:   tools.Tool{Name: f.toolName, Source: tools.ToolSourceID(f.name)},
+					Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) { return tools.ToolResult{}, nil },
+				}}, false)
+				if stageErr != nil {
+					return stageErr
+				}
+				catalogSwap.Commit()
+				return nil
+			})
+			if published && err != nil {
+				errs <- fmt.Errorf("%s published with cleanup error: %w", f.name, err)
+			}
+			if !published && err == nil {
+				errs <- fmt.Errorf("%s refused publication without an error", f.name)
+			}
+		}(i, f)
+		go func(i int, f fixture) {
+			defer wg.Done()
+			<-start
+			for range (n - i) % 7 {
+				runtime.Gosched()
+			}
+			if _, err := reg.DeregisterExact(ctx, f.name, owner, f.fingerprint, func() int {
+				return deregister.DeregisterSource(tools.ToolSourceID(f.name))
+			}); err != nil {
+				errs <- fmt.Errorf("%s exact removal: %w", f.name, err)
+			}
+		}(i, f)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	for _, f := range fixtures {
+		if _, ok := cat.Resolve(f.toolName); ok {
+			t.Errorf("%s remained dispatchable after publish/removal race", f.name)
+		}
+		if pending, live, closing := reg.reservationState(f.name); pending || live || closing {
+			t.Errorf("%s leaked registry state: pending=%t live=%t closing=%t", f.name, pending, live, closing)
+		}
+		f.provider.mu.Lock()
+		closeCalls := f.provider.closed
+		f.provider.mu.Unlock()
+		if closeCalls != 1 {
+			t.Errorf("%s provider close calls = %d, want exactly one", f.name, closeCalls)
+		}
+	}
+}
+
 func (p *stubProvider) SourceID() tools.ToolSourceID { return p.id }
 
 func (p *stubProvider) Close(_ context.Context) error {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.closed++
-	p.mu.Unlock()
+	if len(p.closeErrs) > 0 {
+		err := p.closeErrs[0]
+		p.closeErrs = p.closeErrs[1:]
+		return err
+	}
 	return p.closeErr
 }
 

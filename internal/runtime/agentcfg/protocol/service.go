@@ -44,6 +44,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,7 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/state"
 )
 
 // Sentinel errors the Service returns. The wire handler maps each onto a
@@ -113,6 +115,20 @@ var (
 	// de-duplicated (CLAUDE.md §13). The message names the offender and,
 	// for a duplicate, BOTH offending positions.
 	ErrInvalidExtraSystemBlocks = errors.New("agentcfg/protocol: invalid extra system blocks section")
+	// ErrSignedCapabilityPairReadOnly rejects every generic authoring door for
+	// immutable signed-pair state. It is a client error, not a silently
+	// ignored field: callers must use register_oauth_mcp_capability.
+	ErrSignedCapabilityPairReadOnly = errors.New("agentcfg/protocol: signed oauth mcp capability pair is server-owned and read-only")
+	// ErrSignedCapabilityUnavailable means this Runtime was not booted with an
+	// explicitly enabled signed-capability trust anchor or private preparation seams.
+	ErrSignedCapabilityUnavailable = errors.New("agentcfg/protocol: signed oauth mcp capability registration is not wired or boot-authorized")
+	// ErrSignedCapabilityPairExists rejects a second pair for an agent until the
+	// paired-removal lifecycle lands; generic provider/connection writers never
+	// compose with a signed pair.
+	ErrSignedCapabilityPairExists = errors.New("agentcfg/protocol: signed oauth mcp capability pair already exists")
+	// ErrInvalidSignedCapabilityDescriptor is the closed descriptor validation
+	// failure for the signed capability's HTTP-only MCP connection shape.
+	ErrInvalidSignedCapabilityDescriptor = errors.New("agentcfg/protocol: invalid signed oauth mcp capability descriptor")
 )
 
 // namingMaxTitleLenBounds is the inclusive [min,max] a set max_title_len must
@@ -256,6 +272,19 @@ type Service struct {
 	// flag) OR (the HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR boot env), computed at the
 	// cmd/harbor + devstack boundary and injected here — never Protocol-writable.
 	allowWireOAuthDescriptor bool
+	// signedOAuthMCPCapabilityAuthorities is the boot-only trust-anchor
+	// map, keyed by broker name. A nil/empty map leaves signed capability
+	// registration fail-closed; ordinary OAuth provider verbs never consult it.
+	signedOAuthMCPCapabilityAuthorities map[string]SignedOAuthMCPCapabilityAuthority
+	// signedOAuthMCPOperations is the tenant-scoped durable replay and recovery
+	// ledger for the pair lifecycle. Nil deliberately leaves the signed-capability write
+	// unavailable: accepting an authority without its anti-replay store would
+	// turn a restart into a second registration attempt.
+	signedOAuthMCPOperations *agentcfg.SignedOAuthMCPOperationStore
+	// signedOAuthMCPFences hides a first-install physical pointer until the
+	// exact pair-lifetime receipt is published. It is mandatory with the
+	// operation store; nil leaves the signed-capability surface fail-closed.
+	signedOAuthMCPFences *agentcfg.SignedOAuthMCPActivationFenceStore
 	// allowWireInjection is the effective DEV-ONLY, fail-closed opt-in that
 	// permits add_mcp_connection to carry a per-user credential-INJECTION mapping
 	// (the `injection` object) for a receiver-style MCP server over the wire,
@@ -634,6 +663,41 @@ func WithAllowWireOAuthDescriptor(allow bool) Option {
 	}
 }
 
+// WithSignedOAuthMCPCapabilityAuthorities wires the immutable boot-declared
+// signed-capability trust anchors. The map is copied, so callers cannot mutate a compiled
+// Service after construction. An empty map is the fail-closed default.
+func WithSignedOAuthMCPCapabilityAuthorities(authorities map[string]SignedOAuthMCPCapabilityAuthority) Option {
+	return func(s *Service) {
+		if len(authorities) == 0 {
+			return
+		}
+		copied := make(map[string]SignedOAuthMCPCapabilityAuthority, len(authorities))
+		for broker, authority := range authorities {
+			copied[broker] = authority
+		}
+		s.signedOAuthMCPCapabilityAuthorities = copied
+	}
+}
+
+// WithSignedOAuthMCPOperationState wires the runtime StateStore into the
+// signed-capability recovery ledger. A missing or invalid store leaves the
+// production registration surface fail-closed.
+func WithSignedOAuthMCPOperationState(store state.StateStore) Option {
+	return func(s *Service) {
+		if store == nil {
+			return
+		}
+		ops, err := agentcfg.NewSignedOAuthMCPOperationStore(store)
+		if err == nil {
+			s.signedOAuthMCPOperations = ops
+			fences, fenceErr := agentcfg.NewSignedOAuthMCPActivationFenceStore(store)
+			if fenceErr == nil {
+				s.signedOAuthMCPFences = fences
+			}
+		}
+	}
+}
+
 // WithAllowWireInjection sets the effective DEV-ONLY, fail-closed opt-in that
 // permits add_mcp_connection to carry a per-user credential-INJECTION mapping
 // (the `injection` object) for a receiver-style MCP server over the wire. The
@@ -900,6 +964,22 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
+	// Signed pair state is server-owned. An omitted value is carried forward by
+	// the registry. A supplied read-only projection must equal the active pair;
+	// it is never trusted as an authoring input.
+	if req.Payload.SignedOAuthMCPPair != nil {
+		active, set, activeErr := s.registry.Active(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent)
+		if activeErr != nil {
+			return prototypes.AgentConfigSetRevisionResponse{}, activeErr
+		}
+		var current *prototypes.AgentConfigSignedOAuthMCPPair
+		if set {
+			current = revisionToWire(active).Payload.SignedOAuthMCPPair
+		}
+		if current == nil || !reflect.DeepEqual(current, req.Payload.SignedOAuthMCPPair) {
+			return prototypes.AgentConfigSetRevisionResponse{}, fmt.Errorf("%w: signed_oauth_mcp_pair differs from active immutable state", ErrSignedCapabilityPairReadOnly)
+		}
+	}
 	// A full-payload set that pins per-agent LLM params is validated at set
 	// time (parity with set_llm_params / the tenant model-swap) so an invalid
 	// model or out-of-range sampling value can never be persisted.
@@ -1100,6 +1180,25 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 	if p.OAuthProviders != nil {
 		out.OAuthProviders = &prototypes.AgentConfigOAuthProviders{
 			Providers: oauthProvidersToWire(p.OAuthProviders.Providers),
+		}
+	}
+	if pair, ok := p.SignedOAuthMCPPairView(); ok {
+		out.SignedOAuthMCPPair = &prototypes.AgentConfigSignedOAuthMCPPair{
+			ProviderName:       pair.ProviderName,
+			Broker:             pair.Broker,
+			Audience:           pair.Audience,
+			Scopes:             append([]string(nil), pair.Scopes...),
+			CapabilityRevision: pair.CapabilityRevision,
+			URLDigest:          pair.URLDigest,
+			Sink:               pair.Sink,
+			Connection: prototypes.SignedOAuthMCPConnectionDescriptor{
+				Name: pair.Connection.Name, URL: pair.Connection.URL,
+				ToolAllowlist:    append([]string(nil), pair.Connection.ToolAllowlist...),
+				ToolDenylist:     append([]string(nil), pair.Connection.ToolDenylist...),
+				ConnectTimeoutMS: pair.Connection.ConnectTimeoutMS, RequestTimeoutMS: pair.Connection.RequestTimeoutMS,
+			},
+			AuthorityIssuer: pair.AuthorityIssuer, AuthorityKeyID: pair.AuthorityKeyID,
+			AuthorityJTIHash: pair.AuthorityJTIHash,
 		}
 	}
 	if p.LLMParams != nil {

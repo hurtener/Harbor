@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 342 canonical Harbor Protocol wire types, generated from the single-source
+The 348 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -391,6 +391,7 @@ Declared in `internal/protocol/types`.
 | `tool_exposure` | `*types.AgentConfigToolExposure` — see [`AgentConfigToolExposure`](./types.md#agentconfigtoolexposure) | optional (`omitempty`) |
 | `connections` | `*types.AgentConfigConnections` — see [`AgentConfigConnections`](./types.md#agentconfigconnections) | optional (`omitempty`) |
 | `oauth_providers` | `*types.AgentConfigOAuthProviders` — see [`AgentConfigOAuthProviders`](./types.md#agentconfigoauthproviders) | optional (`omitempty`) |
+| `signed_oauth_mcp_pair` | `*types.AgentConfigSignedOAuthMCPPair` — see [`AgentConfigSignedOAuthMCPPair`](./types.md#agentconfigsignedoauthmcppair) | optional (`omitempty`) |
 | `llm_params` | `*types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) | optional (`omitempty`) |
 | `hooks` | `*types.AgentConfigHooks` — see [`AgentConfigHooks`](./types.md#agentconfighooks) | optional (`omitempty`) |
 | `naming` | `*types.AgentConfigNaming` — see [`AgentConfigNaming`](./types.md#agentconfignaming) | optional (`omitempty`) |
@@ -418,6 +419,33 @@ Declared in `internal/protocol/types`.
 | `user_from` | `string` | optional (`omitempty`) |
 | `user_to` | `string` | optional (`omitempty`) |
 
+## AgentConfigRegisterOAuthMCPCapabilityRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `provider_name` | `string` |  |
+| `broker` | `string` |  |
+| `audience` | `string` |  |
+| `scopes` | `[]string` |  |
+| `connection` | `types.SignedOAuthMCPConnectionDescriptor` — see [`SignedOAuthMCPConnectionDescriptor`](./types.md#signedoauthmcpconnectiondescriptor) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
+| `authority_envelope` | `string` |  |
+
+## AgentConfigRegisterOAuthMCPCapabilityResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `provider_name` | `string` |  |
+| `connection_name` | `string` |  |
+| `protocol_version` | `string` |  |
+
 ## AgentConfigRemoveMCPConnectionRequest
 
 Declared in `internal/protocol/types`.
@@ -437,6 +465,28 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `name` | `string` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigRemoveOAuthMCPCapabilityRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `expected_content_hash` | `string` |  |
+
+## AgentConfigRemoveOAuthMCPCapabilityResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `provider_name` | `string` |  |
+| `connection_name` | `string` |  |
+| `operation_phase` | `string` |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigRemoveOAuthProviderRequest
@@ -776,6 +826,24 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `protocol_version` | `string` |  |
+
+## AgentConfigSignedOAuthMCPPair
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `provider_name` | `string` |  |
+| `broker` | `string` |  |
+| `audience` | `string` |  |
+| `scopes` | `[]string` |  |
+| `capability_revision` | `string` |  |
+| `url_digest` | `string` |  |
+| `sink` | `string` |  |
+| `connection` | `types.SignedOAuthMCPConnectionDescriptor` — see [`SignedOAuthMCPConnectionDescriptor`](./types.md#signedoauthmcpconnectiondescriptor) |  |
+| `authority_issuer` | `string` |  |
+| `authority_key_id` | `string` |  |
+| `authority_jti_hash` | `string` |  |
 
 ## AgentConfigSkillInput
 
@@ -3158,6 +3226,19 @@ Declared in `internal/protocol/types`.
 | `session_id` | `string` |  |
 | `title` | `string` |  |
 | `title_source` | `string` |  |
+
+## SignedOAuthMCPConnectionDescriptor
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `url` | `string` |  |
+| `tool_allowlist` | `[]string` | optional (`omitempty`) |
+| `tool_denylist` | `[]string` | optional (`omitempty`) |
+| `connect_timeout_ms` | `int` | optional (`omitempty`) |
+| `request_timeout_ms` | `int` | optional (`omitempty`) |
 
 ## SizeRange
 

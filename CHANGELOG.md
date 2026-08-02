@@ -19,6 +19,12 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Security
 
+- Signed OAuth MCP capability registration now recovers only exact durable
+  signed pairs at boot and run start. Recovery verifies the pair descriptor,
+  owner, operation receipt, and activation fence before it can attach or
+  withdraw a connection; real SQLite and two-runtime Postgres restart paths
+  are covered.
+
 - Agent-addressed data-plane calls now require signed, bounded
   `agent_reach` authority. This applies to `control.start`, the session and
   user `agent_config` data-plane methods, and `tools.describe` only when it

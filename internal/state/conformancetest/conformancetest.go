@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -52,6 +53,13 @@ type Factory func() (state.StateStore, func())
 //   - Save_OverwritesSlotWithDifferentEventID
 //   - SaveIf_MatchingStaleAbsentAndMultiSlot
 //   - SaveIf_ConcurrentOneWinner
+//   - DeleteIf_ExactStaleAndAbsent
+//   - DeleteIf_InvalidExpectationFailsLoud
+//   - DeleteIf_ConcurrentReplacementNeverDeleted
+//   - DeleteIf_CancelledAndClosedFailLoud
+//   - FenceIf_ExactStaleAbsentAndCallbackError
+//   - FenceIf_SerializesSaveIf
+//   - FenceIf_InvalidCancelledAndClosedFailLoud
 //   - Load_NotFound
 //   - LoadByEventID_RoundTrip
 //   - LoadByEventID_NotFound
@@ -141,6 +149,252 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if got := winners.Load(); got != 1 {
 			t.Fatalf("SaveIf winners = %d, want exactly 1", got)
+		}
+	})
+
+	t.Run("FenceIf_ExactStaleAbsentAndCallbackError", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		rec := state.StateRecord{ID: "01HABXXX00000000F1", Identity: tripleA(), Kind: "conditional.fence", Bytes: []byte("base")}
+		if err := s.Save(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+		calls := 0
+		exact := state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind, ExpectedEventID: rec.ID}
+		if err := s.FenceIf(ctx, exact, func() error { calls++; return nil }); err != nil || calls != 1 {
+			t.Fatalf("exact FenceIf = calls=%d err=%v", calls, err)
+		}
+		stale := exact
+		stale.ExpectedEventID = "01HABXXX00000000F2"
+		if err := s.FenceIf(ctx, stale, func() error { calls++; return nil }); !errors.Is(err, state.ErrConditionFailed) || calls != 1 {
+			t.Fatalf("stale FenceIf = calls=%d err=%v, want condition failure without callback", calls, err)
+		}
+		absent := state.SlotExpectation{Identity: rec.Identity, Kind: "conditional.fence.absent", ExpectedEventID: rec.ID}
+		if err := s.FenceIf(ctx, absent, func() error { calls++; return nil }); !errors.Is(err, state.ErrConditionFailed) || calls != 1 {
+			t.Fatalf("absent FenceIf = calls=%d err=%v, want condition failure", calls, err)
+		}
+		callbackErr := errors.New("fence callback failed")
+		if err := s.FenceIf(ctx, exact, func() error { return callbackErr }); !errors.Is(err, callbackErr) {
+			t.Fatalf("callback error = %v, want injected error", err)
+		}
+		got, err := s.Load(ctx, rec.Identity, rec.Kind)
+		if err != nil || got.ID != rec.ID || !reflect.DeepEqual(got.Bytes, rec.Bytes) {
+			t.Fatalf("callback error mutated slot: got=%+v err=%v", got, err)
+		}
+	})
+
+	t.Run("FenceIf_SerializesSaveIf", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		base := state.StateRecord{ID: "01HABXXX00000000F3", Identity: tripleA(), Kind: "conditional.fence.race", Bytes: []byte("base")}
+		if err := s.Save(ctx, base); err != nil {
+			t.Fatal(err)
+		}
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		fenceDone := make(chan error, 1)
+		go func() {
+			fenceDone <- s.FenceIf(ctx, state.SlotExpectation{Identity: base.Identity, Kind: base.Kind, ExpectedEventID: base.ID}, func() error {
+				close(entered)
+				<-release
+				return nil
+			})
+		}()
+		<-entered
+		next := state.StateRecord{ID: "01HABXXX00000000F4", Identity: base.Identity, Kind: base.Kind, Bytes: []byte("removed")}
+		saveDone := make(chan error, 1)
+		go func() {
+			saveDone <- s.SaveIf(ctx, []state.SlotExpectation{{Identity: base.Identity, Kind: base.Kind, ExpectedEventID: base.ID}}, next)
+		}()
+		select {
+		case err := <-saveDone:
+			t.Fatalf("SaveIf crossed an active FenceIf: %v", err)
+		case <-time.After(25 * time.Millisecond):
+		}
+		close(release)
+		if err := <-fenceDone; err != nil {
+			t.Fatalf("FenceIf: %v", err)
+		}
+		if err := <-saveDone; err != nil {
+			t.Fatalf("SaveIf after fence: %v", err)
+		}
+	})
+
+	t.Run("FenceIf_InvalidCancelledAndClosedFailLoud", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		rec := state.StateRecord{ID: "01HABXXX00000000F5", Identity: tripleA(), Kind: "conditional.fence.closed", Bytes: []byte("base")}
+		if err := s.Save(context.Background(), rec); err != nil {
+			t.Fatal(err)
+		}
+		exact := state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind, ExpectedEventID: rec.ID}
+		if err := s.FenceIf(context.Background(), exact, nil); !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("nil callback = %v, want ErrInvalidRecord", err)
+		}
+		invalid := exact
+		invalid.ExpectedEventID = ""
+		if err := s.FenceIf(context.Background(), invalid, func() error { return nil }); !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("empty generation = %v, want ErrInvalidRecord", err)
+		}
+		invalid = exact
+		invalid.Kind = ""
+		if err := s.FenceIf(context.Background(), invalid, func() error { return nil }); !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("empty kind = %v, want ErrInvalidRecord", err)
+		}
+		invalid = exact
+		invalid.Identity.SessionID = ""
+		if err := s.FenceIf(context.Background(), invalid, func() error { return nil }); !errors.Is(err, state.ErrIdentityRequired) {
+			t.Fatalf("incomplete identity = %v, want ErrIdentityRequired", err)
+		}
+		cancelled, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := s.FenceIf(cancelled, exact, func() error { return nil }); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled FenceIf = %v, want context.Canceled", err)
+		}
+		if err := s.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.FenceIf(context.Background(), exact, func() error { return nil }); !errors.Is(err, state.ErrStoreClosed) {
+			t.Fatalf("closed FenceIf = %v, want ErrStoreClosed", err)
+		}
+	})
+
+	t.Run("DeleteIf_ExactStaleAndAbsent", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		rec := state.StateRecord{ID: "01HABXXX00000000DY", Identity: tripleA(), Kind: "conditional.delete", Bytes: []byte("candidate")}
+		if err := s.Save(ctx, rec); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		stale := state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind, ExpectedEventID: "01HABXXX00000000DZ"}
+		if changed, err := s.DeleteIf(ctx, stale); err != nil || changed {
+			t.Fatalf("stale DeleteIf = changed=%t err=%v, want false nil", changed, err)
+		}
+		if changed, err := s.DeleteIf(ctx, state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind, ExpectedEventID: rec.ID}); err != nil || !changed {
+			t.Fatalf("exact DeleteIf = changed=%t err=%v, want true nil", changed, err)
+		}
+		if _, err := s.Load(ctx, rec.Identity, rec.Kind); !errors.Is(err, state.ErrNotFound) {
+			t.Fatalf("Load after exact DeleteIf = %v, want ErrNotFound", err)
+		}
+		if changed, err := s.DeleteIf(ctx, state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind, ExpectedEventID: rec.ID}); err != nil || changed {
+			t.Fatalf("absent DeleteIf = changed=%t err=%v, want false nil", changed, err)
+		}
+	})
+
+	t.Run("DeleteIf_InvalidExpectationFailsLoud", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		rec := state.StateRecord{
+			ID:        "01HABXXX00000000DI",
+			Identity:  tripleA(),
+			Kind:      "conditional.delete.invalid",
+			Version:   17,
+			Bytes:     []byte("original-generation-content"),
+			UpdatedAt: time.Unix(1_725_000_000, 123_000_000).UTC(),
+		}
+		if err := s.Save(ctx, rec); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		before, err := s.Load(ctx, rec.Identity, rec.Kind)
+		if err != nil {
+			t.Fatalf("load seed: %v", err)
+		}
+		cases := []struct {
+			name        string
+			expectation state.SlotExpectation
+			wantErr     error
+		}{
+			{
+				name:        "incomplete identity",
+				expectation: state.SlotExpectation{Kind: rec.Kind, ExpectedEventID: rec.ID},
+				wantErr:     state.ErrIdentityRequired,
+			},
+			{
+				name:        "empty kind",
+				expectation: state.SlotExpectation{Identity: rec.Identity, ExpectedEventID: rec.ID},
+				wantErr:     state.ErrInvalidRecord,
+			},
+			{
+				name:        "empty event id",
+				expectation: state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind},
+				wantErr:     state.ErrInvalidRecord,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				changed, err := s.DeleteIf(ctx, tc.expectation)
+				if changed || !errors.Is(err, tc.wantErr) {
+					t.Fatalf("DeleteIf = changed=%t err=%v, want false %v", changed, err, tc.wantErr)
+				}
+				after, loadErr := s.Load(ctx, rec.Identity, rec.Kind)
+				if loadErr != nil {
+					t.Fatalf("Load after invalid DeleteIf: %v", loadErr)
+				}
+				if !reflect.DeepEqual(after, before) {
+					t.Fatalf("invalid DeleteIf mutated original record:\n before=%+v\n after=%+v", before, after)
+				}
+			})
+		}
+	})
+
+	t.Run("DeleteIf_ConcurrentReplacementNeverDeleted", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		const rounds = 32
+		for i := range rounds {
+			kind := fmt.Sprintf("conditional.delete.race.%d", i)
+			base := state.StateRecord{ID: state.EventID(fmt.Sprintf("01HABDEL%018d", i)), Identity: tripleA(), Kind: kind, Bytes: []byte("candidate")}
+			next := state.StateRecord{ID: state.EventID(fmt.Sprintf("01HABWIN%018d", i)), Identity: tripleA(), Kind: kind, Bytes: []byte("winner")}
+			if err := s.Save(ctx, base); err != nil {
+				t.Fatalf("round %d seed: %v", i, err)
+			}
+			start := make(chan struct{})
+			errCh := make(chan error, 2)
+			go func() {
+				<-start
+				_, err := s.DeleteIf(ctx, state.SlotExpectation{Identity: base.Identity, Kind: base.Kind, ExpectedEventID: base.ID})
+				errCh <- err
+			}()
+			go func() {
+				<-start
+				errCh <- s.Save(ctx, next)
+			}()
+			close(start)
+			for range 2 {
+				if err := <-errCh; err != nil {
+					t.Fatalf("round %d concurrent mutation: %v", i, err)
+				}
+			}
+			got, err := s.Load(ctx, next.Identity, next.Kind)
+			if err != nil || got.ID != next.ID {
+				t.Fatalf("round %d winner was deleted: got=%+v err=%v", i, got, err)
+			}
+		}
+	})
+
+	t.Run("DeleteIf_CancelledAndClosedFailLoud", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		rec := state.StateRecord{ID: "01HABXXX00000000DC", Identity: tripleA(), Kind: "conditional.delete.cancel", Bytes: []byte("candidate")}
+		if err := s.Save(context.Background(), rec); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		expectation := state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind, ExpectedEventID: rec.ID}
+		cancelled, cancel := context.WithCancel(context.Background())
+		cancel()
+		if changed, err := s.DeleteIf(cancelled, expectation); !errors.Is(err, context.Canceled) || changed {
+			t.Fatalf("DeleteIf cancelled = changed=%t err=%v, want false context.Canceled", changed, err)
+		}
+		if err := s.Close(context.Background()); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if changed, err := s.DeleteIf(context.Background(), expectation); !errors.Is(err, state.ErrStoreClosed) || changed {
+			t.Fatalf("DeleteIf after Close = changed=%t err=%v, want false ErrStoreClosed", changed, err)
 		}
 	})
 

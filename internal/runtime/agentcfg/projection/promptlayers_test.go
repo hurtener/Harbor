@@ -318,6 +318,9 @@ func (r *userScopeErrRegistry) ListRevisions(context.Context, identity.Quadruple
 func (r *userScopeErrRegistry) Rollback(context.Context, identity.Quadruple, string, string, agentcfg.ConfigScope, agentcfg.SetOptions) (agentcfg.Revision, error) {
 	return agentcfg.Revision{}, nil
 }
+func (r *userScopeErrRegistry) DeactivateIfActive(context.Context, identity.Quadruple, string, string, agentcfg.ConfigScope) (bool, error) {
+	return false, nil
+}
 func (r *userScopeErrRegistry) Diff(context.Context, identity.Quadruple, string, string, string, agentcfg.ConfigScope) (agentcfg.Diff, error) {
 	return agentcfg.Diff{}, nil
 }

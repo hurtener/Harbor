@@ -148,7 +148,7 @@ func TestTokenExchange_HTTPClient_RefusesRedirect(t *testing.T) {
 	}))
 	t.Cleanup(broker.Close)
 
-	deps, _, _ := mkDeps(t) // supplies an httptest-reachable client → redirect-refusal path
+	deps, _, _ := mkDeps(t) // provider-owned hardened client → redirect-refusal path
 	cfg := auth.ProviderConfig{
 		Name:             tProviderName,
 		CredentialSource: credsource.Static(tDummyBrokerClient, tDummyBrokerSecret),

@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 123 canonical Harbor Protocol methods, generated from the single-source registry
+The 125 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -214,7 +214,9 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `agent_config.diff` | `POST /v1/agent_config/diff` | agent config — admin | [`AgentConfigDiffRequest`](./types.md#agentconfigdiffrequest) | [`AgentConfigDiffResponse`](./types.md#agentconfigdiffresponse) | read-only; requires the verified `admin` scope claim |
 | `agent_config.get` | `POST /v1/agent_config/get` | agent config — admin | [`AgentConfigGetRequest`](./types.md#agentconfiggetrequest) | [`AgentConfigGetResponse`](./types.md#agentconfiggetresponse) | read-only; requires the verified `admin` scope claim |
 | `agent_config.list_revisions` | `POST /v1/agent_config/list_revisions` | agent config — admin | [`AgentConfigListRevisionsRequest`](./types.md#agentconfiglistrevisionsrequest) | [`AgentConfigListRevisionsResponse`](./types.md#agentconfiglistrevisionsresponse) | read-only; requires the verified `admin` scope claim |
+| `agent_config.register_oauth_mcp_capability` | `POST /v1/agent_config/register_oauth_mcp_capability` | agent config — admin | [`AgentConfigRegisterOAuthMCPCapabilityRequest`](./types.md#agentconfigregisteroauthmcpcapabilityrequest) | [`AgentConfigRegisterOAuthMCPCapabilityResponse`](./types.md#agentconfigregisteroauthmcpcapabilityresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.remove_mcp_connection` | `POST /v1/agent_config/remove_mcp_connection` | agent config — admin | [`AgentConfigRemoveMCPConnectionRequest`](./types.md#agentconfigremovemcpconnectionrequest) | [`AgentConfigRemoveMCPConnectionResponse`](./types.md#agentconfigremovemcpconnectionresponse) | mutating; requires the verified `admin` scope claim |
+| `agent_config.remove_oauth_mcp_capability` | `POST /v1/agent_config/remove_oauth_mcp_capability` | agent config — admin | [`AgentConfigRemoveOAuthMCPCapabilityRequest`](./types.md#agentconfigremoveoauthmcpcapabilityrequest) | [`AgentConfigRemoveOAuthMCPCapabilityResponse`](./types.md#agentconfigremoveoauthmcpcapabilityresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.remove_oauth_provider` | `POST /v1/agent_config/remove_oauth_provider` | agent config — admin | [`AgentConfigRemoveOAuthProviderRequest`](./types.md#agentconfigremoveoauthproviderrequest) | [`AgentConfigRemoveOAuthProviderResponse`](./types.md#agentconfigremoveoauthproviderresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.rollback` | `POST /v1/agent_config/rollback` | agent config — admin | [`AgentConfigRollbackRequest`](./types.md#agentconfigrollbackrequest) | [`AgentConfigRollbackResponse`](./types.md#agentconfigrollbackresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.session.set_source_disables` | `POST /v1/agent_config/session/set_source_disables` | agent config — session | [`AgentConfigSessionSetSourceDisablesRequest`](./types.md#agentconfigsessionsetsourcedisablesrequest) | [`AgentConfigSessionSetSourceDisablesResponse`](./types.md#agentconfigsessionsetsourcedisablesresponse) | mutating; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |

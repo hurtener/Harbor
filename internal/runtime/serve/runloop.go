@@ -267,6 +267,12 @@ type RunLoopDriverOptions struct {
 	// of a removal re-installs). OPTIONAL — nil means no provider reconcile.
 	// Owner-scoped exactly like the connection reconcile.
 	OAuthProviderReconciler projection.OAuthProviderReconciler
+	// SignedOAuthMCPReconciler is the bounded durable recovery seam.
+	// It runs before generic provider/connection projection so a fenced pair
+	// cannot be mistaken for an ordinary declared connection.
+	SignedOAuthMCPReconciler interface {
+		ReconcileSignedOAuthMCPCapability(context.Context, identity.Quadruple, string) error
+	}
 
 	// namingDefault is the static `runtime.naming` fleet-default auto-naming
 	// policy; the driver resolves the effective policy per run (agent-config
@@ -370,10 +376,13 @@ type RunLoopDriver struct {
 	// run-start reconcile's two connection passes (see the opts godoc). Both
 	// concretes are nil when the MCP registry / catalog are absent (no
 	// reconcile); a nil reattacher alone leaves the leg detach-only.
-	connectionDetacher      projection.ConnectionDetacher
-	connectionReattacher    projection.ConnectionReattacher
-	bootDeclaredMCP         map[string]struct{}
-	oauthProviderReconciler projection.OAuthProviderReconciler
+	connectionDetacher       projection.ConnectionDetacher
+	connectionReattacher     projection.ConnectionReattacher
+	bootDeclaredMCP          map[string]struct{}
+	oauthProviderReconciler  projection.OAuthProviderReconciler
+	signedOAuthMCPReconciler interface {
+		ReconcileSignedOAuthMCPCapability(context.Context, identity.Quadruple, string) error
+	}
 
 	// session auto-naming wiring: the static fleet-default policy, the
 	// session-registry titler seam, and the run's wrapped LLM client. All
@@ -476,6 +485,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		connectionReattacher:     opts.ConnectionReattacher,
 		bootDeclaredMCP:          opts.BootDeclaredMCP,
 		oauthProviderReconciler:  opts.OAuthProviderReconciler,
+		signedOAuthMCPReconciler: opts.SignedOAuthMCPReconciler,
 		namingDefault:            opts.NamingDefault,
 		sessionTitler:            opts.SessionTitler,
 		namingLLM:                opts.NamingLLM,
@@ -881,6 +891,13 @@ func flattenJoined(err error) []error {
 }
 
 func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string, q identity.Quadruple) {
+	if d.signedOAuthMCPReconciler != nil {
+		if err := d.signedOAuthMCPReconciler.ReconcileSignedOAuthMCPCapability(ctx, q, agentID); err != nil {
+			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start signed OAuth MCP reconcile failed",
+				slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
+			return
+		}
+	}
 	// The PROVIDER-reconcile leg runs independently of the connection detacher:
 	// make the reconciling owner's installed OAuth providers match the current
 	// active revision (a rollback past an install uninstalls+closes; a rollback

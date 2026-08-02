@@ -104,6 +104,28 @@ func TestValidateSaveIf_Cases(t *testing.T) {
 	}
 }
 
+func TestValidateDeleteIf_Cases(t *testing.T) {
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}}
+	if err := state.ValidateDeleteIf(state.SlotExpectation{Identity: q, Kind: "slot", ExpectedEventID: "01HABXXX"}); err != nil {
+		t.Fatalf("valid exact generation: %v", err)
+	}
+	for _, tc := range []struct {
+		name    string
+		want    state.SlotExpectation
+		wantErr error
+	}{
+		{name: "incomplete identity", want: state.SlotExpectation{Kind: "slot", ExpectedEventID: "01HABXXX"}, wantErr: state.ErrIdentityRequired},
+		{name: "empty kind", want: state.SlotExpectation{Identity: q, ExpectedEventID: "01HABXXX"}, wantErr: state.ErrInvalidRecord},
+		{name: "empty event id", want: state.SlotExpectation{Identity: q, Kind: "slot"}, wantErr: state.ErrInvalidRecord},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := state.ValidateDeleteIf(tc.want); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("ValidateDeleteIf = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateListScopes_Cases(t *testing.T) {
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}}
 	validScope := state.ListScope{MaintenanceScoped: true}

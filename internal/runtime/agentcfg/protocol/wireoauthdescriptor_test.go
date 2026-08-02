@@ -112,6 +112,7 @@ func newWireHarness(t *testing.T, allow bool, attachResult error) *wireHarness {
 		agentcfgprotocol.WithConnectionAttacher(attacher),
 		agentcfgprotocol.WithCoordinator(coord),
 		agentcfgprotocol.WithProviderInstaller(inst),
+		agentcfgprotocol.WithSignedOAuthMCPOperationState(st),
 		agentcfgprotocol.WithAllowWireOAuthDescriptor(allow),
 	)
 	if err != nil {

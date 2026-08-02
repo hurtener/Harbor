@@ -169,6 +169,7 @@ func newP199Harness(t *testing.T, f *p199Fixtures, allowWire bool) *p199Harness 
 		agentcfgprotocol.WithProviderInstaller(installer),
 		agentcfgprotocol.WithConnectionAttacher(p199OnlineAttacher{}),
 		agentcfgprotocol.WithCoordinator(pauseresume.New()),
+		agentcfgprotocol.WithSignedOAuthMCPOperationState(st),
 		agentcfgprotocol.WithAllowWireOAuthDescriptor(allowWire),
 	)
 	if err != nil {

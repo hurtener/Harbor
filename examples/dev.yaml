@@ -545,6 +545,15 @@ tools:
   #     scope_ceiling: ["mail.read", "mail.send"]            # optional, clamps installed scopes
   #     cache_ttl: 5m    # optional
   #     timeout: 10s     # optional
+  #     # D-401 signed capability registration is a separate production
+  #     # opt-in. The issuer, public verifier, and token lifetime remain
+  #     # boot-pinned; registration requests carry neither a key source nor a
+  #     # credential sink. Exactly one of jwks_url / jwks_file is required.
+  #     signed_oauth_mcp_capability_authority:
+  #       enabled: true
+  #       issuer: https://authority.example.com
+  #       jwks_url: https://authority.example.com/.well-known/jwks.json
+  #       max_authority_lifetime: 10m
 
   # tools.entries[] — per-tool middleware bindings (approval / OAuth /
   # loading-mode), applied by name AFTER built-ins and http_manifests

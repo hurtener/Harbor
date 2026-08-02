@@ -123,6 +123,8 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigRemoveMCPConnection,
 	methods.MethodAgentConfigSetMCPDiscoveryOrigins,
 	methods.MethodAgentConfigSetOAuthProvider,
+	methods.MethodAgentConfigRegisterOAuthMCPCapability,
+	methods.MethodAgentConfigRemoveOAuthMCPCapability,
 	methods.MethodAgentConfigRemoveOAuthProvider,
 	methods.MethodAgentConfigSetLLMProvider,
 	methods.MethodAgentConfigSessionSetUserPrompt,
@@ -184,9 +186,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// the mandatory store Get rather than the optional presign
 	// capability) = 122,
 	// + the agent-config additive-prompt-blocks write one
-	// (agent_config.set_extra_system_blocks, D-367) = 123.
-	if len(got) != 123 {
-		t.Fatalf("Methods() returned %d methods, want 123", len(got))
+	// (agent_config.set_extra_system_blocks, D-367) = 123, plus signed
+	// OAuth MCP capability registration and paired removal = 125.
+	if len(got) != 125 {
+		t.Fatalf("Methods() returned %d methods, want 125", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))

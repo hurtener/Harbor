@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
@@ -112,7 +113,9 @@ func svcWithInstaller(t *testing.T, inst agentcfgprotocol.ProviderInstaller, boo
 	if bus != nil {
 		opts = append(opts, bus.opt())
 	}
-	s, err := agentcfgprotocol.NewService(newRegistry(t), opts...)
+	reg, st := newRegistryWithState(t)
+	opts = append(opts, agentcfgprotocol.WithSignedOAuthMCPOperationState(st))
+	s, err := agentcfgprotocol.NewService(reg, opts...)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -245,8 +248,80 @@ func TestSetOAuthProvider_AuditFailClosed(t *testing.T) {
 		t.Fatalf("audit fail-closed must UNINSTALL the just-installed provider (no observable state)")
 	}
 	got, _ := s.Get(ctx, prototypes.AgentConfigGetRequest{Identity: scope(), AgentID: testAgentID})
-	if got.Set && got.Revision != nil && got.Revision.Payload.OAuthProviders != nil {
-		t.Fatalf("audit fail-closed must leave no installed-provider section")
+	if got.Set || got.Revision != nil {
+		t.Fatalf("first-install audit compensation must restore no-active, got %+v", got)
+	}
+	// The failed candidate stays immutable history for diagnosis, but no
+	// forward empty revision may be written as a compensating authority state.
+	history, err := s.ListRevisions(ctx, prototypes.AgentConfigListRevisionsRequest{Identity: scope(), AgentID: testAgentID})
+	if err != nil {
+		t.Fatalf("list history: %v", err)
+	}
+	if len(history.Revisions) != 1 || history.Revisions[0].Payload.OAuthProviders == nil {
+		t.Fatalf("first-install compensation must retain only the candidate history, got %+v", history.Revisions)
+	}
+}
+
+func TestSetOAuthProvider_FirstInstallCommitThenErrorRestoresUnsetAgent(t *testing.T) {
+	base, st := newRegistryWithState(t)
+	injected := errors.New("injected commit acknowledgement loss")
+	wrapped := &capabilityLandedThenErroredRegistry{Registry: base, err: injected}
+	inst := newFakeInstaller()
+	s, err := agentcfgprotocol.NewService(wrapped,
+		agentcfgprotocol.WithProviderInstaller(inst),
+		agentcfgprotocol.WithSignedOAuthMCPOperationState(st),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.SetOAuthProvider(context.Background(), prototypes.AgentConfigSetOAuthProviderRequest{
+		Identity: scope(), AgentID: testAgentID, Provider: okProvider("m365"),
+	})
+	if !errors.Is(err, injected) {
+		t.Fatalf("set error = %v, want injected acknowledgement loss", err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	if active, set, err := base.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); err != nil || set {
+		t.Fatalf("first-install candidate remained authoritative: set=%v active=%+v err=%v", set, active, err)
+	}
+	if inst.has("m365") {
+		t.Fatal("provider installed after commit acknowledgement loss")
+	}
+	history, err := base.ListRevisions(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, 0)
+	if err != nil || len(history) != 1 {
+		t.Fatalf("immutable candidate history = %+v err=%v", history, err)
+	}
+}
+
+func TestSetOAuthProvider_BootLifecycleCommitThenErrorRestoresExactPrior(t *testing.T) {
+	base, st := newRegistryWithState(t)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	boot, err := base.SetRevision(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed boot lifecycle: %v", err)
+	}
+	injected := errors.New("injected lifecycle commit acknowledgement loss")
+	wrapped := &capabilityLandedThenErroredRegistry{Registry: base, err: injected}
+	inst := newFakeInstaller()
+	s, err := agentcfgprotocol.NewService(wrapped,
+		agentcfgprotocol.WithProviderInstaller(inst),
+		agentcfgprotocol.WithSignedOAuthMCPOperationState(st),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.SetOAuthProvider(context.Background(), prototypes.AgentConfigSetOAuthProviderRequest{
+		Identity: scope(), AgentID: testAgentID, Provider: okProvider("m365"),
+	})
+	if !errors.Is(err, injected) {
+		t.Fatalf("set error = %v, want injected acknowledgement loss", err)
+	}
+	active, set, err := base.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.RevisionID != boot.RevisionID || active.ContentHash != boot.ContentHash {
+		t.Fatalf("boot lifecycle not restored exactly: set=%t active=%+v boot=%+v err=%v", set, active, boot, err)
+	}
+	if active.Payload.OAuthProviders != nil || active.Payload.SignedOAuthMCPPair != nil || inst.has("m365") {
+		t.Fatalf("failed candidate remained observable: active=%+v provider_installed=%t", active, inst.has("m365"))
 	}
 }
 

@@ -527,6 +527,71 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 	return nil
 }
 
+// DeleteIf atomically removes only the exact EventID generation named by the
+// caller. The generation predicate is part of the DELETE statement, so a
+// concurrent replacement is never removed.
+func (d *driver) DeleteIf(ctx context.Context, expectation state.SlotExpectation) (bool, error) {
+	if d.closed.Load() {
+		return false, fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateDeleteIf(expectation); err != nil {
+		return false, err
+	}
+	result, err := d.db.ExecContext(ctx, `
+        DELETE FROM state_records
+        WHERE tenant = ? AND user = ? AND session = ? AND run = ? AND kind = ? AND event_id = ?`,
+		expectation.Identity.TenantID, expectation.Identity.UserID, expectation.Identity.SessionID,
+		expectation.Identity.RunID, expectation.Kind, string(expectation.ExpectedEventID))
+	if err != nil {
+		return false, fmt.Errorf("state/sqlite: conditional delete: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state/sqlite: conditional delete rows affected: %w", err)
+	}
+	return changed == 1, nil
+}
+
+// FenceIf holds SQLite's immediate writer transaction across one short
+// external publication callback, serializing it with SaveIf on the same slot.
+func (d *driver) FenceIf(ctx context.Context, expectation state.SlotExpectation, fn func() error) error {
+	if d.closed.Load() {
+		return fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateFenceIf(expectation, fn); err != nil {
+		return err
+	}
+	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return fmt.Errorf("state/sqlite: begin fence tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback() //nolint:errcheck // the caller receives the original error
+		}
+	}()
+	var actual string
+	if err := tx.QueryRowContext(ctx, `SELECT event_id FROM state_records WHERE tenant=? AND user=? AND session=? AND run=? AND kind=?`,
+		expectation.Identity.TenantID, expectation.Identity.UserID, expectation.Identity.SessionID, expectation.Identity.RunID, expectation.Kind).Scan(&actual); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("state/sqlite: %w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+		}
+		return fmt.Errorf("state/sqlite: fence read: %w", err)
+	}
+	if actual != string(expectation.ExpectedEventID) {
+		return fmt.Errorf("state/sqlite: %w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("state/sqlite: commit fence: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 // slotKey mirrors `internal/state/drivers/inmem`'s indexKey: a
 // struct-typed composite primary key that cannot be confused by
 // delimiters in tenant / user / session strings.

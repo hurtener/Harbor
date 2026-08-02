@@ -126,6 +126,23 @@ type StateStore interface {
 	// all predicates match; it never bypasses a failed predicate.
 	SaveIf(ctx context.Context, expectations []SlotExpectation, next StateRecord) error
 
+	// DeleteIf atomically removes exactly one present slot generation. A
+	// different or absent generation is a normal concurrent-state outcome and
+	// returns (false, nil); only an exact EventID match may be deleted. This is
+	// the conditional-delete counterpart to SaveIf for compensations that must
+	// restore a genuinely absent pre-operation state without writing a marker.
+	DeleteIf(ctx context.Context, expectation SlotExpectation) (bool, error)
+
+	// FenceIf acquires the driver's cross-instance lock for one exact slot
+	// generation, verifies the EventID, runs fn while that generation cannot be
+	// replaced, then releases the lock without mutating the slot. fn MUST NOT
+	// call this StateStore; it exists for a short process-local publication
+	// linearization that must serialize with SaveIf on the same durable slot.
+	// Context cancellation is an admission condition before fn starts; callers
+	// must not use cancellation to infer that an already-started callback did
+	// not publish.
+	FenceIf(ctx context.Context, expectation SlotExpectation, fn func() error) error
+
 	// Load returns the record at (id, kind). Returns ErrNotFound
 	// (wrapped) when no record exists for that key.
 	Load(ctx context.Context, id identity.Quadruple, kind string) (StateRecord, error)
@@ -347,6 +364,30 @@ func ValidateSaveIf(expectations []SlotExpectation, next StateRecord) error {
 		}
 	}
 	if !foundNext {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
+// ValidateDeleteIf validates the exact-present generation predicate used by
+// StateStore.DeleteIf. Conditional deletion never accepts the empty EventID
+// sentinel because absence is not something it can delete.
+func ValidateDeleteIf(expectation SlotExpectation) error {
+	if err := ValidateIdentity(expectation.Identity); err != nil {
+		return err
+	}
+	if expectation.Kind == "" || expectation.ExpectedEventID == "" {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
+// ValidateFenceIf validates one present exact-generation fence predicate.
+func ValidateFenceIf(expectation SlotExpectation, fn func() error) error {
+	if err := ValidateDeleteIf(expectation); err != nil {
+		return err
+	}
+	if fn == nil {
 		return ErrInvalidRecord
 	}
 	return nil

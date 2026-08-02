@@ -26,8 +26,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
@@ -285,14 +287,64 @@ func (b *ProviderBuilder) BuildWire(ctx context.Context, desc WireProviderDescri
 	})
 }
 
+// BuildSignedCapability constructs the signed-capability production exception. The token
+// endpoint and credential source remain pinned by the named boot broker; only
+// the audience and downstream sink already authenticated by the signed
+// authority vary. Requested scopes must already be a subset of the boot scope
+// ceiling; this path refuses widening instead of relying on the general
+// token-exchange driver's silent intersection. It deliberately does not consult
+// the development-only wire descriptor gate.
+func (b *ProviderBuilder) BuildSignedCapability(ctx context.Context, brokerName string, binding SignedCapabilityExchangeBinding, scopes []string) (OAuthProvider, error) {
+	u, err := url.Parse(binding.Resource)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return nil, fmt.Errorf("auth: signed capability sink is not a canonical https origin")
+	}
+	if binding.ProviderName == "" || binding.Audience == "" || binding.Resource == "" {
+		return nil, fmt.Errorf("auth: signed capability exchange binding is incomplete")
+	}
+	broker, ok := b.brokers[brokerName]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q (declared: %v)", ErrUnknownBroker, brokerName, b.BrokerNames())
+	}
+	if err := requireSignedCapabilityScopeSubset(scopes, broker.ScopeCeiling); err != nil {
+		return nil, fmt.Errorf("%w: broker %q: %w", ErrConfigInvalid, brokerName, err)
+	}
+	return b.buildBrokerPull(ctx, binding.ProviderName, brokerName, scopes, brokerPullOverride{
+		override: true, audience: binding.Audience, resourceIndicator: binding.Resource, allowedHosts: []string{u.Host},
+		signedCapability: &binding, refuseRedirects: true,
+	})
+}
+
+func requireSignedCapabilityScopeSubset(requested, ceiling []string) error {
+	allowed := make(map[string]struct{}, len(ceiling))
+	for _, scope := range ceiling {
+		if normalized := strings.TrimSpace(scope); normalized != "" {
+			allowed[normalized] = struct{}{}
+		}
+	}
+	for _, scope := range requested {
+		normalized := strings.TrimSpace(scope)
+		if normalized == "" {
+			return fmt.Errorf("signed capability requested an empty scope")
+		}
+		if _, ok := allowed[normalized]; !ok {
+			return fmt.Errorf("signed capability requested scope %q outside the boot ceiling", normalized)
+		}
+	}
+	return nil
+}
+
 // brokerPullOverride carries the wire-supplied per-server OAuth params that
 // override the boot broker's defaults for a wire-installed provider. The zero
 // value (override=false) is the plain boot broker-pull path.
 type brokerPullOverride struct {
-	override     bool
-	tokenURL     string
-	audience     string
-	allowedHosts []string
+	override          bool
+	tokenURL          string
+	audience          string
+	resourceIndicator string
+	allowedHosts      []string
+	signedCapability  *SignedCapabilityExchangeBinding
+	refuseRedirects   bool
 }
 
 // buildBrokerPull is the shared broker-pull construction for both [Build] (no
@@ -335,20 +387,28 @@ func (b *ProviderBuilder) buildBrokerPull(ctx context.Context, name, brokerName 
 	audience := broker.Audience
 	allowedHosts := append([]string(nil), broker.AllowedDownstreamHosts...)
 	if ov.override {
-		tokenURL = ov.tokenURL
+		// The signed-capability path intentionally leaves tokenURL empty:
+		// the exchange sink remains the boot broker's fixed endpoint. The
+		// development-only wire path supplies one and retains its old override.
+		if ov.tokenURL != "" {
+			tokenURL = ov.tokenURL
+		}
 		allowedHosts = append([]string(nil), ov.allowedHosts...)
 		if ov.audience != "" {
 			audience = ov.audience
 		}
 	}
 	pcfg := ProviderConfig{
-		Name:                   name,
-		CredentialSource:       src,
-		Scopes:                 append([]string(nil), scopes...),
-		TokenURL:               tokenURL,
-		AllowedDownstreamHosts: allowedHosts,
-		Audience:               audience,
-		ScopeCeiling:           append([]string(nil), broker.ScopeCeiling...),
+		Name:                      name,
+		CredentialSource:          src,
+		Scopes:                    append([]string(nil), scopes...),
+		TokenURL:                  tokenURL,
+		AllowedDownstreamHosts:    allowedHosts,
+		Audience:                  audience,
+		ScopeCeiling:              append([]string(nil), broker.ScopeCeiling...),
+		ResourceIndicator:         ov.resourceIndicator,
+		SignedCapability:          ov.signedCapability,
+		RefuseDownstreamRedirects: ov.refuseRedirects,
 	}
 	prov, err := Resolve(ctx, TokenExchangeDriverName, pcfg, b.factoryDeps)
 	if err != nil {

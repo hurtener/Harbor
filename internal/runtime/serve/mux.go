@@ -142,6 +142,9 @@ type MuxInput struct {
 	// remove_oauth_provider (the Protocol-installed, zero-URL broker-pull
 	// provider). Built caller-side; nil leaves the install verbs unwired (→ 501).
 	OAuthProviderInstaller agentcfgprotocol.ProviderInstaller
+	// SignedOAuthMCPCapabilityAuthorities are boot-built verifier
+	// anchors, keyed by broker name. Empty leaves signed registration disabled.
+	SignedOAuthMCPCapabilityAuthorities map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority
 	// BootDeclaredOAuth is the set of boot-declared OAuth provider names
 	// (tools.oauth_providers[].name); an install/uninstall of one of these is
 	// refused (boot wins).
@@ -680,6 +683,8 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithBootDeclaredOAuthProviders(append([]string(nil), in.BootDeclaredOAuth...)),
 			agentcfgprotocol.WithAllowWireOAuthDescriptor(in.AllowWireOAuthDescriptor),
 			agentcfgprotocol.WithAllowWireInjection(in.AllowWireInjection),
+			agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(in.SignedOAuthMCPCapabilityAuthorities),
+			agentcfgprotocol.WithSignedOAuthMCPOperationState(in.State),
 		}
 		if in.MCPAttacher != nil {
 			if preparer, ok := in.MCPAttacher.(agentcfgprotocol.ConnectionPreparer); ok {

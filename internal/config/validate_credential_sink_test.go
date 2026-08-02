@@ -3,6 +3,7 @@ package config_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
 )
@@ -113,6 +114,33 @@ func TestValidate_CredentialBrokers(t *testing.T) {
 			b.AuthTokenEnv = ""
 			c.Tools.OAuthCredentialBrokers = []config.ToolOAuthCredentialBrokerConfig{b}
 		}, "auth_token_env"},
+		{"signed capability authority accepted only with complete opt-in", func(c *config.Config) {
+			c.Tools.OAuthTokenKEKEnv = "HARBOR_TOOL_OAUTH_KEK"
+			b := base()
+			b.SignedOAuthMCPCapabilityAuthority = &config.ToolSignedOAuthMCPCapabilityAuthorityConfig{
+				Enabled:              true,
+				Issuer:               "https://authority.example.test",
+				JWKSURL:              "https://authority.example.test/keys",
+				MaxAuthorityLifetime: 10 * time.Minute,
+			}
+			c.Tools.OAuthCredentialBrokers = []config.ToolOAuthCredentialBrokerConfig{b}
+		}, ""},
+		{"signed capability authority requires explicit enabled", func(c *config.Config) {
+			b := base()
+			b.SignedOAuthMCPCapabilityAuthority = &config.ToolSignedOAuthMCPCapabilityAuthorityConfig{
+				Issuer:               "https://authority.example.test",
+				JWKSURL:              "https://authority.example.test/keys",
+				MaxAuthorityLifetime: time.Minute,
+			}
+			c.Tools.OAuthCredentialBrokers = []config.ToolOAuthCredentialBrokerConfig{b}
+		}, "must be true"},
+		{"signed capability authority requires one verifier source and bounded lifetime", func(c *config.Config) {
+			b := base()
+			b.SignedOAuthMCPCapabilityAuthority = &config.ToolSignedOAuthMCPCapabilityAuthorityConfig{
+				Enabled: true, Issuer: "https://authority.example.test",
+			}
+			c.Tools.OAuthCredentialBrokers = []config.ToolOAuthCredentialBrokerConfig{b}
+		}, "exactly one of jwks_url or jwks_file"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

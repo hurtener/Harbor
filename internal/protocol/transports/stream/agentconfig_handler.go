@@ -202,6 +202,10 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveSetMCPDiscoveryOrigins(w, r, body, wireID)
 	case "set_oauth_provider":
 		h.serveSetOAuthProvider(w, r, body, wireID)
+	case "register_oauth_mcp_capability":
+		h.serveRegisterOAuthMCPCapability(w, r, body, wireID)
+	case "remove_oauth_mcp_capability":
+		h.serveRemoveOAuthMCPCapability(w, r, body, wireID)
 	case "remove_oauth_provider":
 		h.serveRemoveOAuthProvider(w, r, body, wireID)
 	case "set_llm_provider":
@@ -310,6 +314,40 @@ func (h *AgentConfigHandler) serveSetRevision(w http.ResponseWriter, r *http.Req
 	resp, err := h.service.SetRevision(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigSetRevision, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveRegisterOAuthMCPCapability(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigRegisterOAuthMCPCapability) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.RegisterOAuthMCPCapability(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigRegisterOAuthMCPCapability, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveRemoveOAuthMCPCapability(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigRemoveOAuthMCPCapability) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.RemoveOAuthMCPCapability(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigRemoveOAuthMCPCapability, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)
@@ -953,6 +991,9 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	case errors.Is(err, agentcfgprotocol.ErrProviderInstallUnavailable):
 		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
 			m + ": oauth provider install is not wired on this runtime"
+	case errors.Is(err, agentcfgprotocol.ErrSignedCapabilityUnavailable):
+		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
+			m + ": signed oauth mcp capability registration is not boot-authorized"
 	case errors.Is(err, agentcfgprotocol.ErrLLMProviderInstallUnavailable):
 		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
 			m + ": llm provider install is not wired on this runtime"
@@ -978,6 +1019,15 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// sink) held by default. A wire credential-injection mapping with its own
 		// fail-closed opt-in off (ErrWireInjectionNotAllowed) is the same shape: a
 		// rejected bad request, the boot-declared-only injection posture by default.
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrSignedCapabilityPairReadOnly),
+		errors.Is(err, agentcfgprotocol.ErrSignedCapabilityPairExists),
+		errors.Is(err, agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor),
+		errors.Is(err, agentcfg.ErrSignedCapabilityAuthority),
+		errors.Is(err, agentcfg.ErrSignedCapabilityBinding),
+		errors.Is(err, agentcfg.ErrSignedCapabilityScopeWidening),
+		errors.Is(err, agentcfg.ErrSignedCapabilityReplay):
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrProviderNotFound):
@@ -1043,11 +1093,12 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// onto the agent-level chain). An authorization failure.
 		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
 			m + ": " + err.Error()
-	case errors.Is(err, agentcfg.ErrRevisionConflict):
+	case errors.Is(err, agentcfg.ErrRevisionConflict), errors.Is(err, agentcfg.ErrSignedCapabilityPending):
 		// A conditional write declared an `expected_content_hash` and the
 		// agent's active revision no longer carries it (or there is none).
 		// The body was well-formed and the caller was authorised — the
-		// target's CURRENT STATE forbids the write, and nothing was
+		// target's CURRENT STATE forbids the write (including a durable signed
+		// capability activation fence), and nothing was
 		// persisted. A dedicated machine-branchable code so a client can
 		// tell "re-read `agent_config.get` and retry" apart from a malformed
 		// request (400) or a server fault (500). 409 Conflict.

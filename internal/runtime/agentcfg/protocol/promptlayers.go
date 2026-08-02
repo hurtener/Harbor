@@ -68,6 +68,7 @@ func (s *Service) SetPromptLayers(ctx context.Context, req prototypes.AgentConfi
 		// other: this verb replaces only its own, so the blocks survive.
 		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		payload.OAuthProviders = active.Payload.OAuthProviders
+		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
 	}
 
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,

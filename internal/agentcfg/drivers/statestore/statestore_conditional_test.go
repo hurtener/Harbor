@@ -192,6 +192,197 @@ func TestSetRevision_ConditionalWrite_NoActiveRevisionRefused(t *testing.T) {
 	}
 }
 
+// TestSignedOAuthMCPActivationFence_HidesCandidateAndRejectsForeignWriters
+// proves the signed-capability fence at the real Registry boundary. The candidate pointer
+// is physically durable before publication, yet Active exposes only the prior
+// authority and every unmarked writer fails closed across that interval.
+func TestSignedOAuthMCPActivationFence_HidesCandidateAndRejectsForeignWriters(t *testing.T) {
+	ctx := context.Background()
+	reg, st := newRegistryWithStore(t)
+	q := agentQuad(condAgent)
+	prior, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("prior"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed prior: %v", err)
+	}
+	pair := &agentcfg.SignedOAuthMCPPair{ProviderName: "provider", Broker: "broker", Audience: "aud", CapabilityRevision: "v1", URLDigest: "digest", OwnerAgentID: condAgent, AuthorityOperationKind: "operation-kind"}
+	candidatePayload := agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"candidate"}}, SignedOAuthMCPPair: pair}
+	candidateHash, err := agentcfg.ContentHash(agentcfg.NormalizePayload(candidatePayload))
+	if err != nil {
+		t.Fatalf("candidate hash: %v", err)
+	}
+	fences, err := agentcfg.NewSignedOAuthMCPActivationFenceStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := fences.Begin(ctx, tenantT, condAgent, pair.AuthorityOperationKind, "fingerprint", candidateHash, prior.RevisionID)
+	if err != nil {
+		t.Fatalf("begin fence: %v", err)
+	}
+	if _, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("foreign"), agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityPending) {
+		t.Fatalf("foreign writer = %v, want ErrSignedCapabilityPending", err)
+	}
+	candidate, err := reg.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, condAgent, agentcfg.ConfigScopeAgent, candidatePayload, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("owning candidate write: %v", err)
+	}
+	visible, set, err := reg.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || visible.RevisionID != prior.RevisionID {
+		t.Fatalf("pending Active = (%q, %v, %v), want prior %q", visible.RevisionID, set, err, prior.RevisionID)
+	}
+	if _, err := fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceCommitted, candidate.RevisionID); err != nil {
+		t.Fatalf("commit fence: %v", err)
+	}
+	visible, set, err = reg.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || visible.RevisionID != candidate.RevisionID {
+		t.Fatalf("committed Active = (%q, %v, %v), want candidate %q", visible.RevisionID, set, err, candidate.RevisionID)
+	}
+}
+
+func TestSignedOAuthMCPPair_GenericWritesCarryForwardAndRollbackCannotMutate(t *testing.T) {
+	ctx := context.Background()
+	reg, _ := newRegistryWithStore(t)
+	q := agentQuad(condAgent)
+	prior, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("prior"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair := &agentcfg.SignedOAuthMCPPair{
+		ProviderName: "provider", Broker: "broker", Audience: "audience", CapabilityRevision: "v1",
+		URLDigest: "url-digest", SinkDigest: "sink-digest", Sink: "https://mcp.example.test:8443",
+		Connection:   agentcfg.SignedOAuthMCPConnectionDescriptor{Name: "server", URL: "https://mcp.example.test:8443/mcp", ToolAllowlist: []string{"read"}},
+		OwnerAgentID: condAgent, OwnerUserID: q.UserID, OwnerSessionID: q.SessionID, AuthorityOperationKind: "pair-operation",
+	}
+	pairPayload := condPayload("paired")
+	pairPayload.SignedOAuthMCPPair = pair
+	pairRevision, err := reg.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, condAgent, agentcfg.ConfigScopeAgent, pairPayload, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed pair: %v", err)
+	}
+	carried, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("generic-edit"), agentcfg.SetOptions{})
+	if err != nil || !reflect.DeepEqual(carried.Payload.SignedOAuthMCPPair, pair) {
+		t.Fatalf("generic omission did not carry immutable pair: pair=%+v err=%v", carried.Payload.SignedOAuthMCPPair, err)
+	}
+	altered := carried.Payload
+	mutated := *pair
+	mutated.CapabilityRevision = "v2"
+	altered.SignedOAuthMCPPair = &mutated
+	if _, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, altered, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
+		t.Fatalf("generic pair alteration = %v, want replay refusal", err)
+	}
+	if _, err := reg.Rollback(ctx, q, condAgent, prior.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
+		t.Fatalf("generic rollback removed pair: %v", err)
+	}
+	removedPayload := carried.Payload
+	removedPayload.SignedOAuthMCPPair = nil
+	removed, err := reg.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, condAgent, agentcfg.ConfigScopeAgent, removedPayload, agentcfg.SetOptions{})
+	if err != nil || removed.Payload.SignedOAuthMCPPair != nil {
+		t.Fatalf("paired removal: pair=%+v err=%v", removed.Payload.SignedOAuthMCPPair, err)
+	}
+	if _, err := reg.Rollback(ctx, q, condAgent, pairRevision.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
+		t.Fatalf("generic rollback resurrected pair: %v", err)
+	}
+}
+
+func TestRollback_ActiveRevisionReadFailureAbortsBeforePointerMutation(t *testing.T) {
+	ctx := context.Background()
+	base := newSharedStore(t)
+	seed := newRegistryOnStore(t, base)
+	q := agentQuad(condAgent)
+	prior, err := seed.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("prior"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed prior: %v", err)
+	}
+	pair := &agentcfg.SignedOAuthMCPPair{
+		ProviderName: "provider", Broker: "broker", Audience: "audience", CapabilityRevision: "v1",
+		URLDigest: "url-digest", SinkDigest: "sink-digest", Sink: "https://mcp.example.test",
+		Connection:   agentcfg.SignedOAuthMCPConnectionDescriptor{Name: "server", URL: "https://mcp.example.test/mcp"},
+		OwnerAgentID: condAgent, OwnerUserID: q.UserID, OwnerSessionID: q.SessionID, AuthorityOperationKind: "rollback-operation",
+	}
+	pairedPayload := condPayload("paired")
+	pairedPayload.SignedOAuthMCPPair = pair
+	paired, err := seed.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, condAgent, agentcfg.ConfigScopeAgent, pairedPayload, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed paired revision: %v", err)
+	}
+
+	injected := errors.New("active revision payload unavailable")
+	fault := &rollbackActiveReadFaultStore{StateStore: base, err: injected}
+	reg := newRegistryOnStore(t, fault)
+	_, err = reg.Rollback(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, condAgent, prior.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{})
+	if !errors.Is(err, injected) {
+		t.Fatalf("Rollback = %v, want injected active-read failure", err)
+	}
+	activeLoads, saveIfCalls := fault.counts()
+	if activeLoads != 2 {
+		t.Fatalf("active loads = %d, want expectation capture plus active revision read", activeLoads)
+	}
+	if saveIfCalls != 0 {
+		t.Fatalf("SaveIf calls = %d, want zero after active revision read failure", saveIfCalls)
+	}
+
+	active, set, err := seed.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent)
+	if err != nil || !set {
+		t.Fatalf("Active after refusal: set=%v err=%v", set, err)
+	}
+	if active.RevisionID != paired.RevisionID {
+		t.Fatalf("active revision = %q, want unchanged paired revision %q", active.RevisionID, paired.RevisionID)
+	}
+	if !reflect.DeepEqual(active.Payload.SignedOAuthMCPPair, pair) {
+		t.Fatalf("active pair changed: got %+v want %+v", active.Payload.SignedOAuthMCPPair, pair)
+	}
+	if active.RevisionID == prior.RevisionID {
+		t.Fatal("rollback target became active despite failed active-revision read")
+	}
+}
+
+// TestSignedOAuthMCPActivationFence_SQLiteTwoRuntimeRecovery pins the restart
+// contract against two independent real SQLite handles. The second runtime
+// cannot observe or mutate the physically-landed candidate until the first
+// operation writes the exact committed fence receipt.
+func TestSignedOAuthMCPActivationFence_SQLiteTwoRuntimeRecovery(t *testing.T) {
+	ctx := context.Background()
+	leftStore, rightStore := newSharedStores(t)
+	left := newRegistryOnStore(t, leftStore)
+	right := newRegistryOnStore(t, rightStore)
+	q := agentQuad("agent-fence-sqlite")
+	prior, err := left.SetRevision(ctx, q, "agent-fence-sqlite", agentcfg.ConfigScopeAgent, condPayload("prior"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed prior: %v", err)
+	}
+	pair := &agentcfg.SignedOAuthMCPPair{ProviderName: "provider", Broker: "broker", Audience: "aud", CapabilityRevision: "v1", URLDigest: "digest", OwnerAgentID: "agent-fence-sqlite", AuthorityOperationKind: "sqlite-operation"}
+	payload := agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"candidate"}}, SignedOAuthMCPPair: pair}
+	hash, err := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fences, err := agentcfg.NewSignedOAuthMCPActivationFenceStore(leftStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := fences.Begin(ctx, tenantT, "agent-fence-sqlite", pair.AuthorityOperationKind, "fingerprint", hash, prior.RevisionID)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	candidate, err := left.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, "agent-fence-sqlite", agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("candidate: %v", err)
+	}
+	visible, set, err := right.Active(ctx, q, "agent-fence-sqlite", agentcfg.ConfigScopeAgent)
+	if err != nil || !set || visible.RevisionID != prior.RevisionID {
+		t.Fatalf("restart Active = (%q, %v, %v), want prior %q", visible.RevisionID, set, err, prior.RevisionID)
+	}
+	if _, err := right.SetRevision(ctx, q, "agent-fence-sqlite", agentcfg.ConfigScopeAgent, condPayload("foreign"), agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityPending) {
+		t.Fatalf("foreign restart writer = %v, want pending", err)
+	}
+	if _, err := fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceCommitted, candidate.RevisionID); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	visible, set, err = right.Active(ctx, q, "agent-fence-sqlite", agentcfg.ConfigScopeAgent)
+	if err != nil || !set || visible.RevisionID != candidate.RevisionID {
+		t.Fatalf("committed restart Active = (%q, %v, %v), want candidate %q", visible.RevisionID, set, err, candidate.RevisionID)
+	}
+}
+
 // TestSetRevision_ConditionalWrite_RefusalPersistsNothing — after a refusal:
 // the chain has not grown, the active pointer has not moved, and a subscriber
 // on a REAL in-memory bus received NO agent.config.revised.
@@ -789,6 +980,41 @@ func (s *loadFaultStore) Load(context.Context, identity.Quadruple, string) (stat
 	return state.StateRecord{}, s.err
 }
 
+type rollbackActiveReadFaultStore struct {
+	state.StateStore
+	mu              sync.Mutex
+	activeLoadCount int
+	saveIfCount     int
+	err             error
+}
+
+func (s *rollbackActiveReadFaultStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
+	s.mu.Lock()
+	if kind == "agentcfg.active" {
+		s.activeLoadCount++
+		if s.activeLoadCount == 2 {
+			err := s.err
+			s.mu.Unlock()
+			return state.StateRecord{}, err
+		}
+	}
+	s.mu.Unlock()
+	return s.StateStore.Load(ctx, q, kind)
+}
+
+func (s *rollbackActiveReadFaultStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	s.mu.Lock()
+	s.saveIfCount++
+	s.mu.Unlock()
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
+func (s *rollbackActiveReadFaultStore) counts() (activeLoads, saveIfCalls int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeLoadCount, s.saveIfCount
+}
+
 func (s *expectationRecordingStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
 	s.expectationCounts = append(s.expectationCounts, len(expectations))
 	return s.StateStore.SaveIf(ctx, expectations, next)
@@ -960,6 +1186,132 @@ func TestRollback_LifecycleTerminalOrCorruptNeverOverwritten(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestDeactivateIfActive_RestoresAbsentAndSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "deactivate-restart.sqlite")
+	firstStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatalf("open first store: %v", err)
+	}
+	first := newRegistryOnStore(t, firstStore)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "deactivate-tenant", UserID: "u", SessionID: "s"}}
+	if changed, err := first.DeactivateIfActive(ctx, q, "absent-agent", "missing-revision", agentcfg.ConfigScopeAgent); err != nil || changed {
+		t.Fatalf("absent agent deactivation = changed=%t err=%v, want false nil", changed, err)
+	}
+	candidate, err := first.SetRevision(ctx, q, "absent-agent", agentcfg.ConfigScopeAgent, condPayload("candidate"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed candidate: %v", err)
+	}
+	if changed, err := first.DeactivateIfActive(ctx, q, "absent-agent", candidate.RevisionID, agentcfg.ConfigScopeAgent); err != nil || !changed {
+		t.Fatalf("exact deactivation = changed=%t err=%v, want true nil", changed, err)
+	}
+	slot, kind, err := agentcfg.LifecycleSlot(q.TenantID, "absent-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := firstStore.Load(ctx, slot, kind); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("deactivated lifecycle slot = %v, want ErrNotFound", err)
+	}
+	if err := first.Close(ctx); err != nil {
+		t.Fatalf("close first registry: %v", err)
+	}
+	secondStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	second := newRegistryOnStore(t, secondStore)
+	if active, set, err := second.Active(ctx, q, "absent-agent", agentcfg.ConfigScopeAgent); err != nil || set {
+		t.Fatalf("restart resurrected candidate: set=%t active=%+v err=%v", set, active, err)
+	}
+}
+
+func TestDeactivateIfActive_TerminalOrCorruptFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "deactivate-tenant", UserID: "u", SessionID: "s"}}
+	for _, tc := range []struct {
+		name  string
+		bytes []byte
+		want  error
+	}{
+		{name: "terminal", bytes: []byte(`{"schema":1,"revision_id":"","updated_at":"2026-08-02T00:00:00Z"}`), want: agentcfg.ErrAgentRetired},
+		{name: "corrupt", bytes: []byte(`{"schema":1,"revision_id":"candidate"}`), want: agentcfg.ErrStateUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newSharedStore(t)
+			reg := newRegistryOnStore(t, st)
+			slot, kind, err := agentcfg.LifecycleSlot(q.TenantID, condAgent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := state.StateRecord{ID: state.NewEventID(), Identity: slot, Kind: kind, Bytes: tc.bytes}
+			if err := st.Save(ctx, before); err != nil {
+				t.Fatalf("seed %s lifecycle: %v", tc.name, err)
+			}
+			if changed, err := reg.DeactivateIfActive(ctx, q, condAgent, "candidate", agentcfg.ConfigScopeAgent); !errors.Is(err, tc.want) || changed {
+				t.Fatalf("DeactivateIfActive %s = changed=%t err=%v, want false %v", tc.name, changed, err, tc.want)
+			}
+			after, err := st.Load(ctx, slot, kind)
+			if err != nil || after.ID != before.ID || string(after.Bytes) != string(before.Bytes) {
+				t.Fatalf("%s lifecycle changed: before=%+v after=%+v err=%v", tc.name, before, after, err)
+			}
+		})
+	}
+}
+
+type deleteIfBarrierStore struct {
+	state.StateStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *deleteIfBarrierStore) DeleteIf(ctx context.Context, expectation state.SlotExpectation) (bool, error) {
+	close(s.entered)
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	return s.StateStore.DeleteIf(ctx, expectation)
+}
+
+func TestDeactivateIfActive_CASRaceNeverDeletesReplacement(t *testing.T) {
+	ctx := context.Background()
+	base := newSharedStore(t)
+	barrier := &deleteIfBarrierStore{StateStore: base, entered: make(chan struct{}), release: make(chan struct{})}
+	deactivator := newRegistryOnStore(t, barrier)
+	winnerRegistry := newRegistryOnStore(t, base)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "deactivate-race", UserID: "u", SessionID: "s"}}
+	candidate, err := winnerRegistry.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("candidate"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed candidate: %v", err)
+	}
+	result := make(chan struct {
+		changed bool
+		err     error
+	}, 1)
+	go func() {
+		changed, deactivateErr := deactivator.DeactivateIfActive(ctx, q, condAgent, candidate.RevisionID, agentcfg.ConfigScopeAgent)
+		result <- struct {
+			changed bool
+			err     error
+		}{changed: changed, err: deactivateErr}
+	}()
+	<-barrier.entered
+	winner, err := winnerRegistry.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("winner"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("publish replacement: %v", err)
+	}
+	close(barrier.release)
+	gotResult := <-result
+	if gotResult.err != nil || gotResult.changed {
+		t.Fatalf("stale deactivation = changed=%t err=%v, want false nil", gotResult.changed, gotResult.err)
+	}
+	active, set, err := winnerRegistry.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.RevisionID != winner.RevisionID || active.Payload.SignedOAuthMCPPair != nil {
+		t.Fatalf("replacement authority lost or pair resurrected: set=%t active=%+v err=%v", set, active, err)
 	}
 }
 

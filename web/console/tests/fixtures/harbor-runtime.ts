@@ -175,7 +175,6 @@ export const test = base.extend<{}, { runtime: RuntimeFixture }>({
         // that the requested triple is part of that seeded set. It returns
         // immediately — the seeding it once stubbed now happens out-of-band
         // at boot, which is deterministic and free of planner-run flake.
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the triple is seeded at boot; this is the resolved acknowledgement.
         async seedIdentity(_triple: IdentityTriple) {
           // Boot-time seeding (HARBOR_DEV_SEED_FIXTURES) has already run;
           // nothing to do per-spec. Retained as a stable seam so specs and

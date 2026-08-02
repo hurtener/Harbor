@@ -1815,6 +1815,35 @@ func (c *Config) validateTools() error {
 		if b.Timeout < 0 {
 			return fieldError(prefix+".timeout", "must be >= 0")
 		}
+		if authority := b.SignedOAuthMCPCapabilityAuthority; authority != nil {
+			authorityPrefix := prefix + ".signed_oauth_mcp_capability_authority"
+			if !authority.Enabled {
+				return fieldError(authorityPrefix+".enabled",
+					"must be true when signed_oauth_mcp_capability_authority is configured (omit the block to keep signed capability registration disabled)")
+			}
+			if strings.TrimSpace(authority.Issuer) == "" {
+				return fieldError(authorityPrefix+".issuer", "must not be empty")
+			}
+			if (authority.JWKSURL == "") == (authority.JWKSFile == "") {
+				return fieldError(authorityPrefix,
+					"must set exactly one of jwks_url or jwks_file")
+			}
+			if authority.JWKSURL != "" {
+				u, err := url.Parse(authority.JWKSURL)
+				if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+					return fieldError(authorityPrefix+".jwks_url",
+						fmt.Sprintf("must be a well-formed http(s) URL with a host, got %q", authority.JWKSURL))
+				}
+				if u.Scheme == "http" && !isLoopbackHostname(u.Hostname()) {
+					return fieldError(authorityPrefix+".jwks_url",
+						fmt.Sprintf("must be https for non-loopback hosts, got %q", authority.JWKSURL))
+				}
+			}
+			if authority.MaxAuthorityLifetime <= 0 {
+				return fieldError(authorityPrefix+".max_authority_lifetime",
+					"must be > 0 (signed authority envelopes require an explicit bounded lifetime)")
+			}
+		}
 	}
 	if (len(c.Tools.OAuthProviders) > 0 || len(c.Tools.OAuthCredentialBrokers) > 0) && c.Tools.OAuthTokenKEKEnv == "" {
 		return fieldError("tools.oauth_token_kek_env",

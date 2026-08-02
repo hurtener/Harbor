@@ -11883,7 +11883,7 @@ If the one-time code is spent but credential persistence fails, FlowStore record
 
 **Status:** Accepted for Phase 228; tightens D-390.
 
-**Decision.** `Registry.StageRegistration` reserves a same-name replacement without placing the staged provider in the live registry map. Direct resource/prompt/observability reads continue reaching the exact prior provider until the catalog source swap succeeds. The catalog remains the dispatch linearization point; registry Commit then publishes the reserved entry and drains the displaced provider. Register, deregister, and separator-ambiguous staging cannot invalidate a live reservation.
+**Decision.** `Registry.StageRegistration` reserves a same-name replacement without placing the staged provider in the live registry map. Direct resource/prompt/observability reads continue reaching the exact prior provider until the catalog source swap succeeds. The catalog remains the dispatch linearization point; registry Commit then publishes the reserved entry and drains the displaced provider. Register, generic deregister, and separator-ambiguous staging cannot invalidate a live reservation. Exact generation-bound teardown can invalidate that reservation: it removes the unpublished handle into a private retryable `closing` receipt and closes that same handle. A close failure retains the receipt and blocks replacement; only a positive retry clears it. The invalidated receipt can never Commit.
 
 When an auth-required revision write reports failure but an exact reread proves the descriptor and provider landed, the operation converges as successful `auth_required`: Harbor publishes the exact provider, retains the producer-owned pause, emits the reread revision and pause token, and returns that token to the caller. A lost storage acknowledgement alone never rejects a durable continuation or hides its resume handle.
 
@@ -11997,6 +11997,11 @@ production opt-in for signed capability authority. A configured static host or
 audience allow-list remains valid, but is not the mechanism for this dynamic
 capability path.
 
+The anchor's bounded-expiry ceiling is a required positive boot-only
+`max_authority_lifetime`; it is not a hidden global default and never rides the
+Protocol request. The signed envelope carries only `iat`/`exp`; exactly-boundary
+lifetimes are valid and any over-ceiling envelope fails closed.
+
 The sole production registration/creation write is admin-only
 `agent_config.register_oauth_mcp_capability`. It is production-safe only when
 the boot broker/trust anchor's explicit signed-capability opt-in and verifier
@@ -12024,8 +12029,9 @@ collision-safe deterministic Kind derived from a canonical length-prefixed
 tuple hash; its bounded payload repeats tuple hashes/fields, exact pair
 fingerprint, expiry, phase, and revision identity. First `SaveIf`-absent claim
 creates one pair-lifetime operation record. Its sole normal graph is
-`claimed -> revision_committed -> published -> removal_revision_committed ->
-catalog_unpublished -> teardown_receipted -> removed`; every transition
+`claimed -> revision_committed -> published -> removal_admitted ->
+removal_revision_committed -> catalog_unpublished -> teardown_receipted ->
+removed`; every transition
 `SaveIf`-compares the exact operation EventID. There is no generic `aborted`
 phase: a prepared-but-incomplete claim retries its recorded phase. Only
 `claimed` or `revision_committed` may terminally enter `expired_incomplete`
@@ -12068,19 +12074,65 @@ Token/cache assertions include the subject plus agent, capability revision,
 audience, and URL digest. Requested scope outside the true boot ceiling rejects
 loudly; silent scope intersection is forbidden for this path.
 
+One opaque `publisher_epoch` lives only in the durable pair-lifetime operation
+record. After the desired revision reaches `revision_committed`, a publisher
+must exact-EventID CAS-mint an epoch before private provider/MCP preparation.
+Reconcile in another runtime CAS-takes a new epoch, immediately making every
+older provider, cache entry, bearer, and local MCP handle inert. The epoch never
+rides the wire, immutable agent-config revision, broker actor assertion, or
+audit. Every pair-owned token path authorizes exact tenant, operation kind,
+phase, and epoch before cache lookup, after exchange, and before cached return;
+the bearer RoundTripper repeats that authorization immediately before any
+downstream request. Only a private preparation context may authorize
+`revision_committed`; normal dispatch requires `published` and cannot inherit
+the preparation marker.
+
 The signed provider is pair-owned and outside general `ProviderSet`; private MCP
-prepare binds directly to that exact provider instance. The catalog source swap
-alone linearizes data-plane dispatch. Protocol projections derive from the
+prepare binds directly to that exact provider instance. Before the final
+durable-authority proof, activation installs an exact owner/fingerprint/
+generation registry reservation that is private and non-dispatchable. Exact
+teardown can therefore see and close the staged handle while proof is in
+flight. Publication holds that exact reservation while it verifies the
+physical revision and pair, operation generation/phase, and activation fence,
+then commits the catalog source and live registry handle as one ordered
+critical section. If teardown won or closed the reservation, publication fails
+and prepared resources close; if publication won, any later teardown
+necessarily sees the published handle. The catalog source swap alone
+linearizes data-plane dispatch, and it never occurs before proof. Protocol projections derive from the
 immutable signed-pair revision, not a live provider map; generic provider
 resolution cannot bind the pair. A pair-owned live registry may retain only
 close/reconcile receipts, never authority/projection/dispatch. General bare-name
-collision checking remains. Prepare is never durable and closes on failure or
-restart; teardown closes transport+provider as one receipt. Generic revision
-writers remain closed against a pair. Paired removal continues the same
-pair-lifetime JTI record; it is never a second operation. It is the durable
-exact-EventID `SaveIf` sequence `removal_revision_committed` (desired pair absent by revision
-CAS), `catalog_unpublished`, `teardown_receipted` (close+revoke from frozen
-fingerprint), then terminal `removed`. Commit-then-error or unknown outcomes
+collision checking remains. Catalog withdrawal is the dispatch linearization
+point for teardown, but the exact generation/provider handle remains in a
+private, non-dispatchable `closing` state until every owned transport/provider
+close or revoke returns success. A close error retains that handle and name
+reservation for a genuine retry; absent-after-error is never a teardown receipt,
+and replacement remains blocked. Prepare is never durable and closes on failure
+or restart; teardown closes transport+provider as one receipt. Generic revision
+writers remain closed against a pair. Pair-lifetime exclusion and removal
+maintenance are tenant+agent scoped even when a second caller has another
+user/session or Service instance; the frozen user/session fields remain the
+authorization and exchange subject and are not widened into teardown authority.
+Restart reconciliation treats its initial active-pair read as advisory: after
+private provider/connection preparation it re-reads the exact physical active
+revision, pair-lifetime operation generation and phase, and activation fence
+immediately before activation, then verifies them again before transferring
+provider ownership. A completed removal or replacement closes the prepared
+private resources and publishes nothing; immutable history cannot resurrect a
+removed pair.
+Paired removal continues the same
+pair-lifetime JTI record; it is never a second operation. It first exact-EventID
+`SaveIf`-advances to `removal_admitted`, serializing with the exact operation-slot
+publication fence before desired-state mutation and denying every publisher
+epoch before local teardown. It then advances through
+`removal_revision_committed` (desired pair absent by revision CAS),
+`catalog_unpublished`, `teardown_receipted` (close+revoke from frozen
+fingerprint for the exact local epoch when present), then terminal `removed`.
+An empty remover may advance because durable removal admission is the authority
+receipt; a stale handle in another runtime remains network-inert and its owning
+runtime closes it on reconcile. `teardown_receipted` therefore never infers
+bearer authority from process-local presence or absence. A definitive desired-state refusal rolls
+the admission back to `published`; commit-then-error or unknown outcomes
 exact-reread the operation phase/EventID, desired revision, catalog source, and
 receipt, then resume only the missing phase. Expiry, key revocation, or a lost
 verifier never block it; retirement uses this same removal path.
@@ -12180,3 +12232,73 @@ release gate and was not duplicated locally.
 
 **Cross-references.** D-025, D-147, D-148, D-298. RFC §6.2, §6.5, §6.8,
 §6.13. Plan: `docs/plans/phase-233c-bifrost-reasoning-fidelity.md`.
+
+---
+
+## D-403 — Exact-generation conditional mutation protects authority compensation and publication
+
+**Date:** 2026-08-02
+
+**Status:** Accepted and shipped as the Phase 233b compensation correction.
+
+**Decision.** D-398's mandatory StateStore conditional-mutation surface adds
+`DeleteIf(ctx, SlotExpectation) (bool, error)` across in-memory, SQLite, and
+Postgres. The expectation names one complete identity-and-Kind slot and a
+non-empty exact EventID. Only that generation may be removed atomically. A
+different generation or absent slot returns `false, nil` and mutates nothing;
+invalid identity, empty Kind/EventID, cancellation, closed storage, and driver
+failure remain loud. All drivers run the same conformance suite, and durable
+drivers additionally race independent clients through conditional delete versus
+replacement and verify the one CAS winner after reopen. This is one mandatory
+interface, not an optional capability.
+
+The same mandatory surface adds `FenceIf(ctx, SlotExpectation, fn) error`.
+Under the driver's SaveIf serialization lock it verifies one exact present
+EventID, runs one short process-local callback, and releases without changing
+the record. The callback performs no network or StateStore I/O. Its first
+consumer is D-401 catalog/registry publication: paired removal must first
+SaveIf-advance that exact operation generation to `removal_admitted`, so either
+publication completes before admission or a stale publisher fails before a
+bearer-capable handle becomes dispatchable. Context cancellation is checked at
+admission; once this irreversible callback starts, cancellation is not evidence
+that publication did not occur.
+
+D-401 additionally CAS-mints a durable publisher epoch on that same operation
+slot after desired-state commit. Publication and every credential/cache/
+downstream use compare the exact epoch; a second runtime's takeover invalidates
+old local handles without trusting process memory. `removal_admitted` changes
+the operation phase under exact EventID before teardown, so all epochs fail
+closed even when the remover has no local handle. Exact local close still names
+the matching epoch; an older local generation may remain only as inert cleanup
+state and can never satisfy or bypass the durable authority receipt.
+
+The shared invalid-expectation row pins the exact canonical sentinels:
+incomplete identity returns `ErrIdentityRequired`; empty Kind or EventID returns
+`ErrInvalidRecord`. Every refusal returns `changed=false` and a byte-for-byte
+reload proves the original generation, version, timestamp, and content remain
+unchanged. Direct validator tests remain a separate structural unit guard, not
+a substitute for exercising every driver boundary.
+
+The first consumer is `agentcfg.Registry.DeactivateIfActive`. A compensation
+whose pre-operation lifecycle slot was truly absent removes only its exact
+candidate pointer generation. A compensation with a prior boot/config revision
+repoints to that exact revision only while the candidate content hash remains
+active. A concurrent winner is never deleted or rolled back. Immutable
+candidate revision history remains for diagnosis; no provider, catalog binding,
+or signed pair remains authoritative.
+
+The earlier Phase 233b inactive-marker implementation is rejected because it
+added an `inactive` member to D-400's closed lifecycle envelope. D-400 correctly
+classified that unknown field as malformed. No reader or classifier is loosened:
+active, terminal, and corrupt lifecycle records retain their existing strict
+meanings; terminal and corrupt compensation attempts fail closed and preserve
+the exact bytes. The pending activation fence remains D-401's semantic security
+boundary; conditional deletion is only exact post-fence restoration of an
+absent physical authority state.
+
+**Wire consequence.** None. This changes the internal persistence and
+compensation contract only; Protocol types, methods, errors, events, version,
+and Console lockstep remain unchanged.
+
+**Cross-references.** D-025, D-366, D-398, D-400, D-401. RFC §6.11, §6.16,
+§9. Plan: `docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md`.

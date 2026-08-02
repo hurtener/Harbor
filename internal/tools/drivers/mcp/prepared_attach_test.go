@@ -15,6 +15,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 )
@@ -70,6 +71,7 @@ func preparedFixture(t *testing.T, name string, cat tools.ToolCatalog, reg *Regi
 	closers := []func(context.Context) error{}
 	prepared, err := Prepare(ctx, config.MCPServerConfig{Name: name, TransportMode: string(TransportSSE), URL: server.URL}, AttachDeps{
 		Catalog: cat, Registry: reg, Bus: newTestBus(t), DefaultIdentity: defaultIdentity(), Closers: &closers, Owner: owner,
+		DescriptorFingerprint: "fingerprint-" + name,
 	})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
@@ -95,6 +97,167 @@ func TestPreparedAttachment_PrepareDoesNotPublishAndCloseIsIdempotent(t *testing
 	}
 	if err := p.Activate(context.Background()); err == nil {
 		t.Fatal("Activate succeeded after Close")
+	}
+}
+
+func TestPreparedAttachment_PostPublicationAdmissionErrorRetainsLiveGeneration(t *testing.T) {
+	ctx := context.Background()
+	cat := tools.NewCatalog()
+	reg := NewRegistry()
+	p := preparedFixture(t, "post-publish", cat, reg, auth.Owner{Tenant: "tenant", Agent: "agent"})
+	var logs bytes.Buffer
+	p.deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	originalClose := p.closeFn
+	closeCalls := 0
+	p.closeFn = func(closeCtx context.Context) error {
+		closeCalls++
+		return originalClose(closeCtx)
+	}
+	releaseErr := errors.New("injected fence transaction release error")
+	if err := p.ActivateUnder(ctx, func(_ context.Context, publish func() error) error {
+		if err := publish(); err != nil {
+			return err
+		}
+		return releaseErr
+	}); err != nil {
+		t.Fatalf("ActivateUnder after irreversible publication = %v, want success", err)
+	}
+	descriptor, ok := cat.Resolve("post-publish_echo")
+	if !ok {
+		t.Fatal("post-publication admission error withdrew the live catalog generation")
+	}
+	invokeCtx, err := identity.With(ctx, defaultIdentity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := descriptor.Invoke(invokeCtx, json.RawMessage(`{"text":"still live"}`)); err != nil {
+		t.Fatalf("live descriptor invoke after admission error: %v", err)
+	}
+	if _, _, ok := reg.RegistrationIdentity("post-publish"); !ok {
+		t.Fatal("post-publication admission error withdrew the live registry handle")
+	}
+	if !p.activated || !bytes.Contains(logs.Bytes(), []byte(releaseErr.Error())) {
+		t.Fatalf("post-publication ambiguity was not retained and warned: activated=%t logs=%s", p.activated, logs.String())
+	}
+	if err := p.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := p.Close(ctx); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("activated provider close calls = %d, want one", closeCalls)
+	}
+}
+
+func TestPreparedAttachment_AuthorityLostBeforeReservationNeverPublishes(t *testing.T) {
+	cat := tools.NewCatalog()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	p := preparedFixture(t, "lost-before-stage", cat, reg, owner)
+	authorityLost := errors.New("durable pair was removed before final proof")
+
+	// The durable removal completed after network preparation but before this
+	// process could establish/finalize its reservation. ActivateIf may stage
+	// privately, but the final proof refuses and rollback removes that stage.
+	if err := p.ActivateIf(context.Background(), func(context.Context) error { return authorityLost }); !errors.Is(err, authorityLost) {
+		t.Fatalf("ActivateIf = %v, want authority loss", err)
+	}
+	if _, ok := cat.Resolve("lost-before-stage_echo"); ok {
+		t.Fatal("authority-lost preparation became dispatchable")
+	}
+	if pending, live, closing := reg.reservationState("lost-before-stage"); pending || live || closing {
+		t.Fatalf("authority-lost reservation leaked: pending=%t live=%t closing=%t", pending, live, closing)
+	}
+	if err := p.Close(context.Background()); err != nil {
+		t.Fatalf("close refused preparation: %v", err)
+	}
+}
+
+func TestPreparedAttachment_ExactRemovalAfterReservationInvalidatesPublication(t *testing.T) {
+	cat := tools.NewCatalog()
+	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant", Agent: "agent"}
+	p := preparedFixture(t, "removed-while-staged", cat, reg, owner)
+	proofEntered := make(chan struct{})
+	proofRelease := make(chan struct{})
+	activateDone := make(chan error, 1)
+	go func() {
+		activateDone <- p.ActivateIf(context.Background(), func(context.Context) error {
+			close(proofEntered)
+			<-proofRelease
+			return nil
+		})
+	}()
+	select {
+	case <-proofEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ActivateIf never reached the post-reservation authority proof")
+	}
+	if pending, live, closing := reg.reservationState("removed-while-staged"); !pending || live || closing {
+		t.Fatalf("proof barrier reservation = pending=%t live=%t closing=%t, want true/false/false", pending, live, closing)
+	}
+	withdrawals := 0
+	removed, err := reg.DeregisterExact(context.Background(), "removed-while-staged", owner, "fingerprint-removed-while-staged", func() int {
+		withdrawals++
+		return cat.(tools.CatalogSourceDeregisterer).DeregisterSource("removed-while-staged")
+	})
+	if err != nil || removed != 0 || withdrawals != 0 {
+		t.Fatalf("remove exact private stage = removed=%d withdrawals=%d err=%v, want 0/0/nil", removed, withdrawals, err)
+	}
+	close(proofRelease)
+	if err := <-activateDone; err == nil {
+		t.Fatal("publication succeeded after exact teardown invalidated its reservation")
+	}
+	if _, ok := cat.Resolve("removed-while-staged_echo"); ok {
+		t.Fatal("invalidated staged provider became dispatchable")
+	}
+	if pending, live, closing := reg.reservationState("removed-while-staged"); pending || live || closing {
+		t.Fatalf("invalidated reservation leaked: pending=%t live=%t closing=%t", pending, live, closing)
+	}
+	if err := p.Close(context.Background()); err != nil {
+		t.Fatalf("close invalidated preparation: %v", err)
+	}
+}
+
+func TestPreparedAttachment_SignedToolProjectionAppliesAllowAndDenyBeforePublication(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		allow []string
+		deny  []string
+		want  bool
+	}{
+		{name: "allow exact tool", allow: []string{"echo"}, want: true},
+		{name: "allow excludes tool", allow: []string{"other"}, want: false},
+		{name: "deny overrides allow", allow: []string{"echo"}, deny: []string{"echo"}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mockSrv := newMockServer()
+			handler := mcpsdk.NewSSEHandler(func(*http.Request) *mcpsdk.Server { return mockSrv.server }, nil)
+			server := httptest.NewServer(handler)
+			t.Cleanup(server.Close)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cat := tools.NewCatalog()
+			reg := NewRegistry()
+			closers := []func(context.Context) error{}
+			prepared, err := Prepare(ctx, config.MCPServerConfig{Name: "signed", TransportMode: string(TransportSSE), URL: server.URL}, AttachDeps{
+				Catalog: cat, Registry: reg, Bus: newTestBus(t), DefaultIdentity: defaultIdentity(), Closers: &closers,
+				Owner: auth.Owner{Tenant: "tenant", Agent: "agent"}, DescriptorFingerprint: "signed-descriptor",
+				ToolAllowlist: tc.allow, ToolDenylist: tc.deny,
+			})
+			if err != nil {
+				t.Fatalf("prepare: %v", err)
+			}
+			t.Cleanup(func() { _ = prepared.Close(context.Background()) })
+			if err := prepared.Activate(ctx); err != nil {
+				t.Fatalf("activate: %v", err)
+			}
+			_, got := cat.Resolve("signed_echo")
+			if got != tc.want {
+				t.Fatalf("published echo=%v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -175,18 +338,6 @@ func TestPreparedAttachment_RegistryStagesBeforeCatalogDispatchLinearization(t *
 		t.Fatal("Activate did not reach the catalog publication barrier")
 	}
 
-	reg.mu.RLock()
-	visibleProvider := reg.servers["staged"].provider
-	_, privatelyStaged := reg.pending["staged"]
-	reg.mu.RUnlock()
-	if visibleProvider != old || !privatelyStaged {
-		t.Fatalf("catalog barrier registry state: visible=%T old=%T privately_staged=%v", visibleProvider, old, privatelyStaged)
-	}
-	readCtx := idCtx(t)
-	body, mime, err := reg.ReadResource(readCtx, "staged", "mem://hello")
-	if err != nil || string(body) != "old resource" || mime != "text/plain" {
-		t.Fatalf("direct registry read crossed private stage: body=%q mime=%q err=%v", body, mime, err)
-	}
 	d, ok := baseCatalog.Resolve("staged_echo")
 	if !ok || d.Tool.Description != "old descriptor" {
 		t.Fatalf("dispatch changed before the catalog linearization point: ok=%v descriptor=%+v", ok, d.Tool)
@@ -204,17 +355,35 @@ func TestPreparedAttachment_RegistryStagesBeforeCatalogDispatchLinearization(t *
 		t.Fatalf("old provider closed before catalog publication: %d", closed)
 	}
 
+	// Exact teardown starts after the authority proof but while publication is
+	// at the catalog linearization point. It must wait for the registry-locked
+	// publication and then observe/close the newly live exact handle; it can
+	// never receipt absence in the catalog-only interval.
+	detachDone := make(chan error, 1)
+	go func() {
+		_, err := reg.DeregisterExact(ctx, "staged", owner, "fingerprint-staged", func() int {
+			return baseCatalog.(tools.CatalogSourceDeregisterer).DeregisterSource("staged")
+		})
+		detachDone <- err
+	}()
+	select {
+	case err := <-detachDone:
+		t.Fatalf("exact teardown returned during atomic publication: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
 	release()
 	if err := <-activateDone; err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
-	body, mime, err = reg.ReadResource(readCtx, "staged", "mem://hello")
-	if err != nil || string(body) != "hello world" || mime != "text/plain" {
-		t.Fatalf("direct registry read did not switch after catalog publication: body=%q mime=%q err=%v", body, mime, err)
+	if err := <-detachDone; err != nil {
+		t.Fatalf("exact teardown after publication: %v", err)
 	}
-	after, ok := baseCatalog.Resolve("staged_echo")
-	if !ok || after.Tool.Description == "old descriptor" {
-		t.Fatalf("new descriptor absent after activation: ok=%v descriptor=%+v", ok, after.Tool)
+	if _, ok := baseCatalog.Resolve("staged_echo"); ok {
+		t.Fatal("exact teardown left the just-published catalog source dispatchable")
+	}
+	if _, _, ok := reg.RegistrationIdentity("staged"); ok {
+		t.Fatal("exact teardown failed to remove the just-published registry handle")
 	}
 	if err := p.Close(ctx); err != nil {
 		t.Fatalf("close activated provider: %v", err)

@@ -244,9 +244,7 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
-	norm := agentcfg.NormalizePayload(payload)
-	hash, err := agentcfg.ContentHash(norm)
-	if err != nil {
+	if err := r.guardSignedOAuthMCPFenceWriter(ctx, id, agentID, scope); err != nil {
 		return agentcfg.Revision{}, err
 	}
 	q := keys.quad
@@ -260,6 +258,17 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	// publication, so a concurrent Runtime cannot turn this read into a
 	// lost update. The per-owner write lock only reduces same-process churn.
 	active, hasActive, err := r.loadActiveRevision(ctx, q, keys.activeKind, keys.revPfx)
+	if err != nil {
+		return agentcfg.Revision{}, err
+	}
+	if scope == agentcfg.ConfigScopeAgent {
+		payload, err = preserveSignedOAuthMCPPair(ctx, active, hasActive, payload)
+		if err != nil {
+			return agentcfg.Revision{}, err
+		}
+	}
+	norm := agentcfg.NormalizePayload(payload)
+	hash, err := agentcfg.ContentHash(norm)
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
@@ -339,6 +348,38 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	return rev, nil
 }
 
+func preserveSignedOAuthMCPPair(ctx context.Context, active agentcfg.Revision, hasActive bool, payload agentcfg.ConfigPayload) (agentcfg.ConfigPayload, error) {
+	operation := agentcfg.SignedOAuthMCPFenceOperation(ctx)
+	var current *agentcfg.SignedOAuthMCPPair
+	if hasActive {
+		current = active.Payload.SignedOAuthMCPPair
+	}
+	requested := payload.SignedOAuthMCPPair
+	switch {
+	case current == nil && requested == nil:
+		return payload, nil
+	case current == nil && requested != nil:
+		if operation == "" || operation != requested.AuthorityOperationKind {
+			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: generic writer cannot add signed capability pair", agentcfg.ErrSignedCapabilityReplay)
+		}
+		return payload, nil
+	case current != nil && requested == nil:
+		if operation == current.AuthorityOperationKind {
+			return payload, nil
+		}
+		payload.SignedOAuthMCPPair = current
+		return payload, nil
+	default:
+		currentNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: current}).SignedOAuthMCPPair
+		requestedNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: requested}).SignedOAuthMCPPair
+		if !reflect.DeepEqual(currentNorm, requestedNorm) {
+			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: generic writer cannot alter signed capability pair", agentcfg.ErrSignedCapabilityReplay)
+		}
+		payload.SignedOAuthMCPPair = current
+		return payload, nil
+	}
+}
+
 func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
 	if err := r.validate(id, agentID); err != nil {
 		return agentcfg.Revision{}, false, err
@@ -355,7 +396,81 @@ func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID st
 			return agentcfg.Revision{}, false, err
 		}
 	}
+	active, set, err := r.loadActiveRevision(ctx, keys.quad, keys.activeKind, keys.revPfx)
+	if err != nil || scope != agentcfg.ConfigScopeAgent {
+		return active, set, err
+	}
+	return r.applySignedOAuthMCPFence(ctx, id, agentID, keys, active, set)
+}
+
+// PhysicalActive returns the revision named by the durable pointer without
+// applying the activation-fence visibility projection. It is intentionally a
+// recovery-only seam: ordinary authorization callers use Active, while the
+// signed-capability reconciler must inspect the hidden candidate in order to
+// commit or neutralize that exact revision after a crash.
+func (r *registry) PhysicalActive(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
+	if err := r.validate(id, agentID); err != nil {
+		return agentcfg.Revision{}, false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return agentcfg.Revision{}, false, err
+	}
+	keys, err := keysFor(scope, id, agentID)
+	if err != nil {
+		return agentcfg.Revision{}, false, err
+	}
 	return r.loadActiveRevision(ctx, keys.quad, keys.activeKind, keys.revPfx)
+}
+
+// DeactivateIfActive removes the physical active-pointer slot only when it
+// still names revisionID. StateStore.DeleteIf applies the exact EventID
+// predicate atomically, so compensation restores a genuinely absent authority
+// state and can never erase another Runtime's winner.
+func (r *registry) DeactivateIfActive(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope agentcfg.ConfigScope) (bool, error) {
+	if err := r.validate(id, agentID); err != nil {
+		return false, err
+	}
+	if revisionID == "" {
+		return false, fmt.Errorf("%w: revision id is empty", agentcfg.ErrRevisionNotFound)
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	keys, err := keysFor(scope, id, agentID)
+	if err != nil {
+		return false, err
+	}
+	if err := r.guardSignedOAuthMCPFenceWriter(ctx, id, agentID, scope); err != nil {
+		return false, err
+	}
+	current, err := r.state.Load(ctx, keys.quad, keys.activeKind)
+	if errors.Is(err, state.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%w: load active pointer: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	switch agentcfg.ClassifyLifecycleRecord(current.Bytes) {
+	case agentcfg.LifecycleRecordInvalid:
+		return false, fmt.Errorf("%w: lifecycle pointer is malformed", agentcfg.ErrStateUnavailable)
+	case agentcfg.LifecycleRecordTerminal:
+		return false, agentcfg.ErrAgentRetired
+	}
+	var pointer activeRecord
+	if err := json.Unmarshal(current.Bytes, &pointer); err != nil {
+		return false, fmt.Errorf("%w: unmarshal active pointer: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	if pointer.Schema != 0 && pointer.Schema != recordSchema {
+		return false, fmt.Errorf("%w: active pointer schema=%d, runtime supports %d", agentcfg.ErrStateUnavailable, pointer.Schema, recordSchema)
+	}
+	if pointer.RevisionID != revisionID {
+		return false, nil
+	}
+	changed, err := r.state.DeleteIf(ctx, state.SlotExpectation{Identity: keys.quad, Kind: keys.activeKind, ExpectedEventID: current.ID})
+	if err != nil {
+		return false, fmt.Errorf("%w: conditionally deactivate active pointer: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	return changed, nil
 }
 
 func (r *registry) Get(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope agentcfg.ConfigScope) (agentcfg.Revision, error) {
@@ -448,6 +563,9 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
+	if err := r.guardSignedOAuthMCPFenceWriter(ctx, id, agentID, scope); err != nil {
+		return agentcfg.Revision{}, err
+	}
 	q := keys.quad
 	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys, opts)
 	if err != nil {
@@ -462,22 +580,35 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	}
 	fromID := ""
 	active, hasActive, aerr := r.loadActiveRevision(ctx, q, keys.activeKind, keys.revPfx)
-	if aerr == nil && hasActive {
+	if aerr != nil {
+		// The pointer generation above is only half of the rollback decision:
+		// pair immutability and the emitted from-revision require the active
+		// revision content too. An unreadable active revision is never treated
+		// as an empty one, even for an unconditional caller, and no SaveIf is
+		// attempted from partial knowledge.
+		return agentcfg.Revision{}, aerr
+	}
+	if hasActive {
 		fromID = active.RevisionID
+	}
+	if scope == agentcfg.ConfigScopeAgent {
+		operation := agentcfg.SignedOAuthMCPFenceOperation(ctx)
+		currentPair := active.Payload.SignedOAuthMCPPair
+		targetPair := target.Payload.SignedOAuthMCPPair
+		if currentPair != nil && operation == currentPair.AuthorityOperationKind {
+			// Paired removal/expiry compensation may repoint through the exact
+			// frozen operation. No other internal marker authorizes this path.
+		} else if !reflect.DeepEqual(agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: currentPair}).SignedOAuthMCPPair,
+			agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: targetPair}).SignedOAuthMCPPair) {
+			return agentcfg.Revision{}, fmt.Errorf("%w: rollback would alter immutable signed capability pair", agentcfg.ErrSignedCapabilityReplay)
+		}
 	}
 	// The precondition, on the pointer-move door: the CURRENTLY-ACTIVE
 	// revision must still carry the expected content or the repoint is
 	// refused and the pointer is left where it was. Evaluated before the
 	// save, against the same read the from-pointer uses.
 	//
-	// The unconditional path keeps its historical tolerance of a failed
-	// active read (fromID stays empty and the repoint proceeds); a
-	// CONDITIONAL caller cannot be answered from a read that failed, so
-	// the error is surfaced instead of swallowed.
 	if opts.ExpectedContentHash != "" {
-		if aerr != nil {
-			return agentcfg.Revision{}, aerr
-		}
 		if err := agentcfg.CheckExpectedRevision(opts, active, hasActive); err != nil {
 			return agentcfg.Revision{}, err
 		}
@@ -540,6 +671,68 @@ func (r *registry) Close(_ context.Context) error {
 }
 
 // --- internal helpers ---
+
+// guardSignedOAuthMCPFenceWriter is the cross-runtime half of the signed
+// activation fence. Every Registry pointer-mutating door reaches this driver,
+// so a generic writer cannot race a pending first-install candidate into
+// authority. Only the internally-marked exact operation may write while the
+// fence is pending.
+func (r *registry) guardSignedOAuthMCPFenceWriter(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) error {
+	if scope != agentcfg.ConfigScopeAgent {
+		return nil
+	}
+	fence, set, err := r.signedOAuthMCPFence(ctx, id.TenantID, agentID)
+	if err != nil || !set || fence.Phase != agentcfg.SignedOAuthMCPFencePending {
+		return err
+	}
+	if agentcfg.SignedOAuthMCPFenceOperation(ctx) != fence.OperationKind {
+		return fmt.Errorf("%w: foreign writer cannot mutate agent %q while operation %q is pending", agentcfg.ErrSignedCapabilityPending, agentID, fence.OperationKind)
+	}
+	return nil
+}
+
+// applySignedOAuthMCPFence hides exactly the candidate named by a pending
+// receipt. A physical active pointer is not authority until the receipt and
+// fence both commit; callers observe the prior revision (or no active state).
+func (r *registry) applySignedOAuthMCPFence(ctx context.Context, id identity.Quadruple, agentID string, keys scopeKeys, active agentcfg.Revision, set bool) (agentcfg.Revision, bool, error) {
+	if !set {
+		return active, set, nil
+	}
+	fence, fenceSet, err := r.signedOAuthMCPFence(ctx, id.TenantID, agentID)
+	if err != nil || !fenceSet || fence.Phase != agentcfg.SignedOAuthMCPFencePending {
+		return active, set, err
+	}
+	if active.ContentHash != fence.CandidateContentHash ||
+		(fence.CandidateRevisionID != "" && active.RevisionID != fence.CandidateRevisionID) {
+		return active, set, nil
+	}
+	if fence.PriorRevisionID == "" {
+		return agentcfg.Revision{}, false, nil
+	}
+	prior, err := r.loadRevision(ctx, keys.quad, keys.revPfx, fence.PriorRevisionID)
+	if err != nil {
+		return agentcfg.Revision{}, false, fmt.Errorf("%w: load activation-fence prior revision: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	return prior.toRevision(), true, nil
+}
+
+func (r *registry) signedOAuthMCPFence(ctx context.Context, tenant, agentID string) (agentcfg.SignedOAuthMCPActivationFence, bool, error) {
+	quad := identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: agentCfgUser, SessionID: agentID}}
+	record, err := r.state.Load(ctx, quad, agentcfg.SignedOAuthMCPActivationFenceKind())
+	if errors.Is(err, state.ErrNotFound) {
+		return agentcfg.SignedOAuthMCPActivationFence{}, false, nil
+	}
+	if err != nil {
+		return agentcfg.SignedOAuthMCPActivationFence{}, false, fmt.Errorf("%w: load signed capability activation fence: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	var fence agentcfg.SignedOAuthMCPActivationFence
+	if err := json.Unmarshal(record.Bytes, &fence); err != nil || fence.TenantID != tenant || fence.AgentID != agentID || fence.OperationKind == "" || fence.CandidateContentHash == "" ||
+		(fence.Phase != agentcfg.SignedOAuthMCPFencePending && fence.Phase != agentcfg.SignedOAuthMCPFenceCommitted && fence.Phase != agentcfg.SignedOAuthMCPFenceAborted) {
+		return agentcfg.SignedOAuthMCPActivationFence{}, false, fmt.Errorf("%w: corrupt signed capability activation fence", agentcfg.ErrStateUnavailable)
+	}
+	fence.EventID = record.ID
+	return fence, true, nil
+}
 
 func (r *registry) loadActiveRevision(ctx context.Context, q identity.Quadruple, activeKind, revPfx string) (agentcfg.Revision, bool, error) {
 	rec, err := r.state.Load(ctx, q, activeKind)

@@ -295,6 +295,7 @@ func (s *Service) rebuildWithDiscoveryOrigins(active agentcfg.Revision, hasActiv
 		// other: this verb replaces only its own, so the blocks survive.
 		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		payload.OAuthProviders = active.Payload.OAuthProviders
+		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
 	}
 	if len(servers) > 0 {
 		payload.Connections = &agentcfg.ConnectionsSection{Servers: servers}

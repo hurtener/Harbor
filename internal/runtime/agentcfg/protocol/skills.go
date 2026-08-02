@@ -195,6 +195,7 @@ func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadrup
 		// other: this verb replaces only its own, so the blocks survive.
 		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		payload.OAuthProviders = active.Payload.OAuthProviders
+		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
 	}
 	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload, opts)
 }

@@ -642,6 +642,49 @@ type OAuthProvidersSection struct {
 	Providers []OAuthProviderDescriptor `json:"providers,omitempty"`
 }
 
+// SignedOAuthMCPConnectionDescriptor is the deliberately closed, non-secret
+// connection half of a signed capability pair. Unlike the generic MCP
+// descriptor it cannot carry a transport selector, headers, discovery policy,
+// injection mapping, command, environment, or a credential sink list. The
+// production registration verb is its sole author.
+type SignedOAuthMCPConnectionDescriptor struct {
+	Name             string   `json:"name"`
+	URL              string   `json:"url"`
+	ToolAllowlist    []string `json:"tool_allowlist,omitempty"`
+	ToolDenylist     []string `json:"tool_denylist,omitempty"`
+	ConnectTimeoutMS int      `json:"connect_timeout_ms,omitempty"`
+	RequestTimeoutMS int      `json:"request_timeout_ms,omitempty"`
+}
+
+// SignedOAuthMCPPair is immutable server-authored desired state for one
+// signed OAuth provider and MCP connection. It deliberately stores only the
+// verified, canonical binding facts; the untrusted authority envelope is never
+// projected from a revision or copied into audit/event payloads.
+type SignedOAuthMCPPair struct {
+	ProviderName       string                             `json:"provider_name"`
+	Broker             string                             `json:"broker"`
+	Audience           string                             `json:"audience"`
+	Scopes             []string                           `json:"scopes"`
+	CapabilityRevision string                             `json:"capability_revision"`
+	URLDigest          string                             `json:"url_digest"`
+	Sink               string                             `json:"sink"`
+	SinkDigest         string                             `json:"sink_digest"`
+	Connection         SignedOAuthMCPConnectionDescriptor `json:"connection"`
+	AuthorityIssuer    string                             `json:"authority_issuer"`
+	AuthorityKeyID     string                             `json:"authority_key_id"`
+	AuthorityJTIHash   string                             `json:"authority_jti_hash"`
+	// AuthorityOperationKind is an opaque deterministic StateStore kind for
+	// the pair-lifetime receipt. It is retained only in immutable desired-state
+	// history and deliberately has no Protocol projection.
+	AuthorityOperationKind string `json:"authority_operation_kind"`
+	// OwnerAgentID is the signed agent binding retained only for internal
+	// receipt validation. agent_id remains a runtime entity key, not an
+	// isolation principal.
+	OwnerAgentID   string `json:"owner_agent_id"`
+	OwnerUserID    string `json:"owner_user_id"`
+	OwnerSessionID string `json:"owner_session_id"`
+}
+
 // RunCompletionHook is the durable, versioned run-completion hook
 // configuration in a config revision: the catalog tool the run transcript is
 // dispatched to at the run loop's terminal boundary, plus an optional
@@ -720,9 +763,13 @@ type ConfigPayload struct {
 	Skills         *SkillsSelection       `json:"skills,omitempty"`
 	Connections    *ConnectionsSection    `json:"connections,omitempty"`
 	OAuthProviders *OAuthProvidersSection `json:"oauth_providers,omitempty"`
-	LLMParams      *LLMParams             `json:"llm_params,omitempty"`
-	Hooks          *HooksSection          `json:"hooks,omitempty"`
-	Naming         *NamingSection         `json:"naming,omitempty"`
+	// SignedOAuthMCPPair is server-owned immutable capability state. Generic
+	// writers carry an existing value exactly; only the bounded signed-pair
+	// registration/removal lifecycle may create or delete it.
+	SignedOAuthMCPPair *SignedOAuthMCPPair `json:"signed_oauth_mcp_pair,omitempty"`
+	LLMParams          *LLMParams          `json:"llm_params,omitempty"`
+	Hooks              *HooksSection       `json:"hooks,omitempty"`
+	Naming             *NamingSection      `json:"naming,omitempty"`
 	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
 	// named additive prompt blocks. Absent (nil) contributes nothing and
 	// leaves the system prompt byte-identical.
@@ -835,6 +882,14 @@ type Registry interface {
 	// carry that content hash or the repoint is refused with
 	// ErrRevisionConflict and the pointer is left where it was.
 	Rollback(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope ConfigScope, opts SetOptions) (Revision, error)
+	// DeactivateIfActive removes an active revision only when that exact
+	// revision still owns the pointer. It is the first-write compensation seam:
+	// a failed first install returns to no-active without writing a forward empty
+	// revision that could become an authority-bearing candidate.
+	//
+	// The bool reports whether this call changed the active pointer. A false
+	// result is a concurrent-state outcome, not permission to assume inactive.
+	DeactivateIfActive(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope ConfigScope) (bool, error)
 	// Diff returns the deterministic compare of two existing revisions.
 	Diff(ctx context.Context, id identity.Quadruple, agentID, fromRev, toRev string, scope ConfigScope) (Diff, error)
 	// Close releases resources. Idempotent.
@@ -883,6 +938,9 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 		if len(providers) > 0 {
 			out.OAuthProviders = &OAuthProvidersSection{Providers: providers}
 		}
+	}
+	if p.SignedOAuthMCPPair != nil {
+		out.SignedOAuthMCPPair = cloneSignedOAuthMCPPair(p.SignedOAuthMCPPair)
 	}
 	if p.LLMParams != nil {
 		// Normalise empty Model / ReasoningEffort strings to nil so a

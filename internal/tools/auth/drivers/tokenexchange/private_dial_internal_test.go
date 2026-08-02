@@ -79,7 +79,7 @@ func TestHardenTokenExchangeClient_DialControlWiring(t *testing.T) {
 
 	// Default (armed): a private dial is refused at Control time — returns
 	// immediately with ErrPrivateDialRefused, before any TCP connect.
-	armed := hardenTokenExchangeClient(nil, 5*time.Second, false)
+	armed, _ := hardenTokenExchangeClient(nil, 5*time.Second, false)
 	if _, err := dialControl(armed)(context.Background(), "tcp", "10.255.255.1:9"); !errors.Is(err, ErrPrivateDialRefused) {
 		t.Fatalf("armed dial to private IP: want ErrPrivateDialRefused, got %v", err)
 	}
@@ -88,7 +88,7 @@ func TestHardenTokenExchangeClient_DialControlWiring(t *testing.T) {
 	// proceeds and fails on the unreachable host bounded by the dialer
 	// timeout — the error is NOT ErrPrivateDialRefused (the guard let it
 	// through).
-	relaxed := hardenTokenExchangeClient(nil, 50*time.Millisecond, true)
+	relaxed, _ := hardenTokenExchangeClient(nil, 50*time.Millisecond, true)
 	_, err := dialControl(relaxed)(context.Background(), "tcp", "10.255.255.1:9")
 	if err == nil {
 		t.Fatal("opt-in dial to an unreachable private IP unexpectedly succeeded")

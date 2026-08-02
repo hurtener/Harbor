@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/hurtener/Harbor/internal/config"
@@ -191,10 +192,16 @@ type Config struct {
 	// non-secret provider NAME (config `oauth_provider`) against the declared
 	// provider registry — the name selects an acquisition strategy; the
 	// secret stays on the provider. Immutable after construction: no per-call
-	// transport state mutates (the token rides the call's ctx). A connect-time
-	// request (initialize / discovery) predates any per-call identity and so
-	// carries only the static Headers — a documented limitation.
+	// transport state mutates (the token rides the call's ctx). A pair-private
+	// owned binding also authenticates preparation: each initialize attempt and
+	// each discovery RPC resolves a bearer from that exact ctx before any wire
+	// request, failing closed on an error or empty token. Shared boot bindings
+	// retain credential-neutral connect/discovery for run-start reattachment.
 	OAuthProvider auth.OAuthProvider
+	// OwnOAuthProvider transfers teardown ownership of OAuthProvider to this
+	// connection. It is reserved for a privately prepared signed capability;
+	// ordinary boot/shared providers remain owned by their provider set.
+	OwnOAuthProvider bool
 
 	// MetaAnnotations is a static, non-secret set of operator-declared
 	// key/values merged into the `_meta` map on every identity-stamped
@@ -494,6 +501,13 @@ type Provider struct {
 	mu      sync.RWMutex
 	session *mcpsdk.ClientSession
 	closed  bool
+	// closeMu serializes teardown retries. closed blocks new dispatch as soon as
+	// teardown begins; session and oauthProviderClosed are the independent
+	// positive receipts. A failed Close keeps the outstanding handle so the
+	// exact registry generation can retry it instead of observing a false
+	// idempotent success.
+	closeMu             sync.Mutex
+	oauthProviderClosed bool
 
 	// selectedMode is the actual transport mode chosen by
 	// selectTransport — useful for tests and observability.
@@ -632,7 +646,11 @@ func (p *Provider) Connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	session, firstErr := p.client.Connect(ctx, transport, nil)
+	connectCtx, err := p.resolvePreparationBearerCtx(ctx)
+	if err != nil {
+		return fmt.Errorf("mcp: resolve bearer before initialize: %w", err)
+	}
+	session, firstErr := p.client.Connect(connectCtx, transport, nil)
 	if firstErr == nil {
 		p.mu.Lock()
 		p.session = session
@@ -653,7 +671,11 @@ func (p *Provider) Connect(ctx context.Context) error {
 	}
 
 	sseTransport := newSSETransport(p.cfg)
-	session, sseErr := p.client.Connect(ctx, sseTransport, nil)
+	fallbackCtx, bearerErr := p.resolvePreparationBearerCtx(ctx)
+	if bearerErr != nil {
+		return fmt.Errorf("mcp: resolve bearer before SSE initialize fallback: %w", bearerErr)
+	}
+	session, sseErr := p.client.Connect(fallbackCtx, sseTransport, nil)
 	if sseErr != nil {
 		return fmt.Errorf("%w: streamable-http failed (%w); sse failed (%w)",
 			ErrTransportFailed, firstErr, sseErr)
@@ -694,7 +716,11 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	}
 
 	// Tools.
-	toolsRes, err := session.ListTools(ctx, nil)
+	toolsCtx, err := p.resolvePreparationBearerCtx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: resolve bearer before tools discovery: %w", err)
+	}
+	toolsRes, err := session.ListTools(toolsCtx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: list tools: %w", ErrTransportFailed, err)
 	}
@@ -733,7 +759,14 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	}
 
 	// Resources.
-	resRes, err := session.ListResources(ctx, nil)
+	resourcesCtx, err := p.resolvePreparationBearerCtx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: resolve bearer before resources discovery: %w", err)
+	}
+	resRes, err := session.ListResources(resourcesCtx, nil)
+	if err != nil && !isJSONRPCMethodNotFound(err) {
+		return nil, fmt.Errorf("%w: list resources: %w", ErrTransportFailed, err)
+	}
 	if err == nil && resRes != nil {
 		for _, r := range resRes.Resources {
 			if r == nil || r.URI == "" {
@@ -747,7 +780,14 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	// server simply doesn't expose resources.
 
 	// Prompts.
-	prRes, err := session.ListPrompts(ctx, nil)
+	promptsCtx, err := p.resolvePreparationBearerCtx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: resolve bearer before prompts discovery: %w", err)
+	}
+	prRes, err := session.ListPrompts(promptsCtx, nil)
+	if err != nil && !isJSONRPCMethodNotFound(err) {
+		return nil, fmt.Errorf("%w: list prompts: %w", ErrTransportFailed, err)
+	}
 	if err == nil && prRes != nil {
 		for _, pr := range prRes.Prompts {
 			if pr == nil || pr.Name == "" {
@@ -776,6 +816,14 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	}
 
 	return out, nil
+}
+
+// isJSONRPCMethodNotFound recognizes only the canonical JSON-RPC optional
+// method absence. Authentication failures, HTTP/transport failures, malformed
+// responses, and every other JSON-RPC code remain discovery failures.
+func isJSONRPCMethodNotFound(err error) bool {
+	var rpcErr *jsonrpc.Error
+	return errors.As(err, &rpcErr) && rpcErr.Code == jsonrpc.CodeMethodNotFound
 }
 
 // checkArtifactEgressSchema validates every egress-mapped parameter
@@ -1552,25 +1600,41 @@ func (p *Provider) onResourceUpdated(ctx context.Context, req *mcpsdk.ResourceUp
 	}
 }
 
-// Close shuts the session down idempotently and joins any
-// in-flight SDK goroutines. Safe to call multiple times.
+// Close shuts the session and pair-owned OAuth provider down idempotently and
+// joins any in-flight SDK goroutines. A failure is retryable: successful legs
+// retain their receipt while failed legs keep their exact handle for the next
+// call. Safe to call multiple times.
 func (p *Provider) Close(ctx context.Context) error {
+	p.closeMu.Lock()
+	defer p.closeMu.Unlock()
+
 	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return nil
-	}
 	p.closed = true
 	session := p.session
-	p.session = nil
+	oauthProviderClosed := p.oauthProviderClosed
 	p.mu.Unlock()
-	if session == nil {
-		return nil
+	var errs []error
+	if session != nil {
+		if err := session.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("mcp: close session: %w", err))
+		} else {
+			p.mu.Lock()
+			if p.session == session {
+				p.session = nil
+			}
+			p.mu.Unlock()
+		}
 	}
-	if err := session.Close(); err != nil {
-		return fmt.Errorf("mcp: close session: %w", err)
+	if p.cfg.OwnOAuthProvider && p.cfg.OAuthProvider != nil && !oauthProviderClosed {
+		if err := p.cfg.OAuthProvider.Close(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("mcp: close private oauth provider: %w", err))
+		} else {
+			p.mu.Lock()
+			p.oauthProviderClosed = true
+			p.mu.Unlock()
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // buildIdentityMeta builds the `_meta` map the MCP wire format
@@ -1716,6 +1780,18 @@ func (p *Provider) resolveBearerCtx(ctx context.Context, key string) (context.Co
 		slot.setGranted(tok.Scopes)
 	}
 	return withBearer(ctx, tok.AccessToken), nil
+}
+
+// resolvePreparationBearerCtx authenticates the pair-private signed
+// capability path before initialize and discovery. OwnOAuthProvider is the
+// ownership marker carried only by that private binding (registration and
+// reconcile); ordinary shared providers deliberately keep credential-neutral
+// preparation so run-start reattachment does not require interactive consent.
+func (p *Provider) resolvePreparationBearerCtx(ctx context.Context) (context.Context, error) {
+	if !p.cfg.OwnOAuthProvider {
+		return ctx, nil
+	}
+	return p.resolveBearerCtx(auth.WithSignedCapabilityPreparation(ctx), "")
 }
 
 // resolveInjection sources the acting principal's credential from the bound

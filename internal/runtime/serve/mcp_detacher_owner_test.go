@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -21,13 +22,22 @@ import (
 // detacherStubProvider is a deterministic MCP provider for the detacher tests —
 // the real driver needs a live MCP wire.
 type detacherStubProvider struct {
-	id     tools.ToolSourceID
-	closed int
+	id        tools.ToolSourceID
+	closed    int
+	closeErrs []error
 }
 
 func (p *detacherStubProvider) SourceID() tools.ToolSourceID { return p.id }
-func (p *detacherStubProvider) Close(context.Context) error  { p.closed++; return nil }
-func (p *detacherStubProvider) DisplayModes() []string       { return nil }
+func (p *detacherStubProvider) Close(context.Context) error {
+	p.closed++
+	if len(p.closeErrs) == 0 {
+		return nil
+	}
+	err := p.closeErrs[0]
+	p.closeErrs = p.closeErrs[1:]
+	return err
+}
+func (p *detacherStubProvider) DisplayModes() []string { return nil }
 func (p *detacherStubProvider) ReadResource(context.Context, string) ([]byte, string, error) {
 	return nil, "", errors.New("no resources")
 }
@@ -83,6 +93,45 @@ func TestMCPConnectionDetacher_Detach_OwnerScoped(t *testing.T) {
 	}
 	if prov.closed != 1 {
 		t.Fatalf("provider Close called %d times, want 1", prov.closed)
+	}
+}
+
+func TestDetachSourceExpected_CloseFailureIsRetryableAndNeverAbsentSuccess(t *testing.T) {
+	owner := toolauth.Owner{Tenant: "tenant-a", Agent: "agent-a"}
+	closeFault := errors.New("injected exact close fault")
+	registry := mcpdrv.NewRegistry()
+	provider := &detacherStubProvider{id: "exact-retry", closeErrs: []error{closeFault, nil}}
+	if err := registry.Register(context.Background(), mcpdrv.ServerRegistration{
+		Provider: provider, Transport: "stdio", InitialState: mcpdrv.ServerStateOnline,
+		Owner: owner, DescriptorFingerprint: "generation-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	catalog := tools.NewCatalog()
+	if err := catalog.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "exact-retry_echo", Source: "exact-retry"}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+		return tools.ToolResult{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := detachSourceExpected(context.Background(), catalog, registry, "exact-retry", owner, "generation-a", nil, "test"); !errors.Is(err, closeFault) {
+		t.Fatalf("first exact detach = %v, want close fault", err)
+	}
+	if _, ok := catalog.Resolve("exact-retry_echo"); ok {
+		t.Fatal("catalog remained dispatchable after withdrawal")
+	}
+	if _, err := registry.StageRegistration(mcpdrv.ServerRegistration{
+		Provider: &detacherStubProvider{id: "exact-retry"}, Transport: "stdio", Owner: owner, DescriptorFingerprint: "generation-b",
+	}, nil); err == nil {
+		t.Fatal("replacement staged before close receipt")
+	}
+	if err := detachSourceExpected(context.Background(), catalog, registry, "exact-retry", owner, "generation-a", nil, "test"); err != nil {
+		t.Fatalf("exact detach retry: %v", err)
+	}
+	if provider.closed != 2 {
+		t.Fatalf("provider close calls = %d, want genuine retry", provider.closed)
+	}
+	if err := detachSourceExpected(context.Background(), catalog, registry, "exact-retry", owner, "generation-a", nil, "test"); err != nil {
+		t.Fatalf("post-receipt idempotent retry: %v", err)
 	}
 }
 

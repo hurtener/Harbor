@@ -323,6 +323,97 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 	return nil
 }
 
+// DeleteIf atomically removes only the exact EventID generation named by the
+// caller. Keeping the generation predicate in the DELETE statement makes it
+// linearizable with concurrent UPSERTs without relying on process-local locks.
+func (d *driver) DeleteIf(ctx context.Context, expectation state.SlotExpectation) (bool, error) {
+	if d.closed.Load() {
+		return false, state.ErrStoreClosed
+	}
+	if err := state.ValidateDeleteIf(expectation); err != nil {
+		return false, err
+	}
+	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return false, d.translateErr(err, "postgres: begin conditional delete tx")
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback() //nolint:errcheck // the caller receives the original error
+		}
+	}()
+	lockIDs, err := conditionalAdvisoryLockIDs(ctx, tx, []state.SlotExpectation{expectation}, postgresAdvisoryLockID)
+	if err != nil {
+		return false, d.translateErr(err, "postgres: conditional delete advisory lock ID")
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockIDs[0]); err != nil {
+		return false, d.translateErr(err, "postgres: conditional delete advisory lock")
+	}
+	result, err := tx.ExecContext(ctx, `
+		DELETE FROM state_records
+		WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND run_id = $4 AND kind = $5 AND event_id = $6`,
+		expectation.Identity.TenantID, expectation.Identity.UserID, expectation.Identity.SessionID,
+		expectation.Identity.RunID, expectation.Kind, string(expectation.ExpectedEventID))
+	if err != nil {
+		return false, d.translateErr(err, "postgres: conditional delete")
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, d.translateErr(err, "postgres: conditional delete rows affected")
+	}
+	if err := tx.Commit(); err != nil {
+		return false, d.translateErr(err, "postgres: commit conditional delete")
+	}
+	committed = true
+	return changed == 1, nil
+}
+
+// FenceIf holds the same advisory transaction lock used by SaveIf across one
+// short external publication callback.
+func (d *driver) FenceIf(ctx context.Context, expectation state.SlotExpectation, fn func() error) error {
+	if d.closed.Load() {
+		return state.ErrStoreClosed
+	}
+	if err := state.ValidateFenceIf(expectation, fn); err != nil {
+		return err
+	}
+	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return d.translateErr(err, "postgres: begin fence tx")
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback() //nolint:errcheck // the caller receives the original error
+		}
+	}()
+	lockIDs, err := conditionalAdvisoryLockIDs(ctx, tx, []state.SlotExpectation{expectation}, postgresAdvisoryLockID)
+	if err != nil {
+		return d.translateErr(err, "postgres: fence advisory lock ID")
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockIDs[0]); err != nil {
+		return d.translateErr(err, "postgres: fence advisory lock")
+	}
+	var actual string
+	err = tx.QueryRowContext(ctx, `SELECT event_id FROM state_records WHERE tenant_id=$1 AND user_id=$2 AND session_id=$3 AND run_id=$4 AND kind=$5`,
+		expectation.Identity.TenantID, expectation.Identity.UserID, expectation.Identity.SessionID, expectation.Identity.RunID, expectation.Kind).Scan(&actual)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && actual != string(expectation.ExpectedEventID)) {
+		return fmt.Errorf("postgres: %w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+	}
+	if err != nil {
+		return d.translateErr(err, "postgres: fence read")
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return d.translateErr(err, "postgres: commit fence")
+	}
+	committed = true
+	return nil
+}
+
 func postgresSlotKey(expectation state.SlotExpectation) string {
 	q := expectation.Identity
 	// Length prefixes make this an injective representation even if a caller

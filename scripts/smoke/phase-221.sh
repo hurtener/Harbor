@@ -39,16 +39,37 @@ ERRORS_MD='docs/site/protocol/errors.md'
 # silently never fires on Linux CI).
 # ---------------------------------------------------------------------------
 
-# (1) EXACT count, not ">= 1": dropping one of the seventeen doors FAILS here.
-# The count moved 16 -> 17 when phase 222's `set_extra_system_blocks` joined the
-# spine (CLAUDE.md §17.6 — the guard did exactly its job by refusing to let a
-# new door land silently; the door threads the token and is DRIVEN by
-# TestConditionalWrite_AllSeventeenDoorsAcceptTheToken, which moved with it).
+# (1) EXACT count, not ">= 1": dropping one of the nineteen doors FAILS here.
+# Phase 233b adds the signed OAuth MCP pair's creation and removal requests.
+# Creation is an ordinary optional CAS write; removal names the immutable pair
+# revision and therefore requires its hash. The two named assertions below keep
+# those semantically different additions from being satisfied by a field on an
+# unrelated request type.
 #     Mutation 3 (drop the field from one request type) turns this OK -> FAIL.
-assert_grep_count 'ExpectedContentHash string' "${TYPES_GO}" 17 \
-    'phase 221: all seventeen spine request types carry expected_content_hash'
-assert_grep_count 'expected_content_hash,omitempty' "${TYPES_GO}" 17 \
-    'phase 221: all seventeen json tags are optional (absent == unconditional)'
+assert_grep_count 'ExpectedContentHash string' "${TYPES_GO}" 19 \
+    'phase 221: all nineteen spine request types carry expected_content_hash'
+assert_grep_count 'expected_content_hash,omitempty' "${TYPES_GO}" 18 \
+    'phase 221: eighteen ordinary spine writes keep expected_content_hash optional'
+if awk '
+    $0 == "type AgentConfigRegisterOAuthMCPCapabilityRequest struct {" { inside = 1; next }
+    inside && /^}/ { exit }
+    inside && /ExpectedContentHash string/ && /json:"expected_content_hash,omitempty"/ { found = 1 }
+    END { exit !found }
+' "${TYPES_GO}"; then
+    ok 'phase 221: signed OAuth MCP pair creation carries the optional CAS token'
+else
+    fail 'phase 221: signed OAuth MCP pair creation must carry optional expected_content_hash'
+fi
+if awk '
+    $0 == "type AgentConfigRemoveOAuthMCPCapabilityRequest struct {" { inside = 1; next }
+    inside && /^}/ { exit }
+    inside && /ExpectedContentHash string/ && /json:"expected_content_hash"/ && !/omitempty/ { found = 1 }
+    END { exit !found }
+' "${TYPES_GO}"; then
+    ok 'phase 221: signed OAuth MCP pair removal requires the exact CAS token'
+else
+    fail 'phase 221: signed OAuth MCP pair removal must require expected_content_hash'
+fi
 
 # (2) The domain option + the sentinel.
 assert_grep_present 'type SetOptions struct' "${AGENTCFG_GO}" \
@@ -136,10 +157,30 @@ assert_grep_present 'StateStore\.SaveIf' "${ERRORS_GO}" \
 assert_grep_present 'StateStore\.SaveIf' "${ERRORS_MD}" \
     'phase 221: generated Protocol reference carries the durable predicate (D-209)'
 
-# (8) The Console mirror — seventeen optional fields, hand-mirrored and
-#     lockstep-gated (D-223).
-assert_grep_count 'expected_content_hash\?: string;' "${TS_WIRE}" 17 \
-    'phase 221: the Console wire module mirrors the field on all seventeen types'
+# (8) The Console mirror — eighteen optional fields plus HA-50's required
+#     paired-removal token, hand-mirrored and lockstep-gated (D-223).
+assert_grep_count 'expected_content_hash\?: string;' "${TS_WIRE}" 18 \
+    'phase 221: the Console wire module mirrors all eighteen optional CAS fields'
+if awk '
+    $0 == "export interface AgentConfigRegisterOAuthMCPCapabilityRequest {" { inside = 1; next }
+    inside && /^}/ { exit }
+    inside && /expected_content_hash\?: string;/ { found = 1 }
+    END { exit !found }
+' "${TS_WIRE}"; then
+    ok 'phase 221: Console mirrors the signed OAuth MCP pair creation CAS token'
+else
+    fail 'phase 221: Console must mirror the signed OAuth MCP pair creation CAS token'
+fi
+if awk '
+    $0 == "export interface AgentConfigRemoveOAuthMCPCapabilityRequest {" { inside = 1; next }
+    inside && /^}/ { exit }
+    inside && /expected_content_hash: string;/ { found = 1 }
+    END { exit !found }
+' "${TS_WIRE}"; then
+    ok 'phase 221: Console requires the signed OAuth MCP pair removal CAS token'
+else
+    fail 'phase 221: Console must require the signed OAuth MCP pair removal CAS token'
+fi
 
 # ---------------------------------------------------------------------------
 # Live guards. The block degrades to its OWN skip rather than exiting, so the

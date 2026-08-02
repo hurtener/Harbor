@@ -119,7 +119,11 @@ func buildHTTPClient(cfg Config) *http.Client {
 	// injecting wrapper above it has already run.
 	rt := http.RoundTripper(&unownedBoundingTransport{base: http.DefaultTransport})
 	if cfg.OAuthProvider != nil {
-		rt = &bearerInjectingTransport{base: rt}
+		var authorizer interface{ AuthorizeUse(context.Context) error }
+		if signed, ok := cfg.OAuthProvider.(interface{ AuthorizeUse(context.Context) error }); ok {
+			authorizer = signed
+		}
+		rt = &bearerInjectingTransport{base: rt, authorizer: authorizer}
 	}
 	// Per-user credential injection (receiver-style server): the HTTP forms
 	// (header / Basic) ride each call's ctx into this innermost injecting
@@ -165,7 +169,11 @@ func buildHTTPClient(cfg Config) *http.Client {
 	// forms (including `_meta`, whose credential rides the redirected body).
 	switch {
 	case cfg.OAuthProvider != nil:
-		client.CheckRedirect = redirectGuardFor(cfg.OAuthProvider.AllowedDownstreamHosts())
+		if strict, ok := cfg.OAuthProvider.(interface{ RefuseRedirects() bool }); ok && strict.RefuseRedirects() {
+			client.CheckRedirect = refuseEveryCredentialRedirect
+		} else {
+			client.CheckRedirect = redirectGuardFor(cfg.OAuthProvider.AllowedDownstreamHosts())
+		}
 	case cfg.Injection != nil:
 		client.CheckRedirect = redirectGuardFor(cfg.Injection.Provider.AllowedDownstreamHosts())
 	}
@@ -176,6 +184,10 @@ func buildHTTPClient(cfg Config) *http.Client {
 // refuses a redirect with when the redirect target host is not in the bound
 // provider's downstream-sink allow-list. Callers compare with errors.Is.
 var ErrRedirectToUnlistedHost = errors.New("mcp: redirect target host is not in the bound provider's allowed_downstream_hosts")
+
+func refuseEveryCredentialRedirect(req *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("%w: signed credential binding refuses redirect to %q", ErrRedirectToUnlistedHost, req.URL.String())
+}
 
 // redirectGuardFor builds an http.Client CheckRedirect that refuses any
 // redirect whose target host is not in allowList (normalised via the ONE
@@ -228,18 +240,38 @@ func bearerFrom(ctx context.Context) string {
 // ctx carries a per-call bearer (see withBearer). It holds NO mutable state —
 // the token rides req.Context(), so one shared transport serves N concurrent
 // identities with no token bleed (the concurrent-reuse contract). A request
-// whose ctx carries no bearer passes through untouched (the unbound-call and
-// connect-time paths).
+// whose ctx carries no bearer passes through untouched (the unbound-call path).
 type bearerInjectingTransport struct {
-	base http.RoundTripper
+	base       http.RoundTripper
+	authorizer interface{ AuthorizeUse(context.Context) error }
 }
 
 // RoundTrip implements http.RoundTripper.
 func (b *bearerInjectingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	tok := bearerFrom(req.Context())
+	if b.authorizer != nil {
+		if err := b.authorizer.AuthorizeUse(req.Context()); err != nil {
+			if req.Method == http.MethodDelete {
+				// Session teardown is local cleanup, not data-plane authority.
+				// Once the durable publisher fence denies this epoch, never send
+				// even a cached bearer downstream merely to close the SDK handle.
+				// A synthetic no-content acknowledgement lets the SDK release its
+				// local session while the network remains fail-closed.
+				return &http.Response{
+					StatusCode: http.StatusNoContent,
+					Status:     http.StatusText(http.StatusNoContent),
+					Header:     make(http.Header),
+					Body:       http.NoBody,
+					Request:    req,
+				}, nil
+			}
+			return nil, fmt.Errorf("mcp: durable bearer authorization: %w", err)
+		}
+	}
 	if tok == "" {
-		// No per-call identity (connect-time request, or an unbound call) —
-		// pass through so static Headers remain the only auth.
+		// An unsigned, unbound call carries no bearer; pass through so static
+		// Headers remain the only auth. A signed pair still crossed the durable
+		// authorizer above, including SDK teardown requests with no bearer.
 		return b.base.RoundTrip(req)
 	}
 	// Clone so we never mutate the caller's request (the SDK may reuse it

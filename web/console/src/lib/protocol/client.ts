@@ -77,6 +77,9 @@ import type {
 	AgentConfigSetMCPDiscoveryOriginsResponse,
 	AgentConfigOAuthProviderDescriptor,
 	AgentConfigSetOAuthProviderResponse,
+	AgentConfigRegisterOAuthMCPCapabilityResponse,
+	AgentConfigRemoveOAuthMCPCapabilityResponse,
+	SignedOAuthMCPConnectionDescriptor,
 	AgentConfigRemoveOAuthProviderResponse,
 	AgentConfigLLMProviderDescriptor,
 	AgentConfigSetLLMProviderResponse,
@@ -1406,6 +1409,35 @@ export class AgentConfigNamespace {
 		return this.#t.request<AgentConfigSetOAuthProviderResponse>(
 			'/v1/agent_config/set_oauth_provider',
 			{ agent_id: agentId, provider },
+		);
+	}
+	/** `agent_config.register_oauth_mcp_capability` — atomically prepare,
+	 * persist, and activate one signed OAuth MCP pair. The signed envelope is
+	 * write-only; callers receive only the committed immutable revision view. */
+	registerOAuthMCPCapability(
+		agentId: string,
+		providerName: string,
+		broker: string,
+		audience: string,
+		scopes: string[],
+		connection: SignedOAuthMCPConnectionDescriptor,
+		authorityEnvelope: string,
+		expectedContentHash?: string,
+	): Promise<AgentConfigRegisterOAuthMCPCapabilityResponse> {
+		return this.#t.request<AgentConfigRegisterOAuthMCPCapabilityResponse>(
+			'/v1/agent_config/register_oauth_mcp_capability',
+			{ agent_id: agentId, provider_name: providerName, broker, audience, scopes, connection, authority_envelope: authorityEnvelope, expected_content_hash: expectedContentHash },
+		);
+	}
+	/** `agent_config.remove_oauth_mcp_capability` — atomically withdraw the
+	 * server-owned pair through its durable lifetime receipt. */
+	removeOAuthMCPCapability(
+		agentId: string,
+		expectedContentHash: string,
+	): Promise<AgentConfigRemoveOAuthMCPCapabilityResponse> {
+		return this.#t.request<AgentConfigRemoveOAuthMCPCapabilityResponse>(
+			'/v1/agent_config/remove_oauth_mcp_capability',
+			{ agent_id: agentId, expected_content_hash: expectedContentHash },
 		);
 	}
 	/** `agent_config.remove_oauth_provider` — uninstall a Protocol-installed OAuth

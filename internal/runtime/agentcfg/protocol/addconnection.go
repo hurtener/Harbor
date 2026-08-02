@@ -109,11 +109,34 @@ type PreparedConnection interface {
 	Close(ctx context.Context) error
 }
 
+// AuthorityBoundPreparedConnection is the mandatory signed-capability
+// publication seam. ActivateIf establishes an exact, non-dispatchable provider
+// reservation before prove runs, then publishes only if that same reservation
+// is still current. Exact teardown can invalidate and close the reservation;
+// callers must treat a non-implementing prepared connection as unavailable,
+// never fall back to ordinary Activate.
+type AuthorityBoundPreparedConnection interface {
+	PreparedConnection
+	ActivateIf(ctx context.Context, prove func(context.Context) error) error
+	// ActivateUnder hands the exact local publication callback to admit. The
+	// caller uses this to hold a durable operation-slot fence across catalog and
+	// registry publication without putting network preparation inside the fence.
+	ActivateUnder(ctx context.Context, admit func(context.Context, func() error) error) error
+}
+
 // ProviderPreparer builds an unpublished OAuth provider for an MCP prepare.
 // The provider can be used privately during dial/discovery, then published
 // reversibly after the durable revision lands.
 type ProviderPreparer interface {
 	PrepareProvider(ctx context.Context, tenant, agentID string, desc agentcfg.OAuthProviderDescriptor) (PreparedOAuthProvider, error)
+}
+
+// SignedCapabilityProviderPreparer constructs the pair-owned provider used by
+// signed capability flow. It deliberately has no Publish-to-ProviderSet operation: the MCP
+// prepared connection receives the private binding directly and its catalog
+// activation is the sole data-plane publication point.
+type SignedCapabilityProviderPreparer interface {
+	PrepareSignedCapabilityProvider(ctx context.Context, broker string, binding toolauth.SignedCapabilityExchangeBinding, scopes []string) (PreparedOAuthProvider, error)
 }
 
 // PreparedOAuthProvider owns one unpublished provider instance.
@@ -167,6 +190,29 @@ type ConnectionDetacher interface {
 	DetachConnection(ctx context.Context, tenant, agentID, name string) error
 }
 
+// ExactConnectionDetacher is the mandatory teardown seam for a signed pair.
+// The complete descriptor fingerprint is proved at the registry/catalog
+// linearization point before any source is withdrawn.
+type ExactConnectionDetacher interface {
+	DetachExactConnection(ctx context.Context, tenant, agentID, name, descriptorFingerprint string) error
+}
+
+// ExactConnectionTeardownFence is the process-local admission receipt that
+// spans desired-state removal. Seal is called once pair absence is durable;
+// Cancel is called only when the CAS is proven not to have committed.
+type ExactConnectionTeardownFence interface {
+	Seal()
+	Cancel(ctx context.Context) error
+}
+
+// ExactConnectionTeardownFencer prevents a matching private preparation from
+// publishing between the final durable authority proof and pair removal CAS.
+// It is a companion to ExactConnectionDetacher so existing non-signed detach
+// implementations do not acquire lifecycle ceremony they cannot use.
+type ExactConnectionTeardownFencer interface {
+	BeginExactConnectionTeardown(tenant, agentID, name, descriptorFingerprint string) (ExactConnectionTeardownFence, error)
+}
+
 // AttachRequest is the input to a ConnectionAttacher. It carries the
 // non-secret descriptor PLUS the optional operator-supplied auth headers
 // used ONLY for the live transport — the attacher never persists them.
@@ -199,6 +245,22 @@ type AttachRequest struct {
 	// this private preparation. It never enters the shared provider set until
 	// the durable desired state has landed.
 	OAuthProviderOverride toolauth.OAuthProvider
+	// OwnOAuthProvider transfers teardown ownership of OAuthProviderOverride to
+	// the prepared MCP connection. It is used only for a pair-private binding.
+	OwnOAuthProvider bool
+	// ToolAllowlist and ToolDenylist restrict the server-side tool names that
+	// may be projected into the live catalog. Empty allowlist means all except
+	// explicitly denied names.
+	ToolAllowlist []string
+	ToolDenylist  []string
+	// ConnectTimeoutMS bounds connect plus initial discovery. RequestTimeoutMS
+	// becomes the default per-request tool policy for the live connection.
+	ConnectTimeoutMS int
+	RequestTimeoutMS int
+	// DescriptorFingerprint, when set by a server-owned signed pair, commits the
+	// complete connection policy. Generic connections derive their fingerprint
+	// from the ordinary descriptor fields.
+	DescriptorFingerprint string
 	// MetaAnnotations is the non-secret operator `_meta` annotation set the
 	// attacher carries onto the live connection's per-call `_meta`.
 	MetaAnnotations map[string]string
@@ -834,6 +896,7 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 		// other: this verb replaces only its own, so the blocks survive.
 		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		providers = active.Payload.OAuthProviderDescriptors()
+		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
 	}
 	servers = append(servers, desc)
 	payload.Connections = &agentcfg.ConnectionsSection{Servers: servers}

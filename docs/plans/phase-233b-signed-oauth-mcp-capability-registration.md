@@ -48,6 +48,10 @@ explicit signed-capability production opt-in; it is not enabled by default.
   endpoint, credential pull, runtime broker credential, KEK, true scope
   ceiling, verifier issuer/key material, and an explicit production opt-in
   permitting signed capability authority.
+- The trust anchor's bounded-expiry policy is an explicit, required positive
+  boot `max_authority_lifetime` (not an inferred product-wide default). The
+  envelope supplies only signed `iat`/`exp`; `exp - iat` may equal but may not
+  exceed that configured ceiling.
 - Accept only a signed envelope that exactly binds tenant, agent, broker,
   provider/capability identifier and revision, canonical connection URL digest,
   audience, normalized scope set, issuer/key ID, issue/expiry, and anti-replay
@@ -75,7 +79,7 @@ explicit signed-capability production opt-in; it is not enabled by default.
 
 ## Acceptance criteria
 
-- [ ] The sole new production registration/creation write is admin-gated
+- [x] The sole new production registration/creation write is admin-gated
   `agent_config.register_oauth_mcp_capability`. Its request contains provider
   name, boot broker name, audience, requested scopes, a dedicated closed
   `SignedOAuthMCPConnectionDescriptor`, `expected_content_hash`, and signed
@@ -85,11 +89,11 @@ explicit signed-capability production opt-in; it is not enabled by default.
   that it excludes `oauth`, `oauth_provider`, `token_url`, injection, discovery
   origins, stdio command/env/cwd, headers, credentials, secrets, and every
   host/sink list. Unknown fields reject before side effects.
-- [ ] A boot-declared generic broker/trust anchor validates its static exchange
+- [x] A boot-declared generic broker/trust anchor validates its static exchange
   endpoint, credential-pull endpoint, broker authentication, KEK, true scope
   ceiling, trusted issuer/key set, and explicit signed-capability production
   opt-in. A missing/invalid opt-in, verifier, broker, or key fails closed.
-- [ ] The envelope uses an approved asymmetric signature and has exact claims:
+- [x] The envelope uses an approved asymmetric signature and has exact claims:
   tenant ID, agent ID, broker, capability/provider ID and immutable capability
   revision, canonical URL digest, audience, normalized unique scope set,
   issuer, key ID, issued-at, bounded expiry, and unique replay ID (JTI). The
@@ -99,7 +103,7 @@ explicit signed-capability production opt-in; it is not enabled by default.
   from the canonical length-prefixed tuple hash. Its bounded payload repeats
   tuple hashes/fields, exact pair fingerprint, expiry, phase, and revision
   identity. One pair-lifetime record has exactly one normal graph:
-  `claimed -> revision_committed -> published -> removal_revision_committed -> catalog_unpublished -> teardown_receipted -> removed`.
+  `claimed -> revision_committed -> published -> removal_admitted -> removal_revision_committed -> catalog_unpublished -> teardown_receipted -> removed`.
   Every transition `SaveIf`-compares its exact operation EventID. There is no
   generic `aborted` phase: a prepared-but-incomplete claim retries its recorded
   phase. Only `claimed` or `revision_committed` may terminally enter
@@ -119,7 +123,7 @@ explicit signed-capability production opt-in; it is not enabled by default.
   validates current entitlement and exact binding. `removed` remains an
   anti-replay tombstone with pair history and never less than the authority
   expiry-plus-skew horizon, preventing recreation/replay.
-- [ ] A signed provider is pair-owned and outside the general `ProviderSet`.
+- [x] A signed provider is pair-owned and outside the general `ProviderSet`.
   Private MCP preparation binds directly to that exact provider instance; a
   catalog source swap is the sole data-plane dispatch linearization point.
   Protocol projections derive only from the immutable signed-pair revision,
@@ -129,7 +133,17 @@ explicit signed-capability production opt-in; it is not enabled by default.
   collision-checks the general bare namespace. Prepare is never durable and
   closes on refusal/failure/restart; teardown closes transport and provider as
   one receipt.
-- [ ] The provider token endpoint stays boot-pinned. One named shared
+- [x] Every local publication is bound to an opaque publisher epoch CAS-minted
+  in the durable operation only after `revision_committed`. The epoch is absent
+  from Protocol, immutable revisions, broker actor assertions, and audit.
+  Independent-runtime reconcile CAS-takes a new epoch before preparation and
+  makes all older provider/cache/MCP handles inert. Pair-owned token exchange
+  checks exact tenant+operation+phase+epoch before cache lookup, after exchange,
+  and before cached return; the bearer RoundTripper rechecks immediately before
+  downstream send. The internal preparation marker authorizes only
+  `revision_committed`; normal dispatch requires `published` and cannot inherit
+  it. Missing, malformed, or stale epoch/operation state fails closed.
+- [x] The provider token endpoint stays boot-pinned. One named shared
   canonical-URL helper supplies signer/verifier request matching, fingerprinting,
   transport enforcement, and restart/reconcile. It requires absolute HTTPS;
   applies IDNA2008 ASCII lower-case host with trailing root dot removed and
@@ -143,14 +157,14 @@ explicit signed-capability production opt-in; it is not enabled by default.
   Canonical URL bytes are `https://host:port/path[?query]`; the only sink is
   origin `https://host:port`. The pair stores canonical URL digest/sink, never a
   host list; every bearer send rechecks it and refuses redirects.
-- [ ] Requested scopes are normalized before signing/comparison. A requested
+- [x] Requested scopes are normalized before signing/comparison. A requested
   scope outside the boot true ceiling rejects loudly with a typed invalid-scope
   result; the production path never silently intersects/drops scopes.
-- [ ] Token and cache keys/assertions include verified tenant/user/session plus
+- [x] Token and cache keys/assertions include verified tenant/user/session plus
   agent, capability revision, audience, and URL digest. The exchange refuses
   absent, malformed, unentitled, or mismatched audience/binding independently
   of Harbor's signature check; audience never substitutes for subject identity.
-- [ ] Signed-pair representation is server-owned/read-only. Whole
+- [x] Signed-pair representation is server-owned/read-only. Whole
   `agent_config.set_revision`, rollback, every generic section setter, and
   legacy `remove_oauth_provider` / `remove_mcp_connection` must carry it
   forward byte-identically or reject addition, mutation, omission, deletion,
@@ -159,18 +173,62 @@ explicit signed-capability production opt-in; it is not enabled by default.
   Rollback activation performs full binding verification, while paired removal
   and retirement use the frozen durable pair fingerprint to close/revoke even
   if envelope verification would now fail.
-- [ ] Paired removal continues that same pair-lifetime JTI operation; it is not
+- [x] Paired removal continues that same pair-lifetime JTI operation; it is not
   a second operation or handoff. It is a durable operation, never a best-effort
-  close. Its exact EventID `SaveIf` subphases are `removal_revision_committed` (desired
-  pair absent by revision CAS), `catalog_unpublished`, `teardown_receipted`
+  close. Its mandatory `expected_content_hash` names the exact immutable
+  pair-bearing revision being removed; hash-less or stale delayed targets fail
+  closed, while an exact terminal retry returns that pair lifetime's original
+  removal receipt and cannot select a replacement. Its exact EventID `SaveIf`
+  subphases are `removal_admitted` (the operation generation won the mandatory
+  StateStore publication fence and durably denied every publisher epoch before
+  desired-state mutation),
+  `removal_revision_committed` (desired pair absent by revision CAS),
+  `catalog_unpublished`, `teardown_receipted`
   (transport/provider close+revoke from frozen fingerprint), then terminal
   `removed` checkpoint. Each commit-then-error or unknown outcome exact-rereads
   the operation EventID/phase, desired revision, catalog source, and close/revoke
-  receipt; retry resumes the missing phase idempotently. Expiry, key revocation,
+  receipt; retry resumes the missing phase idempotently. An empty-runtime
+  remover may advance once durable admission denies every epoch; exact local
+  teardown closes only the matching epoch, while stale handles elsewhere stay
+  network-inert and close on reconcile. Expiry, key revocation,
   or lost verifier never block this teardown. It cannot report `removed` while
   authority remains live, and retirement's terminal manifest invokes this same
   state machine rather than a second teardown path.
-- [ ] Reconcile/restart/rollback activate only a stored immutable pair whose
+- [x] The irreversible local catalog+registry publish callback runs under
+  mandatory StateStore `FenceIf` against the operation's exact EventID and does
+  no network or StateStore I/O. Removal admission is a competing exact-EventID
+  `SaveIf`; two independent Services/registries therefore cannot cross publish
+  and removal. A definitive desired-state CAS refusal rolls the operation back
+  to `published` and reports any exact local-fence cleanup failure; retry keeps
+  the same owner/fingerprint receipt.
+- [x] Live attachment and exact teardown are generation-bound to the durable
+  operation identity as well as the connection descriptor. A new registration
+  cannot replace a pair while an older lifetime is `published` without an
+  active pair or is in any removal subphase. That exclusion and maintenance
+  scan are tenant+agent scoped across Service instances and user/session
+  subjects; subject ownership checks remain exact and a foreign subject gains
+  no teardown authority. Catalog withdrawal hides the exact generation from
+  dispatch, while a private retryable closing receipt retains its provider
+  handle and name reservation until transport/provider close or revoke returns
+  success. Absent-after-error cannot advance teardown. Sequential and
+  independent-runtime races therefore cannot let an old teardown detach a
+  same-named replacement or publish one before the old generation is closed.
+- [x] Restart reconciliation revalidates the exact physical active revision,
+  operation generation/phase, and activation fence after private preparation
+  under an exact owner/fingerprint/generation registry reservation immediately
+  before catalog activation. The reservation is non-dispatchable but visible to
+  exact teardown, which closes it through the same retryable closing receipt as
+  a live handle. Catalog publication and live-registry installation commit under
+  that exact reservation: removal before commit invalidates publication, while
+  removal after commit necessarily sees the published handle. If removal or
+  replacement completed after the initial read, prepared connection/provider
+  resources close and no pair, catalog source, provider handle, or cache is
+  resurrected. Tenant+agent exclusion remains tenant-isolated.
+- [x] Every post-prepare refusal uses one bounded cleanup context, attempts both
+  connection and pair-owned provider cleanup, and joins every cleanup failure
+  with the primary error. Erroring-close tests prove no catalog publication,
+  active revision, provider resource, or connection worker remains.
+- [x] Reconcile/restart/rollback activate only a stored immutable pair whose
   operation record is exactly `published`, whose fingerprint/bindings verify,
   and whose activation fence is committed; they never classify that stored JTI
   as a fresh replay. They fail closed for an incomplete operation, absent current
@@ -178,7 +236,11 @@ explicit signed-capability production opt-in; it is not enabled by default.
   widening, URL mismatch, provider collision, pending fence, or pair half-state.
   Registration-authority expiry/key revocation neither deletes nor replays a
   published record nor blocks its frozen-fingerprint paired removal/retirement.
-- [ ] Before a first-install candidate can become semantically active,
+  A same-JTI published retry may observe a later active revision only when the
+  committed fence still proves the original immutable candidate and that later
+  revision carries the exact same operation-bound pair; ordinary sibling edits
+  are therefore replay-safe without weakening orphan rejection.
+- [x] Before a first-install candidate can become semantically active,
   `set_oauth_provider` creates a durable pending-activation/compensation fence
   under the agent scope. The fence binds exact operation/content fingerprint,
   attempted revision identity, and prior active revision/EventID (or no-active),
@@ -191,10 +253,14 @@ explicit signed-capability production opt-in; it is not enabled by default.
   resume. Success `SaveIf`-commits the fence; failure `SaveIf`-aborts it; every
   unknown transition stays safely pending across runtimes until exact reread
   proves committed or aborted. Immutable candidate history remains.
-  `DeactivateIfActive` may afterwards compact a physical pointer with its exact
-  EventID/inactive marker, but is not the security fence and cannot assert an
-  unknown result inactive.
-- [ ] All canonical method/type/error/event/Console manifest/docs lockstep
+  Under D-403, `DeactivateIfActive` may afterwards remove a truly first-write
+  physical pointer only through mandatory StateStore `DeleteIf` against its
+  exact non-empty EventID. A prior boot/config revision is restored by rollback
+  only while the candidate content hash remains active. Wrong-generation and
+  absent deletes mutate nothing; terminal/corrupt lifecycle bytes fail closed.
+  This never loosens D-400's closed lifecycle decoder, and the physical repair
+  remains post-fence convergence rather than the security fence.
+- [x] All canonical method/type/error/event/Console manifest/docs lockstep
   gates cover the new surface. Events and audit carry only redacted identity,
   provider/capability names or hashes, revision, audience hash, and URL digest;
   no authority envelope, secret, URL, credential, or raw replay ID is emitted.
@@ -205,6 +271,8 @@ explicit signed-capability production opt-in; it is not enabled by default.
   posture; no configuration migration/docs are shipped in this planning phase.
 - `internal/agentcfg/`, `internal/runtime/agentcfg/protocol/`, projection, and
   `internal/runtime/serve/` provider/connection preparation and reconcile.
+- `internal/state/` plus the in-memory, SQLite, and Postgres drivers for the
+  mandatory exact-generation `DeleteIf` primitive and shared conformance.
 - `internal/tools/auth/` and MCP driver binding/cache/exchange checks.
 - `internal/protocol/{types,methods,errors,singlesource}/`, stream transport,
   generated Protocol docs and Console typed lockstep artifacts.
@@ -226,7 +294,8 @@ explicit signed-capability production opt-in; it is not enabled by default.
   the shared canonical-byte helper; cross-language golden fixtures are public
   testdata for signers.
 - `agentcfg.Registry.DeactivateIfActive` remains a post-fence physical-pointer
-  compaction/convergence seam, never the cross-runtime security fence.
+  convergence seam. It uses exact-generation StateStore deletion for a truly
+  absent prestate and never substitutes for the cross-runtime security fence.
 - A boot-only `ToolOAuthCredentialBrokerConfig` signed-capability authority
   block; none of its secrets, endpoints, host lists, or verifier material are
   Protocol-writable.
@@ -235,6 +304,8 @@ explicit signed-capability production opt-in; it is not enabled by default.
 
 - **Unit:** strict wire decoding; claim matching; JTI operation Kind/payload
   construction; every operation/fence phase, EventID CAS, unknown-outcome reread,
+  publisher-epoch CAS takeover and stale-epoch/removal denial at token cache and
+  bearer transport (including bearer-present and empty-bearer teardown),
   full legal JTI graph, expiry/skew incomplete-only cleanup, published
   pair-lifetime retention through authority expiry/key revocation, removed
   anti-replay tombstone retention, remove terminality, and
@@ -246,19 +317,33 @@ explicit signed-capability production opt-in; it is not enabled by default.
   catalog-only dispatch; and first-write pending-fence commit/abort/uncertain
   cross-runtime reader and foreign-mutator conflict cases.
 - **Integration:** real SQLite/Postgres operation-state recovery through every
-  phase and restart/fault point; token exchange assertion capture; exact
+  phase and restart/fault point; three independent SQLite runtime graphs prove
+  cached-token epoch takeover, empty-runtime removal, zero broker/downstream
+  calls from stale handles, and exact terminal cleanup; token exchange assertion capture; exact
   pair-owned catalog dispatch/no generic-provider binding; cross-language URL
   signer fixtures; no-redirect enforcement; paired removal/retirement after
   authority expiry/key rotation/revocation and unknown outcomes; and
   cross-tenant/user/session/agent cache and bearer-bleed denials.
 - **Conformance:** all StateStore drivers run the same JTI operation and
   pending-activation fence phase/EventID/fault suite, including two-runtime
-  readers and recovery; Protocol/Console/generated-doc lockstep covers every
-  new canonical type, method, error, and event.
+  readers and recovery. Their mandatory `DeleteIf` suite covers exact-once,
+  wrong-generation/absent zero mutation, invalid/cancelled/closed failure,
+  conditional replacement races, and durable reopen; Protocol/Console/
+  generated-doc lockstep covers every new canonical type, method, error, and
+  event.
 - **Concurrency / leak:** N>=100 shared broker verifier/provider-set and MCP
   preparer invocations under `-race`; competing registration/removal/rollback/
   retirement and commit-then-error cases prove one winner, no incorrect
   compensation, cancellation cross-talk, identity bleed, or goroutine leak.
+  Token-exchange providers drain and join the idle connections of only the
+  transport they construct; a caller-supplied client/transport remains shared
+  and untouched across providers. Token/Revoke admission takes only a short
+  lifecycle lock and derives a per-call context cancelled by provider shutdown;
+  no coordinator, event, broker, or transport I/O runs under that lock. Close is
+  idempotent and non-admitting, cancels admitted calls and exchange workers, and
+  waits with the caller's context. A deadline leaves a retryable closing state;
+  later Close resumes, while new Token/Revoke calls fail closed. Independent
+  session/provider teardown receipts remain intact.
 
 ## Smoke script additions
 
@@ -306,16 +391,16 @@ explicit signed-capability production opt-in; it is not enabled by default.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages >= stated target
-- [ ] Cross-session and cross-tenant bearer/cache isolation test passes
-- [ ] Reusable verifier/provider/preparer N>=100 concurrent-reuse test passes
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages >= stated target
+- [x] Cross-session and cross-tenant bearer/cache isolation test passes
+- [x] Reusable verifier/provider/preparer N>=100 concurrent-reuse test passes
   under `-race` with no race, bleed, cancellation cross-talk, or leak
-- [ ] Real-driver integration covers identity, restart, failure, and cleanup
-- [ ] Protocol/error/event/Console/generated-doc lockstep gates pass
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry
+- [x] Real-driver integration covers identity, restart, failure, and cleanup
+- [x] Protocol/error/event/Console/generated-doc lockstep gates pass
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry
   filed

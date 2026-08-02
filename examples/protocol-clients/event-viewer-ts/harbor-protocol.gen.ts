@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:fd2ebc179cbf12168a3352e03fa24abc1dfa39e28a58fd6eb8acfa72d815f1f0";
+export const WIRE_SURFACE_DIGEST = "sha256:a0ca764b13a8974b41120fb9f6b562c0035c8598c6cf0ece2eb15de6f1caf6cc";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -25,7 +25,9 @@ export type HarborMethod =
   | "agent_config.diff"
   | "agent_config.get"
   | "agent_config.list_revisions"
+  | "agent_config.register_oauth_mcp_capability"
   | "agent_config.remove_mcp_connection"
+  | "agent_config.remove_oauth_mcp_capability"
   | "agent_config.remove_oauth_provider"
   | "agent_config.rollback"
   | "agent_config.session.set_source_disables"
@@ -564,6 +566,7 @@ export interface AgentConfigPayload {
   tool_exposure?: AgentConfigToolExposure;
   connections?: AgentConfigConnections;
   oauth_providers?: AgentConfigOAuthProviders;
+  signed_oauth_mcp_pair?: AgentConfigSignedOAuthMCPPair;
   llm_params?: AgentConfigLLMParams;
   hooks?: AgentConfigHooks;
   naming?: AgentConfigNaming;
@@ -584,6 +587,25 @@ export interface AgentConfigPromptLayersDiff {
   user_to?: string;
 }
 
+export interface AgentConfigRegisterOAuthMCPCapabilityRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  provider_name: string;
+  broker: string;
+  audience: string;
+  scopes: string[];
+  connection: SignedOAuthMCPConnectionDescriptor;
+  expected_content_hash?: string;
+  authority_envelope: string;
+}
+
+export interface AgentConfigRegisterOAuthMCPCapabilityResponse {
+  revision: AgentConfigRevisionView;
+  provider_name: string;
+  connection_name: string;
+  protocol_version: string;
+}
+
 export interface AgentConfigRemoveMCPConnectionRequest {
   identity: IdentityScope;
   agent_id: string;
@@ -594,6 +616,20 @@ export interface AgentConfigRemoveMCPConnectionRequest {
 export interface AgentConfigRemoveMCPConnectionResponse {
   revision: AgentConfigRevisionView;
   name: string;
+  protocol_version: string;
+}
+
+export interface AgentConfigRemoveOAuthMCPCapabilityRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  expected_content_hash: string;
+}
+
+export interface AgentConfigRemoveOAuthMCPCapabilityResponse {
+  revision: AgentConfigRevisionView;
+  provider_name: string;
+  connection_name: string;
+  operation_phase: string;
   protocol_version: string;
 }
 
@@ -801,6 +837,20 @@ export interface AgentConfigSetToolExposureRequest {
 export interface AgentConfigSetToolExposureResponse {
   revision: AgentConfigRevisionView;
   protocol_version: string;
+}
+
+export interface AgentConfigSignedOAuthMCPPair {
+  provider_name: string;
+  broker: string;
+  audience: string;
+  scopes: string[];
+  capability_revision: string;
+  url_digest: string;
+  sink: string;
+  connection: SignedOAuthMCPConnectionDescriptor;
+  authority_issuer: string;
+  authority_key_id: string;
+  authority_jti_hash: string;
 }
 
 export interface AgentConfigSkillInput {
@@ -2303,6 +2353,15 @@ export interface SessionsSetTitleResponse {
   session_id: string;
   title: string;
   title_source: string;
+}
+
+export interface SignedOAuthMCPConnectionDescriptor {
+  name: string;
+  url: string;
+  tool_allowlist?: string[];
+  tool_denylist?: string[];
+  connect_timeout_ms?: number;
+  request_timeout_ms?: number;
 }
 
 export interface SizeRange {
