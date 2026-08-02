@@ -630,6 +630,75 @@ func TestTranslateResponse_NoUsage(t *testing.T) {
 	}
 }
 
+func TestTranslateResponse_SelectsWireChoiceZeroIndependentOfSliceOrder(t *testing.T) {
+	t.Parallel()
+	badContent, goodContent := "choice-one", "choice-zero"
+	badReasoning, goodReasoning := "wrong reasoning", "selected reasoning"
+	badID, goodID := "call-one", "call-zero"
+	badName, goodName := "wrong-tool", "selected-tool"
+	message := func(content, reasoning string, id, name *string) *bfschemas.ChatMessage {
+		return &bfschemas.ChatMessage{
+			Role:    bfschemas.ChatMessageRoleAssistant,
+			Content: &bfschemas.ChatMessageContent{ContentStr: &content},
+			ChatAssistantMessage: &bfschemas.ChatAssistantMessage{
+				ReasoningDetails: []bfschemas.ChatReasoningDetails{{
+					Index: 0, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: &reasoning,
+				}},
+				ToolCalls: []bfschemas.ChatAssistantMessageToolCall{{
+					ID: id,
+					Function: bfschemas.ChatAssistantMessageToolCallFunction{
+						Name: name, Arguments: `{"selected":true}`,
+					},
+				}},
+			},
+		}
+	}
+	resp := &bfschemas.BifrostChatResponse{Choices: []bfschemas.BifrostResponseChoice{
+		{Index: 1, ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{
+			Message: message(badContent, badReasoning, &badID, &badName),
+		}},
+		{Index: 0, ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{
+			Message: message(goodContent, goodReasoning, &goodID, &goodName),
+		}},
+	}}
+
+	out := translateResponse(resp)
+	if out.Content != goodContent || out.Reasoning != goodReasoning {
+		t.Fatalf("selected response = content %q reasoning %q", out.Content, out.Reasoning)
+	}
+	if len(out.ToolCalls) != 1 || out.ToolCalls[0].ID != goodID || out.ToolCalls[0].Name != goodName {
+		t.Fatalf("selected tool calls = %#v", out.ToolCalls)
+	}
+}
+
+func TestTranslateResponse_NoWireChoiceZeroReturnsEmptySelection(t *testing.T) {
+	t.Parallel()
+	content, reasoning := "must-not-leak", "must-not-leak"
+	id, name := "must-not-leak", "must-not-leak"
+	resp := &bfschemas.BifrostChatResponse{Choices: []bfschemas.BifrostResponseChoice{{
+		Index: 2,
+		ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{Message: &bfschemas.ChatMessage{
+			Content: &bfschemas.ChatMessageContent{ContentStr: &content},
+			ChatAssistantMessage: &bfschemas.ChatAssistantMessage{
+				ReasoningDetails: []bfschemas.ChatReasoningDetails{{
+					Index: 0, Type: bfschemas.BifrostReasoningDetailsTypeText, Text: &reasoning,
+				}},
+				ToolCalls: []bfschemas.ChatAssistantMessageToolCall{{
+					ID: &id, Function: bfschemas.ChatAssistantMessageToolCallFunction{Name: &name},
+				}},
+			},
+		}},
+	}}}
+
+	out := translateResponse(resp)
+	if out.Content != "" || out.Reasoning != "" || out.ToolCalls != nil {
+		t.Fatalf("no choice zero must return empty selection: %#v", out)
+	}
+	if selectedNonStreamChoice(resp) != nil || selectedNonStreamChoice(nil) != nil {
+		t.Fatal("selector returned a choice when wire index zero was absent")
+	}
+}
+
 // TestExtractUsageAndCost_CacheTokens_ExplicitSplit — providers that report
 // separate read/write cache counts (e.g. Anthropic/OpenRouter) land both on
 // llm.Usage. Uses bifrost's own vendored struct type directly (§17.8: the

@@ -42,23 +42,11 @@ func anthropicReasoningBudget(e llm.ReasoningEffort) int {
 	}
 }
 
-// reasoningFromMessage walks a bifrost assistant message's normalised
-// `ReasoningDetails` slice and returns the concatenated plain-text
-// reasoning trace. This is bifrost's documented canonical surface for
-// provider reasoning: every provider — OpenRouter
-// thinking-class models AND the native Gemini path — populates
-// `reasoning_details[]` on the response message. Reading it here
-// closes the Gemini-direct black hole (where the per-delta
-// `delta.Reasoning` field is nil) and the unary-path gap (where
-// `OnReasoning` never fires).
-//
-// Only `reasoning.text` and `reasoning.summary` entries contribute.
-// Encrypted and content-block entries stay outside D-147's flat-text
-// provider-capture boundary. A nil/empty slice returns the empty
-// string.
-//
-// The caller (the driver's unary + streaming paths) stamps the result
-// onto `llm.CompleteResponse.Reasoning`.
+// reasoningFromMessage returns the assistant message's normalized
+// plain-text reasoning trace. Text and summary entries contribute;
+// encrypted and structured content-block entries are excluded because
+// they do not expose plain-text reasoning. A nil message or empty
+// details slice returns the empty string.
 func reasoningFromMessage(msg *bfschemas.ChatMessage) string {
 	if msg == nil || msg.ChatAssistantMessage == nil {
 		return ""

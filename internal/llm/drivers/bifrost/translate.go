@@ -571,10 +571,9 @@ func translateResponseFormat(rf *llm.ResponseFormat) (*interface{}, error) {
 }
 
 // translateResponse builds Harbor's `llm.CompleteResponse` from
-// bifrost's non-streaming response. The assistant message's text
-// content goes into `Content`; the message's normalised
-// `ReasoningDetails` go into `Reasoning` (closes the
-// unary-path reasoning-capture gap); usage and cost flow through.
+// bifrost's non-streaming response. Content, reasoning, and tool calls
+// all come from the choice whose wire index is zero; usage and cost
+// come from the response envelope.
 func translateResponse(resp *bfschemas.BifrostChatResponse) llm.CompleteResponse {
 	out := llm.CompleteResponse{}
 	if resp == nil {
@@ -587,42 +586,53 @@ func translateResponse(resp *bfschemas.BifrostChatResponse) llm.CompleteResponse
 	return out
 }
 
-// extractReasoning pulls the normalised reasoning trace from the first
-// non-streaming choice's assistant message. Bifrost populates
+// selectedNonStreamChoice returns the non-streaming choice whose wire
+// index is zero. Slice order is not authoritative: providers may
+// return choices in a different order.
+func selectedNonStreamChoice(resp *bfschemas.BifrostChatResponse) *bfschemas.BifrostResponseChoice {
+	if resp == nil {
+		return nil
+	}
+	for i := range resp.Choices {
+		choice := &resp.Choices[i]
+		if choice.Index == 0 && choice.ChatNonStreamResponseChoice != nil {
+			return choice
+		}
+	}
+	return nil
+}
+
+// extractReasoning pulls the normalised reasoning trace from the
+// selected non-streaming choice's assistant message. Bifrost populates
 // `reasoning_details[]` on the message for every reasoning-capable
 // provider, including the native Gemini path where the per-delta
 // `delta.Reasoning` field is nil. Empty when the
 // provider surfaced no reasoning.
 func extractReasoning(resp *bfschemas.BifrostChatResponse) string {
-	if resp == nil || len(resp.Choices) == 0 {
-		return ""
-	}
-	choice := resp.Choices[0]
-	if choice.ChatNonStreamResponseChoice == nil {
+	choice := selectedNonStreamChoice(resp)
+	if choice == nil {
 		return ""
 	}
 	return reasoningFromMessage(choice.Message)
 }
 
-// extractContent pulls the assistant-message text from the first
+// extractContent pulls the assistant-message text from the selected
 // non-streaming choice. Streaming responses return their content via
 // the chunk path; the caller accumulates and supplies a non-streaming-
 // shaped response to this helper, or constructs one of its own.
 func extractContent(resp *bfschemas.BifrostChatResponse) string {
-	if len(resp.Choices) == 0 {
+	choice := selectedNonStreamChoice(resp)
+	if choice == nil {
 		return ""
 	}
-	choice := resp.Choices[0]
-	if choice.ChatNonStreamResponseChoice != nil &&
-		choice.Message != nil &&
+	if choice.Message != nil &&
 		choice.Message.Content != nil &&
 		choice.Message.Content.ContentStr != nil {
 		return *choice.Message.Content.ContentStr
 	}
 	// Some providers return the content as blocks even for non-
 	// streaming responses; concatenate the text-typed blocks.
-	if choice.ChatNonStreamResponseChoice != nil &&
-		choice.Message != nil &&
+	if choice.Message != nil &&
 		choice.Message.Content != nil &&
 		choice.Message.Content.ContentBlocks != nil {
 		var sb strings.Builder
@@ -774,11 +784,8 @@ func translateAssistantToolCalls(in []llm.ToolCallStructured) []bfschemas.ChatAs
 }
 
 func extractToolCalls(resp *bfschemas.BifrostChatResponse) []llm.ToolCallStructured {
-	if resp == nil || len(resp.Choices) == 0 {
-		return nil
-	}
-	choice := resp.Choices[0]
-	if choice.ChatNonStreamResponseChoice == nil {
+	choice := selectedNonStreamChoice(resp)
+	if choice == nil {
 		return nil
 	}
 	msg := choice.Message

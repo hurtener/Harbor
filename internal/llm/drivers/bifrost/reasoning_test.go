@@ -479,6 +479,20 @@ func equalCallbacks[T comparable](got, want []T) bool {
 func TestReasoningCapture_ConcurrentReuseNoBleedOrLeak(t *testing.T) {
 	stub := newStubClient()
 	stub.streamHandler = func(req *bfschemas.BifrostChatRequest) (chan *bfschemas.BifrostStreamChunk, *bfschemas.BifrostError) {
+		if strings.HasPrefix(req.Model, "short-") {
+			// The callback cancels this call after the only buffered
+			// fragment. Leaving the channel open makes the next loop
+			// iteration deterministically select that call's context.
+			ch := make(chan *bfschemas.BifrostStreamChunk, 1)
+			piece := req.Model + ":"
+			ch <- &bfschemas.BifrostStreamChunk{BifrostChatResponse: &bfschemas.BifrostChatResponse{
+				Model: req.Model,
+				Choices: []bfschemas.BifrostResponseChoice{{Index: 0, ChatStreamResponseChoice: &bfschemas.ChatStreamResponseChoice{
+					Delta: &bfschemas.ChatStreamResponseChoiceDelta{Reasoning: &piece},
+				}}},
+			}}
+			return ch, nil
+		}
 		ch := make(chan *bfschemas.BifrostStreamChunk, 2)
 		for _, fragment := range []string{req.Model + ":", "reasoning"} {
 			piece := fragment
@@ -503,8 +517,21 @@ func TestReasoningCapture_ConcurrentReuseNoBleedOrLeak(t *testing.T) {
 	for i := range n {
 		go func() {
 			defer wg.Done()
-			model := fmt.Sprintf("model-%03d", i)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			mode := "ok"
+			switch i % 8 {
+			case 0:
+				mode = "pre"
+			case 1:
+				mode = "short"
+			}
+			model := fmt.Sprintf("%s-%03d", mode, i)
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if mode == "ok" {
+				ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			} else {
+				ctx, cancel = context.WithCancel(context.Background())
+			}
 			defer cancel()
 			var identityErr error
 			ctx, identityErr = identity.With(ctx, identity.Identity{
@@ -516,9 +543,13 @@ func TestReasoningCapture_ConcurrentReuseNoBleedOrLeak(t *testing.T) {
 				errs <- fmt.Errorf("call %d identity: %w", i, identityErr)
 				return
 			}
+			if mode == "pre" {
+				cancel()
+			}
 			text := "go"
 			var callback strings.Builder
 			terminal := 0
+			var shortCancel sync.Once
 			out, err := drv.Complete(ctx, llm.CompleteRequest{
 				Model: model, Stream: true,
 				Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
@@ -528,16 +559,33 @@ func TestReasoningCapture_ConcurrentReuseNoBleedOrLeak(t *testing.T) {
 						return
 					}
 					callback.WriteString(delta)
+					if mode == "short" {
+						shortCancel.Do(cancel)
+					}
 				},
 			})
+			errText := "<nil>"
 			if err != nil {
-				errs <- fmt.Errorf("call %d: %w", i, err)
-				return
+				errText = err.Error()
 			}
-			want := model + ":reasoning"
-			if out.Reasoning != want || callback.String() != want || terminal != 1 {
-				errs <- fmt.Errorf("call %d: response=%q callback=%q terminal=%d want=%q/1", i, out.Reasoning, callback.String(), terminal, want)
-				return
+			switch mode {
+			case "pre":
+				if !errors.Is(err, context.Canceled) || out.Content != "" || out.Reasoning != "" || len(out.ToolCalls) != 0 || callback.Len() != 0 || terminal != 0 {
+					errs <- fmt.Errorf("pre-cancel call %d: err=%s response=%#v callback=%q terminal=%d", i, errText, out, callback.String(), terminal)
+					return
+				}
+			case "short":
+				want := model + ":"
+				if !errors.Is(err, context.Canceled) || out.Content != "" || out.Reasoning != "" || len(out.ToolCalls) != 0 || callback.String() != want || terminal != 1 {
+					errs <- fmt.Errorf("short-cancel call %d: err=%s response=%#v callback=%q terminal=%d want=%q/1", i, errText, out, callback.String(), terminal, want)
+					return
+				}
+			default:
+				want := model + ":reasoning"
+				if err != nil || out.Reasoning != want || callback.String() != want || terminal != 1 {
+					errs <- fmt.Errorf("success call %d: err=%s response=%q callback=%q terminal=%d want=%q/1", i, errText, out.Reasoning, callback.String(), terminal, want)
+					return
+				}
 			}
 			errs <- nil
 		}()
