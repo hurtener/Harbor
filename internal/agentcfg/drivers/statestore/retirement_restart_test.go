@@ -2,6 +2,7 @@ package statestore_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/state"
+	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	statesqlite "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 )
 
@@ -22,6 +24,56 @@ type retirementDiscoveryBoundaryStore struct {
 	state.StateStore
 	failAt uint64
 	failed atomic.Bool
+}
+
+type retirementAfterItemSaveFaultStore struct {
+	state.StateStore
+	failed atomic.Bool
+}
+
+type retirementScrubBoundaryStore struct {
+	state.StateStore
+	boundary string
+	failed   atomic.Bool
+}
+
+func (s *retirementScrubBoundaryStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if s.failed.Load() {
+		return s.StateStore.SaveIf(ctx, expectations, next)
+	}
+	if s.boundary == "compact" && strings.HasPrefix(next.Kind, "agentcfg.retirement.manifest.") && strings.Contains(string(next.Bytes), `"scrubbed":true`) && s.failed.CompareAndSwap(false, true) {
+		return errors.New("injected manifest compaction failure")
+	}
+	if next.Kind == agentcfg.ActiveSlotKind {
+		var envelope struct {
+			Retirement *struct {
+				CleanupCompleted uint64 `json:"cleanup_completed"`
+				ScrubCompleted   uint64 `json:"scrub_completed"`
+			} `json:"retirement"`
+		}
+		if json.Unmarshal(next.Bytes, &envelope) == nil && envelope.Retirement != nil {
+			matches := s.boundary == "cleanup" && envelope.Retirement.CleanupCompleted == 1 && envelope.Retirement.ScrubCompleted == 0
+			matches = matches || s.boundary == "scrub-cursor" && envelope.Retirement.CleanupCompleted == 1 && envelope.Retirement.ScrubCompleted == 1
+			if matches && s.failed.CompareAndSwap(false, true) {
+				return errors.New("injected retirement scrub lifecycle failure")
+			}
+		}
+	}
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
+func (s *retirementAfterItemSaveFaultStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if next.Kind == agentcfg.ActiveSlotKind && !s.failed.Load() {
+		var envelope struct {
+			Retirement *struct {
+				ManifestCount uint64 `json:"manifest_count"`
+			} `json:"retirement"`
+		}
+		if json.Unmarshal(next.Bytes, &envelope) == nil && envelope.Retirement != nil && envelope.Retirement.ManifestCount == 1 && s.failed.CompareAndSwap(false, true) {
+			return errors.New("injected lifecycle failure after manifest item save")
+		}
+	}
+	return s.StateStore.SaveIf(ctx, expectations, next)
 }
 
 func (s *retirementDiscoveryBoundaryStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
@@ -301,6 +353,28 @@ func TestRetirement_SQLiteMultipageLongTargetsRestartMakesMonotonicProgress(t *t
 	if completed != targetCount {
 		t.Fatalf("completed=%d want=%d", completed, targetCount)
 	}
+	continuation = ""
+	scrubbed := 0
+	for {
+		page, err := restartedStore.ScanKindForTenant(ctx, state.ListScope{MaintenanceScoped: true}, admin.TenantID, manifestPrefix, state.MaxStateScanLimit, continuation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, record := range page.Records {
+			body := string(record.Bytes)
+			if !strings.Contains(body, `"scrubbed":true`) || strings.Contains(body, `"resource"`) || strings.Contains(body, `"source"`) || strings.Contains(body, "user-") || strings.Contains(body, "session-") || strings.Contains(body, "skill-") {
+				t.Fatalf("completed manifest retained target content kind=%q body=%s", record.Kind, body)
+			}
+			scrubbed++
+		}
+		if page.Continuation == "" {
+			break
+		}
+		continuation = page.Continuation
+	}
+	if scrubbed != targetCount {
+		t.Fatalf("scrubbed=%d want=%d", scrubbed, targetCount)
+	}
 	personalPrefix, _ := sessionoverlay.PersonalSkillPrefix(agent)
 	continuation = ""
 	tombstones := 0
@@ -335,5 +409,215 @@ func TestRetirement_SQLiteMultipageLongTargetsRestartMakesMonotonicProgress(t *t
 	}
 	if got, err := restarted.Get(ctx, admin, agent, revision.RevisionID, agentcfg.ConfigScopeAgent); err != nil || got.ContentHash != revision.ContentHash {
 		t.Fatalf("history=(%+v,%v)", got, err)
+	}
+}
+
+func TestRetirement_OccupiedOrdinalReplaysStoredSuccessorAfterSourceDeletion(t *testing.T) {
+	for _, driver := range []string{"inmem", "sqlite"} {
+		for _, following := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/following=%t", driver, following), func(t *testing.T) {
+				ctx := context.Background()
+				var base state.StateStore
+				var err error
+				dsn := filepath.Join(t.TempDir(), "successor.db")
+				if driver == "sqlite" {
+					base, err = statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+				} else {
+					base, err = stateinmem.New(config.StateConfig{Driver: "inmem"})
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				admin := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-successor", UserID: "admin", SessionID: "control"}}
+				const agent = "successor-agent"
+				operation := fmt.Sprintf("successor-%s-%t", driver, following)
+				first := newRegistryOnStore(t, &retirementAfterItemSaveFaultStore{StateStore: base})
+				revision, err := first.SetRevision(ctx, admin, agent, agentcfg.ConfigScopeAgent, skills("history"), agentcfg.SetOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				personal, _ := sessionoverlay.NewDurableStore(base, nil)
+				seedCount := 1 + map[bool]int{true: 1}[following]
+				for i := range seedCount {
+					target := identity.Quadruple{Identity: identity.Identity{TenantID: admin.TenantID, UserID: fmt.Sprintf("erased-user-%d", i), SessionID: fmt.Sprintf("erased-session-%d", i)}}
+					if _, err := personal.SavePersonal(ctx, target, agent, retirementPersonalSkill(fmt.Sprintf("erased-name-%d", i)), "", ""); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := first.(agentcfg.RetirementRegistry).Retire(ctx, admin, agent, agentcfg.RetirementRequest{OperationID: operation, ExpectedContentHash: revision.ContentHash}); err == nil {
+					t.Fatal("injected lifecycle failure unexpectedly succeeded")
+				}
+				lifecycleQ, _, _ := agentcfg.LifecycleSlot(admin.TenantID, agent)
+				manifestKind := fmt.Sprintf("agentcfg.retirement.manifest.%s.%020d", agentcfg.RetirementOperationHash(operation), 0)
+				pending, err := base.Load(ctx, lifecycleQ, manifestKind)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var persisted struct {
+					Resource string `json:"resource"`
+				}
+				if err := json.Unmarshal(pending.Bytes, &persisted); err != nil {
+					t.Fatal(err)
+				}
+				targetBytes, err := base64.RawURLEncoding.DecodeString(persisted.Resource)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var target struct {
+					TenantID  string `json:"tenant_id"`
+					UserID    string `json:"user_id"`
+					SessionID string `json:"session_id"`
+					Kind      string `json:"kind"`
+				}
+				if err := json.Unmarshal(targetBytes, &target); err != nil {
+					t.Fatal(err)
+				}
+				deletedQ := identity.Quadruple{Identity: identity.Identity{TenantID: target.TenantID, UserID: target.UserID, SessionID: target.SessionID}}
+				if err := base.Delete(ctx, deletedQ, target.Kind); err != nil {
+					t.Fatal(err)
+				}
+				_ = first.Close(ctx)
+				if driver == "sqlite" {
+					if err := base.Close(ctx); err != nil {
+						t.Fatal(err)
+					}
+					base, err = statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				defer base.Close(ctx)
+				restarted := newRegistryOnStore(t, base)
+				status, err := restarted.(agentcfg.RetirementRegistry).Retire(ctx, admin, agent, agentcfg.RetirementRequest{OperationID: operation, ExpectedContentHash: revision.ContentHash})
+				if err != nil {
+					t.Fatalf("resume from occupied ordinal: %v", err)
+				}
+				completed := 0
+				for !status.Completed {
+					if len(status.Cleanup) != 1 {
+						t.Fatalf("pending status=%+v", status)
+					}
+					step := status.Cleanup[0]
+					status, err = restarted.(agentcfg.RetirementRegistry).CompleteRetirementStep(ctx, admin, agent, operation, step.Class, step.Resource)
+					if err != nil {
+						t.Fatalf("complete item %d: %v", completed, err)
+					}
+					completed++
+				}
+				want := 1
+				if following {
+					want = 2
+				}
+				if completed != want || len(status.Cleanup) != 0 {
+					t.Fatalf("completed=%d cleanup=%+v want=%d", completed, status.Cleanup, want)
+				}
+				for ordinal := range want {
+					record, err := base.Load(ctx, lifecycleQ, fmt.Sprintf("agentcfg.retirement.manifest.%s.%020d", agentcfg.RetirementOperationHash(operation), ordinal))
+					if err != nil || !strings.Contains(string(record.Bytes), `"scrubbed":true`) || strings.Contains(string(record.Bytes), "erased-") {
+						t.Fatalf("final manifest ordinal %d retained target content: %s err=%v", ordinal, record.Bytes, err)
+					}
+				}
+				if got, err := restarted.Get(ctx, admin, agent, revision.RevisionID, agentcfg.ConfigScopeAgent); err != nil || got.ContentHash != revision.ContentHash {
+					t.Fatalf("immutable history=(%+v,%v)", got, err)
+				}
+			})
+		}
+	}
+}
+
+func TestRetirement_SQLiteScrubOrderingRestartsAtEveryBoundary(t *testing.T) {
+	for _, boundary := range []string{"cleanup", "compact", "scrub-cursor"} {
+		t.Run(boundary, func(t *testing.T) {
+			ctx := context.Background()
+			dsn := filepath.Join(t.TempDir(), "scrub-order.db")
+			base, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fault := &retirementScrubBoundaryStore{StateStore: base, boundary: boundary}
+			first := newRegistryOnStore(t, fault)
+			admin := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-scrub", UserID: "admin", SessionID: "control"}}
+			agent := "scrub-" + boundary
+			operation := "operation-" + boundary
+			payload := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{{Name: "private-resource-" + boundary}}}}
+			revision, err := first.SetRevision(ctx, admin, agent, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			status, err := first.(agentcfg.RetirementRegistry).Retire(ctx, admin, agent, agentcfg.RetirementRequest{OperationID: operation, ExpectedContentHash: revision.ContentHash})
+			if err != nil || len(status.Cleanup) != 1 {
+				t.Fatalf("retire=(%+v,%v)", status, err)
+			}
+			step := status.Cleanup[0]
+			if _, err := first.(agentcfg.RetirementRegistry).CompleteRetirementStep(ctx, admin, agent, operation, step.Class, step.Resource); err == nil {
+				t.Fatal("injected scrub boundary unexpectedly completed")
+			}
+			lifecycleQ, lifecycleKind, _ := agentcfg.LifecycleSlot(admin.TenantID, agent)
+			manifestKind := fmt.Sprintf("agentcfg.retirement.manifest.%s.%020d", agentcfg.RetirementOperationHash(operation), 0)
+			manifest, err := base.Load(ctx, lifecycleQ, manifestKind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			isCompact := strings.Contains(string(manifest.Bytes), `"scrubbed":true`)
+			if (boundary == "scrub-cursor") != isCompact {
+				t.Fatalf("boundary %s compact=%t body=%s", boundary, isCompact, manifest.Bytes)
+			}
+			lifecycle, err := base.Load(ctx, lifecycleQ, lifecycleKind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var durable struct {
+				Retirement struct {
+					CleanupCompleted uint64 `json:"cleanup_completed"`
+					ScrubCompleted   uint64 `json:"scrub_completed"`
+				} `json:"retirement"`
+			}
+			if err := json.Unmarshal(lifecycle.Bytes, &durable); err != nil {
+				t.Fatal(err)
+			}
+			wantCleanup := uint64(1)
+			if boundary == "cleanup" {
+				wantCleanup = 0
+			}
+			if durable.Retirement.CleanupCompleted != wantCleanup || durable.Retirement.ScrubCompleted != 0 {
+				t.Fatalf("boundary %s lifecycle cleanup=%d scrub=%d", boundary, durable.Retirement.CleanupCompleted, durable.Retirement.ScrubCompleted)
+			}
+			_ = first.Close(ctx)
+			_ = base.Close(ctx)
+			reopened, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close(ctx)
+			restarted := newRegistryOnStore(t, reopened)
+			status, err = restarted.(agentcfg.RetirementRegistry).Retire(ctx, admin, agent, agentcfg.RetirementRequest{OperationID: operation, ExpectedContentHash: revision.ContentHash})
+			if err != nil {
+				t.Fatalf("restart replay: %v", err)
+			}
+			if boundary == "cleanup" {
+				if len(status.Cleanup) != 1 {
+					t.Fatalf("cleanup-CAS restart lost full item: %+v", status)
+				}
+				step = status.Cleanup[0]
+				status, err = restarted.(agentcfg.RetirementRegistry).CompleteRetirementStep(ctx, admin, agent, operation, step.Class, step.Resource)
+				if err != nil {
+					t.Fatalf("retry cleanup: %v", err)
+				}
+			}
+			if !status.Completed || len(status.Cleanup) != 0 {
+				t.Fatalf("restart status=%+v", status)
+			}
+			finalManifest, err := reopened.Load(ctx, lifecycleQ, manifestKind)
+			if err != nil || !strings.Contains(string(finalManifest.Bytes), `"scrubbed":true`) || strings.Contains(string(finalManifest.Bytes), "private-resource") {
+				t.Fatalf("final compact manifest=%s err=%v", finalManifest.Bytes, err)
+			}
+			replay, err := restarted.(agentcfg.RetirementRegistry).Retire(ctx, admin, agent, agentcfg.RetirementRequest{OperationID: operation, ExpectedContentHash: revision.ContentHash})
+			if err != nil || !replay.Completed || len(replay.Cleanup) != 0 {
+				t.Fatalf("completed replay=(%+v,%v)", replay, err)
+			}
+			if got, err := restarted.Get(ctx, admin, agent, revision.RevisionID, agentcfg.ConfigScopeAgent); err != nil || got.ContentHash != revision.ContentHash {
+				t.Fatalf("immutable history=(%+v,%v)", got, err)
+			}
+		})
 	}
 }

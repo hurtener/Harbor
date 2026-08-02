@@ -62,6 +62,15 @@ func TestAgentConfigHandler_Retire_AdminReplayAndTerminalRefusal(t *testing.T) {
 	}
 }
 
+func TestAgentConfigHandler_Retire_UsesSharedAgentConfigBodyScope(t *testing.T) {
+	h := sessionHandler(t)
+	body := `{"identity":{"tenant":"foreign","user":"u1","session":"s1"},"agent_id":"` + acAgent + `","operation_id":"scope-gate","expected_content_hash":"none"}`
+	code, response := acReq(t, h, "retire", body, acID(), []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusUnauthorized || errCode(t, response) != protoerrors.CodeIdentityRequired {
+		t.Fatalf("foreign-body retirement = (%d,%s), want shared agent-config identity rejection", code, response)
+	}
+}
+
 // TestAgentConfigHandler_UserRoute_WithUserScopeAllowed proves a caller
 // carrying the agent_config:user scope reaches a user-tier route.
 func TestAgentConfigHandler_UserRoute_WithUserScopeAllowed(t *testing.T) {

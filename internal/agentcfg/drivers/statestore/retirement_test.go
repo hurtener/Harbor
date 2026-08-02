@@ -345,12 +345,63 @@ func TestRetirement_ProgressIsFrozenCASState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("complete frozen item: %v", err)
 	}
-	if !status.Completed || !status.Cleanup[0].Completed || status.Generation < 2 {
+	if !status.Completed || len(status.Cleanup) != 0 || status.Generation < 2 {
 		t.Fatalf("completed status = %+v, want durable completed generation", status)
 	}
 	replay, found, err := retirer.RetirementStatus(ctx, id, "agent-a")
-	if err != nil || !found || !replay.Completed || !replay.Cleanup[0].Completed {
+	if err != nil || !found || !replay.Completed || len(replay.Cleanup) != 0 {
 		t.Fatalf("reread durable progress = (%+v,%v,%v)", replay, found, err)
+	}
+}
+
+func TestRetirement_ConcurrentSameItemCleanupAndScrubCASConverges(t *testing.T) {
+	ctx := context.Background()
+	leftStore, rightStore := newSharedStores(t)
+	left := newRegistryOnStore(t, leftStore)
+	right := newRegistryOnStore(t, rightStore)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-scrub-race", UserID: "admin", SessionID: "control"}}
+	const agent = "agent-scrub-race"
+	payload := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{{Name: "owned-race"}}}}
+	revision, err := left.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := left.(agentcfg.RetirementRegistry).Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "scrub-race-op", ExpectedContentHash: revision.ContentHash})
+	if err != nil || len(status.Cleanup) != 1 {
+		t.Fatalf("retire=(%+v,%v)", status, err)
+	}
+	step := status.Cleanup[0]
+	const n = 100
+	errCh := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			reg := left.(agentcfg.RetirementRegistry)
+			if index%2 == 1 {
+				reg = right.(agentcfg.RetirementRegistry)
+			}
+			_, err := reg.CompleteRetirementStep(ctx, id, agent, "scrub-race-op", step.Class, step.Resource)
+			errCh <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil && !errors.Is(err, agentcfg.ErrRetirementConflict) {
+			t.Fatalf("concurrent completion=%v", err)
+		}
+	}
+	replay, err := left.(agentcfg.RetirementRegistry).Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "scrub-race-op", ExpectedContentHash: revision.ContentHash})
+	if err != nil || !replay.Completed || len(replay.Cleanup) != 0 {
+		t.Fatalf("converged replay=(%+v,%v)", replay, err)
+	}
+	q, _, _ := agentcfg.LifecycleSlot(id.TenantID, agent)
+	kind := fmt.Sprintf("agentcfg.retirement.manifest.%s.%020d", agentcfg.RetirementOperationHash("scrub-race-op"), 0)
+	record, err := leftStore.Load(ctx, q, kind)
+	if err != nil || !strings.Contains(string(record.Bytes), `"scrubbed":true`) || strings.Contains(string(record.Bytes), step.Resource) {
+		t.Fatalf("compacted manifest=%s err=%v", record.Bytes, err)
 	}
 }
 
@@ -403,7 +454,7 @@ func TestRetirement_CommitThenAckLossConverges(t *testing.T) {
 		if err != nil {
 			t.Fatalf("complete after committed-but-errored progress: %v", err)
 		}
-		if !status.Completed || !status.Cleanup[0].Completed {
+		if !status.Completed || len(status.Cleanup) != 0 {
 			t.Fatalf("progress status=%+v, want completed frozen cleanup", status)
 		}
 	})
@@ -461,7 +512,7 @@ func TestRetirement_EventPublishFailureStaysCheckpointed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("complete after replayed started event: %v", err)
 	}
-	if !status.Completed || !status.Cleanup[0].Completed {
+	if !status.Completed || len(status.Cleanup) != 0 {
 		t.Fatalf("completed retry status=%+v, want acknowledged cleanup", status)
 	}
 }
@@ -500,7 +551,7 @@ func TestRetirement_PendingProgressMustFlushBeforeLaterStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry later completion after progress acknowledgement: %v", err)
 	}
-	if !status.Completed || len(status.Cleanup) != 1 || status.Cleanup[0].Resource != "two" || !status.Cleanup[0].Completed {
+	if !status.Completed || len(status.Cleanup) != 0 {
 		t.Fatalf("ordered cleanup did not finish: %+v", status)
 	}
 }

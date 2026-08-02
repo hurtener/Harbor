@@ -89,14 +89,15 @@ func validRetirementEnvelope(data []byte) bool {
 		ManifestDigest   *string                      `json:"manifest_digest"`
 		CleanupCompleted *uint64                      `json:"cleanup_completed"`
 		CleanupDigest    *string                      `json:"cleanup_digest"`
+		ScrubCompleted   *uint64                      `json:"scrub_completed"`
 	}
-	if decodeStrictLifecycleJSON(data, &record) != nil || record.OperationID == nil || record.RetiredAt == nil || record.Generation == nil || record.Completed == nil || record.ManifestCount == nil || record.ManifestDigest == nil || record.CleanupCompleted == nil || record.CleanupDigest == nil {
+	if decodeStrictLifecycleJSON(data, &record) != nil || record.OperationID == nil || record.RetiredAt == nil || record.Generation == nil || record.Completed == nil || record.ManifestCount == nil || record.ManifestDigest == nil || record.CleanupCompleted == nil || record.CleanupDigest == nil || record.ScrubCompleted == nil {
 		return false
 	}
 	if *record.OperationID == "" || *record.OperationID != strings.TrimSpace(*record.OperationID) || len(*record.OperationID) > 128 || record.RetiredAt.IsZero() || *record.Generation == 0 {
 		return false
 	}
-	if !validLifecycleDigest(*record.ManifestDigest) || !validLifecycleDigest(*record.CleanupDigest) || *record.CleanupCompleted > *record.ManifestCount {
+	if !validLifecycleDigest(*record.ManifestDigest) || !validLifecycleDigest(*record.CleanupDigest) || *record.CleanupCompleted > *record.ManifestCount || *record.ScrubCompleted > *record.CleanupCompleted {
 		return false
 	}
 	if record.Discovery != nil {
@@ -108,10 +109,21 @@ func validRetirementEnvelope(data []byte) bool {
 		}
 	}
 	frozen := record.ManifestFrozen != nil && *record.ManifestFrozen
-	if frozen == (record.Discovery != nil) || (!frozen && (*record.Completed || *record.CleanupCompleted != 0)) || (frozen && *record.Completed != (*record.CleanupCompleted == *record.ManifestCount)) || (*record.ManifestCount == 0 && *record.ManifestDigest != emptyLifecycleManifestDigest()) || (*record.CleanupCompleted == 0 && *record.CleanupDigest != emptyLifecycleManifestDigest()) || (*record.Completed && *record.CleanupDigest != *record.ManifestDigest) {
+	allCleanupScrubbed := *record.CleanupCompleted == *record.ManifestCount && *record.ScrubCompleted == *record.ManifestCount
+	if frozen == (record.Discovery != nil) ||
+		(!frozen && (*record.Completed || *record.CleanupCompleted != 0 || *record.ScrubCompleted != 0)) ||
+		(*record.Completed && !allCleanupScrubbed) ||
+		(*record.ManifestCount == 0 && *record.ManifestDigest != emptyLifecycleManifestDigest()) ||
+		(*record.ManifestCount > 0 && *record.ManifestDigest == emptyLifecycleManifestDigest()) ||
+		(*record.CleanupCompleted == 0 && *record.CleanupDigest != emptyLifecycleManifestDigest()) ||
+		(*record.CleanupCompleted > 0 && *record.CleanupDigest == emptyLifecycleManifestDigest()) ||
+		(*record.Completed && *record.CleanupDigest != *record.ManifestDigest) {
 		return false
 	}
 	if record.PendingEvent != nil && !validRetirementPendingEvent(record.PendingEvent, frozen, *record.Completed) {
+		return false
+	}
+	if frozen && allCleanupScrubbed && !*record.Completed && (record.PendingEvent == nil || record.PendingEvent.Stage == nil || *record.PendingEvent.Stage != "progress") {
 		return false
 	}
 	return true

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionfence"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -138,6 +139,90 @@ func TestRetirement_Phase233aManifestExactAndFourSlotCleanup(t *testing.T) {
 	}
 	if _, err := st.Load(ctx, target, sessionoverlay.LegacyOverlayKind("a")); err != nil {
 		t.Fatalf("legacy compatibility row was physically removed: %v", err)
+	}
+}
+
+func TestRetirement_ErasureFenceAndAbsentFrozenPersonalTargetConverges(t *testing.T) {
+	for _, fence := range []string{"pending", "terminal"} {
+		t.Run(fence, func(t *testing.T) {
+			ctx := context.Background()
+			registry, st := newRegistryWithStore(t)
+			personal, _ := sessionoverlay.NewDurableStore(st, time.Now)
+			admin := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-erasure", UserID: "admin", SessionID: "control"}}
+			target := identity.Quadruple{Identity: identity.Identity{TenantID: admin.TenantID, UserID: "erased-user", SessionID: "erased-session"}}
+			otherTenantAdmin := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-erasure-other", UserID: "admin", SessionID: "control"}}
+			otherTenant := identity.Quadruple{Identity: identity.Identity{TenantID: otherTenantAdmin.TenantID, UserID: "survivor", SessionID: "session"}}
+			const agent = "a"
+			revision, err := registry.SetRevision(ctx, admin, agent, agentcfg.ConfigScopeAgent, skills("history"), agentcfg.SetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := registry.SetRevision(ctx, admin, "ab", agentcfg.ConfigScopeAgent, skills("sibling"), agentcfg.SetOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := registry.SetRevision(ctx, otherTenantAdmin, agent, agentcfg.ConfigScopeAgent, skills("other"), agentcfg.SetOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := personal.SavePersonal(ctx, target, agent, retirementPersonalSkill("erased-canonical"), "", ""); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := personal.SavePersonal(ctx, target, "ab", retirementPersonalSkill("sibling-canonical"), "", ""); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := personal.SavePersonal(ctx, otherTenant, agent, retirementPersonalSkill("other-canonical"), "", ""); err != nil {
+				t.Fatal(err)
+			}
+			operation := "erasure-" + fence
+			status, err := registry.(agentcfg.RetirementRegistry).Retire(ctx, admin, agent, agentcfg.RetirementRequest{OperationID: operation, ExpectedContentHash: revision.ContentHash})
+			if err != nil || len(status.Cleanup) != 1 || status.Cleanup[0].Class != "session_personal" {
+				t.Fatalf("frozen status=(%+v,%v)", status, err)
+			}
+			targetKind, _ := sessionoverlay.PersonalSkillKind(agent, "erased-canonical")
+			if err := st.Delete(ctx, target, targetKind); err != nil {
+				t.Fatal(err)
+			}
+			var fenceQ identity.Quadruple
+			var fenceKind string
+			if fence == "pending" {
+				fenceQ, fenceKind, err = sessionfence.PendingSlot(target)
+			} else {
+				fenceQ, fenceKind, err = sessionfence.TombstoneSlot(target)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: fenceQ, Kind: fenceKind, Bytes: []byte(`{"fence":true}`)}); err != nil {
+				t.Fatal(err)
+			}
+			step := status.Cleanup[0]
+			status, err = registry.(agentcfg.RetirementRegistry).CompleteRetirementStep(ctx, admin, agent, operation, step.Class, step.Resource)
+			if err != nil || !status.Completed || len(status.Cleanup) != 0 {
+				t.Fatalf("erasure convergence=(%+v,%v)", status, err)
+			}
+			if _, err := st.Load(ctx, target, targetKind); !errors.Is(err, state.ErrNotFound) {
+				t.Fatalf("erased target was recreated: %v", err)
+			}
+			siblingKind, _ := sessionoverlay.PersonalSkillKind("ab", "sibling-canonical")
+			if sibling, err := st.Load(ctx, target, siblingKind); err != nil || strings.Contains(string(sibling.Bytes), `"deleted":true`) {
+				t.Fatalf("sibling bleed=(%s,%v)", sibling.Bytes, err)
+			}
+			if survivor, found, err := personal.LoadPersonal(ctx, otherTenant, agent, "other-canonical"); err != nil || !found || survivor.Deleted {
+				t.Fatalf("tenant bleed=(%+v,%v,%v)", survivor, found, err)
+			}
+			lifecycleQ, _, _ := agentcfg.LifecycleSlot(admin.TenantID, agent)
+			manifestKind := fmt.Sprintf("agentcfg.retirement.manifest.%s.%020d", agentcfg.RetirementOperationHash(operation), 0)
+			manifest, err := st.Load(ctx, lifecycleQ, manifestKind)
+			if err != nil || !strings.Contains(string(manifest.Bytes), `"scrubbed":true`) || strings.Contains(string(manifest.Bytes), "erased-") {
+				t.Fatalf("manifest retained erased identity: %s err=%v", manifest.Bytes, err)
+			}
+			if got, err := registry.Get(ctx, admin, agent, revision.RevisionID, agentcfg.ConfigScopeAgent); err != nil || got.ContentHash != revision.ContentHash {
+				t.Fatalf("history=(%+v,%v)", got, err)
+			}
+			replay, err := registry.(agentcfg.RetirementRegistry).Retire(ctx, admin, agent, agentcfg.RetirementRequest{OperationID: operation, ExpectedContentHash: revision.ContentHash})
+			if err != nil || !replay.Completed || len(replay.Cleanup) != 0 {
+				t.Fatalf("completed replay=(%+v,%v)", replay, err)
+			}
+		})
 	}
 }
 

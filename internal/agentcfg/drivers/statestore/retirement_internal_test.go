@@ -3,11 +3,17 @@ package statestore
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
+	eventsinmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
@@ -39,5 +45,76 @@ func TestRetirementStrictDecoders_RejectNestedDuplicatesAndUnknownClass(t *testi
 		if _, err := r.loadRetirementManifestItem(context.Background(), q, retirement, 0); err == nil {
 			t.Fatalf("invalid manifest accepted: %s", body)
 		}
+	}
+}
+
+func TestRetirementManifestTamper_RecomputedSelfDigestFailsBeforeProjectionAndProgress(t *testing.T) {
+	for _, count := range []int{1, 2} {
+		t.Run(map[int]string{1: "final", 2: "current"}[count], func(t *testing.T) {
+			ctx := context.Background()
+			store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close(ctx)
+			bus, err := eventsinmem.New(config.EventsConfig{Driver: "inmem", MaxSubscribersPerSession: 4, SubscriberBufferSize: 16, IdleTimeout: time.Second, DropWindow: time.Second}, auditpatterns.New())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer bus.Close(ctx)
+			newRegistry := func() *registry {
+				return &registry{state: store, bus: bus, clock: time.Now, logger: slog.Default()}
+			}
+			r := newRegistry()
+			id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-tamper", UserID: "admin", SessionID: "control"}}
+			servers := make([]agentcfg.MCPConnectionDescriptor, 0, count)
+			for i := range count {
+				servers = append(servers, agentcfg.MCPConnectionDescriptor{Name: "owned-" + string(rune('a'+i))})
+			}
+			revision, err := r.SetRevision(ctx, id, "agent", agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: servers}}, agentcfg.SetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			operation := map[int]string{1: "tamper-final", 2: "tamper-current"}[count]
+			status, err := r.Retire(ctx, id, "agent", agentcfg.RetirementRequest{OperationID: operation, ExpectedContentHash: revision.ContentHash})
+			if err != nil || len(status.Cleanup) != 1 {
+				t.Fatalf("retire=(%+v,%v)", status, err)
+			}
+			q := syntheticQuad(id.TenantID, "agent")
+			kind := retirementManifestKind(agentcfg.RetirementOperationHash(operation), 0)
+			record, err := store.Load(ctx, q, kind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var item retirementManifestItem
+			if err := json.Unmarshal(record.Bytes, &item); err != nil {
+				t.Fatal(err)
+			}
+			item.Class = "oauth_provider"
+			item.Resource = "well-shaped-altered-resource"
+			item.Digest, err = advanceRetirementManifestDigest(item.PriorDigest, item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			item.Successor.ManifestDigest = item.Digest
+			altered, err := json.Marshal(item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: altered}); err != nil {
+				t.Fatal(err)
+			}
+			restarted := newRegistry()
+			if _, _, err := restarted.RetirementStatus(ctx, id, "agent"); !errors.Is(err, agentcfg.ErrRetirementConflict) {
+				t.Fatalf("tampered restarted status=%v, want conflict", err)
+			}
+			if _, err := restarted.CompleteRetirementStep(ctx, id, "agent", operation, item.Class, item.Resource); !errors.Is(err, agentcfg.ErrRetirementConflict) {
+				t.Fatalf("tampered completion=%v, want conflict", err)
+			}
+			lifecycle, _, _, err := restarted.loadActiveRecord(ctx, q)
+			if err != nil || lifecycle.Retirement.CleanupCompleted != 0 || lifecycle.Retirement.ScrubCompleted != 0 {
+				t.Fatalf("tamper advanced lifecycle=(%+v,%v)", lifecycle.Retirement, err)
+			}
+		})
 	}
 }

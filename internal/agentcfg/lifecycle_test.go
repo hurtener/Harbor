@@ -6,7 +6,7 @@ import (
 )
 
 func TestClassifyLifecycleRecord_RetirementEnvelopeStrictAndTerminal(t *testing.T) {
-	valid := []byte(`{"schema":1,"revision_id":"","updated_at":"2026-08-02T00:00:00Z","retirement":{"operation_id":"op","retired_at":"2026-08-02T00:00:00Z","generation":2,"completed":false,"discovery":{"stage":"legacy","continuation":"","config_index":0},"manifest_count":1,"manifest_digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","cleanup_completed":0,"cleanup_digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}`)
+	valid := []byte(`{"schema":1,"revision_id":"","updated_at":"2026-08-02T00:00:00Z","retirement":{"operation_id":"op","retired_at":"2026-08-02T00:00:00Z","generation":2,"completed":false,"discovery":{"stage":"legacy","continuation":"","config_index":0},"manifest_count":1,"manifest_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cleanup_completed":0,"cleanup_digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","scrub_completed":0}}`)
 	if got := ClassifyLifecycleRecord(valid); got != LifecycleRecordTerminal {
 		t.Fatalf("valid retirement classification=%v want terminal", got)
 	}
@@ -16,9 +16,12 @@ func TestClassifyLifecycleRecord_RetirementEnvelopeStrictAndTerminal(t *testing.
 	}{
 		{name: "mixed active and retirement", data: strings.Replace(string(valid), "\"revision_id\":\"\"", "\"revision_id\":\"active\"", 1)},
 		{name: "missing completed", data: strings.Replace(string(valid), "\"completed\":false,", ",", 1)},
+		{name: "missing scrub cursor", data: strings.Replace(string(valid), ",\"scrub_completed\":0", "", 1)},
 		{name: "unknown retirement field", data: strings.Replace(string(valid), "\"cleanup_completed\":0", "\"cleanup_completed\":0,\"reactivate\":true", 1)},
 		{name: "frozen with discovery", data: strings.Replace(string(valid), "\"manifest_count\":1", "\"manifest_frozen\":true,\"manifest_count\":1", 1)},
 		{name: "completed before cleanup", data: strings.Replace(string(valid), "\"completed\":false", "\"completed\":true", 1)},
+		{name: "missing manifest digest for nonempty manifest", data: strings.Replace(string(valid), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 1)},
+		{name: "scrub ahead of cleanup", data: strings.Replace(string(valid), "\"scrub_completed\":0", "\"scrub_completed\":1", 1)},
 		{name: "unknown pending stage", data: strings.Replace(string(valid), "\"completed\":false,", "\"completed\":false,\"pending_event\":{\"stage\":\"future\"},", 1)},
 		{name: "progress without class", data: strings.Replace(string(valid), "\"completed\":false,", "\"completed\":false,\"pending_event\":{\"stage\":\"progress\"},", 1)},
 	} {
@@ -50,7 +53,7 @@ func TestValidateUniqueJSONFields_RejectsEveryNestedDuplicate(t *testing.T) {
 
 func TestClassifyLifecycleRecord_PendingEventAndFrozenInvariants(t *testing.T) {
 	const prefix = `{"schema":1,"revision_id":"","updated_at":"2026-08-02T00:00:00Z","retirement":{"operation_id":"op","retired_at":"2026-08-02T00:00:00Z","generation":4,`
-	const suffix = `,"manifest_frozen":true,"manifest_count":1,"manifest_digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","cleanup_completed":0,"cleanup_digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}`
+	const suffix = `,"manifest_frozen":true,"manifest_count":1,"manifest_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cleanup_completed":1,"cleanup_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","scrub_completed":0}}`
 	validProgress := prefix + `"completed":false,"pending_event":{"stage":"progress","class":"session_personal"}` + suffix
 	if got := ClassifyLifecycleRecord([]byte(validProgress)); got != LifecycleRecordTerminal {
 		t.Fatalf("valid progress=%v", got)
@@ -60,8 +63,9 @@ func TestClassifyLifecycleRecord_PendingEventAndFrozenInvariants(t *testing.T) {
 		strings.Replace(validProgress, `"class":"session_personal"`, `"class":"unknown"`, 1),
 		strings.Replace(validProgress, `"stage":"progress","class":"session_personal"`, `"stage":"started","class":"session_personal"`, 1),
 		strings.Replace(validProgress, `"completed":false`, `"completed":true`, 1),
-		strings.Replace(validProgress, `"cleanup_completed":0`, `"cleanup_completed":2`, 1),
-		strings.Replace(validProgress, `"cleanup_completed":0`, `"cleanup_completed":1`, 1),
+		strings.Replace(validProgress, `"cleanup_completed":1`, `"cleanup_completed":2`, 1),
+		strings.Replace(validProgress, `"cleanup_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`, `"cleanup_digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"`, 1),
+		strings.Replace(validProgress, `"scrub_completed":0`, `"scrub_completed":2`, 1),
 	} {
 		if got := ClassifyLifecycleRecord([]byte(data)); got != LifecycleRecordInvalid {
 			t.Fatalf("invalid pending/frozen state classified=%v data=%s", got, data)

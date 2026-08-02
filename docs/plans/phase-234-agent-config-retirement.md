@@ -2,7 +2,7 @@
 
 ## Summary
 
-Add a durable CAS retirement verb that makes an agent terminally unresolvable for new runs while preserving immutable revision history. The tombstone retains the exact pre-retirement hash, operation ID, cleanup manifest, and progress so a same-operation retry resumes after any interruption; durable session records use Phase 233a's lifecycle-and-erasure fence composition rather than process-local compensation.
+Add a durable CAS retirement verb that makes an agent terminally unresolvable for new runs while preserving immutable revision history. The tombstone retains the exact pre-retirement hash, operation ID, frozen-manifest digest/count, and bounded cleanup/scrub progress so a same-operation retry resumes after any interruption; durable session records use Phase 233a's lifecycle-and-erasure fence composition rather than process-local compensation.
 
 ## RFC anchor
 
@@ -50,7 +50,7 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 ## Acceptance criteria
 
 - [ ] `agent_config.retire` requires admin scope, exact identity, non-empty bounded operation ID, and expected active content hash (or `ExpectNoActiveRevision`); it never requires `agent_reach`.
-- [ ] The agent active slot becomes a backward-compatible lifecycle envelope; a tombstone contains prior revision ID/hash, operation/time, fixed cleanup manifest, and per-step progress.
+- [ ] The agent active slot becomes a backward-compatible lifecycle envelope; a tombstone contains prior revision ID/hash, operation/time, fixed-manifest digest/count, and bounded discovery/cleanup/scrub progress. Pending external items are compacted to content-free digest anchors only after cleanup advancement is durable, and completion requires cleanup and scrub cursors to reach the manifest count.
 - [ ] Initial retirement and every progress update use `SaveIf`; a stale writer, rollback, or user-tier writer cannot resurrect or mutate the tombstoned agent.
 - [ ] Overlay and agent-owned personal-record mutation builds four exact `SaveIf` expectations (target, lifecycle, pending erasure, terminal erasure) and writes only the target; retirement or erasure wins with no local compensation fiction, and every later read/write refuses the corresponding terminal state.
 - [ ] Uncertain retirement tombstone/progress writes reread lifecycle target
@@ -136,14 +136,17 @@ and the Phase 233a personal/legacy cleanup is integrated here. The combined
 cleanup acceptance criterion above and Phase 234's master-plan status remain
 open until Phase 233b lands and the pair path is integrated and verified.
 
-The fixed cleanup manifest is operation-owned and stored as bounded immutable
-StateStore records, one deterministic ordinal at a time. The lifecycle
-tombstone retains only bounded discovery/cleanup cursors, item counts, and the
-rolling frozen digest. A same-operation response exposes only the next pending
-item (or final completed item), so neither a large scan page nor the complete
-target population can exceed the lifecycle envelope. Persisting an item
-precedes advancing its lifecycle cursor; an interrupted replay accepts only
-the exact existing item and then advances, preventing post-tombstone livelock.
+The fixed cleanup manifest is operation-owned and discovered into bounded
+StateStore records, one deterministic ordinal at a time. Each item includes
+its exact source and successor discovery authority, so replay validates and
+advances an occupied ordinal before any rescan. The lifecycle tombstone keeps
+only bounded discovery, cleanup, and scrub cursors plus manifest count/digest.
+A same-operation response exposes only the next pending item. After its side
+effect is durably acknowledged, the item is conditionally compacted to a
+content-free digest anchor and the scrub cursor advances; final completion
+requires every item to be cleaned and scrubbed. This ordering closes crashes
+before cleanup CAS, before compaction, and before scrub-cursor CAS without
+retaining erased session or canonical resource identities after completion.
 
 ## Risks / open questions
 

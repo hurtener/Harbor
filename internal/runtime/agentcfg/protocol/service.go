@@ -1179,6 +1179,17 @@ func (s *Service) Retire(ctx context.Context, req prototypes.AgentConfigRetireRe
 // reach token is consulted: retirement must finish after authority expiry.
 func (s *Service) completeRetirementCleanup(ctx context.Context, reg agentcfg.RetirementRegistry, q identity.Quadruple, agentID string, status agentcfg.RetirementStatus) (agentcfg.RetirementStatus, error) {
 	for !status.Completed {
+		fresh, found, err := reg.RetirementStatus(ctx, q, agentID)
+		if err != nil {
+			return agentcfg.RetirementStatus{}, err
+		}
+		if !found || fresh.OperationID != status.OperationID {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: retirement lifecycle changed before cleanup", agentcfg.ErrRetirementConflict)
+		}
+		status = fresh
+		if status.Completed {
+			break
+		}
 		if len(status.Cleanup) != 1 || status.Cleanup[0].Completed {
 			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: frozen cleanup status has no next item", agentcfg.ErrRetirementConflict)
 		}
@@ -1205,7 +1216,6 @@ func (s *Service) completeRetirementCleanup(ctx context.Context, reg agentcfg.Re
 		default:
 			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: unknown frozen cleanup class %q", agentcfg.ErrRetirementConflict, step.Class)
 		}
-		var err error
 		status, err = reg.CompleteRetirementStep(ctx, q, agentID, status.OperationID, step.Class, step.Resource)
 		if err != nil {
 			return agentcfg.RetirementStatus{}, err

@@ -220,10 +220,18 @@ func (s *DurableStore) RetirePersonalCandidate(ctx context.Context, target ident
 		}
 		return fmt.Errorf("%w: retirement cleanup requires terminal lifecycle", ErrAgentLifecycleCorrupt)
 	}
+	rec, err := s.state.Load(ctx, durableSessionQuad(target), kind)
 	if fenceState.erased() {
+		if errors.Is(err, state.ErrNotFound) {
+			// Pending or terminal erasure plus the terminal agent lifecycle is a
+			// durable two-fence proof that this exact absent row cannot reactivate.
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("%w: load erased retirement personal target: %w", ErrStateUnavailable, err)
+		}
 		return ErrSessionErased
 	}
-	rec, err := s.state.Load(ctx, durableSessionQuad(target), kind)
 	if errors.Is(err, state.ErrNotFound) {
 		// Session erasure may have physically removed a row after discovery.
 		// The terminal lifecycle still prevents resurrection, so absence is a

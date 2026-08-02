@@ -28,7 +28,7 @@ assert_grep_present 'completeRetirementCleanup' internal/runtime/agentcfg/protoc
 assert_grep_present 'RetirementStatus' internal/runtime/serve/agent_resolver.go \
   'phase 234: run resolver refuses a retired effective target'
 
-assert_go_tests_pass "${P234_TMP}/retirement.log" '-race -count=1 ./cmd/harbor ./internal/agentcfg ./internal/agentcfg/drivers/statestore ./internal/runtime/agentcfg/protocol ./internal/runtime/registry ./internal/runtime/serve ./internal/protocol/transports/stream' \
+assert_go_tests_pass "${P234_TMP}/retirement.log" '-race -count=1 ./cmd/harbor ./internal/agentcfg ./internal/agentcfg/drivers/statestore ./internal/runtime/agentcfg/protocol ./internal/runtime/registry ./internal/runtime/serve ./internal/protocol/bodyscope ./internal/protocol/transports/stream' \
 	'phase 234: terminal state, frozen cleanup, production HTTP start refusal, and protocol replay run under race' \
 	TestRetirement_TerminalHistoryAndReplay \
 	TestRetirement_NoActiveSentinelReplay \
@@ -44,6 +44,12 @@ assert_go_tests_pass "${P234_TMP}/retirement.log" '-race -count=1 ./cmd/harbor .
 	TestRetirement_Phase233aManifestExactAndFourSlotCleanup \
 	TestRetirement_Phase233aN100StalePersonalCAS \
 	TestRetirement_SQLiteMultipageLongTargetsRestartMakesMonotonicProgress \
+	TestRetirement_OccupiedOrdinalReplaysStoredSuccessorAfterSourceDeletion \
+	TestRetirement_SQLiteScrubOrderingRestartsAtEveryBoundary \
+	TestRetirement_ConcurrentSameItemCleanupAndScrubCASConverges \
+	TestRetirement_ErasureFenceAndAbsentFrozenPersonalTargetConverges \
+	TestRetirementManifestTamper_RecomputedSelfDigestFailsBeforeProjectionAndProgress \
+	TestRetire_TamperedStatusFailsBeforeExternalTeardown \
 	TestRetirementStrictDecoders_RejectNestedDuplicatesAndUnknownClass \
 	TestClassifyLifecycleRecord_RetirementEnvelopeStrictAndTerminal \
 	TestClassifyLifecycleRecord_PendingEventAndFrozenInvariants \
@@ -51,6 +57,8 @@ assert_go_tests_pass "${P234_TMP}/retirement.log" '-race -count=1 ./cmd/harbor .
 	TestDeregister_IndependentOfAgentConfigRetirement \
 	TestDevComposition_RetiredDefaultRefusesExplicitAndImplicitStartBeforeSpawn \
 	TestAgentConfigHandler_Retire_AdminReplayAndTerminalRefusal \
+	TestAgentConfigHandler_Retire_UsesSharedAgentConfigBodyScope \
+	TestGate_Coverage_EveryScopeCarryingRequestIsRegistered \
 	TestAgentResolverAdapter_DefaultTombstoneWins
 
 # A preflight-provided base URL is a live-server contract: do not turn an
