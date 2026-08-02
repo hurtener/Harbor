@@ -11991,14 +11991,16 @@ production opt-in for signed capability authority. A configured static host or
 audience allow-list remains valid, but is not the mechanism for this dynamic
 capability path.
 
-The sole production write is admin-only
-`agent_config.register_oauth_mcp_capability`. It atomically prepares an
+The sole production registration/creation write is admin-only
+`agent_config.register_oauth_mcp_capability`. It is production-safe only when
+the boot broker/trust anchor's explicit signed-capability opt-in and verifier
+are present; it is not enabled merely by running production. It atomically prepares an
 unpublished provider and MCP connection, CAS-persists exactly one revision,
 and publishes the pair. It is forbidden to compose `set_oauth_provider` and
 `add_mcp_connection` to obtain this state. The writable request contains only
 provider name, boot broker name, per-capability audience and normalized
-requested scopes, a bounded ordinary MCP connection descriptor, expected
-revision, and a signed authority envelope. It contains no token URL,
+requested scopes, a bounded ordinary MCP connection descriptor,
+`expected_content_hash`, and a signed authority envelope. It contains no token URL,
 credential URL, client secret, credential/env name, KEK, or downstream host
 list. `tools.allow_wire_oauth_descriptor` and its environment switch remain
 development-only D-340 controls and are neither required nor consulted by this
@@ -12008,16 +12010,27 @@ The signed envelope, not admin input, authorizes the dynamic values. It is
 verified against the boot trust anchor and binds exact tenant, agent, broker,
 provider/capability ID and immutable capability revision, canonical connection
 URL digest, audience, normalized scope set, issuer/key ID, issued-at, expiry,
-and unique anti-replay ID. Every request field exactly matches the verified
-claim. Unknown broker/issuer/key, malformed/expired authority, replay,
-unentitled capability, scope widening, URL mismatch, or CAS mismatch fails
-before a live side effect. Replay persistence is durable through expiry, not a
-best-effort memory cache.
+and unique anti-replay ID (JTI). Every request field exactly matches the
+verified claim. The first valid registration durably consumes/stores that JTI
+and the complete immutable pair fingerprint through expiry. An exact retry of
+the same JTI and fingerprint idempotently converges to the existing pair and
+does not issue a new revision or claim; the same JTI for any different
+fingerprint, or any new mutation reusing it, rejects. Restart, reconcile, and
+rollback re-activate stored immutable state by checking its recorded
+JTI/fingerprint association and other bindings, not by treating the stored JTI
+as a fresh request replay. Unknown broker/issuer/key, malformed/expired
+authority, unentitled capability, scope widening, URL mismatch, or CAS
+mismatch fails before a live side effect. Replay persistence is durable through
+expiry, not a best-effort memory cache.
 
-Harbor derives exactly one normalized bearer sink from the bound MCP
+Harbor derives exactly one canonical HTTPS bearer sink from the bound MCP
 connection URL, persists the pair's URL-digest/sink binding, and re-derives it
-on activation, rollback, restart, and reconcile. A free-form host list is
-never accepted or persisted. The exchange endpoint stays boot-pinned; the
+on activation, rollback, restart, and reconcile. It is `https` plus lower-case
+IDNA host and explicit/effective port (443 when omitted), rejects userinfo and
+fragment, and excludes path/query from the sink while retaining them in the
+URL digest. A bearer request verifies this origin before send and uses a
+redirect-refusing client; a free-form host list or bearer redirect is never
+accepted. The exchange endpoint stays boot-pinned; the
 capability's signed audience is bounded by the envelope and independently
 validated by the exchange along with tenant, agent, provider/capability,
 revision, and URL digest. The verified `(tenant, user, session)` remains the
@@ -12026,22 +12039,32 @@ Token/cache assertions include the subject plus agent, capability revision,
 audience, and URL digest. Requested scope outside the true boot ceiling rejects
 loudly; silent scope intersection is forbidden for this path.
 
-Signed pairs are immutable revision state. Generic `set_revision` and section
-setters cannot add or mutate them; a rollback may reactivate one only after the
-same full verification. Removal tears down the provider and connection as one
-owner-scoped pair, and D-399 retirement captures it as one cleanup manifest
-item after the lifecycle tombstone wins. D-301's honest bare-name namespace is
+Pair publication has one composite visibility linearization point: a private
+capability reservation owns the unpublished provider and MCP prepared binding;
+after one CAS revision write it swaps provider resolution and connection/catalog
+dispatch visibility together. `ProviderSet.Stage` and a separate MCP catalog
+swap are not D-401 publication seams. Signed pairs are server-owned, read-only
+revision state. Generic `set_revision`, rollback, every section setter, and
+legacy provider/connection removals must carry a pair forward byte-identically
+or reject addition, mutation, omission, deletion, or a half-pair; only paired
+removal may remove it. Admission validity gates activation only. Paired removal
+and D-399 retirement close/revoke from their frozen durable pair fingerprint
+even if authority is expired, replayed, revoked, or no longer verifiable.
+D-301's honest bare-name namespace is
 unchanged: a process-global collision fails loudly, and this decision makes no
 claim of catalog dispatch isolation in a shared runtime.
 
 **First-install repair.** `set_oauth_provider` validates/prepares an unknown
 broker/build/install failure before persistence. On any remaining post-write
-failure, it conditionally neutralizes only when the active pointer still equals
-the attempted revision, using Phase 233 `SaveIf` and a semantic no-active
-marker. It never overwrites a concurrent writer and never writes a forward
-empty revision as compensation. A failed immutable revision may remain only
-when its exact conditional neutralization is unresolvable; it is inactive,
-unpublished, and loud.
+failure, the mandatory `Registry.DeactivateIfActive` conditionally neutralizes
+only when the active pointer still equals the attempted revision. The
+statestore-owned implementation compares that exact active EventID with
+`SaveIf` and replaces only the pointer with deterministic schema-valid semantic
+inactive-marker bytes; `Active` treats the next marker generation as absent.
+It never overwrites a concurrent writer and never writes a forward empty
+revision as compensation. An uncertain result fences every reader and reconcile
+loud until reread proves the exact marker or concurrent winner. The failed
+immutable revision remains history only, inactive, unpublished, and loud.
 
 **Cross-references.** D-025, D-300, D-301, D-303, D-340, D-390, D-394,
 D-396, D-398, D-399. RFC §4, §5.5, §6.4, §6.11, §6.16. Plan:

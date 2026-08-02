@@ -2,11 +2,12 @@
 
 ## Summary
 
-Deliver HA-50 and D-401: a production-default, admin-only Protocol operation
+Deliver HA-50 and D-401: a production-safe, boot-authorized, admin-only Protocol operation
 that atomically prepares, persists, and publishes one OAuth provider plus one
 MCP connection. A generic boot broker/trust anchor keeps all credential
 custody; a signed, bounded authority envelope permits a new capability without
-a runtime-config edit or redeploy.
+a runtime-config edit or redeploy. It requires the broker/trust anchor's
+explicit signed-capability production opt-in; it is not enabled by default.
 
 ## RFC anchor
 
@@ -40,7 +41,7 @@ a runtime-config edit or redeploy.
 
 ## Goals
 
-- Add the one canonical admin method
+- Add the one canonical admin registration/creation method
   `agent_config.register_oauth_mcp_capability`; no composition of
   `set_oauth_provider` and `add_mcp_connection` can create the same pair.
 - Keep one generic boot broker/trust anchor responsible for the fixed exchange
@@ -75,10 +76,10 @@ a runtime-config edit or redeploy.
 
 ## Acceptance criteria
 
-- [ ] The sole new production write is admin-gated
+- [ ] The sole new production registration/creation write is admin-gated
   `agent_config.register_oauth_mcp_capability`. Its request contains provider
   name, boot broker name, audience, requested scopes, an ordinary bounded MCP
-  connection descriptor, expected revision precondition, and signed authority
+  connection descriptor, `expected_content_hash`, and signed authority
   envelope only. Unknown fields reject at decode; no forbidden credential-sink
   or custody field exists on any writable type.
 - [ ] A boot-declared generic broker/trust anchor validates its static exchange
@@ -88,18 +89,29 @@ a runtime-config edit or redeploy.
 - [ ] The envelope uses an approved asymmetric signature and has exact claims:
   tenant ID, agent ID, broker, capability/provider ID and immutable capability
   revision, canonical URL digest, audience, normalized unique scope set,
-  issuer, key ID, issued-at, bounded expiry, and unique replay ID. Algorithm
-  confusion, unknown key/issuer, malformed timing, expired authority, replay,
+  issuer, key ID, issued-at, bounded expiry, and unique replay ID (JTI).
+  The first valid operation durably records JTI plus complete immutable pair
+  fingerprint through expiry. An exact retry of that JTI/fingerprint converges
+  idempotently to the original pair and creates no revision or claim; the same
+  JTI with any different fingerprint, and any new mutation reusing it, rejects.
+  Algorithm confusion, unknown key/issuer, malformed timing, expired authority,
   or any request/claim mismatch has no prepare, revision, provider, or live
   connection side effect.
 - [ ] One operation privately builds the provider, prepares/dials/discovers the
   connection, CAS-writes one revision containing a durable signed-pair binding,
-  then publishes provider and connection as one logical capability. Refusal or
-  unknown persistence outcome closes unpublished resources; exact landed
-  outcome converges only when the complete pair fingerprint matches.
+  then publishes provider and connection through one composite dispatch/
+  visibility linearization point. A private capability reservation owns the
+  unpublished provider and MCP prepared binding to that exact reservation;
+  public `ProviderSet.Stage`, a mutex, or separately ordered provider/catalog
+  swaps are forbidden. Refusal or unknown persistence outcome closes unpublished
+  resources; exact landed outcome converges only when the complete pair
+  fingerprint matches.
 - [ ] The provider's token endpoint stays the broker's boot-pinned endpoint.
-  Harbor derives one normalized bearer sink from the canonical connection URL;
-  the pair stores the URL digest/sink binding, never a host list, and each
+  Harbor derives one canonical HTTPS bearer sink from the connection URL:
+  `https`, lower-case IDNA host, explicit/effective port (443 when omitted),
+  no userinfo/fragment; path/query contribute only to the URL digest. The pair
+  stores this digest/sink binding, never a host list, and every bearer request
+  rechecks it before send with redirects refused. Each
   attach/rollback/restart/reconcile recomputes it before a bearer can flow.
 - [ ] Requested scopes are normalized before signing/comparison. A requested
   scope outside the boot true ceiling rejects loudly with a typed invalid-scope
@@ -108,23 +120,33 @@ a runtime-config edit or redeploy.
   agent, capability revision, audience, and URL digest. The exchange refuses
   absent, malformed, unentitled, or mismatched audience/binding independently
   of Harbor's signature check; audience never substitutes for subject identity.
-- [ ] Generic `agent_config.set_revision`, rollback-to-an-arbitrary revision,
-  and section setters cannot add or mutate a signed pair. Rollback may activate
-  a previously immutable signed pair only after full authority, expiry, replay,
-  URL-digest, scope, and broker re-verification. Pair removal is owner-scoped,
-  atomic in desired state, and closes both live resources; retirement lists the
-  pair as one fixed cleanup manifest item after its tombstone wins.
-- [ ] Reconcile/restart fail closed for an absent/malformed/expired/replayed or
-  unentitled envelope, unknown broker, scope widening, URL-host mismatch,
-  provider collision, or pair half-state. It never installs one half, forwards
-  a token, or repairs state by creating a new authority claim.
+- [ ] Signed-pair representation is server-owned/read-only. Whole
+  `agent_config.set_revision`, rollback, every generic section setter, and
+  legacy `remove_oauth_provider` / `remove_mcp_connection` must carry it
+  forward byte-identically or reject addition, mutation, omission, deletion,
+  and pair-half changes. A closed-door census covers all those writers. Only
+  paired removal may remove it; it is owner-scoped and atomic in desired state.
+  Rollback activation performs full binding verification, while paired removal
+  and retirement use the frozen durable pair fingerprint to close/revoke even
+  if envelope verification would now fail.
+- [ ] Reconcile/restart/rollback activate a stored immutable pair only after
+  verifying its stored JTI/fingerprint association and every non-replay
+  binding; they never classify that same stored JTI as a new request replay.
+  They fail closed for absent/malformed/expired/unentitled authority, a JTI
+  bound to another fingerprint, unknown broker, scope widening, URL-host
+  mismatch, provider collision, or pair half-state. They never install one
+  half, forward a token, or repair state by creating a new authority claim.
 - [ ] `set_oauth_provider` validates and prepares unknown broker/build/install
   failures before writing. On a first-write publish/audit failure it performs
-  exact conditional neutralization only when the active pointer still equals
-  the attempted revision, using the Phase 233 `SaveIf` no-active marker; it
-  never writes a forward empty revision and never overwrites a concurrent
-  winner. An immutable failed revision may remain only when exact conditional
-  removal is unresolvable, is never active/live, and is surfaced loudly.
+  exact conditional neutralization through mandatory
+  `Registry.DeactivateIfActive(ctx, identity, agent, scope, attemptedRevisionID)`.
+  The statestore implementation owns the active slot and `SaveIf`-compares its
+  exact attempted EventID, then replaces only that pointer with deterministic
+  schema-valid semantic inactive-marker bytes which `Active` treats as absent.
+  It never writes a forward empty revision and never overwrites a concurrent
+  winner. An uncertain pointer outcome fences readers/reconcile loud until
+  reread proves the marker or winner. The immutable failed revision remains
+  history only, never active/live, and is surfaced loudly.
 - [ ] All canonical method/type/error/event/Console manifest/docs lockstep
   gates cover the new surface. Events and audit carry only redacted identity,
   provider/capability names or hashes, revision, audience hash, and URL digest;
@@ -150,6 +172,10 @@ a runtime-config edit or redeploy.
   failures.
 - `agent_config.remove_oauth_mcp_capability` is the only paired removal verb;
   it is admin-only and owner-scoped.
+- `agentcfg.Registry.DeactivateIfActive(ctx, identity, agent, scope,
+  attemptedRevisionID)` is the mandatory registry-owned, exact-pointer
+  conditional deactivation seam; StateStore drivers implement it with `SaveIf`
+  and deterministic schema-valid inactive-marker bytes.
 - A boot-only `ToolOAuthCredentialBrokerConfig` signed-capability authority
   block; none of its secrets, endpoints, host lists, or verifier material are
   Protocol-writable.
@@ -157,17 +183,23 @@ a runtime-config edit or redeploy.
 ## Test plan
 
 - **Unit:** strict wire decoding; claim canonicalization and exact matching;
-  signature algorithm/issuer/key/timing/replay rejection; scope-ceiling loud
+  signature algorithm/issuer/key/timing rejection; first JTI consumption,
+  exact JTI/fingerprint idempotent retry, and same-JTI/different-fingerprint
+  rejection; scope-ceiling loud
   refusal; URL canonicalization/digest/sink equality; forbidden-field
-  reflection guard; pair fingerprint and generic-set-revision refusal; no
-  partial publication; first-write unknown-broker/build/publish/audit failure
-  and exact no-active/CAS-race neutralization.
+  reflection guard; pair fingerprint and closed generic-writer/removal census;
+  no partial publication and one composite visibility point; first-write
+  unknown-broker/build/publish/audit failure; exact conditional deactivation,
+  marker bytes, uncertain-outcome reader fence, and CAS-race neutralization.
 - **Integration:** real SQLite and Postgres broker/trust-anchor registration,
   token exchange assertion capture, provider+connection atomic visibility,
-  restart/rollback/reconcile re-verification, pair removal, retirement cleanup,
+  restart/rollback/reconcile stored-pair re-verification and same-JTI
+  idempotence, exact HTTPS-sink/no-redirect enforcement, pair removal, and
+  retirement cleanup after authority expiry/key rotation/revocation,
   and cross-tenant/user/session/agent cache and bearer-bleed denials.
-- **Conformance:** all StateStore drivers run the same no-active conditional
-  neutralization and pair lifecycle suite; Protocol/Console/generated-doc
+- **Conformance:** all StateStore drivers run the same
+  `DeactivateIfActive` marker/uncertain-outcome/fault suite and pair lifecycle
+  suite; Protocol/Console/generated-doc
   lockstep covers every new canonical type, method, error, and event.
 - **Concurrency / leak:** N>=100 shared broker verifier/provider-set and MCP
   preparer invocations under `-race`; competing registration/removal/rollback/
@@ -202,11 +234,13 @@ a runtime-config edit or redeploy.
   asymmetric validator or receive an RFC ruling before implementation; request
   parsing must not select algorithms or issuers.
 - Replay persistence needs bounded retention through expiry without widening
-  maintenance scans; exact replay identity cannot be treated as a best-effort
-  cache.
+  maintenance scans. It must distinguish an exact stored JTI/fingerprint
+  idempotence lookup from a fresh replay/mutation attempt; neither may be a
+  best-effort cache.
 - A previously registered capability can expire before rollback/reconcile. The
   safe behavior is inactive/unavailable with loud diagnostics, not an implicit
-  renewal or acceptance of administrator input.
+  renewal or acceptance of administrator input; removal/retirement remains
+  available from its frozen durable pair fingerprint.
 
 ## Glossary additions
 
