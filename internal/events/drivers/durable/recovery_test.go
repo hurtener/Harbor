@@ -362,6 +362,9 @@ func (s *listFailingStore) ListKind(context.Context, state.ListScope, string) ([
 func (s *listFailingStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
 	return nil, s.listErr
 }
+func (s *listFailingStore) ScanKindForTenant(context.Context, state.ListScope, string, string, int, string) (state.StateScanPage, error) {
+	return state.StateScanPage{}, s.listErr
+}
 func (s *listFailingStore) Close(context.Context) error { return nil }
 
 // scopeRecordingStore records whether ListKind was called with the
@@ -393,5 +396,12 @@ func (s *scopeRecordingStore) ListKind(_ context.Context, scope state.ListScope,
 }
 func (s *scopeRecordingStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
 	return nil, nil
+}
+func (s *scopeRecordingStore) ScanKindForTenant(_ context.Context, scope state.ListScope, _ string, _ string, _ int, _ string) (state.StateScanPage, error) {
+	if !scope.MaintenanceScoped {
+		return state.StateScanPage{}, state.ErrMaintenanceScopeRequired
+	}
+	s.sawMaintenanceScope = true
+	return state.StateScanPage{}, nil
 }
 func (s *scopeRecordingStore) Close(context.Context) error { return nil }

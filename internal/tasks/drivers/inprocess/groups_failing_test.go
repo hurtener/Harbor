@@ -65,6 +65,10 @@ func (f *failingStateStore) ListKindForIdentity(ctx context.Context, id identity
 	return f.inner.ListKindForIdentity(ctx, id, kindPrefix)
 }
 
+func (f *failingStateStore) ScanKindForTenant(ctx context.Context, scope state.ListScope, tenantID, kindPrefix string, limit int, continuation string) (state.StateScanPage, error) {
+	return f.inner.ScanKindForTenant(ctx, scope, tenantID, kindPrefix, limit, continuation)
+}
+
 func (f *failingStateStore) Close(ctx context.Context) error {
 	return f.inner.Close(ctx)
 }

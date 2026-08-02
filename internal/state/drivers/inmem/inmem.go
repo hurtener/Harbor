@@ -24,6 +24,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -347,6 +348,80 @@ func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple,
 		out = append(out, rec)
 	}
 	return out, nil
+}
+
+// ScanKindForTenant implements StateStore's deterministic tenant-bounded
+// maintenance scan. The in-memory map is unordered, so it copies matching
+// records and sorts their composite tuple before applying the keyset cursor.
+func (d *driver) ScanKindForTenant(ctx context.Context, scope state.ListScope, tenantID, literalKindPrefix string, limit int, continuation string) (state.StateScanPage, error) {
+	if d.closed.Load() {
+		return state.StateScanPage{}, state.ErrStoreClosed
+	}
+	if err := state.ValidateScanKindForTenant(scope, tenantID, literalKindPrefix, limit); err != nil {
+		return state.StateScanPage{}, err
+	}
+	cursor, err := state.DecodeStateScanContinuation(continuation, tenantID, literalKindPrefix, scope)
+	if err != nil {
+		return state.StateScanPage{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return state.StateScanPage{}, err
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	rows := make([]state.StateRecord, 0)
+	for key, rec := range d.records {
+		if err := ctx.Err(); err != nil {
+			return state.StateScanPage{}, err
+		}
+		if key.Tenant != tenantID || !strings.HasPrefix(key.Kind, literalKindPrefix) || !afterScanCursor(key, cursor) {
+			continue
+		}
+		rec.Bytes = cloneBytes(rec.Bytes)
+		rows = append(rows, rec)
+	}
+	sort.Slice(rows, func(i, j int) bool { return scanRecordLess(rows[i], rows[j]) })
+	if err := ctx.Err(); err != nil {
+		return state.StateScanPage{}, err
+	}
+	if len(rows) > limit+1 {
+		rows = rows[:limit+1]
+	}
+	page := state.StateScanPage{Records: rows}
+	if len(page.Records) <= limit {
+		return page, nil
+	}
+	page.Records = page.Records[:limit]
+	last := page.Records[len(page.Records)-1]
+	page.Continuation, err = state.EncodeStateScanContinuation(state.StateScanCursor{UserID: last.Identity.UserID, SessionID: last.Identity.SessionID, RunID: last.Identity.RunID, Kind: last.Kind}, tenantID, literalKindPrefix, scope)
+	if err != nil {
+		return state.StateScanPage{}, err
+	}
+	return page, nil
+}
+
+func afterScanCursor(key indexKey, cursor state.StateScanCursor) bool {
+	if cursor.UserID == "" {
+		return true
+	}
+	return tupleCompare(key.User, key.Session, key.Run, key.Kind, cursor.UserID, cursor.SessionID, cursor.RunID, cursor.Kind) > 0
+}
+
+func scanRecordLess(left, right state.StateRecord) bool {
+	return tupleCompare(left.Identity.UserID, left.Identity.SessionID, left.Identity.RunID, left.Kind, right.Identity.UserID, right.Identity.SessionID, right.Identity.RunID, right.Kind) < 0
+}
+
+func tupleCompare(leftUser, leftSession, leftRun, leftKind, rightUser, rightSession, rightRun, rightKind string) int {
+	for _, pair := range [][2]string{{leftUser, rightUser}, {leftSession, rightSession}, {leftRun, rightRun}, {leftKind, rightKind}} {
+		if pair[0] < pair[1] {
+			return -1
+		}
+		if pair[0] > pair[1] {
+			return 1
+		}
+	}
+	return 0
 }
 
 // Close implements state.StateStore. Idempotent.

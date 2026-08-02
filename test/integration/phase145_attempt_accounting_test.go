@@ -350,6 +350,10 @@ func (s *phase145SaveFailStore) ListKindForIdentity(ctx context.Context, q ident
 	return s.inner.ListKindForIdentity(ctx, q, kind)
 }
 
+func (s *phase145SaveFailStore) ScanKindForTenant(ctx context.Context, scope state.ListScope, tenantID, kind string, limit int, continuation string) (state.StateScanPage, error) {
+	return s.inner.ScanKindForTenant(ctx, scope, tenantID, kind, limit, continuation)
+}
+
 func (s *phase145SaveFailStore) Close(ctx context.Context) error { return s.inner.Close(ctx) }
 
 func phase145Near(a, b float64) bool {

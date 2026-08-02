@@ -696,9 +696,8 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 }
 
 // ListKind implements state.StateStore — the explicitly-elevated
-// maintenance scan (RFC §6.11). The prefix matches literally:
-// LIKE metacharacters in kindPrefix are escaped so a prefix containing
-// `%` or `_` cannot widen the scan.
+// maintenance scan (RFC §6.11). The prefix is a literal, case-sensitive
+// BINARY substring; wildcard and backslash characters cannot widen it.
 func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix string) ([]state.StateRecord, error) {
 	if d.closed.Load() {
 		return nil, fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
@@ -710,8 +709,8 @@ func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix
 	const sel = `
         SELECT tenant, user, session, run, kind, event_id, version, bytes, updated_at
         FROM state_records
-        WHERE kind LIKE ? ESCAPE '\'`
-	rows, err := d.db.QueryContext(ctx, sel, escapeLikePrefix(kindPrefix)+"%")
+        WHERE substr(kind, 1, length(?)) = ? COLLATE BINARY`
+	rows, err := d.db.QueryContext(ctx, sel, kindPrefix, kindPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("state/sqlite: list kind: %w", err)
 	}
@@ -756,8 +755,8 @@ func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple,
         SELECT tenant, user, session, run, kind, event_id, version, bytes, updated_at
         FROM state_records
         WHERE tenant = ? AND user = ? AND session = ? AND run = ?
-          AND kind LIKE ? ESCAPE '\'`
-	rows, err := d.db.QueryContext(ctx, sel, id.TenantID, id.UserID, id.SessionID, id.RunID, escapeLikePrefix(kindPrefix)+"%")
+          AND substr(kind, 1, length(?)) = ? COLLATE BINARY`
+	rows, err := d.db.QueryContext(ctx, sel, id.TenantID, id.UserID, id.SessionID, id.RunID, kindPrefix, kindPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("state/sqlite: list kind for identity: %w", err)
 	}
@@ -779,12 +778,66 @@ func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple,
 	return out, nil
 }
 
-// escapeLikePrefix escapes the SQL LIKE metacharacters (`%`, `_`, and
-// the escape character itself) so a caller-supplied kind prefix
-// matches literally under `LIKE ? ESCAPE '\'`.
-func escapeLikePrefix(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
-	return r.Replace(s)
+// ScanKindForTenant implements the bounded deterministic maintenance scan.
+// SQLite evaluates the literal prefix and tenant predicate in storage, orders
+// by the complete cursor tuple, and asks for limit+1 rows solely to decide
+// whether a continuation exists.
+func (d *driver) ScanKindForTenant(ctx context.Context, scope state.ListScope, tenantID, literalKindPrefix string, limit int, continuation string) (state.StateScanPage, error) {
+	if d.closed.Load() {
+		return state.StateScanPage{}, fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateScanKindForTenant(scope, tenantID, literalKindPrefix, limit); err != nil {
+		return state.StateScanPage{}, err
+	}
+	cursor, err := state.DecodeStateScanContinuation(continuation, tenantID, literalKindPrefix, scope)
+	if err != nil {
+		return state.StateScanPage{}, err
+	}
+	const base = `
+        SELECT tenant, user, session, run, kind, event_id, version, bytes, updated_at
+        FROM state_records
+        WHERE tenant = ? AND substr(kind, 1, length(?)) = ? COLLATE BINARY
+    `
+	const after = `
+		  AND (user COLLATE BINARY > ? OR (user COLLATE BINARY = ? AND session COLLATE BINARY > ?) OR (user COLLATE BINARY = ? AND session COLLATE BINARY = ? AND run COLLATE BINARY > ?) OR (user COLLATE BINARY = ? AND session COLLATE BINARY = ? AND run COLLATE BINARY = ? AND kind COLLATE BINARY > ?))
+	`
+	const orderLimit = ` ORDER BY user COLLATE BINARY ASC, session COLLATE BINARY ASC, run COLLATE BINARY ASC, kind COLLATE BINARY ASC LIMIT ?`
+	args := []any{tenantID, literalKindPrefix, literalKindPrefix}
+	query := base
+	if cursor.UserID != "" {
+		query += after
+		args = append(args, cursor.UserID, cursor.UserID, cursor.SessionID, cursor.UserID, cursor.SessionID, cursor.RunID, cursor.UserID, cursor.SessionID, cursor.RunID, cursor.Kind)
+	}
+	args = append(args, limit+1)
+	rows, err := d.db.QueryContext(ctx, query+orderLimit, args...)
+	if err != nil {
+		return state.StateScanPage{}, fmt.Errorf("state/sqlite: scan kind for tenant: %w", err)
+	}
+	defer rows.Close()
+	page := state.StateScanPage{Records: make([]state.StateRecord, 0, limit)}
+	for rows.Next() {
+		var tenant, user, session, run, kind, eventID string
+		var version int
+		var data []byte
+		var updatedAt time.Time
+		if err := rows.Scan(&tenant, &user, &session, &run, &kind, &eventID, &version, &data, &updatedAt); err != nil {
+			return state.StateScanPage{}, fmt.Errorf("state/sqlite: scan kind for tenant row: %w", err)
+		}
+		page.Records = append(page.Records, state.StateRecord{ID: state.EventID(eventID), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: user, SessionID: session}, RunID: run}, Kind: kind, Version: version, Bytes: data, UpdatedAt: updatedAt})
+	}
+	if err := rows.Err(); err != nil {
+		return state.StateScanPage{}, fmt.Errorf("state/sqlite: scan kind for tenant rows: %w", err)
+	}
+	if len(page.Records) <= limit {
+		return page, nil
+	}
+	page.Records = page.Records[:limit]
+	last := page.Records[len(page.Records)-1]
+	page.Continuation, err = state.EncodeStateScanContinuation(state.StateScanCursor{UserID: last.Identity.UserID, SessionID: last.Identity.SessionID, RunID: last.Identity.RunID, Kind: last.Kind}, tenantID, literalKindPrefix, scope)
+	if err != nil {
+		return state.StateScanPage{}, err
+	}
+	return page, nil
 }
 
 // Close implements state.StateStore. Setting the atomic flag BEFORE

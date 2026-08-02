@@ -341,6 +341,9 @@ func (f *failingStore) ListKind(context.Context, state.ListScope, string) ([]sta
 func (f *failingStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
 	return nil, nil
 }
+func (f *failingStore) ScanKindForTenant(context.Context, state.ListScope, string, string, int, string) (state.StateScanPage, error) {
+	return state.StateScanPage{}, f.saveErr
+}
 func (f *failingStore) Close(context.Context) error { return nil }
 
 func TestDurable_PersistFailure_SurfacesLoudly(t *testing.T) {

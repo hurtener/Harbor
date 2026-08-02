@@ -145,6 +145,13 @@ func (f *faultyStateStore) ListKindForIdentity(ctx context.Context, id identity.
 	return f.inner.ListKindForIdentity(ctx, id, kindPrefix)
 }
 
+func (f *faultyStateStore) ScanKindForTenant(ctx context.Context, scope state.ListScope, tenantID, kindPrefix string, limit int, continuation string) (state.StateScanPage, error) {
+	if f.faulted() {
+		return state.StateScanPage{}, errStateDisconnected
+	}
+	return f.inner.ScanKindForTenant(ctx, scope, tenantID, kindPrefix, limit, continuation)
+}
+
 // Close delegates verbatim — teardown is never faulted (a faulted
 // Close would leak the real store's resources, which is a different
 // failure class than the one this harness injects).

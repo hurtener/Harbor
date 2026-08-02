@@ -47,12 +47,30 @@ assert_grep_present 'SaveIf\(ctx context\.Context, expectations \[\]SlotExpectat
   'phase 233: StateStore declares mandatory SaveIf'
 assert_grep_present 'ErrConditionFailed = errors\.New' "${STATE_GO}" \
   'phase 233: condition-failed sentinel is declared'
+assert_grep_present 'ScanKindForTenant\(ctx context\.Context, scope ListScope, tenantID, literalKindPrefix string, limit int, continuation string\)' "${STATE_GO}" \
+  'phase 233: StateStore declares bounded tenant scan'
+assert_grep_present 'ErrInvalidScan = errors\.New' "${STATE_GO}" \
+  'phase 233: invalid tenant scan sentinel is declared'
 assert_grep_present 'func \(d \*driver\) SaveIf' "${INMEM_GO}" \
   'phase 233: in-memory driver implements SaveIf'
 assert_grep_present 'func \(d \*driver\) SaveIf' "${SQLITE_GO}" \
   'phase 233: SQLite driver implements SaveIf'
 assert_grep_present 'func \(d \*driver\) SaveIf' "${POSTGRES_GO}" \
   'phase 233: Postgres driver implements SaveIf'
+assert_grep_present 'func \(d \*driver\) ScanKindForTenant' "${INMEM_GO}" \
+  'phase 233: in-memory driver implements bounded tenant scan'
+assert_grep_present 'func \(d \*driver\) ScanKindForTenant' "${SQLITE_GO}" \
+  'phase 233: SQLite driver implements bounded tenant scan'
+assert_grep_present 'func \(d \*driver\) ScanKindForTenant' "${POSTGRES_GO}" \
+  'phase 233: Postgres driver implements bounded tenant scan'
+assert_grep_present 'substr\(kind, 1, length\(\?\)\) = \? COLLATE BINARY' "${SQLITE_GO}" \
+  'phase 233: SQLite tenant scan uses a literal case-sensitive prefix'
+assert_grep_present 'left\(kind, char_length\(\$2\)\) COLLATE "C" = \$2 COLLATE "C"' "${POSTGRES_GO}" \
+  'phase 233: Postgres tenant scan uses a literal case-sensitive prefix'
+assert_grep_present 'ORDER BY user COLLATE BINARY ASC, session COLLATE BINARY ASC, run COLLATE BINARY ASC, kind COLLATE BINARY ASC LIMIT' "${SQLITE_GO}" \
+  'phase 233: SQLite tenant scan uses explicit tuple order and bound'
+assert_grep_present 'ORDER BY user_id COLLATE "C" ASC, session_id COLLATE "C" ASC, run_id COLLATE "C" ASC, kind COLLATE "C" ASC LIMIT' "${POSTGRES_GO}" \
+  'phase 233: Postgres tenant scan uses explicit tuple order and bound'
 assert_grep_present 'conditionalAdvisoryLockIDs' "${POSTGRES_GO}" \
   'phase 233: Postgres orders actual advisory lock IDs'
 assert_grep_present 'validateTxlock' "${SQLITE_GO}" \

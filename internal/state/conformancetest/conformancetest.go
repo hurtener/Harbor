@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -70,6 +71,8 @@ type Factory func() (state.StateStore, func())
 //   - ListKind_NoMatchesReturnsEmpty
 //   - ListKind_MetacharactersMatchLiterally
 //   - ListKind_AfterClose_Errors
+//   - ScanKindForTenant_BoundedKeysetAndFailClosed
+//   - ScanKindForTenant_ConcurrentReuse_NoCrossTalk
 //   - ListKindForIdentity_IsolatedAndFailClosed
 //   - ListKindForIdentity_ConcurrentReuse_NoCrossTalk
 //   - Save_AfterClose_Errors
@@ -706,10 +709,13 @@ func Run(t *testing.T, factory Factory) {
 		defer cleanup()
 		ctx := context.Background()
 		// `%` and `_` in the prefix must match literally — a SQL driver
-		// that forgets LIKE escaping would match the decoy kinds.
+		// that treats either as a pattern would match the decoy kind.
 		seeds := []state.StateRecord{
 			{ID: "01HABXXX00000003LK", Identity: tripleA(), Kind: "a%b_c:match", Bytes: []byte("m")},
 			{ID: "01HABXXX00000004LK", Identity: tripleA(), Kind: "aXbYc:decoy", Bytes: []byte("d")},
+			{ID: "01HABXXX00000005LK", Identity: tripleA(), Kind: "A%b_c:case-decoy", Bytes: []byte("d")},
+			{ID: "01HABXXX00000006LK", Identity: tripleA(), Kind: "slash\\match", Bytes: []byte("m")},
+			{ID: "01HABXXX00000007LK", Identity: tripleA(), Kind: "slashXmatch", Bytes: []byte("d")},
 		}
 		for _, r := range seeds {
 			if err := s.Save(ctx, r); err != nil {
@@ -722,6 +728,10 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if len(got) != 1 || got[0].Kind != "a%b_c:match" {
 			t.Fatalf("ListKind metacharacter prefix returned %+v, want exactly the literal match", got)
+		}
+		slash, err := s.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, "slash\\")
+		if err != nil || len(slash) != 1 || slash[0].Kind != "slash\\match" || strings.Count(slash[0].Kind, "\\") != 1 {
+			t.Fatalf("ListKind backslash prefix = %+v, %v; want one literal backslash", slash, err)
 		}
 	})
 
@@ -738,6 +748,190 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
+	t.Run("ScanKindForTenant_BoundedKeysetAndFailClosed", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		scope := state.ListScope{MaintenanceScoped: true}
+		const tenant = "scan-tenant"
+		const prefix = "a"
+		seeds := []state.StateRecord{
+			{ID: "01HABXXX00000020SC", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "u-2", SessionID: "s-1"}, RunID: "r-2"}, Kind: "ab", Bytes: []byte("2")},
+			{ID: "01HABXXX00000021SC", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "u-1", SessionID: "s-2"}, RunID: ""}, Kind: "a", Bytes: []byte("1")},
+			{ID: "01HABXXX00000022SC", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "u-1", SessionID: "s-1"}, RunID: "r-1"}, Kind: "abc", Bytes: []byte("0")},
+			{ID: "01HABXXX00000023SC", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "scan-other", UserID: "u-0", SessionID: "s-0"}, RunID: "r-0"}, Kind: "a", Bytes: []byte("decoy")},
+			{ID: "01HABXXX00000024SC", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "u-0", SessionID: "s-0"}, RunID: "r-0"}, Kind: "z", Bytes: []byte("decoy")},
+			{ID: "01HABXXX00000025SC", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "u-3", SessionID: "s-1"}, RunID: "r-1"}, Kind: "a%_\\literal", Bytes: []byte("literal")},
+			{ID: "01HABXXX00000026SC", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "u-4", SessionID: "s-1"}, RunID: "r-1"}, Kind: "aXxliteral", Bytes: []byte("wildcard-decoy")},
+			{ID: "01HABXXX00000027SC", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "u-5", SessionID: "s-1"}, RunID: "r-1"}, Kind: "AUpper", Bytes: []byte("case-decoy")},
+			{ID: "01HABXXX00000028SC", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "u-6", SessionID: "s-1"}, RunID: "r-1"}, Kind: "special%_\\one", Bytes: []byte("one-backslash")},
+			{ID: "01HABXXX00000029SC", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "u-7", SessionID: "s-1"}, RunID: "r-1"}, Kind: "special%_\\\\two", Bytes: []byte("two-backslash")},
+			{ID: "01HABXXX00000030SC", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "u-8", SessionID: "s-1"}, RunID: "r-1"}, Kind: "specialXXone", Bytes: []byte("wildcard-decoy")},
+		}
+		for _, rec := range seeds {
+			if err := s.Save(ctx, rec); err != nil {
+				t.Fatalf("seed %s: %v", rec.ID, err)
+			}
+		}
+		if _, err := s.ScanKindForTenant(ctx, state.ListScope{}, tenant, prefix, 1, ""); !errors.Is(err, state.ErrMaintenanceScopeRequired) {
+			t.Fatalf("missing scope = %v, want ErrMaintenanceScopeRequired", err)
+		}
+		for _, bad := range []struct {
+			tenant, prefix string
+			limit          int
+		}{{"", prefix, 1}, {tenant, "", 1}, {tenant, prefix, 0}, {tenant, prefix, state.MaxStateScanLimit + 1}} {
+			if _, err := s.ScanKindForTenant(ctx, scope, bad.tenant, bad.prefix, bad.limit, ""); !errors.Is(err, state.ErrInvalidScan) {
+				t.Fatalf("invalid scan %+v = %v, want ErrInvalidScan", bad, err)
+			}
+		}
+
+		var all []state.StateRecord
+		continuation := ""
+		for {
+			page, err := s.ScanKindForTenant(ctx, scope, tenant, prefix, 1, continuation)
+			if err != nil {
+				t.Fatalf("ScanKindForTenant: %v", err)
+			}
+			all = append(all, page.Records...)
+			if page.Continuation == "" {
+				break
+			}
+			continuation = page.Continuation
+		}
+		if len(all) != 5 {
+			t.Fatalf("paged scan rows=%d, want five tenant/prefix records: %+v", len(all), all)
+		}
+		for i, rec := range all {
+			if rec.Identity.TenantID != tenant || (i > 0 && scanTuple(rec) <= scanTuple(all[i-1])) {
+				t.Fatalf("scan tuple %d = %+v, want strict tenant-local order", i, rec)
+			}
+		}
+		last := all[len(all)-1]
+		terminalCursor, err := state.EncodeStateScanContinuation(state.StateScanCursor{UserID: last.Identity.UserID, SessionID: last.Identity.SessionID, RunID: last.Identity.RunID, Kind: last.Kind}, tenant, prefix, scope)
+		if err != nil {
+			t.Fatalf("encode terminal cursor: %v", err)
+		}
+		terminal, err := s.ScanKindForTenant(ctx, scope, tenant, prefix, 1, terminalCursor)
+		if err != nil || len(terminal.Records) != 0 || terminal.Continuation != "" {
+			t.Fatalf("terminal cursor replay = %+v, %v; want empty terminal page", terminal, err)
+		}
+		first, err := s.ScanKindForTenant(ctx, scope, tenant, prefix, 1, "")
+		if err != nil || len(first.Records) != 1 || first.Continuation == "" {
+			t.Fatalf("first page = %+v, %v; want continuation", first, err)
+		}
+		replay, err := s.ScanKindForTenant(ctx, scope, tenant, prefix, 1, first.Continuation)
+		if err != nil || len(replay.Records) != 1 || replay.Records[0].ID == first.Records[0].ID {
+			t.Fatalf("first cursor replay = %+v, %v; want deterministic next page", replay, err)
+		}
+		replayAgain, err := s.ScanKindForTenant(ctx, scope, tenant, prefix, 1, first.Continuation)
+		if err != nil || len(replayAgain.Records) != 1 || replayAgain.Records[0].ID != replay.Records[0].ID || replayAgain.Continuation != replay.Continuation {
+			t.Fatalf("same-query cursor replay = %+v, %v; want %+v", replayAgain, err, replay)
+		}
+		for _, pageLimit := range []int{2, state.MaxStateScanLimit} {
+			page, err := s.ScanKindForTenant(ctx, scope, tenant, prefix, pageLimit, "")
+			if err != nil {
+				t.Fatalf("limit %d first page: %v", pageLimit, err)
+			}
+			if pageLimit == 2 && (len(page.Records) != 2 || page.Continuation == "") {
+				t.Fatalf("limit 2 page = %+v, want two rows and continuation", page)
+			}
+			if pageLimit == state.MaxStateScanLimit && (len(page.Records) != 5 || page.Continuation != "") {
+				t.Fatalf("max limit page = %+v, want all rows terminal", page)
+			}
+		}
+		for _, tc := range []struct{ name, tenant, prefix, cursor string }{
+			{"malformed", tenant, prefix, "%%%"},
+			{"json-object", tenant, prefix, "e30"},
+			{"tenant-mismatch", "scan-other", prefix, first.Continuation},
+			{"prefix-mismatch", tenant, "ab", first.Continuation},
+		} {
+			if _, err := s.ScanKindForTenant(ctx, scope, tc.tenant, tc.prefix, 1, tc.cursor); !errors.Is(err, state.ErrInvalidScan) {
+				t.Fatalf("%s cursor = %v, want ErrInvalidScan", tc.name, err)
+			}
+		}
+		literal, err := s.ScanKindForTenant(ctx, scope, tenant, "a%_\\", 8, "")
+		if err != nil || len(literal.Records) != 1 || literal.Records[0].Kind != "a%_\\literal" {
+			t.Fatalf("literal wildcard prefix = %+v, %v", literal, err)
+		}
+		singleBackslash, err := s.ScanKindForTenant(ctx, scope, tenant, "special%_\\", 8, "")
+		if err != nil || len(singleBackslash.Records) != 2 || strings.Count(singleBackslash.Records[0].Kind, "\\") != 1 || strings.Count(singleBackslash.Records[1].Kind, "\\") != 2 {
+			t.Fatalf("single-backslash literal prefix = %+v, %v; want one- and two-backslash rows", singleBackslash, err)
+		}
+		doubleBackslash, err := s.ScanKindForTenant(ctx, scope, tenant, "special%_\\\\", 8, "")
+		if err != nil || len(doubleBackslash.Records) != 1 || doubleBackslash.Records[0].Kind != "special%_\\\\two" || strings.Count(doubleBackslash.Records[0].Kind, "\\") != 2 {
+			t.Fatalf("double-backslash literal prefix = %+v, %v", doubleBackslash, err)
+		}
+		upper, err := s.ScanKindForTenant(ctx, scope, tenant, "A", 8, "")
+		if err != nil || len(upper.Records) != 1 || upper.Records[0].Kind != "AUpper" {
+			t.Fatalf("case-sensitive prefix = %+v, %v", upper, err)
+		}
+		ab, err := s.ScanKindForTenant(ctx, scope, tenant, "ab", 8, "")
+		if err != nil || len(ab.Records) != 2 {
+			t.Fatalf("a/ab narrowing = %+v, %v; want ab and abc only", ab, err)
+		}
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := s.ScanKindForTenant(cancelled, scope, tenant, prefix, 1, ""); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled scan = %v, want context.Canceled", err)
+		}
+		if err := s.Close(ctx); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if _, err := s.ScanKindForTenant(ctx, scope, tenant, prefix, 1, ""); !errors.Is(err, state.ErrStoreClosed) {
+			t.Fatalf("closed scan = %v, want ErrStoreClosed", err)
+		}
+	})
+
+	t.Run("ScanKindForTenant_ConcurrentReuse_NoCrossTalk", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		const callers = 128
+		for i := range callers {
+			q := identity.Quadruple{Identity: identity.Identity{TenantID: fmt.Sprintf("scan-target-%03d", i), UserID: "user", SessionID: "session"}, RunID: "run"}
+			if err := s.Save(ctx, state.StateRecord{ID: state.EventID(fmt.Sprintf("scan-race-%03d", i)), Identity: q, Kind: "scan.prefix.target", Bytes: []byte(q.TenantID)}); err != nil {
+				t.Fatalf("seed caller %d: %v", i, err)
+			}
+		}
+		start := make(chan struct{})
+		errs := make(chan error, callers)
+		var wg sync.WaitGroup
+		for i := range callers {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				callCtx := ctx
+				if i%16 == 0 {
+					cancelled, cancel := context.WithCancel(ctx)
+					cancel()
+					callCtx = cancelled
+				}
+				tenantID := fmt.Sprintf("scan-target-%03d", i)
+				page, err := s.ScanKindForTenant(callCtx, state.ListScope{MaintenanceScoped: true}, tenantID, "scan.prefix.", 1, "")
+				if i%16 == 0 {
+					if !errors.Is(err, context.Canceled) {
+						errs <- fmt.Errorf("caller %d cancelled scan = %w", i, err)
+					}
+					return
+				}
+				if err != nil {
+					errs <- fmt.Errorf("caller %d ScanKindForTenant: %w", i, err)
+					return
+				}
+				if len(page.Records) != 1 || page.Records[0].Identity.TenantID != tenantID || page.Continuation != "" {
+					errs <- fmt.Errorf("caller %d unexpected page: %+v", i, page)
+				}
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Error(err)
+		}
+	})
+
 	t.Run("ListKindForIdentity_IsolatedAndFailClosed", func(t *testing.T) {
 		s, cleanup := factory()
 		defer cleanup()
@@ -751,6 +945,10 @@ func Run(t *testing.T, factory Factory) {
 			{ID: "01HABXXX00000009LS", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: want.TenantID, UserID: want.UserID, SessionID: "sess-9"}, RunID: want.RunID}, Kind: "agentcfg.revision.a", Bytes: []byte("other-session")},
 			{ID: "01HABXXX00000010LS", Identity: identity.Quadruple{Identity: want.Identity, RunID: "run-9"}, Kind: "agentcfg.revision.a", Bytes: []byte("other-run")},
 			{ID: "01HABXXX00000011LS", Identity: tripleA(), Kind: "other.revision.a", Bytes: []byte("other-kind")},
+			{ID: "01HABXXX00000012LS", Identity: tripleA(), Kind: "literal\\match", Bytes: []byte("literal")},
+			{ID: "01HABXXX00000013LS", Identity: tripleA(), Kind: "literalXmatch", Bytes: []byte("decoy")},
+			{ID: "01HABXXX00000014LS", Identity: tripleA(), Kind: "Case.Match", Bytes: []byte("upper")},
+			{ID: "01HABXXX00000015LS", Identity: tripleA(), Kind: "case.Match", Bytes: []byte("lower")},
 		}
 		for _, rec := range seeds {
 			if err := s.Save(ctx, rec); err != nil {
@@ -774,6 +972,14 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if _, err := s.ListKindForIdentity(ctx, tripleA(), ""); !errors.Is(err, state.ErrInvalidRecord) {
 			t.Fatalf("empty prefix err=%v, want ErrInvalidRecord", err)
+		}
+		literal, err := s.ListKindForIdentity(ctx, tripleA(), "literal\\")
+		if err != nil || len(literal) != 1 || literal[0].Kind != "literal\\match" || strings.Count(literal[0].Kind, "\\") != 1 {
+			t.Fatalf("identity literal backslash prefix = %+v, %v", literal, err)
+		}
+		upper, err := s.ListKindForIdentity(ctx, tripleA(), "Case")
+		if err != nil || len(upper) != 1 || upper[0].Kind != "Case.Match" {
+			t.Fatalf("identity case-sensitive prefix = %+v, %v", upper, err)
 		}
 		cancelled, cancel := context.WithCancel(ctx)
 		cancel()
@@ -977,6 +1183,10 @@ func Run(t *testing.T, factory Factory) {
 			t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, runtime.NumGoroutine())
 		}
 	})
+}
+
+func scanTuple(rec state.StateRecord) string {
+	return rec.Identity.UserID + "\x00" + rec.Identity.SessionID + "\x00" + rec.Identity.RunID + "\x00" + rec.Kind
 }
 
 func tripleA() identity.Quadruple {
