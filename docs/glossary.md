@@ -217,6 +217,49 @@ never stops the server. Phase 182, D-318.
 
 ## C
 
+**Agent-owned session personal skill record** — one StateStore record carrying
+a complete validated session-scope Skill body for one agent within one
+`(tenant, user, session)` triple. The agent ID is encoded only as ownership
+metadata in the record Kind; it is not an isolation principal. A logical
+tombstone suppresses legacy fallback, and lifecycle plus pending/terminal
+erasure expectations fence each write. This replaces new shared-SkillStore
+session-body writes while preserving durable `ScopeUser` skills. RFC §6.7 /
+§6.9 / §6.11 / §6.16, D-400.
+
+**Legacy session overlay Kind** — the schema-1 raw key
+`agentcfg.session_overlay.` concatenated directly with the agent ID. It has no
+delimiter or encoding and therefore is not a collision-safe per-agent prefix:
+maintenance scans use the tenant-bounded common overlay prefix then require
+exact `LegacyOverlayKind(agentID)` equality. New encoded personal-record Kinds
+are distinct and may use collision-safe exact per-agent prefixes. The `a`/`ab`
+adjacency case is mandatory coverage. D-400.
+
+**Composite skill resolver** — the trusted per-run reader that composes
+agent-owned session-personal records, eligible legacy session rows during
+rolling cutover, and the existing shared skill rungs. Directory plus
+`skill_get`, `skill_list`, and `skill_search` use this one resolver so their
+lexical and opt-in semantic results agree; it never lets a session record
+delete or widen a `ScopeUser` skill. D-400.
+
+**Tenant-bounded StateStore scan** — the mandatory, maintenance-scoped
+`ScanKindForTenant` page API. It storage-filters a named tenant plus a literal
+Kind prefix, returns at most the declared limit in stable lexicographic
+composite-slot order, and carries an opaque validated continuation. Its pages
+are restart-resumable but are not a restart-surviving database snapshot;
+cutover must make the source quiescent and finish with a fresh verification
+pass. D-400.
+
+**Session-personal cutover control scope** — the reserved complete StateStore
+quadruple returned by `CutoverScope(tenant)`: `{TenantID: tenant, UserID:
+"__agentcfg__", SessionID: "__session_personal_cutover__", RunID: ""}`. It
+holds only the admitted tenant's bounded cutover progress record. Invalid
+static declarations fail boot; a malformed or declaration-mismatched durable
+record never authorizes `state_only` and remains mutation-refusing `dual_read`
+with a loud diagnostic/error. A verified real user-scope config named
+`__agentcfg__` is already rejected by `ErrReservedUser`; an equal agent ID
+cannot alias this scope because its Kind namespace is disjoint from
+lifecycle/config Kinds. D-400.
+
 **Co-launched TUI** — the explicit `harbor serve --tui` or generated-binary
 `--tui` posture where one foreground command owns both an ordinary authenticated
 Protocol server and the native TUI client attached to its bound listener. It is
@@ -318,11 +361,11 @@ D-316.
 
 **Credential source** — the §4.4 seam through which an OAuth provider's own client credential (`client_id`/`client_secret`) resolves: `env` (boot-time process-env resolution, the default) or `remote` (an authenticated PULL from a coordinator-served endpoint at first need — memory-only TTL cache, single-flight, fail-loud typed sentinel, SafePayload audit events). With `remote`, the broker client secret never enters the runtime's environment; the credential authority stays its single source of truth (the D-271 pull posture applied one level up). Phase 154, D-285.
 
-**Credential broker (named)** — a boot-declared, config/file-only credential-broker entry that is the sink authority for a **Protocol-installed OAuth provider**: it pins the token endpoint (`token_url`), the allowed downstream hosts a bearer may be injected into (`allowed_downstream_hosts`, D-300), the audience/scope ceiling, and the environment variable holding the runtime's own service token (`auth_token_env`). The installed provider descriptor references the broker by non-secret NAME (the same indirection `mcp.servers[].oauth_provider` and `tools.entries[].oauth.provider` already use), so NO URL and no environment-variable name ever crosses the wire — the v1.14 invariant that no admin-writable field may determine a credential sink (D-300). It resolves through the SAME `remote` **credential source** as an inline `oauth_providers[].remote` block (D-285) — a naming indirection, not a second seam. Restart-required. Phase 166 / Phase 169, D-300, D-303.
+**Credential broker (named)** — a boot-declared, config/file-only credential-broker entry that is the sink authority for a **Protocol-installed OAuth provider**: it pins the token endpoint (`token_url`), the allowed downstream hosts a bearer may be injected into (`allowed_downstream_hosts`, D-300), the audience/scope ceiling, and the environment variable holding the runtime's own service token (`auth_token_env`). The installed provider descriptor references the broker by non-secret NAME (the same indirection `mcp.servers[].oauth_provider` and `tools.entries[].oauth.provider` already use), so NO URL and no environment-variable name ever crosses the wire — the v1.14 invariant that no ordinary admin-writable field may determine a credential sink (D-300). D-401's sole narrow exception is a production-safe, explicitly boot-authorized signed capability envelope: the same broker/trust anchor verifies an exact dynamic audience and URL-digest binding, while retaining all custody and fixed endpoints; it never makes ordinary setters dynamic. It resolves through the SAME `remote` **credential source** as an inline `oauth_providers[].remote` block (D-285) — a naming indirection, not a second seam. Restart-required. Phase 166 / Phase 169 / Phase 233b, D-300, D-303, D-401.
 
 **Credential injection mapping** — non-secret MCP connection config mapping a broker-pulled, per-acting-user credential's field(s) to outbound request header(s), an `Authorization: Basic` value, or `_meta.<vendor>` keys, so a **receiver-style MCP server** (one that RECEIVES its credential directly instead of PULLING via RFC 8693) can be fed a per-user credential. The mapping is non-secret (like `allowed_downstream_hosts`); only the pulled value is secret and it is never logged/persisted (the audit redactor is extended to the Basic scheme + declared keys + `_meta` values). Mutually exclusive with the bearer/oauth mode (one auth mode per connection). A controlled pull-then-inject exception to the pull-only posture (D-271) that extends the D-278 injection seam. D-341.
 
-**Credential sink** — any endpoint a Harbor runtime sends credential material to: a token endpoint (where the org's OAuth `client_id`/`client_secret` are POSTed for exchange) or a downstream connection host (where an exchanged bearer is injected). The v1.14 credential-plane invariant (D-300) is that **no admin-writable field may determine a credential sink** — every sink-determining value (token endpoint, allowed downstream hosts, audience, scope ceiling) is boot-declared, config/file-only. Enforced by the boot-declared `allowed_downstream_hosts` allow-list checked in `resolveOAuthBinding`, the boot audience/scope ceiling, and the hardened, redirect-refusing token-exchange client. Supersedes the earlier "no env-var NAMES on the wire" symptom rule, which two adversarial reviews proved insufficient (the `token_url` and connection `url` remained admin-writable sinks). Phase 166, RFC §6.4, §7, D-300.
+**Credential sink** — any endpoint a Harbor runtime sends credential material to: a token endpoint (where the org's OAuth `client_id`/`client_secret` are POSTed for exchange) or a downstream connection host (where an exchanged bearer is injected). The v1.14 credential-plane invariant (D-300) is that **no ordinary admin-writable field may determine a credential sink** — every ordinary sink-determining value (token endpoint, allowed downstream hosts, audience, scope ceiling) is boot-declared, config/file-only. D-401's only narrow exception permits a dynamic audience and one canonical HTTPS bearer sink when a boot-authorized signed capability envelope exactly binds them to tenant/agent, broker, capability revision, and URL digest; the sink is `https` plus lower-case IDNA host and explicit/effective port (443 when omitted), excludes userinfo/fragment, and retains path/query only in the URL digest. The envelope is authority, not ordinary admin input, and no endpoint/host list/secret rides the wire; a bearer send rechecks the derived origin and refuses redirects. Ordinary providers retain the boot-declared `allowed_downstream_hosts` allow-list and audience/scope ceiling, while the D-401 pair uses the boot trust anchor's signed authority plus exact derived binding. Supersedes the earlier "no env-var NAMES on the wire" symptom rule, which two adversarial reviews proved insufficient (the `token_url` and connection `url` remained admin-writable sinks). Phase 166 / Phase 233b, RFC §6.4, §7, D-300, D-401.
 
 **Cache read tokens / cache write tokens** — the counts of a completion call's `PromptTokens` served from (read) or newly written to (write) the provider's prompt cache, reported on `llm.Usage.CacheReadTokens`/`CacheWriteTokens` (sourced from the gateway's `PromptTokensDetails`). A SUBSET of `PromptTokens`, never additional tokens — surfaces render them as an annotation, not a summed row. Zero when the provider reports no cache data. Phase 189, D-326.
 
@@ -816,7 +859,7 @@ D-320.
 
 **Owner tag (runtime-added entry)** — a `(tenant, agent)` tag on a runtime-added MCP connection or a Protocol-installed OAuth provider, mirroring the agent-config revision owner that already governs it (`ConfigScopeAgent`). It is used for exactly one thing beyond that revision ownership: scoping the run-start reconcile VIEW so a run only touches ITS OWN owner's runtime-added entries — never boot-declared servers, never another owner's adds (exactly what the two "process-global enumeration" reconcile NOTEs asked for — a per-agent reconcile VIEW, not full-triple isolation keying). It is NOT an isolation principal (§6: `agent_id` is not an isolation key) and is never used for dispatch or a storage `WHERE` clause; boot infra + the bare-name tool catalog stay process-global and deployment-shared (D-287, PRESERVED — the earlier triple-keying draft that would have reversed it was rejected). A shared runtime therefore trusts co-tenant admins for runtime-added connection/provider names (a collision fails loud); hard isolation of runtime-added tools is a one-runtime-per-tenant deployment. Phase 167, D-301 (extends D-287).
 
-**Protocol-installed OAuth provider** — an OAuth provider descriptor written over the Protocol (`agent_config.set_oauth_provider`, Phase 169 / D-303) onto the agent-config revision spine rather than declared in `harbor.yaml`. Its wire shape carries ZERO URLs — `{name, credential_broker, scopes?}` — because the v1.14 invariant is that no admin-writable field may determine where a credential is sent (D-300): the token endpoint, the allowed downstream hosts, and the audience/scope ceiling are all pinned at boot on the named **credential broker (named)**. A write carrying any URL (`token_url`, `auth_url`) or env-var name (`client_id_env`, `client_secret_env`, `remote`) is rejected by name (`DisallowUnknownFields` — the field is not on the writable struct). Installed providers live in the `auth.ProviderSet` (Phase 167 — a provider SET of instances, process-global bare-name for RESOLUTION per D-287 with an **owner tag** for reconcile scoping; NOT the OAuth driver registry and NOT a §4.4 driver seam) the MCP attach path consults, so a connection added moments later can bind them with no restart; uninstalling CLOSES the provider, so a still-bound connection's next call fails LOUD rather than degrading to an unauthenticated dial (§13), and the break is confined to the owning owner by the owner-scoped reconcile. The interactive `oauth2` driver and every env-named local-secret provider stay config-only. RFC §6.4, §6.16, D-271, D-285, D-300, D-303.
+**Protocol-installed OAuth provider** — an OAuth provider descriptor written over the Protocol (`agent_config.set_oauth_provider`, Phase 169 / D-303) onto the agent-config revision spine rather than declared in `harbor.yaml`. Its wire shape carries ZERO URLs — `{name, credential_broker, scopes?}` — because the v1.14 invariant is that no ordinary admin-writable field may determine where a credential is sent (D-300): the token endpoint, the allowed downstream hosts, and the audience/scope ceiling are all pinned at boot on the named **credential broker (named)**. A write carrying any URL (`token_url`, `auth_url`) or env-var name (`client_id_env`, `client_secret_env`, `remote`) is rejected by name (`DisallowUnknownFields` — the field is not on the writable struct). D-401 does not relax this provider setter: its separate boot-authorized signed-pair registration can install a server-owned immutable provider/connection pair with a signed audience and URL digest, never a free-form sink. Installed providers live in the `auth.ProviderSet` (Phase 167 — a provider SET of instances, process-global bare-name for RESOLUTION per D-287 with an **owner tag** for reconcile scoping; NOT the OAuth driver registry and NOT a §4.4 driver seam) the MCP attach path consults, so a connection added moments later can bind them with no restart; uninstalling CLOSES the provider, so a still-bound connection's next call fails LOUD rather than degrading to an unauthenticated dial (§13), and the break is confined to the owning owner by the owner-scoped reconcile. The interactive `oauth2` driver and every env-named local-secret provider stay config-only. RFC §6.4, §6.16, D-271, D-285, D-300, D-303, D-401.
 
 **Wire-carried OAuth-provider descriptor** — the gated extension of a **Protocol-installed OAuth provider** in which the descriptor MAY carry the NEW server's OAuth params (`token_url`, `audience`, `scopes`) over `agent_config.set_oauth_provider` or an `add_mcp_connection` inline `oauth` binding, while STILL naming a boot-declared `credential_broker` — so a NEW OAuth-fronted MCP server is connectable at runtime without a static `tools.oauth_providers[]` block — but ONLY behind a fail-closed, boot-only opt-in (`tools.allow_wire_oauth_descriptor` OR `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR`, default off). With the opt-in off (all of production), a descriptor carrying `token_url` or `audience` is rejected exactly as the name-only binding rejects a sink field (D-303 posture, unchanged). When opted in, `allowed_downstream_hosts` is DERIVED from the connected server's own URL (`NormalizeDownstreamHost(connection.url)`, never a free-form wire field) and the wire `token_url` faces the identical D-300/D-338 SSRF backstop; the runtime's OWN credential custody (the coordinator pull endpoint + service-token env name + org secret) stays 100% boot-declared on the named broker — NO credential-source URL, env-var name, or secret ever rides the wire (an earlier draft's wire `remote{}` credential-pull block was removed as an exfil primitive). The opt-in is also a kill-switch: a wire provider is not rebuilt by the run-start reconcile when the opt-in is off. Phase 199, D-340.
 
@@ -1371,11 +1414,15 @@ Additions to this set are RFC PRs.
 
 **Slot expectation** — one identity quadruple, record kind, and expected current event ID used by conditional save. It names a StateStore slot rather than an event-history row; the next record's target slot must be among the operation's unique expectations. Phase 233, D-398.
 
-**Agent-config retirement** — the terminal lifecycle transition that makes one registration ID unresolvable for new runs and freezes its agent-, user-, and session-tier config mutation without deleting immutable revision history. It is separate from fleet deregistration. Phase 234, D-399.
+**Agent-config retirement** — the terminal lifecycle transition that makes one registration ID unresolvable for new runs and freezes its agent-, user-, and session-tier config mutation without deleting immutable revision history. Effective target selection is followed by signed reach before lifecycle lookup; it is separate from fleet deregistration. Phase 234, D-399.
 
 **Retirement tombstone** — the durable lifecycle envelope occupying a retired agent's active-config slot. It carries the pre-retirement revision identity, operation identity, fixed cleanup manifest, and progress; it is retained as the terminal resolution and replay oracle. Phase 234, D-399.
 
 **Retirement replay identity** — the tuple of tenant, agent registration ID, operation ID, and pre-retirement revision/hash recorded by a retirement tombstone. Only an exact same-operation retry may resume that tombstone's cleanup; a different operation conflicts. Phase 234, D-399.
+
+**Agent retirement resolution** — the closed protocol-owned result after pure effective-agent selection and signed-reach authorization: `active`, `unresolvable`, or `retired`. An unauthorized caller does not cause a tenant-local lifecycle lookup and cannot distinguish the latter two states. Phase 234, D-399.
+
+**Retirement event checkpoint** — the durable pending/acknowledged record that makes a retirement lifecycle event at-least-once: persist pending, emit, then exact CAS acknowledgement. A retry resumes after either failure; duplicate delivery is acceptable and loss is not. Phase 234, D-399.
 
 **StateStore** — Harbor's persistence floor. One mandatory interface keyed on `(identity.Quadruple, Kind, Bytes)` with idempotency on a caller-supplied `EventID` (ULID), exact multi-slot conditional save, identity-scoped deletion/enumeration, and the explicit maintenance scan. Three V1 drivers (in-memory, SQLite, Postgres) all pass the same `state.conformancetest.Run` suite. Consuming subsystems (sessions, tasks, governance, planner, memory, steering) land typed wrappers atop this generic surface — the leaf interface holds no domain types. RFC §6.11, §9, D-027, D-398.
 
@@ -1384,6 +1431,79 @@ Additions to this set are RFC PRs.
 **`StreamFrame`** — Chunked payload tied to a parent run (Phase 12). `StreamID` (defaults to `RunID`), `Seq` (engine-assigned, monotonic per StreamID), `Text`, `Done`, `Meta`. Distinct from `events.Event` (lifecycle markers); StreamFrames carry incremental output. RFC §6.1, brief 01 §2.
 
 **`Subflow`** — Runtime primitive (Phase 14): `(nctx *NodeContext) CallSubflow(ctx, factory) (Envelope, error)`. Runs a child engine for one parent envelope, mirrors parent cancellation via a watcher goroutine, returns the first egress payload, then `Stop`s the child. RFC §6.1, brief 01 §4.
+
+**Signed OAuth MCP capability** — the immutable, owner-scoped pair of one
+broker-pull OAuth provider and one MCP connection registered by
+`agent_config.register_oauth_mcp_capability`. The pair is admitted only by
+the **signed capability authority envelope**, persists in one agent-config
+revision, derives its single bearer sink from the canonical connection URL, and
+is prepared/published, reconciled, removed, and retired as one lifecycle unit.
+Its writable connection is the closed
+`SignedOAuthMCPConnectionDescriptor` exactly `{name, url, tool_allowlist,
+tool_denylist, connect_timeout_ms, request_timeout_ms}`, never a general MCP
+descriptor; strict decode/reflection reject OAuth/provider, credential/secret,
+injection/discovery, stdio, headers, and host/sink-list fields. Removal is the
+durable exact-EventID `SaveIf` sequence `removal_revision_committed`,
+`catalog_unpublished`, `teardown_receipted`, then terminal `removed`; unknown
+outcomes reread and resume the missing phase from its frozen fingerprint.
+Its provider is pair-owned outside the general ProviderSet; catalog source swap
+alone exposes dispatch, while Protocol projection comes from the immutable
+revision. Its broker retains all credential custody. It does not change the
+process-global bare-name catalog namespace; collisions fail loudly. Phase 233b,
+D-401.
+
+**Signed capability authority envelope** — the asymmetric-signature-verified,
+boot-trust-anchor-authorized claim set required for a D-401 dynamic OAuth MCP
+capability. It exactly binds tenant, agent, broker, provider/capability ID and
+revision, canonical URL digest, audience, normalized scopes, issuer/key ID,
+issued-at/expiry, and a durable one-time replay ID (JTI). Its tenant-scoped
+operation key is `(tenant_id, trust_anchor_name, issuer, kid, jti)` and has a
+canonical length-prefixed tuple-hash control record containing bounded tuple
+fields/hashes, pair fingerprint, expiry, revision, phase, and exact EventID.
+Its sole normal pair-lifetime graph is `claimed -> revision_committed ->
+published -> removal_revision_committed -> catalog_unpublished ->
+teardown_receipted -> removed`, all by exact-EventID `SaveIf`; only incomplete
+`claimed`/`revision_committed` may terminally become `expired_incomplete` and
+clean after expiry+skew. A published record remains with immutable pair history
+despite registration-authority expiry/key revocation for later frozen-fingerprint
+removal; its retention is not bearer authority. The `removed` tombstone remains
+with pair history (and at least through authority expiry+skew) to reject replay
+or recreation. Exact tuple/fingerprint resumes phase while a different
+fingerprint rejects. Stored-pair activation requires published state, rather
+than treating it as a fresh replay. Administrator-supplied fields merely request
+the signed values; the envelope carries neither credentials nor arbitrary sinks.
+
+**Capability-pair binding** — the persisted non-secret, server-owned/read-only
+binding of a signed OAuth MCP capability's provider/capability revision,
+audience, normalized scope set, canonical connection URL digest, and exactly
+one URL-derived bearer sink. Runtime activation, rollback, restart, and
+reconcile re-derive and verify it before a bearer can flow. Generic revision
+and section writers carry it byte-identically or reject; only the paired
+removal/retirement lifecycle may close it from its frozen fingerprint. Phase
+233b, D-401.
+
+**Canonical OAuth MCP URL** — the one byte canonicalization used by D-401
+signing, claim matching, pair fingerprinting, transport, and reconcile: absolute
+HTTPS; IDNA2008 lower-case ASCII host without a trailing root dot; normalized
+RFC5952 compressed lower-case IPv6 in brackets; no IP zone/userinfo/fragment;
+leading-zero explicit port rejected (omitted is 443); upper-case percent hex
+and unreserved decode before RFC3986 dot-segment removal (so `%2e` participates);
+`/` empty path; ordered duplicate query pairs retained and `+` literal. An absent
+query omits `?`, while explicit empty query retains it. Its bytes are
+`https://host:port/path[?query]`; the bearer sink is the origin only. Golden
+fixtures make other signers reproduce it. Phase 233b, D-401.
+
+**Pending activation/compensation fence** — an agent-scope durable record that
+precedes a first-install candidate's semantic activation. It binds operation and
+content fingerprint, candidate revision, prior active revision/EventID or
+no-active, phase, and EventID. While pending, Active, mutation, and reconcile
+expose only the prior/no-active state; every generic section writer and
+production registration/creation write, `set_revision`, rollback, pair removal,
+retirement, and reconcile must also consult the exact fence and physical active
+revision/EventID. A foreign operation
+gets typed pending/conflict while only the same operation can resume. `SaveIf`
+commit or abort decides the candidate. Unknown outcomes remain pending across
+runtimes. Phase 233b, D-401.
 
 ## T
 

@@ -11915,6 +11915,185 @@ When an auth-required revision write reports failure but an exact reread proves 
 
 **Status:** Accepted for Phase 234.
 
-**Decision.** Retirement CAS-replaces the agent active slot with a backward-compatible lifecycle tombstone carrying operation ID, retirement time, prior revision ID/hash, a fixed cleanup manifest, and durable step progress. The tombstone wins before cleanup and remains the replay oracle: the same operation resumes, a different one conflicts, and no later durable config write, user variant, or rollback can resurrect the agent. Process-local session overlay writes use before/after lifecycle reads and exact local compensation if retirement wins between them; an overlay completed before retirement may remain resident in another process but is inaccessible thereafter. Explicit and defaulted new-run selection refuse the tombstone; already-acquired run snapshots remain immutable. Cleanup touches only durably attributable `(tenant, agent_id)` resources, retains immutable agent/user revision history, and never sweeps boot/global or unattributable credentials. `agent_config.retire` is admin control-plane lifecycle and intentionally does not consume data-plane `agent_reach`. Recreate mints a new ID. `agents.deregister` remains fleet-record deletion only.
+**Decision.** Retirement CAS-replaces the agent active slot with a backward-compatible lifecycle tombstone carrying operation ID, retirement time, prior revision ID/hash, a fixed cleanup manifest, and durable step progress. The tombstone wins before cleanup and remains the replay oracle: the same operation resumes, a different one conflicts, and no later durable config write, user variant, or rollback can resurrect the agent. The superseded process-local overlay description below is history only; D-400's durable four-slot model is the implementation. `EffectiveAgentID(requested)` first selects explicit or default without storage access, the shared signed-reach gate then authorizes it, and only then may lifecycle/config lookup return the closed `active`, `unresolvable`, or `retired` result before session/task spawn. A default never short-circuits that lookup. An unauthorized caller sees no unknown/configured/retired distinction. Reach-authorized retirement maps to `agent_retired` (HTTP 409); retire precondition/different-operation/incompatible-slot conflicts map to `agent_retirement_conflict` (HTTP 409). Admin historical List/Diff/exact revision reads and user List/Diff under their existing scope plus reach remain available; active/current and mutation doors do not. Cleanup touches only durably attributable `(tenant, agent_id)` resources, retains immutable agent/user revision history, and never sweeps boot/global or unattributable credentials. `agent_config.retire` is admin control-plane lifecycle and intentionally does not consume data-plane `agent_reach`. Recreate mints a new ID. `agents.deregister` remains fleet-record deletion only.
+
+**Canonical lifecycle events.** Retirement emits redacted, identity-scoped `agent_config.retirement.started`, `.progress`, and `.completed` events. Payloads contain identity, agent ID, a hash of operation ID, and bounded stage/class, counters, and generation only; raw operation IDs, descriptors, and credentials are forbidden. Every durable transition persists a pending event checkpoint before emission, blocks subsequent cleanup progress until it emits, then CAS-acknowledges it. A bus or acknowledgement failure is loud and the same-operation retry resumes the at-least-once sequence; duplicate delivery is acceptable, lost delivery is not.
 
 **Cross-references.** D-059, D-301, D-312, D-366, D-394, D-398. RFC §5.5, §6.11, §6.13, §6.16.
+
+**Dated correction (2026-08-01).** The preceding process-local session-overlay
+write and compensation mechanism is retained as D-399 history only. It is
+superseded by D-400's durable StateStore overlay/personal-record model,
+four-slot fences, exact uncertain-write convergence, and paged retirement
+cleanup; it is not an accepted implementation path.
+
+---
+
+## D-400 — Session overlays and agent-owned session personal skills are durable records fenced by lifecycle and erasure state
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 233a; corrects the process-local overlay premise in D-399 without rewriting that accepted decision.
+
+**Decision.** A session overlay is a StateStore record under the caller's full `(tenant, user, session)` triple, and an agent-owned session personal skill is one separately validated StateStore record under that same triple. New personal-record Kinds encode the agent ID solely as ownership metadata; it is never an isolation key, query principal, or widened scope. Existing schema-1 overlay Kinds retain their raw compatibility shape and are selected only through their common prefix plus exact Kind equality. Each write uses `SaveIf` with exact expectations for the target record, the agent lifecycle slot, the pending session-erasure ledger, and the terminal session-erasure tombstone. `SaveIf` checks all of those slots but saves one record only; it is not used to claim an atomically enforced collection size.
+
+Personal records carry the complete validated Skill body. Their new Kind uses an encoded agent component and a canonical-name hash, while the payload repeats the canonical name and agent so a key collision or malformed record fails loud rather than aliasing. A logical tombstone is the authoritative delete and suppresses legacy fallback. Schema-1 overlay `PersonalSkills` entries are read-only migration eligibility for eligible legacy `ScopeSession` rows; new session writes never place a body in the shared SkillStore. A trusted per-run composite resolver is the only reader for Directory and `skill_get`, `skill_list`, and `skill_search`: it preserves durable `ScopeUser` and higher shared scopes, replaces only the legacy session tier, applies the same deterministic lexical or opt-in semantic policy to the composed view, and exposes no new wire body by default.
+
+Session erasure adds a mandatory, idempotent SkillStore `DeleteSessionScope` ledger step that sweeps only exact legacy `ScopeSession` rows before StateStore scope deletion. Retirement replays cleanup from its tombstone manifest and removes only exact attributable agent-owned StateStore records; it does not delete/retire shared, unattributable, or `ScopeUser` bodies. This supersedes only D-399's process-local before/after compensation description.
+
+`ScanKindForTenant` is a mandatory StateStore, storage-filtered maintenance scan: explicit maintenance scope plus tenant ID, literal non-empty Kind prefix, bounded limit, and opaque validated continuation; all drivers return a stable lexicographic `(tenant, user, session, run, kind)` order. It is an ordered resumable page sequence, not a durable database snapshot. Cutover and retirement use it; after retirement's lifecycle tombstone wins, the owned keyset is frozen. New personal-record Kinds are encoded and collision-safe per agent. Legacy overlay Kinds are raw `agentcfg.session_overlay.` + agent ID with no delimiter, so scan code uses their common tenant-bounded prefix then exact `record.Kind == LegacyOverlayKind(agentID)` equality; `a` and `ab` are an adversarial no-overmatch row. `SaveIf` uncertain-write recovery is class-specific: overlay/personal reread target plus lifecycle and erasure pair; cutover rereads cutover target plus epoch/digest/generation; retirement rereads lifecycle target plus operation/progress; cleanup rereads item target plus applicable session fences. Every class accepts only exact intended event/content and never compensates unconditionally.
+
+For a session/user agent-addressed projection, signed reach is always checked
+before the lifecycle fence or any tenant-local lookup. Once authorized, a
+lifecycle tombstone produces canonical `agent_retired` (HTTP 409) for
+active/current, mutating, skill-list, and every session door; it never becomes
+a generic unresolvable result. Historical user List/Diff retain their existing
+verified user scope and signed-reach requirements, rather than gaining admin
+authority.
+
+The schema-1 cutover is a static, operator-controlled boot contract, not a runtime-membership or writer-advertisement subsystem. `skills.session_personal_cutover.tenants` is a bounded unique declaration list of `{tenant_id, epoch, roster_digest, legacy_writers_drained}`. Syntactically or structurally malformed static configuration (empty/invalid fields, duplicate tenant IDs, or an over-bound list) fails boot loud; it is not an admitted declaration. Unlisted tenants and valid declarations with `legacy_writers_drained=false` remain read-only `dual_read`; boot discovers no tenants and iterates only admitted declarations. It CASes each declaration to `agentcfg.session_personal.cutover.<base64url(epoch)>` under `CutoverScope(tenant)`, exactly `{TenantID: tenant, UserID: "__agentcfg__", SessionID: "__session_personal_cutover__", RunID: ""}`. A malformed or declaration-mismatched durable cutover record never authorizes `state_only`: resolution remains mutation-refusing `dual_read` and surfaces a bounded loud diagnostic/error. The existing `ErrReservedUser` rule already rejects a verified real user named `__agentcfg__`; an agent ID equal to `__session_personal_cutover__` cannot alias the control record because the cutover Kind namespace is disjoint from lifecycle/config Kinds, and tests pin that disjointness. That bounded record contains only mode, epoch, digest, current scan continuation, counters, and generation. It holds no per-overlay classification: each owned personal record carries its per-name copy marker (epoch and legacy content hash), and retirement/erasure status comes from durable terminal fences. After old writers are drained, paged `ScanKindForTenant` walks the common schema-1 overlay prefix and requires exact legacy Kind equality before it copies any eligible referenced legacy body under the overlay's own identity with all four fences. New code never mutates schema-1 `PersonalSkills`, so the source is quiescent without pretending a restart-survivable snapshot. Restart resumes from the continuation. A final fresh paged verification pass proves every currently eligible reference is copied or terminally fenced before one final CAS may set `state_only`. Until then legacy `ScopeSession` rows are authoritative, copies are non-authoritative, and every session-personal mutation fails loud. The owned body/tombstone record is the sole post-cutover membership record: one personal verb performs one `SaveIf` and never mutates `Overlay.PersonalSkills`. Overlay responses project current owned names in `state_only` and legacy names in `dual_read` without persisting either projection. `agent_config.session.skills.list` returns only this session tier; Directory and general skill tools, not that method, compose `ScopeUser` and higher rungs. Every overlay/personal/composite read captures lifecycle plus pending/tombstone fence EventIDs before and after loading/enumerating; it retries at most `MaxSessionSkillReadAttempts = 3`, honoring context cancellation/deadline on each attempt, then returns `ErrSessionSkillReadUnstable`; externally observable exhaustion maps to canonical `session_skill_read_unstable` HTTP 409. The fixed retirement manifest records cleanup classes: new personal records use collision-safe exact per-agent prefixes, while legacy overlays record the common scan prefix and exact `LegacyOverlayKind(agentID)` equality rule. It scans after tombstone and mutates each result only under its own full identity. Overlay records retain their schema-1 raw-agent Kind/payload compatibility and have no separate retirement tombstone; lifecycle is terminal, and cleanup never uses unconditional `Delete`.
+
+**Cross-references.** D-059, D-256, D-312, D-392, D-398, D-399. RFC §6.7, §6.9, §6.11, §6.13, §6.16.
+
+**Deployment compatibility.** The default mutation refusal in `dual_read` is
+intentional rather than a transparent upgrade. Before v1.26 release approval,
+reviewers must explicitly accept this compatibility/deployment trade-off. The
+implementation PR must update `docs/CONFIG.md`, `CHANGELOG.md`, the matching
+operator skill and docs-site stub, and example configuration with the drain,
+attestation, resumable migration, and `state_only` completion procedure.
+
+**Wire consequence.** Refused session-personal mutation returns the canonical
+`session_skill_cutover_pending` Protocol error (HTTP 409), backed by a Go
+sentinel. It is a wire addition despite adding no method or response member:
+the canonical error registry, stream mapping, Protocol documentation, Console
+types/manifest, and error-matrix tests regenerate and lockstep-gate together.
+Read-fence exhaustion adds the similarly canonical
+`session_skill_read_unstable` error (HTTP 409), mapped from
+`ErrSessionSkillReadUnstable` with the same registry, transport, docs, Console
+manifest, and matrix obligations.
+
+---
+
+## D-401 — Signed OAuth MCP capability registration is the bounded production exception to D-300's static audience/sink posture
+
+**Date:** 2026-08-01
+
+**Status:** Accepted for Phase 233b (HA-50).
+
+**Decision.** D-300 remains the credential-sink invariant: an administrator's
+ordinary writable fields do not decide where a credential is sent. A generic
+boot-declared OAuth credential broker/trust anchor may, however, authorize a
+bounded new OAuth-fronted MCP capability without a runtime config edit. The
+broker/trust anchor alone retains the fixed exchange `token_url`, credential
+pull URL, runtime broker authentication secret/env, KEK, true scope ceiling,
+and configured signature issuer/key verifier. It also carries an explicit
+production opt-in for signed capability authority. A configured static host or
+audience allow-list remains valid, but is not the mechanism for this dynamic
+capability path.
+
+The sole production registration/creation write is admin-only
+`agent_config.register_oauth_mcp_capability`. It is production-safe only when
+the boot broker/trust anchor's explicit signed-capability opt-in and verifier
+are present; it is not enabled merely by running production. It atomically prepares an
+unpublished provider and MCP connection, CAS-persists exactly one revision,
+and publishes the pair. It is forbidden to compose `set_oauth_provider` and
+`add_mcp_connection` to obtain this state. The writable request contains only
+provider name, boot broker name, per-capability audience and normalized
+requested scopes, a dedicated closed `SignedOAuthMCPConnectionDescriptor`,
+`expected_content_hash`, and a signed authority envelope. It accepts no general
+MCP descriptor: the exact shape is `{name, url, tool_allowlist, tool_denylist,
+connect_timeout_ms, request_timeout_ms}`, and strict decode plus reflection
+reject OAuth/provider/token URL, injection, discovery, stdio command/env/cwd,
+headers, credential/secret, and host/sink-list fields. `tools.allow_wire_oauth_descriptor` and its environment switch remain
+development-only D-340 controls and are neither required nor consulted by this
+production path.
+
+The signed envelope, not admin input, authorizes the dynamic values. It binds
+tenant, agent, broker, provider/capability ID and immutable capability revision,
+canonical URL digest, audience, normalized scope set, issuer/key ID, timing,
+and JTI. The durable JTI operation key is tenant-scoped
+`(tenant_id, trust_anchor_name, issuer, kid, jti)`: tenant is signed and Harbor
+isolation remains tenant-local. A reserved tenant-control-scope record uses a
+collision-safe deterministic Kind derived from a canonical length-prefixed
+tuple hash; its bounded payload repeats tuple hashes/fields, exact pair
+fingerprint, expiry, phase, and revision identity. First `SaveIf`-absent claim
+creates one pair-lifetime operation record. Its sole normal graph is
+`claimed -> revision_committed -> published -> removal_revision_committed ->
+catalog_unpublished -> teardown_receipted -> removed`; every transition
+`SaveIf`-compares the exact operation EventID. There is no generic `aborted`
+phase: a prepared-but-incomplete claim retries its recorded phase. Only
+`claimed` or `revision_committed` may terminally enter `expired_incomplete`
+after safe close/compensation and a preserved prior/no-active activation fence;
+that tombstone remains until expiry+skew before cleanup. There is no
+claim+revision cross-record ACID assertion: this durable state machine is
+recovery. Exact tuple+fingerprint resumes phase; same key/different fingerprint
+rejects. `claimed` retries prepare again; uncertain revision write exact-rereads
+active revision/fingerprint to advance, retry, or conflict;
+`revision_committed` re-prepares/re-publishes after restart; publish-then-
+checkpoint errors verify the exact live pair before advancing; `published`
+returns the original response; and `removed` never recreates. A `published`
+record survives registration-authority expiry or verifier-key revocation for the
+full immutable pair-history lifetime, so removal/retirement resumes from its
+frozen fingerprint. That durable record is a recovery/replay constraint, not a
+bearer grant: exchange still enforces current entitlement and exact binding.
+`removed` is retained as an anti-replay tombstone with pair history and never
+less than the authority expiry+skew horizon, preventing recreation or replay.
+Unknown broker/issuer/key, malformed authority, scope widening, or mismatch
+fails before a live side effect.
+
+One named shared canonical-URL helper supplies signer/verifier matching, pair
+fingerprinting, transport enforcement, and restart/reconcile. It requires
+absolute HTTPS; uses IDNA2008 ASCII lower-case host with trailing root dot
+removed and RFC5952 compressed lower-case IPv6 in brackets; rejects IP zone,
+userinfo, fragment, and a leading-zero explicit port (omitted `443`);
+uppercases percent hex and decodes unreserved bytes before RFC3986
+remove-dot-segments (so `%2e` participates; empty path `/`). Query preserves
+original pair order and duplicates while canonicalizing percent encoding (no
+sorting; `+` stays literal plus); absent query omits `?`, while explicit empty
+query retains a terminal `?`. Canonical URL bytes are
+`https://host:port/path[?query]`; sink is `https://host:port`.
+Bearer send rechecks that sink and refuses redirects; no free-form host list is
+accepted. The exchange endpoint stays boot-pinned; the
+capability's signed audience is bounded by the envelope and independently
+validated by the exchange along with tenant, agent, provider/capability,
+revision, and URL digest. The verified `(tenant, user, session)` remains the
+token subject; audience names the destination resource, never the person.
+Token/cache assertions include the subject plus agent, capability revision,
+audience, and URL digest. Requested scope outside the true boot ceiling rejects
+loudly; silent scope intersection is forbidden for this path.
+
+The signed provider is pair-owned and outside general `ProviderSet`; private MCP
+prepare binds directly to that exact provider instance. The catalog source swap
+alone linearizes data-plane dispatch. Protocol projections derive from the
+immutable signed-pair revision, not a live provider map; generic provider
+resolution cannot bind the pair. A pair-owned live registry may retain only
+close/reconcile receipts, never authority/projection/dispatch. General bare-name
+collision checking remains. Prepare is never durable and closes on failure or
+restart; teardown closes transport+provider as one receipt. Generic revision
+writers remain closed against a pair. Paired removal continues the same
+pair-lifetime JTI record; it is never a second operation. It is the durable
+exact-EventID `SaveIf` sequence `removal_revision_committed` (desired pair absent by revision
+CAS), `catalog_unpublished`, `teardown_receipted` (close+revoke from frozen
+fingerprint), then terminal `removed`. Commit-then-error or unknown outcomes
+exact-reread the operation phase/EventID, desired revision, catalog source, and
+receipt, then resume only the missing phase. Expiry, key revocation, or a lost
+verifier never block it; retirement uses this same removal path.
+
+**First-install repair.** Before any candidate can become semantically active,
+`set_oauth_provider` writes a durable pending-activation/compensation fence
+under agent scope, bound to exact operation/content fingerprint, attempted
+revision, and prior active revision/EventID (or no-active), with phase/EventID.
+`Registry.Active`, every generic section writer and production
+registration/creation write, `set_revision`, rollback, pair removal, retirement,
+and reconcile consult the exact fence and physical active revision/EventID:
+pending returns only prior active or no-active and never
+authorizes the candidate. A foreign operation rejects with typed
+pending/conflict; only the same operation may serialize and resume. Success
+`SaveIf` commits the fence; failure aborts it; unknown transitions remain safely
+pending across runtimes until exact reread proves either phase. Candidate history
+is immutable. `DeactivateIfActive` may compact the physical pointer afterward;
+it is not the security fence and cannot infer an unknown outcome inactive.
+
+**Cross-references.** D-025, D-300, D-301, D-303, D-340, D-390, D-394,
+D-396, D-398, D-399. RFC §4, §5.5, §6.4, §6.11, §6.16. Plan:
+`docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md`.
