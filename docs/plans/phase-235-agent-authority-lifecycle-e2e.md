@@ -35,6 +35,13 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 - Close every FAIL/WARN from a read-only checkpoint audit before release.
 - Produce complete v1.26.0 release evidence and operator migration notes.
 
+## Checkpoint status
+
+The composed SQLite checkpoint and CI-only Postgres two-runtime retirement
+restart leg are implemented. This is a release gate, not a release: the
+remaining audit, hosted preflight, release-build, and publication criteria
+below remain open until evidence is collected from `main`.
+
 ## Non-goals
 
 - No new feature surface beyond corrections required by composing tests or audit findings.

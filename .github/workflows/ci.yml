@@ -377,6 +377,15 @@ jobs:
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
         run: go test -race -count=1 -timeout 240s ./internal/runtime/agentcfg/protocol -run '^TestRegisterOAuthMCPCapability_PostgresTwoIndependentRuntimes$'
+      - name: Run v1.26 agent authority/lifecycle checkpoint against postgres:16
+        env:
+          HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
+        run: |
+          set -euo pipefail
+          test_log="$(mktemp "${RUNNER_TEMP}/phase-235-postgres.XXXXXX.log")"
+          trap 'rm -f "${test_log}"' EXIT
+          go test -v -race -count=1 -timeout 240s ./test/integration -run '^TestE2E_WaveV126$/^postgres$' | tee "${test_log}"
+          grep -Fq -- '--- PASS: TestE2E_WaveV126/postgres' "${test_log}"
 
   memory-postgres:
     name: memory/postgres conformance (postgres:16)

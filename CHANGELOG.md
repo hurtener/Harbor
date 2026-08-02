@@ -46,6 +46,11 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Fixed
 
+- The unreleased authority and lifecycle checkpoint now composes signed-agent
+  reach, conditional configuration writes, session erasure, mixed-identity
+  cancellation isolation, and a two-runtime Postgres retirement restart
+  proof. This is release-gate evidence only; it does not announce a release.
+
 - Bifrost reasoning now preserves the selected response's exact observed
   bytes. Any non-nil raw reasoning delta, including an empty one, makes the raw
   stream authoritative; details-only responses coalesce fragments by stable
