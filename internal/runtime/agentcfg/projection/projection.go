@@ -578,6 +578,38 @@ func ActiveSkillViews(ctx context.Context, reg agentcfg.Registry, ov sessionover
 	return FilterSkillViewsByMembership(views, allowed), nil
 }
 
+// ActiveSessionSkillMembership captures the selected agent's complete
+// run-start skill-membership authority. The AGENT scope is read exactly once;
+// a present Skills section (including an explicitly empty Names slice) sets
+// AdminMembershipSet, while an absent revision/section leaves the base view
+// ungated. The exact USER scope is then read exactly once and contributes only
+// its durable personal-skill names. Returned slices are fresh copies suitable
+// for binding into an immutable per-run resolver.
+func ActiveSessionSkillMembership(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) (sessionoverlay.SessionSkillMembership, error) {
+	var membership sessionoverlay.SessionSkillMembership
+	if reg == nil || agentID == "" {
+		return membership, nil
+	}
+
+	agentRevision, found, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return sessionoverlay.SessionSkillMembership{}, err
+	}
+	if found && agentRevision.Payload.Skills != nil {
+		membership.AdminMembershipSet = true
+		membership.AdminNames = append([]string(nil), agentRevision.Payload.Skills.Names...)
+	}
+
+	userRevision, found, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeUser)
+	if err != nil {
+		return sessionoverlay.SessionSkillMembership{}, err
+	}
+	if found && userRevision.Payload.Skills != nil {
+		membership.UserPersonalNames = append([]string(nil), userRevision.Payload.Skills.Names...)
+	}
+	return membership, nil
+}
+
 // activeDurableUserSkillNames resolves the caller's active USER-scope durable
 // config revision and returns its skills-membership names — the durable
 // per-user personal-skill set. It keys by the run's identity triple with

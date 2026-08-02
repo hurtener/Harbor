@@ -5,9 +5,19 @@ import (
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/skills"
 	skilltools "github.com/hurtener/Harbor/internal/skills/tools"
 	"github.com/hurtener/Harbor/internal/tools"
 )
+
+// skillReader returns the explicitly supplied read projection, falling back
+// to the historical SkillStore field for source-compatible boot wiring.
+func skillReader(rc RegistryContext) skills.SkillReader {
+	if rc.SkillReader != nil {
+		return rc.SkillReader
+	}
+	return rc.SkillStore
+}
 
 // runCapability computes the capability envelope the skill_* built-in
 // delegations pass to the skills-tools handlers.

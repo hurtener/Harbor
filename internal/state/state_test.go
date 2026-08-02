@@ -127,6 +127,18 @@ func TestValidateListScopes_Cases(t *testing.T) {
 	}
 }
 
+func TestValidateListKindForIdentityBounded_Cases(t *testing.T) {
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}}
+	if err := state.ValidateListKindForIdentityBounded(q, "prefix", 1); err != nil {
+		t.Fatalf("ValidateListKindForIdentityBounded valid = %v", err)
+	}
+	for _, limit := range []int{0, state.MaxStateIdentityListLimit + 1} {
+		if err := state.ValidateListKindForIdentityBounded(q, "prefix", limit); !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("ValidateListKindForIdentityBounded(%d) = %v, want ErrInvalidRecord", limit, err)
+		}
+	}
+}
+
 func TestTenantScanValidationAndContinuation_Cases(t *testing.T) {
 	scope := state.ListScope{MaintenanceScoped: true}
 	if err := state.ValidateScanKindForTenant(scope, "tenant", "prefix", 1); err != nil {

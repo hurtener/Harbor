@@ -4,7 +4,11 @@
 // never reaches a production build.
 package devstack
 
-import "github.com/hurtener/Harbor/internal/config"
+import (
+	"context"
+
+	"github.com/hurtener/Harbor/internal/config"
+)
 
 // TryAssemble re-exports the package-private assembleWith (Phase 110d
 // / D-197 — the thin error-returning core over
@@ -22,5 +26,11 @@ import "github.com/hurtener/Harbor/internal/config"
 // which is strictly stronger: reflection over EVERY config field, not
 // a hand-listed golden.
 func TryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
-	return assembleWith(cfg, opts)
+	return assembleWith(context.Background(), cfg, opts)
+}
+
+// TryAssembleContext exposes the caller-context variant for tests that need to
+// verify boot cancellation through every test-kit assembly leg.
+func TryAssembleContext(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
+	return assembleWith(ctx, cfg, opts)
 }

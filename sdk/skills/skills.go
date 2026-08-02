@@ -14,6 +14,8 @@ import (
 type (
 	// SkillStore is the identity-mandatory skill store interface.
 	SkillStore = internal.SkillStore
+	// SkillReader is the identity-mandatory read-only skill store interface.
+	SkillReader = internal.SkillReader
 	// ConfigSnapshot is the resolved skills configuration.
 	ConfigSnapshot = internal.ConfigSnapshot
 	// Deps carries shared dependencies (bus, logger).

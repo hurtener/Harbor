@@ -73,6 +73,34 @@ func TestAgentResolverAdapter_TwoCheckRule(t *testing.T) {
 	}
 }
 
+// TestAgentResolverAdapter_DefaultEnsuresLifecycle proves the control.start
+// adapter is one of the trusted boot-lifecycle entry points. Caller-named
+// non-default agents still use only the existing registry lookup and never
+// receive an implicit revision.
+func TestAgentResolverAdapter_DefaultEnsuresLifecycle(t *testing.T) {
+	const defaultID = "boot-agent"
+	st := runSnapshotState(t)
+	reg := lifecycleTestRegistry(t, st)
+	id := identity.Identity{TenantID: "resolver-tenant", UserID: "user", SessionID: "session"}
+	ensurer := func(ctx context.Context, got identity.Identity, agentID string) error {
+		return EnsureBootAgentLifecycle(ctx, st, reg, got, agentID)
+	}
+	r := NewAgentResolverAdapter(reg, defaultID, WithBootLifecycleEnsurer(ensurer))
+
+	if resolved, err := r.ResolveAgent(t.Context(), id, defaultID); err != nil || !resolved {
+		t.Fatalf("ResolveAgent(default) = (%t, %v), want (true, nil)", resolved, err)
+	}
+	if _, active, err := reg.Active(t.Context(), identity.Quadruple{Identity: id}, defaultID, agentcfg.ConfigScopeAgent); err != nil || !active {
+		t.Fatalf("default lifecycle active=%t err=%v", active, err)
+	}
+	if resolved, err := r.ResolveAgent(t.Context(), id, "caller-named-unknown"); err != nil || resolved {
+		t.Fatalf("ResolveAgent(caller named unknown) = (%t, %v), want (false, nil)", resolved, err)
+	}
+	if _, active, err := reg.Active(t.Context(), identity.Quadruple{Identity: id}, "caller-named-unknown", agentcfg.ConfigScopeAgent); err != nil || active {
+		t.Fatalf("caller-named lifecycle active=%t err=%v, want inactive", active, err)
+	}
+}
+
 // TestAgentResolverAdapter_NoRegistryRefusesRatherThanAccepts — an
 // assembly with no agent-config registry answers false for every
 // non-default id. It never accepts, and the ControlSurface turns the

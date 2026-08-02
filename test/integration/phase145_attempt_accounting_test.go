@@ -350,6 +350,10 @@ func (s *phase145SaveFailStore) ListKindForIdentity(ctx context.Context, q ident
 	return s.inner.ListKindForIdentity(ctx, q, kind)
 }
 
+func (s *phase145SaveFailStore) ListKindForIdentityBounded(ctx context.Context, q identity.Quadruple, kind string, limit int) ([]state.StateRecord, error) {
+	return s.inner.ListKindForIdentityBounded(ctx, q, kind, limit)
+}
+
 func (s *phase145SaveFailStore) ScanKindForTenant(ctx context.Context, scope state.ListScope, tenantID, kind string, limit int, continuation string) (state.StateScanPage, error) {
 	return s.inner.ScanKindForTenant(ctx, scope, tenantID, kind, limit, continuation)
 }

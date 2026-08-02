@@ -18,7 +18,9 @@
 //
 // The Service depends on the narrow `agentcfg.Registry` interface (the
 // StateStore-backed concrete satisfies it) plus an optional
-// `skills.SkillStore` for the skills consumer; tests inject fakes. The
+// `skills.SkillStore` for the durable/shared skills consumer and a narrow
+// `SessionPersonalSkillController` for the agent-owned session tier; tests
+// inject fakes. The
 // Service owns wire validation + the wire↔domain mapping; the registry
 // owns persistence + the revision events; the SkillStore owns the skill
 // rows + the skill events.
@@ -64,8 +66,8 @@ var (
 	ErrIdentityRequired = errors.New("agentcfg/protocol: identity scope incomplete")
 	// ErrMisconfigured — NewService was called with a nil registry.
 	ErrMisconfigured = errors.New("agentcfg/protocol: NewService missing a mandatory dependency")
-	// ErrSkillsUnavailable — a skills method was called but no SkillStore
-	// was wired into the Service.
+	// ErrSkillsUnavailable — a skills method was called but its SkillStore or
+	// session-personal controller was not wired into the Service.
 	ErrSkillsUnavailable = errors.New("agentcfg/protocol: skills control not wired on this runtime")
 	// ErrUnknownModel — a set_llm_params (or a set_revision carrying an
 	// LLMParams.Model) named a model with no configured ModelProfile. The
@@ -163,13 +165,29 @@ func validateLoadingModeMap(field string, m map[string]string) error {
 // Clock is the time source the Service stamps response timestamps from.
 type Clock func() time.Time
 
+// SessionPersonalSkillController is the sole mutation and read authority for
+// one selected agent's session-personal skill tier. UpsertSessionSkill and
+// DeleteSessionSkill each perform one controller-owned CAS; callers must not
+// pair them with a legacy SkillStore or Overlay.PersonalSkills write.
+// SessionSkills returns only ScopeSession rows for the supplied real identity
+// triple and selected agent. Implementations preserve cutover and unstable-read
+// sentinels so the Protocol edge can map them to their canonical 409 codes.
+type SessionPersonalSkillController interface {
+	SessionSkills(ctx context.Context, id identity.Quadruple, agentID string) ([]skills.Skill, error)
+	UpsertSessionSkill(ctx context.Context, id identity.Quadruple, agentID string, skill skills.Skill) error
+	DeleteSessionSkill(ctx context.Context, id identity.Quadruple, agentID, name string) error
+}
+
 // Service implements the admin-scoped agent-config methods.
 type Service struct {
-	registry agentcfg.Registry
-	skills   skills.SkillStore // optional — nil ⇒ skills methods return ErrSkillsUnavailable
-	bus      events.EventBus   // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
-	logger   *slog.Logger
-	now      Clock
+	registry              agentcfg.Registry
+	bootDefaultAgentID    string
+	ensureBootLifecycle   agentcfg.BootLifecycleEnsurer
+	skills                skills.SkillStore // optional — nil ⇒ shared/durable skills methods return ErrSkillsUnavailable
+	sessionPersonalSkills SessionPersonalSkillController
+	bus                   events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
+	logger                *slog.Logger
+	now                   Clock
 
 	// preparer drives the unpublished MCP prepare/persist/activate lifecycle.
 	// Optional — nil ⇒ add_mcp_connection returns ErrConnectionAttachUnavailable
@@ -271,10 +289,11 @@ type Service struct {
 	stdioAllowlist map[string]struct{}
 
 	// sessionOverlay backs the session-safe (non-admin) lower tier: the
-	// `agent_config.session.*` verbs write the session's user prompt layer +
-	// narrow-only disable set + ephemeral personal-skill names. Optional —
-	// nil ⇒ the session methods return ErrSessionOverlayUnavailable (→ 501 at
-	// the wire edge). Keyed by the REAL (tenant, user, session) triple, so it
+	// `agent_config.session.*` verbs write the session's user prompt layer and
+	// narrow-only disable set. Personal-skill names are legacy migration input
+	// only and are dynamically projected from sessionPersonalSkills. Optional —
+	// nil ⇒ overlay-writing methods return ErrSessionOverlayUnavailable (→ 501
+	// at the wire edge). Keyed by the REAL (tenant, user, session) triple, so it
 	// is session-isolated by construction.
 	sessionOverlay sessionoverlay.Store
 
@@ -309,6 +328,36 @@ type Service struct {
 	// (config writes are infrequent, and a brief unrelated serialisation costs
 	// nothing and never affects correctness).
 	writeLocks [writeLockShards]sync.Mutex
+}
+
+// WithBootLifecycleEnsurer wires the production bootstrap authority into the
+// session/user handler path. The handler calls it only after signed reach has
+// authorized the effective target; this option itself never creates a named
+// caller-selected agent.
+func WithBootLifecycleEnsurer(defaultAgentID string, ensure agentcfg.BootLifecycleEnsurer) Option {
+	return func(s *Service) {
+		if defaultAgentID != "" && ensure != nil {
+			s.bootDefaultAgentID = defaultAgentID
+			s.ensureBootLifecycle = ensure
+		}
+	}
+}
+
+// EnsureBootLifecycle materialises the boot-declared default for a verified
+// request identity. It is intentionally a no-op for named agents: their
+// lifecycle is explicit configuration authority, never request-created state.
+func (s *Service) EnsureBootLifecycle(ctx context.Context, scope prototypes.IdentityScope, agentID string) error {
+	if s.ensureBootLifecycle == nil || agentID == "" || agentID != s.bootDefaultAgentID {
+		return nil
+	}
+	id, err := identityFromScope(scope, agentID)
+	if err != nil {
+		return err
+	}
+	if err := s.ensureBootLifecycle(ctx, id, agentID); err != nil {
+		return fmt.Errorf("ensure boot agent lifecycle: %w", err)
+	}
+	return nil
 }
 
 // writeLockShards bounds the per-owner write-lock memory. 256 shards keep
@@ -413,6 +462,19 @@ func WithSkillStore(st skills.SkillStore) Option {
 	return func(s *Service) {
 		if st != nil {
 			s.skills = st
+		}
+	}
+}
+
+// WithSessionPersonalSkillController wires the sole authority for
+// `agent_config.session.skills.*` and the dynamic personal-name projection on
+// every session-overlay response. A nil controller leaves those reads/writes
+// failing loud with ErrSkillsUnavailable (→ 501 at the wire edge); the Service
+// never falls back to SkillStore or persists Overlay.PersonalSkills.
+func WithSessionPersonalSkillController(controller SessionPersonalSkillController) Option {
+	return func(s *Service) {
+		if controller != nil {
+			s.sessionPersonalSkills = controller
 		}
 	}
 }

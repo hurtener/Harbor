@@ -190,6 +190,14 @@ type StateStore interface {
 	// Prefix matching is literal and kindPrefix must be non-empty.
 	ListKindForIdentity(ctx context.Context, id identity.Quadruple, kindPrefix string) ([]StateRecord, error)
 
+	// ListKindForIdentityBounded is the identity-scoped counterpart for a
+	// caller that must cap materialization before it processes records. It
+	// returns at most limit rows, with the identity and literal-prefix
+	// semantics of ListKindForIdentity. Callers that must reject overflow ask
+	// for their accepted bound plus one. It is deliberately not a cursor: it
+	// is a bounded admission check, not a maintenance traversal.
+	ListKindForIdentityBounded(ctx context.Context, id identity.Quadruple, kindPrefix string, limit int) ([]StateRecord, error)
+
 	// ScanKindForTenant returns one deterministic, tenant-bounded maintenance
 	// page whose Kind begins with literalKindPrefix. It is deliberately a
 	// keyset scan, not a database snapshot: callers that need convergence must
@@ -271,8 +279,11 @@ var (
 const (
 	// MaxStateScanLimit bounds one maintenance page so no caller can turn the
 	// tenant scan into an accidental unbounded read.
-	MaxStateScanLimit       = 256
-	maxStateScanCursorBytes = 1024
+	MaxStateScanLimit = 256
+	// MaxStateIdentityListLimit bounds one identity-local admission read. It
+	// prevents a caller from using the bounded surface as an unbounded dump.
+	MaxStateIdentityListLimit = 1000
+	maxStateScanCursorBytes   = 1024
 )
 
 // ValidateIdentity checks that the triple is fully specified. Empty
@@ -363,6 +374,18 @@ func ValidateListKindForIdentity(id identity.Quadruple, kindPrefix string) error
 		return err
 	}
 	if kindPrefix == "" {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
+// ValidateListKindForIdentityBounded checks the identity-prefix and hard
+// materialization bounds shared by every bounded identity-list driver.
+func ValidateListKindForIdentityBounded(id identity.Quadruple, kindPrefix string, limit int) error {
+	if err := ValidateListKindForIdentity(id, kindPrefix); err != nil {
+		return err
+	}
+	if limit < 1 || limit > MaxStateIdentityListLimit {
 		return ErrInvalidRecord
 	}
 	return nil

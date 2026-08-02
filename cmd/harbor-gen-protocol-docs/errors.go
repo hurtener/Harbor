@@ -38,6 +38,14 @@ var errorTable = map[protoerrors.Code]errorEntry{
 			"The refusal is exact across Runtime processes sharing a shipped StateStore: publication rechecks the active-pointer EventID through `StateStore.SaveIf`; the per-owner lock only reduces local contention. Omitting `expected_content_hash` keeps the unconditional last-writer-wins behaviour.",
 		Retry: "Yes, after re-reading — call `agent_config.get` (or `agent_config.user.get` if the door you are retrying is a `user.*` twin; they are separate revision spines and a hash from the wrong one never matches) for the current `revision_id` and `content_hash`, re-apply your edit on top (`agent_config.diff` compares what you read against what it is now), and resubmit with the fresh hash.",
 	},
+	protoerrors.CodeSessionSkillCutoverPending: {
+		When:  "A session-personal skill mutation reached a tenant whose explicit durable cutover is still `dual_read`; Harbor refuses the mutation until the declared migration completes and a fresh verification pass authorizes `state_only`.",
+		Retry: "Yes, after the operator completes the tenant's declared cutover; do not retry as an unconditional legacy write.",
+	},
+	protoerrors.CodeSessionSkillReadUnstable: {
+		When:  "All three bounded before/after lifecycle and session-erasure fence reads observed concurrent change. Harbor returned no partial session-skill view.",
+		Retry: "Yes, after the concurrent lifecycle or erasure transition settles.",
+	},
 	protoerrors.CodeIdentityRequired: {
 		When:  "The request resolved no complete `(tenant, user, session)` identity scope — a missing bearer, a missing session (no `X-Harbor-Session` header and no default claim), or a body identity that contradicts the verified token. Identity is mandatory and fails closed.",
 		Retry: "No — attach a token / session first ([Auth & identity](./auth-and-identity.md)).",

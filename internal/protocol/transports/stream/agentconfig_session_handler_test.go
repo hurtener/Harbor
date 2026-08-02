@@ -19,6 +19,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/skills"
 	localdb "github.com/hurtener/Harbor/internal/skills/drivers/localdb"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
@@ -50,6 +51,15 @@ func sessionHandler(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("overlay: %v", err)
 	}
+	authority, err := serve.NewSessionPersonalSkillAuthority(ctx, st, skStore, []config.SessionPersonalCutoverTenant{{
+		TenantID: "t1", Epoch: "handler-test", RosterDigest: "empty-legacy-roster", LegacyWritersDrained: true,
+	}})
+	if err != nil {
+		t.Fatalf("session personal authority: %v", err)
+	}
+	if _, err := reg.SetRevision(ctx, identity.Quadruple{Identity: *acID()}, acAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("activate agent lifecycle: %v", err)
+	}
 	t.Cleanup(func() {
 		_ = reg.Close(ctx)
 		_ = skStore.Close(ctx)
@@ -61,6 +71,7 @@ func sessionHandler(t *testing.T) http.Handler {
 		agentcfgprotocol.WithSkillStore(skStore),
 		agentcfgprotocol.WithBus(bus),
 		agentcfgprotocol.WithSessionOverlay(ov),
+		agentcfgprotocol.WithSessionPersonalSkillController(authority.Controller),
 	)
 	if err != nil {
 		t.Fatalf("service: %v", err)

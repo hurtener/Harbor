@@ -718,6 +718,27 @@ type SkillsConfig struct {
 	// no stub fallback). Capability filtering, redaction, and the
 	// budgeter apply unchanged on top.
 	Retrieval string `yaml:"retrieval,omitempty"`
+
+	// SessionPersonalCutover is the static, restart-required operator
+	// declaration that controls durable session-personal-skill migration.
+	// An omitted declaration leaves a tenant in read-only dual-read mode.
+	SessionPersonalCutover SessionPersonalCutoverConfig `yaml:"session_personal_cutover,omitempty"`
+}
+
+// SessionPersonalCutoverConfig contains the finite tenant declarations the
+// runtime may migrate. It is intentionally static configuration, not a
+// runtime writer-discovery or membership mechanism.
+type SessionPersonalCutoverConfig struct {
+	Tenants []SessionPersonalCutoverTenant `yaml:"tenants,omitempty"`
+}
+
+// SessionPersonalCutoverTenant attests that a tenant's legacy session-skill
+// writers have drained for one migration epoch.
+type SessionPersonalCutoverTenant struct {
+	TenantID             string `yaml:"tenant_id"`
+	Epoch                string `yaml:"epoch"`
+	RosterDigest         string `yaml:"roster_digest"`
+	LegacyWritersDrained bool   `yaml:"legacy_writers_drained"`
 }
 
 // SkillsDirectoryConfig configures the skills virtual directory

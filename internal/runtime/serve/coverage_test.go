@@ -576,11 +576,18 @@ func TestPerTaskRunLoop_FullyWired_DrivesCompletingRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("skills.NewDirectory: %v", err)
 	}
+	skillAuthority, err := NewSessionPersonalSkillAuthority(context.Background(), st, skillStore, nil)
+	if err != nil {
+		t.Fatalf("NewSessionPersonalSkillAuthority: %v", err)
+	}
 	agentCfgReg, err := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: st, Bus: bus})
 	if err != nil {
 		t.Fatalf("agentcfg.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = agentCfgReg.Close(context.Background()) })
+	if _, err := agentCfgReg.SetRevision(context.Background(), identity.Quadruple{Identity: runLoopDriverTestID}, "coverage-agent", agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("seed coverage agent lifecycle: %v", err)
+	}
 	overlay, err := sessionoverlay.NewStore(st, nil)
 	if err != nil {
 		t.Fatalf("sessionoverlay.NewStore: %v", err)
@@ -597,23 +604,26 @@ func TestPerTaskRunLoop_FullyWired_DrivesCompletingRun(t *testing.T) {
 	p := &driverTestPlanner{finishGoalImmediately: true, finishPayload: map[string]any{"answer": "ok"}}
 
 	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
-		Bus:              bus,
-		RunLoop:          rl,
-		Planner:          p,
-		Tasks:            reg,
-		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Memory:           mem,
-		SkillsDirectory:  skillsDir,
-		Catalog:          cat,
-		Executor:         executor,
-		ArtifactStore:    artStore,
-		GrantedScopes:    []string{"scope-a"},
-		AgentConfig:      agentCfgReg,
-		AgentConfigID:    "coverage-agent",
-		SessionOverlay:   overlay,
-		SessionOverrides: runsStore,
-		TenantOverrides:  fakeTenantOverrides{set: false},
-		MaxStepsRunLoop:  4,
+		Bus:                   bus,
+		RunLoop:               rl,
+		Planner:               p,
+		Tasks:                 reg,
+		Logger:                slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Memory:                mem,
+		SkillsDirectory:       skillsDir,
+		SkillStore:            skillStore,
+		SessionPersonalSkills: skillAuthority.Personal,
+		SessionSkillCutover:   skillAuthority.Cutover,
+		Catalog:               cat,
+		Executor:              executor,
+		ArtifactStore:         artStore,
+		GrantedScopes:         []string{"scope-a"},
+		AgentConfig:           agentCfgReg,
+		AgentConfigID:         "coverage-agent",
+		SessionOverlay:        overlay,
+		SessionOverrides:      runsStore,
+		TenantOverrides:       fakeTenantOverrides{set: false},
+		MaxStepsRunLoop:       4,
 	})
 	if err != nil {
 		t.Fatalf("NewRunLoopDriver: %v", err)
@@ -639,7 +649,8 @@ func TestPerTaskRunLoop_FullyWired_DrivesCompletingRun(t *testing.T) {
 		t.Fatalf("reg.Spawn: %v", err)
 	}
 	if status := waitForTaskStatus(t, reg, h.ID, tasks.StatusComplete, 5*time.Second); status != tasks.StatusComplete {
-		t.Fatalf("fully-wired run stuck at %q, want %q", status, tasks.StatusComplete)
+		failed, getErr := reg.Get(ctx, h.ID)
+		t.Fatalf("fully-wired run stuck at %q, want %q (task error=%+v, get error=%v)", status, tasks.StatusComplete, failed.Error, getErr)
 	}
 	// The trajectory accessor serves the completed run.
 	if driver.TrajectoryByTaskID(h.ID) == nil {
@@ -815,8 +826,13 @@ func TestSessionEnsurerAdapter_SentinelTranslation(t *testing.T) {
 		t.Fatalf("artifacts.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = arts.Close(ctxBg) })
+	skillStore, err := skills.Open(ctxBg, skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:"}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("skills.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = skillStore.Close(ctxBg) })
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: st, Memory: mem, Artifacts: arts, Bus: bus, Redactor: red,
+		Registry: reg, State: st, Memory: mem, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)

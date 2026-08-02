@@ -201,6 +201,44 @@ The React planner runs on native provider tool-calling: the LLM doesn't ask "wha
 
 Independent of the meta-tools, every planner turn carries a compact `<skills_context>` block produced by the **skills directory**: a bounded, stable, pinned-then-recent browse window over the catalog (name / title / trigger / task type / pinned flag — never full bodies). The block tells the LLM *what exists*; pulling content is `skill_get`'s job. Tune it with the `skills.directory` yaml block above — `pinned` guarantees your flagship skills are always visible, `max_entries` caps the budget, and the stable ordering keeps the prompt prefix KV-cache-friendly. Capability filtering applies to the directory too: pinning never bypasses it.
 
+### Session-personal skill cutover — operator-only, deny writes until verified
+
+Phase 233a moves agent-owned session-personal skill bodies to durable records.
+The rollout is intentionally **not** automatic: the default is read-only
+`dual_read`. Existing eligible legacy session skills remain readable, but every
+session-personal mutation is refused with `session_skill_cutover_pending`
+(HTTP 409) until the tenant completes its declared migration. Do not retry that
+error by writing a legacy shared-skill row.
+
+Only declare a tenant after all older writers for that tenant have drained.
+The declaration is static and takes effect on restart; it neither discovers
+tenants/writers nor makes writes safe merely because its flag is set. It needs
+the normal configured SkillStore and a durable StateStore in production:
+
+```yaml
+state:
+  driver: sqlite
+  dsn: /var/lib/harbor/state.sqlite
+
+skills:
+  driver: localdb
+  dsn: /var/lib/harbor/skills.sqlite
+  session_personal_cutover:
+    tenants:
+      - tenant_id: tenant-acme
+        epoch: 2026-08-cutover-01
+        roster_digest: sha256-... # an operator-attested label, never a secret
+        legacy_writers_drained: false
+```
+
+`tenant_id` is case-sensitive. The list is capped at 256 declarations, and its
+identifiers/epoch/digest are bounded printable-ASCII tokens; bad or duplicate
+entries fail boot. Start with `legacy_writers_drained: false`. After draining
+all older writers and attesting the roster, change it to `true` and restart.
+Harbor resumes its bounded checkpointed migration and performs a fresh
+verification pass. It alone writes durable `state_only`; until then, mutation
+refusal is expected and protects the authoritative legacy view.
+
 ### Skill vs tool — when to pick which
 
 - **Tool** — there's code to run, an API to call, a typed input/output. Build a [tool](../add-an-in-process-tool/SKILL.md).
@@ -221,6 +259,7 @@ The two are unrelated. The glossary entry pins this distinction (`docs/glossary.
 - **`harbor dev` reboots in a loop after enabling memory.** Your `memory.dsn` is inside the project directory and the SQLite WAL trap fires. Move the DSN to `/tmp/harbor-validation/<project>-memory.sqlite` or `~/.harbor/<project>-memory.sqlite`.
 - **`harbor skill import` fails with "skill name already exists".** The catalog rejects duplicate names by default. Re-import with `--overwrite`, remove the old entry first (`harbor skill rm <name>`), or rename the skill in the file.
 - **The planner doesn't pick a skill I imported.** Either the skill's `trigger:` doesn't pattern-match the user's input (write more concrete trigger language), the run can't see a tool the skill requires (`required_tools` is capability-filtered — default-deny), or `planner.max_steps` is too low to reach the skill-search turn. Pin it (`skills.directory.pinned`) to guarantee it's at least visible in every `<skills_context>` block.
+- **A session-personal skill update returns `session_skill_cutover_pending`.** This is the production-safe default while the tenant is unlisted, undrained, or still being freshly verified. Do not write through to a legacy shared body. Drain old writers, attest the exact roster, set the declaration true, restart, and wait for Harbor to reach `state_only`.
 - **Cross-session memory leakage suspected.** It can't happen — the SQL filter is at the driver. If you see it, file a bug with the SQL trace from `telemetry.log_level: debug` — a leak would be a P0 security issue.
 
 ## See also

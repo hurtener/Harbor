@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/artifacts"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
@@ -201,8 +202,8 @@ func TestRunOne_MemoryFetchError_MarksRuntimeFetchError(t *testing.T) {
 // errors on the skills-projection read fails the run LOUD.
 func TestRunOne_SkillsProjectionError_FailsRun(t *testing.T) {
 	env := newFailDriverEnv(t)
-	// A real (empty) skills directory so the skills block runs; the failing
-	// registry dies on its FIRST Active read (the skills projection).
+	// A real (empty) skills directory and complete snapshot authority; the
+	// failing registry dies on its FIRST Active read (membership capture).
 	skillStore, err := skills.Open(context.Background(), skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:"}, skills.Deps{Bus: env.bus})
 	if err != nil {
 		t.Fatalf("skills.Open: %v", err)
@@ -212,12 +213,24 @@ func TestRunOne_SkillsProjectionError_FailsRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("skills.NewDirectory: %v", err)
 	}
+	st, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatalf("sessionoverlay.NewDurableStore: %v", err)
+	}
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
 		o.SkillsDirectory = skillsDir
+		o.SkillStore = skillStore
+		o.SessionPersonalSkills = personal
+		o.SessionSkillCutover = runSnapshotModeReader{}
 		o.AgentConfig = &countingFailRegistry{failAt: 1}
 		o.AgentConfigID = "fail-agent"
 	})
-	spawnAndAwaitFailure(t, env.reg, nil, "runtime_fetch_error", "agent-config skills projection")
+	spawnAndAwaitFailure(t, env.reg, nil, "runtime_fetch_error", "skills snapshot")
 }
 
 // TestRunOne_CatalogProjectionError_FailsRun — an agent-config registry that

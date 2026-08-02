@@ -19,8 +19,8 @@
 // # The safe subset is structurally narrow-only
 //
 // The persisted Overlay carries ONLY a user prompt layer (never a base),
-// a source/tool DISABLE set (never an enable), and the names of the
-// session's ephemeral personal skills. Because the shape has no base-prompt
+// a source/tool DISABLE set (never an enable), and the read-only legacy names
+// of the session's ephemeral personal skills. Because the shape has no base-prompt
 // field and no enable field, a session caller PHYSICALLY cannot widen a
 // capability or edit the operator base — the data model carries the
 // guarantee; the projection's union-only composition is the second layer.
@@ -39,7 +39,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -82,10 +81,9 @@ type Overlay struct {
 	// DisabledTools names tools the session has DISABLED. Unioned into the
 	// admin exclusion set at projection (narrow-only).
 	DisabledTools []string `json:"disabled_tools,omitempty"`
-	// PersonalSkills names the session's ephemeral personal skills (the
-	// bodies live in the session-scoped SkillStore under the same triple).
-	// They are added back to the session's skill view at projection and
-	// never promote to the agent/tenant scope.
+	// PersonalSkills is schema-1 migration-eligibility input only. New code
+	// never mutates this field; agent-owned personal records are body and
+	// membership after cutover.
 	PersonalSkills []string `json:"personal_skills,omitempty"`
 }
 
@@ -103,11 +101,11 @@ type Store interface {
 	// "enable" — the set names what the session wants OFF; the projection
 	// unions it into the admin exclusion set, so it can only narrow.
 	SetSourceDisables(ctx context.Context, id identity.Quadruple, agentID string, servers, tools []string) (Overlay, error)
-	// AddPersonalSkill records a personal-skill name (idempotent), preserving
-	// every other field.
+	// AddPersonalSkill is retained for interface compatibility and fails loud
+	// with ErrCutoverPending without writing the legacy overlay.
 	AddPersonalSkill(ctx context.Context, id identity.Quadruple, agentID, name string) (Overlay, error)
-	// RemovePersonalSkill removes a personal-skill name (idempotent),
-	// preserving every other field.
+	// RemovePersonalSkill is retained for interface compatibility and fails
+	// loud with ErrCutoverPending without writing the legacy overlay.
 	RemovePersonalSkill(ctx context.Context, id identity.Quadruple, agentID, name string) (Overlay, error)
 	// Close releases resources. Idempotent.
 	Close(ctx context.Context) error
@@ -116,11 +114,6 @@ type Store interface {
 // Persisted-record schema version. Bumped only on a breaking record shape
 // change; a forward-schema record fails loud rather than silently reset.
 const recordSchema = 1
-
-// kindPrefix is the StateStore Kind prefix every session-overlay record
-// persists under. The agent id is appended so distinct agents have distinct
-// overlays within the same session.
-const kindPrefix = "agentcfg.session_overlay."
 
 // overlayRecord is the JSON-encoded session-overlay record.
 type overlayRecord struct {
@@ -134,66 +127,6 @@ type store struct {
 	state  state.StateStore
 	clock  func() time.Time
 	closed atomic.Bool
-
-	// writeLocksMu guards writeLocks. It is held only for the map lookup +
-	// refcount adjustment, never across the slot lock or the store I/O.
-	writeLocksMu sync.Mutex
-	// writeLocks serialises the mutate() read-modify-write per overlay slot
-	// (the full (tenant, user, session) triple + agent). The overlay row is
-	// last-write-wins, so two concurrent SAME-session edits (e.g.
-	// AddPersonalSkill racing SetSourceDisables) would each load → apply →
-	// save from the other's pre-write snapshot, losing one update. A per-slot
-	// lock held across the whole read-modify-write makes it atomic.
-	//
-	// The map is REFCOUNTED, not append-only: an entry is created on the
-	// first holder and removed when the last one releases it. A map that only
-	// ever grew would accumulate one entry per distinct (triple + agent) for
-	// the lifetime of the process, and sessions are unbounded — so any
-	// authenticated caller writing an overlay under a fresh session id in a
-	// loop grows it without limit. Refcounting bounds it by the number of
-	// writes IN FLIGHT, which is what the locks are actually for.
-	writeLocks map[string]*slotLock
-}
-
-// slotLock is one overlay slot's write lock plus the number of holders and
-// waiters currently referencing it. refs is guarded by store.writeLocksMu,
-// never by mu itself.
-type slotLock struct {
-	mu   sync.Mutex
-	refs int
-}
-
-// lockSlot acquires the per-overlay-slot write lock and returns the release
-// func (call via defer). Keyed by the full triple + agent so distinct
-// sessions / agents never contend.
-//
-// The reference is taken BEFORE the slot lock is acquired and dropped AFTER
-// it is released, so an entry is only ever removed while no goroutine holds
-// or awaits it: a waiter can never be handed a lock that a releaser is about
-// to delete and a later arrival re-create, which would break mutual exclusion
-// for the slot.
-func (s *store) lockSlot(id identity.Quadruple, agentID string) func() {
-	key := id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID + "\x00" + agentID
-
-	s.writeLocksMu.Lock()
-	sl, ok := s.writeLocks[key]
-	if !ok {
-		sl = &slotLock{}
-		s.writeLocks[key] = sl
-	}
-	sl.refs++
-	s.writeLocksMu.Unlock()
-
-	sl.mu.Lock()
-	return func() {
-		sl.mu.Unlock()
-		s.writeLocksMu.Lock()
-		sl.refs--
-		if sl.refs == 0 {
-			delete(s.writeLocks, key)
-		}
-		s.writeLocksMu.Unlock()
-	}
 }
 
 // NewStore builds a session-overlay Store over a StateStore. st is
@@ -209,7 +142,7 @@ func NewStore(st state.StateStore, clock func() time.Time) (Store, error) {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &store{state: st, clock: clock, writeLocks: make(map[string]*slotLock)}, nil
+	return &store{state: st, clock: clock}, nil
 }
 
 // sessionQuad zeroes the RunID so the overlay is SESSION-scoped (it spans
@@ -223,13 +156,7 @@ func (s *store) validate(id identity.Quadruple, agentID string) error {
 	if s.closed.Load() {
 		return ErrClosed
 	}
-	if id.TenantID == "" || id.UserID == "" || id.SessionID == "" {
-		return fmt.Errorf("%w: (tenant=%q user=%q session=%q)", ErrIdentityRequired, id.TenantID, id.UserID, id.SessionID)
-	}
-	if agentID == "" {
-		return fmt.Errorf("%w: agent id is empty", ErrIdentityRequired)
-	}
-	return nil
+	return validateSessionInput(id, agentID)
 }
 
 func (s *store) Get(ctx context.Context, id identity.Quadruple, agentID string) (Overlay, bool, error) {
@@ -239,7 +166,33 @@ func (s *store) Get(ctx context.Context, id identity.Quadruple, agentID string) 
 	if err := ctx.Err(); err != nil {
 		return Overlay{}, false, err
 	}
-	return s.load(ctx, id, agentID)
+	for range MaxSessionSkillReadAttempts {
+		if err := ctx.Err(); err != nil {
+			return Overlay{}, false, err
+		}
+		before, err := loadFences(ctx, s.state, id, agentID)
+		if err != nil {
+			return Overlay{}, false, err
+		}
+		if before.erased() {
+			return Overlay{}, false, ErrSessionErased
+		}
+		if err := before.lifecycleError(); err != nil {
+			return Overlay{}, false, err
+		}
+		overlay, found, _, err := s.loadSlot(ctx, id, agentID)
+		if err != nil {
+			return Overlay{}, false, err
+		}
+		stable, err := before.stable(ctx, s.state)
+		if err != nil {
+			return Overlay{}, false, err
+		}
+		if stable {
+			return overlay, found, nil
+		}
+	}
+	return Overlay{}, false, ErrSessionSkillReadUnstable
 }
 
 func (s *store) SetUserPrompt(ctx context.Context, id identity.Quadruple, agentID, prompt string) (Overlay, error) {
@@ -256,32 +209,29 @@ func (s *store) SetSourceDisables(ctx context.Context, id identity.Quadruple, ag
 }
 
 func (s *store) AddPersonalSkill(ctx context.Context, id identity.Quadruple, agentID, name string) (Overlay, error) {
-	if name == "" {
+	if err := s.validate(id, agentID); err != nil {
+		return Overlay{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Overlay{}, err
+	}
+	if canonicalNameFor(name) == "" {
 		return Overlay{}, fmt.Errorf("%w: personal-skill name is empty", ErrInvalidInput)
 	}
-	return s.mutate(ctx, id, agentID, func(o *Overlay) {
-		set := make(map[string]struct{}, len(o.PersonalSkills)+1)
-		for _, n := range o.PersonalSkills {
-			set[n] = struct{}{}
-		}
-		set[name] = struct{}{}
-		o.PersonalSkills = setToSorted(set)
-	})
+	return Overlay{}, ErrCutoverPending
 }
 
 func (s *store) RemovePersonalSkill(ctx context.Context, id identity.Quadruple, agentID, name string) (Overlay, error) {
-	if name == "" {
+	if err := s.validate(id, agentID); err != nil {
+		return Overlay{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Overlay{}, err
+	}
+	if canonicalNameFor(name) == "" {
 		return Overlay{}, fmt.Errorf("%w: personal-skill name is empty", ErrInvalidInput)
 	}
-	return s.mutate(ctx, id, agentID, func(o *Overlay) {
-		set := make(map[string]struct{}, len(o.PersonalSkills))
-		for _, n := range o.PersonalSkills {
-			if n != name {
-				set[n] = struct{}{}
-			}
-		}
-		o.PersonalSkills = setToSorted(set)
-	})
+	return Overlay{}, ErrCutoverPending
 }
 
 func (s *store) Close(_ context.Context) error {
@@ -289,10 +239,9 @@ func (s *store) Close(_ context.Context) error {
 	return nil
 }
 
-// mutate is the read-modify-write helper every set method shares: it loads
-// the current overlay (or the zero overlay when none exists), applies the
-// mutation, normalises, and persists. The mutation only ever touches the
-// safe-subset fields — there is no base-prompt or enable path to reach.
+// mutate is the four-slot CAS helper shared by the writable prompt/disable
+// verbs. PersonalSkills is decoded and re-encoded unchanged; it is read-only
+// migration input, never a writable membership projection.
 func (s *store) mutate(ctx context.Context, id identity.Quadruple, agentID string, apply func(*Overlay)) (Overlay, error) {
 	if err := s.validate(id, agentID); err != nil {
 		return Overlay{}, err
@@ -300,56 +249,134 @@ func (s *store) mutate(ctx context.Context, id identity.Quadruple, agentID strin
 	if err := ctx.Err(); err != nil {
 		return Overlay{}, err
 	}
-	defer s.lockSlot(id, agentID)()
-	cur, _, err := s.load(ctx, id, agentID)
+	fences, err := loadFences(ctx, s.state, id, agentID)
+	if err != nil {
+		return Overlay{}, err
+	}
+	if fences.erased() {
+		return Overlay{}, ErrSessionErased
+	}
+	if err := fences.lifecycleError(); err != nil {
+		return Overlay{}, err
+	}
+	cur, _, target, err := s.loadSlot(ctx, id, agentID)
 	if err != nil {
 		return Overlay{}, err
 	}
 	apply(&cur)
-	if err := s.save(ctx, id, agentID, cur); err != nil {
+	now := s.clock().UTC()
+	bytes, err := encodeOverlayRecord(cur, now)
+	if err != nil {
 		return Overlay{}, err
+	}
+	next := state.StateRecord{ID: state.NewEventID(), Identity: sessionQuad(id), Kind: LegacyOverlayKind(agentID), Bytes: bytes, UpdatedAt: now}
+	expectations := append([]state.SlotExpectation{target}, fences.expectations()...)
+	if err := s.state.SaveIf(ctx, expectations, next); err != nil {
+		if errors.Is(err, state.ErrConditionFailed) {
+			return Overlay{}, err
+		}
+		converged, ok, reconcileErr := s.exactOverlay(ctx, id, agentID, next, fences)
+		if reconcileErr == nil && ok {
+			return converged, nil
+		}
+		if reconcileErr != nil {
+			return Overlay{}, fmt.Errorf("%w: conditional overlay save: %w; exact reread: %w", ErrStateUnavailable, err, reconcileErr)
+		}
+		return Overlay{}, fmt.Errorf("%w: conditional overlay save outcome uncertain: %w", ErrStateUnavailable, err)
 	}
 	return cur, nil
 }
 
-func (s *store) load(ctx context.Context, id identity.Quadruple, agentID string) (Overlay, bool, error) {
-	rec, err := s.state.Load(ctx, sessionQuad(id), kindPrefix+agentID)
+func (s *store) loadSlot(ctx context.Context, id identity.Quadruple, agentID string) (Overlay, bool, state.SlotExpectation, error) {
+	q := sessionQuad(id)
+	kind := LegacyOverlayKind(agentID)
+	rec, err := s.state.Load(ctx, q, kind)
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			return Overlay{}, false, state.SlotExpectation{Identity: q, Kind: kind}, nil
+		}
+		return Overlay{}, false, state.SlotExpectation{}, fmt.Errorf("%w: load overlay: %w", ErrStateUnavailable, err)
+	}
+	overlay, err := decodeOverlayRecord(rec.Bytes)
+	if err != nil {
+		return Overlay{}, false, state.SlotExpectation{}, err
+	}
+	return overlay, true, state.SlotExpectation{Identity: q, Kind: kind, ExpectedEventID: rec.ID}, nil
+}
+
+func (s *store) exactOverlay(ctx context.Context, id identity.Quadruple, agentID string, expected state.StateRecord, before fences) (Overlay, bool, error) {
+	rec, err := s.state.Load(ctx, expected.Identity, expected.Kind)
 	if err != nil {
 		if errors.Is(err, state.ErrNotFound) {
 			return Overlay{}, false, nil
 		}
-		return Overlay{}, false, fmt.Errorf("%w: load overlay: %w", ErrStateUnavailable, err)
+		return Overlay{}, false, err
 	}
-	if len(rec.Bytes) == 0 {
+	if rec.ID != expected.ID || string(rec.Bytes) != string(expected.Bytes) {
 		return Overlay{}, false, nil
 	}
-	var or overlayRecord
-	if err := json.Unmarshal(rec.Bytes, &or); err != nil {
-		return Overlay{}, false, fmt.Errorf("%w: unmarshal overlay: %w", ErrStateUnavailable, err)
+	after, err := loadFences(ctx, s.state, id, agentID)
+	if err != nil {
+		return Overlay{}, false, err
 	}
-	if or.Schema != 0 && or.Schema != recordSchema {
-		return Overlay{}, false, fmt.Errorf("%w: overlay schema=%d, runtime supports %d", ErrStateUnavailable, or.Schema, recordSchema)
+	if after.erased() || !before.equal(after) {
+		return Overlay{}, false, nil
 	}
-	return or.Overlay, true, nil
+	if err := after.lifecycleError(); err != nil {
+		return Overlay{}, false, err
+	}
+	overlay, err := decodeOverlayRecord(rec.Bytes)
+	return overlay, err == nil, err
 }
 
-func (s *store) save(ctx context.Context, id identity.Quadruple, agentID string, o Overlay) error {
-	now := s.clock().UTC()
+func encodeOverlayRecord(o Overlay, now time.Time) ([]byte, error) {
 	rec := overlayRecord{Schema: recordSchema, Overlay: o, UpdatedAt: now}
-	buf, err := json.Marshal(rec)
+	bytes, err := json.Marshal(rec)
 	if err != nil {
-		return fmt.Errorf("agentcfg/sessionoverlay: marshal overlay: %w", err)
+		return nil, fmt.Errorf("agentcfg/sessionoverlay: marshal overlay: %w", err)
 	}
-	if err := s.state.Save(ctx, state.StateRecord{
-		ID:        state.NewEventID(),
-		Identity:  sessionQuad(id),
-		Kind:      kindPrefix + agentID,
-		Bytes:     buf,
-		UpdatedAt: now,
-	}); err != nil {
-		return fmt.Errorf("%w: save overlay: %w", ErrStateUnavailable, err)
+	if len(bytes) == 0 || len(bytes) > MaxLegacySessionOverlayRecordBytes {
+		return nil, fmt.Errorf("%w: overlay record size %d is outside 1..%d", ErrInvalidInput, len(bytes), MaxLegacySessionOverlayRecordBytes)
 	}
-	return nil
+	return bytes, nil
+}
+
+func decodeOverlayRecord(data []byte) (Overlay, error) {
+	if len(data) == 0 || len(data) > MaxLegacySessionOverlayRecordBytes {
+		return Overlay{}, fmt.Errorf("%w: overlay record size %d is outside 1..%d", ErrLegacyOverlayInvalid, len(data), MaxLegacySessionOverlayRecordBytes)
+	}
+	if err := rejectDuplicateJSONObjectFields(data); err != nil {
+		return Overlay{}, fmt.Errorf("%w: duplicate envelope field: %w", ErrLegacyOverlayInvalid, err)
+	}
+	var envelope struct {
+		Schema    *int            `json:"schema"`
+		Overlay   json.RawMessage `json:"overlay"`
+		UpdatedAt *time.Time      `json:"updated_at"`
+	}
+	if err := decodeStrictJSON(data, &envelope); err != nil {
+		return Overlay{}, fmt.Errorf("%w: decode schema-1 envelope: %w", ErrLegacyOverlayInvalid, err)
+	}
+	if envelope.Schema == nil || *envelope.Schema != recordSchema || len(envelope.Overlay) == 0 || string(envelope.Overlay) == "null" || envelope.UpdatedAt == nil || envelope.UpdatedAt.IsZero() {
+		return Overlay{}, fmt.Errorf("%w: incompatible schema-1 envelope", ErrLegacyOverlayInvalid)
+	}
+	if err := rejectDuplicateJSONObjectFields(envelope.Overlay); err != nil {
+		return Overlay{}, fmt.Errorf("%w: duplicate overlay field: %w", ErrLegacyOverlayInvalid, err)
+	}
+	var overlay Overlay
+	if err := decodeStrictJSON(envelope.Overlay, &overlay); err != nil {
+		return Overlay{}, fmt.Errorf("%w: decode overlay body: %w", ErrLegacyOverlayInvalid, err)
+	}
+	for _, values := range [][]string{overlay.DisabledServers, overlay.DisabledTools, overlay.PersonalSkills} {
+		if !sort.StringsAreSorted(values) {
+			return Overlay{}, fmt.Errorf("%w: overlay lists must be canonical sorted sets", ErrLegacyOverlayInvalid)
+		}
+		for i, value := range values {
+			if value == "" || (i > 0 && values[i-1] == value) {
+				return Overlay{}, fmt.Errorf("%w: overlay lists must contain unique non-empty values", ErrLegacyOverlayInvalid)
+			}
+		}
+	}
+	return overlay, nil
 }
 
 // sortDedup returns a sorted, de-duplicated copy. A nil input returns nil.
@@ -363,18 +390,9 @@ func sortDedup(in []string) []string {
 			set[s] = struct{}{}
 		}
 	}
-	return setToSorted(set)
-}
-
-// setToSorted returns the set's members sorted. An empty set returns nil so
-// an emptied field drops out of the persisted record.
-func setToSorted(set map[string]struct{}) []string {
-	if len(set) == 0 {
-		return nil
-	}
 	out := make([]string, 0, len(set))
-	for n := range set {
-		out = append(out, n)
+	for value := range set {
+		out = append(out, value)
 	}
 	sort.Strings(out)
 	return out

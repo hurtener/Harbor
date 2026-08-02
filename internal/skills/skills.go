@@ -171,7 +171,8 @@ type ListFilter struct {
 }
 
 // RankedSkill carries the search-time relevance score + the path
-// that produced it. `Path` is one of `"fts5" | "regex" | "exact"`;
+// that produced it. `Path` identifies the actual ranking engine (for example,
+// `"fts5"`, `"full_text"`, `"regex"`, `"exact"`, or `"semantic"`);
 // callers (the planner tools) surface it for observability
 // only — it is not part of the ranking math.
 //
@@ -188,10 +189,27 @@ type RankedSkill struct {
 	Path  string
 }
 
+// SnapshotCandidateSearcher ranks one immutable, already-authorized candidate
+// view. It is implemented by every configured SkillStore driver, rather than
+// by an ad-hoc portable scorer: a frozen composed view must retain the base
+// driver's actual full-text availability and ranking semantics.
+//
+// Candidates are complete copies from a single run-start view. Implementations
+// MUST rank only those candidates, preserve their configured retrieval policy,
+// and fail loudly rather than falling back from semantic retrieval when its
+// Embedder is unavailable or fails. They must honour ctx and are safe for
+// concurrent reuse.
+type SnapshotCandidateSearcher interface {
+	SearchSnapshot(ctx context.Context, id identity.Quadruple, query string, candidates []Skill, limit int) ([]RankedSkill, error)
+}
+
 // Search-result paths.
 const (
 	// PathFTS5 — FTS5 virtual table produced the row.
 	PathFTS5 = "fts5"
+	// PathFullText — a non-FTS5 backend-native full-text engine produced the
+	// row. PostgreSQL's to_tsvector/to_tsquery path uses this value.
+	PathFullText = "full_text"
 	// PathRegex — regex fallback produced the row.
 	PathRegex = "regex"
 	// PathExact — exact lowercase-equality fallback produced the row.
@@ -207,7 +225,7 @@ type RetrievalMode string
 
 // RetrievalMode values.
 const (
-	// RetrievalDefault — the zero value: the token-savvy FTS5 →
+	// RetrievalDefault — the zero value: the driver's token-savvy full-text →
 	// regex → exact ladder.
 	RetrievalDefault RetrievalMode = ""
 	// RetrievalSemantic — rank by embedding similarity over the
@@ -231,6 +249,36 @@ type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
+// SkillReader is Harbor's identity-mandatory read-only skill-storage
+// interface. It includes both the normal precedence-aware read and the
+// exact-rung read used by migrations that must never fall through to a
+// wider scope.
+type SkillReader interface {
+	// Get returns the skill identified by `name` under the supplied
+	// identity using the store's normal scope-precedence rules. Missing →
+	// `ErrSkillNotFound`.
+	Get(ctx context.Context, id identity.Quadruple, name string) (Skill, error)
+
+	// GetScope returns the skill identified by `name` at exactly `scope`.
+	// It never falls through to another visibility rung. ScopeUser is keyed
+	// by `(tenant, user)`; every other V1 rung is additionally pinned to the
+	// supplied session. Missing exact rung → `ErrSkillNotFound`.
+	GetScope(ctx context.Context, id identity.Quadruple, name string, scope Scope) (Skill, error)
+
+	// List returns the filtered, paged skills under the supplied
+	// identity. Ordering is deterministic: `(UpdatedAt DESC,
+	// Name ASC)`.
+	List(ctx context.Context, id identity.Quadruple, filter ListFilter) ([]Skill, error)
+
+	// Search returns up to `limit` skills ranked by the FTS5 →
+	// regex → exact ladder. `limit == 0` falls back
+	// to 20. The driver picks the first path that returns rows;
+	// later paths run only when earlier ones produced nothing.
+	// Emits `skill.search_executed` with the path that produced the
+	// result.
+	Search(ctx context.Context, id identity.Quadruple, query string, limit int) ([]RankedSkill, error)
+}
+
 // SkillStore is Harbor's mandatory skill-storage interface. A single
 // surface; every V1 driver (`localdb` here; Portico post-V1)
 // implements every method. No `Supports*` ceremony per AGENTS.md
@@ -249,6 +297,9 @@ type Embedder interface {
 //     Mutable state is internally synchronised; per-call state lives
 //     in `ctx` and the supplied `Quadruple`, never on the driver.
 type SkillStore interface {
+	SkillReader
+	SnapshotCandidateSearcher
+
 	// Upsert inserts or updates `skill` under the identity-scoped
 	// `(tenant, user, session, scope, name)` key. Conflict policy
 	// (RFC §6.7):
@@ -263,23 +314,6 @@ type SkillStore interface {
 	//   - otherwise: last-write-wins; emit `skill.upserted` with
 	//     `idempotent=false`.
 	Upsert(ctx context.Context, id identity.Quadruple, skill Skill) error
-
-	// Get returns the skill identified by `name` under the supplied
-	// identity. Missing → `ErrSkillNotFound`.
-	Get(ctx context.Context, id identity.Quadruple, name string) (Skill, error)
-
-	// List returns the filtered, paged skills under the supplied
-	// identity. Ordering is deterministic: `(UpdatedAt DESC,
-	// Name ASC)`.
-	List(ctx context.Context, id identity.Quadruple, filter ListFilter) ([]Skill, error)
-
-	// Search returns up to `limit` skills ranked by the FTS5 →
-	// regex → exact ladder. `limit == 0` falls back
-	// to 20. The driver picks the first path that returns rows;
-	// later paths run only when earlier ones produced nothing.
-	// Emits `skill.search_executed` with the path that produced the
-	// result.
-	Search(ctx context.Context, id identity.Quadruple, query string, limit int) ([]RankedSkill, error)
 
 	// Delete removes the named skill under the identity, at the target
 	// `scope`. The scope makes the DESTRUCTIVE op RUNG-PRECISE so an
@@ -298,6 +332,14 @@ type SkillStore interface {
 	//
 	// Missing → `ErrSkillNotFound`. Emits `skill.deleted` on success.
 	Delete(ctx context.Context, id identity.Quadruple, name string, scope Scope) error
+
+	// DeleteSessionScope removes every legacy ScopeSession row under exactly
+	// `id`'s (tenant, user, session) triple. It is idempotent: a completed
+	// sweep, including one that found no rows, returns nil. It never lists or
+	// deletes ScopeUser or any other shared scope. Session erasure calls this
+	// destructive operation before clearing the StateStore scope so an
+	// interrupted cascade can retry to convergence without widening identity.
+	DeleteSessionScope(ctx context.Context, id identity.Quadruple) error
 
 	// Close releases the driver's resources. Subsequent method
 	// calls return `ErrStoreClosed`. Close is idempotent.

@@ -22,6 +22,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
 
@@ -44,6 +45,7 @@ const (
 type usHarness struct {
 	handler    http.Handler
 	registry   agentcfg.Registry
+	state      state.StateStore
 	bus        events.EventBus
 	agentReach []string
 }
@@ -65,6 +67,10 @@ func newUSHarness(t *testing.T) *usHarness {
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
+	// The harness reach declares both agents. Activate their real agent-level
+	// lifecycle once so the shared session-overlay projection remains fenced.
+	activateFixtureAgent(t, reg, usID("fixture", "bootstrap"), usAgent)
+	activateFixtureAgent(t, reg, usID("fixture", "bootstrap"), waveAgentID)
 	svc, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithBus(bus))
 	if err != nil {
 		t.Fatalf("service: %v", err)
@@ -79,7 +85,7 @@ func newUSHarness(t *testing.T) *usHarness {
 		_ = bus.Close(context.Background())
 		_ = st.Close(context.Background())
 	})
-	return &usHarness{handler: h, registry: reg, bus: bus, agentReach: []string{usAgent, waveAgentID}}
+	return &usHarness{handler: h, registry: reg, state: st, bus: bus, agentReach: []string{usAgent, waveAgentID}}
 }
 
 func (h *usHarness) call(t *testing.T, path string, body any, id identity.Identity, scopes []auth.Scope) *httptest.ResponseRecorder {

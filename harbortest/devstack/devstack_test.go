@@ -12,16 +12,19 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/hurtener/Harbor/harbortest/devstack"
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	_ "github.com/hurtener/Harbor/internal/llm/mock"
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
@@ -165,6 +168,53 @@ func TestAssemble_DefaultOpts_BuildsEveryLayer(t *testing.T) {
 	}
 	if stack.Handler == nil {
 		t.Error("Handler nil")
+	}
+}
+
+// TestAssemble_MaterializesSyntheticAgentLifecycle pins the Phase 233a
+// compatibility boundary: the devstack's selected boot agent must have the
+// same active lifecycle fence the durable session-personal resolver requires.
+// Without this, ordinary pre-existing run-loop consumers fail before their
+// planner is invoked with ErrAgentLifecycleInactive.
+func TestAssemble_MaterializesSyntheticAgentLifecycle(t *testing.T) {
+	t.Parallel()
+	cfg := minimalConfig(t)
+	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
+		Identity: struct {
+			Tenant  string
+			User    string
+			Session string
+		}{Tenant: "lifecycle-tenant", User: "lifecycle-user", Session: "lifecycle-session"},
+	})
+	defer stack.Close()
+
+	caller := identity.Quadruple{Identity: identity.Identity{
+		TenantID:  "lifecycle-tenant",
+		UserID:    "lifecycle-user",
+		SessionID: "lifecycle-session",
+	}}
+	revision, active, err := stack.AgentConfig.Active(context.Background(), caller, stack.AgentConfigID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		t.Fatalf("Active synthetic agent lifecycle: %v", err)
+	}
+	if !active {
+		t.Fatal("synthetic devstack agent has no active lifecycle revision")
+	}
+	if revision.ParentRevisionID != "" {
+		t.Fatalf("synthetic lifecycle parent = %q, want first revision", revision.ParentRevisionID)
+	}
+}
+
+func TestTryAssembleContext_CancelledFailsWithCallerContext(t *testing.T) {
+	cfg := minimalConfig(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	stack, err := devstack.TryAssembleContext(ctx, cfg, devstack.AssembleOpts{})
+	if stack != nil {
+		stack.Close()
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("TryAssembleContext error = %v, want context.Canceled", err)
 	}
 }
 

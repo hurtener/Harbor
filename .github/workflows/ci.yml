@@ -415,13 +415,52 @@ jobs:
         with:
           go-version: '1.26'
           check-latest: true
-      - name: Run skills/postgres tests against postgres:16
-        # CGO_ENABLED intentionally unset (same rationale as the
-        # state-postgres job above — -race requires the cgo race
-        # runtime; only the static-binary build pins CGO_ENABLED=0).
+      - name: Run Phase 233a two-instance Postgres race contract
+        # This test also has a local SQLite leg, but only this service job can
+        # prove the two independent StateStore instances really share
+        # Postgres. The PASS-line assertion makes a renamed filter, no-match,
+        # or HARBOR_PG_DSN-driven skip fail instead of returning a vacuous 0.
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
-        run: go test -race -count=1 -timeout 240s ./internal/skills/drivers/postgres/...
+        run: |
+          set -euo pipefail
+          test_log="$(mktemp "${RUNNER_TEMP}/phase-233a-postgres.XXXXXX")"
+          trap 'rm -f "${test_log}"' EXIT
+          go test -race -count=1 -timeout 240s -v \
+            -run '^TestRealDrivers_TwoIndependentSessionPersonalRaceContract$/^postgres$' \
+            ./internal/agentcfg/sessionoverlay | tee "${test_log}"
+          if grep -qE -- 'no tests to run|--- SKIP:.*TestRealDrivers_TwoIndependentSessionPersonalRaceContract/postgres' "${test_log}"; then
+            echo 'Phase 233a Postgres race contract skipped or did not match' >&2
+            exit 1
+          fi
+          grep -qE -- '^[[:space:]]*--- PASS: TestRealDrivers_TwoIndependentSessionPersonalRaceContract/postgres ' "${test_log}"
+      - name: Run and coverage-gate skills/postgres against postgres:16
+        # CGO_ENABLED intentionally unset (same rationale as the
+        # state-postgres job above — -race requires the cgo race
+        # runtime; only the static-binary build pins CGO_ENABLED=0). Phase
+        # 233a raises this touched driver's binding package floor to 85%.
+        env:
+          HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
+        run: |
+          set -euo pipefail
+          coverage_file="$(mktemp "${RUNNER_TEMP}/skills-postgres.XXXXXX.cover")"
+          test_log="$(mktemp "${RUNNER_TEMP}/skills-postgres.XXXXXX.log")"
+          trap 'rm -f "${coverage_file}" "${test_log}"' EXIT
+          go test -race -count=1 -timeout 240s -v -covermode=atomic \
+            -coverprofile="${coverage_file}" \
+            ./internal/skills/drivers/postgres/... | tee "${test_log}"
+          if grep -qE -- 'no tests to run|^[[:space:]]*--- SKIP:' "${test_log}"; then
+            echo 'skills/postgres coverage run skipped or did not execute its real-driver suite' >&2
+            exit 1
+          fi
+          grep -qE -- '^[[:space:]]*--- PASS: TestConformance ' "${test_log}"
+          coverage_pct="$(go tool cover -func="${coverage_file}" | awk '$1 == "total:" {gsub(/%/, "", $3); print $3}')"
+          minimum_coverage=85
+          if [ -z "${coverage_pct}" ] || ! awk -v actual="${coverage_pct}" -v minimum="${minimum_coverage}" 'BEGIN { exit !(actual + 0 >= minimum + 0) }'; then
+            echo "skills/postgres coverage ${coverage_pct:-missing}% is below ${minimum_coverage}%" >&2
+            exit 1
+          fi
+          echo "skills/postgres coverage ${coverage_pct}% meets ${minimum_coverage}%"
 
   artifacts-s3:
     name: artifacts/s3 conformance (MinIO)

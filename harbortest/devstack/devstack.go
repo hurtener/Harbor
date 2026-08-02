@@ -77,6 +77,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -145,6 +146,9 @@ const (
 	DefaultDevTenant  = "dev"
 	DefaultDevUser    = "dev"
 	DefaultDevSession = "dev"
+	// devAgentConfigID is the synthetic boot agent selected by the devstack
+	// run-loop and granted by the minted dev bearer.
+	devAgentConfigID = "harbor-dev-agent"
 
 	// DefaultKID is the kid header the in-test ES256 signer stamps
 	// on tokens. Matches `cmd/harbor`'s DevKID convention.
@@ -412,6 +416,10 @@ type DevStack struct {
 	// run-start composition. Keyed by the real (tenant, user, session) triple,
 	// so it is session-isolated. Nil when the StateStore is unavailable.
 	SessionOverlay sessionoverlay.Store
+	// SessionPersonalSkillAuthority is the complete durable cutover/controller
+	// graph shared by Protocol session-personal methods and run-start snapshots.
+	// Nil when the skills subsystem is absent.
+	SessionPersonalSkillAuthority *serve.SessionPersonalSkillAuthority
 
 	// Catalog / Coordinator / Gates / OAuthProviders are nil when
 	// SkipCatalog is set. The Gates map is keyed by tool name and
@@ -520,7 +528,7 @@ func (k *devKeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
 // package init exactly once regardless of how many importers).
 func Assemble(t *testing.T, cfg *config.Config, opts AssembleOpts) *DevStack {
 	t.Helper()
-	stack, err := assembleWith(cfg, opts)
+	stack, err := assembleWith(t.Context(), cfg, opts)
 	if err != nil {
 		if stack != nil {
 			stack.Close()
@@ -528,6 +536,22 @@ func Assemble(t *testing.T, cfg *config.Config, opts AssembleOpts) *DevStack {
 		t.Fatalf("devstack: %v", err)
 	}
 	return stack
+}
+
+// EnsureBootAgentLifecycle explicitly provisions this DevStack's one
+// boot-declared agent for id's tenant. The production runtime never infers a
+// tenant declaration from a run request; integration callers that exercise a
+// different tenant must make that provisioning step explicit too. The helper
+// is idempotent and preserves terminal or corrupt lifecycle records fail
+// closed through serve.EnsureBootAgentLifecycle.
+func (s *DevStack) EnsureBootAgentLifecycle(ctx context.Context, id identity.Identity) error {
+	if s == nil || s.State == nil || s.AgentConfig == nil || s.AgentConfigID == "" {
+		return errors.New("devstack boot agent lifecycle is not wired")
+	}
+	if err := serve.EnsureBootAgentLifecycle(ctx, s.State, s.AgentConfig, id, s.AgentConfigID); err != nil {
+		return fmt.Errorf("devstack boot agent lifecycle: %w", err)
+	}
+	return nil
 }
 
 // assembleWith is the error-returning core of Assemble. Since Phase
@@ -541,7 +565,10 @@ func Assemble(t *testing.T, cfg *config.Config, opts AssembleOpts) *DevStack {
 // Returns a partial DevStack on error so the caller's deferred Close
 // drains every subsystem that was successfully opened before the
 // failure (the assemble package carries the same contract).
-func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
+func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
+	if ctx == nil {
+		return nil, errors.New("assemble context is required")
+	}
 	if cfg == nil {
 		return nil, fmt.Errorf("cfg is required (call config.Load + Validate or build a minimal cfg by hand)")
 	}
@@ -566,7 +593,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	// exercising the SAME MetricsRegistry + bridge + Snapshot code path
 	// production runs (production resolves a metrics exporter through
 	// the §4.4 driver registry instead).
-	core, err := assemble.Assemble(context.Background(), cfg, assemble.Options{
+	core, err := assemble.Assemble(ctx, cfg, assemble.Options{
 		Logger:           opts.Logger,
 		LLMSnapshot:      opts.LLMConfigSnapshot,
 		PlannerOverride:  opts.PlannerOverride,
@@ -640,21 +667,33 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	// is handed to the run-loop driver (run-start skills projection) and the
 	// mounted `agent_config.*` Protocol service, so a skills edit lands on
 	// the next run. Built whenever the assembly opened a StateStore.
-	const devAgentConfigID = "harbor-dev-agent"
 	// tenantPolicy is the admin-set tenant-default LLM-override policy — ONE
 	// instance shared by the run-loop driver (consume at run start) and the
 	// mounted governance surface (set/get), mirroring production. Built
 	// whenever the assembly opened a StateStore.
 	var tenantPolicy *governance.TenantOverridePolicy
 	var setPosturePolicy *governance.SetPosturePolicy
+	var bootLifecycleEnsurer agentcfg.BootLifecycleEnsurer
 	if core.State != nil {
-		reg, regErr := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: core.State, Bus: bus})
+		reg, regErr := agentcfg.Open(ctx, agentcfg.Config{}, agentcfg.Deps{State: core.State, Bus: bus})
 		if regErr != nil {
 			return stack, fmt.Errorf("agent-config registry: %w", regErr)
 		}
 		stack.AgentConfig = reg
 		stack.AgentConfigID = devAgentConfigID
 		stack.closeFns = append(stack.closeFns, reg.Close)
+		// The synthetic boot agent is a real selected agent for the devstack's
+		// token identity. Phase 233a's durable session-personal resolver uses
+		// the agent-level active slot as its lifecycle fence, so materialise an
+		// empty first revision only when that slot is truly absent. Existing
+		// slots are deliberately untouched: in particular a terminal tombstone
+		// must remain terminal across a reconstructed stack.
+		if lifecycleErr := serve.EnsureBootAgentLifecycle(ctx, core.State, reg, resolveDevIdentity(opts), devAgentConfigID); lifecycleErr != nil {
+			return stack, fmt.Errorf("devstack synthetic agent lifecycle: %w", lifecycleErr)
+		}
+		bootLifecycleEnsurer = func(runCtx context.Context, id identity.Identity, agentID string) error {
+			return serve.EnsureBootAgentLifecycle(runCtx, core.State, reg, id, agentID)
+		}
 
 		// The SESSION-scoped safe-subset overlay store (the non-admin lower
 		// tier) reuses the SAME StateStore for session-keyed identity
@@ -666,6 +705,18 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		}
 		stack.SessionOverlay = ovStore
 		stack.closeFns = append(stack.closeFns, ovStore.Close)
+		if stack.Skills != nil {
+			authority, authorityErr := serve.NewSessionPersonalSkillAuthority(
+				ctx,
+				core.State,
+				stack.Skills,
+				cfg.Skills.SessionPersonalCutover.Tenants,
+			)
+			if authorityErr != nil {
+				return stack, fmt.Errorf("agent-config session-personal skill authority: %w", authorityErr)
+			}
+			stack.SessionPersonalSkillAuthority = authority
+		}
 
 		tp, tpErr := governance.NewTenantOverridePolicy(core.State, bus, devstackValidModels(cfg), nil)
 		if tpErr != nil {
@@ -722,7 +773,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// silent accept.
 		stack.AgentReach = auth.NewAgentReachAuthorizer()
 		surfaceOpts = append(surfaceOpts,
-			protocol.WithAgentResolver(serve.NewAgentResolverAdapter(stack.AgentConfig, stack.AgentConfigID)),
+			protocol.WithAgentResolver(serve.NewAgentResolverAdapter(stack.AgentConfig, stack.AgentConfigID, serve.WithBootLifecycleEnsurer(bootLifecycleEnsurer))),
 			protocol.WithAgentReachAuthorizer(stack.AgentReach))
 		surface, surfaceErr := protocol.NewControlSurface(taskReg, core.Steering, surfaceOpts...)
 		if surfaceErr != nil {
@@ -812,41 +863,45 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				}
 			}
 			driver, drvErr := serve.NewRunLoopDriver(serve.RunLoopDriverOptions{
-				Bus:                     bus,
-				RunLoop:                 stack.RunLoop,
-				Planner:                 core.Planner,
-				Tasks:                   taskReg,
-				Logger:                  opts.Logger,
-				SessionOverrides:        runsStore,
-				Memory:                  resolveMemoryStore(opts, stack),
-				MemoryRecall:            memory.RecallFromConfig(cfg.Memory),
-				SkillsDirectory:         skillsDir,
-				PlanningHints:           resolvePlanningHints(opts, cfg),
-				Catalog:                 stack.Catalog,
-				Executor:                core.Executor,
-				MaxStepsRunLoop:         cfg.Planner.MaxSteps,
-				GrantedScopes:           append([]string(nil), cfg.Tools.GrantedScopes...),
-				ArtifactStore:           stack.Artifacts,
-				TokenBudget:             cfg.Planner.TokenBudget,
-				Compression:             core.Compression,
-				DispositionPolicy:       dispositionPolicy,
-				TenantOverrides:         tenantPolicy,
-				AgentConfig:             stack.AgentConfig,
-				AgentConfigID:           stack.AgentConfigID,
-				SessionOverlay:          stack.SessionOverlay,
-				RunCompletionHook:       projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
-				ConnectionDetacher:      devDetacher,
-				ConnectionReattacher:    devReattacher,
-				BootDeclaredMCP:         serve.BootDeclaredMCPServerSet(cfg),
-				OAuthProviderReconciler: devProviderReconciler,
-				NamingDefault:           cfg.Runtime.Naming,
-				SessionTitler:           stack.Sessions,
-				NamingLLM:               stack.LLMClient,
+				Bus:                      bus,
+				RunLoop:                  stack.RunLoop,
+				Planner:                  core.Planner,
+				Tasks:                    taskReg,
+				Logger:                   opts.Logger,
+				SessionOverrides:         runsStore,
+				Memory:                   resolveMemoryStore(opts, stack),
+				MemoryRecall:             memory.RecallFromConfig(cfg.Memory),
+				SkillsDirectory:          skillsDir,
+				PlanningHints:            resolvePlanningHints(opts, cfg),
+				SkillStore:               stack.Skills,
+				SessionPersonalSkills:    devSessionPersonalStore(stack.SessionPersonalSkillAuthority),
+				SessionSkillCutover:      devSessionPersonalCutover(stack.SessionPersonalSkillAuthority),
+				Catalog:                  stack.Catalog,
+				Executor:                 core.Executor,
+				MaxStepsRunLoop:          cfg.Planner.MaxSteps,
+				GrantedScopes:            append([]string(nil), cfg.Tools.GrantedScopes...),
+				ArtifactStore:            stack.Artifacts,
+				TokenBudget:              cfg.Planner.TokenBudget,
+				Compression:              core.Compression,
+				DispositionPolicy:        dispositionPolicy,
+				TenantOverrides:          tenantPolicy,
+				AgentConfig:              stack.AgentConfig,
+				AgentConfigID:            stack.AgentConfigID,
+				EnsureBootAgentLifecycle: bootLifecycleEnsurer,
+				SessionOverlay:           stack.SessionOverlay,
+				RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
+				ConnectionDetacher:       devDetacher,
+				ConnectionReattacher:     devReattacher,
+				BootDeclaredMCP:          serve.BootDeclaredMCPServerSet(cfg),
+				OAuthProviderReconciler:  devProviderReconciler,
+				NamingDefault:            cfg.Runtime.Naming,
+				SessionTitler:            stack.Sessions,
+				NamingLLM:                stack.LLMClient,
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
 			}
-			if startErr := driver.Start(context.Background()); startErr != nil {
+			if startErr := driver.Start(ctx); startErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver start: %w", startErr)
 			}
 			stack.RunLoopDriver = driver
@@ -962,7 +1017,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				inferenceBrokerNames = concrete.BrokerNames()
 				stack.closeFns = append(stack.closeFns, concrete.Close)
 				if cfg.LLM.CredentialSource == "remote" {
-					if cErr := concrete.BootConnectPrimary(context.Background(), cfg.LLM.InferenceBroker); cErr != nil {
+					if cErr := concrete.BootConnectPrimary(ctx, cfg.LLM.InferenceBroker); cErr != nil {
 						return nil, fmt.Errorf("llm brokered primary: %w", cErr)
 					}
 				}
@@ -975,51 +1030,53 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// agents / auth-rotate / governance-override / governance-key-rotate
 		// surfaces the mirror omitted.
 		built, bErr := serve.BuildMux(serve.MuxInput{
-			Cfg:                      cfg,
-			Surface:                  stack.Surface,
-			Bus:                      bus,
-			Redactor:                 stack.Audit,
-			Logger:                   lg,
-			Metrics:                  metricsReg,
-			LLMSnapshot:              llmPostureCfg,
-			Tasks:                    stack.Tasks,
-			Sessions:                 stack.Sessions,
-			Agents:                   core.Agents,
-			Artifacts:                stack.Artifacts,
-			Memory:                   stack.Memory,
-			Catalog:                  stack.Catalog,
-			Coordinator:              stack.Coordinator,
-			MCPRegistry:              stack.MCPRegistry,
-			MCPToolContext:           stack.MCPToolContext,
-			State:                    stack.State,
-			Skills:                   stack.Skills,
-			AgentConfig:              stack.AgentConfig,
-			AgentConfigID:            stack.AgentConfigID,
-			SessionOverlay:           stack.SessionOverlay,
-			RunsStore:                runsStore,
-			RunLoopDriver:            stack.RunLoopDriver,
-			OAuthProviders:           stack.OAuthProviders,
-			TenantOverridePolicy:     tenantPolicy,
-			SetPosturePolicy:         setPosturePolicy,
-			KeyRotator:               core.KeyRotator,
-			ValidModels:              devstackValidModels(cfg),
-			MCPAttacher:              attacher,
-			MCPStdioAllowlist:        append([]string(nil), opts.MCPStdioAllowlist...),
-			BootDeclaredMCP:          serve.BootDeclaredMCPServerNames(cfg),
-			BootDeclaredOAuth:        serve.BootDeclaredOAuthProviderNames(cfg),
-			AllowWireOAuthDescriptor: cfg.Tools.AllowWireOAuthDescriptor,
-			AllowWireInjection:       cfg.Tools.AllowWireInjection,
-			OAuthProviderInstaller:   oauthProviderInstaller,
-			LLMProviderInstaller:     llmProviderInstaller,
-			InferenceBrokers:         inferenceBrokerNames,
-			Validator:                stack.Validator,
-			AuthSurface:              rotateSurface,
-			AgentReach:               stack.AgentReach,
-			DisplayName:              "harbor devstack",
-			InstanceID:               "harbor-devstack",
-			BuildVersion:             "devstack",
-			BuildCommit:              "devstack",
-			TopologyAvailable:        false,
+			Cfg:                            cfg,
+			Surface:                        stack.Surface,
+			Bus:                            bus,
+			Redactor:                       stack.Audit,
+			Logger:                         lg,
+			Metrics:                        metricsReg,
+			LLMSnapshot:                    llmPostureCfg,
+			Tasks:                          stack.Tasks,
+			Sessions:                       stack.Sessions,
+			Agents:                         core.Agents,
+			Artifacts:                      stack.Artifacts,
+			Memory:                         stack.Memory,
+			Catalog:                        stack.Catalog,
+			Coordinator:                    stack.Coordinator,
+			MCPRegistry:                    stack.MCPRegistry,
+			MCPToolContext:                 stack.MCPToolContext,
+			State:                          stack.State,
+			Skills:                         stack.Skills,
+			AgentConfig:                    stack.AgentConfig,
+			AgentConfigID:                  stack.AgentConfigID,
+			BootLifecycleEnsurer:           bootLifecycleEnsurer,
+			SessionOverlay:                 stack.SessionOverlay,
+			SessionPersonalSkillController: devSessionPersonalController(stack.SessionPersonalSkillAuthority),
+			RunsStore:                      runsStore,
+			RunLoopDriver:                  stack.RunLoopDriver,
+			OAuthProviders:                 stack.OAuthProviders,
+			TenantOverridePolicy:           tenantPolicy,
+			SetPosturePolicy:               setPosturePolicy,
+			KeyRotator:                     core.KeyRotator,
+			ValidModels:                    devstackValidModels(cfg),
+			MCPAttacher:                    attacher,
+			MCPStdioAllowlist:              append([]string(nil), opts.MCPStdioAllowlist...),
+			BootDeclaredMCP:                serve.BootDeclaredMCPServerNames(cfg),
+			BootDeclaredOAuth:              serve.BootDeclaredOAuthProviderNames(cfg),
+			AllowWireOAuthDescriptor:       cfg.Tools.AllowWireOAuthDescriptor,
+			AllowWireInjection:             cfg.Tools.AllowWireInjection,
+			OAuthProviderInstaller:         oauthProviderInstaller,
+			LLMProviderInstaller:           llmProviderInstaller,
+			InferenceBrokers:               inferenceBrokerNames,
+			Validator:                      stack.Validator,
+			AuthSurface:                    rotateSurface,
+			AgentReach:                     stack.AgentReach,
+			DisplayName:                    "harbor devstack",
+			InstanceID:                     "harbor-devstack",
+			BuildVersion:                   "devstack",
+			BuildCommit:                    "devstack",
+			TopologyAvailable:              false,
 		})
 		if bErr != nil {
 			return stack, bErr
@@ -1107,6 +1164,27 @@ func resolveMemoryStore(opts AssembleOpts, stack *DevStack) memory.MemoryStore {
 		return opts.MemoryStore
 	}
 	return stack.Memory
+}
+
+func devSessionPersonalStore(authority *serve.SessionPersonalSkillAuthority) *sessionoverlay.DurableStore {
+	if authority == nil {
+		return nil
+	}
+	return authority.Personal
+}
+
+func devSessionPersonalCutover(authority *serve.SessionPersonalSkillAuthority) sessionoverlay.CutoverModeReader {
+	if authority == nil {
+		return nil
+	}
+	return authority.Cutover
+}
+
+func devSessionPersonalController(authority *serve.SessionPersonalSkillAuthority) agentcfgprotocol.SessionPersonalSkillController {
+	if authority == nil {
+		return nil
+	}
+	return authority.Controller
 }
 
 // resolveSkillsContextMax returns the per-task driver's skills cap: an

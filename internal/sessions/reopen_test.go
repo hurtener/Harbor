@@ -385,7 +385,7 @@ func TestCascadeEraser_TombstoneSaveFailure_LoudAndKeepsLedger_WARN1(t *testing.
 	boom := errors.New("forced tombstone save fault")
 	faulty := &faultySaveStore{StateStore: f.store, failPrefix: erasureTombstoneTestKindPrefix, failErr: boom}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: faulty, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: faulty, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)

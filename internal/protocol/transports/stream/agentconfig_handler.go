@@ -602,7 +602,7 @@ func (h *AgentConfigHandler) serveSessionSetUserPrompt(w http.ResponseWriter, r 
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAgent(w, r, req.AgentID) {
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigSessionSetUserPrompt) {
 		return
 	}
 	resp, err := h.service.SessionSetUserPrompt(r.Context(), req)
@@ -622,7 +622,7 @@ func (h *AgentConfigHandler) serveSessionSetSourceDisables(w http.ResponseWriter
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAgent(w, r, req.AgentID) {
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigSessionSetSourceDisables) {
 		return
 	}
 	resp, err := h.service.SessionSetSourceDisables(r.Context(), req)
@@ -642,7 +642,7 @@ func (h *AgentConfigHandler) serveSessionSkillsList(w http.ResponseWriter, r *ht
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAgent(w, r, req.AgentID) {
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigSessionSkillsList) {
 		return
 	}
 	resp, err := h.service.SessionSkillsList(r.Context(), req)
@@ -662,7 +662,7 @@ func (h *AgentConfigHandler) serveSessionSkillsUpsert(w http.ResponseWriter, r *
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAgent(w, r, req.AgentID) {
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigSessionSkillsUpsert) {
 		return
 	}
 	resp, err := h.service.SessionSkillsUpsert(r.Context(), req)
@@ -682,7 +682,7 @@ func (h *AgentConfigHandler) serveSessionSkillsDelete(w http.ResponseWriter, r *
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAgent(w, r, req.AgentID) {
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigSessionSkillsDelete) {
 		return
 	}
 	resp, err := h.service.SessionSkillsDelete(r.Context(), req)
@@ -704,7 +704,7 @@ func (h *AgentConfigHandler) serveUserGet(w http.ResponseWriter, r *http.Request
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAgent(w, r, req.AgentID) {
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserGet) {
 		return
 	}
 	resp, err := h.service.UserGet(r.Context(), req)
@@ -724,7 +724,7 @@ func (h *AgentConfigHandler) serveUserSetRevision(w http.ResponseWriter, r *http
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAgent(w, r, req.AgentID) {
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserSetRevision) {
 		return
 	}
 	resp, err := h.service.UserSetRevision(r.Context(), req)
@@ -744,6 +744,9 @@ func (h *AgentConfigHandler) serveUserListRevisions(w http.ResponseWriter, r *ht
 		return
 	}
 	req.Identity = wireID
+	// Historical revisions remain readable after retirement and must never
+	// manufacture a lifecycle slot when the default has not been used. Signed
+	// reach still gates this read before the registry is consulted.
 	if !h.authorizeAgent(w, r, req.AgentID) {
 		return
 	}
@@ -764,6 +767,8 @@ func (h *AgentConfigHandler) serveUserDiff(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	req.Identity = wireID
+	// Diff is a historical read over immutable revisions, not a current-agent
+	// operation. Preserve retirement/absence history without bootstrapping.
 	if !h.authorizeAgent(w, r, req.AgentID) {
 		return
 	}
@@ -784,7 +789,7 @@ func (h *AgentConfigHandler) serveUserRollback(w http.ResponseWriter, r *http.Re
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAgent(w, r, req.AgentID) {
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserRollback) {
 		return
 	}
 	resp, err := h.service.UserRollback(r.Context(), req)
@@ -806,7 +811,7 @@ func (h *AgentConfigHandler) serveUserSkillsList(w http.ResponseWriter, r *http.
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAgent(w, r, req.AgentID) {
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserSkillsList) {
 		return
 	}
 	resp, err := h.service.UserSkillsList(r.Context(), req)
@@ -826,7 +831,7 @@ func (h *AgentConfigHandler) serveUserSkillsUpsert(w http.ResponseWriter, r *htt
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAgent(w, r, req.AgentID) {
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserSkillsUpsert) {
 		return
 	}
 	resp, err := h.service.UserSkillsUpsert(r.Context(), req)
@@ -846,7 +851,7 @@ func (h *AgentConfigHandler) serveUserSkillsDelete(w http.ResponseWriter, r *htt
 		return
 	}
 	req.Identity = wireID
-	if !h.authorizeAgent(w, r, req.AgentID) {
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserSkillsDelete) {
 		return
 	}
 	resp, err := h.service.UserSkillsDelete(r.Context(), req)
@@ -891,6 +896,20 @@ func (h *AgentConfigHandler) authorizeAgent(w http.ResponseWriter, r *http.Reque
 	if err := h.reach.AuthorizeAgentReach(r.Context(), agentID); err != nil {
 		writeAgentConfigError(w, protoerrors.CodeScopeMismatch, http.StatusForbidden,
 			"caller is not authorized for the effective agent")
+		return false
+	}
+	return true
+}
+
+// authorizeAndEnsureBootAgent keeps ordering explicit: signed reach is the
+// authority gate and MUST succeed before the bounded default-agent lifecycle
+// bootstrap observes or writes tenant state.
+func (h *AgentConfigHandler) authorizeAndEnsureBootAgent(w http.ResponseWriter, r *http.Request, scope prototypes.IdentityScope, agentID string, method methods.Method) bool {
+	if !h.authorizeAgent(w, r, agentID) {
+		return false
+	}
+	if err := h.service.EnsureBootLifecycle(r.Context(), scope, agentID); err != nil {
+		h.writeServiceError(w, r, method, err)
 		return false
 	}
 	return true
@@ -1034,6 +1053,24 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// request (400) or a server fault (500). 409 Conflict.
 		return protoerrors.CodeRevisionConflict, http.StatusConflict,
 			m + ": " + err.Error()
+	case errors.Is(err, sessionoverlay.ErrCutoverPending):
+		// A session-personal mutation is valid but the tenant's declared
+		// migration has not yet durably reached state_only. Do not collapse this
+		// state refusal into an invalid request or a server fault.
+		return protoerrors.CodeSessionSkillCutoverPending, http.StatusConflict,
+			m + ": session-personal cutover is still pending"
+	case errors.Is(err, sessionoverlay.ErrSessionSkillReadUnstable):
+		// A bounded session-skill read never found equal lifecycle/erasure
+		// fences. The caller receives no partial result and may retry once the
+		// concurrent transition settles.
+		return protoerrors.CodeSessionSkillReadUnstable, http.StatusConflict,
+			m + ": session-skill read was unstable; retry after concurrent state settles"
+	case errors.Is(err, sessionoverlay.ErrSessionSkillResultLimit):
+		// Session-personal projections have a hard bounded response contract.
+		// Do not serialize a partial dynamic overlay or treat one tenant's
+		// oversized personal tier as a server fault.
+		return protoerrors.CodeRequestTooLarge, http.StatusRequestEntityTooLarge,
+			m + ": session-personal skill result exceeds the response limit"
 	case errors.Is(err, agentcfg.ErrRevisionNotFound), errors.Is(err, skills.ErrSkillNotFound):
 		return protoerrors.CodeNotFound, http.StatusNotFound,
 			m + ": " + err.Error()

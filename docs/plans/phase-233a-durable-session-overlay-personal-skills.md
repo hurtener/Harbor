@@ -36,6 +36,24 @@ safe rolling cutover from legacy `ScopeSession` bodies.
 - None. The older process-local-overlay premise is corrected by D-400; it was
   not a brief finding to preserve.
 
+## Permanent implementation deviations
+
+- The resolver does not use a portable frozen-candidate full-text proxy. Its
+  base is the configured mandatory `SkillStore`, whose
+  `SearchSnapshot(ctx, id, query, candidates, limit)` implementation ranks
+  only the immutable composed candidates while retaining the actual selected
+  driver's full-text availability, tokenizer, ranking, and fallback ladder.
+  The LocalDB driver builds a connection-local FTS5 view; PostgreSQL uses a
+  values CTE through its `to_tsvector`/`to_tsquery` path. This avoids labeling
+  a custom contains scorer as FTS5. Semantic snapshot search keeps the
+  established deterministic most-recent 256-candidate ceiling, so one billed
+  embedding batch is at most 257 texts including the query.
+- `StateStore.ListKindForIdentityBounded` is a new mandatory public API across
+  in-memory, SQLite, and PostgreSQL drivers. The state-only resolver asks for
+  its owned-record cap plus one and rejects overflow before candidate search or
+  embedding. A resolver-side length check after `ListKindForIdentity` would
+  still materialize an unbounded identity prefix and is therefore insufficient.
+
 ## Goals
 
 - Make the session overlay a cross-process-safe StateStore CAS consumer,
@@ -72,16 +90,16 @@ safe rolling cutover from legacy `ScopeSession` bodies.
 
 ## Acceptance criteria
 
-- [ ] Shared exported typed helpers construct the exact lifecycle active-slot
+- [x] Shared exported typed helpers construct the exact lifecycle active-slot
   identity/Kind, pending-erasure ledger identity/Kind, and terminal-erasure
   tombstone identity/Kind. Overlay, personal-record, erasure, and retirement
   callers use those helpers rather than duplicating string construction.
-- [ ] `sessionoverlay` reads/writes the session-scoped overlay from StateStore
+- [x] `sessionoverlay` reads/writes the session-scoped overlay from StateStore
   and uses `SaveIf`, not a process-local lock, for every mutation. Its
   expectation set contains exactly the target overlay slot, agent lifecycle,
   pending erasure ledger, and terminal erasure tombstone; stale/lifecycle/
   erasure failures persist nothing and fail loud.
-- [ ] Uncertain `SaveIf` convergence is write-class-specific. Overlay/personal
+- [x] Uncertain `SaveIf` convergence is write-class-specific. Overlay/personal
   body writes reread target + lifecycle + pending/tombstone erasure pair;
   cutover target/progress/final writes reread cutover target + exact
   epoch/digest/generation preconditions; retirement tombstone/progress writes
@@ -89,7 +107,7 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   writes reread item target + applicable session fences. Each accepts only its
   intended EventID/content and otherwise returns uncertainty without
   unconditional compensation. Commit-then-error rows cover every class.
-- [ ] Overlay, personal-record, and composite resolver reads capture lifecycle,
+- [x] Overlay, personal-record, and composite resolver reads capture lifecycle,
   pending-erasure, and terminal-erasure EventIDs before point loads or
   enumeration and re-read them after. Only an equal, non-terminal
   before/after generation may return. `MaxSessionSkillReadAttempts = 3` is a
@@ -99,12 +117,12 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   endpoint, it maps to canonical `session_skill_read_unstable` (HTTP 409) and
   carries the same registry/transport/docs/Console-manifest lockstep as the
   cutover-pending code.
-- [ ] A per-agent session-personal record holds the complete validated Skill
+- [x] A per-agent session-personal record holds the complete validated Skill
   body plus schema, canonical name, ownership metadata, content hash, and
   live/tombstone state. Kind construction encodes the agent ID and hashes the
   canonical name; decoded payload identity/name/agent mismatches or a hash
   collision fail loud instead of aliasing a skill.
-- [ ] New session-personal writes, updates, and logical deletes write only
+- [x] New session-personal writes, updates, and logical deletes write only
   agent-owned StateStore records after the fleet cutover is `state_only`. A
   tombstone then prevents a deleted name from reappearing through legacy
   fallback; each record body and mutation input is bounded and validated
@@ -112,7 +130,7 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   membership, so each verb performs exactly one successful `SaveIf` and never
   also mutates `Overlay.PersonalSkills`; that schema-1 field is read-only
   legacy migration-eligibility input.
-- [ ] `skills.session_personal_cutover.tenants` is a bounded unique static
+- [x] `skills.session_personal_cutover.tenants` is a bounded unique static
   declaration list of `{tenant_id, epoch, roster_digest,
   legacy_writers_drained}`. Empty/invalid fields, duplicate tenants, and an
   over-bound list fail boot loud. Boot iterates only valid declared tenants;
@@ -129,7 +147,7 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   session sentinel cannot alias the cutover record because the Kind namespace
   is disjoint from lifecycle/config Kinds. That bounded record has only mode,
   epoch, digest, current opaque scan continuation, counters, and generation.
-- [ ] The migration consumes mandatory `StateStore.ScanKindForTenant` rather
+- [x] The migration consumes mandatory `StateStore.ScanKindForTenant` rather
   than `ListKind`: storage-side tenant and literal `agentcfg.session_overlay.`
   filtering, bounded page limit, stable lexicographic composite-slot cursor,
   and opaque validated continuation. It is a resumable page sequence, not a
@@ -140,7 +158,7 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   raw Kind/payload remain readable/migratable, and `a`/`ab` is a no-overmatch
   adversarial row. Only new encoded personal-record Kind helpers are
   collision-safe exact per-agent prefixes.
-- [ ] Once the operator drains old writers, new code never mutates schema-1
+- [x] Once the operator drains old writers, new code never mutates schema-1
   `Overlay.PersonalSkills`; each paged overlay copy handles every eligible
   referenced legacy body under that overlay's own triple with target,
   lifecycle, pending-erasure, and terminal-erasure expectations. The owned
@@ -150,7 +168,7 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   restart resumes the continuation. Before the final `state_only` CAS, a fresh
   paged verification pass proves every currently eligible schema-1 reference
   has an exact copied marker or a terminal fence.
-- [ ] Until that verification succeeds, legacy `ScopeSession` rows remain
+- [x] Until that verification succeeds, legacy `ScopeSession` rows remain
   authoritative and requests stay read-only `dual_read`: per-agent copies are
   non-authoritative and every session-personal mutation returns the canonical
   `session_skill_cutover_pending` Protocol error (HTTP 409). It maps from a
@@ -158,7 +176,7 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   error matrix, generated Protocol docs, Console types, and regenerated
   `wire-manifest.gen.json`. An old writer after an early copy is therefore
   still visible, never silently lost.
-- [ ] A narrow read-only `SessionSkillResolver` replaces direct `SkillStore`
+- [x] A narrow read-only `SessionSkillResolver` replaces direct `SkillStore`
   reads at Directory and `skill_get`, `skill_list`, and `skill_search`. Runtime
   assembly builds an immutable per-run resolver snapshot from the run's
   identity, selected agent ID, and active config revision; it is passed as an
@@ -168,24 +186,28 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   can become an independent membership authority. General Directory/tools
   compose `ScopeUser` and higher rungs; the session-only Protocol method does
   not.
-- [ ] `agent_config.session.skills.list` returns only owned/legacy session
+- [x] `agent_config.session.skills.list` returns only owned/legacy session
   personal rows, never a `ScopeUser` union. All session-overlay responses
   dynamically project current personal names: owned record names in
   `state_only`, eligible legacy names in `dual_read`. Upsert/delete reload the
   resolver view before responding, and never persist that projection back to
   `Overlay.PersonalSkills`, so responses cannot become stale.
-- [ ] The resolver's default search policy is lexical: deterministic canonical
-  name/title/trigger/tag matching and a stable merge with the existing
-  FTS5/regex/exact ladder. Its semantic policy is opt-in, requires the
-  existing Embedder, ranks the same composed candidate view, and fails loud
-  when unavailable; result and page limits are enforced without claiming an
-  atomically enforced stored-record count.
-- [ ] `SkillStore.DeleteSessionScope(ctx, identity.Quadruple)` is mandatory,
+- [x] The resolver delegates frozen-candidate search to the configured
+  mandatory `SkillStore` driver, never a portable contains scorer. Default
+  retrieval preserves that driver's true full-text availability and behavior
+  (LocalDB FTS5 or fallback regex/exact; PostgreSQL full-text then the same
+  tail), with result paths truthful to the producing engine. Semantic retrieval
+  is opt-in, ranks only the frozen composed view, deterministically selects the
+  most-recent 256 candidates, honors cancellation through candidate/text/cosine
+  loops, and never bills an embedding batch above 256 candidates plus query.
+  State-only owned-record enumeration is storage-bounded to that cap plus one
+  and rejects overflow before candidate search/embedding.
+- [x] `SkillStore.DeleteSessionScope(ctx, identity.Quadruple)` is mandatory,
   identity-exact, and idempotent across every driver. Session erasure records
   its completion in the durable ledger before `StateStore.DeleteScope`; it
   deletes only legacy `ScopeSession` rows and leaves `ScopeUser`, project,
   tenant, and global rows intact.
-- [ ] Retirement's fixed manifest distinguishes cleanup classes. New encoded
+- [x] Retirement's fixed manifest distinguishes cleanup classes. New encoded
   personal records use a collision-safe exact per-agent Kind prefix; legacy
   overlays use the tenant-bounded common overlay prefix plus exact
   `LegacyOverlayKind(agentID)` equality, never an agent-specific raw prefix.
@@ -205,8 +227,9 @@ safe rolling cutover from legacy `ScopeSession` bodies.
 - `internal/config/{config.go,loader.go}`, `examples/dev.yaml`, and
   `CHANGELOG.md`
 - `internal/sessions/erasure.go` and erasure tests
-- `internal/state/` typed record helpers plus `ScanKindForTenant` triad and
-  conformance; no migration files
+- `internal/state/` typed record helpers plus `ScanKindForTenant` and
+  `ListKindForIdentityBounded` mandatory-driver triads and conformance; no
+  migration files
 - `test/integration/session_personal_skills_test.go`
 - `scripts/smoke/phase-233a.sh`
 - `RFC-001-Harbor.md`, `docs/decisions.md`, `docs/glossary.md`, and plan index
@@ -226,6 +249,11 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   Kinds used in `SaveIf` expectations.
 - `ScanKindForTenant` and its opaque continuation/page types as a mandatory
   StateStore API.
+- `ListKindForIdentityBounded(ctx, id, literalKindPrefix, limit)` as a
+  mandatory StateStore API for storage-enforced identity-local admission caps.
+- Mandatory `SkillStore.SearchSnapshot` driver seam for immutable
+  run-start candidate views; no token URL, credential, or runtime
+  configuration surface is added by this phase.
 - `skills.session_personal_cutover.tenants` plus `CutoverScope(tenant)` and a
   bounded typed cutover record. `CutoverScope(tenant)` is exactly
   `{TenantID: tenant, UserID: "__agentcfg__", SessionID:
@@ -251,8 +279,10 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   namespace prevents an agent ID equal to the session sentinel from aliasing;
   overlay and personal four-slot expectation construction; tombstone
   precedence; single-`SaveIf` personal mutation with no overlay mutation;
-  before/after read-generation retry/fail-closed rows; lexical ranking,
-  semantic embedder absence, stable pagination, `ScopeUser` preservation,
+  before/after read-generation retry/fail-closed rows; actual driver-owned
+  frozen-view full-text versus regex/exact fallback behavior, semantic
+  256-candidate/257-text batch cap and cancellation, bounded state-only owned
+  admission, stable pagination, `ScopeUser` preservation,
   raw-agent schema-1 overlay compatibility including `a`/`ab`, dynamic overlay
   projection, class-specific commit-then-error exact-re-read convergence, and
   three-attempt perpetual-fence-churn exhaustion with cancellation/deadline.
@@ -298,6 +328,20 @@ safe rolling cutover from legacy `ScopeSession` bodies.
 - `internal/agentcfg/sessionoverlay`: 90%; `internal/skills` and resolver/
   tools packages: 85%; `internal/sessions`: 90%; touched SkillStore drivers
   and conformance package: 85%.
+- As built, `internal/agentcfg/sessionoverlay` is 90.3% and LocalDB is 85.4%,
+  including `SearchSnapshot` at 94.1%. The conformance harness is 86.7% when
+  its real LocalDB happy paths and adversarial self-tests are merged in one
+  `-coverpkg=./internal/skills/conformancetest` profile. The adversarial matrix
+  injects contract violations and asserts the harness rejects each one, so its
+  failure-reporting branches are exercised without accepting a broken driver.
+  PostgreSQL still requires `HARBOR_PG_DSN`: without it, the real-driver tests
+  skip and direct coverage is not representative. Against an isolated local
+  `postgres:16` container with unique per-test schemas and cleanup, the exact
+  CI race profile passes with no skips at 88.4% for
+  `internal/skills/drivers/postgres`; the exact two-instance sessionoverlay
+  Postgres race also passes. The service job refuses skipped/no-match runs and
+  enforces the binding 85% package floor; its authoritative cloud rerun is
+  pending.
 
 ## Dependencies
 
@@ -329,17 +373,25 @@ safe rolling cutover from legacy `ScopeSession` bodies.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages >= stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] Reusable overlay/resolver concurrent-reuse test passes — N>=100 shared
+- [x] `make drift-audit` passes
+- [ ] Authoritative cloud `make preflight` is pending; full local preflight was
+  skipped per maintainer process
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages >= stated target; local evidence is
+  sessionoverlay 90.3%, LocalDB 85.4% (`SearchSnapshot` 94.1%), and the
+  conformance harness 86.7% across its real-driver and adversarial self-tests;
+  the isolated `postgres:16` exact race profile is 88.4% with `TestConformance`
+  passing and no skips. The PostgreSQL >=85% cloud gate is configured and its
+  authoritative rerun is pending.
+- [x] If multi-isolation paths changed: cross-session isolation test passes
+- [x] Reusable overlay/resolver concurrent-reuse test passes — N>=100 shared
   invocations under `-race`, with no data races, context bleed, cancellation
   cross-talk, or goroutine leak
-- [ ] Real-driver integration test covers identity, restart, erasure-ledger,
-  and condition-failed behavior
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md
-  entry filed
+- [x] Real-driver integration test covers identity, restart, erasure-ledger,
+  and condition-failed behavior; SQLite and local compile/selection gates pass,
+  and the isolated `postgres:16` two-instance Postgres leg passes under
+  `-race`. Authoritative cloud confirmation is pending CI.
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: N/A; no brief departure is recorded
+  above

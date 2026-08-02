@@ -137,7 +137,7 @@ func KnownNames() []string {
 // registration time. Fields are optional for builtins that don't use
 // them. Two failure postures, both fail-loud:
 //
-//   - Store-shaped deps (`SkillStore`, `ArtifactStore`) fail at
+//   - Store-shaped deps (`SkillReader`/`SkillStore`, `ArtifactStore`) fail at
 //     INVOKE time with an operator-readable message when nil — the
 //     registration is structurally valid, the backing subsystem is
 //     simply not configured.
@@ -152,7 +152,12 @@ func KnownNames() []string {
 // under these scopes — default-deny: an empty list means tools with
 // AuthScopes are invisible and skills requiring them are filtered.
 type RegistryContext struct {
-	Catalog       tools.ToolCatalog
+	Catalog tools.ToolCatalog
+	// SkillReader optionally supplies a read-only skill projection for
+	// skill_search, skill_get, and skill_list. When nil those readers retain
+	// source compatibility by falling back to SkillStore. Mutating built-ins
+	// such as skill_propose always require SkillStore.
+	SkillReader   skills.SkillReader
 	SkillStore    skills.SkillStore
 	ArtifactStore artifacts.ArtifactStore
 	Bus           events.EventBus
@@ -183,9 +188,8 @@ func Register(cat tools.ToolCatalog, names []string) error {
 }
 
 // RegisterWith attaches each named built-in to the catalog, passing
-// the full RegistryContext so builtins that need the SkillStore
-// (skill_search, skill_get) can reach it. Builtins that don't use
-// the store ignore it.
+// the full RegistryContext so builtins that need skill reads or writes can
+// reach their narrowed dependency. Builtins that don't use skills ignore it.
 func RegisterWith(rc RegistryContext, names []string) error {
 	if rc.Catalog == nil {
 		return fmt.Errorf("%w: catalog is nil", ErrRegisterFailed)

@@ -51,7 +51,7 @@ const driverName = "statestore"
 
 // Record kinds and the reserved synthetic-identity user slot.
 const (
-	kindActive      = "agentcfg.active"
+	kindActive      = agentcfg.ActiveSlotKind
 	kindRevisionPfx = "agentcfg.revision."
 	// The DISTINCT per-user record kinds. The user variant persists under
 	// the caller's REAL (tenant, user) identity AND these kinds, so the two
@@ -66,7 +66,7 @@ const (
 	// config persists under. The double-underscore prefix is reserved for
 	// runtime-internal scopes (matches the governance __governance__
 	// convention); no real session collides with it.
-	agentCfgUser = "__agentcfg__"
+	agentCfgUser = agentcfg.ReservedAgentConfigUser
 )
 
 // scopeKeys is the resolved keying for one (scope, identity, agent) tuple:
@@ -195,6 +195,9 @@ func init() {
 // persist under. The caller's verified tenant is the isolation boundary;
 // agent_id is the per-agent key in the session slot.
 func syntheticQuad(tenant, agentID string) identity.Quadruple {
+	// The registry validates tenant and agentID before constructing scope
+	// keys. Keep the construction total here rather than returning a zero
+	// identity on an impossible violated precondition.
 	return identity.Quadruple{Identity: identity.Identity{
 		TenantID:  tenant,
 		UserID:    agentCfgUser,
@@ -247,7 +250,7 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 		return agentcfg.Revision{}, err
 	}
 	q := keys.quad
-	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys)
+	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys, opts)
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
@@ -347,6 +350,11 @@ func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID st
 	if err != nil {
 		return agentcfg.Revision{}, false, err
 	}
+	if scope == agentcfg.ConfigScopeUser {
+		if err := r.validatePresentLifecycle(ctx, syntheticQuad(id.TenantID, agentID), kindActive); err != nil {
+			return agentcfg.Revision{}, false, err
+		}
+	}
 	return r.loadActiveRevision(ctx, keys.quad, keys.activeKind, keys.revPfx)
 }
 
@@ -441,7 +449,7 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 		return agentcfg.Revision{}, err
 	}
 	q := keys.quad
-	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys)
+	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys, opts)
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
@@ -541,6 +549,15 @@ func (r *registry) loadActiveRevision(ctx context.Context, q identity.Quadruple,
 		}
 		return agentcfg.Revision{}, false, fmt.Errorf("%w: load active pointer: %w", agentcfg.ErrStateUnavailable, err)
 	}
+	if activeKind == kindActive {
+		pointerState := agentcfg.ClassifyLifecycleRecord(rec.Bytes)
+		if pointerState == agentcfg.LifecycleRecordInvalid {
+			return agentcfg.Revision{}, false, fmt.Errorf("%w: lifecycle pointer is malformed", agentcfg.ErrStateUnavailable)
+		}
+		if pointerState == agentcfg.LifecycleRecordTerminal {
+			return agentcfg.Revision{}, false, agentcfg.ErrAgentRetired
+		}
+	}
 	if len(rec.Bytes) == 0 {
 		return agentcfg.Revision{}, false, nil
 	}
@@ -579,6 +596,15 @@ func (r *registry) loadActivePointerID(ctx context.Context, q identity.Quadruple
 			return "", nil
 		}
 		return "", fmt.Errorf("%w: load active pointer: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	if activeKind == kindActive {
+		pointerState := agentcfg.ClassifyLifecycleRecord(rec.Bytes)
+		if pointerState == agentcfg.LifecycleRecordInvalid {
+			return "", fmt.Errorf("%w: lifecycle pointer is malformed", agentcfg.ErrStateUnavailable)
+		}
+		if pointerState == agentcfg.LifecycleRecordTerminal {
+			return "", nil
+		}
 	}
 	if len(rec.Bytes) == 0 {
 		return "", nil
@@ -629,22 +655,85 @@ func (r *registry) saveRevision(ctx context.Context, q identity.Quadruple, revPf
 }
 
 // activeExpectations returns the raw active-pointer generations a config write
-// must retain. Agent writes condition their own pointer. User writes additionally
+// must retain. The agent pointer is an authority lifecycle record, not merely
+// a best-effort config cache: a valid terminal or malformed record must refuse
+// every writer, and the first-write sentinel requires the SLOT itself to be
+// absent. SaveIf then rechecks that exact absence at publication, so a
+// concurrent tombstone cannot be reactivated between this read and the write.
+//
+// Agent writes condition their own lifecycle pointer. User writes additionally
 // condition the agent-tier lifecycle slot so a terminal lifecycle transition
 // wins over a user write that started earlier.
-func (r *registry) activeExpectations(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope, keys scopeKeys) ([]state.SlotExpectation, error) {
+func (r *registry) activeExpectations(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope, keys scopeKeys, opts agentcfg.SetOptions) ([]state.SlotExpectation, error) {
+	if scope == agentcfg.ConfigScopeAgent {
+		lifecycle, err := r.lifecycleExpectation(ctx, keys.quad, keys.activeKind, opts.ExpectedContentHash == agentcfg.ExpectNoActiveRevision)
+		if err != nil {
+			return nil, err
+		}
+		return []state.SlotExpectation{lifecycle}, nil
+	}
+
 	local, err := r.slotExpectation(ctx, keys.quad, keys.activeKind)
 	if err != nil {
 		return nil, err
 	}
-	if scope != agentcfg.ConfigScopeUser {
-		return []state.SlotExpectation{local}, nil
-	}
-	agent, err := r.slotExpectation(ctx, syntheticQuad(id.TenantID, agentID), kindActive)
+	lifecycle, err := r.lifecycleExpectation(ctx, syntheticQuad(id.TenantID, agentID), kindActive, false)
 	if err != nil {
 		return nil, err
 	}
-	return []state.SlotExpectation{local, agent}, nil
+	return []state.SlotExpectation{local, lifecycle}, nil
+}
+
+// lifecycleExpectation reads and classifies the authoritative agent lifecycle
+// slot. Its record is intentionally stricter than a generic active pointer:
+// the session-personal resolver also consumes these bytes as its authority
+// fence. Do not turn a terminal or malformed generation into "no active
+// revision", because accepting a config write on that interpretation would
+// overwrite a tombstone or erase forensic evidence of corruption.
+func (r *registry) lifecycleExpectation(ctx context.Context, q identity.Quadruple, kind string, requireAbsent bool) (state.SlotExpectation, error) {
+	rec, err := r.state.Load(ctx, q, kind)
+	if errors.Is(err, state.ErrNotFound) {
+		return state.SlotExpectation{Identity: q, Kind: kind}, nil
+	}
+	if err != nil {
+		return state.SlotExpectation{}, fmt.Errorf("%w: load lifecycle pointer generation: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	classification := agentcfg.ClassifyLifecycleRecord(rec.Bytes)
+	switch classification {
+	case agentcfg.LifecycleRecordInvalid:
+		return state.SlotExpectation{}, fmt.Errorf("%w: lifecycle pointer is malformed", agentcfg.ErrStateUnavailable)
+	case agentcfg.LifecycleRecordTerminal:
+		return state.SlotExpectation{}, agentcfg.ErrAgentRetired
+	case agentcfg.LifecycleRecordActive:
+		if requireAbsent {
+			return state.SlotExpectation{}, fmt.Errorf("%w: expected an absent lifecycle slot", agentcfg.ErrRevisionConflict)
+		}
+		return state.SlotExpectation{Identity: q, Kind: kind, ExpectedEventID: rec.ID}, nil
+	default:
+		return state.SlotExpectation{}, fmt.Errorf("%w: unknown lifecycle pointer state", agentcfg.ErrStateUnavailable)
+	}
+}
+
+// validatePresentLifecycle protects user-tier active reads from a terminal or
+// corrupt agent-tier lifecycle. A genuinely absent lifecycle still reports no
+// user config through the normal Active path; only a present invalid authority
+// record is fail-closed here.
+func (r *registry) validatePresentLifecycle(ctx context.Context, q identity.Quadruple, kind string) error {
+	rec, err := r.state.Load(ctx, q, kind)
+	if errors.Is(err, state.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: load lifecycle pointer: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	switch agentcfg.ClassifyLifecycleRecord(rec.Bytes) {
+	case agentcfg.LifecycleRecordActive:
+		return nil
+	case agentcfg.LifecycleRecordTerminal:
+		return agentcfg.ErrAgentRetired
+	default:
+		return fmt.Errorf("%w: lifecycle pointer is malformed", agentcfg.ErrStateUnavailable)
+	}
 }
 
 func (r *registry) slotExpectation(ctx context.Context, q identity.Quadruple, kind string) (state.SlotExpectation, error) {

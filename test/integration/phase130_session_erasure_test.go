@@ -49,6 +49,8 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
+	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/drivers/localdb"
 	"github.com/hurtener/Harbor/internal/state"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -106,6 +108,10 @@ func newPhase130DepsWithRegistry(t *testing.T) (*phase130Deps, *sessions.Registr
 	if err != nil {
 		t.Fatalf("artifacts.Open: %v", err)
 	}
+	skillStore, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:"}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("skills localdb.New: %v", err)
+	}
 	taskReg, err := tasks.Open(ctx, tasks.Dependencies{
 		Store: store, Bus: bus, Redactor: audit.Redactor(red),
 		Cfg: config.TasksConfig{Driver: "inprocess"},
@@ -129,7 +135,7 @@ func newPhase130DepsWithRegistry(t *testing.T) (*phase130Deps, *sessions.Registr
 	}
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: store, Memory: mem, Artifacts: arts, Bus: bus, Redactor: red,
+		Registry: reg, State: store, Memory: mem, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -169,6 +175,7 @@ func newPhase130DepsWithRegistry(t *testing.T) (*phase130Deps, *sessions.Registr
 			_ = taskReg.Close(ctx)
 			_ = mem.Close(ctx)
 			_ = arts.Close(ctx)
+			_ = skillStore.Close(ctx)
 			_ = bus.Close(ctx)
 			_ = store.Close(ctx)
 		},

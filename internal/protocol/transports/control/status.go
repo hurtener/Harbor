@@ -113,6 +113,16 @@ func HTTPStatus(code protoerrors.Code) int {
 		// did not fault). The client re-reads `agent_config.get` and
 		// retries.
 		return http.StatusConflict // 409
+	case protoerrors.CodeSessionSkillCutoverPending:
+		// A session-personal mutation reached a tenant still in the declared
+		// dual-read migration mode. The request is valid, but state_only has
+		// not yet been durably authorized.
+		return http.StatusConflict // 409
+	case protoerrors.CodeSessionSkillReadUnstable:
+		// The bounded session-skill read observed lifecycle or erasure fences
+		// changing on every attempt. No partial result is returned; retry
+		// after the concurrent transition settles.
+		return http.StatusConflict // 409
 	default:
 		// An unmapped Code is a Protocol-surface bug, not a client
 		// error. Surface it loud as a 500 rather than masking it

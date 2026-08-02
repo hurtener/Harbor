@@ -17,6 +17,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/sessions"
+	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -112,7 +113,7 @@ func TestCascadeEraser_LedgerCumulative_InterruptedAfterArtifacts_ReinvokeSumsCo
 	fail.Store(true)
 	flakyMem := &flakyMemory{MemoryStore: f.mem, fail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: flakyMem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: f.store, Memory: flakyMem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -259,6 +260,151 @@ func seedStaleLedger(t *testing.T, f erasureFixture, id identity.Identity, stamp
 	}
 }
 
+type flakySessionSkillSweepStore struct {
+	skills.SkillStore
+	fail *atomic.Bool
+}
+
+func (s *flakySessionSkillSweepStore) DeleteSessionScope(ctx context.Context, id identity.Quadruple) error {
+	if s.fail != nil && s.fail.Load() {
+		return errors.New("flaky skill store: forced session-scope sweep failure")
+	}
+	return s.SkillStore.DeleteSessionScope(ctx, id)
+}
+
+func legacyErasureSkill(name string, scope skills.Scope) skills.Skill {
+	return skills.Skill{
+		Name: name, Trigger: "trigger " + name, Steps: []string{"step"},
+		Origin: skills.OriginGenerated, Scope: scope,
+	}
+}
+
+func assertLegacyErasureSkill(t *testing.T, store skills.SkillStore, id identity.Identity, name string, want bool) {
+	t.Helper()
+	_, err := store.Get(context.Background(), identity.Quadruple{Identity: id}, name)
+	if want && err != nil {
+		t.Fatalf("retained skill %q: %v", name, err)
+	}
+	if !want && !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("erased skill %q: err=%v, want ErrSkillNotFound", name, err)
+	}
+}
+
+// TestCascadeEraser_OldLedgerAbsentSession_UpgradesLegacySkillCheckpoint pins
+// the rolling-upgrade path: a pre-233a ledger has no
+// legacy_session_skills_deleted field, and the StateStore session record is
+// already gone, but a legacy ScopeSession row remains in the separate store.
+// Retry must sweep and checkpoint that row before terminal finalization while
+// retaining every shared rung.
+func TestCascadeEraser_OldLedgerAbsentSession_UpgradesLegacySkillCheckpoint(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-old-ledger", "u-old-ledger", "s-old-ledger")
+	seedStaleLedger(t, f, id, 101)
+	for _, skill := range []skills.Skill{
+		legacyErasureSkill("erase-session", skills.ScopeSession),
+		legacyErasureSkill("retain-user", skills.ScopeUser),
+		legacyErasureSkill("retain-project", skills.ScopeProject),
+	} {
+		if err := f.skills.Upsert(ctx, identity.Quadruple{Identity: id}, skill); err != nil {
+			t.Fatalf("seed %s: %v", skill.Name, err)
+		}
+	}
+
+	if _, err := f.eraser.Erase(ctx, id); err != nil {
+		t.Fatalf("Erase old ledger retry: %v", err)
+	}
+	assertLegacyErasureSkill(t, f.skills, id, "erase-session", false)
+	assertLegacyErasureSkill(t, f.skills, id, "retain-user", true)
+	assertLegacyErasureSkill(t, f.skills, id, "retain-project", true)
+	if _, err := f.store.Load(ctx, ledgerScopeForTest(id), erasureLedgerTestKindPrefix+id.SessionID); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("upgraded ledger survived finalization: %v", err)
+	}
+}
+
+func TestCascadeEraser_OldLedgerAbsentSession_SweepFailureRetries(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-old-sweep-fail", "u-old-sweep-fail", "s-old-sweep-fail")
+	seedStaleLedger(t, f, id, 102)
+	if err := f.skills.Upsert(ctx, identity.Quadruple{Identity: id}, legacyErasureSkill("erase-after-retry", skills.ScopeSession)); err != nil {
+		t.Fatal(err)
+	}
+	var fail atomic.Bool
+	fail.Store(true)
+	flakySkills := &flakySessionSkillSweepStore{SkillStore: f.skills, fail: &fail}
+	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: flakySkills, Bus: f.bus,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eraser.Erase(ctx, id); err == nil {
+		t.Fatal("forced legacy skill sweep failure did not fail loud")
+	}
+	assertLegacyErasureSkill(t, f.skills, id, "erase-after-retry", true)
+	if _, err := f.store.Load(ctx, ledgerScopeForTest(id), erasureLedgerTestKindPrefix+id.SessionID); err != nil {
+		t.Fatalf("sweep failure lost old ledger: %v", err)
+	}
+	if got := countSessionErasedLifecycle(t, f.bus, id, 102); got != 0 {
+		t.Fatalf("sweep failure finalized record-of-fact: got %d events", got)
+	}
+	if _, err := f.store.Load(ctx, ledgerScopeForTest(id), erasureTombstoneTestKindPrefix+id.SessionID); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("sweep failure wrote terminal tombstone: %v", err)
+	}
+
+	fail.Store(false)
+	if _, err := eraser.Erase(ctx, id); err != nil {
+		t.Fatalf("retry after sweep failure: %v", err)
+	}
+	assertLegacyErasureSkill(t, f.skills, id, "erase-after-retry", false)
+}
+
+func TestCascadeEraser_OldLedgerAbsentSession_CheckpointFailureRetries(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-old-checkpoint-fail", "u-old-checkpoint-fail", "s-old-checkpoint-fail")
+	seedStaleLedger(t, f, id, 103)
+	if err := f.skills.Upsert(ctx, identity.Quadruple{Identity: id}, legacyErasureSkill("swept-before-checkpoint", skills.ScopeSession)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.skills.Upsert(ctx, identity.Quadruple{Identity: id}, legacyErasureSkill("retain-user-checkpoint", skills.ScopeUser)); err != nil {
+		t.Fatal(err)
+	}
+	var fail atomic.Bool
+	fail.Store(true)
+	flakyState := &flakyLedgerStore{StateStore: f.store, saveFail: &fail}
+	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: f.reg, State: flakyState, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eraser.Erase(ctx, id); err == nil {
+		t.Fatal("forced upgraded-ledger checkpoint failure did not fail loud")
+	}
+	assertLegacyErasureSkill(t, f.skills, id, "swept-before-checkpoint", false)
+	assertLegacyErasureSkill(t, f.skills, id, "retain-user-checkpoint", true)
+	if _, err := f.store.Load(ctx, ledgerScopeForTest(id), erasureLedgerTestKindPrefix+id.SessionID); err != nil {
+		t.Fatalf("checkpoint failure lost old ledger: %v", err)
+	}
+	if got := countSessionErasedLifecycle(t, f.bus, id, 103); got != 0 {
+		t.Fatalf("checkpoint failure finalized record-of-fact: got %d events", got)
+	}
+	if _, err := f.store.Load(ctx, ledgerScopeForTest(id), erasureTombstoneTestKindPrefix+id.SessionID); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("checkpoint failure wrote terminal tombstone: %v", err)
+	}
+
+	fail.Store(false)
+	if _, err := eraser.Erase(ctx, id); err != nil {
+		t.Fatalf("retry after checkpoint failure: %v", err)
+	}
+	if _, err := f.store.Load(ctx, ledgerScopeForTest(id), erasureLedgerTestKindPrefix+id.SessionID); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("retry did not finalize upgraded ledger: %v", err)
+	}
+	assertLegacyErasureSkill(t, f.skills, id, "retain-user-checkpoint", true)
+}
+
 // countSessionErasedLifecycle counts only one erased-session lifecycle. The
 // canonical population is the durable HistoryReplayer window, then its
 // lifecycle extra is checked rather than treating a reused session id as one
@@ -323,7 +469,7 @@ func TestCascadeEraser_FinalEmitPublishFailure_FailsLoud_ReinvokeConverges(t *te
 	flaky := &flakyPublishBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: flaky,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: flaky,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -422,7 +568,7 @@ func TestCascadeEraser_RedactorRefusal_FailsLoud_ReinvokeConverges(t *testing.T)
 	fail.Store(true)
 	flaky := &flakyRedactor{inner: passthroughRedactor{}, fail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: f.bus, Redactor: flaky,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus, Redactor: flaky,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -547,7 +693,7 @@ func TestCascadeEraser_StaleLedger_EmitsOldLifecycleBeforeDeletingCheckpoint(t *
 		<-release
 	}}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -588,12 +734,15 @@ func TestCascadeEraser_StaleLedger_DeleteFailureRetryDoesNotDuplicateOldRecord(t
 	}
 	oldStamp := live.OpenedAt.UnixNano() - 1
 	seedStaleLedger(t, f, id, oldStamp)
+	if err := f.skills.Upsert(ctx, identity.Quadruple{Identity: id}, legacyErasureSkill("new-lifecycle-skill", skills.ScopeSession)); err != nil {
+		t.Fatalf("seed newer-lifecycle skill: %v", err)
+	}
 
 	var fail atomic.Bool
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, deleteFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -607,6 +756,10 @@ func TestCascadeEraser_StaleLedger_DeleteFailureRetryDoesNotDuplicateOldRecord(t
 	if _, loadErr := f.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); loadErr != nil {
 		t.Fatalf("cleanup failure touched the current lifecycle: %v", loadErr)
 	}
+	// A pre-233a stale ledger must not trigger the upgrade sweep while a newer
+	// lifecycle owns this exact triple. The old checkpoint cleanup failed before
+	// the caller-authorized erasure of the new lifecycle began.
+	assertLegacyErasureSkill(t, f.skills, id, "new-lifecycle-skill", true)
 
 	fail.Store(false)
 	if _, eraseErr := eraser.Erase(ctx, id); eraseErr != nil {
@@ -615,6 +768,7 @@ func TestCascadeEraser_StaleLedger_DeleteFailureRetryDoesNotDuplicateOldRecord(t
 	if got := countSessionErasedLifecycle(t, f.bus, id, oldStamp); got != 1 {
 		t.Errorf("old lifecycle records after retry = %d, want exactly 1", got)
 	}
+	assertLegacyErasureSkill(t, f.skills, id, "new-lifecycle-skill", false)
 }
 
 // TestCascadeEraser_StaleLedger_EmitFailureRetainsCheckpointAndLiveSession
@@ -640,7 +794,7 @@ func TestCascadeEraser_StaleLedger_EmitFailureRetainsCheckpointAndLiveSession(t 
 	fail.Store(true)
 	bus := &flakyPublishBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: bus,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -692,7 +846,7 @@ func TestCascadeEraser_FailedErase_ReopenBlocked_ReinvokeConverges(t *testing.T)
 	fail.Store(true)
 	flaky := &flakyPublishBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
 	failEraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: flaky,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: flaky,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -827,7 +981,7 @@ func TestCascadeEraser_LedgerLoadFailure_FailsLoud_TouchesNothing(t *testing.T) 
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, loadFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -896,7 +1050,7 @@ func TestCascadeEraser_LedgerSaveFailure_LoudAndRetrySafe(t *testing.T) {
 	skip.Store(1)
 	flaky := &flakyLedgerStore{StateStore: f.store, saveFail: &fail, saveSkip: &skip}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -991,7 +1145,7 @@ func TestCascadeEraser_DeleteScopeFailure_LoudAndRetrySafe(t *testing.T) {
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, deleteScopeFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -1042,7 +1196,7 @@ func TestCascadeEraser_LedgerCleanupFailure_SucceedsWithWarn(t *testing.T) {
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, deleteFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -1090,7 +1244,7 @@ func TestCascadeEraser_ReinvokeAfterCleanupFailure_ExactlyOneEmit(t *testing.T) 
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, deleteFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -1180,7 +1334,7 @@ func TestCascadeEraser_ReemitGuardScanFailure_EmitsAnyway(t *testing.T) {
 		t.Fatalf("fixture bus must implement events.HistoryReplayer")
 	}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts,
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills,
 		Bus: &windowErrBus{EventBus: f.bus, fencer: fencer, hr: hr},
 	})
 	if err != nil {

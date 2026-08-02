@@ -15,6 +15,8 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/sessions"
+	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/drivers/localdb"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -253,6 +255,11 @@ func TestRegistry_Interleave_EraseVsOpen_NoResurrection(t *testing.T) {
 		t.Fatalf("artifacts.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = arts.Close(ctx) })
+	skillStore, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:"}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("skills localdb.New: %v", err)
+	}
+	t.Cleanup(func() { _ = skillStore.Close(ctx) })
 	reg, err := sessions.New(gate, config.SessionsConfig{
 		IdleTTL: 24 * time.Hour, HardCap: 720 * time.Hour, SweepInterval: time.Hour,
 	}, bus)
@@ -261,7 +268,7 @@ func TestRegistry_Interleave_EraseVsOpen_NoResurrection(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reg.CloseRegistry(ctx) })
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: gate, Memory: mem, Artifacts: arts, Bus: bus, Redactor: red,
+		Registry: reg, State: gate, Memory: mem, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)

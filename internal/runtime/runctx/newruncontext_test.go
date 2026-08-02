@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
@@ -24,9 +25,58 @@ import (
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/skills"
+	skilltools "github.com/hurtener/Harbor/internal/skills/tools"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
 )
+
+// snapshotSkillReader intentionally implements only skills.SkillReader. Its
+// atomic counters prove the exact same read projection serves the Directory
+// and every read-only skill tool without exposing mutation capabilities.
+type snapshotSkillReader struct {
+	skill       skills.Skill
+	getCalls    atomic.Int64
+	listCalls   atomic.Int64
+	searchCalls atomic.Int64
+}
+
+func (r *snapshotSkillReader) Get(_ context.Context, q identity.Quadruple, name string) (skills.Skill, error) {
+	if err := identity.Validate(q.Identity); err != nil {
+		return skills.Skill{}, err
+	}
+	r.getCalls.Add(1)
+	if name != r.skill.Name {
+		return skills.Skill{}, skills.ErrSkillNotFound
+	}
+	return r.skill, nil
+}
+
+func (r *snapshotSkillReader) GetScope(ctx context.Context, q identity.Quadruple, name string, scope skills.Scope) (skills.Skill, error) {
+	got, err := r.Get(ctx, q, name)
+	if err != nil {
+		return skills.Skill{}, err
+	}
+	if got.Scope != scope {
+		return skills.Skill{}, skills.ErrSkillNotFound
+	}
+	return got, nil
+}
+
+func (r *snapshotSkillReader) List(_ context.Context, q identity.Quadruple, _ skills.ListFilter) ([]skills.Skill, error) {
+	if err := identity.Validate(q.Identity); err != nil {
+		return nil, err
+	}
+	r.listCalls.Add(1)
+	return []skills.Skill{r.skill}, nil
+}
+
+func (r *snapshotSkillReader) Search(_ context.Context, q identity.Quadruple, _ string, _ int) ([]skills.RankedSkill, error) {
+	if err := identity.Validate(q.Identity); err != nil {
+		return nil, err
+	}
+	r.searchCalls.Add(1)
+	return []skills.RankedSkill{{Skill: r.skill, Score: 1, Path: skills.PathExact}}, nil
+}
 
 // parityQuad is the run quadruple every parity leg uses (a complete
 // identity triple + a run ID).
@@ -90,6 +140,17 @@ func (s *paritySkillStore) Get(_ context.Context, id identity.Quadruple, name st
 	return skills.Skill{}, skills.ErrSkillNotFound
 }
 
+func (s *paritySkillStore) GetScope(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) (skills.Skill, error) {
+	got, err := s.Get(ctx, id, name)
+	if err != nil {
+		return skills.Skill{}, err
+	}
+	if got.Scope != scope {
+		return skills.Skill{}, skills.ErrSkillNotFound
+	}
+	return got, nil
+}
+
 func (s *paritySkillStore) List(_ context.Context, id identity.Quadruple, _ skills.ListFilter) ([]skills.Skill, error) {
 	if err := identity.Validate(id.Identity); err != nil {
 		return nil, err
@@ -106,7 +167,24 @@ func (s *paritySkillStore) Search(_ context.Context, id identity.Quadruple, _ st
 	return nil, nil
 }
 
+func (s *paritySkillStore) SearchSnapshot(ctx context.Context, id identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := skills.ValidateIdentity(id); err != nil {
+		return nil, err
+	}
+	return skills.SearchSnapshotRegexExact(ctx, query, candidates, limit)
+}
+
 func (s *paritySkillStore) Delete(_ context.Context, id identity.Quadruple, _ string, _ skills.Scope) error {
+	if err := identity.Validate(id.Identity); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *paritySkillStore) DeleteSessionScope(_ context.Context, id identity.Quadruple) error {
 	if err := identity.Validate(id.Identity); err != nil {
 		return err
 	}
@@ -145,6 +223,14 @@ func TestNewRunContext_IdentityMandatory_FailsLoud(t *testing.T) {
 		identity.Quadruple{Identity: identity.Identity{TenantID: "acme"}}, "goal")
 	if err == nil {
 		t.Fatal("NewRunContext with an incomplete identity must fail loud")
+	}
+}
+
+func TestNewRunContext_EmptyRunID_RemainsSupportedWithoutReaderSnapshot(t *testing.T) {
+	t.Parallel()
+	q := identity.Quadruple{Identity: parityQuad().Identity}
+	if _, err := runctx.NewRunContext(context.Background(), runctx.Sources{}, q, "goal"); err != nil {
+		t.Fatalf("NewRunContext with empty RunID and no reader snapshot: %v", err)
 	}
 }
 
@@ -219,6 +305,76 @@ func TestNewRunContext_SkillsParity(t *testing.T) {
 	}
 	if !reflect.DeepEqual(rc.SkillsContext, want) {
 		t.Errorf("skills parity mismatch:\n NewRunContext = %+v\n direct = %+v", rc.SkillsContext, want)
+	}
+}
+
+// TestNewRunContext_SkillReaderSnapshot_SharedWithReadTools pins the
+// consumer seam: the already-selected effective agent's immutable reader is
+// used by both the Directory projection and the read tools. A deliberately
+// different invoking-agent provenance value cannot influence selection.
+func TestNewRunContext_SkillReaderSnapshot_SharedWithReadTools(t *testing.T) {
+	t.Parallel()
+	bus := newFetchTestBus(t)
+	q := parityQuad()
+	selected := &snapshotSkillReader{skill: skills.Skill{
+		Name: "selected-skill", Title: "Selected", Trigger: "selected trigger",
+		Steps: []string{"selected step"}, Origin: skills.OriginPack, Scope: skills.ScopeProject,
+	}}
+	fallback := &snapshotSkillReader{skill: skills.Skill{
+		Name: "fallback-skill", Title: "Fallback", Trigger: "fallback trigger",
+		Steps: []string{"fallback step"}, Origin: skills.OriginPack, Scope: skills.ScopeProject,
+	}}
+	dir, err := skills.NewDirectory(fallback, skills.Deps{Bus: bus}, skills.DirectoryConfig{})
+	if err != nil {
+		t.Fatalf("NewDirectory: %v", err)
+	}
+	snapshot, err := skills.NewRunSkillReaderSnapshot(q, "selected-agent", selected)
+	if err != nil {
+		t.Fatalf("NewRunSkillReaderSnapshot: %v", err)
+	}
+	if snapshot.EffectiveAgentID() != "selected-agent" {
+		t.Fatalf("EffectiveAgentID = %q, want selected-agent", snapshot.EffectiveAgentID())
+	}
+
+	rc, err := runctx.NewRunContext(context.Background(), runctx.Sources{
+		SkillsDirectory: dir, Catalog: parityCatalog(t), Bus: bus,
+	}, q, "goal", runctx.WithSkillReaderSnapshot(snapshot))
+	if err != nil {
+		t.Fatalf("NewRunContext: %v", err)
+	}
+	if len(rc.SkillsContext) != 1 {
+		t.Fatalf("SkillsContext len = %d, want 1", len(rc.SkillsContext))
+	}
+
+	toolCtx, err := identity.WithRun(context.Background(), q.Identity, q.RunID)
+	if err != nil {
+		t.Fatalf("identity.WithRun: %v", err)
+	}
+	toolCtx = tools.WithInvokingAgent(toolCtx, "unrelated-invoking-agent")
+	toolCtx = skills.WithRunSkillReaderSnapshot(toolCtx, snapshot)
+	if _, err := skilltools.GetHandler(toolCtx, fallback, bus, skilltools.GetArgs{
+		Names: []string{"selected-skill"}, MaxTokens: 1024,
+	}); err != nil {
+		t.Fatalf("GetHandler: %v", err)
+	}
+	if _, err := skilltools.ListHandler(toolCtx, fallback, bus, skilltools.ListArgs{}); err != nil {
+		t.Fatalf("ListHandler: %v", err)
+	}
+	if _, err := skilltools.SearchHandler(toolCtx, fallback, bus, skilltools.SearchArgs{Query: "selected"}); err != nil {
+		t.Fatalf("SearchHandler: %v", err)
+	}
+
+	if got := selected.getCalls.Load(); got != 1 {
+		t.Errorf("selected Get calls = %d, want 1", got)
+	}
+	if got := selected.listCalls.Load(); got != 2 {
+		t.Errorf("selected List calls = %d, want 2 (Directory + skill_list)", got)
+	}
+	if got := selected.searchCalls.Load(); got != 1 {
+		t.Errorf("selected Search calls = %d, want 1", got)
+	}
+	if got := fallback.getCalls.Load() + fallback.listCalls.Load() + fallback.searchCalls.Load(); got != 0 {
+		t.Errorf("fallback reader calls = %d, want 0", got)
 	}
 }
 

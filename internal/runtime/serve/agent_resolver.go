@@ -23,6 +23,18 @@ import (
 type AgentResolverAdapter struct {
 	reg       agentcfg.Registry
 	defaultID string
+	ensure    agentcfg.BootLifecycleEnsurer
+}
+
+// AgentResolverOption configures the production adapter's bounded bootstrap
+// seam without widening its Protocol-facing interface.
+type AgentResolverOption func(*AgentResolverAdapter)
+
+// WithBootLifecycleEnsurer installs the one shared default-agent lifecycle
+// materialiser. It is reached only after ControlSurface has checked signed
+// agent reach and only for defaultID.
+func WithBootLifecycleEnsurer(ensure agentcfg.BootLifecycleEnsurer) AgentResolverOption {
+	return func(a *AgentResolverAdapter) { a.ensure = ensure }
 }
 
 // NewAgentResolverAdapter builds the adapter from the SAME agent-config
@@ -33,8 +45,12 @@ type AgentResolverAdapter struct {
 // A nil registry or an empty default id is legal: the adapter then
 // answers false for every id, which the ControlSurface turns into the
 // standard refusal. It is never a silent accept.
-func NewAgentResolverAdapter(reg agentcfg.Registry, defaultID string) *AgentResolverAdapter {
-	return &AgentResolverAdapter{reg: reg, defaultID: defaultID}
+func NewAgentResolverAdapter(reg agentcfg.Registry, defaultID string, opts ...AgentResolverOption) *AgentResolverAdapter {
+	a := &AgentResolverAdapter{reg: reg, defaultID: defaultID}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 // ResolveAgent implements protocol.AgentResolver.
@@ -62,6 +78,11 @@ func (a *AgentResolverAdapter) ResolveAgent(ctx context.Context, ident identity.
 		return false, nil
 	}
 	if a.defaultID != "" && agentID == a.defaultID {
+		if a.ensure != nil {
+			if err := a.ensure(ctx, ident, agentID); err != nil {
+				return false, fmt.Errorf("ensure boot agent lifecycle: %w", err)
+			}
+		}
 		return true, nil
 	}
 	if a.reg == nil {

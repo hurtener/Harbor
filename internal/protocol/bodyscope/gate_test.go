@@ -56,6 +56,7 @@ var elevationSiteAllowList = map[string]string{
 	filepath.Join("internal", "memory", "strategy", "semantic.go"):                  "an embedding call is attributed to the identity the stored vectors are scoped under, so provenance follows the record rather than the reader",
 	filepath.Join("internal", "skills", "drivers", "localdb", "search_semantic.go"): "an embedding call is attributed to the identity the stored skill is scoped under, so provenance follows the record rather than the reader",
 	filepath.Join("internal", "skills", "drivers", "postgres", "search.go"):         "an embedding call is attributed to the identity the stored skill is scoped under, so provenance follows the record rather than the reader",
+	filepath.Join("internal", "skills", "snapshot_candidate_searcher.go"):           "a frozen, already-authorized run snapshot attributes semantic embedding to its bound candidate identity; cross-tenant attribution uses the same reviewed path as the configured store drivers",
 }
 
 // TestGate_Coverage_EveryScopeCarryingRequestIsRegistered is the

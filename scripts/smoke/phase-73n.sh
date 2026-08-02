@@ -149,20 +149,23 @@ else
     skip 'phase 73n: overrides.go not present yet — slot-map bound guards SKIP'
 fi
 
-# The sibling shape, in the agent-config SESSION-overlay path: its per-slot
-# write-lock map is keyed by the same unbounded (triple + agent) space and is
-# refcounted rather than append-only for exactly the same reason.
+# The sibling session-overlay path used to own a process-local per-slot lock
+# map. Phase 233a replaced that implementation with StateStore SaveIf fences:
+# the bounded/reclaimed concurrency invariant is now the durable record's
+# exact four-slot expectation, rather than a map entry deleted after unlock.
 OVERLAY_GO='internal/agentcfg/sessionoverlay/sessionoverlay.go'
 if [ -f "${OVERLAY_GO}" ]; then
-    assert_grep_present 'delete\(s\.writeLocks, key\)' "${OVERLAY_GO}" \
-        'phase 73n: the session-overlay write-lock map releases its slot entries (refcounted, not append-only)'
+    assert_grep_absent 'writeLocks|lockSlot' "${OVERLAY_GO}" \
+        'phase 73n: session-overlay no longer retains an unbounded process-local write-lock map'
+    assert_grep_present 'SaveIf\(' "${OVERLAY_GO}" \
+        'phase 73n: session-overlay mutations use the durable conditional-write fence'
     assert_go_tests_pass "${P73N_GOLOG:-$(mktemp "${TMPDIR:-/tmp}/phase73n-overlay.XXXXXX")}" \
         '-race -count=1 ./internal/agentcfg/sessionoverlay/' \
-        'phase 73n: the session-overlay write-lock map is bounded AND still excludes per slot' \
-        TestLockSlot_ReleasesTheSlotEntry \
-        TestLockSlot_KeepsTheEntryWhileHeld \
-        TestLockSlot_SerialisesConcurrentHoldersOfOneSlot \
-        TestLockSlot_DistinctSlotsDoNotContend
+        'phase 73n: session-overlay uses bounded durable fences and excludes concurrent session writers' \
+        TestStore_ConcurrentReuse \
+        TestStore_ConcurrentSameSlotCAS_OneWinner \
+        TestStore_FourSlotCommitThenErrorRestartAndClose \
+        TestStore_GetRetriesFenceChangeAndBoundsPerpetualChurn
 else
     skip 'phase 73n: sessionoverlay.go not present yet — write-lock bound guards SKIP'
 fi

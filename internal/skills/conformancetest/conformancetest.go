@@ -34,10 +34,22 @@ import (
 // for future ephemeral providers) leave `ReopenedStore` nil and the
 // subtest skips.
 type Harness struct {
-	Store         skills.SkillStore
-	Bus           events.EventBus
-	Cleanup       func()
-	ReopenedStore func() (skills.SkillStore, error)
+	Store                skills.SkillStore
+	Bus                  events.EventBus
+	Cleanup              func()
+	ReopenedStore        func() (skills.SkillStore, error)
+	SnapshotFullTextPath string
+}
+
+// failureReporter is the minimal assertion surface used by the suite's
+// individual contract checks. Keeping it narrower than testing.TB lets the
+// harness self-test its fail-closed diagnostics with an adversarial reporter;
+// testing.TB intentionally has private methods and cannot be implemented by a
+// test double.
+type failureReporter interface {
+	Helper()
+	Fatal(args ...any)
+	Fatalf(format string, args ...any)
 }
 
 // Run executes the shared suite against the harness returned by
@@ -68,6 +80,12 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 		h := factory(t)
 		defer h.Cleanup()
 		testIdentityRejection(t, h)
+	})
+
+	t.Run("snapshot_search", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testSnapshotSearch(t, h)
 	})
 
 	t.Run("not_found", func(t *testing.T) {
@@ -101,6 +119,30 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 		h := factory(t)
 		defer h.Cleanup()
 		testDeleteRungIndependence(t, h)
+	})
+
+	t.Run("get_scope_exact_rung", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testGetScopeExactRung(t, h)
+	})
+
+	t.Run("delete_session_scope", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testDeleteSessionScope(t, h)
+	})
+
+	t.Run("delete_session_scope_after_close", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testDeleteSessionScopeAfterClose(t, h)
+	})
+
+	t.Run("get_scope_after_close", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testGetScopeAfterClose(t, h)
 	})
 }
 
@@ -138,7 +180,7 @@ func newSkill(name string) skills.Skill {
 	return s
 }
 
-func testUpsertGetRoundTrip(t *testing.T, h Harness) {
+func testUpsertGetRoundTrip(t failureReporter, h Harness) {
 	ctx := context.Background()
 	want := newSkill("alpha")
 	if err := h.Store.Upsert(ctx, fixtureID, want); err != nil {
@@ -156,7 +198,7 @@ func testUpsertGetRoundTrip(t *testing.T, h Harness) {
 	}
 }
 
-func testConflictPolicy(t *testing.T, h Harness) {
+func testConflictPolicy(t failureReporter, h Harness) {
 	ctx := context.Background()
 
 	// Seed a pack-origin skill.
@@ -212,7 +254,7 @@ func testConflictPolicy(t *testing.T, h Harness) {
 	}
 }
 
-func testOrdering(t *testing.T, h Harness) {
+func testOrdering(t failureReporter, h Harness) {
 	ctx := context.Background()
 	names := []string{"echo", "alpha", "delta", "bravo", "charlie"}
 	for _, n := range names {
@@ -242,7 +284,7 @@ func testOrdering(t *testing.T, h Harness) {
 	}
 }
 
-func testIdentityRejection(t *testing.T, h Harness) {
+func testIdentityRejection(t failureReporter, h Harness) {
 	ctx := context.Background()
 	bad := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u"}} // missing session
 	cases := []struct {
@@ -251,8 +293,13 @@ func testIdentityRejection(t *testing.T, h Harness) {
 	}{
 		{"Upsert", func() error { return h.Store.Upsert(ctx, bad, newSkill("x")) }},
 		{"Get", func() error { _, err := h.Store.Get(ctx, bad, "x"); return err }},
+		{"GetScope", func() error { _, err := h.Store.GetScope(ctx, bad, "x", skills.ScopeSession); return err }},
 		{"List", func() error { _, err := h.Store.List(ctx, bad, skills.ListFilter{}); return err }},
 		{"Search", func() error { _, err := h.Store.Search(ctx, bad, "x", 5); return err }},
+		{"SearchSnapshot", func() error {
+			_, err := h.Store.SearchSnapshot(ctx, bad, "x", []skills.Skill{newSkill("x")}, 5)
+			return err
+		}},
 		{"Delete", func() error { return h.Store.Delete(ctx, bad, "x", skills.ScopeSession) }},
 	}
 	for _, c := range cases {
@@ -263,7 +310,77 @@ func testIdentityRejection(t *testing.T, h Harness) {
 	}
 }
 
-func testNotFound(t *testing.T, h Harness) {
+// testSnapshotSearch pins the mandatory driver-owned frozen-candidate search
+// seam. The candidate is intentionally not stored: a compliant implementation
+// must rank exactly the supplied run snapshot, not silently re-read its mutable
+// backing catalog.
+func testSnapshotSearch(t failureReporter, h Harness) {
+	candidate := newSkill("snapshot-target")
+	candidate.Description = "frozen snapshot harborneedle"
+	candidate.UpdatedAt = time.Unix(10, 0).UTC()
+	result, err := h.Store.SearchSnapshot(context.Background(), fixtureID, "harborneedle", []skills.Skill{candidate}, 5)
+	if err != nil {
+		t.Fatalf("SearchSnapshot: %v", err)
+	}
+	if len(result) != 1 || result[0].Skill.Name != candidate.Name || result[0].Path != h.SnapshotFullTextPath || result[0].Score != 1 {
+		t.Fatalf("SearchSnapshot result = %+v, want only configured-driver full-text frozen candidate", result)
+	}
+}
+
+// testGetScopeExactRung pins the non-precedence read used by legacy
+// migration. A same-named wider user row may never replace an exact session
+// row, and an absent session rung must remain absent even when the user rung
+// exists.
+func testGetScopeExactRung(t failureReporter, h Harness) {
+	ctx := context.Background()
+	sessionSkill := newSkill("same-name")
+	sessionSkill.Scope = skills.ScopeSession
+	sessionSkill.Title = "session"
+	userSkill := newSkill("same-name")
+	userSkill.Scope = skills.ScopeUser
+	userSkill.Title = "user"
+	for _, skill := range []skills.Skill{userSkill, sessionSkill} {
+		if err := h.Store.Upsert(ctx, fixtureID, skill); err != nil {
+			t.Fatalf("Upsert(%s): %v", skill.Scope, err)
+		}
+	}
+
+	gotSession, err := h.Store.GetScope(ctx, fixtureID, "same-name", skills.ScopeSession)
+	if err != nil || gotSession.Scope != skills.ScopeSession || gotSession.Title != "session" {
+		t.Fatalf("GetScope(session): got=%+v err=%v", gotSession, err)
+	}
+	gotUser, err := h.Store.GetScope(ctx, fixtureID, "same-name", skills.ScopeUser)
+	if err != nil || gotUser.Scope != skills.ScopeUser || gotUser.Title != "user" {
+		t.Fatalf("GetScope(user): got=%+v err=%v", gotUser, err)
+	}
+
+	userOnly := newSkill("user-only")
+	userOnly.Scope = skills.ScopeUser
+	if err := h.Store.Upsert(ctx, fixtureID, userOnly); err != nil {
+		t.Fatalf("Upsert(user-only): %v", err)
+	}
+	if _, err := h.Store.GetScope(ctx, fixtureID, userOnly.Name, skills.ScopeSession); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("GetScope missing exact session rung: err=%v, want ErrSkillNotFound", err)
+	}
+
+	foreign := []identity.Quadruple{fixtureID, fixtureID, fixtureID}
+	foreign[0].SessionID = "s-conformance-foreign"
+	foreign[1].UserID = "u-conformance-foreign"
+	foreign[2].TenantID = "t-conformance-foreign"
+	for _, id := range foreign {
+		if _, err := h.Store.GetScope(ctx, id, "same-name", skills.ScopeSession); !errors.Is(err, skills.ErrSkillNotFound) {
+			t.Fatalf("GetScope foreign identity %+v: err=%v, want ErrSkillNotFound", id.Identity, err)
+		}
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := h.Store.GetScope(canceled, fixtureID, "same-name", skills.ScopeSession); !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetScope canceled context: err=%v, want context.Canceled", err)
+	}
+}
+
+func testNotFound(t failureReporter, h Harness) {
 	ctx := context.Background()
 	if _, err := h.Store.Get(ctx, fixtureID, "no-such-skill"); err == nil {
 		t.Fatalf("Get: expected ErrSkillNotFound, got nil")
@@ -273,7 +390,7 @@ func testNotFound(t *testing.T, h Harness) {
 	}
 }
 
-func testDelete(t *testing.T, h Harness) {
+func testDelete(t failureReporter, h Harness) {
 	ctx := context.Background()
 	s := newSkill("doomed")
 	if err := h.Store.Upsert(ctx, fixtureID, s); err != nil {
@@ -287,7 +404,7 @@ func testDelete(t *testing.T, h Harness) {
 	}
 }
 
-func testRestartSurvival(t *testing.T, h Harness) {
+func testRestartSurvival(t failureReporter, h Harness) {
 	ctx := context.Background()
 	s := newSkill("durable")
 	if err := h.Store.Upsert(ctx, fixtureID, s); err != nil {
@@ -316,7 +433,7 @@ func testRestartSurvival(t *testing.T, h Harness) {
 // a different tenant, and does NOT change the session-pinned visibility of
 // non-user scopes. Every driver inherits this verbatim (the persistence
 // three-driver parity contract).
-func testUserScopeResolution(t *testing.T, h Harness) {
+func testUserScopeResolution(t failureReporter, h Harness) {
 	ctx := context.Background()
 
 	// Identity variants off the base fixture.
@@ -390,7 +507,7 @@ func testUserScopeResolution(t *testing.T, h Harness) {
 // the session↔user rung boundary the READ filter unions. It covers both
 // directions plus the plain "delete nothing durable" case, so every driver is
 // held to rung-precise deletes.
-func testDeleteRungIndependence(t *testing.T, h Harness) {
+func testDeleteRungIndependence(t failureReporter, h Harness) {
 	ctx := context.Background()
 
 	sessionA := fixtureID
@@ -459,7 +576,101 @@ func testDeleteRungIndependence(t *testing.T, h Harness) {
 	}
 }
 
-func assertListContains(t *testing.T, ctx context.Context, h Harness, id identity.Quadruple, filter skills.ListFilter, name string, want bool, msg string) {
+// testDeleteSessionScope pins the session-erasure-only destructive surface:
+// it sweeps only exact ScopeSession rows, is idempotent, and cannot cross a
+// session, user, or tenant boundary or delete the durable ScopeUser rung.
+func testDeleteSessionScope(t failureReporter, h Harness) {
+	ctx := context.Background()
+	sessionA := fixtureID
+	sessionB := fixtureID
+	sessionB.SessionID = "s-conformance-B"
+	otherUser := fixtureID
+	otherUser.UserID = "u-conformance-other"
+	otherUser.SessionID = sessionA.SessionID
+	otherTenant := fixtureID
+	otherTenant.TenantID = "t-conformance-other"
+
+	mk := func(name string, scope skills.Scope) skills.Skill {
+		s := newSkill(name)
+		s.Scope = scope
+		s.ContentHash = skills.CanonicalContentHash(s)
+		return s
+	}
+	seed := []struct {
+		id    identity.Quadruple
+		skill skills.Skill
+	}{
+		{sessionA, mk("erase-session", skills.ScopeSession)},
+		{sessionA, mk("retain-user", skills.ScopeUser)},
+		{sessionA, mk("retain-project", skills.ScopeProject)},
+		{sessionB, mk("retain-other-session", skills.ScopeSession)},
+		{otherUser, mk("retain-other-user", skills.ScopeSession)},
+		{otherTenant, mk("retain-other-tenant", skills.ScopeSession)},
+	}
+	for _, row := range seed {
+		if err := h.Store.Upsert(ctx, row.id, row.skill); err != nil {
+			t.Fatalf("seed %s/%s: %v", row.id.SessionID, row.skill.Name, err)
+		}
+	}
+
+	if err := h.Store.DeleteSessionScope(ctx, sessionA); err != nil {
+		t.Fatalf("DeleteSessionScope: %v", err)
+	}
+	// A retried completed sweep must stay successful, including when no rows
+	// remain; this is the ledger-recovery contract session erasure relies on.
+	if err := h.Store.DeleteSessionScope(ctx, sessionA); err != nil {
+		t.Fatalf("DeleteSessionScope retry: %v", err)
+	}
+	if _, err := h.Store.Get(ctx, sessionA, "erase-session"); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("erased session row: err=%v, want ErrSkillNotFound", err)
+	}
+	for _, row := range []struct {
+		id   identity.Quadruple
+		name string
+	}{
+		{sessionA, "retain-user"},
+		{sessionA, "retain-project"},
+		{sessionB, "retain-other-session"},
+		{otherUser, "retain-other-user"},
+		{otherTenant, "retain-other-tenant"},
+	} {
+		if _, err := h.Store.Get(ctx, row.id, row.name); err != nil {
+			t.Fatalf("retained %s/%s: %v", row.id.SessionID, row.name, err)
+		}
+	}
+
+	bad := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u"}}
+	if err := h.Store.DeleteSessionScope(ctx, bad); err == nil {
+		t.Fatal("DeleteSessionScope missing session: err=nil, want identity error")
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := h.Store.DeleteSessionScope(canceled, sessionA); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DeleteSessionScope canceled context: err=%v, want context.Canceled", err)
+	}
+}
+
+func testDeleteSessionScopeAfterClose(t failureReporter, h Harness) {
+	ctx := context.Background()
+	if err := h.Store.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := h.Store.DeleteSessionScope(ctx, fixtureID); !errors.Is(err, skills.ErrStoreClosed) {
+		t.Fatalf("DeleteSessionScope after Close: err=%v, want ErrStoreClosed", err)
+	}
+}
+
+func testGetScopeAfterClose(t failureReporter, h Harness) {
+	ctx := context.Background()
+	if err := h.Store.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := h.Store.GetScope(ctx, fixtureID, "x", skills.ScopeSession); !errors.Is(err, skills.ErrStoreClosed) {
+		t.Fatalf("GetScope after Close: err=%v, want ErrStoreClosed", err)
+	}
+}
+
+func assertListContains(t failureReporter, ctx context.Context, h Harness, id identity.Quadruple, filter skills.ListFilter, name string, want bool, msg string) {
 	t.Helper()
 	list, err := h.Store.List(ctx, id, filter)
 	if err != nil {

@@ -32,10 +32,11 @@ func registerSkillSearch(rc RegistryContext) error {
 	return inproc.RegisterFunc[SkillSearchArgs, skilltools.SearchResult](
 		rc.Catalog, skilltools.ToolNameSkillSearch,
 		func(ctx context.Context, args SkillSearchArgs) (skilltools.SearchResult, error) {
-			if rc.SkillStore == nil {
-				return skilltools.SearchResult{}, fmt.Errorf("skill_search: backing SkillStore is nil — `skill_search` was registered without skills.SkillStore deps (operator misconfiguration)")
+			reader := skillReader(rc)
+			if reader == nil {
+				return skilltools.SearchResult{}, fmt.Errorf("skill_search: backing SkillStore is nil and no SkillReader was supplied (operator misconfiguration)")
 			}
-			return skilltools.SearchHandler(ctx, rc.SkillStore, rc.Bus, skilltools.SearchArgs{
+			return skilltools.SearchHandler(ctx, reader, rc.Bus, skilltools.SearchArgs{
 				Query:      args.Query,
 				Limit:      args.Limit,
 				Capability: runCapability(ctx, rc),

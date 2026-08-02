@@ -68,6 +68,11 @@ var (
 	// to the reserved internal sentinel ("__agentcfg__"); fails closed so the
 	// per-user key space can never alias onto the agent-level chain.
 	ErrReservedUser = errors.New("agentcfg: user id collides with the reserved internal slot")
+	// ErrAgentRetired — the durable lifecycle slot is a valid terminal
+	// tombstone. Callers must preserve this distinction from an absent agent
+	// and from a malformed lifecycle record so Protocol can map it to the
+	// canonical agent_retired response when that surface lands.
+	ErrAgentRetired = errors.New("agentcfg: agent is retired")
 	// ErrRevisionConflict — a conditional write declared an expected
 	// content hash (SetOptions.ExpectedContentHash) and the agent's active
 	// revision no longer carries it, or there is no active revision at all.
@@ -155,6 +160,13 @@ type SetOptions struct {
 	// would break every caller that does not send one.
 	ExpectedContentHash string
 }
+
+// BootLifecycleEnsurer materialises the configured default agent's tenant
+// local lifecycle before a trusted caller uses an agent-addressed surface.
+// Assembly injects the concrete because agentcfg owns the contract while the
+// StateStore-backed bootstrap implementation lives at the runtime boundary.
+// Callers invoke it only after effective-agent reach authorization.
+type BootLifecycleEnsurer func(context.Context, identity.Identity, string) error
 
 // CheckExpectedRevision evaluates opts against an active-revision snapshot.
 // Persistence drivers use it at the authoritative write boundary. Protocol

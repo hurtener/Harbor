@@ -54,6 +54,128 @@ func openStore(t *testing.T) skills.SkillStore {
 	return store
 }
 
+func TestNew_FailsLoudForMissingDependenciesAndRetrievalMisconfiguration(t *testing.T) {
+	t.Parallel()
+	if _, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:"}, skills.Deps{}); err == nil {
+		t.Fatal("New without EventBus returned nil error")
+	}
+	bus := newBus(t)
+	if _, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb"}, skills.Deps{Bus: bus}); err == nil {
+		t.Fatal("New with empty DSN returned nil error")
+	}
+	if _, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:", Retrieval: skills.RetrievalSemantic}, skills.Deps{Bus: bus}); err == nil {
+		t.Fatal("semantic New without Embedder returned nil error")
+	}
+	if _, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:", Retrieval: skills.RetrievalMode("future")}, skills.Deps{Bus: bus}); err == nil {
+		t.Fatal("New with unknown retrieval mode returned nil error")
+	}
+}
+
+func TestClosedStore_AllPublicOperationsFailClosed(t *testing.T) {
+	t.Parallel()
+	store := openStore(t)
+	if err := store.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	skill := mustHash(skills.Skill{
+		Name: "closed", Trigger: "closed", Steps: []string{"closed"},
+		Origin: skills.OriginGenerated, Scope: skills.ScopeSession,
+	})
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{name: "upsert", call: func() error { return store.Upsert(context.Background(), fixtureID, skill) }},
+		{name: "get", call: func() error { _, err := store.Get(context.Background(), fixtureID, skill.Name); return err }},
+		{name: "list", call: func() error { _, err := store.List(context.Background(), fixtureID, skills.ListFilter{}); return err }},
+		{name: "search", call: func() error { _, err := store.Search(context.Background(), fixtureID, skill.Name, 1); return err }},
+		{name: "delete", call: func() error { return store.Delete(context.Background(), fixtureID, skill.Name, skill.Scope) }},
+		{name: "snapshot search", call: func() error {
+			_, err := store.(skills.SnapshotCandidateSearcher).SearchSnapshot(context.Background(), fixtureID, skill.Name, []skills.Skill{skill}, 1)
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		if err := tc.call(); !errors.Is(err, skills.ErrStoreClosed) {
+			t.Errorf("%s after Close = %v, want ErrStoreClosed", tc.name, err)
+		}
+	}
+}
+
+func TestCanceledContext_DatabaseOperationsFailLoudly(t *testing.T) {
+	t.Parallel()
+	store := openStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	skill := mustHash(skills.Skill{
+		Name: "canceled", Trigger: "canceled", Steps: []string{"canceled"},
+		Origin: skills.OriginGenerated, Scope: skills.ScopeSession,
+	})
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{name: "upsert", call: func() error { return store.Upsert(ctx, fixtureID, skill) }},
+		{name: "get", call: func() error { _, err := store.Get(ctx, fixtureID, skill.Name); return err }},
+		{name: "list", call: func() error { _, err := store.List(ctx, fixtureID, skills.ListFilter{}); return err }},
+		{name: "delete", call: func() error { return store.Delete(ctx, fixtureID, skill.Name, skill.Scope) }},
+	}
+	for _, tc := range cases {
+		if err := tc.call(); !errors.Is(err, context.Canceled) {
+			t.Errorf("%s with canceled context = %v, want context.Canceled", tc.name, err)
+		}
+	}
+}
+
+func TestClosedEventBus_PersistingOperationsFailLoudly(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	bus := newBus(t)
+	store, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: ":memory:"}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("localdb.New: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+
+	pack := mustHash(skills.Skill{
+		Name: "closed-bus-pack", Trigger: "pack", Steps: []string{"pack"},
+		Origin: skills.OriginPack, Scope: skills.ScopeSession,
+	})
+	deletable := mustHash(skills.Skill{
+		Name: "closed-bus-delete", Trigger: "delete", Steps: []string{"delete"},
+		Description: "searchable marker", Origin: skills.OriginGenerated, Scope: skills.ScopeSession,
+	})
+	for _, skill := range []skills.Skill{pack, deletable} {
+		if err := store.Upsert(ctx, fixtureID, skill); err != nil {
+			t.Fatalf("seed %q: %v", skill.Name, err)
+		}
+	}
+	if err := bus.Close(ctx); err != nil {
+		t.Fatalf("close EventBus: %v", err)
+	}
+
+	fresh := mustHash(skills.Skill{
+		Name: "closed-bus-upsert", Trigger: "upsert", Steps: []string{"upsert"},
+		Origin: skills.OriginGenerated, Scope: skills.ScopeSession,
+	})
+	if err := store.Upsert(ctx, fixtureID, fresh); !errors.Is(err, events.ErrBusClosed) {
+		t.Errorf("Upsert with closed EventBus = %v, want ErrBusClosed", err)
+	}
+	if _, err := store.Search(ctx, fixtureID, "searchable", 10); !errors.Is(err, events.ErrBusClosed) {
+		t.Errorf("Search with closed EventBus = %v, want ErrBusClosed", err)
+	}
+	if err := store.Delete(ctx, fixtureID, deletable.Name, deletable.Scope); !errors.Is(err, events.ErrBusClosed) {
+		t.Errorf("Delete with closed EventBus = %v, want ErrBusClosed", err)
+	}
+
+	overwrite := pack
+	overwrite.Origin = skills.OriginGenerated
+	overwrite.ContentHash = ""
+	if err := store.Upsert(ctx, fixtureID, overwrite); !errors.Is(err, skills.ErrPackOverwriteRefused) || !errors.Is(err, events.ErrBusClosed) {
+		t.Errorf("pack overwrite with closed EventBus = %v, want ErrPackOverwriteRefused and ErrBusClosed", err)
+	}
+}
+
 // TestConformance runs the shared SkillStore conformance suite
 // against the localdb driver, using a temp-file DSN so the restart-
 // survival subtest can reopen.
@@ -68,9 +190,10 @@ func TestConformance(t *testing.T) {
 			t.Fatalf("localdb.New: %v", err)
 		}
 		return conformancetest.Harness{
-			Store:   store,
-			Bus:     bus,
-			Cleanup: func() { _ = store.Close(context.Background()) },
+			Store:                store,
+			Bus:                  bus,
+			Cleanup:              func() { _ = store.Close(context.Background()) },
+			SnapshotFullTextPath: skills.PathFTS5,
 			ReopenedStore: func() (skills.SkillStore, error) {
 				return localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: dsn},
 					skills.Deps{Bus: bus})

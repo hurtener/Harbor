@@ -57,6 +57,10 @@ func (failingStateStore) ListKindForIdentity(_ context.Context, _ identity.Quadr
 	return nil, errStateProbe
 }
 
+func (failingStateStore) ListKindForIdentityBounded(_ context.Context, _ identity.Quadruple, _ string, _ int) ([]state.StateRecord, error) {
+	return nil, errStateProbe
+}
+
 func (failingStateStore) ScanKindForTenant(_ context.Context, _ state.ListScope, _ string, _ string, _ int, _ string) (state.StateScanPage, error) {
 	return state.StateScanPage{}, errStateProbe
 }

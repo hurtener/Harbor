@@ -46,16 +46,23 @@ func (stubStore) Upsert(context.Context, identity.Quadruple, skills.Skill) error
 func (stubStore) Get(context.Context, identity.Quadruple, string) (skills.Skill, error) {
 	return skills.Skill{}, nil
 }
+func (stubStore) GetScope(context.Context, identity.Quadruple, string, skills.Scope) (skills.Skill, error) {
+	return skills.Skill{}, nil
+}
 func (stubStore) List(context.Context, identity.Quadruple, skills.ListFilter) ([]skills.Skill, error) {
 	return nil, nil
 }
 func (stubStore) Search(context.Context, identity.Quadruple, string, int) ([]skills.RankedSkill, error) {
 	return nil, nil
 }
+func (stubStore) SearchSnapshot(context.Context, identity.Quadruple, string, []skills.Skill, int) ([]skills.RankedSkill, error) {
+	return nil, nil
+}
 func (stubStore) Delete(context.Context, identity.Quadruple, string, skills.Scope) error {
 	return nil
 }
-func (stubStore) Close(context.Context) error { return nil }
+func (stubStore) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }
+func (stubStore) Close(context.Context) error                                  { return nil }
 
 func validSkill() skills.Skill {
 	return skills.Skill{

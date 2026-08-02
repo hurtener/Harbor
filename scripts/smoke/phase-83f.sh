@@ -42,16 +42,23 @@ assert_grep_present 'planner.skills_context_max' "internal/config/validate.go" \
 # ----------------------------------------------------------------------------
 assert_grep_present 'memory.MemoryStore' "internal/runtime/serve/runloop.go" \
     "perTaskRunLoopDriver opts carry the MemoryStore dep (D-149)"
-# Phase 111d (D-201): the D-149 SkillStore dep became the Phase-39
-# Directory — the `<skills_context>` producer the driver consumes.
-assert_grep_present 'skillsDirectory \*skills.Directory' "internal/runtime/serve/runloop.go" \
-    "perTaskRunLoopDriver opts carry the skills Directory dep (D-149 → D-201)"
+# Phase 233a replaces the boot-time Directory dependency as the source of
+# truth with a run-start immutable reader snapshot. The Directory still
+# projects `<skills_context>`, but it MUST resolve that exact snapshot rather
+# than a mutable/shared session view: a run may never observe a later personal
+# skill mutation mid-flight.
+assert_grep_present 'func \(d \*RunLoopDriver\) captureRunSkillSnapshot' "internal/runtime/serve/runloop.go" \
+    "runloop declares the run-start immutable skill-reader snapshot seam (Phase 233a)"
+assert_grep_present 'skills\.NewRunSkillReaderSnapshot' "internal/runtime/serve/runloop.go" \
+    "runloop binds the composite resolver to one immutable per-run skill reader (Phase 233a)"
+assert_grep_present 'skills\.WithRunSkillReaderSnapshot\(taskCtx, skillSnapshot\)' "internal/runtime/serve/runloop.go" \
+    "runloop installs the immutable reader before Directory consumers run (Phase 233a)"
 # Phase 110b (D-195) re-homed the projection helpers to the exported
 # internal/runtime/runctx package; the run loop is a thin caller.
 assert_grep_present 'runctx\.FetchMemoryBlocks' "internal/runtime/serve/runloop.go" \
     "runloop calls runctx.FetchMemoryBlocks (promotes ProjectMemoryBlocks + semantic recall)"
 assert_grep_present 'runctx\.ProjectSkillsDirectory' "internal/runtime/serve/runloop.go" \
-    "runloop projects the Directory view via runctx.ProjectSkillsDirectory (110b → 111d)"
+    "runloop projects the snapshot-authorized Directory view via runctx.ProjectSkillsDirectory (110b → 111d → 233a)"
 assert_grep_present 'RepairCounters{' "internal/runtime/serve/runloop.go" \
     "per-run *RepairCounters allocated in runOne (D-145 producer-side, D-149)"
 assert_grep_present 'runtime_fetch_error' "internal/runtime/serve/runloop.go" \

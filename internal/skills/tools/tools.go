@@ -1,7 +1,7 @@
 // Package tools registers Harbor's planner-facing skill tools
 // (`skill_search`, `skill_get`, `skill_list`) into the
 // `tools.ToolCatalog`. Each handler wraps the
-// `skills.SkillStore` with three injection-time concerns
+// `skills.SkillReader` with three injection-time concerns
 // (RFC §6.7):
 //
 //  1. Capability filter — a skill is visible only when its
@@ -31,7 +31,7 @@
 //
 // Concurrent reuse: the catalog + the registered descriptors
 // are stateless after `Register`; per-call state lives on
-// `(ctx, args)`. One catalog + one store is safe to share across N
+// `(ctx, args)`. One catalog + one reader is safe to share across N
 // concurrent goroutines.
 //
 // Registration is a runtime call (the catalog is built at boot, not
@@ -65,7 +65,7 @@ import (
 const (
 	// ToolNameSkillSearch — `skill_search(query, limit, capability)
 	// -> {skills, path}`. Returns ranked candidates from the
-	// SkillStore's FTS5 → regex → exact ladder, filtered
+	// SkillReader's FTS5 → regex → exact ladder, filtered
 	// by capability and redacted.
 	ToolNameSkillSearch = "skill_search"
 	// ToolNameSkillGet — `skill_get(names[], max_tokens, capability)
@@ -142,11 +142,11 @@ type SearchArgs struct {
 // SearchResult is the output shape for `skill_search`.
 type SearchResult struct {
 	// Skills are the ranked candidates after capability filter +
-	// redaction. The slice never exceeds `Limit` (or the SkillStore
+	// redaction. The slice never exceeds `Limit` (or the SkillReader
 	// default when zero).
 	Skills []skills.RankedSkill `json:"skills"`
 	// Path is the ranking ladder branch that produced the rows
-	// ("fts5" | "regex" | "exact"). Surfaced for observability;
+	// ("fts5" | "full_text" | "regex" | "exact" | "semantic"). Surfaced for observability;
 	// inert to the planner's reasoning.
 	Path string `json:"path"`
 }
@@ -154,7 +154,7 @@ type SearchResult struct {
 // GetArgs is the input shape for `skill_get`.
 type GetArgs struct {
 	// Names are the skill names to fetch. Each is looked up via
-	// `SkillStore.Get`; missing names are SKIPPED (not an error) so
+	// `SkillReader.Get`; missing names are SKIPPED (not an error) so
 	// a partial response remains useful when one name is stale.
 	Names []string `json:"names"`
 	// MaxTokens caps the returned skills' combined estimated
@@ -199,25 +199,25 @@ type ListResult struct {
 }
 
 // Register installs `skill_search`, `skill_get`, `skill_list` into
-// `catalog`, wired against `store`. Returns wrapped errors on
+// `catalog`, wired against `reader`. Returns wrapped errors on
 // validation failure or catalog conflicts (e.g. a duplicate name —
 // indicates a misconfigured boot path, not a runtime fault).
 //
 // Concurrent reuse: the registered descriptors hold only an
-// immutable closure over `store` + `deps`; the concurrent-reuse contract holds.
-func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) error {
+// immutable closure over `reader` + `deps`; the concurrent-reuse contract holds.
+func Register(catalog tcat.ToolCatalog, reader skills.SkillReader, deps Deps) error {
 	if catalog == nil {
 		return errors.New("skills/tools: catalog is nil")
 	}
-	if store == nil {
-		return errors.New("skills/tools: store is nil")
+	if reader == nil {
+		return errors.New("skills/tools: reader is nil")
 	}
 	if deps.Bus == nil {
 		return errors.New("skills/tools: deps.Bus is required (events.EventBus)")
 	}
 
 	search := func(ctx context.Context, args SearchArgs) (SearchResult, error) {
-		return SearchHandler(ctx, store, deps.Bus, args)
+		return SearchHandler(ctx, reader, deps.Bus, args)
 	}
 	if err := inproc.RegisterFunc[SearchArgs, SearchResult](
 		catalog,
@@ -233,7 +233,7 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 	}
 
 	get := func(ctx context.Context, args GetArgs) (GetResult, error) {
-		return GetHandler(ctx, store, deps.Bus, args)
+		return GetHandler(ctx, reader, deps.Bus, args)
 	}
 	if err := inproc.RegisterFunc[GetArgs, GetResult](
 		catalog,
@@ -249,7 +249,7 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 	}
 
 	list := func(ctx context.Context, args ListArgs) (ListResult, error) {
-		return ListHandler(ctx, store, deps.Bus, args)
+		return ListHandler(ctx, reader, deps.Bus, args)
 	}
 	if err := inproc.RegisterFunc[ListArgs, ListResult](
 		catalog,
@@ -267,7 +267,7 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 }
 
 // SearchHandler is the `skill_search` planner-tool body. Identity
-// from ctx → SkillStore.Search → Filter → Redact (per-row). Path is
+// from ctx → SkillReader.Search → Filter → Redact (per-row). Path is
 // surfaced for observability.
 //
 // Exported as the handler seam the
@@ -275,17 +275,21 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 // home, two registration carriers collapse onto it. Callers supply
 // the capability envelope on `args.Capability`; the builtin carrier
 // computes it from the run's visible-tool set.
-func SearchHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args SearchArgs) (SearchResult, error) {
+func SearchHandler(ctx context.Context, baseReader skills.SkillReader, bus events.EventBus, args SearchArgs) (SearchResult, error) {
 	q, err := skills.IdentityFromCtx(ctx)
 	if err != nil {
 		return SearchResult{}, skills.EmitIdentityRejected(ctx, bus, q, "tools.skill_search")
 	}
-	ranked, err := store.Search(ctx, q, args.Query, args.Limit)
+	reader, err := skills.ResolveSkillReader(ctx, q, baseReader)
+	if err != nil {
+		return SearchResult{}, fmt.Errorf("skills/tools: resolve reader: %w", err)
+	}
+	ranked, err := reader.Search(ctx, q, args.Query, args.Limit)
 	if err != nil {
 		return SearchResult{}, fmt.Errorf("skills/tools: search: %w", err)
 	}
 
-	// Extract the SkillStore-reported path from the first row (the
+	// Extract the SkillReader-reported path from the first row (the
 	// ladder is single-branch — every row in a Search response shares
 	// the same Path). Falls through to an empty string when no rows.
 	var path string
@@ -302,7 +306,7 @@ func SearchHandler(ctx context.Context, store skills.SkillStore, bus events.Even
 	filtered := Filter(flat, args.Capability)
 
 	// Re-pack: keep score + path alongside the filtered skills.
-	// Index-walk is O(N*M); for the typical M ≤ 20 SkillStore limit
+	// Index-walk is O(N*M); for the typical M ≤ 20 SkillReader limit
 	// it is dominated by the redactor's regex passes.
 	out := make([]skills.RankedSkill, 0, len(filtered))
 	for _, s := range filtered {
@@ -330,15 +334,20 @@ func SearchHandler(ctx context.Context, store skills.SkillStore, bus events.Even
 //
 // Exported as the handler seam the
 // `internal/tools/builtin` carrier delegates to.
-func GetHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args GetArgs) (GetResult, error) {
+func GetHandler(ctx context.Context, baseReader skills.SkillReader, bus events.EventBus, args GetArgs) (GetResult, error) {
 	q, err := skills.IdentityFromCtx(ctx)
 	if err != nil {
 		return GetResult{}, skills.EmitIdentityRejected(ctx, bus, q, "tools.skill_get")
 	}
 
+	reader, err := skills.ResolveSkillReader(ctx, q, baseReader)
+	if err != nil {
+		return GetResult{}, fmt.Errorf("skills/tools: resolve reader: %w", err)
+	}
+
 	gathered := make([]skills.Skill, 0, len(args.Names))
 	for _, name := range args.Names {
-		s, err := store.Get(ctx, q, name)
+		s, err := reader.Get(ctx, q, name)
 		if err != nil {
 			if errors.Is(err, skills.ErrSkillNotFound) {
 				// Partial response is acceptable.
@@ -380,17 +389,21 @@ func GetHandler(ctx context.Context, store skills.SkillStore, bus events.EventBu
 }
 
 // ListHandler is the `skill_list` planner-tool body. Identity →
-// SkillStore.List → Filter → Redact (summary fields only — full
+// SkillReader.List → Filter → Redact (summary fields only — full
 // content is reserved for `skill_get`).
 //
 // Exported as the handler seam the
 // `internal/tools/builtin` carrier delegates to.
-func ListHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args ListArgs) (ListResult, error) {
+func ListHandler(ctx context.Context, baseReader skills.SkillReader, bus events.EventBus, args ListArgs) (ListResult, error) {
 	q, err := skills.IdentityFromCtx(ctx)
 	if err != nil {
 		return ListResult{}, skills.EmitIdentityRejected(ctx, bus, q, "tools.skill_list")
 	}
-	listed, err := store.List(ctx, q, skills.ListFilter{
+	reader, err := skills.ResolveSkillReader(ctx, q, baseReader)
+	if err != nil {
+		return ListResult{}, fmt.Errorf("skills/tools: resolve reader: %w", err)
+	}
+	listed, err := reader.List(ctx, q, skills.ListFilter{
 		Scope:    args.Scope,
 		TaskType: args.TaskType,
 		Tags:     args.Tags,

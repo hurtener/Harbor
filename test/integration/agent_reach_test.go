@@ -25,6 +25,7 @@ import (
 
 	"github.com/hurtener/Harbor/harbortest/devstack"
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
@@ -51,6 +52,9 @@ func newAgentReachStack(t *testing.T) *agentReachStack {
 	cfg := phase110bConfig(t)
 	cfg.Skills.Driver = "localdb"
 	cfg.Skills.DSN = filepath.Join(t.TempDir(), "skills.db")
+	cfg.Skills.SessionPersonalCutover.Tenants = []config.SessionPersonalCutoverTenant{{
+		TenantID: devstack.DefaultDevTenant, Epoch: "agent-reach-state-only", RosterDigest: "fixture", LegacyWritersDrained: true,
+	}}
 	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
 		LLMConfigSnapshot: phase110bLLMSnapshot(cfg),
 		SkipRunLoop:       true,

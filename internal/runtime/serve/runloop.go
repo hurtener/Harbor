@@ -138,6 +138,16 @@ type RunLoopDriverOptions struct {
 	SkillsDirectory *skills.Directory
 	PlanningHints   *planner.PlanningHints
 
+	// SkillStore, SessionPersonalSkills, and SessionSkillCutover are the
+	// all-or-none run-start snapshot authority. SkillStore is the shared base
+	// reader for non-session rungs AND the mandatory driver-owned search policy
+	// for the frozen authorized candidates; SessionPersonalSkills owns
+	// agent-selected session records; and SessionSkillCutover supplies the
+	// declared tenant mode.
+	SkillStore            skills.SkillStore
+	SessionPersonalSkills *sessionoverlay.DurableStore
+	SessionSkillCutover   sessionoverlay.CutoverModeReader
+
 	// tool dispatch + Catalog projection +
 	// Trajectory. The tool catalog is the shared catalog the rest of
 	// the dev stack already populated (in-process tools, MCP-discovered
@@ -207,6 +217,9 @@ type RunLoopDriverOptions struct {
 	// the NEXT run (next-turn-only), never mid-flight.
 	AgentConfig   agentcfg.Registry
 	AgentConfigID string
+	// EnsureBootAgentLifecycle materialises only the configured default agent
+	// after trusted direct task construction selected it for this run.
+	EnsureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
 
 	// sessionOverlay resolves the SESSION-scoped safe-subset overlay (the
 	// non-admin lower tier) at run start: the session's user prompt layer,
@@ -304,10 +317,13 @@ type RunLoopDriver struct {
 
 	// per-run consumer wiring; the canonical-skills work
 	// — Directory as the skills surface. See driver opts godoc.
-	memory          memory.MemoryStore
-	memoryRecall    memory.RecallSettings
-	skillsDirectory *skills.Directory
-	planningHints   *planner.PlanningHints
+	memory                memory.MemoryStore
+	memoryRecall          memory.RecallSettings
+	skillsDirectory       *skills.Directory
+	planningHints         *planner.PlanningHints
+	skillStore            skills.SkillStore
+	sessionPersonalSkills *sessionoverlay.DurableStore
+	sessionSkillCutover   sessionoverlay.CutoverModeReader
 
 	// tool dispatch + Catalog projection.
 	catalog         tools.ToolCatalog
@@ -336,8 +352,9 @@ type RunLoopDriver struct {
 
 	// agent-config registry + the dev agent's registration id, read once at
 	// run start to project the agent's active skills-set (nil = none).
-	agentConfig   agentcfg.Registry
-	agentConfigID string
+	agentConfig              agentcfg.Registry
+	agentConfigID            string
+	ensureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
 
 	// session-scoped safe-subset overlay store, read once at run start to
 	// compose the session user layer + narrow-only disables + personal skills
@@ -408,6 +425,18 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 	if opts.Tasks == nil {
 		return nil, fmt.Errorf("%w: tasks is nil", ErrRunLoopDriverMisconfigured)
 	}
+	snapshotDeps := 0
+	for _, present := range []bool{opts.SkillStore != nil, opts.SessionPersonalSkills != nil, opts.SessionSkillCutover != nil} {
+		if present {
+			snapshotDeps++
+		}
+	}
+	if snapshotDeps != 0 && snapshotDeps != 3 {
+		return nil, fmt.Errorf("%w: skill snapshot dependencies must be wired together", ErrRunLoopDriverMisconfigured)
+	}
+	if opts.SkillsDirectory != nil && snapshotDeps == 0 {
+		return nil, fmt.Errorf("%w: skills directory requires the complete run snapshot authority", ErrRunLoopDriverMisconfigured)
+	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
@@ -415,40 +444,44 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		opts.TaskKind = tasks.KindForeground
 	}
 	return &RunLoopDriver{
-		logger:          opts.Logger,
-		bus:             opts.Bus,
-		runLoop:         opts.RunLoop,
-		planner:         opts.Planner,
-		tasks:           opts.Tasks,
-		taskKind:        opts.TaskKind,
-		driveBackground: opts.DriveBackground,
-		memory:          opts.Memory,
-		memoryRecall:    opts.MemoryRecall,
-		skillsDirectory: opts.SkillsDirectory,
-		planningHints:   opts.PlanningHints,
-		catalog:         opts.Catalog,
-		executor:        opts.Executor,
-		maxStepsRunLoop: opts.MaxStepsRunLoop,
-		grantedScopes:   append([]string(nil), opts.GrantedScopes...),
-		artifactStore:   opts.ArtifactStore,
+		logger:                opts.Logger,
+		bus:                   opts.Bus,
+		runLoop:               opts.RunLoop,
+		planner:               opts.Planner,
+		tasks:                 opts.Tasks,
+		taskKind:              opts.TaskKind,
+		driveBackground:       opts.DriveBackground,
+		memory:                opts.Memory,
+		memoryRecall:          opts.MemoryRecall,
+		skillsDirectory:       opts.SkillsDirectory,
+		planningHints:         opts.PlanningHints,
+		skillStore:            opts.SkillStore,
+		sessionPersonalSkills: opts.SessionPersonalSkills,
+		sessionSkillCutover:   opts.SessionSkillCutover,
+		catalog:               opts.Catalog,
+		executor:              opts.Executor,
+		maxStepsRunLoop:       opts.MaxStepsRunLoop,
+		grantedScopes:         append([]string(nil), opts.GrantedScopes...),
+		artifactStore:         opts.ArtifactStore,
 		// disposition policy passthrough.
-		dispositionPolicy:       opts.DispositionPolicy,
-		tenantOverrides:         opts.TenantOverrides,
-		sessionOverrides:        opts.SessionOverrides,
-		agentConfig:             opts.AgentConfig,
-		agentConfigID:           opts.AgentConfigID,
-		sessionOverlay:          opts.SessionOverlay,
-		runCompletionHook:       opts.RunCompletionHook,
-		connectionDetacher:      opts.ConnectionDetacher,
-		connectionReattacher:    opts.ConnectionReattacher,
-		bootDeclaredMCP:         opts.BootDeclaredMCP,
-		oauthProviderReconciler: opts.OAuthProviderReconciler,
-		namingDefault:           opts.NamingDefault,
-		sessionTitler:           opts.SessionTitler,
-		namingLLM:               opts.NamingLLM,
-		trajectories:            make(map[tasks.TaskID]*trackedTrajectory),
-		tokenBudget:             opts.TokenBudget,
-		compression:             opts.Compression,
+		dispositionPolicy:        opts.DispositionPolicy,
+		tenantOverrides:          opts.TenantOverrides,
+		sessionOverrides:         opts.SessionOverrides,
+		agentConfig:              opts.AgentConfig,
+		agentConfigID:            opts.AgentConfigID,
+		ensureBootAgentLifecycle: opts.EnsureBootAgentLifecycle,
+		sessionOverlay:           opts.SessionOverlay,
+		runCompletionHook:        opts.RunCompletionHook,
+		connectionDetacher:       opts.ConnectionDetacher,
+		connectionReattacher:     opts.ConnectionReattacher,
+		bootDeclaredMCP:          opts.BootDeclaredMCP,
+		oauthProviderReconciler:  opts.OAuthProviderReconciler,
+		namingDefault:            opts.NamingDefault,
+		sessionTitler:            opts.SessionTitler,
+		namingLLM:                opts.NamingLLM,
+		trajectories:             make(map[tasks.TaskID]*trackedTrajectory),
+		tokenBudget:              opts.TokenBudget,
+		compression:              opts.Compression,
 	}, nil
 }
 
@@ -689,6 +722,37 @@ func (d *RunLoopDriver) resolveLLMOverrides(ctx context.Context, agentID string,
 // projection package so the two binaries cannot drift (CLAUDE.md §17.6).
 func (d *RunLoopDriver) projectAgentConfigSkills(ctx context.Context, agentID string, q identity.Quadruple, views []skills.SkillView) ([]skills.SkillView, error) {
 	return projection.ActiveSkillViews(ctx, d.agentConfig, d.sessionOverlay, agentID, q, views)
+}
+
+// captureRunSkillSnapshot resolves the selected agent's AGENT/USER membership
+// once, builds the fence-stable composite resolver once, and binds that reader
+// to the exact run quadruple. A driver with no skill snapshot dependencies is
+// the valid no-skills subsystem shape; partial wiring is rejected by
+// NewRunLoopDriver.
+func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAgentID string, q identity.Quadruple) (skills.RunSkillReaderSnapshot, bool, error) {
+	if d.skillStore == nil {
+		return skills.RunSkillReaderSnapshot{}, false, nil
+	}
+	membership, err := projection.ActiveSessionSkillMembership(ctx, d.agentConfig, effectiveAgentID, q)
+	if err != nil {
+		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("capture membership: %w", err)
+	}
+	resolver, err := sessionoverlay.NewSessionSkillResolver(ctx, sessionoverlay.SessionSkillResolverConfig{
+		Run:        q,
+		AgentID:    effectiveAgentID,
+		Base:       d.skillStore,
+		Personal:   d.sessionPersonalSkills,
+		Cutover:    d.sessionSkillCutover,
+		Membership: membership,
+	})
+	if err != nil {
+		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("build resolver: %w", err)
+	}
+	snapshot, err := skills.NewRunSkillReaderSnapshot(q, effectiveAgentID, resolver)
+	if err != nil {
+		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("bind run reader: %w", err)
+	}
+	return snapshot, true, nil
 }
 
 // projectAgentConfigCatalog builds the run's planner catalog view, applying
@@ -981,6 +1045,57 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	if task.AgentID != "" {
 		effectiveAgentID = task.AgentID
 	}
+	if d.ensureBootAgentLifecycle != nil && effectiveAgentID != "" && effectiveAgentID == d.agentConfigID {
+		if err := d.ensureBootAgentLifecycle(taskCtx, q.Identity, effectiveAgentID); err != nil {
+			d.logger.ErrorContext(taskCtx, "RunLoopDriver: boot agent lifecycle unavailable; failing run",
+				slog.String("task_id", string(taskID)), slog.String("run_id", q.RunID),
+				slog.String("agent_id", effectiveAgentID), slog.String("err", err.Error()))
+			if markErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: "boot agent lifecycle: " + err.Error()}); markErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed", slog.String("task_id", string(taskID)), slog.String("err", markErr.Error()))
+			}
+			return
+		}
+	}
+
+	// Capture ONE immutable skill-reader authority after effective agent
+	// selection and before any Directory/tool consumer runs. The task context
+	// carries the exact run quadruple so Directory.ResolveSkillReader selects
+	// this snapshot rather than its boot-time fallback. A resolver/membership
+	// failure is terminal: running with a wider or divergent skill view would be
+	// an authority bypass.
+	skillSnapshot, hasSkillSnapshot, snapshotErr := d.captureRunSkillSnapshot(taskCtx, effectiveAgentID, q)
+	if snapshotErr != nil {
+		d.logger.ErrorContext(taskCtx, "RunLoopDriver: skill snapshot failed; failing run",
+			slog.String("task_id", string(taskID)),
+			slog.String("run_id", q.RunID),
+			slog.String("agent_id", effectiveAgentID),
+			slog.String("err", snapshotErr.Error()))
+		if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    "runtime_fetch_error",
+			Message: "skills snapshot: " + snapshotErr.Error(),
+		}); fErr != nil {
+			d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", fErr.Error()))
+		}
+		return
+	}
+	if hasSkillSnapshot {
+		var runIdentityErr error
+		taskCtx, runIdentityErr = identity.WithRun(taskCtx, q.Identity, q.RunID)
+		if runIdentityErr != nil {
+			d.logger.ErrorContext(taskCtx, "RunLoopDriver: skill snapshot identity failed; failing run",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", runIdentityErr.Error()))
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: "skills snapshot identity: " + runIdentityErr.Error()}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+					slog.String("task_id", string(taskID)), slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		taskCtx = skills.WithRunSkillReaderSnapshot(taskCtx, skillSnapshot)
+	}
 
 	// Run-start reconciliation (detach leg): before projecting the catalog,
 	// detach any MCP server the agent's active revision no longer declares
@@ -1084,29 +1199,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			}
 			return
 		}
-		// Project the agent's active config skills-set ONCE at run start:
-		// when the agent-config control plane pins a skills membership for
-		// this agent, the run sees only those skills (next-turn-only — a
-		// config edit applies on the NEXT run, never mid-flight). A
-		// registry read error fails the run LOUDLY (the registry IS the
-		// runtime StateStore — an error means the runtime is unhealthy).
-		gated, gErr := d.projectAgentConfigSkills(taskCtx, effectiveAgentID, q, views)
-		if gErr != nil {
-			d.logger.ErrorContext(taskCtx, "RunLoopDriver: agent-config skills projection failed; failing run",
-				slog.String("task_id", string(taskID)),
-				slog.String("run_id", q.RunID),
-				slog.String("err", gErr.Error()))
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-				Code:    "runtime_fetch_error",
-				Message: "agent-config skills projection: " + gErr.Error(),
-			}); fErr != nil {
-				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", fErr.Error()))
-			}
-			return
-		}
-		skillsCtx = runctx.ProjectSkillsDirectory(gated)
+		skillsCtx = runctx.ProjectSkillsDirectory(views)
 	}
 
 	// Step 3: per-run RepairCounters. ONE pointer per run, threaded
@@ -1468,6 +1561,9 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// selects CONFIGURATION only — the two agent-id carriers on a run have
 	// different provenance and MUST NOT be unified by a tidying refactor.
 	runCtx := tools.WithInvokingAgent(d.subCtx, d.agentConfigID)
+	if hasSkillSnapshot {
+		runCtx = skills.WithRunSkillReaderSnapshot(runCtx, skillSnapshot)
+	}
 	fin, err := d.runLoop.Run(runCtx, spec)
 	if err != nil {
 		// Cancellation-shaped errors map to MarkFailed{code=cancelled}.

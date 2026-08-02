@@ -649,6 +649,55 @@ filtering, redaction, and the budgeter apply unchanged on top.
 Default: empty. Validation: empty or `semantic`; `semantic` requires
 the `embeddings` block and `skills.driver` to be set.
 
+### skills.session_personal_cutover.tenants
+
+Optional, restart-required declarations for the durable session-personal-skill
+cutover. This is a finite operator allowlist, not runtime tenant or writer
+discovery. Supplying one or more declarations requires a configured
+`skills.driver` and `skills.dsn`; a declaration that cannot reach the required
+SkillStore fails boot rather than being silently ignored.
+
+Each entry carries `tenant_id`, `epoch`, `roster_digest`, and
+`legacy_writers_drained`:
+
+- `tenant_id` is an exact, case-sensitive opaque tenant key.
+- `epoch` identifies one intentional migration rollout. Use a new value for a
+  new rollout; it is not a clock supplied by Harbor.
+- `roster_digest` is the operator-attested digest of the drained legacy writer
+  roster. It is an integrity label, not a secret.
+- `legacy_writers_drained` defaults to `false`. Set it `true` only after all
+  older writers are drained and the roster has been independently attested.
+
+The list is bounded to 256 entries. `tenant_id`, `epoch`, and `roster_digest`
+must each be non-empty printable ASCII tokens with no leading or trailing
+whitespace (maximum lengths: 128, 128, and 256 bytes respectively). Tenant IDs
+must be unique exactly; empty, malformed, duplicate, or over-bound
+declarations fail boot loud.
+
+With this block omitted, with a tenant absent from it, or with
+`legacy_writers_drained: false`, the tenant stays in read-only `dual_read`.
+Existing eligible legacy session-personal skills remain readable, but
+session-personal mutations are deliberately refused with
+`session_skill_cutover_pending` (HTTP 409); Harbor does not create another
+legacy shared-skill body. A drained declaration authorizes only Harbor's
+bounded durable checkpointed migration. It does not make writes safe
+immediately: mutations remain refused until a fresh verification pass durably
+authorizes `state_only`. Harbor discovers no tenants or writers at runtime,
+and a malformed or declaration-mismatched durable checkpoint remains
+mutation-refusing `dual_read` with a loud diagnostic.
+
+```yaml
+skills:
+  driver: localdb
+  dsn: /var/lib/harbor/skills.sqlite
+  session_personal_cutover:
+    tenants:
+      - tenant_id: tenant-acme
+        epoch: 2026-08-cutover-01
+        roster_digest: sha256-... # attested label, not a secret
+        legacy_writers_drained: false
+```
+
 ---
 
 ## Tasks

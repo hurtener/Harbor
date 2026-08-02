@@ -25,6 +25,9 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
+	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/drivers/localdb"
 	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	statesqlite "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
@@ -85,9 +88,22 @@ func esbHarnessOn(t *testing.T, st state.StateStore) *esbHarness {
 	if err != nil {
 		t.Fatalf("session overlay: %v", err)
 	}
+	// Session prompt responses dynamically project the durable personal tier,
+	// so the live session verb needs the same authority graph as production.
+	skillStore, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: filepath.Join(t.TempDir(), "skills.sqlite")}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("skills: %v", err)
+	}
+	t.Cleanup(func() { _ = skillStore.Close(context.Background()) })
+	authority, err := serve.NewSessionPersonalSkillAuthority(context.Background(), st, skillStore, nil)
+	if err != nil {
+		t.Fatalf("session personal authority: %v", err)
+	}
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithBus(bus),
+		agentcfgprotocol.WithSkillStore(skillStore),
 		agentcfgprotocol.WithSessionOverlay(ovStore),
+		agentcfgprotocol.WithSessionPersonalSkillController(authority.Controller),
 	)
 	if err != nil {
 		t.Fatalf("service: %v", err)

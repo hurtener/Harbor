@@ -420,6 +420,14 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		return nil, fmt.Errorf("agent-config registry: %w", err)
 	}
 	closers = append(closers, agentConfigRegistry.Close)
+	if lifecycleErr := EnsureBootAgentLifecycle(ctx, stack.State, agentConfigRegistry,
+		resolveMCPAttachIdentity(opts.MCPDefaultIdentity), devAgentConfigID); lifecycleErr != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("boot agent lifecycle: %w", lifecycleErr)
+	}
+	bootLifecycleEnsurer := agentcfg.BootLifecycleEnsurer(func(runCtx context.Context, id identity.Identity, agentID string) error {
+		return EnsureBootAgentLifecycle(runCtx, stack.State, agentConfigRegistry, id, agentID)
+	})
 
 	// The session-scoped safe-subset overlay store (the non-admin lower tier).
 	sessionOverlayStore, err := sessionoverlay.NewStore(stack.State, nil)
@@ -428,6 +436,27 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		return nil, fmt.Errorf("agent-config session-overlay store: %w", err)
 	}
 	closers = append(closers, sessionOverlayStore.Close)
+	var sessionPersonalAuthority *SessionPersonalSkillAuthority
+	if skillStore != nil {
+		sessionPersonalAuthority, err = NewSessionPersonalSkillAuthority(
+			ctx,
+			stack.State,
+			skillStore,
+			cfg.Skills.SessionPersonalCutover.Tenants,
+		)
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("agent-config session-personal skill authority: %w", err)
+		}
+	}
+	var sessionPersonalStore *sessionoverlay.DurableStore
+	var sessionPersonalCutover sessionoverlay.CutoverModeReader
+	var sessionPersonalController agentcfgprotocol.SessionPersonalSkillController
+	if sessionPersonalAuthority != nil {
+		sessionPersonalStore = sessionPersonalAuthority.Personal
+		sessionPersonalCutover = sessionPersonalAuthority.Cutover
+		sessionPersonalController = sessionPersonalAuthority.Controller
+	}
 
 	// The Protocol ControlSurface. A start on a not-yet-existing session
 	// materialises its registry row via the create-on-first-use ensurer.
@@ -437,7 +466,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	agentReach := auth.NewAgentReachAuthorizer()
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
 		protocol.WithSessionEnsurer(NewSessionEnsurerAdapter(sessionRegistry)),
-		protocol.WithAgentResolver(NewAgentResolverAdapter(agentConfigRegistry, devAgentConfigID)),
+		protocol.WithAgentResolver(NewAgentResolverAdapter(agentConfigRegistry, devAgentConfigID, WithBootLifecycleEnsurer(bootLifecycleEnsurer))),
 		protocol.WithAgentReachAuthorizer(agentReach),
 	)
 	if err != nil {
@@ -569,38 +598,42 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 
 	runLoopDriver, err := NewRunLoopDriver(RunLoopDriverOptions{
-		Logger:                  opts.Logger,
-		Bus:                     bus,
-		RunLoop:                 runLoop,
-		Planner:                 plnr,
-		Tasks:                   taskReg,
-		TaskKind:                tasks.KindForeground,
-		DriveBackground:         true,
-		Memory:                  memStore,
-		MemoryRecall:            memory.RecallFromConfig(cfg.Memory),
-		SkillsDirectory:         skillsDir,
-		PlanningHints:           planner.HintsFromConfig(cfg.Planner.PlanningHints),
-		Catalog:                 toolCat,
-		Executor:                stack.Executor,
-		MaxStepsRunLoop:         cfg.Planner.MaxSteps,
-		GrantedScopes:           append([]string(nil), cfg.Tools.GrantedScopes...),
-		ArtifactStore:           artStore,
-		TokenBudget:             cfg.Planner.TokenBudget,
-		Compression:             stack.Compression,
-		DispositionPolicy:       dispositionPolicy,
-		TenantOverrides:         tenantOverridePolicy,
-		SessionOverrides:        runsStore,
-		AgentConfig:             agentConfigRegistry,
-		AgentConfigID:           devAgentConfigID,
-		SessionOverlay:          sessionOverlayStore,
-		RunCompletionHook:       projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
-		ConnectionDetacher:      mcpDetacher,
-		ConnectionReattacher:    mcpReattacher,
-		BootDeclaredMCP:         BootDeclaredMCPServerSet(cfg),
-		OAuthProviderReconciler: oauthProviderReconciler,
-		NamingDefault:           cfg.Runtime.Naming,
-		SessionTitler:           sessionRegistry,
-		NamingLLM:               stack.LLM,
+		Logger:                   opts.Logger,
+		Bus:                      bus,
+		RunLoop:                  runLoop,
+		Planner:                  plnr,
+		Tasks:                    taskReg,
+		TaskKind:                 tasks.KindForeground,
+		DriveBackground:          true,
+		Memory:                   memStore,
+		MemoryRecall:             memory.RecallFromConfig(cfg.Memory),
+		SkillsDirectory:          skillsDir,
+		PlanningHints:            planner.HintsFromConfig(cfg.Planner.PlanningHints),
+		SkillStore:               skillStore,
+		SessionPersonalSkills:    sessionPersonalStore,
+		SessionSkillCutover:      sessionPersonalCutover,
+		Catalog:                  toolCat,
+		Executor:                 stack.Executor,
+		MaxStepsRunLoop:          cfg.Planner.MaxSteps,
+		GrantedScopes:            append([]string(nil), cfg.Tools.GrantedScopes...),
+		ArtifactStore:            artStore,
+		TokenBudget:              cfg.Planner.TokenBudget,
+		Compression:              stack.Compression,
+		DispositionPolicy:        dispositionPolicy,
+		TenantOverrides:          tenantOverridePolicy,
+		SessionOverrides:         runsStore,
+		AgentConfig:              agentConfigRegistry,
+		AgentConfigID:            devAgentConfigID,
+		EnsureBootAgentLifecycle: bootLifecycleEnsurer,
+		SessionOverlay:           sessionOverlayStore,
+		RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
+		ConnectionDetacher:       mcpDetacher,
+		ConnectionReattacher:     mcpReattacher,
+		BootDeclaredMCP:          BootDeclaredMCPServerSet(cfg),
+		OAuthProviderReconciler:  oauthProviderReconciler,
+		NamingDefault:            cfg.Runtime.Naming,
+		SessionTitler:            sessionRegistry,
+		NamingLLM:                stack.LLM,
 	})
 	if err != nil {
 		closeAll(ctx)
@@ -639,51 +672,53 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 
 	built, err := BuildMux(MuxInput{
-		Cfg:                      cfg,
-		Surface:                  surface,
-		Bus:                      bus,
-		Redactor:                 red,
-		Logger:                   opts.Logger,
-		Metrics:                  metricsReg,
-		LLMSnapshot:              llmCfg,
-		Tasks:                    taskReg,
-		Sessions:                 sessionRegistry,
-		Agents:                   agentRegistry,
-		Artifacts:                artStore,
-		Memory:                   memStore,
-		Catalog:                  toolCat,
-		Coordinator:              coord,
-		MCPRegistry:              mcpRegistry,
-		MCPToolContext:           mcpToolContext,
-		State:                    stack.State,
-		Skills:                   skillStore,
-		AgentConfig:              agentConfigRegistry,
-		AgentConfigID:            devAgentConfigID,
-		SessionOverlay:           sessionOverlayStore,
-		RunsStore:                runsStore,
-		RunLoopDriver:            runLoopDriver,
-		OAuthProviders:           oauthProviders,
-		TenantOverridePolicy:     tenantOverridePolicy,
-		SetPosturePolicy:         setPosturePolicy,
-		KeyRotator:               stack.KeyRotator,
-		ValidModels:              validModels,
-		MCPAttacher:              mcpAttacher,
-		MCPStdioAllowlist:        MCPAddStdioAllowlist(cfg),
-		BootDeclaredMCP:          BootDeclaredMCPServerNames(cfg),
-		BootDeclaredOAuth:        BootDeclaredOAuthProviderNames(cfg),
-		AllowWireOAuthDescriptor: allowWireOAuthDescriptor,
-		AllowWireInjection:       cfg.Tools.AllowWireInjection || toolauth.AllowWireInjectionCaptured(),
-		OAuthProviderInstaller:   oauthProviderInstaller,
-		LLMProviderInstaller:     llmProviderInstaller,
-		InferenceBrokers:         inferenceBrokerNames,
-		Validator:                validator,
-		AuthSurface:              authSurface,
-		AgentReach:               agentReach,
-		DisplayName:              opts.DisplayName,
-		InstanceID:               opts.InstanceID,
-		BuildVersion:             opts.BuildVersion,
-		BuildCommit:              opts.BuildCommit,
-		TopologyAvailable:        false,
+		Cfg:                            cfg,
+		Surface:                        surface,
+		Bus:                            bus,
+		Redactor:                       red,
+		Logger:                         opts.Logger,
+		Metrics:                        metricsReg,
+		LLMSnapshot:                    llmCfg,
+		Tasks:                          taskReg,
+		Sessions:                       sessionRegistry,
+		Agents:                         agentRegistry,
+		Artifacts:                      artStore,
+		Memory:                         memStore,
+		Catalog:                        toolCat,
+		Coordinator:                    coord,
+		MCPRegistry:                    mcpRegistry,
+		MCPToolContext:                 mcpToolContext,
+		State:                          stack.State,
+		Skills:                         skillStore,
+		AgentConfig:                    agentConfigRegistry,
+		AgentConfigID:                  devAgentConfigID,
+		BootLifecycleEnsurer:           bootLifecycleEnsurer,
+		SessionOverlay:                 sessionOverlayStore,
+		SessionPersonalSkillController: sessionPersonalController,
+		RunsStore:                      runsStore,
+		RunLoopDriver:                  runLoopDriver,
+		OAuthProviders:                 oauthProviders,
+		TenantOverridePolicy:           tenantOverridePolicy,
+		SetPosturePolicy:               setPosturePolicy,
+		KeyRotator:                     stack.KeyRotator,
+		ValidModels:                    validModels,
+		MCPAttacher:                    mcpAttacher,
+		MCPStdioAllowlist:              MCPAddStdioAllowlist(cfg),
+		BootDeclaredMCP:                BootDeclaredMCPServerNames(cfg),
+		BootDeclaredOAuth:              BootDeclaredOAuthProviderNames(cfg),
+		AllowWireOAuthDescriptor:       allowWireOAuthDescriptor,
+		AllowWireInjection:             cfg.Tools.AllowWireInjection || toolauth.AllowWireInjectionCaptured(),
+		OAuthProviderInstaller:         oauthProviderInstaller,
+		LLMProviderInstaller:           llmProviderInstaller,
+		InferenceBrokers:               inferenceBrokerNames,
+		Validator:                      validator,
+		AuthSurface:                    authSurface,
+		AgentReach:                     agentReach,
+		DisplayName:                    opts.DisplayName,
+		InstanceID:                     opts.InstanceID,
+		BuildVersion:                   opts.BuildVersion,
+		BuildCommit:                    opts.BuildCommit,
+		TopologyAvailable:              false,
 	})
 	if err != nil {
 		closeAll(ctx)
