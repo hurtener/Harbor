@@ -17,6 +17,39 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.26.0] — 2026-08-02
+
+This release strengthens the authority and lifecycle boundaries for
+agent-addressed Runtime work: bearer reach is explicit and bounded, OAuth MCP
+capabilities have a durable production registration path, and agent-config
+retirement is terminal and recoverable. The Protocol version remains `0.1.0`;
+new methods, fields, and error codes are additive, but the deployment and
+client actions below are required for a safe upgrade.
+
+### Before you deploy
+
+1. **Mint bounded signed bearer reach for every agent-addressed data-plane
+   request.** `control.start`, the session and user `agent_config` methods,
+   and an agent-named `tools.describe` now require a valid `agent_reach` claim.
+   Add `--agent-reach <id>[,<id>...]` when using `harbor token`; missing or
+   empty reach is denied and malformed reach fails authentication. The default
+   `harbor dev` bearer reaches only its boot agent. Update any issuer or client
+   that previously relied on an unbounded bearer before deploying.
+2. **Plan the session-personal skill cutover.** New session-personal skill
+   mutations default to `session_skill_cutover_pending` (HTTP 409) while a
+   tenant is in `dual_read`; eligible legacy skills remain readable. An
+   operator must declare the tenant's bounded static cutover, drain older
+   writers, and allow Harbor's resumable verification to finish at
+   `state_only`. Do not retry the refusal by writing a legacy shared
+   SkillStore body.
+3. **Treat retirement outcomes as part of normal client handling.** The
+   additive `agent_config.retire` operation makes an agent unavailable for new
+   runs while retaining immutable revision history and resumable cleanup. A
+   retired agent now returns the additive `agent_retired` (HTTP 409) outcome;
+   a conflicting retirement operation returns `agent_retirement_conflict`.
+   Clients that distinguish error codes should handle both before enabling
+   retirement automation.
+
 ### Security
 
 - Signed OAuth MCP capability registration now recovers only exact durable
@@ -46,13 +79,15 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Fixed
 
-- The in-progress authority and lifecycle release checkpoint now composes
+- The completed, independently reviewed authority and lifecycle checkpoint
+  composes
   signed-agent reach, conditional configuration writes, signed-capability
   publisher takeover and removal, session erasure, inflight-run retirement
   drain, cleanup restart, reasoning durability, and mixed-identity cancellation
   isolation. Isolated-schema Postgres races cover the conflicting authority,
-  lifecycle, overlay, and personal-record transitions. This is implementation
-  evidence, not release-gate completion or a release announcement.
+  lifecycle, overlay, and personal-record transitions. This is checkpoint
+  evidence; tag, release assets, checksums, and provenance publication are
+  recorded separately after they complete.
 
 - Bifrost reasoning now preserves the selected response's exact observed
   bytes. Any non-nil raw reasoning delta, including an empty one, makes the raw
@@ -60,8 +95,8 @@ Two versions move independently in Harbor (RFC §5.3):
   block identity without trimming or rewriting whitespace. Only choice index 0
   contributes content, reasoning, tool calls, or callbacks. The same bytes are
   verified through live callbacks, completed responses, planner decisions,
-  task trajectory, durable restart history, and Console history rendering
-  (HA-51, D-402). This is an internal fidelity correction with no
+  task trajectory, durable restart history, and Console history rendering.
+  This is an internal fidelity correction with no
   Protocol type, method, event, error, manifest, or version change.
 
 ## [1.25.0] — 2026-08-01
@@ -4218,7 +4253,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.25.0...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.0...HEAD
+[1.26.0]: https://github.com/hurtener/Harbor/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/hurtener/Harbor/compare/v1.24.0...v1.25.0
 [1.10.0]: https://github.com/hurtener/Harbor/releases/tag/v1.10.0
 [1.0.0]: https://github.com/hurtener/Harbor/releases/tag/v1.0.0
