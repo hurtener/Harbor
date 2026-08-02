@@ -106,7 +106,12 @@ type MuxInput struct {
 	AgentConfig    agentcfg.Registry
 	AgentConfigID  string
 	SessionOverlay sessionoverlay.Store
-	RunsStore      *runsprotocol.Store
+	// SessionPersonalSkillController is the single durable authority for the
+	// session-personal skill Protocol tier and its dynamic overlay projection.
+	// Nil keeps those methods fail-loud/unavailable; BuildMux never falls back
+	// to SkillStore or the schema-1 Overlay.PersonalSkills field.
+	SessionPersonalSkillController agentcfgprotocol.SessionPersonalSkillController
+	RunsStore                      *runsprotocol.Store
 	// RunLoopDriver backs the tasks.get trajectory enricher. Nil leaves
 	// tasks reads un-enriched (a stack without a run loop).
 	RunLoopDriver  *RunLoopDriver
@@ -667,6 +672,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithCoordinator(in.Coordinator),
 			agentcfgprotocol.WithStdioAllowlist(append([]string(nil), in.MCPStdioAllowlist...)),
 			agentcfgprotocol.WithSessionOverlay(in.SessionOverlay),
+			agentcfgprotocol.WithSessionPersonalSkillController(in.SessionPersonalSkillController),
 			agentcfgprotocol.WithValidModels(in.ValidModels),
 			agentcfgprotocol.WithBootDeclaredMCPServers(append([]string(nil), in.BootDeclaredMCP...)),
 			agentcfgprotocol.WithBootDeclaredOAuthProviders(append([]string(nil), in.BootDeclaredOAuth...)),

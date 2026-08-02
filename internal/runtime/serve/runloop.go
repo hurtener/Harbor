@@ -430,6 +430,9 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 	if snapshotDeps != 0 && snapshotDeps != 3 {
 		return nil, fmt.Errorf("%w: skill snapshot dependencies must be wired together", ErrRunLoopDriverMisconfigured)
 	}
+	if opts.SkillsDirectory != nil && snapshotDeps == 0 {
+		return nil, fmt.Errorf("%w: skills directory requires the complete run snapshot authority", ErrRunLoopDriverMisconfigured)
+	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}

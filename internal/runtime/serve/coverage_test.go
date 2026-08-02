@@ -576,6 +576,10 @@ func TestPerTaskRunLoop_FullyWired_DrivesCompletingRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("skills.NewDirectory: %v", err)
 	}
+	skillAuthority, err := NewSessionPersonalSkillAuthority(context.Background(), st, skillStore, nil)
+	if err != nil {
+		t.Fatalf("NewSessionPersonalSkillAuthority: %v", err)
+	}
 	agentCfgReg, err := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: st, Bus: bus})
 	if err != nil {
 		t.Fatalf("agentcfg.Open: %v", err)
@@ -600,23 +604,26 @@ func TestPerTaskRunLoop_FullyWired_DrivesCompletingRun(t *testing.T) {
 	p := &driverTestPlanner{finishGoalImmediately: true, finishPayload: map[string]any{"answer": "ok"}}
 
 	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
-		Bus:              bus,
-		RunLoop:          rl,
-		Planner:          p,
-		Tasks:            reg,
-		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Memory:           mem,
-		SkillsDirectory:  skillsDir,
-		Catalog:          cat,
-		Executor:         executor,
-		ArtifactStore:    artStore,
-		GrantedScopes:    []string{"scope-a"},
-		AgentConfig:      agentCfgReg,
-		AgentConfigID:    "coverage-agent",
-		SessionOverlay:   overlay,
-		SessionOverrides: runsStore,
-		TenantOverrides:  fakeTenantOverrides{set: false},
-		MaxStepsRunLoop:  4,
+		Bus:                   bus,
+		RunLoop:               rl,
+		Planner:               p,
+		Tasks:                 reg,
+		Logger:                slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Memory:                mem,
+		SkillsDirectory:       skillsDir,
+		SkillStore:            skillStore,
+		SessionPersonalSkills: skillAuthority.Personal,
+		SessionSkillCutover:   skillAuthority.Cutover,
+		Catalog:               cat,
+		Executor:              executor,
+		ArtifactStore:         artStore,
+		GrantedScopes:         []string{"scope-a"},
+		AgentConfig:           agentCfgReg,
+		AgentConfigID:         "coverage-agent",
+		SessionOverlay:        overlay,
+		SessionOverrides:      runsStore,
+		TenantOverrides:       fakeTenantOverrides{set: false},
+		MaxStepsRunLoop:       4,
 	})
 	if err != nil {
 		t.Fatalf("NewRunLoopDriver: %v", err)

@@ -428,6 +428,27 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		return nil, fmt.Errorf("agent-config session-overlay store: %w", err)
 	}
 	closers = append(closers, sessionOverlayStore.Close)
+	var sessionPersonalAuthority *SessionPersonalSkillAuthority
+	if skillStore != nil {
+		sessionPersonalAuthority, err = NewSessionPersonalSkillAuthority(
+			ctx,
+			stack.State,
+			skillStore,
+			cfg.Skills.SessionPersonalCutover.Tenants,
+		)
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("agent-config session-personal skill authority: %w", err)
+		}
+	}
+	var sessionPersonalStore *sessionoverlay.DurableStore
+	var sessionPersonalCutover sessionoverlay.CutoverModeReader
+	var sessionPersonalController agentcfgprotocol.SessionPersonalSkillController
+	if sessionPersonalAuthority != nil {
+		sessionPersonalStore = sessionPersonalAuthority.Personal
+		sessionPersonalCutover = sessionPersonalAuthority.Cutover
+		sessionPersonalController = sessionPersonalAuthority.Controller
+	}
 
 	// The Protocol ControlSurface. A start on a not-yet-existing session
 	// materialises its registry row via the create-on-first-use ensurer.
@@ -580,6 +601,9 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		MemoryRecall:            memory.RecallFromConfig(cfg.Memory),
 		SkillsDirectory:         skillsDir,
 		PlanningHints:           planner.HintsFromConfig(cfg.Planner.PlanningHints),
+		SkillStore:              skillStore,
+		SessionPersonalSkills:   sessionPersonalStore,
+		SessionSkillCutover:     sessionPersonalCutover,
 		Catalog:                 toolCat,
 		Executor:                stack.Executor,
 		MaxStepsRunLoop:         cfg.Planner.MaxSteps,
@@ -639,51 +663,52 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 
 	built, err := BuildMux(MuxInput{
-		Cfg:                      cfg,
-		Surface:                  surface,
-		Bus:                      bus,
-		Redactor:                 red,
-		Logger:                   opts.Logger,
-		Metrics:                  metricsReg,
-		LLMSnapshot:              llmCfg,
-		Tasks:                    taskReg,
-		Sessions:                 sessionRegistry,
-		Agents:                   agentRegistry,
-		Artifacts:                artStore,
-		Memory:                   memStore,
-		Catalog:                  toolCat,
-		Coordinator:              coord,
-		MCPRegistry:              mcpRegistry,
-		MCPToolContext:           mcpToolContext,
-		State:                    stack.State,
-		Skills:                   skillStore,
-		AgentConfig:              agentConfigRegistry,
-		AgentConfigID:            devAgentConfigID,
-		SessionOverlay:           sessionOverlayStore,
-		RunsStore:                runsStore,
-		RunLoopDriver:            runLoopDriver,
-		OAuthProviders:           oauthProviders,
-		TenantOverridePolicy:     tenantOverridePolicy,
-		SetPosturePolicy:         setPosturePolicy,
-		KeyRotator:               stack.KeyRotator,
-		ValidModels:              validModels,
-		MCPAttacher:              mcpAttacher,
-		MCPStdioAllowlist:        MCPAddStdioAllowlist(cfg),
-		BootDeclaredMCP:          BootDeclaredMCPServerNames(cfg),
-		BootDeclaredOAuth:        BootDeclaredOAuthProviderNames(cfg),
-		AllowWireOAuthDescriptor: allowWireOAuthDescriptor,
-		AllowWireInjection:       cfg.Tools.AllowWireInjection || toolauth.AllowWireInjectionCaptured(),
-		OAuthProviderInstaller:   oauthProviderInstaller,
-		LLMProviderInstaller:     llmProviderInstaller,
-		InferenceBrokers:         inferenceBrokerNames,
-		Validator:                validator,
-		AuthSurface:              authSurface,
-		AgentReach:               agentReach,
-		DisplayName:              opts.DisplayName,
-		InstanceID:               opts.InstanceID,
-		BuildVersion:             opts.BuildVersion,
-		BuildCommit:              opts.BuildCommit,
-		TopologyAvailable:        false,
+		Cfg:                            cfg,
+		Surface:                        surface,
+		Bus:                            bus,
+		Redactor:                       red,
+		Logger:                         opts.Logger,
+		Metrics:                        metricsReg,
+		LLMSnapshot:                    llmCfg,
+		Tasks:                          taskReg,
+		Sessions:                       sessionRegistry,
+		Agents:                         agentRegistry,
+		Artifacts:                      artStore,
+		Memory:                         memStore,
+		Catalog:                        toolCat,
+		Coordinator:                    coord,
+		MCPRegistry:                    mcpRegistry,
+		MCPToolContext:                 mcpToolContext,
+		State:                          stack.State,
+		Skills:                         skillStore,
+		AgentConfig:                    agentConfigRegistry,
+		AgentConfigID:                  devAgentConfigID,
+		SessionOverlay:                 sessionOverlayStore,
+		SessionPersonalSkillController: sessionPersonalController,
+		RunsStore:                      runsStore,
+		RunLoopDriver:                  runLoopDriver,
+		OAuthProviders:                 oauthProviders,
+		TenantOverridePolicy:           tenantOverridePolicy,
+		SetPosturePolicy:               setPosturePolicy,
+		KeyRotator:                     stack.KeyRotator,
+		ValidModels:                    validModels,
+		MCPAttacher:                    mcpAttacher,
+		MCPStdioAllowlist:              MCPAddStdioAllowlist(cfg),
+		BootDeclaredMCP:                BootDeclaredMCPServerNames(cfg),
+		BootDeclaredOAuth:              BootDeclaredOAuthProviderNames(cfg),
+		AllowWireOAuthDescriptor:       allowWireOAuthDescriptor,
+		AllowWireInjection:             cfg.Tools.AllowWireInjection || toolauth.AllowWireInjectionCaptured(),
+		OAuthProviderInstaller:         oauthProviderInstaller,
+		LLMProviderInstaller:           llmProviderInstaller,
+		InferenceBrokers:               inferenceBrokerNames,
+		Validator:                      validator,
+		AuthSurface:                    authSurface,
+		AgentReach:                     agentReach,
+		DisplayName:                    opts.DisplayName,
+		InstanceID:                     opts.InstanceID,
+		BuildVersion:                   opts.BuildVersion,
+		BuildCommit:                    opts.BuildCommit,
+		TopologyAvailable:              false,
 	})
 	if err != nil {
 		closeAll(ctx)

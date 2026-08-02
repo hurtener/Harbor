@@ -412,6 +412,10 @@ type DevStack struct {
 	// run-start composition. Keyed by the real (tenant, user, session) triple,
 	// so it is session-isolated. Nil when the StateStore is unavailable.
 	SessionOverlay sessionoverlay.Store
+	// SessionPersonalSkillAuthority is the complete durable cutover/controller
+	// graph shared by Protocol session-personal methods and run-start snapshots.
+	// Nil when the skills subsystem is absent.
+	SessionPersonalSkillAuthority *serve.SessionPersonalSkillAuthority
 
 	// Catalog / Coordinator / Gates / OAuthProviders are nil when
 	// SkipCatalog is set. The Gates map is keyed by tool name and
@@ -666,6 +670,18 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		}
 		stack.SessionOverlay = ovStore
 		stack.closeFns = append(stack.closeFns, ovStore.Close)
+		if stack.Skills != nil {
+			authority, authorityErr := serve.NewSessionPersonalSkillAuthority(
+				context.Background(),
+				core.State,
+				stack.Skills,
+				cfg.Skills.SessionPersonalCutover.Tenants,
+			)
+			if authorityErr != nil {
+				return stack, fmt.Errorf("agent-config session-personal skill authority: %w", authorityErr)
+			}
+			stack.SessionPersonalSkillAuthority = authority
+		}
 
 		tp, tpErr := governance.NewTenantOverridePolicy(core.State, bus, devstackValidModels(cfg), nil)
 		if tpErr != nil {
@@ -822,6 +838,9 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				MemoryRecall:            memory.RecallFromConfig(cfg.Memory),
 				SkillsDirectory:         skillsDir,
 				PlanningHints:           resolvePlanningHints(opts, cfg),
+				SkillStore:              stack.Skills,
+				SessionPersonalSkills:   devSessionPersonalStore(stack.SessionPersonalSkillAuthority),
+				SessionSkillCutover:     devSessionPersonalCutover(stack.SessionPersonalSkillAuthority),
 				Catalog:                 stack.Catalog,
 				Executor:                core.Executor,
 				MaxStepsRunLoop:         cfg.Planner.MaxSteps,
@@ -975,51 +994,52 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// agents / auth-rotate / governance-override / governance-key-rotate
 		// surfaces the mirror omitted.
 		built, bErr := serve.BuildMux(serve.MuxInput{
-			Cfg:                      cfg,
-			Surface:                  stack.Surface,
-			Bus:                      bus,
-			Redactor:                 stack.Audit,
-			Logger:                   lg,
-			Metrics:                  metricsReg,
-			LLMSnapshot:              llmPostureCfg,
-			Tasks:                    stack.Tasks,
-			Sessions:                 stack.Sessions,
-			Agents:                   core.Agents,
-			Artifacts:                stack.Artifacts,
-			Memory:                   stack.Memory,
-			Catalog:                  stack.Catalog,
-			Coordinator:              stack.Coordinator,
-			MCPRegistry:              stack.MCPRegistry,
-			MCPToolContext:           stack.MCPToolContext,
-			State:                    stack.State,
-			Skills:                   stack.Skills,
-			AgentConfig:              stack.AgentConfig,
-			AgentConfigID:            stack.AgentConfigID,
-			SessionOverlay:           stack.SessionOverlay,
-			RunsStore:                runsStore,
-			RunLoopDriver:            stack.RunLoopDriver,
-			OAuthProviders:           stack.OAuthProviders,
-			TenantOverridePolicy:     tenantPolicy,
-			SetPosturePolicy:         setPosturePolicy,
-			KeyRotator:               core.KeyRotator,
-			ValidModels:              devstackValidModels(cfg),
-			MCPAttacher:              attacher,
-			MCPStdioAllowlist:        append([]string(nil), opts.MCPStdioAllowlist...),
-			BootDeclaredMCP:          serve.BootDeclaredMCPServerNames(cfg),
-			BootDeclaredOAuth:        serve.BootDeclaredOAuthProviderNames(cfg),
-			AllowWireOAuthDescriptor: cfg.Tools.AllowWireOAuthDescriptor,
-			AllowWireInjection:       cfg.Tools.AllowWireInjection,
-			OAuthProviderInstaller:   oauthProviderInstaller,
-			LLMProviderInstaller:     llmProviderInstaller,
-			InferenceBrokers:         inferenceBrokerNames,
-			Validator:                stack.Validator,
-			AuthSurface:              rotateSurface,
-			AgentReach:               stack.AgentReach,
-			DisplayName:              "harbor devstack",
-			InstanceID:               "harbor-devstack",
-			BuildVersion:             "devstack",
-			BuildCommit:              "devstack",
-			TopologyAvailable:        false,
+			Cfg:                            cfg,
+			Surface:                        stack.Surface,
+			Bus:                            bus,
+			Redactor:                       stack.Audit,
+			Logger:                         lg,
+			Metrics:                        metricsReg,
+			LLMSnapshot:                    llmPostureCfg,
+			Tasks:                          stack.Tasks,
+			Sessions:                       stack.Sessions,
+			Agents:                         core.Agents,
+			Artifacts:                      stack.Artifacts,
+			Memory:                         stack.Memory,
+			Catalog:                        stack.Catalog,
+			Coordinator:                    stack.Coordinator,
+			MCPRegistry:                    stack.MCPRegistry,
+			MCPToolContext:                 stack.MCPToolContext,
+			State:                          stack.State,
+			Skills:                         stack.Skills,
+			AgentConfig:                    stack.AgentConfig,
+			AgentConfigID:                  stack.AgentConfigID,
+			SessionOverlay:                 stack.SessionOverlay,
+			SessionPersonalSkillController: devSessionPersonalController(stack.SessionPersonalSkillAuthority),
+			RunsStore:                      runsStore,
+			RunLoopDriver:                  stack.RunLoopDriver,
+			OAuthProviders:                 stack.OAuthProviders,
+			TenantOverridePolicy:           tenantPolicy,
+			SetPosturePolicy:               setPosturePolicy,
+			KeyRotator:                     core.KeyRotator,
+			ValidModels:                    devstackValidModels(cfg),
+			MCPAttacher:                    attacher,
+			MCPStdioAllowlist:              append([]string(nil), opts.MCPStdioAllowlist...),
+			BootDeclaredMCP:                serve.BootDeclaredMCPServerNames(cfg),
+			BootDeclaredOAuth:              serve.BootDeclaredOAuthProviderNames(cfg),
+			AllowWireOAuthDescriptor:       cfg.Tools.AllowWireOAuthDescriptor,
+			AllowWireInjection:             cfg.Tools.AllowWireInjection,
+			OAuthProviderInstaller:         oauthProviderInstaller,
+			LLMProviderInstaller:           llmProviderInstaller,
+			InferenceBrokers:               inferenceBrokerNames,
+			Validator:                      stack.Validator,
+			AuthSurface:                    rotateSurface,
+			AgentReach:                     stack.AgentReach,
+			DisplayName:                    "harbor devstack",
+			InstanceID:                     "harbor-devstack",
+			BuildVersion:                   "devstack",
+			BuildCommit:                    "devstack",
+			TopologyAvailable:              false,
 		})
 		if bErr != nil {
 			return stack, bErr
@@ -1107,6 +1127,27 @@ func resolveMemoryStore(opts AssembleOpts, stack *DevStack) memory.MemoryStore {
 		return opts.MemoryStore
 	}
 	return stack.Memory
+}
+
+func devSessionPersonalStore(authority *serve.SessionPersonalSkillAuthority) *sessionoverlay.DurableStore {
+	if authority == nil {
+		return nil
+	}
+	return authority.Personal
+}
+
+func devSessionPersonalCutover(authority *serve.SessionPersonalSkillAuthority) sessionoverlay.CutoverModeReader {
+	if authority == nil {
+		return nil
+	}
+	return authority.Cutover
+}
+
+func devSessionPersonalController(authority *serve.SessionPersonalSkillAuthority) agentcfgprotocol.SessionPersonalSkillController {
+	if authority == nil {
+		return nil
+	}
+	return authority.Controller
 }
 
 // resolveSkillsContextMax returns the per-task driver's skills cap: an
