@@ -1447,8 +1447,9 @@ Its writable connection is the closed
 tool_denylist, connect_timeout_ms, request_timeout_ms}`, never a general MCP
 descriptor; strict decode/reflection reject OAuth/provider, credential/secret,
 injection/discovery, stdio, headers, and host/sink-list fields. Removal is the
-durable exact-EventID `SaveIf` sequence `removal_revision_committed`,
-`catalog_unpublished`, `teardown_receipted`, then terminal `removed`; unknown
+durable exact-EventID `SaveIf` sequence `removal_admitted`,
+`removal_revision_committed`, `catalog_unpublished`, `teardown_receipted`, then
+terminal `removed`; unknown
 outcomes reread and resume the missing phase from its frozen fingerprint.
 Its provider is pair-owned outside the general ProviderSet; catalog source swap
 alone exposes dispatch, while Protocol projection comes from the immutable
@@ -1471,8 +1472,9 @@ fields/hashes, pair fingerprint, expiry, revision, phase, opaque publisher
 epoch, and exact EventID. The epoch is internal and never rides the wire,
 revision, broker actor assertion, or audit.
 Its sole normal pair-lifetime graph is `claimed -> revision_committed ->
-published -> removal_revision_committed -> catalog_unpublished ->
-teardown_receipted -> removed`, all by exact-EventID `SaveIf`; only incomplete
+published -> removal_admitted -> removal_revision_committed ->
+catalog_unpublished -> teardown_receipted -> removed`, all by exact-EventID
+`SaveIf`; only incomplete
 `claimed`/`revision_committed` may terminally become `expired_incomplete` and
 clean after expiry+skew. A published record remains with immutable pair history
 despite registration-authority expiry/key revocation for later frozen-fingerprint
