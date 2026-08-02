@@ -1460,8 +1460,15 @@ issued-at/expiry, and a durable one-time replay ID (JTI). Its tenant-scoped
 operation key is `(tenant_id, trust_anchor_name, issuer, kid, jti)` and has a
 canonical length-prefixed tuple-hash control record containing bounded tuple
 fields/hashes, pair fingerprint, expiry, revision, phase, and exact EventID.
-`claimed`, `revision_committed`, `published`, and terminal `removed` transition
-only by `SaveIf`; exact tuple/fingerprint resumes phase while a different
+Its sole normal pair-lifetime graph is `claimed -> revision_committed ->
+published -> removal_revision_committed -> catalog_unpublished ->
+teardown_receipted -> removed`, all by exact-EventID `SaveIf`; only incomplete
+`claimed`/`revision_committed` may terminally become `expired_incomplete` and
+clean after expiry+skew. A published record remains with immutable pair history
+despite registration-authority expiry/key revocation for later frozen-fingerprint
+removal; its retention is not bearer authority. The `removed` tombstone remains
+with pair history (and at least through authority expiry+skew) to reject replay
+or recreation. Exact tuple/fingerprint resumes phase while a different
 fingerprint rejects. Stored-pair activation requires published state, rather
 than treating it as a fresh replay. Administrator-supplied fields merely request
 the signed values; the envelope carries neither credentials nor arbitrary sinks.

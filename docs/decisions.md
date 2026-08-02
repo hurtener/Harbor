@@ -12017,19 +12017,29 @@ isolation remains tenant-local. A reserved tenant-control-scope record uses a
 collision-safe deterministic Kind derived from a canonical length-prefixed
 tuple hash; its bounded payload repeats tuple hashes/fields, exact pair
 fingerprint, expiry, phase, and revision identity. First `SaveIf`-absent claim
-retains the operation through expiry plus bounded skew. It transitions only
-`claimed -> revision_committed -> published`; paired remove/retire becomes
-`removed`; every transition `SaveIf`-compares the exact operation EventID.
-There is no claim+revision cross-record ACID assertion: this durable state
-machine is recovery. Exact tuple+fingerprint resumes phase; same key/different
-fingerprint rejects. `claimed` retries prepare again; uncertain revision write
-exact-rereads active revision/fingerprint to advance, retry, or conflict;
+creates one pair-lifetime operation record. Its sole normal graph is
+`claimed -> revision_committed -> published -> removal_revision_committed ->
+catalog_unpublished -> teardown_receipted -> removed`; every transition
+`SaveIf`-compares the exact operation EventID. There is no generic `aborted`
+phase: a prepared-but-incomplete claim retries its recorded phase. Only
+`claimed` or `revision_committed` may terminally enter `expired_incomplete`
+after safe close/compensation and a preserved prior/no-active activation fence;
+that tombstone remains until expiry+skew before cleanup. There is no
+claim+revision cross-record ACID assertion: this durable state machine is
+recovery. Exact tuple+fingerprint resumes phase; same key/different fingerprint
+rejects. `claimed` retries prepare again; uncertain revision write exact-rereads
+active revision/fingerprint to advance, retry, or conflict;
 `revision_committed` re-prepares/re-publishes after restart; publish-then-
 checkpoint errors verify the exact live pair before advancing; `published`
-returns the original response; and `removed` never recreates. Expired incomplete
-operations close/reject and remain retained/tombstoned until expiry+skew; only
-then may cleanup run. Unknown broker/issuer/key, malformed authority, scope
-widening, or mismatch fails before a live side effect.
+returns the original response; and `removed` never recreates. A `published`
+record survives registration-authority expiry or verifier-key revocation for the
+full immutable pair-history lifetime, so removal/retirement resumes from its
+frozen fingerprint. That durable record is a recovery/replay constraint, not a
+bearer grant: exchange still enforces current entitlement and exact binding.
+`removed` is retained as an anti-replay tombstone with pair history and never
+less than the authority expiry+skew horizon, preventing recreation or replay.
+Unknown broker/issuer/key, malformed authority, scope widening, or mismatch
+fails before a live side effect.
 
 One named shared canonical-URL helper supplies signer/verifier matching, pair
 fingerprinting, transport enforcement, and restart/reconcile. It requires
@@ -12060,8 +12070,9 @@ resolution cannot bind the pair. A pair-owned live registry may retain only
 close/reconcile receipts, never authority/projection/dispatch. General bare-name
 collision checking remains. Prepare is never durable and closes on failure or
 restart; teardown closes transport+provider as one receipt. Generic revision
-writers remain closed against a pair. Paired removal is the durable exact-EventID
-`SaveIf` sequence `removal_revision_committed` (desired pair absent by revision
+writers remain closed against a pair. Paired removal continues the same
+pair-lifetime JTI record; it is never a second operation. It is the durable
+exact-EventID `SaveIf` sequence `removal_revision_committed` (desired pair absent by revision
 CAS), `catalog_unpublished`, `teardown_receipted` (close+revoke from frozen
 fingerprint), then terminal `removed`. Commit-then-error or unknown outcomes
 exact-reread the operation phase/EventID, desired revision, catalog source, and

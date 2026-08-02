@@ -396,8 +396,10 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
   envelope, rather than administrator input, exactly binds tenant/agent,
   broker, provider/capability revision, URL digest, audience, normalized
   scopes, issuer/key/timing, and replay ID. A tenant-scoped operation record
-  advances by exact EventID through claim/revision/publish and paired-removal
-  phases, so restart resumes rather than repeats a claim. One shared canonical URL helper
+  advances by exact EventID through one pair-lifetime claim/revision/publish/
+  removal graph, retaining a published record through authority expiry/key
+  revocation and an anti-replay removed tombstone, so restart resumes rather
+  than repeats a claim. One shared canonical URL helper
   governs signing, fingerprinting, transport, and reconcile. Pair provider
   resolution stays outside general ProviderSet; catalog source swap is the sole
   dispatch point. Generic revision edits cannot forge, omit, or split the

@@ -98,19 +98,27 @@ explicit signed-capability production opt-in; it is not enabled by default.
   reserved tenant control-scope record uses a collision-safe deterministic Kind
   from the canonical length-prefixed tuple hash. Its bounded payload repeats
   tuple hashes/fields, exact pair fingerprint, expiry, phase, and revision
-  identity. First claim is a `SaveIf`-absent record retained through expiry plus
-  bounded skew; cleanup occurs only after expiry. It transitions only
-  `claimed -> revision_committed -> published`, and paired remove/retire moves
-  it to `removed`; every transition `SaveIf`-compares its exact operation
-  EventID. No claim+revision cross-record ACID is asserted: this durable state
-  machine is recovery. Exact tuple+fingerprint retries resume phase; the same
-  key with a different fingerprint rejects. A `claimed` retry re-prepares;
+  identity. One pair-lifetime record has exactly one normal graph:
+  `claimed -> revision_committed -> published -> removal_revision_committed -> catalog_unpublished -> teardown_receipted -> removed`.
+  Every transition `SaveIf`-compares its exact operation EventID. There is no
+  generic `aborted` phase: a prepared-but-incomplete claim retries its recorded
+  phase. Only `claimed` or `revision_committed` may terminally enter
+  `expired_incomplete`, after safe close/compensation and a preserved
+  prior/no-active activation fence; that tombstone cleans only after expiry plus
+  bounded skew. No claim+revision cross-record ACID is asserted: this durable
+  state machine is recovery. Exact tuple+fingerprint retries resume phase; the
+  same key with a different fingerprint rejects. A `claimed` retry re-prepares;
   uncertain revision write exact-rereads active revision/fingerprint to advance,
   retry, or conflict; `revision_committed` re-prepares/re-publishes after
   restart; publish-then-checkpoint error verifies the exact live pair before
   advancing; `published` returns the original response; `removed` never
-  recreates. Expired incomplete records close/reject and remain
-  retained/tombstoned through the expiry/skew horizon.
+  recreates. A `published` record remains durable for the full immutable
+  pair-history lifetime despite registration-authority expiry or verifier-key
+  revocation, so removal/retirement resumes from the frozen fingerprint. It is
+  a recovery/replay constraint rather than a bearer grant: exchange still
+  validates current entitlement and exact binding. `removed` remains an
+  anti-replay tombstone with pair history and never less than the authority
+  expiry-plus-skew horizon, preventing recreation/replay.
 - [ ] A signed provider is pair-owned and outside the general `ProviderSet`.
   Private MCP preparation binds directly to that exact provider instance; a
   catalog source swap is the sole data-plane dispatch linearization point.
@@ -151,8 +159,9 @@ explicit signed-capability production opt-in; it is not enabled by default.
   Rollback activation performs full binding verification, while paired removal
   and retirement use the frozen durable pair fingerprint to close/revoke even
   if envelope verification would now fail.
-- [ ] Paired removal is a durable operation, never a best-effort close. Its
-  exact EventID `SaveIf` subphases are `removal_revision_committed` (desired
+- [ ] Paired removal continues that same pair-lifetime JTI operation; it is not
+  a second operation or handoff. It is a durable operation, never a best-effort
+  close. Its exact EventID `SaveIf` subphases are `removal_revision_committed` (desired
   pair absent by revision CAS), `catalog_unpublished`, `teardown_receipted`
   (transport/provider close+revoke from frozen fingerprint), then terminal
   `removed` checkpoint. Each commit-then-error or unknown outcome exact-rereads
@@ -164,9 +173,11 @@ explicit signed-capability production opt-in; it is not enabled by default.
 - [ ] Reconcile/restart/rollback activate only a stored immutable pair whose
   operation record is exactly `published`, whose fingerprint/bindings verify,
   and whose activation fence is committed; they never classify that stored JTI
-  as a fresh replay. They fail closed for an incomplete/expired/unentitled
-  operation, JTI bound to another fingerprint, unknown broker, scope widening,
-  URL mismatch, provider collision, pending fence, or pair half-state.
+  as a fresh replay. They fail closed for an incomplete operation, absent current
+  exchange entitlement, JTI bound to another fingerprint, unknown broker, scope
+  widening, URL mismatch, provider collision, pending fence, or pair half-state.
+  Registration-authority expiry/key revocation neither deletes nor replays a
+  published record nor blocks its frozen-fingerprint paired removal/retirement.
 - [ ] Before a first-install candidate can become semantically active,
   `set_oauth_provider` creates a durable pending-activation/compensation fence
   under the agent scope. The fence binds exact operation/content fingerprint,
@@ -224,8 +235,10 @@ explicit signed-capability production opt-in; it is not enabled by default.
 
 - **Unit:** strict wire decoding; claim matching; JTI operation Kind/payload
   construction; every operation/fence phase, EventID CAS, unknown-outcome reread,
-  expiry/skew retention, remove terminality, and same-key/different-fingerprint
-  refusal; scope-ceiling loud refusal; canonical URL golden bytes/digest/sink
+  full legal JTI graph, expiry/skew incomplete-only cleanup, published
+  pair-lifetime retention through authority expiry/key revocation, removed
+  anti-replay tombstone retention, remove terminality, and
+  same-key/different-fingerprint refusal; scope-ceiling loud refusal; canonical URL golden bytes/digest/sink
   equality including IDNA, RFC5952 IPv6, encoded dot, leading-zero port,
   absent-versus-empty query, and percent/query edge cases; dedicated descriptor
   reflection/strict-decode rejection; pair fingerprint and writer/removal census;

@@ -1565,16 +1565,27 @@ The envelope is authority, not administrator input. Its durable operation key is
 tenant-scoped `(tenant_id, trust_anchor_name, issuer, kid, jti)`; a reserved
 tenant-control-scope record uses a canonical length-prefixed tuple-hash Kind and
 stores bounded tuple fields/hashes, exact pair fingerprint, expiry, phase, and
-revision identity. `SaveIf` claims absent then transitions only
-`claimed -> revision_committed -> published`; remove/retire reaches `removed`.
-Every phase transition compares its exact operation EventID, and expiry+bounded
-skew retains incomplete records before cleanup. Exact tuple+fingerprint resumes
-the recorded phase; same key/different fingerprint rejects. `claimed` retries
+revision identity. One pair-lifetime operation record has exactly one normal
+graph: `claimed -> revision_committed -> published ->
+removal_revision_committed -> catalog_unpublished -> teardown_receipted ->
+removed`. Every phase transition compares its exact operation EventID. There is
+no generic `aborted` phase: a prepared-but-incomplete claim retries its current
+phase until it becomes terminal. Only `claimed` or `revision_committed` may
+transition to terminal `expired_incomplete`, after safe close/compensation and
+the activation fence preserve prior/no-active; that tombstone is retained until
+expiry plus bounded skew before cleanup. Exact tuple+fingerprint resumes the
+recorded phase; same key/different fingerprint rejects. `claimed` retries
 prepare; uncertain revision writes exact-reread; `revision_committed`
 re-prepares/re-publishes after restart; publish checkpoint errors verify the
-exact live pair; `published` returns the original response; `removed` never
-recreates. This recovery state machine explicitly does not claim cross-record
-ACID with the revision.
+exact live pair; `published` returns the original response; and `removed` never
+recreates. A published record is retained for its pair's full immutable-history
+lifetime even after the registration authority expires or its verifier key is
+revoked: this is a recovery/replay constraint, not continued bearer authority,
+which still requires current exchange entitlement and exact binding. `removed`
+is a durable anti-replay tombstone retained with that pair history (and never
+less than the accepted authority expiry-plus-skew horizon), so no retry or
+replay can recreate the pair. This recovery state machine explicitly does not
+claim cross-record ACID with the revision.
 
 One shared canonical URL-byte helper serves signing, matching, fingerprinting,
 transport, and reconcile: absolute HTTPS only; IDNA2008 lower-case ASCII host
@@ -1592,7 +1603,8 @@ prepare binds directly to it, and only catalog source swap makes data-plane
 dispatch visible. Protocol projections come from immutable pair revision;
 generic provider resolution cannot bind it. A pair-owned registry holds only
 close/reconcile receipts. Generic writers remain closed against pair halves.
-Paired removal is a durable `SaveIf` recovery sequence:
+Paired removal is the latter four transitions of that same pair-lifetime record,
+not a second operation. It is a durable `SaveIf` recovery sequence:
 `removal_revision_committed` (desired pair absent by revision CAS),
 `catalog_unpublished`, `teardown_receipted` (transport/provider close+revoke
 from frozen fingerprint), then `removed`. A commit-then-error or unknown
