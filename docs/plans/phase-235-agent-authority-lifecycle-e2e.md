@@ -35,6 +35,19 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 - Close every FAIL/WARN from a read-only checkpoint audit before release.
 - Produce complete v1.26.0 release evidence and operator migration notes.
 
+## Checkpoint status
+
+The checkpoint implementation is complete and publication remains in progress.
+The named suite executes real SQLite signed-capability registration, publisher
+takeover, stale-publisher denial, empty-runtime removal, restart/reconcile,
+four-slot session-personal authority, erasure, inflight-run retirement drain,
+retirement cleanup restart, and byte-exact reasoning durability. Its isolated-
+schema Postgres leg races two independent runtimes across retirement versus
+agent/user config, rollback, second retirement, signed registration/removal,
+and erasure versus overlay/personal writes. The read-only audit, hosted
+preflight, release-build, and publication criteria remain open; this phase is
+not checkpointed yet.
+
 ## Non-goals
 
 - No new feature surface beyond corrections required by composing tests or audit findings.
