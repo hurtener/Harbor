@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
@@ -196,23 +197,27 @@ func TestSessionPersonalController_ReadPropagatesBeforeAfterFenceAndModeFailures
 	id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}}
 	active := []boundaryLoadResult{{record: activeLifecycleBoundaryRecord()}, noRecordBoundaryLoad(), noRecordBoundaryLoad()}
 	legacyAbsent := noRecordBoundaryLoad()
+	beforeFenceErr := errors.New("before offline")
+	afterFenceErr := errors.New("after offline")
+	afterModeErr := errors.New("mode reread offline")
 	for _, tc := range []struct {
 		name    string
 		loads   []boundaryLoadResult
 		cutover CutoverModeReader
+		want    error
 	}{
-		{name: "before fence storage failure", loads: []boundaryLoadResult{{err: errors.New("before offline")}}, cutover: fixedCutoverReader{mode: CutoverDualRead}},
-		{name: "after fence storage failure", loads: append(append([]boundaryLoadResult{}, active...), legacyAbsent, boundaryLoadResult{err: errors.New("after offline")}), cutover: fixedCutoverReader{mode: CutoverDualRead}},
-		{name: "after retirement", loads: append(append([]boundaryLoadResult{}, active...), legacyAbsent, boundaryLoadResult{record: terminalLifecycleBoundaryRecord()}, noRecordBoundaryLoad(), noRecordBoundaryLoad()), cutover: fixedCutoverReader{mode: CutoverDualRead}},
-		{name: "after mode failure", loads: append(append(append([]boundaryLoadResult{}, active...), legacyAbsent), active...), cutover: &sequenceCutoverReader{results: []cutoverReadResult{{mode: CutoverDualRead}, {err: errors.New("mode reread offline")}}}},
+		{name: "before fence storage failure", loads: []boundaryLoadResult{{err: beforeFenceErr}}, cutover: fixedCutoverReader{mode: CutoverDualRead}, want: ErrStateUnavailable},
+		{name: "after fence storage failure", loads: append(append([]boundaryLoadResult{}, active...), legacyAbsent, boundaryLoadResult{err: afterFenceErr}), cutover: fixedCutoverReader{mode: CutoverDualRead}, want: ErrStateUnavailable},
+		{name: "after retirement", loads: append(append([]boundaryLoadResult{}, active...), legacyAbsent, boundaryLoadResult{record: terminalLifecycleBoundaryRecord()}, noRecordBoundaryLoad(), noRecordBoundaryLoad()), cutover: fixedCutoverReader{mode: CutoverDualRead}, want: agentcfg.ErrAgentRetired},
+		{name: "after mode failure", loads: append(append(append([]boundaryLoadResult{}, active...), legacyAbsent), active...), cutover: &sequenceCutoverReader{results: []cutoverReadResult{{mode: CutoverDualRead}, {err: afterModeErr}}}, want: afterModeErr},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			controller := &SessionPersonalController{
 				personal: &DurableStore{state: &scriptedBoundaryStateStore{loads: append([]boundaryLoadResult(nil), tc.loads...)}, clock: time.Now},
 				cutover:  tc.cutover, legacy: boundarySkillReader{},
 			}
-			if _, err := controller.SessionSkills(context.Background(), id, "agent-a"); err == nil {
-				t.Fatal("dependency/fence failure accepted")
+			if _, err := controller.SessionSkills(context.Background(), id, "agent-a"); !errors.Is(err, tc.want) {
+				t.Fatalf("error=%v want errors.Is(%v)", err, tc.want)
 			}
 		})
 	}

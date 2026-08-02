@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/skills"
@@ -878,6 +879,8 @@ func TestDurableExactRereads_RejectMismatchesFenceChangesAndUnknownOutcomes(t *t
 	}
 	expected := state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: trustBoundaryJSON(t, record)}
 	before := fences{state: lifecycleEnvelopeActive}
+	targetLoadErr := errors.New("target offline")
+	fenceLoadErr := errors.New("fence offline")
 
 	for _, tc := range []struct {
 		name    string
@@ -885,10 +888,10 @@ func TestDurableExactRereads_RejectMismatchesFenceChangesAndUnknownOutcomes(t *t
 		wantOK  bool
 		wantErr error
 	}{
-		{name: "target load error", loads: []boundaryLoadResult{{err: errors.New("offline")}}, wantErr: errors.New("offline")},
+		{name: "target load error", loads: []boundaryLoadResult{{err: targetLoadErr}}, wantErr: targetLoadErr},
 		{name: "target generation mismatch", loads: []boundaryLoadResult{{record: state.StateRecord{ID: state.NewEventID()}}}},
-		{name: "fence load error", loads: []boundaryLoadResult{{record: expected}, {err: errors.New("fence offline")}}, wantErr: errors.New("fence offline")},
-		{name: "retired after commit", loads: []boundaryLoadResult{{record: expected}, {record: terminalLifecycleBoundaryRecord()}, noRecordBoundaryLoad(), noRecordBoundaryLoad()}, wantErr: ErrAgentLifecycleCorrupt},
+		{name: "fence load error", loads: []boundaryLoadResult{{record: expected}, {err: fenceLoadErr}}, wantErr: fenceLoadErr},
+		{name: "retired after commit", loads: []boundaryLoadResult{{record: expected}, {record: terminalLifecycleBoundaryRecord()}, noRecordBoundaryLoad(), noRecordBoundaryLoad()}, wantErr: agentcfg.ErrAgentRetired},
 		{name: "erased after commit", loads: []boundaryLoadResult{{record: expected}, {record: activeLifecycleBoundaryRecord()}, {record: state.StateRecord{ID: state.NewEventID()}}, noRecordBoundaryLoad()}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -898,8 +901,8 @@ func TestDurableExactRereads_RejectMismatchesFenceChangesAndUnknownOutcomes(t *t
 			if ok != tc.wantOK {
 				t.Fatalf("ok=%v want=%v err=%v", ok, tc.wantOK, gotErr)
 			}
-			if tc.wantErr != nil && gotErr == nil {
-				t.Fatalf("error=nil want non-nil matching %v", tc.wantErr)
+			if !errors.Is(gotErr, tc.wantErr) {
+				t.Fatalf("error=%v want errors.Is(%v)", gotErr, tc.wantErr)
 			}
 		})
 	}
@@ -939,16 +942,40 @@ func TestOverlayAndCutoverExactRereads_RejectCASUncertainty(t *testing.T) {
 	q := durableSessionQuad(id)
 	overlayBytes := []byte(`{"schema":1,"overlay":{"user_prompt":"safe"},"updated_at":"2026-08-02T00:00:00Z"}`)
 	expected := state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: LegacyOverlayKind("agent-a"), Bytes: overlayBytes}
-	before := fences{state: lifecycleEnvelopeActive}
-	for _, loads := range [][]boundaryLoadResult{
-		{{err: errors.New("offline")}},
-		{{record: state.StateRecord{ID: state.NewEventID()}}},
-		{{record: expected}, {err: errors.New("fence offline")}},
-		{{record: expected}, {record: activeLifecycleBoundaryRecord()}, {record: state.StateRecord{ID: state.NewEventID()}}, noRecordBoundaryLoad()},
+	activeLifecycle := activeLifecycleBoundaryRecord()
+	before := fences{state: lifecycleEnvelopeActive, lifecycle: state.SlotExpectation{ExpectedEventID: activeLifecycle.ID}}
+	overlayLoadErr := errors.New("overlay target offline")
+	overlayFenceErr := errors.New("overlay fence offline")
+	corruptExpected := expected
+	corruptExpected.ID = state.NewEventID()
+	corruptExpected.Bytes = []byte(`{`)
+	for _, tc := range []struct {
+		name       string
+		expected   state.StateRecord
+		loads      []boundaryLoadResult
+		wantFound  bool
+		wantPrompt string
+		wantErr    error
+	}{
+		{name: "target storage error", expected: expected, loads: []boundaryLoadResult{{err: overlayLoadErr}}, wantErr: overlayLoadErr},
+		{name: "target generation mismatch", expected: expected, loads: []boundaryLoadResult{{record: state.StateRecord{ID: state.NewEventID()}}}},
+		{name: "fence storage error", expected: expected, loads: []boundaryLoadResult{{record: expected}, {err: overlayFenceErr}}, wantErr: overlayFenceErr},
+		{name: "fence generation changed", expected: expected, loads: []boundaryLoadResult{{record: expected}, {record: activeLifecycleBoundaryRecord()}, noRecordBoundaryLoad(), noRecordBoundaryLoad()}},
+		{name: "erasure appeared", expected: expected, loads: []boundaryLoadResult{{record: expected}, {record: activeLifecycle}, {record: state.StateRecord{ID: state.NewEventID()}}, noRecordBoundaryLoad()}},
+		{name: "corrupt committed bytes", expected: corruptExpected, loads: []boundaryLoadResult{{record: corruptExpected}, {record: activeLifecycle}, noRecordBoundaryLoad(), noRecordBoundaryLoad()}, wantErr: ErrLegacyOverlayInvalid},
+		{name: "exact committed overlay", expected: expected, loads: []boundaryLoadResult{{record: expected}, {record: activeLifecycle}, noRecordBoundaryLoad(), noRecordBoundaryLoad()}, wantFound: true, wantPrompt: "safe"},
 	} {
-		scripted := &scriptedBoundaryStateStore{loads: append([]boundaryLoadResult(nil), loads...)}
-		overlayStore := &store{state: scripted, clock: time.Now}
-		_, _, _ = overlayStore.exactOverlay(context.Background(), id, "agent-a", expected, before)
+		t.Run("overlay "+tc.name, func(t *testing.T) {
+			scripted := &scriptedBoundaryStateStore{loads: append([]boundaryLoadResult(nil), tc.loads...)}
+			overlayStore := &store{state: scripted, clock: time.Now}
+			got, found, gotErr := overlayStore.exactOverlay(context.Background(), id, "agent-a", tc.expected, before)
+			if found != tc.wantFound || got.UserPrompt != tc.wantPrompt {
+				t.Fatalf("result=(%+v,%v) want prompt=%q found=%v", got, found, tc.wantPrompt, tc.wantFound)
+			}
+			if !errors.Is(gotErr, tc.wantErr) {
+				t.Fatalf("error=%v want errors.Is(%v)", gotErr, tc.wantErr)
+			}
+		})
 	}
 	if _, err := encodeOverlayRecord(Overlay{UserPrompt: strings.Repeat("x", MaxLegacySessionOverlayRecordBytes)}, time.Now()); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("oversized overlay=%v", err)
@@ -985,9 +1012,32 @@ func TestOverlayAndCutoverExactRereads_RejectCASUncertainty(t *testing.T) {
 		}
 	}
 	expectedCutover := state.StateRecord{ID: state.NewEventID(), Identity: cutoverQ, Kind: cutoverKind, Bytes: trustBoundaryJSON(t, valid)}
-	for _, loads := range [][]boundaryLoadResult{{{err: errors.New("offline")}}, {{record: state.StateRecord{ID: state.NewEventID()}}}, {{record: state.StateRecord{ID: expectedCutover.ID, Bytes: []byte(`{`)}}}} {
-		exact := &CutoverController{state: &scriptedBoundaryStateStore{loads: loads}, declarations: controller.declarations}
-		_, _ = exact.exactCutover(context.Background(), expectedCutover, declaration)
+	cutoverLoadErr := errors.New("cutover target offline")
+	corruptCutover := expectedCutover
+	corruptCutover.ID = state.NewEventID()
+	corruptCutover.Bytes = []byte(`{`)
+	for _, tc := range []struct {
+		name     string
+		expected state.StateRecord
+		actual   boundaryLoadResult
+		wantOK   bool
+		wantErr  error
+	}{
+		{name: "storage error", expected: expectedCutover, actual: boundaryLoadResult{err: cutoverLoadErr}, wantErr: cutoverLoadErr},
+		{name: "generation mismatch", expected: expectedCutover, actual: boundaryLoadResult{record: state.StateRecord{ID: state.NewEventID()}}},
+		{name: "corrupt exact bytes", expected: corruptCutover, actual: boundaryLoadResult{record: corruptCutover}, wantErr: ErrCutoverRecordInvalid},
+		{name: "exact checkpoint", expected: expectedCutover, actual: boundaryLoadResult{record: expectedCutover}, wantOK: true},
+	} {
+		t.Run("cutover "+tc.name, func(t *testing.T) {
+			exact := &CutoverController{state: &scriptedBoundaryStateStore{loads: []boundaryLoadResult{tc.actual}}, declarations: controller.declarations}
+			ok, gotErr := exact.exactCutover(context.Background(), tc.expected, declaration)
+			if ok != tc.wantOK {
+				t.Fatalf("ok=%v want=%v err=%v", ok, tc.wantOK, gotErr)
+			}
+			if !errors.Is(gotErr, tc.wantErr) {
+				t.Fatalf("error=%v want errors.Is(%v)", gotErr, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -1002,25 +1052,24 @@ func TestSessionSkillResolverConstruction_FenceAndMembershipAuthorityFailures(t 
 		}
 	}
 	activeFence := []boundaryLoadResult{{record: activeLifecycleBoundaryRecord()}, noRecordBoundaryLoad(), noRecordBoundaryLoad()}
+	lifecycleLoadErr := errors.New("lifecycle offline")
+	afterFenceLoadErr := errors.New("after offline")
 	for _, tc := range []struct {
 		name  string
 		loads []boundaryLoadResult
 		want  error
 	}{
-		{name: "before lifecycle storage error", loads: []boundaryLoadResult{{err: errors.New("lifecycle offline")}}, want: ErrStateUnavailable},
+		{name: "before lifecycle storage error", loads: []boundaryLoadResult{{err: lifecycleLoadErr}}, want: ErrStateUnavailable},
 		{name: "before erasure", loads: []boundaryLoadResult{{record: activeLifecycleBoundaryRecord()}, {record: state.StateRecord{ID: state.NewEventID()}}, noRecordBoundaryLoad()}, want: ErrSessionErased},
-		{name: "before retirement", loads: []boundaryLoadResult{{record: terminalLifecycleBoundaryRecord()}, noRecordBoundaryLoad(), noRecordBoundaryLoad()}, want: nil},
-		{name: "after lifecycle storage error", loads: append(append([]boundaryLoadResult{}, activeFence...), noRecordBoundaryLoad(), boundaryLoadResult{err: errors.New("after offline")}), want: ErrStateUnavailable},
+		{name: "before retirement", loads: []boundaryLoadResult{{record: terminalLifecycleBoundaryRecord()}, noRecordBoundaryLoad(), noRecordBoundaryLoad()}, want: agentcfg.ErrAgentRetired},
+		{name: "after lifecycle storage error", loads: append(append([]boundaryLoadResult{}, activeFence...), noRecordBoundaryLoad(), boundaryLoadResult{err: afterFenceLoadErr}), want: ErrStateUnavailable},
 		{name: "after erasure", loads: append(append([]boundaryLoadResult{}, activeFence...), noRecordBoundaryLoad(), boundaryLoadResult{record: activeLifecycleBoundaryRecord()}, boundaryLoadResult{record: state.StateRecord{ID: state.NewEventID()}}, noRecordBoundaryLoad()), want: ErrSessionErased},
-		{name: "after retirement", loads: append(append([]boundaryLoadResult{}, activeFence...), noRecordBoundaryLoad(), boundaryLoadResult{record: terminalLifecycleBoundaryRecord()}, noRecordBoundaryLoad(), noRecordBoundaryLoad()), want: nil},
+		{name: "after retirement", loads: append(append([]boundaryLoadResult{}, activeFence...), noRecordBoundaryLoad(), boundaryLoadResult{record: terminalLifecycleBoundaryRecord()}, noRecordBoundaryLoad(), noRecordBoundaryLoad()), want: agentcfg.ErrAgentRetired},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := NewSessionSkillResolver(context.Background(), newConfig(tc.loads))
-			if err == nil {
-				t.Fatal("authority failure accepted")
-			}
-			if tc.want != nil && !errors.Is(err, tc.want) {
-				t.Fatalf("error=%v want=%v", err, tc.want)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("error=%v want errors.Is(%v)", err, tc.want)
 			}
 		})
 	}
