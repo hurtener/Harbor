@@ -13,9 +13,8 @@ import (
 // EnsureBootAgentLifecycle materialises the first empty agent-level revision
 // for one boot-declared synthetic agent when, and only when, its lifecycle
 // slot is absent. Session-owned state uses that active slot as its durable
-// authority fence. An existing slot is deliberately not interpreted or
-// replaced here: terminal and malformed slots remain visible to the runtime's
-// fail-closed lifecycle reader and can never be reactivated by boot.
+// authority fence. An existing active slot is left untouched; terminal and
+// malformed slots fail loud and can never be reactivated by boot.
 func EnsureBootAgentLifecycle(ctx context.Context, st state.StateStore, registry agentcfg.Registry, id identity.Identity, agentID string) error {
 	if st == nil || registry == nil {
 		return errors.New("state store and agent-config registry are required")
@@ -27,8 +26,15 @@ func EnsureBootAgentLifecycle(ctx context.Context, st state.StateStore, registry
 	if err != nil {
 		return fmt.Errorf("lifecycle slot: %w", err)
 	}
-	if _, err := st.Load(ctx, slot, kind); err == nil {
-		return nil
+	if record, err := st.Load(ctx, slot, kind); err == nil {
+		switch agentcfg.ClassifyLifecycleRecord(record.Bytes) {
+		case agentcfg.LifecycleRecordActive:
+			return nil
+		case agentcfg.LifecycleRecordTerminal:
+			return agentcfg.ErrAgentRetired
+		default:
+			return fmt.Errorf("%w: boot lifecycle record is malformed", agentcfg.ErrStateUnavailable)
+		}
 	} else if !errors.Is(err, state.ErrNotFound) {
 		return fmt.Errorf("load lifecycle slot: %w", err)
 	}

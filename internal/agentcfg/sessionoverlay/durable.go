@@ -36,8 +36,9 @@ const (
 	// before strict decoding at the migration authority boundary.
 	MaxLegacySessionOverlayRecordBytes = 256 * 1024
 	// MaxAgentLifecycleFenceBytes bounds the active-pointer compatibility
-	// envelope before it can establish session-owned authority.
-	MaxAgentLifecycleFenceBytes = 64 * 1024
+	// envelope before it can establish session-owned authority. The canonical
+	// decoder lives in agentcfg so config writers and resolvers share a shape.
+	MaxAgentLifecycleFenceBytes = agentcfg.MaxLifecycleRecordBytes
 	// MaxSessionPersonalCopyEpochBytes bounds the operator-declared copy epoch
 	// stamped onto records copied from schema-1 overlays.
 	MaxSessionPersonalCopyEpochBytes = 128
@@ -562,35 +563,19 @@ const (
 )
 
 func decodeLifecycleEnvelope(data []byte) lifecycleEnvelopeState {
-	if len(data) == 0 || len(data) > MaxAgentLifecycleFenceBytes {
-		return lifecycleEnvelopeInvalid
-	}
-	if err := rejectDuplicateJSONObjectFields(data); err != nil {
-		return lifecycleEnvelopeInvalid
-	}
-	var envelope struct {
-		Schema     *int       `json:"schema"`
-		RevisionID *string    `json:"revision_id"`
-		UpdatedAt  *time.Time `json:"updated_at"`
-	}
-	if err := decodeStrictJSON(data, &envelope); err != nil || envelope.Schema == nil || envelope.RevisionID == nil || envelope.UpdatedAt == nil {
-		return lifecycleEnvelopeInvalid
-	}
-	if (*envelope.Schema != 0 && *envelope.Schema != 1) || envelope.UpdatedAt.IsZero() {
-		return lifecycleEnvelopeInvalid
-	}
-	if *envelope.RevisionID == "" {
+	switch agentcfg.ClassifyLifecycleRecord(data) {
+	case agentcfg.LifecycleRecordActive:
+		return lifecycleEnvelopeActive
+	case agentcfg.LifecycleRecordTerminal:
 		return lifecycleEnvelopeTerminal
-	}
-	if *envelope.RevisionID != strings.TrimSpace(*envelope.RevisionID) {
+	default:
 		return lifecycleEnvelopeInvalid
 	}
-	return lifecycleEnvelopeActive
 }
 
 // rejectDuplicateJSONObjectFields closes encoding/json's last-key-wins
-// behavior at the lifecycle authority boundary. A duplicate required field
-// must be corrupt rather than letting wire order decide active versus terminal.
+// behavior at a durable JSON authority boundary. A duplicate required field
+// must be corrupt rather than letting wire order choose its meaning.
 func rejectDuplicateJSONObjectFields(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	first, err := decoder.Token()

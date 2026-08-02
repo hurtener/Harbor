@@ -726,6 +726,29 @@ type saveGate struct {
 	proceed   chan struct{}
 }
 
+// saveIfBarrierStore stops the first conditional active-pointer publication
+// after SetRevision has durably saved its immutable candidate. It exposes the
+// StateStore CAS linearization window without reimplementing persistence.
+type saveIfBarrierStore struct {
+	state.StateStore
+	entered     chan struct{}
+	proceed     chan struct{}
+	enteredOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func newSaveIfBarrierStore(inner state.StateStore) *saveIfBarrierStore {
+	return &saveIfBarrierStore{StateStore: inner, entered: make(chan struct{}, 1), proceed: make(chan struct{})}
+}
+
+func (s *saveIfBarrierStore) release() { s.releaseOnce.Do(func() { close(s.proceed) }) }
+
+func (s *saveIfBarrierStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	s.enteredOnce.Do(func() { s.entered <- struct{}{} })
+	<-s.proceed
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
 func newSaveGate(inner state.StateStore) *saveGate {
 	return &saveGate{
 		StateStore: inner,
@@ -788,6 +811,155 @@ func TestSetRevision_SaveIfConditionFailureRemovesCandidate(t *testing.T) {
 	}
 	if len(revs) != 0 {
 		t.Fatalf("condition failure retained candidate revisions: %+v", revs)
+	}
+}
+
+func TestSetRevision_LifecycleTerminalOrCorruptNeverOverwritten(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		bytes []byte
+		want  error
+	}{
+		{name: "terminal", bytes: []byte(`{"schema":1,"revision_id":"","updated_at":"2026-08-02T00:00:00Z"}`), want: agentcfg.ErrAgentRetired},
+		{name: "corrupt", bytes: []byte(`{"schema":1,"revision_id":"active"}`), want: agentcfg.ErrStateUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newSharedStore(t)
+			reg := newRegistryOnStore(t, st)
+			q := agentQuad(condAgent)
+			userQ := identity.Quadruple{Identity: identity.Identity{TenantID: q.TenantID, UserID: "user", SessionID: "session"}}
+			if err := st.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: agentQuad(condAgent), Kind: "agentcfg.active", Bytes: tc.bytes}); err != nil {
+				t.Fatalf("seed %s lifecycle: %v", tc.name, err)
+			}
+			if _, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("candidate"), agentcfg.SetOptions{}); !errors.Is(err, tc.want) {
+				t.Fatalf("SetRevision after %s = %v, want %v", tc.name, err, tc.want)
+			}
+			if _, err := reg.SetRevision(ctx, userQ, condAgent, agentcfg.ConfigScopeUser, condPayload("candidate"), agentcfg.SetOptions{}); !errors.Is(err, tc.want) {
+				t.Fatalf("user SetRevision after %s = %v, want %v", tc.name, err, tc.want)
+			}
+			if _, _, err := reg.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent); !errors.Is(err, tc.want) {
+				t.Fatalf("agent Active after %s = %v, want %v", tc.name, err, tc.want)
+			}
+			if _, _, err := reg.Active(ctx, userQ, condAgent, agentcfg.ConfigScopeUser); !errors.Is(err, tc.want) {
+				t.Fatalf("user Active after %s = %v, want %v", tc.name, err, tc.want)
+			}
+			after, err := st.Load(ctx, agentQuad(condAgent), "agentcfg.active")
+			if err != nil {
+				t.Fatalf("load %s lifecycle: %v", tc.name, err)
+			}
+			if string(after.Bytes) != string(tc.bytes) {
+				t.Fatalf("SetRevision overwrote %s lifecycle: got %s want %s", tc.name, after.Bytes, tc.bytes)
+			}
+			revs, err := reg.ListRevisions(ctx, q, condAgent, agentcfg.ConfigScopeAgent, 0)
+			if err != nil {
+				t.Fatalf("list revisions: %v", err)
+			}
+			if len(revs) != 0 {
+				t.Fatalf("refused %s write retained revisions: %+v", tc.name, revs)
+			}
+		})
+	}
+}
+
+func TestSetRevision_FirstWriteCASCannotOverwriteConcurrentTerminalOrCorruptLifecycle(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		bytes []byte
+	}{
+		{name: "terminal", bytes: []byte(`{"schema":1,"revision_id":"","updated_at":"2026-08-02T00:00:00Z"}`)},
+		{name: "corrupt", bytes: []byte(`{"schema":1,"revision_id":"active"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			left, right := newSharedStores(t)
+			gate := newSaveIfBarrierStore(left)
+			t.Cleanup(gate.release)
+			writer := newRegistryOnStore(t, gate)
+			observer := newRegistryOnStore(t, right)
+			q := agentQuad(condAgent)
+
+			result := make(chan error, 1)
+			go func() {
+				_, err := writer.SetRevision(context.Background(), q, condAgent, agentcfg.ConfigScopeAgent, condPayload("candidate"), agentcfg.SetOptions{ExpectedContentHash: agentcfg.ExpectNoActiveRevision})
+				result <- err
+			}()
+			<-gate.entered // lifecycleExpectation saw absent and candidate revision is durable.
+
+			// Phase 234 will publish this through its retirement CAS verb. A
+			// separate StateStore handle models that independent runtime at the
+			// exact active-slot generation boundary today.
+			if err := right.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: agentQuad(condAgent), Kind: "agentcfg.active", Bytes: tc.bytes}); err != nil {
+				t.Fatalf("publish concurrent %s lifecycle: %v", tc.name, err)
+			}
+			gate.release()
+			if err := <-result; !errors.Is(err, agentcfg.ErrRevisionConflict) {
+				t.Fatalf("first-write after concurrent %s = %v, want ErrRevisionConflict", tc.name, err)
+			}
+			after, err := right.Load(ctx, agentQuad(condAgent), "agentcfg.active")
+			if err != nil {
+				t.Fatalf("load concurrent %s lifecycle: %v", tc.name, err)
+			}
+			if string(after.Bytes) != string(tc.bytes) {
+				t.Fatalf("first-write overwrote concurrent %s: got %s want %s", tc.name, after.Bytes, tc.bytes)
+			}
+			revs, err := observer.ListRevisions(ctx, q, condAgent, agentcfg.ConfigScopeAgent, 0)
+			if err != nil {
+				t.Fatalf("list candidate revisions: %v", err)
+			}
+			if len(revs) != 0 {
+				t.Fatalf("conflicted first-write retained %d candidate revision(s): %+v", len(revs), revs)
+			}
+		})
+	}
+}
+
+func TestRollback_LifecycleTerminalOrCorruptNeverOverwritten(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		bytes []byte
+		want  error
+	}{
+		{name: "terminal", bytes: []byte(`{"schema":1,"revision_id":"","updated_at":"2026-08-02T00:00:00Z"}`), want: agentcfg.ErrAgentRetired},
+		{name: "corrupt", bytes: []byte(`{"schema":1,"revision_id":"active"}`), want: agentcfg.ErrStateUnavailable},
+	} {
+		for _, sc := range []struct {
+			name  string
+			scope agentcfg.ConfigScope
+		}{{name: "agent", scope: agentcfg.ConfigScopeAgent}, {name: "user", scope: agentcfg.ConfigScopeUser}} {
+			t.Run(tc.name+"/"+sc.name, func(t *testing.T) {
+				st := newSharedStore(t)
+				reg := newRegistryOnStore(t, st)
+				agentQ := agentQuad(condAgent)
+				userQ := identity.Quadruple{Identity: identity.Identity{TenantID: agentQ.TenantID, UserID: "rollback-user", SessionID: "rollback-session"}}
+				base, err := reg.SetRevision(ctx, agentQ, condAgent, agentcfg.ConfigScopeAgent, condPayload("agent-base"), agentcfg.SetOptions{})
+				if err != nil {
+					t.Fatalf("seed agent revision: %v", err)
+				}
+				id, target := agentQ, base.RevisionID
+				if sc.scope == agentcfg.ConfigScopeUser {
+					userBase, setErr := reg.SetRevision(ctx, userQ, condAgent, agentcfg.ConfigScopeUser, condPayload("user-base"), agentcfg.SetOptions{})
+					if setErr != nil {
+						t.Fatalf("seed user revision: %v", setErr)
+					}
+					id, target = userQ, userBase.RevisionID
+				}
+				if err := st.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: agentQuad(condAgent), Kind: "agentcfg.active", Bytes: tc.bytes}); err != nil {
+					t.Fatalf("seed %s lifecycle: %v", tc.name, err)
+				}
+				if _, err := reg.Rollback(ctx, id, condAgent, target, sc.scope, agentcfg.SetOptions{}); !errors.Is(err, tc.want) {
+					t.Fatalf("Rollback after %s = %v, want %v", tc.name, err, tc.want)
+				}
+				after, err := st.Load(ctx, agentQuad(condAgent), "agentcfg.active")
+				if err != nil {
+					t.Fatalf("load %s lifecycle: %v", tc.name, err)
+				}
+				if string(after.Bytes) != string(tc.bytes) {
+					t.Fatalf("Rollback overwrote %s lifecycle: got %s want %s", tc.name, after.Bytes, tc.bytes)
+				}
+			})
+		}
 	}
 }
 
