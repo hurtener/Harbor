@@ -157,3 +157,36 @@ func TestRegisterOAuthMCPCapability_DurableReplayResumesPublishedOperation(t *te
 		t.Fatalf("different binding with same JTI = %v, want replay refusal", err)
 	}
 }
+
+func TestRegisterOAuthMCPCapability_ConcurrentReplaySharesOnePublication(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	svc, key, _, preparer := signedCapabilityService(t, now)
+	req := signedCapabilityRequest(t, key, now, "jti-concurrent", "aud-1")
+	const callers = 128
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := svc.RegisterOAuthMCPCapability(context.Background(), req)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent registration: %v", err)
+		}
+	}
+	preparer.mu.Lock()
+	activations := preparer.activations
+	preparer.mu.Unlock()
+	if activations != 1 {
+		t.Fatalf("activations = %d, want one publication", activations)
+	}
+}
