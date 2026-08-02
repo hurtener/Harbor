@@ -1,9 +1,11 @@
 package sessionoverlay_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"testing"
 
@@ -62,7 +64,7 @@ func (r *resolverReader) GetScope(ctx context.Context, id identity.Quadruple, na
 	return skill, nil
 }
 
-func (r *resolverReader) List(ctx context.Context, id identity.Quadruple, _ skills.ListFilter) ([]skills.Skill, error) {
+func (r *resolverReader) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -81,6 +83,14 @@ func (r *resolverReader) List(ctx context.Context, id identity.Quadruple, _ skil
 		if skill.ScopeTenantID == id.TenantID && skill.ScopeProjectID == id.SessionID {
 			result = append(result, skill)
 		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	if filter.Offset >= len(result) {
+		return []skills.Skill{}, nil
+	}
+	result = result[filter.Offset:]
+	if filter.Limit > 0 && len(result) > filter.Limit {
+		result = result[:filter.Limit]
 	}
 	return result, nil
 }
@@ -221,6 +231,89 @@ func TestSessionSkillResolver_StateOnlyUsesOwnedExactPrefixAndTombstones(t *test
 	}
 }
 
+func TestSessionSkillResolver_FailsLoudOnBaseOverflowAndCanonicalAliasConflict(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("resolver-bounds")
+	id.RunID = "run-bounds"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("overflow", func(t *testing.T) {
+		base := &resolverReader{}
+		for i := range 1001 {
+			base.add(id, resolverSkill(id, fmt.Sprintf("base-%04d", i), skills.ScopeGlobal))
+		}
+		if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{})); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+			t.Fatalf("base overflow = %v, want resolver error", err)
+		}
+	})
+	t.Run("same scope canonical aliases", func(t *testing.T) {
+		base := &resolverReader{}
+		first := resolverSkill(id, "Alpha", skills.ScopeGlobal)
+		second := resolverSkill(id, " alpha ", skills.ScopeGlobal)
+		second.Steps = []string{"different"}
+		base.add(id, first)
+		base.add(id, second)
+		if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{})); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+			t.Fatalf("canonical alias conflict = %v, want resolver error", err)
+		}
+	})
+}
+
+func TestSessionSkillResolver_OwnedDecodeRejectsDuplicateFieldsAndExtraIsDeeplyImmutable(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("resolver-immutable")
+	id.RunID = "run-immutable"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := durableSkill("owned")
+	if _, err := personal.SavePersonal(context.Background(), id, "agent-a", owned, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	kind, err := sessionoverlay.PersonalSkillKind("agent-a", "owned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := st.Load(context.Background(), identity.Quadruple{Identity: id.Identity}, kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.ID = state.NewEventID()
+	stored.Bytes = bytes.Replace(stored.Bytes, []byte(`"canonical_name":"owned"`), []byte(`"canonical_name":"owned","canonical_name":"owned"`), 1)
+	if err := st.Save(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, &resolverReader{}, sessionoverlay.CutoverStateOnly, sessionoverlay.SessionSkillMembership{})); !errors.Is(err, sessionoverlay.ErrPersonalRecordInvalid) {
+		t.Fatalf("duplicate owned field = %v, want ErrPersonalRecordInvalid", err)
+	}
+
+	base := &resolverReader{}
+	deep := resolverSkill(id, "deep", skills.ScopeGlobal)
+	deep.Extra = map[string]any{"nested": map[string]any{"list": []any{map[string]any{"value": "original"}}}}
+	base.add(id, deep)
+	resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := resolver.Get(context.Background(), id, "deep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Extra["nested"].(map[string]any)["list"].([]any)[0].(map[string]any)["value"] = "mutated"
+	second, err := resolver.Get(context.Background(), id, "deep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.Extra["nested"].(map[string]any)["list"].([]any)[0].(map[string]any)["value"]; got != "original" {
+		t.Fatalf("nested Extra alias leaked mutation: %v", got)
+	}
+}
+
 type flappingLifecycleStore struct {
 	state.StateStore
 	mu sync.Mutex
@@ -230,7 +323,7 @@ func (s *flappingLifecycleStore) Load(ctx context.Context, q identity.Quadruple,
 	record, err := s.StateStore.Load(ctx, q, kind)
 	if err == nil && kind == "agentcfg.active" {
 		s.mu.Lock()
-		_ = s.StateStore.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: record.Bytes})
+		_ = s.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: record.Bytes})
 		s.mu.Unlock()
 	}
 	return record, err
@@ -278,7 +371,7 @@ func TestSessionSkillResolver_ConcurrentReuseCancellationAndIsolation(t *testing
 			resolver, err := sessionoverlay.NewSessionSkillResolver(ctx, resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{}))
 			if i%2 == 0 {
 				if !errors.Is(err, context.Canceled) {
-					errs <- fmt.Errorf("%d canceled build = %v", i, err)
+					errs <- fmt.Errorf("%d canceled build = %w", i, err)
 				}
 				return
 			}
@@ -288,11 +381,11 @@ func TestSessionSkillResolver_ConcurrentReuseCancellationAndIsolation(t *testing
 			}
 			got, err := resolver.Get(context.Background(), id, fmt.Sprintf("skill-%03d", i))
 			if err != nil || got.Name != fmt.Sprintf("skill-%03d", i) {
-				errs <- fmt.Errorf("%d own skill = (%q, %v)", i, got.Name, err)
+				errs <- fmt.Errorf("%d own skill = (%q, %w)", i, got.Name, err)
 			}
 			other := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "other", SessionID: "other"}, RunID: "other"}
 			if _, err := resolver.Get(context.Background(), other, got.Name); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
-				errs <- fmt.Errorf("%d cross identity = %v", i, err)
+				errs <- fmt.Errorf("%d cross identity = %w", i, err)
 			}
 		}(i)
 	}

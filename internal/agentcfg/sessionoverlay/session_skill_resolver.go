@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -12,6 +13,8 @@ import (
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
 )
+
+const maxSessionSkillResolverBaseRows = 1000
 
 // ErrInvalidSessionSkillResolver means a resolver was built without the
 // complete run-start authority needed to compose the session skill tier.
@@ -138,9 +141,21 @@ func canonicalMembership(names []string) (map[string]struct{}, error) {
 }
 
 func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, user map[string]struct{}) (*SessionSkillResolver, error) {
-	base, err := cfg.Base.List(ctx, cfg.Run, skills.ListFilter{Limit: 1000})
+	base, err := cfg.Base.List(ctx, cfg.Run, skills.ListFilter{Limit: maxSessionSkillResolverBaseRows})
 	if err != nil {
 		return nil, fmt.Errorf("agentcfg/sessionoverlay: list base skills: %w", err)
+	}
+	if len(base) > maxSessionSkillResolverBaseRows {
+		return nil, fmt.Errorf("%w: base enumeration exceeded %d rows", ErrInvalidSessionSkillResolver, maxSessionSkillResolverBaseRows)
+	}
+	if len(base) == maxSessionSkillResolverBaseRows {
+		probe, err := cfg.Base.List(ctx, cfg.Run, skills.ListFilter{Limit: 1, Offset: maxSessionSkillResolverBaseRows})
+		if err != nil {
+			return nil, fmt.Errorf("agentcfg/sessionoverlay: probe base enumeration bound: %w", err)
+		}
+		if len(probe) > 0 {
+			return nil, fmt.Errorf("%w: base enumeration exceeds %d rows", ErrInvalidSessionSkillResolver, maxSessionSkillResolverBaseRows)
+		}
 	}
 	baseByScope := make(map[skills.Scope]map[string]skills.Skill)
 	for _, skill := range base {
@@ -150,7 +165,9 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 		if skill.Scope == skills.ScopeSession {
 			continue
 		}
-		putScoped(baseByScope, skill)
+		if err := putScoped(baseByScope, skill); err != nil {
+			return nil, err
+		}
 	}
 	if cfg.Membership.AdminMembershipSet {
 		for name := range admin {
@@ -158,7 +175,10 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 				return nil, fmt.Errorf("%w: admin-pinned skill body %q is missing", ErrInvalidSessionSkillResolver, name)
 			}
 		}
-		baseByScope = filterScoped(baseByScope, admin)
+		baseByScope, err = filterScoped(baseByScope, admin)
+		if err != nil {
+			return nil, err
+		}
 	}
 	for name := range user {
 		skill, err := cfg.Base.GetScope(ctx, cfg.Run, name, skills.ScopeUser)
@@ -168,7 +188,9 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 		if err := validateExactResolverSkill(skill, name, skills.ScopeUser); err != nil {
 			return nil, err
 		}
-		putScoped(baseByScope, skill)
+		if err := putScoped(baseByScope, skill); err != nil {
+			return nil, err
+		}
 	}
 
 	mode, err := cfg.Cutover.Mode(ctx, cfg.Run.TenantID)
@@ -205,7 +227,7 @@ func loadLegacySessionTier(ctx context.Context, cfg SessionSkillResolverConfig) 
 		return map[string]skills.Skill{}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: load legacy overlay: %v", ErrStateUnavailable, err)
+		return nil, fmt.Errorf("%w: load legacy overlay: %w", ErrStateUnavailable, err)
 	}
 	overlay, err := decodeResolverLegacyOverlay(record, cfg.Run.TenantID, cfg.AgentID)
 	if err != nil {
@@ -215,7 +237,7 @@ func loadLegacySessionTier(ctx context.Context, cfg SessionSkillResolverConfig) 
 	for _, name := range overlay.PersonalSkills {
 		skill, err := cfg.Base.GetScope(ctx, cfg.Run, name, skills.ScopeSession)
 		if err != nil {
-			return nil, fmt.Errorf("%w: exact legacy session skill %q: %v", ErrLegacySkillInvalid, name, err)
+			return nil, fmt.Errorf("%w: exact legacy session skill %q: %w", ErrLegacySkillInvalid, name, err)
 		}
 		canonical := canonicalNameFor(name)
 		if err := validateExactResolverSkill(skill, canonical, skills.ScopeSession); err != nil {
@@ -262,7 +284,7 @@ func loadOwnedSessionTier(ctx context.Context, cfg SessionSkillResolverConfig) (
 	}
 	records, err := cfg.Personal.state.ListKindForIdentity(ctx, durableSessionQuad(cfg.Run), prefix)
 	if err != nil {
-		return nil, fmt.Errorf("%w: list owned personal records: %v", ErrStateUnavailable, err)
+		return nil, fmt.Errorf("%w: list owned personal records: %w", ErrStateUnavailable, err)
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].Kind < records[j].Kind })
 	result := make(map[string]skills.Skill, len(records))
@@ -287,18 +309,30 @@ func decodeResolverPersonal(record state.StateRecord, agentID string) (PersonalS
 	if !strings.HasPrefix(record.Kind, personalKindPrefix) {
 		return PersonalSkillRecord{}, fmt.Errorf("%w: personal record has invalid kind", ErrPersonalRecordInvalid)
 	}
+	if err := rejectDuplicateJSONObjectFields(record.Bytes); err != nil {
+		return PersonalSkillRecord{}, fmt.Errorf("%w: duplicate owned record field: %w", ErrPersonalRecordInvalid, err)
+	}
 	var envelope struct {
 		CanonicalName *string `json:"canonical_name"`
 	}
-	if err := json.Unmarshal(record.Bytes, &envelope); err != nil || envelope.CanonicalName == nil {
-		return PersonalSkillRecord{}, fmt.Errorf("%w: read canonical name: %v", ErrPersonalRecordInvalid, err)
+	if err := json.Unmarshal(record.Bytes, &envelope); err != nil {
+		return PersonalSkillRecord{}, fmt.Errorf("%w: read canonical name: %w", ErrPersonalRecordInvalid, err)
+	}
+	if envelope.CanonicalName == nil {
+		return PersonalSkillRecord{}, fmt.Errorf("%w: canonical name is absent", ErrPersonalRecordInvalid)
 	}
 	decoded, found, err := decodePersonal(record.Bytes, agentID, *envelope.CanonicalName)
-	if err != nil || !found {
-		return PersonalSkillRecord{}, fmt.Errorf("%w: decode owned record: %v", ErrPersonalRecordInvalid, err)
+	if err != nil {
+		return PersonalSkillRecord{}, fmt.Errorf("%w: decode owned record: %w", ErrPersonalRecordInvalid, err)
+	}
+	if !found {
+		return PersonalSkillRecord{}, fmt.Errorf("%w: owned record is absent", ErrPersonalRecordInvalid)
 	}
 	wantKind, err := PersonalSkillKind(agentID, decoded.CanonicalName)
-	if err != nil || record.Kind != wantKind {
+	if err != nil {
+		return PersonalSkillRecord{}, fmt.Errorf("%w: derive exact personal key: %w", ErrPersonalRecordInvalid, err)
+	}
+	if record.Kind != wantKind {
 		return PersonalSkillRecord{}, fmt.Errorf("%w: key does not match payload", ErrPersonalRecordInvalid)
 	}
 	return decoded, nil
@@ -419,7 +453,7 @@ func (r *SessionSkillResolver) validateCall(ctx context.Context, id identity.Qua
 
 func validateResolverSkill(skill skills.Skill) error {
 	if err := skill.Validate(); err != nil {
-		return fmt.Errorf("%w: base skill %q: %v", ErrInvalidSessionSkillResolver, skill.Name, err)
+		return fmt.Errorf("%w: base skill %q: %w", ErrInvalidSessionSkillResolver, skill.Name, err)
 	}
 	if canonicalNameFor(skill.Name) == "" {
 		return fmt.Errorf("%w: base skill name is empty", ErrInvalidSessionSkillResolver)
@@ -434,11 +468,16 @@ func validateExactResolverSkill(skill skills.Skill, name string, scope skills.Sc
 	return nil
 }
 
-func putScoped(in map[skills.Scope]map[string]skills.Skill, skill skills.Skill) {
+func putScoped(in map[skills.Scope]map[string]skills.Skill, skill skills.Skill) error {
 	if in[skill.Scope] == nil {
 		in[skill.Scope] = make(map[string]skills.Skill)
 	}
-	in[skill.Scope][canonicalNameFor(skill.Name)] = cloneSkill(skill)
+	canonical := canonicalNameFor(skill.Name)
+	if prior, found := in[skill.Scope][canonical]; found && skills.CanonicalContentHash(prior) != skills.CanonicalContentHash(skill) {
+		return fmt.Errorf("%w: same-scope canonical aliases for %q have conflicting bodies", ErrInvalidSessionSkillResolver, canonical)
+	}
+	in[skill.Scope][canonical] = cloneSkill(skill)
+	return nil
 }
 
 func hasAnyScope(in map[skills.Scope]map[string]skills.Skill, name string) bool {
@@ -450,17 +489,18 @@ func hasAnyScope(in map[skills.Scope]map[string]skills.Skill, name string) bool 
 	return false
 }
 
-func filterScoped(in map[skills.Scope]map[string]skills.Skill, allowed map[string]struct{}) map[skills.Scope]map[string]skills.Skill {
+func filterScoped(in map[skills.Scope]map[string]skills.Skill, allowed map[string]struct{}) (map[skills.Scope]map[string]skills.Skill, error) {
 	result := make(map[skills.Scope]map[string]skills.Skill, len(in))
-	for scope, scoped := range in {
+	for _, scoped := range in {
 		for name, skill := range scoped {
 			if _, ok := allowed[name]; ok {
-				putScoped(result, skill)
+				if err := putScoped(result, skill); err != nil {
+					return nil, err
+				}
 			}
 		}
-		_ = scope
 	}
-	return result
+	return result, nil
 }
 
 func flattenScoped(in map[skills.Scope]map[string]skills.Skill) map[string]skills.Skill {
@@ -512,12 +552,64 @@ func cloneSkill(skill skills.Skill) skills.Skill {
 	result.RequiredNS = append([]string(nil), skill.RequiredNS...)
 	result.RequiredTags = append([]string(nil), skill.RequiredTags...)
 	if skill.Extra != nil {
-		result.Extra = make(map[string]any, len(skill.Extra))
-		for key, value := range skill.Extra {
-			result.Extra[key] = value
-		}
+		result.Extra = cloneExtra(skill.Extra)
 	}
 	return result
+}
+
+func cloneExtra(in map[string]any) map[string]any {
+	result := make(map[string]any, len(in))
+	for key, value := range in {
+		if value == nil {
+			result[key] = nil
+			continue
+		}
+		result[key] = cloneExtraValue(reflect.ValueOf(value)).Interface()
+	}
+	return result
+}
+
+func cloneExtraValue(value reflect.Value) reflect.Value {
+	if !value.IsValid() {
+		return value
+	}
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		result := reflect.New(value.Type()).Elem()
+		result.Set(cloneExtraValue(value.Elem()))
+		return result
+	case reflect.Map:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		result := reflect.MakeMapWithSize(value.Type(), value.Len())
+		iter := value.MapRange()
+		for iter.Next() {
+			result.SetMapIndex(cloneExtraValue(iter.Key()), cloneExtraValue(iter.Value()))
+		}
+		return result
+	case reflect.Slice:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		result := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		for i := range value.Len() {
+			result.Index(i).Set(cloneExtraValue(value.Index(i)))
+		}
+		return result
+	case reflect.Pointer:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		result := reflect.New(value.Type().Elem())
+		result.Elem().Set(cloneExtraValue(value.Elem()))
+		return result
+	default:
+		return value
+	}
 }
 
 func hasAnyTag(skillTags, wanted []string) bool {
