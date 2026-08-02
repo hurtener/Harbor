@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,6 +32,12 @@ const (
 	// MaxSessionPersonalRecordBytes bounds one durable personal-skill record
 	// before storage and after retrieval.
 	MaxSessionPersonalRecordBytes = 256 * 1024
+	// MaxLegacySessionOverlayRecordBytes bounds one compatibility envelope
+	// before strict decoding at the migration authority boundary.
+	MaxLegacySessionOverlayRecordBytes = 256 * 1024
+	// MaxAgentLifecycleFenceBytes bounds the active-pointer compatibility
+	// envelope before it can establish session-owned authority.
+	MaxAgentLifecycleFenceBytes = 64 * 1024
 	// MaxSessionPersonalCopyEpochBytes bounds the operator-declared copy epoch
 	// stamped onto records copied from schema-1 overlays.
 	MaxSessionPersonalCopyEpochBytes = 128
@@ -144,6 +152,9 @@ func (s *DurableStore) LoadPersonal(ctx context.Context, id identity.Quadruple, 
 		return PersonalSkillRecord{}, false, err
 	}
 	for range MaxSessionSkillReadAttempts {
+		if err := ctx.Err(); err != nil {
+			return PersonalSkillRecord{}, false, err
+		}
 		fences, err := loadFences(ctx, s.state, id, agentID)
 		if err != nil {
 			return PersonalSkillRecord{}, false, err
@@ -319,20 +330,63 @@ func decodePersonal(bytes []byte, agentID, canonicalName string) (PersonalSkillR
 	if len(bytes) == 0 || len(bytes) > MaxSessionPersonalRecordBytes {
 		return PersonalSkillRecord{}, false, fmt.Errorf("%w: record size %d is outside 1..%d", ErrPersonalRecordInvalid, len(bytes), MaxSessionPersonalRecordBytes)
 	}
-	var record PersonalSkillRecord
-	if err := json.Unmarshal(bytes, &record); err != nil {
+	var envelope struct {
+		Schema            *int            `json:"schema"`
+		AgentID           *string         `json:"agent_id"`
+		CanonicalName     *string         `json:"canonical_name"`
+		ContentHash       *string         `json:"content_hash"`
+		Deleted           *bool           `json:"deleted"`
+		Skill             json.RawMessage `json:"skill"`
+		CopyEpoch         *string         `json:"copy_epoch"`
+		LegacyContentHash *string         `json:"legacy_content_hash"`
+		UpdatedAt         *time.Time      `json:"updated_at"`
+	}
+	if err := decodeStrictJSON(bytes, &envelope); err != nil {
 		return PersonalSkillRecord{}, false, fmt.Errorf("%w: decode: %w", ErrPersonalRecordInvalid, err)
 	}
-	if record.Schema != 1 || record.AgentID != agentID || record.CanonicalName != canonicalName {
+	if envelope.Schema == nil || envelope.AgentID == nil || envelope.CanonicalName == nil || envelope.ContentHash == nil || envelope.UpdatedAt == nil || len(envelope.Skill) == 0 || string(envelope.Skill) == "null" {
+		return PersonalSkillRecord{}, false, fmt.Errorf("%w: required field is absent", ErrPersonalRecordInvalid)
+	}
+	var skill skills.Skill
+	if err := decodeStrictJSON(envelope.Skill, &skill); err != nil {
+		return PersonalSkillRecord{}, false, fmt.Errorf("%w: decode skill body: %w", ErrPersonalRecordInvalid, err)
+	}
+	record := PersonalSkillRecord{
+		Schema:        *envelope.Schema,
+		AgentID:       *envelope.AgentID,
+		CanonicalName: *envelope.CanonicalName,
+		ContentHash:   *envelope.ContentHash,
+		Skill:         skill,
+		UpdatedAt:     *envelope.UpdatedAt,
+	}
+	if envelope.CopyEpoch != nil {
+		record.CopyEpoch = *envelope.CopyEpoch
+	}
+	if envelope.LegacyContentHash != nil {
+		record.LegacyContentHash = *envelope.LegacyContentHash
+	}
+	if envelope.Deleted != nil {
+		record.Deleted = *envelope.Deleted
+	}
+	if record.Schema != 1 || record.AgentID != agentID || record.CanonicalName != canonicalName || record.UpdatedAt.IsZero() {
 		return PersonalSkillRecord{}, false, fmt.Errorf("%w: key/payload mismatch", ErrPersonalRecordInvalid)
+	}
+	if envelope.Deleted != nil {
+		if !record.Deleted || record.ContentHash != "" || envelope.CopyEpoch != nil || envelope.LegacyContentHash != nil || !reflect.DeepEqual(record.Skill, skills.Skill{}) {
+			return PersonalSkillRecord{}, false, fmt.Errorf("%w: tombstone carries live body or copy metadata", ErrPersonalRecordInvalid)
+		}
+		return record, true, nil
+	}
+	if (envelope.CopyEpoch == nil) != (envelope.LegacyContentHash == nil) {
+		return PersonalSkillRecord{}, false, fmt.Errorf("%w: copy marker field presence mismatch", ErrPersonalRecordInvalid)
+	}
+	if envelope.CopyEpoch != nil && (*envelope.CopyEpoch == "" || *envelope.LegacyContentHash == "") {
+		return PersonalSkillRecord{}, false, fmt.Errorf("%w: present copy markers must be non-empty", ErrPersonalRecordInvalid)
 	}
 	if err := validateCopyMarkers(record.CopyEpoch, record.LegacyContentHash); err != nil {
 		return PersonalSkillRecord{}, false, fmt.Errorf("%w: %w", ErrPersonalRecordInvalid, err)
 	}
-	if record.Deleted {
-		return record, true, nil
-	}
-	if err := record.Skill.Validate(); err != nil || canonicalNameFor(record.Skill.Name) != canonicalName || record.ContentHash != skills.CanonicalContentHash(record.Skill) {
+	if err := record.Skill.Validate(); err != nil || record.Skill.Scope != skills.ScopeSession || canonicalNameFor(record.Skill.Name) != canonicalName || !validCanonicalSHA256(record.ContentHash) || record.ContentHash != skills.CanonicalContentHash(record.Skill) {
 		return PersonalSkillRecord{}, false, fmt.Errorf("%w: body validation failed", ErrPersonalRecordInvalid)
 	}
 	return record, true, nil
@@ -367,6 +421,9 @@ type fences struct {
 }
 
 func loadFences(ctx context.Context, st state.StateStore, id identity.Quadruple, agentID string) (fences, error) {
+	if err := ctx.Err(); err != nil {
+		return fences{}, err
+	}
 	if err := validateSessionInput(id, agentID); err != nil {
 		return fences{}, err
 	}
@@ -408,6 +465,9 @@ func (f fences) equal(other fences) bool {
 }
 func (f fences) stable(ctx context.Context, st state.StateStore) (bool, error) {
 	for _, before := range f.expectations() {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		after, err := slotExpectation(ctx, st, before.Identity, before.Kind)
 		if err != nil {
 			return false, err
@@ -425,6 +485,9 @@ func slotExpectation(ctx context.Context, st state.StateStore, q identity.Quadru
 }
 
 func slotExpectationWithBytes(ctx context.Context, st state.StateStore, q identity.Quadruple, kind string) (state.SlotExpectation, []byte, error) {
+	if err := ctx.Err(); err != nil {
+		return state.SlotExpectation{}, nil, err
+	}
 	rec, err := st.Load(ctx, q, kind)
 	if errors.Is(err, state.ErrNotFound) {
 		return state.SlotExpectation{Identity: q, Kind: kind}, nil, nil
@@ -435,22 +498,58 @@ func slotExpectationWithBytes(ctx context.Context, st state.StateStore, q identi
 	return state.SlotExpectation{Identity: q, Kind: kind, ExpectedEventID: rec.ID}, rec.Bytes, nil
 }
 
+type lifecycleEnvelopeState uint8
+
+const (
+	lifecycleEnvelopeInvalid lifecycleEnvelopeState = iota
+	lifecycleEnvelopeActive
+	lifecycleEnvelopeTerminal
+)
+
 // activeLifecycleEnvelope is the compatibility reader for the established
-// active-pointer envelope. Until lifecycle tombstones replace that envelope,
-// only schema 0/1 pointers with a non-empty revision ID are active; absent,
-// malformed, empty, and future terminal envelopes fail closed.
+// active-pointer envelope. Only one bounded JSON document containing the
+// known schema/revision/timestamp fields can establish active authority.
+// Empty compatible pointers are terminal; malformed, retired-shaped, future,
+// unknown-field, oversized, and trailing-document records are invalid. Both
+// terminal and invalid states fail closed here.
 func activeLifecycleEnvelope(bytes []byte) bool {
-	if len(bytes) == 0 {
-		return false
+	return decodeLifecycleEnvelope(bytes) == lifecycleEnvelopeActive
+}
+
+func decodeLifecycleEnvelope(data []byte) lifecycleEnvelopeState {
+	if len(data) == 0 || len(data) > MaxAgentLifecycleFenceBytes {
+		return lifecycleEnvelopeInvalid
 	}
 	var envelope struct {
-		Schema     int    `json:"schema"`
-		RevisionID string `json:"revision_id"`
+		Schema     int       `json:"schema"`
+		RevisionID string    `json:"revision_id"`
+		UpdatedAt  time.Time `json:"updated_at"`
 	}
-	if err := json.Unmarshal(bytes, &envelope); err != nil {
-		return false
+	if err := decodeStrictJSON(data, &envelope); err != nil || (envelope.Schema != 0 && envelope.Schema != 1) {
+		return lifecycleEnvelopeInvalid
 	}
-	return (envelope.Schema == 0 || envelope.Schema == 1) && strings.TrimSpace(envelope.RevisionID) != ""
+	if envelope.Schema == 1 && envelope.UpdatedAt.IsZero() {
+		return lifecycleEnvelopeInvalid
+	}
+	if envelope.RevisionID == "" {
+		return lifecycleEnvelopeTerminal
+	}
+	if envelope.RevisionID != strings.TrimSpace(envelope.RevisionID) {
+		return lifecycleEnvelopeInvalid
+	}
+	return lifecycleEnvelopeActive
+}
+
+func decodeStrictJSON(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("trailing JSON document")
+	}
+	return nil
 }
 
 func durableSessionQuad(id identity.Quadruple) identity.Quadruple {
@@ -534,11 +633,10 @@ func NewCutoverController(st state.StateStore, declarations []config.SessionPers
 		if !validCutoverToken(declaration.TenantID, 128) || !validCutoverToken(declaration.Epoch, 128) || !validCutoverToken(declaration.RosterDigest, 256) {
 			return nil, fmt.Errorf("%w: empty static cutover declaration", ErrInvalidInput)
 		}
-		canonicalTenant := strings.ToLower(declaration.TenantID)
-		if _, exists := result[canonicalTenant]; exists {
+		if _, exists := result[declaration.TenantID]; exists {
 			return nil, fmt.Errorf("%w: duplicate tenant %q", ErrInvalidInput, declaration.TenantID)
 		}
-		result[canonicalTenant] = declaration
+		result[declaration.TenantID] = declaration
 	}
 	return &CutoverController{state: st, declarations: result}, nil
 }
@@ -546,7 +644,10 @@ func NewCutoverController(st state.StateStore, declarations []config.SessionPers
 // Mode returns dual-read for unlisted or undrained tenants. A malformed or
 // mismatched durable record never grants state-only authority.
 func (c *CutoverController) Mode(ctx context.Context, tenantID string) (CutoverMode, error) {
-	declaration, listed := c.declarations[strings.ToLower(tenantID)]
+	if err := ctx.Err(); err != nil {
+		return CutoverDualRead, err
+	}
+	declaration, listed := c.declarations[tenantID]
 	if !listed || !declaration.LegacyWritersDrained {
 		return CutoverDualRead, nil
 	}
@@ -567,6 +668,9 @@ func (c *CutoverController) Mode(ctx context.Context, tenantID string) (CutoverM
 // tenant. It never discovers or scans unlisted tenants.
 func (c *CutoverController) Ensure(ctx context.Context) error {
 	for _, declaration := range c.declarations {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !declaration.LegacyWritersDrained {
 			continue
 		}
@@ -622,10 +726,13 @@ func (c *CutoverController) Ensure(ctx context.Context) error {
 // fresh verification scan from the beginning; only that fresh pass may set
 // state_only. The underlying StateStore scan is deliberately not a snapshot.
 func (c *CutoverController) Advance(ctx context.Context, tenantID string, limit int, migrator LegacyMigrator) (CutoverMode, error) {
+	if err := ctx.Err(); err != nil {
+		return CutoverDualRead, err
+	}
 	if migrator == nil {
 		return CutoverDualRead, fmt.Errorf("%w: legacy migrator is required", ErrInvalidConfig)
 	}
-	declaration, listed := c.declarations[strings.ToLower(tenantID)]
+	declaration, listed := c.declarations[tenantID]
 	if !listed || !declaration.LegacyWritersDrained {
 		return CutoverDualRead, nil
 	}
@@ -728,8 +835,11 @@ func validateLegacyOverlayCandidate(candidate state.StateRecord, tenantID string
 	if err := state.ValidateRecord(candidate); err != nil {
 		return fmt.Errorf("%w: record shape: %w", ErrLegacyOverlayInvalid, err)
 	}
-	if candidate.Identity.TenantID != tenantID || candidate.Identity.RunID != "" {
+	if candidate.Identity.TenantID != tenantID || candidate.Identity.RunID != "" || candidate.Identity.UserID == cutoverUser || candidate.Identity.SessionID == cutoverSession {
 		return fmt.Errorf("%w: legacy identity must be the exact tenant session scope with empty run id", ErrLegacyOverlayInvalid)
+	}
+	if len(candidate.Bytes) == 0 || len(candidate.Bytes) > MaxLegacySessionOverlayRecordBytes {
+		return fmt.Errorf("%w: record size %d is outside 1..%d", ErrLegacyOverlayInvalid, len(candidate.Bytes), MaxLegacySessionOverlayRecordBytes)
 	}
 	if !strings.HasPrefix(candidate.Kind, legacyKindPrefix) {
 		return fmt.Errorf("%w: kind %q is outside the legacy prefix", ErrLegacyOverlayInvalid, candidate.Kind)
@@ -743,15 +853,25 @@ func validateLegacyOverlayCandidate(candidate state.StateRecord, tenantID string
 		Overlay   json.RawMessage `json:"overlay"`
 		UpdatedAt *time.Time      `json:"updated_at"`
 	}
-	if err := json.Unmarshal(candidate.Bytes, &envelope); err != nil {
+	if err := decodeStrictJSON(candidate.Bytes, &envelope); err != nil {
 		return fmt.Errorf("%w: decode schema-1 envelope: %w", ErrLegacyOverlayInvalid, err)
 	}
-	if envelope.Schema != recordSchema || len(envelope.Overlay) == 0 || string(envelope.Overlay) == "null" || envelope.UpdatedAt == nil {
+	if envelope.Schema != recordSchema || len(envelope.Overlay) == 0 || string(envelope.Overlay) == "null" || envelope.UpdatedAt == nil || envelope.UpdatedAt.IsZero() {
 		return fmt.Errorf("%w: incompatible schema-1 envelope", ErrLegacyOverlayInvalid)
 	}
 	var overlay Overlay
-	if err := json.Unmarshal(envelope.Overlay, &overlay); err != nil {
+	if err := decodeStrictJSON(envelope.Overlay, &overlay); err != nil {
 		return fmt.Errorf("%w: decode overlay body: %w", ErrLegacyOverlayInvalid, err)
+	}
+	for _, values := range [][]string{overlay.DisabledServers, overlay.DisabledTools, overlay.PersonalSkills} {
+		if !sort.StringsAreSorted(values) {
+			return fmt.Errorf("%w: overlay lists must be canonical sorted sets", ErrLegacyOverlayInvalid)
+		}
+		for i, value := range values {
+			if value == "" || (i > 0 && values[i-1] == value) {
+				return fmt.Errorf("%w: overlay lists must contain unique non-empty values", ErrLegacyOverlayInvalid)
+			}
+		}
 	}
 	return nil
 }
@@ -777,7 +897,7 @@ func (c *CutoverController) loadWithSlot(ctx context.Context, declaration config
 }
 
 func (c *CutoverController) saveRecord(ctx context.Context, q identity.Quadruple, slot state.SlotExpectation, record CutoverRecord) error {
-	declaration, found := c.declarations[strings.ToLower(q.TenantID)]
+	declaration, found := c.declarations[q.TenantID]
 	if !found {
 		return fmt.Errorf("%w: no static declaration for checkpoint tenant", ErrCutoverRecordInvalid)
 	}

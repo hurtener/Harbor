@@ -16,7 +16,6 @@ func TestValidateSessionPersonalCutover_RefusesMalformedDeclarations(t *testing.
 		{name: "empty epoch", entries: []config.SessionPersonalCutoverTenant{{TenantID: "t", RosterDigest: "d"}}},
 		{name: "empty digest", entries: []config.SessionPersonalCutoverTenant{{TenantID: "t", Epoch: "e"}}},
 		{name: "duplicate", entries: []config.SessionPersonalCutoverTenant{{TenantID: "t", Epoch: "e", RosterDigest: "d"}, {TenantID: "t", Epoch: "e2", RosterDigest: "d2"}}},
-		{name: "case canonical duplicate", entries: []config.SessionPersonalCutoverTenant{{TenantID: "Tenant", Epoch: "e", RosterDigest: "d"}, {TenantID: "tenant", Epoch: "e2", RosterDigest: "d2"}}},
 		{name: "whitespace token", entries: []config.SessionPersonalCutoverTenant{{TenantID: "tenant ", Epoch: "e", RosterDigest: "d"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -26,6 +25,17 @@ func TestValidateSessionPersonalCutover_RefusesMalformedDeclarations(t *testing.
 				t.Fatalf("Validate = %v, want a cutover declaration error", err)
 			}
 		})
+	}
+}
+
+func TestValidateSessionPersonalCutover_TenantIDsAreCaseSensitive(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.Skills.SessionPersonalCutover.Tenants = []config.SessionPersonalCutoverTenant{
+		{TenantID: "TenantA", Epoch: "e1", RosterDigest: "d1"},
+		{TenantID: "tenanta", Epoch: "e2", RosterDigest: "d2"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("case-distinct opaque tenant declarations must not alias: %v", err)
 	}
 }
 

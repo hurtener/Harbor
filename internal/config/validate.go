@@ -1156,11 +1156,10 @@ func (c *Config) validateSessionPersonalCutover() error {
 		if !validSessionPersonalCutoverToken(declaration.RosterDigest, maxSessionPersonalCutoverDigest) {
 			return fieldError(path+".roster_digest", "must be a trimmed bounded token")
 		}
-		canonicalTenant := strings.ToLower(declaration.TenantID)
-		if _, ok := seen[canonicalTenant]; ok {
+		if _, ok := seen[declaration.TenantID]; ok {
 			return fieldError(path+".tenant_id", fmt.Sprintf("duplicates tenant %q", declaration.TenantID))
 		}
-		seen[canonicalTenant] = struct{}{}
+		seen[declaration.TenantID] = struct{}{}
 	}
 	return nil
 }

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionfence"
@@ -43,8 +46,30 @@ func activate(t *testing.T, st state.StateStore, id identity.Quadruple) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: []byte(`{"schema":1,"revision_id":"active-revision"}`)}); err != nil {
+	if err := st.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: []byte(`{"schema":1,"revision_id":"active-revision","updated_at":"2026-08-02T00:00:00Z"}`)}); err != nil {
 		t.Fatalf("seed active lifecycle: %v", err)
+	}
+}
+
+func saveLifecycle(t *testing.T, st state.StateStore, id identity.Quadruple, bytes []byte) {
+	t.Helper()
+	q, kind, err := agentcfg.LifecycleSlot(id.TenantID, "agent-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: bytes}); err != nil {
+		t.Fatalf("save lifecycle: %v", err)
+	}
+}
+
+func savePersonalRecordBytes(t *testing.T, st state.StateStore, id identity.Quadruple, name string, bytes []byte) {
+	t.Helper()
+	kind, err := sessionoverlay.PersonalSkillKind("agent-a", name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: kind, Bytes: bytes}); err != nil {
+		t.Fatalf("save personal record: %v", err)
 	}
 }
 
@@ -105,6 +130,144 @@ func TestDurableStore_PersonalRecordCASAndTombstone(t *testing.T) {
 	loaded, found, err = store.LoadPersonal(context.Background(), id, "agent-a", "alpha")
 	if err != nil || !found || !loaded.Deleted {
 		t.Fatalf("tombstone LoadPersonal = (%+v, %v, %v)", loaded, found, err)
+	}
+}
+
+func TestDurableStore_LifecycleEnvelopeStrictlyAuthorizesOnlyActiveCompatibilityShape(t *testing.T) {
+	validTimestamp := `"updated_at":"2026-08-02T00:00:00Z"`
+	for _, tc := range []struct {
+		name  string
+		bytes []byte
+	}{
+		{name: "terminal empty pointer", bytes: []byte(`{"schema":1,"revision_id":"",` + validTimestamp + `}`)},
+		{name: "retired marker", bytes: []byte(`{"schema":1,"revision_id":"active","retired":true,` + validTimestamp + `}`)},
+		{name: "unknown field", bytes: []byte(`{"schema":1,"revision_id":"active","authority":true,` + validTimestamp + `}`)},
+		{name: "trailing document", bytes: []byte(`{"schema":1,"revision_id":"active",` + validTimestamp + `}{}`)},
+		{name: "future schema", bytes: []byte(`{"schema":2,"revision_id":"active",` + validTimestamp + `}`)},
+		{name: "whitespace revision", bytes: []byte(`{"schema":1,"revision_id":" active ",` + validTimestamp + `}`)},
+		{name: "malformed", bytes: []byte(`{"schema":1`)},
+		{name: "oversized", bytes: []byte(strings.Repeat("x", sessionoverlay.MaxAgentLifecycleFenceBytes+1))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newDurableState(t)
+			id := durableID("session-a")
+			saveLifecycle(t, st, id, tc.bytes)
+			store, err := sessionoverlay.NewDurableStore(st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.SavePersonal(context.Background(), id, "agent-a", durableSkill("one"), "", ""); !errors.Is(err, sessionoverlay.ErrAgentLifecycleInactive) {
+				t.Fatalf("SavePersonal = %v, want ErrAgentLifecycleInactive", err)
+			}
+		})
+	}
+
+	for _, bytes := range [][]byte{
+		[]byte(`{"revision_id":"legacy-active"}`),
+		[]byte(`{"schema":1,"revision_id":"active","updated_at":"2026-08-02T00:00:00Z"}`),
+	} {
+		st := newDurableState(t)
+		id := durableID("session-active")
+		saveLifecycle(t, st, id, bytes)
+		store, err := sessionoverlay.NewDurableStore(st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SavePersonal(context.Background(), id, "agent-a", durableSkill("one"), "", ""); err != nil {
+			t.Fatalf("known active compatibility shape refused: %v", err)
+		}
+	}
+}
+
+func TestDurableStore_PersonalRecordStrictLiveAndTombstoneInvariants(t *testing.T) {
+	id := durableID("session-a")
+	liveSkill := durableSkill("strict")
+	valid := sessionoverlay.PersonalSkillRecord{
+		Schema:        1,
+		AgentID:       "agent-a",
+		CanonicalName: "strict",
+		ContentHash:   skills.CanonicalContentHash(liveSkill),
+		Skill:         liveSkill,
+		UpdatedAt:     time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC),
+	}
+	encode := func(t *testing.T, record sessionoverlay.PersonalSkillRecord) []byte {
+		t.Helper()
+		bytes, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bytes
+	}
+	withUnknown := func(t *testing.T) []byte {
+		var object map[string]any
+		if err := json.Unmarshal(encode(t, valid), &object); err != nil {
+			t.Fatal(err)
+		}
+		object["authority"] = true
+		bytes, err := json.Marshal(object)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bytes
+	}
+	for _, tc := range []struct {
+		name  string
+		bytes func(*testing.T) []byte
+	}{
+		{name: "unknown field", bytes: withUnknown},
+		{name: "trailing document", bytes: func(t *testing.T) []byte { return append(encode(t, valid), []byte(`{}`)...) }},
+		{name: "missing tombstone body", bytes: func(*testing.T) []byte {
+			return []byte(`{"schema":1,"agent_id":"agent-a","canonical_name":"strict","content_hash":"","deleted":true,"updated_at":"2026-08-02T00:00:00Z"}`)
+		}},
+		{name: "null tombstone body", bytes: func(*testing.T) []byte {
+			return []byte(`{"schema":1,"agent_id":"agent-a","canonical_name":"strict","content_hash":"","deleted":true,"skill":null,"updated_at":"2026-08-02T00:00:00Z"}`)
+		}},
+		{name: "live missing timestamp", bytes: func(t *testing.T) []byte {
+			record := valid
+			record.UpdatedAt = time.Time{}
+			return encode(t, record)
+		}},
+		{name: "live non-session scope", bytes: func(t *testing.T) []byte {
+			record := valid
+			record.Skill.Scope = skills.ScopeUser
+			record.ContentHash = skills.CanonicalContentHash(record.Skill)
+			return encode(t, record)
+		}},
+		{name: "live explicit empty copy markers", bytes: func(t *testing.T) []byte {
+			var object map[string]any
+			if err := json.Unmarshal(encode(t, valid), &object); err != nil {
+				t.Fatal(err)
+			}
+			object["copy_epoch"] = ""
+			object["legacy_content_hash"] = ""
+			bytes, err := json.Marshal(object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return bytes
+		}},
+		{name: "tombstone with live body", bytes: func(t *testing.T) []byte {
+			record := valid
+			record.Deleted = true
+			return encode(t, record)
+		}},
+		{name: "tombstone with copy markers", bytes: func(t *testing.T) []byte {
+			record := sessionoverlay.PersonalSkillRecord{Schema: 1, AgentID: "agent-a", CanonicalName: "strict", Deleted: true, CopyEpoch: "epoch", LegacyContentHash: skills.CanonicalContentHash(liveSkill), UpdatedAt: valid.UpdatedAt}
+			return encode(t, record)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newDurableState(t)
+			activate(t, st, id)
+			savePersonalRecordBytes(t, st, id, "strict", tc.bytes(t))
+			store, err := sessionoverlay.NewDurableStore(st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.LoadPersonal(context.Background(), id, "agent-a", "strict"); !errors.Is(err, sessionoverlay.ErrPersonalRecordInvalid) {
+				t.Fatalf("LoadPersonal = %v, want ErrPersonalRecordInvalid", err)
+			}
+		})
 	}
 }
 
@@ -307,7 +470,128 @@ func TestDurableStore_FenceChangeRefusesWrite(t *testing.T) {
 	}
 }
 
+type fenceChangeDuringPointReadStore struct {
+	state.StateStore
+	id             identity.Quadruple
+	personalKind   string
+	maximumChanges int32
+	pointReads     atomic.Int32
+}
+
+func (s *fenceChangeDuringPointReadStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
+	record, err := s.StateStore.Load(ctx, q, kind)
+	if err != nil || q != s.id || kind != s.personalKind {
+		return record, err
+	}
+	read := s.pointReads.Add(1)
+	if s.maximumChanges >= 0 && read > s.maximumChanges {
+		return record, nil
+	}
+	lifecycleQ, lifecycleKind, slotErr := agentcfg.LifecycleSlot(s.id.TenantID, "agent-a")
+	if slotErr != nil {
+		return state.StateRecord{}, slotErr
+	}
+	bytes := []byte(fmt.Sprintf(`{"schema":1,"revision_id":"revision-%d","updated_at":"2026-08-02T00:00:00Z"}`, read))
+	if saveErr := s.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: lifecycleQ, Kind: lifecycleKind, Bytes: bytes}); saveErr != nil {
+		return state.StateRecord{}, saveErr
+	}
+	return record, nil
+}
+
+func seedReadablePersonal(t *testing.T) (state.StateStore, identity.Quadruple, string) {
+	t.Helper()
+	st := newDurableState(t)
+	id := durableID("session-readable")
+	activate(t, st, id)
+	store, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SavePersonal(context.Background(), id, "agent-a", durableSkill("readable"), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	kind, err := sessionoverlay.PersonalSkillKind("agent-a", "readable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st, id, kind
+}
+
+func TestDurableStore_LoadPersonalRetriesFenceChangeDuringPointRead(t *testing.T) {
+	base, id, kind := seedReadablePersonal(t)
+	changing := &fenceChangeDuringPointReadStore{StateStore: base, id: id, personalKind: kind, maximumChanges: 1}
+	store, err := sessionoverlay.NewDurableStore(changing, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, found, err := store.LoadPersonal(context.Background(), id, "agent-a", "readable")
+	if err != nil || !found || record.CanonicalName != "readable" {
+		t.Fatalf("LoadPersonal = (%+v, %v, %v)", record, found, err)
+	}
+	if got := changing.pointReads.Load(); got != 2 {
+		t.Fatalf("point reads = %d, want one changed attempt plus one stable attempt", got)
+	}
+}
+
+func TestDurableStore_LoadPersonalPerpetualFenceChurnStopsAfterThreeAttempts(t *testing.T) {
+	base, id, kind := seedReadablePersonal(t)
+	changing := &fenceChangeDuringPointReadStore{StateStore: base, id: id, personalKind: kind, maximumChanges: -1}
+	store, err := sessionoverlay.NewDurableStore(changing, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.LoadPersonal(context.Background(), id, "agent-a", "readable"); !errors.Is(err, sessionoverlay.ErrSessionSkillReadUnstable) {
+		t.Fatalf("LoadPersonal = %v, want ErrSessionSkillReadUnstable", err)
+	}
+	if got := changing.pointReads.Load(); got != sessionoverlay.MaxSessionSkillReadAttempts {
+		t.Fatalf("point reads = %d, want exactly %d attempts", got, sessionoverlay.MaxSessionSkillReadAttempts)
+	}
+}
+
+type cancelDuringPointReadStore struct {
+	state.StateStore
+	id           identity.Quadruple
+	personalKind string
+	cancel       context.CancelFunc
+	pointReads   atomic.Int32
+}
+
+func (s *cancelDuringPointReadStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
+	record, err := s.StateStore.Load(ctx, q, kind)
+	if err == nil && q == s.id && kind == s.personalKind {
+		s.pointReads.Add(1)
+		s.cancel()
+	}
+	return record, err
+}
+
+func TestDurableStore_LoadPersonalHonorsCancellationAndDeadlineOnAttempts(t *testing.T) {
+	base, id, kind := seedReadablePersonal(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	canceling := &cancelDuringPointReadStore{StateStore: base, id: id, personalKind: kind, cancel: cancel}
+	store, err := sessionoverlay.NewDurableStore(canceling, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.LoadPersonal(ctx, id, "agent-a", "readable"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("mid-attempt cancellation = %v, want context.Canceled", err)
+	}
+	if got := canceling.pointReads.Load(); got != 1 {
+		t.Fatalf("point reads after cancellation = %d, want 1", got)
+	}
+
+	expired, stop := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer stop()
+	if _, _, err := store.LoadPersonal(expired, id, "agent-a", "readable"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expired deadline = %v, want context.DeadlineExceeded", err)
+	}
+	if got := canceling.pointReads.Load(); got != 1 {
+		t.Fatalf("expired deadline began another point read: %d", got)
+	}
+}
+
 func TestDurableStore_ConcurrentIsolation(t *testing.T) {
+	baseline := runtime.NumGoroutine()
 	st := newDurableState(t)
 	store, err := sessionoverlay.NewDurableStore(st, nil)
 	if err != nil {
@@ -323,11 +607,20 @@ func TestDurableStore_ConcurrentIsolation(t *testing.T) {
 			defer wg.Done()
 			id := durableID(fmt.Sprintf("session-%03d", i))
 			name := fmt.Sprintf("skill-%03d", i)
-			if _, err := store.SavePersonal(context.Background(), id, "agent-a", durableSkill(name), "", ""); err != nil {
+			ctx := context.Background()
+			if i%2 == 0 {
+				canceled, cancel := context.WithCancel(ctx)
+				cancel()
+				if _, err := store.SavePersonal(canceled, id, "agent-a", durableSkill(name), "", ""); !errors.Is(err, context.Canceled) {
+					errs <- fmt.Errorf("session %d canceled write = %w", i, err)
+				}
+				return
+			}
+			if _, err := store.SavePersonal(ctx, id, "agent-a", durableSkill(name), "", ""); err != nil {
 				errs <- err
 				return
 			}
-			got, found, err := store.LoadPersonal(context.Background(), id, "agent-a", name)
+			got, found, err := store.LoadPersonal(ctx, id, "agent-a", name)
 			if err != nil || !found || got.Skill.Name != name {
 				errs <- fmt.Errorf("session %d read = (%+v, %v, %w)", i, got, found, err)
 			}
@@ -337,6 +630,13 @@ func TestDurableStore_ConcurrentIsolation(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline+2 && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if got := runtime.NumGoroutine(); got > baseline+2 {
+		t.Errorf("goroutine baseline not restored: got=%d baseline=%d", got, baseline)
 	}
 }
 
@@ -502,6 +802,7 @@ func TestCutoverController_ResumesLiteralTenantScanAndFreshVerifies(t *testing.T
 
 func TestCutoverController_MalformedLegacyRowsBlockStateOnly(t *testing.T) {
 	declaration := config.SessionPersonalCutoverTenant{TenantID: "tenant", Epoch: "epoch", RosterDigest: "digest", LegacyWritersDrained: true}
+	valid := []byte(`{"schema":1,"overlay":{},"updated_at":"2026-08-01T00:00:00Z"}`)
 	for _, tc := range []struct {
 		name  string
 		id    identity.Quadruple
@@ -511,6 +812,13 @@ func TestCutoverController_MalformedLegacyRowsBlockStateOnly(t *testing.T) {
 		{name: "future schema", id: durableID("future"), bytes: []byte(`{"schema":2,"overlay":{},"updated_at":"2026-08-01T00:00:00Z"}`)},
 		{name: "missing envelope field", id: durableID("missing"), bytes: []byte(`{"schema":1,"updated_at":"2026-08-01T00:00:00Z"}`)},
 		{name: "run scoped", id: identity.Quadruple{Identity: durableID("run").Identity, RunID: "run-a"}, bytes: []byte(`{"schema":1,"overlay":{},"updated_at":"2026-08-01T00:00:00Z"}`)},
+		{name: "unknown envelope field", id: durableID("unknown-envelope"), bytes: []byte(`{"schema":1,"overlay":{},"updated_at":"2026-08-01T00:00:00Z","authority":true}`)},
+		{name: "unknown overlay field", id: durableID("unknown-overlay"), bytes: []byte(`{"schema":1,"overlay":{"authority":true},"updated_at":"2026-08-01T00:00:00Z"}`)},
+		{name: "trailing document", id: durableID("trailing"), bytes: append(append([]byte(nil), valid...), []byte(`{}`)...)},
+		{name: "oversized", id: durableID("oversized"), bytes: []byte(strings.Repeat("x", sessionoverlay.MaxLegacySessionOverlayRecordBytes+1))},
+		{name: "reserved control user", id: identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "__agentcfg__", SessionID: "ordinary"}}, bytes: valid},
+		{name: "reserved control session", id: identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "__session_personal_cutover__"}}, bytes: valid},
+		{name: "noncanonical overlay set", id: durableID("duplicate"), bytes: []byte(`{"schema":1,"overlay":{"personal_skills":["same","same"]},"updated_at":"2026-08-01T00:00:00Z"}`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := newDurableState(t)
@@ -521,9 +829,13 @@ func TestCutoverController_MalformedLegacyRowsBlockStateOnly(t *testing.T) {
 			if err := st.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: tc.id, Kind: sessionoverlay.LegacyOverlayKind("agent-a"), Bytes: tc.bytes}); err != nil {
 				t.Fatal(err)
 			}
-			mode, err := controller.Advance(context.Background(), "tenant", 8, &recordingMigrator{})
+			migrator := &recordingMigrator{}
+			mode, err := controller.Advance(context.Background(), "tenant", 8, migrator)
 			if mode != sessionoverlay.CutoverDualRead || !errors.Is(err, sessionoverlay.ErrLegacyOverlayInvalid) {
 				t.Fatalf("Advance = (%q, %v), want dual_read ErrLegacyOverlayInvalid", mode, err)
+			}
+			if len(migrator.copied) != 0 || len(migrator.verified) != 0 {
+				t.Fatalf("invalid candidate reached migrator: copied=%v verified=%v", migrator.copied, migrator.verified)
 			}
 			mode, err = controller.Mode(context.Background(), "tenant")
 			if err != nil || mode != sessionoverlay.CutoverDualRead {
@@ -703,6 +1015,86 @@ func TestCutoverController_UnlistedAndUndrainedRemainDualRead(t *testing.T) {
 		if err != nil || mode != sessionoverlay.CutoverDualRead {
 			t.Fatalf("Mode(%q) = (%q, %v)", tenant, mode, err)
 		}
+	}
+}
+
+func TestCutoverController_TenantIDsAreExactOpaqueKeys(t *testing.T) {
+	st := newDurableState(t)
+	declarations := []config.SessionPersonalCutoverTenant{
+		{TenantID: "TenantA", Epoch: "upper", RosterDigest: "upper-digest", LegacyWritersDrained: true},
+		{TenantID: "tenanta", Epoch: "lower", RosterDigest: "lower-digest", LegacyWritersDrained: false},
+	}
+	controller, err := sessionoverlay.NewCutoverController(st, declarations)
+	if err != nil {
+		t.Fatalf("case-distinct declarations: %v", err)
+	}
+	mode, err := controller.Advance(context.Background(), "TenantA", 8, &recordingMigrator{})
+	if err != nil || mode != sessionoverlay.CutoverStateOnly {
+		t.Fatalf("Advance(TenantA) = (%q, %v)", mode, err)
+	}
+	mode, err = controller.Mode(context.Background(), "tenanta")
+	if err != nil || mode != sessionoverlay.CutoverDualRead {
+		t.Fatalf("Mode(tenanta) aliased TenantA = (%q, %v)", mode, err)
+	}
+	if _, err := sessionoverlay.NewCutoverController(st, append(declarations, declarations[0])); !errors.Is(err, sessionoverlay.ErrInvalidInput) {
+		t.Fatalf("exact duplicate declaration = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestCutoverController_ConcurrentReuseIdentityCancellationAndLeak(t *testing.T) {
+	baseline := runtime.NumGoroutine()
+	st := newDurableState(t)
+	declarations := []config.SessionPersonalCutoverTenant{
+		{TenantID: "TenantA", Epoch: "upper", RosterDigest: "upper-digest", LegacyWritersDrained: true},
+		{TenantID: "tenanta", Epoch: "lower", RosterDigest: "lower-digest", LegacyWritersDrained: false},
+	}
+	controller, err := sessionoverlay.NewCutoverController(st, declarations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode, err := controller.Advance(context.Background(), "TenantA", 8, &recordingMigrator{}); err != nil || mode != sessionoverlay.CutoverStateOnly {
+		t.Fatalf("setup Advance = (%q, %v)", mode, err)
+	}
+	const n = 128
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				if _, err := controller.Mode(ctx, "TenantA"); !errors.Is(err, context.Canceled) {
+					errs <- fmt.Errorf("canceled Mode %d = %w", i, err)
+				}
+				return
+			}
+			tenant := "TenantA"
+			want := sessionoverlay.CutoverStateOnly
+			if i%4 == 3 {
+				tenant = "tenanta"
+				want = sessionoverlay.CutoverDualRead
+			}
+			mode, err := controller.Mode(context.Background(), tenant)
+			if err != nil {
+				errs <- fmt.Errorf("Mode(%q): %w", tenant, err)
+			} else if mode != want {
+				errs <- fmt.Errorf("Mode(%q) = %q, want %q", tenant, mode, want)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline+2 && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if got := runtime.NumGoroutine(); got > baseline+2 {
+		t.Errorf("goroutine baseline not restored: got=%d baseline=%d", got, baseline)
 	}
 }
 
