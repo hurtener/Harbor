@@ -6,8 +6,10 @@
 # `StartRequest.agent_id` names which agent's CONFIGURATION a run executes
 # under. The two-check rule: accept when the id equals the runtime's
 # configured default, OR when a config revision exists for the caller's
-# tenant. Anything else is REFUSED at the Protocol edge before a task
-# exists — never substituted with the default.
+# tenant. Phase 232 adds the independent signed-authority condition: selection
+# succeeds only when the effective id is also in the bearer's agent_reach.
+# Anything else is REFUSED at the Protocol edge before a task exists — never
+# substituted with the default.
 #
 # Conventions (AGENTS.md §4.2):
 #   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
@@ -162,8 +164,10 @@ else
     fail "phase 215: start naming the configured default was REFUSED: $(printf '%s' "${DEF_RESP}" | head -c 300)"
 fi
 
-# --- (3) CHECK (ii): write a revision under a SECOND agent id, then name
-#         it on a `start`. ---
+# --- (3) CHECK (ii): write a revision under a SECOND agent id, then prove
+#         tenant-local config existence is selection, NOT authority. The dev
+#         bearer reaches only DEFAULT_AGENT, so naming this resolvable second
+#         id must now refuse with signed-reach scope_mismatch. ---
 REV_PROBE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -X POST -H 'Content-Type: application/json' -d '{}' "${SET_REVISION_URL}" 2>/dev/null || true)
 case "${REV_PROBE:-000}" in
@@ -176,20 +180,23 @@ case "${REV_PROBE:-000}" in
         if [ -z "${REV_ID}" ]; then
             fail "phase 215: could not pin a revision for ${SECOND_AGENT}: $(printf '%s' "${SET_BODY}" | head -c 300)"
         else
-            SEC_RESP="$(post_body "${START_URL}" "{\"query\":\"phase-215 smoke: second agent\",\"agent_id\":\"${SECOND_AGENT}\"}")"
-            SEC_TASK="$(printf '%s' "${SEC_RESP}" | jq -r '.task_id // empty')"
-            if [ -n "${SEC_TASK}" ] && [ "$(task_agent_id "${SEC_TASK}")" = "${SECOND_AGENT}" ]; then
-                ok "phase 215: check (ii) — an agent with a config revision is accepted and persists on the task"
+            SEC_CODE="$(post_code "${START_URL}" "{\"query\":\"phase-215 smoke: second agent\",\"agent_id\":\"${SECOND_AGENT}\"}")"
+            if [ "${SEC_CODE}" = "403" ]; then
+                ok "phase 215/232: check (ii) — a config revision makes ${SECOND_AGENT} selectable but does not grant signed bearer authority"
             else
-                fail "phase 215: start naming ${SECOND_AGENT} (which HAS a revision) was refused or lost the id: $(printf '%s' "${SEC_RESP}" | head -c 300)"
+                fail "phase 215/232: start naming configured-but-out-of-reach ${SECOND_AGENT} returned ${SEC_CODE}, want 403"
             fi
         fi
         ;;
 esac
 
-# --- (4) An UNKNOWN agent_id is refused with 400 AND no task is created.
-#         The task-count check is the load-bearing half: a status-code-only
-#         assertion would not catch a refusal that happened after Spawn.
+# --- (4) The stock bearer cannot reach an UNKNOWN agent_id, so it is refused
+#         with 403 before tenant-local selection lookup, and no task is
+#         created. Phase 232's recording-resolver test separately proves that
+#         an allowed bearer sees unknown and foreign targets as the same 400
+#         invalid_request selection refusal. The task-count check is the
+#         load-bearing half: a status-code-only assertion would not catch a
+#         refusal that happened after Spawn.
 #
 #         The block runs in its OWN session so the count is not perturbed
 #         by the runs steps 1-3 started (or by any child task one of them
@@ -240,10 +247,10 @@ UNKNOWN_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${START_URL}" \
     -H 'Content-Type: application/json' \
     -d '{"query":"phase-215 smoke: unknown agent 2","agent_id":"phase215-no-such-agent"}' 2>/dev/null || true)"
 read -r AFTER_STATUS AFTER_COUNT <<< "$(count_isolated_tasks)"
-if [ "${UNKNOWN_CODE}" = "400" ]; then
-    ok "phase 215: an unknown agent_id is refused with 400 invalid_request"
+if [ "${UNKNOWN_CODE}" = "403" ]; then
+    ok "phase 215/232: an unknown out-of-reach agent_id is refused with 403 before tenant-local selection"
 else
-    fail "phase 215: an unknown agent_id returned ${UNKNOWN_CODE}, want 400"
+    fail "phase 215/232: an unknown out-of-reach agent_id returned ${UNKNOWN_CODE}, want 403"
 fi
 if [ "${BEFORE_STATUS}" != "200" ] || [ "${AFTER_STATUS}" != "200" ] || [ -z "${BEFORE_COUNT}" ] || [ -z "${AFTER_COUNT}" ]; then
     fail "phase 215: task count unreadable (tasks.list ${BEFORE_STATUS} → ${AFTER_STATUS}) — a refused start MUST NOT create a task, and this guard cannot say whether it did"

@@ -374,10 +374,10 @@ func validateCallerMemory(method string, raw json.RawMessage) error {
 // two cases apart by accident.
 const agentNotResolvableMsg = "agent_id is not resolvable for the caller's tenant"
 
-// validateNamedAgent applies the two-check rule to a `start` request's
-// optional agent_id. It returns nil for an OMITTED id (the unchanged
-// path — byte-identical to a Runtime without the field) and a Protocol
-// error for every non-empty id the Runtime cannot honour.
+// validateNamedAgent applies the two-check rule to a `start` request's agent
+// selection. A reach-enabled surface resolves an omitted id to the configured
+// default. Every ControlSurface carries the shared fail-closed gate, so an
+// omitted target is never a bypass.
 //
 // The unwired seam FAILS CLOSED. A surface built without an
 // AgentResolver refuses a non-empty id rather than skipping the check:
@@ -390,14 +390,31 @@ const agentNotResolvableMsg = "agent_id is not resolvable for the caller's tenan
 // A resolver ERROR fails the request loud with CodeRuntimeError; it
 // never falls through to the default agent.
 func (s *ControlSurface) validateNamedAgent(ctx context.Context, method string, id identity.Identity, agentID string) error {
-	if agentID == "" {
-		return nil
+	// Determine the effective target without consulting tenant-local state.
+	// Reach is the authority boundary, so it MUST run before ResolveAgent:
+	// otherwise an untrusted caller can distinguish configured targets from
+	// unknown or foreign ones by observing which lookup occurred. An omitted
+	// id is an effective selection too; a bare surface deliberately leaves it
+	// empty, which the same fail-closed gate rejects.
+	effectiveID := agentID
+	if resolver, ok := s.agents.(EffectiveAgentResolver); ok {
+		var err error
+		effectiveID, err = resolver.EffectiveAgentID(agentID)
+		if err != nil {
+			return protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %s", method, agentNotResolvableMsg)
+		}
+	} else if s.agents != nil && effectiveID == "" {
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %s", method, agentNotResolvableMsg)
+	}
+	if err := s.reach.AuthorizeAgentReach(ctx, effectiveID); err != nil {
+		return protoerrors.Newf(protoerrors.CodeScopeMismatch,
+			"method %q: caller is not authorized for the effective agent", method)
 	}
 	if s.agents == nil {
 		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: %s", method, agentNotResolvableMsg)
 	}
-	allowed, err := s.agents.ResolveAgent(ctx, id, agentID)
+	allowed, err := s.agents.ResolveAgent(ctx, id, effectiveID)
 	if err != nil {
 		return protoerrors.Newf(protoerrors.CodeRuntimeError,
 			"method %q: agent_id resolution failed: %v", method, err)

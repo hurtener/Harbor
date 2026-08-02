@@ -42,6 +42,21 @@ import (
 // the JWT header and the validator resolves it.
 const forkKID = "harbor-conformance-fork-k1"
 
+const forkAgentID = "harbor-conformance-agent"
+
+type forkAgentResolver struct{}
+
+func (forkAgentResolver) ResolveAgent(_ context.Context, _ identity.Identity, agentID string) (bool, error) {
+	return agentID == forkAgentID, nil
+}
+
+func (forkAgentResolver) EffectiveAgentID(requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	return forkAgentID, nil
+}
+
 // TestConformanceFork certifies a Protocol-server fork's assembly
 // against the FULL Harbor conformance suite by wiring a custom
 // conformance.Factory and handing it to conformance.RunSuite.
@@ -131,7 +146,10 @@ func buildForkStack(t *testing.T, testdataRoot string) *conformance.Stack {
 	rollback = append(rollback, func() { _ = taskReg.Close(context.Background()) })
 
 	steerReg := steering.NewRegistry()
-	surface, err := protocol.NewControlSurface(taskReg, steerReg)
+	agentReach := auth.NewAgentReachAuthorizer()
+	surface, err := protocol.NewControlSurface(taskReg, steerReg,
+		protocol.WithAgentResolver(forkAgentResolver{}),
+		protocol.WithAgentReachAuthorizer(agentReach))
 	if err != nil {
 		fatal("protocol.NewControlSurface: %v", err)
 	}
@@ -220,14 +238,15 @@ func defaultClaims(id identity.Identity, scopes []auth.Scope) jwt.MapClaims {
 		scopeStrs = append(scopeStrs, string(s))
 	}
 	return jwt.MapClaims{
-		"iss":     "https://idp.test",
-		"sub":     id.UserID,
-		"exp":     conformance.FixedNow.Add(15 * time.Minute).Unix(),
-		"nbf":     conformance.FixedNow.Add(-1 * time.Minute).Unix(),
-		"tenant":  id.TenantID,
-		"user":    id.UserID,
-		"session": id.SessionID,
-		"scopes":  scopeStrs,
+		"iss":         "https://idp.test",
+		"sub":         id.UserID,
+		"exp":         conformance.FixedNow.Add(15 * time.Minute).Unix(),
+		"nbf":         conformance.FixedNow.Add(-1 * time.Minute).Unix(),
+		"tenant":      id.TenantID,
+		"user":        id.UserID,
+		"session":     id.SessionID,
+		"scopes":      scopeStrs,
+		"agent_reach": []string{forkAgentID},
 	}
 }
 

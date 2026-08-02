@@ -35,9 +35,10 @@ func TestConcurrentReuse_SharedMux_NoCrossTalk(t *testing.T) {
 	deps := newTestDeps(t)
 	defer deps.cleanup()
 
+	stub := &stubValidator{verified: muxTestVerified()}
 	mux, err := transports.NewMux(deps.surface, deps.bus,
 		transports.WithKeepalive(20*time.Millisecond),
-		transports.WithoutValidator())
+		transports.WithValidator(stub))
 	if err != nil {
 		t.Fatalf("NewMux: %v", err)
 	}
@@ -55,7 +56,7 @@ func TestConcurrentReuse_SharedMux_NoCrossTalk(t *testing.T) {
 			if i%2 == 0 {
 				// REST control submission.
 				body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"q"}`
-				resp, err := postControlCarrier(srv.URL+"/v1/control/start",
+				resp, err := postControlBearer(srv.URL+"/v1/control/start",
 					strings.NewReader(body))
 				if err != nil {
 					errs <- err
@@ -76,6 +77,7 @@ func TestConcurrentReuse_SharedMux_NoCrossTalk(t *testing.T) {
 			req.Header.Set("X-Harbor-Tenant", "t1")
 			req.Header.Set("X-Harbor-User", "u1")
 			req.Header.Set("X-Harbor-Session", "s1")
+			req.Header.Set("Authorization", "Bearer faketoken")
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				// A ctx-deadline error on the body read is expected; a
@@ -308,10 +310,9 @@ func TestConcurrentReuse_StateHistory_NoCrossIdentityBleed(t *testing.T) {
 	}
 }
 
-// postControlCarrier drives the control route on a bearer-less mux,
-// supplying the X-Harbor-* carrier headers that posture establishes
-// identity from.
-func postControlCarrier(url string, body io.Reader) (*http.Response, error) {
+// postControlBearer drives the control route through the shared validator.
+// Its stub-verified result carries both the identity and bounded agent reach.
+func postControlBearer(url string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodPost, url, body) //nolint:noctx // the shared-mux stress drives fire-and-forget requests; the test bounds the run itself.
 	if err != nil {
 		return nil, err
@@ -320,5 +321,6 @@ func postControlCarrier(url string, body io.Reader) (*http.Response, error) {
 	req.Header.Set("X-Harbor-Tenant", "t1")
 	req.Header.Set("X-Harbor-User", "u1")
 	req.Header.Set("X-Harbor-Session", "s1")
+	req.Header.Set("Authorization", "Bearer faketoken")
 	return http.DefaultClient.Do(req)
 }

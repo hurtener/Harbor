@@ -177,6 +177,7 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 				return
 			}
 			ctx = WithScopes(ctx, verified.Scopes)
+			ctx = WithAgentReach(ctx, verified.AgentReach)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

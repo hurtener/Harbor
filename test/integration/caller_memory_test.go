@@ -209,6 +209,11 @@ func cmSignToken(t *testing.T, s *cmStack, id identity.Identity) string {
 		"user":    id.UserID,
 		"session": id.SessionID,
 		"scopes":  []string{"admin"},
+		// The helper drives agent-addressed data-plane calls through the
+		// devstack's boot agent. Phase 232 makes that authority explicit:
+		// arbitrary identity is still isolated by the triple, while reach is
+		// the independently signed resource entitlement.
+		"agent_reach": []string{s.stack.AgentConfigID},
 	})
 	tok.Header["kid"] = devstack.DefaultKID
 	signed, err := tok.SignedString(s.stack.SigningKey)

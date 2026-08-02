@@ -25,6 +25,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -123,7 +124,12 @@ func (f *agentFixture) writeRevision(t *testing.T, id identity.Identity, agentID
 // start dispatches a `start` naming agentID (empty = named none).
 func (f *agentFixture) start(t *testing.T, id identity.Identity, agentID, key string) (*types.StartResponse, error) {
 	t.Helper()
-	resp, err := f.surface.Dispatch(authCtx(t, id), methods.MethodStart, &types.StartRequest{
+	effective := agentID
+	if effective == "" {
+		effective = bootAgentID
+	}
+	ctx := auth.WithAgentReach(authCtx(t, id), []string{effective})
+	resp, err := f.surface.Dispatch(ctx, methods.MethodStart, &types.StartRequest{
 		Identity:       types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 		Query:          "hello",
 		IdempotencyKey: key,
@@ -244,10 +250,170 @@ func TestDispatchStart_NamedAgent_UnwiredSurfaceFailsClosed(t *testing.T) {
 		t.Fatalf("error code = %q, want %q", got, protoerrors.CodeInvalidRequest)
 	}
 
-	// An OMITTED agent_id against the same surface is byte-identical to
-	// a Runtime that never had the seam.
-	if _, err := f.start(t, caller, "", "unwired-2"); err != nil {
-		t.Fatalf("omitted agent_id against a resolver-less surface: %v", err)
+	// Omitted is also an effective choice and cannot bypass the reach gate.
+	if _, err := f.start(t, caller, "", "unwired-2"); err == nil {
+		t.Fatal("omitted agent_id against a resolver-less surface was accepted; want refusal")
+	} else if got := codeOf(t, err); got != protoerrors.CodeScopeMismatch {
+		t.Fatalf("omitted error code = %q, want %q", got, protoerrors.CodeScopeMismatch)
+	}
+}
+
+// TestDispatchStart_AgentReach_GatesExplicitAndDefaultBeforeSpawn proves that
+// resolvability is not authority: both a named agent and the configured
+// default are checked against the verified signed reach before a task exists.
+func TestDispatchStart_AgentReach_GatesExplicitAndDefaultBeforeSpawn(t *testing.T) {
+	f := newAgentFixture(t, false)
+	caller := agentIdent("tenant-a", "user-1", "session-x")
+	f.writeRevision(t, caller, "configured-agent")
+	surface, err := protocol.NewControlSurface(f.tasks, steering.NewRegistry(),
+		protocol.WithAgentResolver(serve.NewAgentResolverAdapter(f.cfg, bootAgentID)),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
+	if err != nil {
+		t.Fatalf("NewControlSurface: %v", err)
+	}
+	start := func(ctx context.Context, agentID, key string) error {
+		_, err := surface.Dispatch(ctx, methods.MethodStart, &types.StartRequest{
+			Identity:       types.IdentityScope{Tenant: caller.TenantID, User: caller.UserID, Session: caller.SessionID},
+			Query:          "hello",
+			AgentID:        agentID,
+			IdempotencyKey: key,
+		})
+		return err
+	}
+	before := countTasks(t, f.tasks, caller)
+	if err := start(authCtx(t, caller), "configured-agent", "missing-reach"); codeOf(t, err) != protoerrors.CodeScopeMismatch {
+		t.Fatalf("missing reach code = %q, want %q", codeOf(t, err), protoerrors.CodeScopeMismatch)
+	}
+	if err := start(auth.WithAgentReach(authCtx(t, caller), []string{"configured-agent"}), "", "excluded-default"); codeOf(t, err) != protoerrors.CodeScopeMismatch {
+		t.Fatalf("excluded default code = %q, want %q", codeOf(t, err), protoerrors.CodeScopeMismatch)
+	}
+	if after := countTasks(t, f.tasks, caller); after != before {
+		t.Fatalf("task count %d -> %d: denied reach must precede spawn", before, after)
+	}
+	if err := start(auth.WithAgentReach(authCtx(t, caller), []string{bootAgentID}), "", "allowed-default"); err != nil {
+		t.Fatalf("allowed default start: %v", err)
+	}
+}
+
+func TestDispatchStart_AgentReach_DirectResolverConstructionFailsClosed(t *testing.T) {
+	f := newAgentFixture(t, false)
+	caller := agentIdent("tenant-a", "user-1", "session-x")
+	f.writeRevision(t, caller, "configured-agent")
+	// Deliberately omit WithAgentReachAuthorizer: WithAgentResolver must make
+	// the direct in-process construction fail closed by default.
+	surface, err := protocol.NewControlSurface(f.tasks, steering.NewRegistry(),
+		protocol.WithAgentResolver(serve.NewAgentResolverAdapter(f.cfg, bootAgentID)))
+	if err != nil {
+		t.Fatalf("NewControlSurface: %v", err)
+	}
+	before := countTasks(t, f.tasks, caller)
+	_, err = surface.Dispatch(context.Background(), methods.MethodStart, &types.StartRequest{
+		Identity: types.IdentityScope{Tenant: caller.TenantID, User: caller.UserID, Session: caller.SessionID},
+		Query:    "hello",
+		AgentID:  "configured-agent",
+	})
+	if codeOf(t, err) != protoerrors.CodeScopeMismatch {
+		t.Fatalf("direct missing-reach code = %q, want %q", codeOf(t, err), protoerrors.CodeScopeMismatch)
+	}
+	if after := countTasks(t, f.tasks, caller); after != before {
+		t.Fatalf("task count %d -> %d: direct denied reach must precede spawn", before, after)
+	}
+}
+
+func TestDispatchStart_AgentReach_BareDirectOmittedTargetFailsClosed(t *testing.T) {
+	f := newAgentFixture(t, false)
+	caller := agentIdent("tenant-a", "user-1", "session-x")
+	// No resolver and no reach: this is the formerly bypassing direct path.
+	surface, err := protocol.NewControlSurface(f.tasks, steering.NewRegistry())
+	if err != nil {
+		t.Fatalf("NewControlSurface: %v", err)
+	}
+	before := countTasks(t, f.tasks, caller)
+	_, err = surface.Dispatch(authCtx(t, caller), methods.MethodStart, &types.StartRequest{
+		Identity: types.IdentityScope{Tenant: caller.TenantID, User: caller.UserID, Session: caller.SessionID},
+		Query:    "hello",
+	})
+	if codeOf(t, err) != protoerrors.CodeScopeMismatch {
+		t.Fatalf("bare omitted-target code = %q, want %q", codeOf(t, err), protoerrors.CodeScopeMismatch)
+	}
+	if after := countTasks(t, f.tasks, caller); after != before {
+		t.Fatalf("task count %d -> %d: bare denied reach must precede spawn", before, after)
+	}
+}
+
+// recordingReachResolver makes a tenant-local resolvability lookup observable.
+// It is deliberately not a config registry: this test pins the ControlSurface
+// ordering contract itself, including the case where a selected ID is unknown.
+type recordingReachResolver struct {
+	defaultID string
+	calls     int
+}
+
+func (r *recordingReachResolver) ResolveAgent(context.Context, identity.Identity, string) (bool, error) {
+	r.calls++
+	return false, nil
+}
+
+func (r *recordingReachResolver) EffectiveAgentID(requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	return r.defaultID, nil
+}
+
+// TestDispatchStart_AgentReach_DenialPrecedesTenantResolver proves that an
+// unauthorized bearer cannot use start as a tenant-local config existence
+// oracle. The resolver would report every target unknown, but it is never
+// called for explicit or defaulted selections when reach is missing, empty, or
+// excludes that effective target.
+func TestDispatchStart_AgentReach_DenialPrecedesTenantResolver(t *testing.T) {
+	f := newAgentFixture(t, false)
+	caller := agentIdent("tenant-a", "user-1", "session-x")
+
+	for _, selection := range []struct {
+		name      string
+		agentID   string
+		effective string
+	}{
+		{name: "explicit unknown", agentID: "unknown-explicit", effective: "unknown-explicit"},
+		{name: "omitted default unknown", effective: "unknown-default"},
+	} {
+		t.Run(selection.name, func(t *testing.T) {
+			for _, authority := range []struct {
+				name string
+				ctx  context.Context
+			}{
+				{name: "missing", ctx: authCtx(t, caller)},
+				{name: "empty", ctx: auth.WithAgentReach(authCtx(t, caller), []string{})},
+				{name: "excluded", ctx: auth.WithAgentReach(authCtx(t, caller), []string{"another-agent"})},
+			} {
+				t.Run(authority.name, func(t *testing.T) {
+					resolver := &recordingReachResolver{defaultID: "unknown-default"}
+					surface, err := protocol.NewControlSurface(f.tasks, steering.NewRegistry(),
+						protocol.WithAgentResolver(resolver),
+						protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
+					if err != nil {
+						t.Fatalf("NewControlSurface: %v", err)
+					}
+					before := countTasks(t, f.tasks, caller)
+					_, err = surface.Dispatch(authority.ctx, methods.MethodStart, &types.StartRequest{
+						Identity:       types.IdentityScope{Tenant: caller.TenantID, User: caller.UserID, Session: caller.SessionID},
+						Query:          "hello",
+						AgentID:        selection.agentID,
+						IdempotencyKey: selection.name + "-" + authority.name,
+					})
+					if got := codeOf(t, err); got != protoerrors.CodeScopeMismatch {
+						t.Fatalf("%s target %q error code = %q, want %q", authority.name, selection.effective, got, protoerrors.CodeScopeMismatch)
+					}
+					if resolver.calls != 0 {
+						t.Fatalf("%s target %q called tenant resolver %d times before reach denial", authority.name, selection.effective, resolver.calls)
+					}
+					if after := countTasks(t, f.tasks, caller); after != before {
+						t.Fatalf("task count %d -> %d: denied reach must precede resolver and spawn", before, after)
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -270,7 +436,7 @@ func TestDispatchStart_NamedAgent_ResolverErrorFailsLoud(t *testing.T) {
 	caller := agentIdent("tenant-a", "user-1", "session-x")
 	before := countTasks(t, f.tasks, caller)
 
-	_, dErr := surface.Dispatch(authCtx(t, caller), methods.MethodStart, &types.StartRequest{
+	_, dErr := surface.Dispatch(auth.WithAgentReach(authCtx(t, caller), []string{bootAgentID}), methods.MethodStart, &types.StartRequest{
 		Identity: types.IdentityScope{Tenant: caller.TenantID, User: caller.UserID, Session: caller.SessionID},
 		Query:    "hello",
 		AgentID:  bootAgentID,

@@ -36,6 +36,27 @@ type surfaceFixture struct {
 	state    state.StateStore
 }
 
+// fixtureAgentResolver is an explicit non-production agent-selection policy
+// for legacy control-surface tests that exercise task mechanics rather than
+// bearer authority. Production assembly always uses the StateStore-backed
+// resolver and signed gate.
+type fixtureAgentResolver struct{}
+
+func (fixtureAgentResolver) ResolveAgent(context.Context, identity.Identity, string) (bool, error) {
+	return true, nil
+}
+
+func (fixtureAgentResolver) EffectiveAgentID(requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	return "fixture-default", nil
+}
+
+type fixtureReachAuthorizer struct{}
+
+func (fixtureReachAuthorizer) AuthorizeAgentReach(context.Context, string) error { return nil }
+
 func newSurfaceFixture(t *testing.T) *surfaceFixture {
 	t.Helper()
 
@@ -69,7 +90,9 @@ func newSurfaceFixture(t *testing.T) *surfaceFixture {
 	}
 	steerReg := steering.NewRegistry()
 
-	surface, err := protocol.NewControlSurface(taskReg, steerReg)
+	surface, err := protocol.NewControlSurface(taskReg, steerReg,
+		protocol.WithAgentResolver(fixtureAgentResolver{}),
+		protocol.WithAgentReachAuthorizer(fixtureReachAuthorizer{}))
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())

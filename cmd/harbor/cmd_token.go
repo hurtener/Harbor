@@ -40,18 +40,19 @@ import (
 // Flag names for `harbor token`, declared as constants so the command
 // bodies, tests, and help text reference one spelling.
 const (
-	flagTokenOut      = "out"
-	flagTokenAlg      = "alg"
-	flagTokenForce    = "force"
-	flagTokenKey      = "key"
-	flagTokenTenant   = "tenant"
-	flagTokenUser     = "user"
-	flagTokenSession  = "session"
-	flagTokenIssuer   = "issuer"
-	flagTokenAudience = "audience"
-	flagTokenKID      = "kid"
-	flagTokenScopes   = "scopes"
-	flagTokenTTL      = "ttl"
+	flagTokenOut        = "out"
+	flagTokenAlg        = "alg"
+	flagTokenForce      = "force"
+	flagTokenKey        = "key"
+	flagTokenTenant     = "tenant"
+	flagTokenUser       = "user"
+	flagTokenSession    = "session"
+	flagTokenIssuer     = "issuer"
+	flagTokenAudience   = "audience"
+	flagTokenKID        = "kid"
+	flagTokenScopes     = "scopes"
+	flagTokenAgentReach = "agent-reach"
+	flagTokenTTL        = "ttl"
 )
 
 // defaultTokenTTL is the `harbor token mint` expiry when --ttl is
@@ -159,6 +160,9 @@ iss/aud mismatch with 401.
 Least privilege: no scopes are granted unless --scopes is passed. The
 default TTL is short (1h); raise it with --ttl only when you must.
 
+Agent-addressed data-plane calls additionally require a signed
+--agent-reach registration ID list; omission grants none of that authority.
+
 The signed token is written to stdout (capture it); nothing else is.
 
 Examples:
@@ -180,6 +184,7 @@ Examples:
 	cmd.Flags().String(flagTokenAudience, "", "aud claim — MUST equal identity.audience (required)")
 	cmd.Flags().String(flagTokenKID, "", "key id header (defaults to the key's JWK thumbprint)")
 	cmd.Flags().StringSlice(flagTokenScopes, nil, "scopes to grant (default: none — least privilege)")
+	cmd.Flags().StringSlice(flagTokenAgentReach, nil, "agent registration IDs this bearer may address (default: none)")
 	cmd.Flags().Duration(flagTokenTTL, defaultTokenTTL, "token lifetime")
 	return cmd
 }
@@ -270,15 +275,16 @@ func runTokenKeygen(cmd *cobra.Command, _ []string) error {
 
 // runTokenMint is the cobra RunE for `harbor token mint`.
 func runTokenMint(cmd *cobra.Command, _ []string) error {
-	keyPath, _ := cmd.Flags().GetString(flagTokenKey)        //nolint:errcheck // flag statically registered; lookup cannot fail
-	tenant, _ := cmd.Flags().GetString(flagTokenTenant)      //nolint:errcheck // flag statically registered; lookup cannot fail
-	user, _ := cmd.Flags().GetString(flagTokenUser)          //nolint:errcheck // flag statically registered; lookup cannot fail
-	session, _ := cmd.Flags().GetString(flagTokenSession)    //nolint:errcheck // flag statically registered; lookup cannot fail
-	issuer, _ := cmd.Flags().GetString(flagTokenIssuer)      //nolint:errcheck // flag statically registered; lookup cannot fail
-	audience, _ := cmd.Flags().GetString(flagTokenAudience)  //nolint:errcheck // flag statically registered; lookup cannot fail
-	kidOverride, _ := cmd.Flags().GetString(flagTokenKID)    //nolint:errcheck // flag statically registered; lookup cannot fail
-	scopes, _ := cmd.Flags().GetStringSlice(flagTokenScopes) //nolint:errcheck // flag statically registered; lookup cannot fail
-	ttl, _ := cmd.Flags().GetDuration(flagTokenTTL)          //nolint:errcheck // flag statically registered; lookup cannot fail
+	keyPath, _ := cmd.Flags().GetString(flagTokenKey)                //nolint:errcheck // flag statically registered; lookup cannot fail
+	tenant, _ := cmd.Flags().GetString(flagTokenTenant)              //nolint:errcheck // flag statically registered; lookup cannot fail
+	user, _ := cmd.Flags().GetString(flagTokenUser)                  //nolint:errcheck // flag statically registered; lookup cannot fail
+	session, _ := cmd.Flags().GetString(flagTokenSession)            //nolint:errcheck // flag statically registered; lookup cannot fail
+	issuer, _ := cmd.Flags().GetString(flagTokenIssuer)              //nolint:errcheck // flag statically registered; lookup cannot fail
+	audience, _ := cmd.Flags().GetString(flagTokenAudience)          //nolint:errcheck // flag statically registered; lookup cannot fail
+	kidOverride, _ := cmd.Flags().GetString(flagTokenKID)            //nolint:errcheck // flag statically registered; lookup cannot fail
+	scopes, _ := cmd.Flags().GetStringSlice(flagTokenScopes)         //nolint:errcheck // flag statically registered; lookup cannot fail
+	agentReach, _ := cmd.Flags().GetStringSlice(flagTokenAgentReach) //nolint:errcheck // flag statically registered; lookup cannot fail
+	ttl, _ := cmd.Flags().GetDuration(flagTokenTTL)                  //nolint:errcheck // flag statically registered; lookup cannot fail
 
 	if missing := firstMissingMintField(keyPath, tenant, user, session, issuer, audience); missing != "" {
 		return emitCLIError(cmd, CLIError{
@@ -337,6 +343,16 @@ func runTokenMint(cmd *cobra.Command, _ []string) error {
 	// inject a blank scope.
 	scopes = cleanScopes(scopes)
 	claims := harborClaims(now, ttl, issuer, audience, tenant, user, session, scopes)
+	if cmd.Flags().Changed(flagTokenAgentReach) {
+		if err := setAgentReachClaim(claims, agentReach); err != nil {
+			return emitCLIError(cmd, CLIError{
+				Subcommand: "token mint",
+				Message:    fmt.Sprintf("--%s: %v", flagTokenAgentReach, err),
+				Code:       CodeTokenMissingField,
+				Hint:       "pass 1-128 unique, nonblank registration IDs no longer than 128 bytes",
+			})
+		}
+	}
 
 	signed, err := mintJWT(signer, alg, kid, claims)
 	if err != nil {

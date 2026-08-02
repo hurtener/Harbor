@@ -22,6 +22,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -40,6 +41,19 @@ const callerMemoryCap = 32 * 1024
 type callerMemoryFixture struct {
 	surface *protocol.ControlSurface
 	tasks   tasks.TaskRegistry
+}
+
+type callerMemoryAgentResolver struct{}
+
+func (callerMemoryAgentResolver) ResolveAgent(context.Context, identity.Identity, string) (bool, error) {
+	return true, nil
+}
+
+func (callerMemoryAgentResolver) EffectiveAgentID(requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	return "caller-memory-default", nil
 }
 
 func newCallerMemoryFixture(t *testing.T) *callerMemoryFixture {
@@ -74,7 +88,8 @@ func newCallerMemoryFixture(t *testing.T) *callerMemoryFixture {
 	}
 	t.Cleanup(func() { _ = taskReg.Close(context.Background()) })
 
-	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry())
+	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry(),
+		protocol.WithAgentResolver(callerMemoryAgentResolver{}))
 	if err != nil {
 		t.Fatalf("protocol.NewControlSurface: %v", err)
 	}
@@ -85,7 +100,8 @@ func newCallerMemoryFixture(t *testing.T) *callerMemoryFixture {
 // bytes. A nil raw omits the field entirely.
 func (f *callerMemoryFixture) start(t *testing.T, id identity.Identity, raw json.RawMessage, key string) (*types.StartResponse, error) {
 	t.Helper()
-	resp, err := f.surface.Dispatch(authCtx(t, id), methods.MethodStart, &types.StartRequest{
+	ctx := auth.WithAgentReach(authCtx(t, id), []string{"caller-memory-default"})
+	resp, err := f.surface.Dispatch(ctx, methods.MethodStart, &types.StartRequest{
 		Identity:       types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 		Query:          "hello",
 		IdempotencyKey: key,

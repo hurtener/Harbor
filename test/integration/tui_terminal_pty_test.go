@@ -954,7 +954,7 @@ func writePTYTokens(t *testing.T, path string, tokens map[string]string) {
 }
 func mintPTYToken(t *testing.T, stack *devstack.DevStack, session string) string {
 	t.Helper()
-	token := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{"iss": "harbor-test", "sub": devstack.DefaultDevUser, "aud": "harbor", "exp": time.Now().Add(time.Hour).Unix(), "nbf": time.Now().Add(-time.Minute).Unix(), "iat": time.Now().Unix(), "tenant": devstack.DefaultDevTenant, "user": devstack.DefaultDevUser, "session": session, "scopes": []string{"admin", "console:fleet"}})
+	token := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{"iss": "harbor-test", "sub": devstack.DefaultDevUser, "aud": "harbor", "exp": time.Now().Add(time.Hour).Unix(), "nbf": time.Now().Add(-time.Minute).Unix(), "iat": time.Now().Unix(), "tenant": devstack.DefaultDevTenant, "user": devstack.DefaultDevUser, "session": session, "scopes": []string{"admin", "console:fleet"}, "agent_reach": []string{stack.AgentConfigID}})
 	token.Header["kid"] = stack.KID
 	signed, err := token.SignedString(stack.SigningKey)
 	if err != nil {

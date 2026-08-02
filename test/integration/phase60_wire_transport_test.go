@@ -23,6 +23,7 @@ package integration_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -38,7 +39,9 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -56,6 +59,8 @@ type phase60Deps struct {
 	bus     events.EventBus
 	cleanup func()
 }
+
+const phase60AgentID = "phase60-agent"
 
 func newPhase60Deps(t *testing.T) *phase60Deps {
 	t.Helper()
@@ -87,7 +92,9 @@ func newPhase60Deps(t *testing.T) *phase60Deps {
 		_ = bus.Close(context.Background())
 		t.Fatalf("tasks.Open: %v", err)
 	}
-	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry())
+	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry(),
+		protocol.WithAgentResolver(explicitAgentReachResolver{effective: phase60AgentID}),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())
@@ -96,10 +103,13 @@ func newPhase60Deps(t *testing.T) *phase60Deps {
 	}
 	mux, err := transports.NewMux(surface, bus,
 		transports.WithKeepalive(50*time.Millisecond),
-		// Phase 60 surface predates the Phase 61 auth wrapping; the
-		// integration test asserts the trust-based posture, so we
-		// opt out of auth via the test-only escape hatch (PR #91).
-		transports.WithoutValidator(),
+		// Phase 60 predates JWT validation, but agent-addressed data-plane
+		// calls may no longer bypass signed reach. Keep this fixture focused
+		// on transport by explicitly seating one bounded verified reach set.
+		transports.WithValidator(explicitAgentReachValidator{verified: auth.Verified{
+			Identity:   identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"},
+			AgentReach: []string{phase60AgentID},
+		}}),
 	)
 	if err != nil {
 		_ = taskReg.Close(context.Background())
@@ -127,6 +137,7 @@ func openStream(t *testing.T, ctx context.Context, baseURL string, tenant, user,
 	req.Header.Set(stream.HeaderTenant, tenant)
 	req.Header.Set(stream.HeaderUser, user)
 	req.Header.Set(stream.HeaderSession, session)
+	req.Header.Set("Authorization", "Bearer phase60-explicit-reach")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("open SSE stream: %v", err)
@@ -159,7 +170,7 @@ func submitStart(t *testing.T, baseURL, session string) string {
 	t.Helper()
 	body := fmt.Sprintf(`{"identity":{"tenant":%q,"user":%q,"session":%q},"query":"e2e"}`,
 		"t1", "u1", session)
-	resp, err := postCarrierJSON(baseURL+"/v1/control/start", []byte(body), "t1", "u1", session)
+	resp, err := postPhase60ReachJSON(baseURL+"/v1/control/start", []byte(body), "t1", "u1", session)
 	if err != nil {
 		t.Fatalf("POST /v1/control/start: %v", err)
 	}
@@ -175,6 +186,19 @@ func submitStart(t *testing.T, baseURL, session string) string {
 		t.Fatal("StartResponse.TaskID is empty")
 	}
 	return sr.TaskID
+}
+
+func postPhase60ReachJSON(url string, body []byte, tenant, user, session string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer phase60-explicit-reach")
+	req.Header.Set(stream.HeaderTenant, tenant)
+	req.Header.Set(stream.HeaderUser, user)
+	req.Header.Set(stream.HeaderSession, session)
+	return http.DefaultClient.Do(req)
 }
 
 // TestE2E_Phase60_WireTransport_BothDirections — the headline E2E: a

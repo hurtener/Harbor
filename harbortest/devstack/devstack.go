@@ -402,6 +402,9 @@ type DevStack struct {
 	// on the next run. Nil/"" when the StateStore is unavailable.
 	AgentConfig   agentcfg.Registry
 	AgentConfigID string
+	// AgentReach is the shared effective-agent gate used by this stack's
+	// control and stream projections.
+	AgentReach auth.AgentReachAuthorizer
 
 	// SessionOverlay is the SESSION-scoped safe-subset overlay store (the
 	// non-admin lower tier of the authorization matrix) shared by the mounted
@@ -717,8 +720,10 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// with no StateStore has no registry: the adapter then refuses
 		// every named agent, which is the fail-closed posture, never a
 		// silent accept.
+		stack.AgentReach = auth.NewAgentReachAuthorizer()
 		surfaceOpts = append(surfaceOpts,
-			protocol.WithAgentResolver(serve.NewAgentResolverAdapter(stack.AgentConfig, stack.AgentConfigID)))
+			protocol.WithAgentResolver(serve.NewAgentResolverAdapter(stack.AgentConfig, stack.AgentConfigID)),
+			protocol.WithAgentReachAuthorizer(stack.AgentReach))
 		surface, surfaceErr := protocol.NewControlSurface(taskReg, core.Steering, surfaceOpts...)
 		if surfaceErr != nil {
 			return stack, fmt.Errorf("protocol.NewControlSurface: %w", surfaceErr)
@@ -1009,6 +1014,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			InferenceBrokers:         inferenceBrokerNames,
 			Validator:                stack.Validator,
 			AuthSurface:              rotateSurface,
+			AgentReach:               stack.AgentReach,
 			DisplayName:              "harbor devstack",
 			InstanceID:               "harbor-devstack",
 			BuildVersion:             "devstack",
@@ -1076,16 +1082,17 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 func signDevToken(priv *ecdsa.PrivateKey, tenant, user, session string) (string, error) {
 	now := time.Now()
 	tok := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
-		"iss":     "harbor-test",
-		"sub":     user,
-		"aud":     "harbor",
-		"exp":     now.Add(DefaultTokenTTL).Unix(),
-		"nbf":     now.Add(-1 * time.Minute).Unix(),
-		"iat":     now.Unix(),
-		"tenant":  tenant,
-		"user":    user,
-		"session": session,
-		"scopes":  []string{"admin", "console:fleet"},
+		"iss":         "harbor-test",
+		"sub":         user,
+		"aud":         "harbor",
+		"exp":         now.Add(DefaultTokenTTL).Unix(),
+		"nbf":         now.Add(-1 * time.Minute).Unix(),
+		"iat":         now.Unix(),
+		"tenant":      tenant,
+		"user":        user,
+		"session":     session,
+		"scopes":      []string{"admin", "console:fleet"},
+		"agent_reach": []string{"harbor-dev-agent"},
 	})
 	tok.Header["kid"] = DefaultKID
 	return tok.SignedString(priv)

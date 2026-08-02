@@ -28,6 +28,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 )
 
 // harborClaims builds the canonical Harbor JWT claim set both CLI
@@ -55,4 +57,20 @@ func harborClaims(now time.Time, ttl time.Duration, issuer, audience, tenant, us
 		claims["scopes"] = scopes
 	}
 	return claims
+}
+
+// setAgentReachClaim validates and attaches the additive signed reach claim.
+// A present empty array remains present and intentionally grants no
+// agent-addressed authority; callers omit it only for an absent claim.
+func setAgentReachClaim(claims jwt.MapClaims, reach []string) error {
+	raw := make([]any, len(reach))
+	for i, id := range reach {
+		raw[i] = id
+	}
+	validated, err := auth.ParseAgentReach(raw)
+	if err != nil {
+		return err
+	}
+	claims[auth.AgentReachClaim] = validated
+	return nil
 }

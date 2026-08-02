@@ -55,12 +55,13 @@ const (
 )
 
 type suHarness struct {
-	handler  http.Handler
-	registry agentcfg.Registry
-	overlay  sessionoverlay.Store
-	skills   skillspkg.SkillStore
-	catalog  tools.ToolCatalog
-	bus      events.EventBus
+	handler    http.Handler
+	registry   agentcfg.Registry
+	overlay    sessionoverlay.Store
+	skills     skillspkg.SkillStore
+	catalog    tools.ToolCatalog
+	bus        events.EventBus
+	agentReach []string
 }
 
 func suIdentity(session string) identity.Identity {
@@ -122,7 +123,8 @@ func newSUHarness(t *testing.T) *suHarness {
 	if err != nil {
 		t.Fatalf("service: %v", err)
 	}
-	h, err := stream.NewAgentConfigHandler(svc)
+	h, err := stream.NewAgentConfigHandler(svc,
+		stream.WithAgentConfigReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
@@ -133,7 +135,7 @@ func newSUHarness(t *testing.T) *suHarness {
 		_ = bus.Close(context.Background())
 		_ = st.Close(context.Background())
 	})
-	return &suHarness{handler: h, registry: reg, overlay: ov, skills: skillStore, catalog: newSUCatalog(t), bus: bus}
+	return &suHarness{handler: h, registry: reg, overlay: ov, skills: skillStore, catalog: newSUCatalog(t), bus: bus, agentReach: []string{suAgent}}
 }
 
 // call POSTs to the handler with the supplied identity + scopes.
@@ -147,7 +149,9 @@ func (h *suHarness) call(t *testing.T, path string, body any, id identity.Identi
 	req.Header.Set(stream.HeaderTenant, id.TenantID)
 	req.Header.Set(stream.HeaderUser, id.UserID)
 	req.Header.Set(stream.HeaderSession, id.SessionID)
-	req = req.WithContext(auth.WithScopes(req.Context(), scopes))
+	ctx := auth.WithScopes(req.Context(), scopes)
+	ctx = auth.WithAgentReach(ctx, h.agentReach)
+	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	h.handler.ServeHTTP(rec, req)
 	return rec

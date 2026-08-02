@@ -186,6 +186,21 @@ type Stack struct {
 // defeats the conformance suite's purpose (CLAUDE.md §17.3).
 type Factory func(t *testing.T) *Stack
 
+const conformanceAgentID = "harbor-conformance-agent"
+
+type conformanceAgentResolver struct{}
+
+func (conformanceAgentResolver) ResolveAgent(_ context.Context, _ identity.Identity, agentID string) (bool, error) {
+	return agentID == conformanceAgentID, nil
+}
+
+func (conformanceAgentResolver) EffectiveAgentID(requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	return conformanceAgentID, nil
+}
+
 // NewDefaultFactory returns the canonical factory used by Harbor's own
 // conformance test. It wires:
 //
@@ -267,7 +282,10 @@ func buildDefaultStack(t *testing.T, testdataRoot string) *Stack {
 	rollback = append(rollback, func() { _ = taskReg.Close(context.Background()) })
 
 	steerReg := steering.NewRegistry()
-	surface, err := protocol.NewControlSurface(taskReg, steerReg)
+	agentReach := auth.NewAgentReachAuthorizer()
+	surface, err := protocol.NewControlSurface(taskReg, steerReg,
+		protocol.WithAgentResolver(conformanceAgentResolver{}),
+		protocol.WithAgentReachAuthorizer(agentReach))
 	if err != nil {
 		fatal("protocol.NewControlSurface: %v", err)
 	}
@@ -402,14 +420,15 @@ func defaultClaims(id identity.Identity, scopes []auth.Scope) jwt.MapClaims {
 		scopeStrs = append(scopeStrs, string(s))
 	}
 	return jwt.MapClaims{
-		"iss":     "https://idp.test",
-		"sub":     id.UserID,
-		"exp":     fixedNow.Add(15 * time.Minute).Unix(),
-		"nbf":     fixedNow.Add(-1 * time.Minute).Unix(),
-		"tenant":  id.TenantID,
-		"user":    id.UserID,
-		"session": id.SessionID,
-		"scopes":  scopeStrs,
+		"iss":         "https://idp.test",
+		"sub":         id.UserID,
+		"exp":         fixedNow.Add(15 * time.Minute).Unix(),
+		"nbf":         fixedNow.Add(-1 * time.Minute).Unix(),
+		"tenant":      id.TenantID,
+		"user":        id.UserID,
+		"session":     id.SessionID,
+		"scopes":      scopeStrs,
+		"agent_reach": []string{conformanceAgentID},
 	}
 }
 
@@ -1108,7 +1127,8 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 						Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 						Query:    "conformance",
 					}
-					resp, err := st.Surface.Dispatch(context.Background(), m, req)
+					directCtx := auth.WithAgentReach(context.Background(), []string{conformanceAgentID})
+					resp, err := st.Surface.Dispatch(directCtx, m, req)
 					if err != nil {
 						t.Fatalf("Dispatch(start): unexpected error: %v", err)
 					}
@@ -2152,7 +2172,8 @@ func runConcurrentReuse(t *testing.T, factory Factory) {
 			case 0:
 				// In-process Dispatch — `start`. The spawned task
 				// must carry our triple.
-				resp, err := st.Surface.Dispatch(context.Background(), methods.MethodStart, &types.StartRequest{
+				directCtx := auth.WithAgentReach(context.Background(), []string{conformanceAgentID})
+				resp, err := st.Surface.Dispatch(directCtx, methods.MethodStart, &types.StartRequest{
 					Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 					Query:    fmt.Sprintf("conc-%d", i),
 				})

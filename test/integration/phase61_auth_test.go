@@ -88,6 +88,8 @@ type phase61Deps struct {
 // behaviour is reproducible.
 var fixedNowPhase61 = time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 
+const phase61AgentID = "phase61-agent"
+
 func newPhase61Deps(t *testing.T) *phase61Deps {
 	t.Helper()
 
@@ -121,7 +123,9 @@ func newPhase61Deps(t *testing.T) *phase61Deps {
 		_ = bus.Close(context.Background())
 		t.Fatalf("tasks.Open: %v", err)
 	}
-	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry())
+	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry(),
+		protocol.WithAgentResolver(explicitAgentReachResolver{effective: phase61AgentID}),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())
@@ -251,14 +255,15 @@ func signES256Phase61(t *testing.T, priv *ecdsa.PrivateKey, claims jwt.MapClaims
 // fixed test clock.
 func validClaimsPhase61(tenant, user, session string, scopes []string) jwt.MapClaims {
 	return jwt.MapClaims{
-		"iss":     "https://idp.test",
-		"sub":     user,
-		"exp":     fixedNowPhase61.Add(15 * time.Minute).Unix(),
-		"nbf":     fixedNowPhase61.Add(-1 * time.Minute).Unix(),
-		"tenant":  tenant,
-		"user":    user,
-		"session": session,
-		"scopes":  scopes,
+		"iss":         "https://idp.test",
+		"sub":         user,
+		"exp":         fixedNowPhase61.Add(15 * time.Minute).Unix(),
+		"nbf":         fixedNowPhase61.Add(-1 * time.Minute).Unix(),
+		"tenant":      tenant,
+		"user":        user,
+		"session":     session,
+		"scopes":      scopes,
+		"agent_reach": []string{phase61AgentID},
 	}
 }
 

@@ -39,6 +39,28 @@ type testDeps struct {
 	cleanup func()
 }
 
+const muxTestAgentID = "harbor-mux-test-agent"
+
+type muxTestAgentResolver struct{}
+
+func (muxTestAgentResolver) ResolveAgent(_ context.Context, _ identity.Identity, agentID string) (bool, error) {
+	return agentID == muxTestAgentID, nil
+}
+
+func (muxTestAgentResolver) EffectiveAgentID(requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	return muxTestAgentID, nil
+}
+
+func muxTestVerified() auth.Verified {
+	return auth.Verified{
+		Identity:   identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"},
+		AgentReach: []string{muxTestAgentID},
+	}
+}
+
 func newTestDeps(t *testing.T) *testDeps {
 	t.Helper()
 	red := auditpatterns.New()
@@ -69,7 +91,9 @@ func newTestDeps(t *testing.T) *testDeps {
 		_ = bus.Close(context.Background())
 		t.Fatalf("tasks.Open: %v", err)
 	}
-	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry())
+	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry(),
+		protocol.WithAgentResolver(muxTestAgentResolver{}),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())
@@ -123,7 +147,8 @@ func TestNewMux_RoutesBothTransports(t *testing.T) {
 	deps := newTestDeps(t)
 	defer deps.cleanup()
 
-	mux, err := transports.NewMux(deps.surface, deps.bus, transports.WithoutValidator())
+	stub := &stubValidator{verified: muxTestVerified()}
+	mux, err := transports.NewMux(deps.surface, deps.bus, transports.WithValidator(stub))
 	if err != nil {
 		t.Fatalf("NewMux: %v", err)
 	}
@@ -132,7 +157,7 @@ func TestNewMux_RoutesBothTransports(t *testing.T) {
 
 	// REST control route.
 	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"q"}`
-	resp := postCarrier(t, srv.URL+"/v1/control/start", body)
+	resp := postBearer(t, srv.URL+"/v1/control/start", body)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("control route status = %d, want 200", resp.StatusCode)
@@ -153,6 +178,7 @@ func TestNewMux_RoutesBothTransports(t *testing.T) {
 	req.Header.Set("X-Harbor-Tenant", "t1")
 	req.Header.Set("X-Harbor-User", "u1")
 	req.Header.Set("X-Harbor-Session", "s1")
+	req.Header.Set("Authorization", "Bearer faketoken")
 	sresp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET /v1/events: %v", err)
@@ -173,12 +199,13 @@ func TestNewMux_Options(t *testing.T) {
 	defer deps.cleanup()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	stub := &stubValidator{verified: muxTestVerified()}
 	mux, err := transports.NewMux(deps.surface, deps.bus,
 		transports.WithLogger(logger),
 		transports.WithLogger(nil),  // ignored
 		transports.WithKeepalive(0), // ignored
 		transports.WithKeepalive(time.Second),
-		transports.WithoutValidator(),
+		transports.WithValidator(stub),
 	)
 	if err != nil {
 		t.Fatalf("NewMux with options: %v", err)
@@ -188,7 +215,7 @@ func TestNewMux_Options(t *testing.T) {
 
 	// The mux still serves the control route with the options applied.
 	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"q"}`
-	resp := postCarrier(t, srv.URL+"/v1/control/start", body)
+	resp := postBearer(t, srv.URL+"/v1/control/start", body)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -226,9 +253,7 @@ func TestNewMux_WithValidator_AppliesAuthMiddlewareToBothHandlers(t *testing.T) 
 	// A no-op-success Validator (so a valid bearer succeeds) — but we
 	// only test the *rejection* paths here; the wiring is the surface
 	// under test.
-	stub := &stubValidator{verified: auth.Verified{
-		Identity: identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"},
-	}}
+	stub := &stubValidator{verified: muxTestVerified()}
 
 	mux, err := transports.NewMux(deps.surface, deps.bus, transports.WithValidator(stub))
 	if err != nil {
@@ -270,9 +295,7 @@ func TestNewMux_WithValidator_ValidBearerPasses(t *testing.T) {
 	deps := newTestDeps(t)
 	defer deps.cleanup()
 
-	stub := &stubValidator{verified: auth.Verified{
-		Identity: identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"},
-	}}
+	stub := &stubValidator{verified: muxTestVerified()}
 	mux, err := transports.NewMux(deps.surface, deps.bus, transports.WithValidator(stub))
 	if err != nil {
 		t.Fatalf("NewMux with validator: %v", err)
@@ -378,9 +401,9 @@ func TestNewMux_WithValidator_NilValidator_FailsLoud(t *testing.T) {
 
 // TestNewMux_WithoutValidator_OptInUnauthenticated — the explicit
 // test-only escape hatch runs the mux without a JWT validator. Identity
-// is still mandatory: the carrier headers establish it, and a request
-// that supplies none is refused 401 rather than falling back to the
-// caller-supplied request body.
+// is still mandatory, but carrier identity is not signed agent authority:
+// an agent-addressed start with a valid carrier triple fails closed at 403.
+// A request that supplies no carrier identity is refused earlier at 401.
 func TestNewMux_WithoutValidator_OptInUnauthenticated(t *testing.T) {
 	deps := newTestDeps(t)
 	defer deps.cleanup()
@@ -395,8 +418,8 @@ func TestNewMux_WithoutValidator_OptInUnauthenticated(t *testing.T) {
 	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"q"}`
 	resp := postCarrier(t, srv.URL+"/v1/control/start", body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("carrier posture: status %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("carrier posture without signed reach: status %d, want 403", resp.StatusCode)
 	}
 
 	// A request that carries no identity at all is refused before any
@@ -585,6 +608,23 @@ func postCarrier(t *testing.T, url, body string) *http.Response {
 	req.Header.Set("X-Harbor-Tenant", "t1")
 	req.Header.Set("X-Harbor-User", "u1")
 	req.Header.Set("X-Harbor-Session", "s1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	return resp
+}
+
+// postBearer drives the same identity through a validator-backed mux. The
+// stub validator is the signed authority source; the body carries no authority.
+func postBearer(t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer faketoken")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)

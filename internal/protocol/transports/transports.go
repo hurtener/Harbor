@@ -78,6 +78,7 @@ type muxConfig struct {
 	logger          *slog.Logger
 	keepalive       time.Duration
 	validator       auth.Validator
+	reach           auth.AgentReachAuthorizer
 	withoutAuth     bool
 	aggregatorClock events.AggregatorClock
 	// redactor is the audit.Redactor wired into the control transport
@@ -508,6 +509,13 @@ func WithToolsService(s *toolsprotocol.Service) Option {
 			c.toolsService = s
 		}
 	}
+}
+
+// WithAgentReachAuthorizer supplies the one immutable effective-agent gate to
+// the agent-addressed stream projections. A nil value is retained so those
+// projections fail closed instead of silently widening authority.
+func WithAgentReachAuthorizer(a auth.AgentReachAuthorizer) Option {
+	return func(c *muxConfig) { c.reach = a }
 }
 
 // WithTasksService wires the `tasks.*` handler into
@@ -956,7 +964,9 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	// `skip_if_404` keeps preflight green on a partial build.
 	var toolsHandler *stream.ToolsHandler
 	if cfg.toolsService != nil {
-		th, err := stream.NewToolsHandler(cfg.toolsService, stream.WithToolsLogger(cfg.logger))
+		th, err := stream.NewToolsHandler(cfg.toolsService,
+			stream.WithToolsLogger(cfg.logger),
+			stream.WithToolsReachAuthorizer(cfg.reach))
 		if err != nil {
 			return nil, fmt.Errorf("transports: build tools handler: %w", err)
 		}
@@ -1115,7 +1125,9 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	// `skip_if_404` keeps preflight green on a partial build.
 	var agentConfigHandler *stream.AgentConfigHandler
 	if cfg.agentConfigService != nil {
-		ach, err := stream.NewAgentConfigHandler(cfg.agentConfigService, stream.WithAgentConfigLogger(cfg.logger))
+		ach, err := stream.NewAgentConfigHandler(cfg.agentConfigService,
+			stream.WithAgentConfigLogger(cfg.logger),
+			stream.WithAgentConfigReachAuthorizer(cfg.reach))
 		if err != nil {
 			return nil, fmt.Errorf("transports: build agent-config handler: %w", err)
 		}

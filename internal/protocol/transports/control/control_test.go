@@ -19,6 +19,7 @@ import (
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/transports/control"
@@ -29,6 +30,25 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
 )
+
+const controlTestAgentID = "harbor-control-test-agent"
+
+type controlTestAgentResolver struct{}
+
+func (controlTestAgentResolver) ResolveAgent(_ context.Context, _ identity.Identity, agentID string) (bool, error) {
+	return agentID == controlTestAgentID, nil
+}
+
+func (controlTestAgentResolver) EffectiveAgentID(requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	return controlTestAgentID, nil
+}
+
+func withControlTestReach(ctx context.Context) context.Context {
+	return auth.WithAgentReach(ctx, []string{controlTestAgentID})
+}
 
 // newTestSurface builds a real protocol.ControlSurface over real
 // in-process drivers — no mocks at the seam (CLAUDE.md §17.3). The
@@ -63,7 +83,9 @@ func newTestSurface(t *testing.T) (*protocol.ControlSurface, func()) {
 		t.Fatalf("tasks.Open: %v", err)
 	}
 	steerReg := steering.NewRegistry()
-	surface, err := protocol.NewControlSurface(taskReg, steerReg)
+	surface, err := protocol.NewControlSurface(taskReg, steerReg,
+		protocol.WithAgentResolver(controlTestAgentResolver{}),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())
@@ -121,7 +143,9 @@ func newImpersonationHandler(t *testing.T) (*control.Handler, events.EventBus, f
 		_ = bus.Close(context.Background())
 		t.Fatalf("tasks.Open: %v", err)
 	}
-	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry())
+	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry(),
+		protocol.WithAgentResolver(controlTestAgentResolver{}),
+		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())
@@ -160,6 +184,7 @@ func do(t *testing.T, h http.Handler, target, body string) *httptest.ResponseRec
 	if err != nil {
 		t.Fatalf("seat verified identity: %v", err)
 	}
+	ctx = withControlTestReach(ctx)
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	// The bare handler does not get a PathValue unless mounted on a mux

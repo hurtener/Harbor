@@ -75,5 +75,19 @@ func (a *AgentResolverAdapter) ResolveAgent(ctx context.Context, ident identity.
 	return ok, nil
 }
 
+// EffectiveAgentID implements protocol.EffectiveAgentResolver. An omitted
+// start target means the configured default agent and must therefore be
+// authorized exactly like an explicitly named default.
+func (a *AgentResolverAdapter) EffectiveAgentID(requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	if a.defaultID == "" {
+		return "", fmt.Errorf("configured default agent id is empty")
+	}
+	return a.defaultID, nil
+}
+
 // Compile-time assertion: the adapter satisfies the Protocol seam.
 var _ protocol.AgentResolver = (*AgentResolverAdapter)(nil)
+var _ protocol.EffectiveAgentResolver = (*AgentResolverAdapter)(nil)

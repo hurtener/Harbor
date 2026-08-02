@@ -65,7 +65,8 @@ func sessionHandler(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("service: %v", err)
 	}
-	h, err := stream.NewAgentConfigHandler(svc)
+	h, err := stream.NewAgentConfigHandler(svc,
+		stream.WithAgentConfigReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
@@ -73,6 +74,10 @@ func sessionHandler(t *testing.T) http.Handler {
 }
 
 func acReq(t *testing.T, h http.Handler, route, body string, id *identity.Identity, scopes []auth.Scope) (int, []byte) {
+	return acReqReach(t, h, route, body, id, scopes, []string{acAgent})
+}
+
+func acReqReach(t *testing.T, h http.Handler, route, body string, id *identity.Identity, scopes []auth.Scope, reach []string) (int, []byte) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v1/agent_config/"+route, strings.NewReader(body))
 	if id != nil {
@@ -82,6 +87,9 @@ func acReq(t *testing.T, h http.Handler, route, body string, id *identity.Identi
 	}
 	if scopes != nil {
 		req = req.WithContext(auth.WithScopes(req.Context(), scopes))
+	}
+	if id != nil {
+		req = req.WithContext(auth.WithAgentReach(req.Context(), reach))
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -93,6 +101,49 @@ func acID() *identity.Identity {
 }
 
 const acAgent = "agent-x"
+
+// TestAgentConfigHandler_AgentReachClosedCensus is the executable census for
+// every Phase-232 agent-config data-plane verb. Each row supplies a body that
+// decodes and reconciles before the excluded signed reach is refused, proving
+// the shared gate sits before every service/storage call.
+func TestAgentConfigHandler_AgentReachClosedCensus(t *testing.T) {
+	identityJSON := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x"}`
+	skill := `{"name":"s","trigger":"t","steps":["step"],"origin":"generated","scope":"session"}`
+	cases := []struct {
+		route  string
+		body   string
+		scopes []auth.Scope
+	}{
+		{"session/set_user_prompt", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","user_prompt":"x"}`, nil},
+		{"session/set_source_disables", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","disabled_servers":["srv"]}`, nil},
+		{"session/skills/list", identityJSON, nil},
+		{"session/skills/upsert", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","skill":` + skill + `}`, nil},
+		{"session/skills/delete", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","name":"s"}`, nil},
+		{"user/get", identityJSON, []auth.Scope{auth.ScopeAgentConfigUser}},
+		{"user/set_revision", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","payload":{}}`, []auth.Scope{auth.ScopeAgentConfigUser}},
+		{"user/list_revisions", identityJSON, []auth.Scope{auth.ScopeAgentConfigUser}},
+		{"user/diff", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","from_revision":"a","to_revision":"b"}`, []auth.Scope{auth.ScopeAgentConfigUser}},
+		{"user/rollback", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","revision_id":"a"}`, []auth.Scope{auth.ScopeAgentConfigUser}},
+		{"user/skills/list", identityJSON, nil},
+		{"user/skills/upsert", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","skill":` + skill + `}`, nil},
+		{"user/skills/delete", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","name":"s"}`, nil},
+	}
+	if len(cases) != 13 {
+		t.Fatalf("agent-config reach census has %d routes, want 13", len(cases))
+	}
+	for _, tc := range cases {
+		t.Run(tc.route, func(t *testing.T) {
+			h := sessionHandler(t)
+			code, body := acReqReach(t, h, tc.route, tc.body, acID(), tc.scopes, []string{"other-agent"})
+			if code != http.StatusForbidden {
+				t.Fatalf("excluded reach status = %d body=%s", code, body)
+			}
+			if got := errCode(t, body); got != protoerrors.CodeScopeMismatch {
+				t.Fatalf("excluded reach code = %q, want %q", got, protoerrors.CodeScopeMismatch)
+			}
+		})
+	}
+}
 
 // TestAgentConfigHandler_SessionRoute_NonAdminAllowed proves a NON-admin
 // (session-scoped) caller is permitted on a session-safe route (no admin

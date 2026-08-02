@@ -42,9 +42,10 @@ const (
 )
 
 type usHarness struct {
-	handler  http.Handler
-	registry agentcfg.Registry
-	bus      events.EventBus
+	handler    http.Handler
+	registry   agentcfg.Registry
+	bus        events.EventBus
+	agentReach []string
 }
 
 func newUSHarness(t *testing.T) *usHarness {
@@ -68,7 +69,8 @@ func newUSHarness(t *testing.T) *usHarness {
 	if err != nil {
 		t.Fatalf("service: %v", err)
 	}
-	h, err := stream.NewAgentConfigHandler(svc)
+	h, err := stream.NewAgentConfigHandler(svc,
+		stream.WithAgentConfigReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
@@ -77,7 +79,7 @@ func newUSHarness(t *testing.T) *usHarness {
 		_ = bus.Close(context.Background())
 		_ = st.Close(context.Background())
 	})
-	return &usHarness{handler: h, registry: reg, bus: bus}
+	return &usHarness{handler: h, registry: reg, bus: bus, agentReach: []string{usAgent, waveAgentID}}
 }
 
 func (h *usHarness) call(t *testing.T, path string, body any, id identity.Identity, scopes []auth.Scope) *httptest.ResponseRecorder {
@@ -90,7 +92,9 @@ func (h *usHarness) call(t *testing.T, path string, body any, id identity.Identi
 	req.Header.Set(stream.HeaderTenant, id.TenantID)
 	req.Header.Set(stream.HeaderUser, id.UserID)
 	req.Header.Set(stream.HeaderSession, id.SessionID)
-	req = req.WithContext(auth.WithScopes(req.Context(), scopes))
+	ctx := auth.WithScopes(req.Context(), scopes)
+	ctx = auth.WithAgentReach(ctx, h.agentReach)
+	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	h.handler.ServeHTTP(rec, req)
 	return rec
@@ -102,7 +106,9 @@ func (h *usHarness) rawCall(t *testing.T, path, body string, id identity.Identit
 	req.Header.Set(stream.HeaderTenant, id.TenantID)
 	req.Header.Set(stream.HeaderUser, id.UserID)
 	req.Header.Set(stream.HeaderSession, id.SessionID)
-	req = req.WithContext(auth.WithScopes(req.Context(), scopes))
+	ctx := auth.WithScopes(req.Context(), scopes)
+	ctx = auth.WithAgentReach(ctx, h.agentReach)
+	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	h.handler.ServeHTTP(rec, req)
 	return rec

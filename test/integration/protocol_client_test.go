@@ -33,6 +33,7 @@ func TestE2E_ProtocolClient_AuthStartReadAndSSEReconnect(t *testing.T) {
 		"iat":    time.Now().Add(-2 * time.Hour).Unix(),
 		"tenant": devstack.DefaultDevTenant, "user": devstack.DefaultDevUser,
 		"session": devstack.DefaultDevSession, "scopes": []string{"admin", "console:fleet"},
+		"agent_reach": []string{stack.AgentConfigID},
 	})
 	expired.Header["kid"] = stack.KID
 	expiredToken, err := expired.SignedString(stack.SigningKey)
@@ -47,6 +48,7 @@ func TestE2E_ProtocolClient_AuthStartReadAndSSEReconnect(t *testing.T) {
 			"exp": time.Now().Add(time.Hour).Unix(), "nbf": time.Now().Add(-time.Minute).Unix(),
 			"iat": time.Now().Unix(), "tenant": devstack.DefaultDevTenant, "user": devstack.DefaultDevUser,
 			"session": session, "scopes": []string{"admin", "console:fleet"},
+			"agent_reach": []string{stack.AgentConfigID},
 		})
 		token.Header["kid"] = stack.KID
 		signed, signErr := token.SignedString(stack.SigningKey)

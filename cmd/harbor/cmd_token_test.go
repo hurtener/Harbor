@@ -130,6 +130,36 @@ func TestTokenRoundTrip_RealParserAcceptsMatchingIssAud(t *testing.T) {
 	}
 }
 
+func TestTokenMint_AgentReach_ValidatesAndSignsBoundedClaim(t *testing.T) {
+	dir := t.TempDir()
+	jwksPath, privPath := keygenInto(t, dir, algES256)
+	stdout, _, err := runRoot(t, []string{
+		"token", "mint", "--key", privPath,
+		"--tenant", "acme", "--user", "alice", "--session", "sess-1",
+		"--issuer", testIssuer, "--audience", testAudience,
+		"--agent-reach", "agent-a,agent-b",
+	})
+	if err != nil {
+		t.Fatalf("token mint: %v", err)
+	}
+	verified, err := realValidator(t, jwksPath).Validate(context.Background(), strings.TrimSpace(stdout))
+	if err != nil {
+		t.Fatalf("validate minted token: %v", err)
+	}
+	if got, want := strings.Join(verified.AgentReach, ","), "agent-a,agent-b"; got != want {
+		t.Fatalf("minted agent reach = %q, want %q", got, want)
+	}
+	_, _, err = runRoot(t, []string{
+		"token", "mint", "--key", privPath,
+		"--tenant", "acme", "--user", "alice", "--session", "sess-1",
+		"--issuer", testIssuer, "--audience", testAudience,
+		"--agent-reach", "agent-a,agent-a",
+	})
+	if err == nil {
+		t.Fatal("duplicate --agent-reach minted a token, want failure")
+	}
+}
+
 func TestTokenRoundTrip_RealParserRejectsIssuerMismatch(t *testing.T) {
 	// iss/aud rejection happens in the validator's claim check, AFTER
 	// signature verification succeeds, so it is algorithm-agnostic — ES256
