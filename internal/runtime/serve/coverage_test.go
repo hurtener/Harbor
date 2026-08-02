@@ -581,6 +581,9 @@ func TestPerTaskRunLoop_FullyWired_DrivesCompletingRun(t *testing.T) {
 		t.Fatalf("agentcfg.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = agentCfgReg.Close(context.Background()) })
+	if _, err := agentCfgReg.SetRevision(context.Background(), identity.Quadruple{Identity: runLoopDriverTestID}, "coverage-agent", agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("seed coverage agent lifecycle: %v", err)
+	}
 	overlay, err := sessionoverlay.NewStore(st, nil)
 	if err != nil {
 		t.Fatalf("sessionoverlay.NewStore: %v", err)
@@ -639,7 +642,8 @@ func TestPerTaskRunLoop_FullyWired_DrivesCompletingRun(t *testing.T) {
 		t.Fatalf("reg.Spawn: %v", err)
 	}
 	if status := waitForTaskStatus(t, reg, h.ID, tasks.StatusComplete, 5*time.Second); status != tasks.StatusComplete {
-		t.Fatalf("fully-wired run stuck at %q, want %q", status, tasks.StatusComplete)
+		failed, getErr := reg.Get(ctx, h.ID)
+		t.Fatalf("fully-wired run stuck at %q, want %q (task error=%+v, get error=%v)", status, tasks.StatusComplete, failed.Error, getErr)
 	}
 	// The trajectory accessor serves the completed run.
 	if driver.TrajectoryByTaskID(h.ID) == nil {

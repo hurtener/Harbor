@@ -190,9 +190,7 @@ func TestActiveSkillViews_PersonalSkillMissingBody_Silent(t *testing.T) {
 	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
-	if _, err := ov.AddPersonalSkill(ctx, projID(), projAgent, "p"); err != nil {
-		t.Fatalf("add personal skill: %v", err)
-	}
+	ov.seedLegacyPersonal(t, "p")
 	got, err := projection.ActiveSkillViews(ctx, reg, ov, projAgent, projID(), views("a", "b"))
 	if err != nil {
 		t.Fatalf("a missing PERSONAL skill must not fail loud: %v", err)

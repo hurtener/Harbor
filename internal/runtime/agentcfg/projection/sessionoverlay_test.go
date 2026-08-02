@@ -8,12 +8,18 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
+	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
 
+type projectionOverlay struct {
+	sessionoverlay.Store
+	state state.StateStore
+}
+
 // newOverlay builds a real StateStore-backed session-overlay store for the
 // projection composition tests.
-func newOverlay(t *testing.T) sessionoverlay.Store {
+func newOverlay(t *testing.T) *projectionOverlay {
 	t.Helper()
 	st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
 	if err != nil {
@@ -24,7 +30,27 @@ func newOverlay(t *testing.T) sessionoverlay.Store {
 	if err != nil {
 		t.Fatalf("overlay store: %v", err)
 	}
-	return ov
+	lifecycleQ, lifecycleKind, err := agentcfg.LifecycleSlot(projID().TenantID, projAgent)
+	if err != nil {
+		t.Fatalf("lifecycle slot: %v", err)
+	}
+	if err := st.Save(t.Context(), state.StateRecord{
+		ID: state.NewEventID(), Identity: lifecycleQ, Kind: lifecycleKind,
+		Bytes: []byte(`{"schema":1,"revision_id":"active","updated_at":"2026-08-02T00:00:00Z"}`),
+	}); err != nil {
+		t.Fatalf("seed active lifecycle: %v", err)
+	}
+	return &projectionOverlay{Store: ov, state: st}
+}
+
+func (o *projectionOverlay) seedLegacyPersonal(t *testing.T, name string) {
+	t.Helper()
+	if err := o.state.Save(t.Context(), state.StateRecord{
+		ID: state.NewEventID(), Identity: projID(), Kind: sessionoverlay.LegacyOverlayKind(projAgent),
+		Bytes: []byte(`{"schema":1,"overlay":{"personal_skills":["` + name + `"]},"updated_at":"2026-08-02T00:00:00Z"}`),
+	}); err != nil {
+		t.Fatalf("seed legacy personal membership: %v", err)
+	}
 }
 
 // TestActivePlannerCatalogView_SessionDisable_NarrowsWithinAdminAllowed
@@ -211,9 +237,7 @@ func TestActiveSkillViews_PersonalSkillSurvivesAdminMembershipFilter(t *testing.
 	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("admin membership: %v", err)
 	}
-	if _, err := ov.AddPersonalSkill(ctx, projID(), projAgent, "p"); err != nil {
-		t.Fatalf("add personal: %v", err)
-	}
+	ov.seedLegacyPersonal(t, "p")
 	got, err := projection.ActiveSkillViews(ctx, reg, ov, projAgent, projID(), views("a", "b", "p"))
 	if err != nil {
 		t.Fatalf("projection: %v", err)
@@ -250,9 +274,7 @@ func TestActiveSkillViews_DurableUserSkillSurvivesAdminMembershipFilter(t *testi
 	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("durable user membership: %v", err)
 	}
-	if _, err := ov.AddPersonalSkill(ctx, projID(), projAgent, "p"); err != nil {
-		t.Fatalf("add personal: %v", err)
-	}
+	ov.seedLegacyPersonal(t, "p")
 	got, err := projection.ActiveSkillViews(ctx, reg, ov, projAgent, projID(), views("a", "b", "p", "u"))
 	if err != nil {
 		t.Fatalf("projection: %v", err)
