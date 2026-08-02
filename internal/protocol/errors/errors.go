@@ -187,26 +187,40 @@ const (
 	// StateStore.SaveIf. The service's per-owner write lock only reduces local
 	// contention; it is not the authority for this guarantee.
 	CodeRevisionConflict Code = "revision_conflict"
+	// CodeSessionSkillCutoverPending — agent-config session-skill surface: the
+	// tenant remains in the explicit durable `dual_read` cutover mode, so a
+	// session-personal mutation is refused until the declared migration has
+	// completed and its fresh verification pass authorizes `state_only`. The
+	// request is well-formed and authorized; the target's current migration
+	// state forbids the mutation. Maps to HTTP 409 (Conflict).
+	CodeSessionSkillCutoverPending Code = "session_skill_cutover_pending"
+	// CodeSessionSkillReadUnstable — agent-config session-skill surface: all
+	// bounded before/after fence reads observed concurrent lifecycle or session
+	// erasure changes. Harbor returns no partial view; the caller may retry
+	// after the concurrent writer settles. Maps to HTTP 409 (Conflict).
+	CodeSessionSkillReadUnstable Code = "session_skill_read_unstable"
 )
 
 // canonicalCodes is the registered set — a fixed package-level map. A
 // new Protocol error code is a new phase that declares a constant +
 // extends this map; there is no registration escape hatch.
 var canonicalCodes = map[Code]struct{}{
-	CodeInvalidRequest:        {},
-	CodeIdentityRequired:      {},
-	CodeScopeMismatch:         {},
-	CodePayloadInvalid:        {},
-	CodeUnknownMethod:         {},
-	CodeNotFound:              {},
-	CodeRuntimeError:          {},
-	CodeAuthRejected:          {},
-	CodeIdentityScopeRequired: {},
-	CodePresignUnsupported:    {},
-	CodeRequestTooLarge:       {},
-	CodeSessionRunning:        {},
-	CodeSessionErased:         {},
-	CodeRevisionConflict:      {},
+	CodeInvalidRequest:             {},
+	CodeIdentityRequired:           {},
+	CodeScopeMismatch:              {},
+	CodePayloadInvalid:             {},
+	CodeUnknownMethod:              {},
+	CodeNotFound:                   {},
+	CodeRuntimeError:               {},
+	CodeAuthRejected:               {},
+	CodeIdentityScopeRequired:      {},
+	CodePresignUnsupported:         {},
+	CodeRequestTooLarge:            {},
+	CodeSessionRunning:             {},
+	CodeSessionErased:              {},
+	CodeRevisionConflict:           {},
+	CodeSessionSkillCutoverPending: {},
+	CodeSessionSkillReadUnstable:   {},
 }
 
 // IsValidCode reports whether c is one of the canonical Protocol error

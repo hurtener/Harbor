@@ -28,6 +28,8 @@ var wantCodes = []protoerrors.Code{
 	protoerrors.CodeSessionRunning,
 	protoerrors.CodeSessionErased,
 	protoerrors.CodeRevisionConflict,
+	protoerrors.CodeSessionSkillCutoverPending,
+	protoerrors.CodeSessionSkillReadUnstable,
 }
 
 func TestErrorCodes_StableWireStrings(t *testing.T) {
@@ -35,20 +37,22 @@ func TestErrorCodes_StableWireStrings(t *testing.T) {
 	// (RFC §5.3) — a Protocol client branches on them. A casual rename
 	// is a breaking change; this test pins the strings.
 	wire := map[protoerrors.Code]string{
-		protoerrors.CodeInvalidRequest:        "invalid_request",
-		protoerrors.CodeIdentityRequired:      "identity_required",
-		protoerrors.CodeScopeMismatch:         "scope_mismatch",
-		protoerrors.CodePayloadInvalid:        "payload_invalid",
-		protoerrors.CodeUnknownMethod:         "unknown_method",
-		protoerrors.CodeNotFound:              "not_found",
-		protoerrors.CodeRuntimeError:          "runtime_error",
-		protoerrors.CodeAuthRejected:          "auth_rejected",
-		protoerrors.CodeIdentityScopeRequired: "identity_scope_required",
-		protoerrors.CodePresignUnsupported:    "presign_unsupported",
-		protoerrors.CodeRequestTooLarge:       "request_too_large",
-		protoerrors.CodeSessionRunning:        "session_running",
-		protoerrors.CodeSessionErased:         "session_erased",
-		protoerrors.CodeRevisionConflict:      "revision_conflict",
+		protoerrors.CodeInvalidRequest:             "invalid_request",
+		protoerrors.CodeIdentityRequired:           "identity_required",
+		protoerrors.CodeScopeMismatch:              "scope_mismatch",
+		protoerrors.CodePayloadInvalid:             "payload_invalid",
+		protoerrors.CodeUnknownMethod:              "unknown_method",
+		protoerrors.CodeNotFound:                   "not_found",
+		protoerrors.CodeRuntimeError:               "runtime_error",
+		protoerrors.CodeAuthRejected:               "auth_rejected",
+		protoerrors.CodeIdentityScopeRequired:      "identity_scope_required",
+		protoerrors.CodePresignUnsupported:         "presign_unsupported",
+		protoerrors.CodeRequestTooLarge:            "request_too_large",
+		protoerrors.CodeSessionRunning:             "session_running",
+		protoerrors.CodeSessionErased:              "session_erased",
+		protoerrors.CodeRevisionConflict:           "revision_conflict",
+		protoerrors.CodeSessionSkillCutoverPending: "session_skill_cutover_pending",
+		protoerrors.CodeSessionSkillReadUnstable:   "session_skill_read_unstable",
 	}
 	for code, want := range wire {
 		if string(code) != want {

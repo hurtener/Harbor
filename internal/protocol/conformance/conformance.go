@@ -470,20 +470,22 @@ func signAlgNone(t *testing.T, claims jwt.MapClaims) string {
 // status.go; this table mirrors it so a future status reshuffle would
 // surface as a conformance failure rather than landing silently.
 var expectedHTTPStatus = map[protoerrors.Code]int{
-	protoerrors.CodeInvalidRequest:        http.StatusBadRequest,
-	protoerrors.CodeIdentityRequired:      http.StatusUnauthorized,
-	protoerrors.CodeScopeMismatch:         http.StatusForbidden,
-	protoerrors.CodePayloadInvalid:        http.StatusUnprocessableEntity,
-	protoerrors.CodeUnknownMethod:         http.StatusNotFound,
-	protoerrors.CodeNotFound:              http.StatusNotFound,
-	protoerrors.CodeRuntimeError:          http.StatusInternalServerError,
-	protoerrors.CodeAuthRejected:          http.StatusUnauthorized,
-	protoerrors.CodeIdentityScopeRequired: http.StatusForbidden,
-	protoerrors.CodePresignUnsupported:    http.StatusNotImplemented,
-	protoerrors.CodeRequestTooLarge:       http.StatusRequestEntityTooLarge,
-	protoerrors.CodeSessionRunning:        http.StatusConflict,
-	protoerrors.CodeSessionErased:         http.StatusConflict,
-	protoerrors.CodeRevisionConflict:      http.StatusConflict,
+	protoerrors.CodeInvalidRequest:             http.StatusBadRequest,
+	protoerrors.CodeIdentityRequired:           http.StatusUnauthorized,
+	protoerrors.CodeScopeMismatch:              http.StatusForbidden,
+	protoerrors.CodePayloadInvalid:             http.StatusUnprocessableEntity,
+	protoerrors.CodeUnknownMethod:              http.StatusNotFound,
+	protoerrors.CodeNotFound:                   http.StatusNotFound,
+	protoerrors.CodeRuntimeError:               http.StatusInternalServerError,
+	protoerrors.CodeAuthRejected:               http.StatusUnauthorized,
+	protoerrors.CodeIdentityScopeRequired:      http.StatusForbidden,
+	protoerrors.CodePresignUnsupported:         http.StatusNotImplemented,
+	protoerrors.CodeRequestTooLarge:            http.StatusRequestEntityTooLarge,
+	protoerrors.CodeSessionRunning:             http.StatusConflict,
+	protoerrors.CodeSessionErased:              http.StatusConflict,
+	protoerrors.CodeRevisionConflict:           http.StatusConflict,
+	protoerrors.CodeSessionSkillCutoverPending: http.StatusConflict,
+	protoerrors.CodeSessionSkillReadUnstable:   http.StatusConflict,
 }
 
 // errorCodeMatrix is the closed set of canonical Protocol error codes
@@ -534,6 +536,12 @@ var errorCodeMatrix = []protoerrors.Code{
 	// agent-config surface (same posture as the artifacts / sessions codes
 	// above).
 	protoerrors.CodeRevisionConflict,
+	// agent-config session-skill surface — these migration-state refusals are
+	// exercised by the session-skill handler/integration suite once the core
+	// durable cutover implementation is wired into the service. The generic
+	// conformance Stack intentionally has no agent-config surface.
+	protoerrors.CodeSessionSkillCutoverPending,
+	protoerrors.CodeSessionSkillReadUnstable,
 }
 
 // methodScopeFor returns the steering scope the suite uses when

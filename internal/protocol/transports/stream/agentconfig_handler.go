@@ -1034,6 +1034,18 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// request (400) or a server fault (500). 409 Conflict.
 		return protoerrors.CodeRevisionConflict, http.StatusConflict,
 			m + ": " + err.Error()
+	case errors.Is(err, sessionoverlay.ErrCutoverPending):
+		// A session-personal mutation is valid but the tenant's declared
+		// migration has not yet durably reached state_only. Do not collapse this
+		// state refusal into an invalid request or a server fault.
+		return protoerrors.CodeSessionSkillCutoverPending, http.StatusConflict,
+			m + ": session-personal cutover is still pending"
+	case errors.Is(err, sessionoverlay.ErrSessionSkillReadUnstable):
+		// A bounded session-skill read never found equal lifecycle/erasure
+		// fences. The caller receives no partial result and may retry once the
+		// concurrent transition settles.
+		return protoerrors.CodeSessionSkillReadUnstable, http.StatusConflict,
+			m + ": session-skill read was unstable; retry after concurrent state settles"
 	case errors.Is(err, agentcfg.ErrRevisionNotFound), errors.Is(err, skills.ErrSkillNotFound):
 		return protoerrors.CodeNotFound, http.StatusNotFound,
 			m + ": " + err.Error()

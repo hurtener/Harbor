@@ -2,7 +2,7 @@
 
 # Protocol errors
 
-The 14 canonical Harbor Protocol error codes, generated from the single-source
+The 16 canonical Harbor Protocol error codes, generated from the single-source
 registry (`internal/protocol/errors`). The HTTP column is read from the same
 code-to-status binding the wire transport serves — the two cannot drift.
 
@@ -30,4 +30,6 @@ Clients branch on `code` (stable across Runtime refactors — RFC §5.3), never 
 | `scope_mismatch` | 403 | The caller's steering scope claim is below the control method's RFC §6.3 minimum, or a cross-tenant steering / mutation was attempted without `admin`. | No — the operation needs a higher scope. |
 | `session_erased` | 409 | A `start` named a session id that was permanently deleted by `sessions.delete` (right-to-erasure). The session is terminal and cannot be reopened — its data is gone. A closed-but-not-erased session, by contrast, reopens normally on `start`. | No — the conversation was erased; start a new one with a fresh session id. |
 | `session_running` | 409 | A `sessions.delete` erasure was refused because the target session has a RUNNING task, mirroring the GC never-reap-running invariant. No store is touched on refusal — a session with in-flight work is durable execution state, not a cache entry. | Yes — re-issue after the session's task finishes (or cancel it first). |
+| `session_skill_cutover_pending` | 409 | A session-personal skill mutation reached a tenant whose explicit durable cutover is still `dual_read`; Harbor refuses the mutation until the declared migration completes and a fresh verification pass authorizes `state_only`. | Yes, after the operator completes the tenant's declared cutover; do not retry as an unconditional legacy write. |
+| `session_skill_read_unstable` | 409 | All three bounded before/after lifecycle and session-erasure fence reads observed concurrent change. Harbor returned no partial session-skill view. | Yes, after the concurrent lifecycle or erasure transition settles. |
 | `unknown_method` | 404 | The method name is not in the canonical registry ([methods.md](./methods.md)). | No — check the method name and this Runtime's advertised capabilities (`runtime.info`). |

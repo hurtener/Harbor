@@ -11,6 +11,7 @@ import (
 
 	"fmt"
 
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
@@ -407,5 +408,31 @@ func TestClassifyAgentConfigError_InvalidNaming400(t *testing.T) {
 	}
 	if code != protoerrors.CodeInvalidRequest {
 		t.Errorf("code = %q, want %q", code, protoerrors.CodeInvalidRequest)
+	}
+}
+
+func TestClassifyAgentConfigError_SessionSkillCutoverStates409(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		err      error
+		wantCode protoerrors.Code
+	}{
+		{
+			name:     "cutover pending",
+			err:      fmt.Errorf("wrapped: %w", sessionoverlay.ErrCutoverPending),
+			wantCode: protoerrors.CodeSessionSkillCutoverPending,
+		},
+		{
+			name:     "read unstable",
+			err:      fmt.Errorf("wrapped: %w", sessionoverlay.ErrSessionSkillReadUnstable),
+			wantCode: protoerrors.CodeSessionSkillReadUnstable,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, status, _ := classifyAgentConfigError(methods.MethodAgentConfigSessionSkillsList, tc.err)
+			if code != tc.wantCode || status != http.StatusConflict {
+				t.Fatalf("classifyAgentConfigError = (%q, %d), want (%q, 409)", code, status, tc.wantCode)
+			}
+		})
 	}
 }

@@ -29,8 +29,10 @@ func TestHTTPStatus_Mapping_EveryCanonicalCode(t *testing.T) {
 		// unpinned — the exhaustiveness check only proves a row exists, not
 		// that it returns the right number. Added alongside
 		// CodeRevisionConflict, which would have shipped with the same gap.
-		protoerrors.CodeSessionErased:    http.StatusConflict,
-		protoerrors.CodeRevisionConflict: http.StatusConflict,
+		protoerrors.CodeSessionErased:              http.StatusConflict,
+		protoerrors.CodeRevisionConflict:           http.StatusConflict,
+		protoerrors.CodeSessionSkillCutoverPending: http.StatusConflict,
+		protoerrors.CodeSessionSkillReadUnstable:   http.StatusConflict,
 	}
 	for code, want := range cases {
 		if got := HTTPStatus(code); got != want {
@@ -46,20 +48,22 @@ func TestHTTPStatus_Mapping_EveryCanonicalCode(t *testing.T) {
 // (D-082 amendment) so a new code without a mapping surfaces by NAME.
 func TestHTTPStatus_Mapping_ExhaustiveOverCanonicalCodes(t *testing.T) {
 	mapped := map[protoerrors.Code]struct{}{
-		protoerrors.CodeInvalidRequest:        {},
-		protoerrors.CodeIdentityRequired:      {},
-		protoerrors.CodeScopeMismatch:         {},
-		protoerrors.CodePayloadInvalid:        {},
-		protoerrors.CodeUnknownMethod:         {},
-		protoerrors.CodeNotFound:              {},
-		protoerrors.CodeRuntimeError:          {},
-		protoerrors.CodeAuthRejected:          {},
-		protoerrors.CodeIdentityScopeRequired: {},
-		protoerrors.CodePresignUnsupported:    {},
-		protoerrors.CodeRequestTooLarge:       {},
-		protoerrors.CodeSessionRunning:        {},
-		protoerrors.CodeSessionErased:         {},
-		protoerrors.CodeRevisionConflict:      {},
+		protoerrors.CodeInvalidRequest:             {},
+		protoerrors.CodeIdentityRequired:           {},
+		protoerrors.CodeScopeMismatch:              {},
+		protoerrors.CodePayloadInvalid:             {},
+		protoerrors.CodeUnknownMethod:              {},
+		protoerrors.CodeNotFound:                   {},
+		protoerrors.CodeRuntimeError:               {},
+		protoerrors.CodeAuthRejected:               {},
+		protoerrors.CodeIdentityScopeRequired:      {},
+		protoerrors.CodePresignUnsupported:         {},
+		protoerrors.CodeRequestTooLarge:            {},
+		protoerrors.CodeSessionRunning:             {},
+		protoerrors.CodeSessionErased:              {},
+		protoerrors.CodeRevisionConflict:           {},
+		protoerrors.CodeSessionSkillCutoverPending: {},
+		protoerrors.CodeSessionSkillReadUnstable:   {},
 	}
 	for code := range mapped {
 		if !protoerrors.IsValidCode(code) {
