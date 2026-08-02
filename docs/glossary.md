@@ -1414,11 +1414,15 @@ Additions to this set are RFC PRs.
 
 **Slot expectation** — one identity quadruple, record kind, and expected current event ID used by conditional save. It names a StateStore slot rather than an event-history row; the next record's target slot must be among the operation's unique expectations. Phase 233, D-398.
 
-**Agent-config retirement** — the terminal lifecycle transition that makes one registration ID unresolvable for new runs and freezes its agent-, user-, and session-tier config mutation without deleting immutable revision history. It is separate from fleet deregistration. Phase 234, D-399.
+**Agent-config retirement** — the terminal lifecycle transition that makes one registration ID unresolvable for new runs and freezes its agent-, user-, and session-tier config mutation without deleting immutable revision history. Effective target selection is followed by signed reach before lifecycle lookup; it is separate from fleet deregistration. Phase 234, D-399.
 
 **Retirement tombstone** — the durable lifecycle envelope occupying a retired agent's active-config slot. It carries the pre-retirement revision identity, operation identity, fixed cleanup manifest, and progress; it is retained as the terminal resolution and replay oracle. Phase 234, D-399.
 
 **Retirement replay identity** — the tuple of tenant, agent registration ID, operation ID, and pre-retirement revision/hash recorded by a retirement tombstone. Only an exact same-operation retry may resume that tombstone's cleanup; a different operation conflicts. Phase 234, D-399.
+
+**Agent retirement resolution** — the closed protocol-owned result after pure effective-agent selection and signed-reach authorization: `active`, `unresolvable`, or `retired`. An unauthorized caller does not cause a tenant-local lifecycle lookup and cannot distinguish the latter two states. Phase 234, D-399.
+
+**Retirement event checkpoint** — the durable pending/acknowledged record that makes a retirement lifecycle event at-least-once: persist pending, emit, then exact CAS acknowledgement. A retry resumes after either failure; duplicate delivery is acceptable and loss is not. Phase 234, D-399.
 
 **StateStore** — Harbor's persistence floor. One mandatory interface keyed on `(identity.Quadruple, Kind, Bytes)` with idempotency on a caller-supplied `EventID` (ULID), exact multi-slot conditional save, identity-scoped deletion/enumeration, and the explicit maintenance scan. Three V1 drivers (in-memory, SQLite, Postgres) all pass the same `state.conformancetest.Run` suite. Consuming subsystems (sessions, tasks, governance, planner, memory, steering) land typed wrappers atop this generic surface — the leaf interface holds no domain types. RFC §6.11, §9, D-027, D-398.
 

@@ -264,6 +264,19 @@ identity supplies no signed reach and therefore cannot use these methods.
 `agent_id` remains registration metadata under §6.16 and does not join the
 isolation tuple.
 
+**Effective agent resolution is ordered and closed (D-397/D-399).**
+`EffectiveAgentID(requested)` is a pure selection step: it chooses the
+explicit requested id or the configured default for an omitted
+`control.start.agent_id`; it performs no StateStore lookup. The shared signed
+reach gate runs next. Only after that gate authorizes the selected id may the
+runtime consult tenant-local lifecycle/configuration and return the
+protocol-owned closed resolution state `active`, `unresolvable`, or `retired`.
+Thus a caller without reach cannot distinguish an unknown, configured, or
+retired agent, and no lifecycle/config read becomes an authority oracle. All
+three steps complete before session creation or task spawn. A configured
+default receives the same lifecycle lookup as an explicit id: it never
+short-circuits around a tombstone.
+
 ### 5.6 External Protocol serving (Settled — D-291)
 
 An external binary — a scaffolded agent with compiled in-process Go tools, a headless embedder that also wants a network surface — may **serve the Protocol** at parity with the stock `harbor serve`. This is a **decided contract**, superseding the earlier deliberate omission where the serve composition lived only inside `cmd/harbor` (package `main`, unreachable to any importer). It rests on two pieces:
@@ -1520,6 +1533,31 @@ not a data-plane bearer operation, so admin scope is its authority and it does
 not consume `agent_reach`. `agents.deregister`
 continues to remove only the fleet registry record and neither creates nor
 removes the agent-config tombstone.
+
+The retired result is distinct only after signed reach has authorized the
+effective target: a reach-authorized `control.start`, every active/current or
+mutating agent-config/session/user/skills projection, and all session methods
+return canonical `agent_retired` (HTTP 409). `agent_config.retire` returns
+canonical `agent_retirement_conflict` (HTTP 409) for an expected-hash
+mismatch, a different operation ID, or an incompatible same-slot retirement;
+an exact same-operation retry instead returns and resumes its stored status.
+The generic `unresolvable` refusal remains the non-oracle result. Admin
+`agent_config.list_revisions` and `agent_config.diff`, and exact immutable
+revision reads, remain available after retirement under their existing admin
+authority. `agent_config.user.list_revisions` and `agent_config.user.diff`
+remain available only under their existing verified user scope plus signed
+reach. This preserves history without broadening any claim; active/current
+getters and skill-list projections do not become historical read doors.
+
+Retirement lifecycle facts are canonical, redacted, and identity-scoped:
+`agent_config.retirement.started`, `.progress`, and `.completed`. Their
+payloads carry only the identity, agent ID, a hash of the operation ID, and
+bounded stage/class, counters, and generation; they never carry a raw operation
+ID, descriptor, or credential. Each durable transition first records a pending
+event checkpoint. Cleanup cannot advance beyond it; the runtime emits the
+event and then exactly CAS-acknowledges the checkpoint. An emit or ack failure
+fails loud and the same-operation retry resumes this sequence. Delivery is
+therefore at-least-once (duplicates are permitted; silent loss is not).
 
 **Events.** The registry emits `agent.registered`, `agent.restarted`, `agent.health`, `agent.drained`, `agent.deregistered` on the typed event bus (§6.13), carrying the registration `agent_id`. The Console Agents page (§7) is a lens over these events plus a registry state snapshot — the Console never holds the agent list itself (D-061).
 

@@ -33,7 +33,10 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 
 - Install a terminal lifecycle tombstone by exact StateStore compare-and-swap.
 - Freeze every agent- and user-tier durable mutation after retirement and make every session overlay/personal record inaccessible through the four-slot lifecycle, pending-erasure, tombstone-erasure, and target-record CAS composition.
-- Deny explicit and defaulted new-run selection while preserving already-acquired run snapshots.
+- Resolve explicit/default/omitted new-run targets as pure selection, authorize
+  signed reach before any tenant-local lifecycle/config lookup, and deny a
+  retired target before session or task spawn while preserving already-acquired
+  run snapshots.
 - Resume a fixed, idempotent, owner-scoped cleanup manifest for the same
   operation only, through a deterministic paged scan after the tombstone wins.
 
@@ -46,7 +49,7 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 
 ## Acceptance criteria
 
-- [ ] `agent_config.retire` requires admin scope, exact identity, non-empty bounded operation ID, and expected active content hash (or `ExpectNoActiveRevision`).
+- [ ] `agent_config.retire` requires admin scope, exact identity, non-empty bounded operation ID, and expected active content hash (or `ExpectNoActiveRevision`); it never requires `agent_reach`.
 - [ ] The agent active slot becomes a backward-compatible lifecycle envelope; a tombstone contains prior revision ID/hash, operation/time, fixed cleanup manifest, and per-step progress.
 - [ ] Initial retirement and every progress update use `SaveIf`; a stale writer, rollback, or user-tier writer cannot resurrect or mutate the tombstoned agent.
 - [ ] Overlay and agent-owned personal-record mutation builds four exact `SaveIf` expectations (target, lifecycle, pending erasure, terminal erasure) and writes only the target; retirement or erasure wins with no local compensation fiction, and every later read/write refuses the corresponding terminal state.
@@ -57,9 +60,12 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 - [ ] Overlay/personal/composite reads use Phase 233a's before/after lifecycle
   and erasure-fence generation check, retrying or failing closed on a changed
   generation so retirement's postcondition includes read inaccessibility.
-- [ ] Same-operation retries resume; different operation IDs return a typed conflict; landed-but-unacknowledged writes converge by exact reread.
-- [ ] `Active` and every mutation return `ErrAgentRetired`; historical Get/List/Diff remain available to authorized admin/audit callers.
-- [ ] Both explicit and omitted/default `control.start` fail before new work; a run whose immutable start snapshot predates the tombstone may finish unchanged.
+- [ ] Same-operation retries return and resume stored status; expected-hash mismatch, a different operation ID, or an incompatible same-slot retirement return `agent_retirement_conflict` (HTTP 409). Landed-but-unacknowledged writes converge by exact reread.
+- [ ] `EffectiveAgentID(requested)` is pure explicit/default/omitted selection. The shared signed-reach gate runs before tenant-local lifecycle/config lookup; only then does the protocol-owned resolver return `active`, `unresolvable`, or `retired`. Missing reach reveals none of unknown/configured/retired state; a configured default never bypasses lifecycle lookup.
+- [ ] A reach-authorized `control.start`, every active/current or mutating config/session/user/skills projection, skill-list current projection, and every session method returns `agent_retired` (HTTP 409) after tombstone. Generic `unresolvable` remains the non-oracle refusal.
+- [ ] Admin `agent_config.list_revisions`/`diff` and exact immutable revision reads remain under existing admin authority. `agent_config.user.list_revisions`/`user.diff` remain only under their existing verified user scope plus signed reach. No claim is broadened.
+- [ ] Both explicit and omitted/default `control.start` fail before session/task spawn; a run whose immutable start snapshot predates the tombstone may finish unchanged.
+- [ ] Retirement emits canonical redacted identity-scoped `agent_config.retirement.started`, `.progress`, and `.completed` events. Payloads contain only identity, agent ID, operation-ID hash, and bounded stage/class/counters/generation. Each transition persists a pending event checkpoint before emit and exact CAS-acknowledges after; a bus/ack failure is loud, blocks later cleanup progress, and same-operation retry resumes at-least-once delivery.
 - [ ] Cleanup detaches only manifest-listed runtime-added MCP connections and uninstalls only durably owner-scoped providers; after the lifecycle tombstone freezes the owned keyset, its fixed manifest uses `ScanKindForTenant`. New encoded personal records use a collision-safe exact per-agent prefix; raw schema-1 overlays use the common overlay prefix plus exact `LegacyOverlayKind(agentID)` equality (including an `a`/`ab` no-overmatch test). Every result is mutated only under its own identity. It retains user and agent revision history plus `ScopeUser` skills, never touches boot/global, remote-process memory, shared/unattributable legacy bodies, or credentials, and makes no unconditional `Delete`. Schema-1 overlay records remain compatibility-readable and need no separate retirement tombstone because the lifecycle fence is terminal.
 - [ ] Tombstone and progress survive restart on SQLite/Postgres; fault injection after every side effect/progress boundary converges on same-operation retry.
 - [ ] `agents.deregister` neither installs nor deletes a tombstone, and retirement does not remove the fleet record.
@@ -78,20 +84,23 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 
 ## Public API surface
 
-- `agent_config.retire` request/response wire types and typed retirement error codes.
+- `agent_config.retire` request/response wire types, closed agent-resolution state, canonical `agent_retired` / `agent_retirement_conflict` errors, and retirement lifecycle events.
 - `agentcfg.Registry.Retire`, `RetirementStatus`, `ErrAgentRetired`, and `ErrRetirementConflict`.
 - Owner-scoped idempotent cleanup interface injected by runtime assembly.
 
 ## Test plan
 
 - **Unit:** lifecycle decoding, CAS install, operation replay/conflict, freeze
-  matrix, resolver/default behavior, manifest construction, raw legacy Kind
-  equality (`a`/`ab`), class-specific uncertain-write convergence, and typed
-  Protocol mapping.
+  matrix, pure effective-target/reach/lifecycle order, explicit/default/omitted
+  resolver behavior, manifest construction, raw legacy Kind equality (`a`/`ab`),
+  class-specific uncertain-write convergence, exact historical-read matrix,
+  retirement error/status mapping, and redacted event payload/checkpoint rules.
 - **Integration:** real StateStore registry + Phase 233a composite resolver +
-  runtime projection + mux, restart durability, explicit/default start
-  refusal, history preservation, exact paged owned-record cleanup after
-  tombstone, and `agents.deregister` independence.
+  runtime projection + mux, restart durability, unauthorized-reach hiding of
+  unknown/configured/retired distinctions, explicit/default/omitted start
+  refusal before spawn, history preservation, exact paged owned-record cleanup
+  after tombstone, event emit/ack failure and restart replay, and
+  `agents.deregister` independence.
 - **Conformance:** all agentcfg drivers implement terminal lifecycle and same-operation replay; the 17 spine writes plus five session writes are held in a closed refusal census.
 - **Concurrency / leak:** stale writer/rollback/user/overlay/personal-record
   writer versus retirement and erasure across two instances; four-slot
@@ -101,8 +110,14 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 
 ## Smoke script additions
 
-- Retire the dev agent, assert explicit/default start refusal, immutable history, replay/conflict, fenced session-record refusal, exact owned cleanup, and separate fleet deregistration behavior.
-- Run every cleanup fault boundary and require at least one real live-server assertion.
+- Retire the dev agent, assert explicit/default/omitted start refusal before
+  task spawn, immutable history/read matrix, same-operation replay versus
+  `agent_retirement_conflict`, fenced session-record refusal, exact owned
+  cleanup, redacted lifecycle events, and separate fleet deregistration
+  behavior.
+- Assert a bearer without reach cannot distinguish unknown, configured, and
+  retired targets; run every cleanup/event fault boundary and require at least
+  one real live-server assertion.
 
 ## Coverage target
 
@@ -133,5 +148,6 @@ Add a durable CAS retirement verb that makes an agent terminally unresolvable fo
 - [ ] Cross-session and cross-tenant retirement isolation tests pass
 - [ ] Reusable registry/cleaner N≥100 concurrent-reuse test passes with no race, bleed, cancellation cross-talk, or leak
 - [ ] Real-driver integration covers identity, restart, conflict, and cleanup failure
+- [ ] Error-code/status, event, Protocol-doc, and Console lockstep gates pass
 - [ ] If new vocabulary: glossary updated
 - [ ] If a brief finding was departed from: justified above + decisions.md entry filed
