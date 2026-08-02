@@ -4,11 +4,48 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/state"
 )
+
+// retirementCommitAckFaultStore models one ambiguous conditional write: the
+// StateStore commits the exact bytes, but its acknowledgement is lost. It is
+// deliberately one-shot so the retry/convergence path runs against the real
+// store rather than a permanently unavailable one.
+type retirementCommitAckFaultStore struct {
+	state.StateStore
+	failAt int64
+	calls  atomic.Int64
+}
+
+func (s *retirementCommitAckFaultStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if isActivePointerKind(next.Kind) && s.calls.Add(1) == s.failAt {
+		if err := s.StateStore.SaveIf(ctx, expectations, next); err != nil {
+			return err
+		}
+		return errPointerWrite
+	}
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
+// retirementFailOnceBus refuses exactly one armed lifecycle publication while
+// delegating all subscription and close behaviour to the real in-memory bus.
+type retirementFailOnceBus struct {
+	events.EventBus
+	armed atomic.Bool
+}
+
+func (b *retirementFailOnceBus) Publish(ctx context.Context, event events.Event) error {
+	if b.armed.CompareAndSwap(true, false) {
+		return errPointerWrite
+	}
+	return b.EventBus.Publish(ctx, event)
+}
 
 // TestRetirement_TerminalHistoryAndReplay proves the lifecycle transition is
 // terminal for every active/mutation door while immutable revision history is
@@ -174,5 +211,100 @@ func TestRetirement_ProgressIsFrozenCASState(t *testing.T) {
 	replay, found, err := retirer.RetirementStatus(ctx, id, "agent-a")
 	if err != nil || !found || !replay.Completed || !replay.Cleanup[0].Completed {
 		t.Fatalf("reread durable progress = (%+v,%v,%v)", replay, found, err)
+	}
+}
+
+// TestRetirement_CommitThenAckLossConverges proves every retirement-owned
+// SaveIf boundary treats a returned store error as ambiguous. The durable
+// lifecycle record is reread exactly: if the intended tombstone/progress
+// landed, the call resumes the pending event transition instead of requiring
+// an operator to guess whether retirement took effect.
+func TestRetirement_CommitThenAckLossConverges(t *testing.T) {
+	ctx := context.Background()
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-fault", UserID: "admin", SessionID: "control"}}
+
+	t.Run("tombstone", func(t *testing.T) {
+		base := newSharedStore(t)
+		seed := newRegistryOnStore(t, base)
+		rev, err := seed.SetRevision(ctx, id, "agent-tombstone", agentcfg.ConfigScopeAgent, skills("seed"), agentcfg.SetOptions{})
+		if err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		reg := newRegistryOnStore(t, &retirementCommitAckFaultStore{StateStore: base, failAt: 1})
+		status, err := reg.(agentcfg.RetirementRegistry).Retire(ctx, id, "agent-tombstone", agentcfg.RetirementRequest{OperationID: "op-tombstone", ExpectedContentHash: rev.ContentHash})
+		if err != nil {
+			t.Fatalf("retire after committed-but-errored tombstone: %v", err)
+		}
+		if !status.Completed || status.OperationID != "op-tombstone" {
+			t.Fatalf("tombstone status=%+v, want completed same operation", status)
+		}
+	})
+
+	t.Run("progress", func(t *testing.T) {
+		base := newSharedStore(t)
+		seed := newRegistryOnStore(t, base)
+		payload := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{{Name: "owned"}}}}
+		rev, err := seed.SetRevision(ctx, id, "agent-progress", agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{})
+		if err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		// The first two writes are tombstone install and started-event ack;
+		// the third is the durable cleanup-progress transition.
+		reg := newRegistryOnStore(t, &retirementCommitAckFaultStore{StateStore: base, failAt: 3})
+		retirer := reg.(agentcfg.RetirementRegistry)
+		status, err := retirer.Retire(ctx, id, "agent-progress", agentcfg.RetirementRequest{OperationID: "op-progress", ExpectedContentHash: rev.ContentHash})
+		if err != nil {
+			t.Fatalf("retire: %v", err)
+		}
+		if status.Completed || len(status.Cleanup) != 1 {
+			t.Fatalf("initial status=%+v, want one pending cleanup", status)
+		}
+		status, err = retirer.CompleteRetirementStep(ctx, id, "agent-progress", "op-progress", "mcp_connection", "owned")
+		if err != nil {
+			t.Fatalf("complete after committed-but-errored progress: %v", err)
+		}
+		if !status.Completed || !status.Cleanup[0].Completed {
+			t.Fatalf("progress status=%+v, want completed frozen cleanup", status)
+		}
+	})
+}
+
+// TestRetirement_EventPublishFailureStaysCheckpointed proves a failed
+// lifecycle event does not turn into an unobserved completed tombstone. The
+// pending checkpoint remains durable, blocks success, and an exact
+// same-operation retry redelivers the transition before completing.
+func TestRetirement_EventPublishFailureStaysCheckpointed(t *testing.T) {
+	ctx := context.Background()
+	bus := &retirementFailOnceBus{EventBus: newBus(t)}
+	reg := newRegistryOnBus(t, bus)
+	retirer := reg.(agentcfg.RetirementRegistry)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-event", UserID: "admin", SessionID: "control"}}
+	const agent = "agent-event"
+	payload := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{{Name: "owned"}}}}
+	rev, err := reg.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	bus.armed.Store(true)
+	if _, err := retirer.Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "op-event", ExpectedContentHash: rev.ContentHash}); !errors.Is(err, agentcfg.ErrStateUnavailable) {
+		t.Fatalf("retire with failed started event = %v, want state unavailable", err)
+	}
+	status, found, err := retirer.RetirementStatus(ctx, id, agent)
+	if err != nil || !found || status.Completed {
+		t.Fatalf("status after failed event = (%+v,%v,%v), want durable incomplete tombstone", status, found, err)
+	}
+	status, err = retirer.Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: "op-event", ExpectedContentHash: rev.ContentHash})
+	if err != nil {
+		t.Fatalf("same-operation retry after failed event: %v", err)
+	}
+	if status.Completed || status.OperationID != "op-event" || len(status.Cleanup) != 1 {
+		t.Fatalf("retry status=%+v, want pending stored operation", status)
+	}
+	status, err = retirer.CompleteRetirementStep(ctx, id, agent, "op-event", "mcp_connection", "owned")
+	if err != nil {
+		t.Fatalf("complete after replayed started event: %v", err)
+	}
+	if !status.Completed || !status.Cleanup[0].Completed {
+		t.Fatalf("completed retry status=%+v, want acknowledged cleanup", status)
 	}
 }
