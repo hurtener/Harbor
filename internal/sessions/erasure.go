@@ -136,7 +136,7 @@ const erasureTombstoneKindPrefix = "session.erasure.tombstone."
 //     emit failed finds the session already gone (ErrSessionNotFound from
 //     the registry pre-flight) AND a still-present ledger checkpoint —
 //     recognized as a CONVERGING retry: it skips already-checkpointed work
-//     and goes straight to completeErasure. A pre-Phase-233a ledger first
+//     and goes straight to completeErasure. An older-format ledger first
 //     performs and checkpoints the separately stored legacy-session-skill
 //     sweep; then completeErasure re-attempts the record + emit using the
 //     ledger's cumulative counts.
@@ -582,7 +582,7 @@ func (e *CascadeEraser) convergeStaleLedger(ctx context.Context, id identity.Ide
 // gone but a ledger checkpoint still pending).
 func (e *CascadeEraser) completeErasure(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) (prototypes.SessionsDeleteResponse, error) {
 	var zero prototypes.SessionsDeleteResponse
-	// A ledger written by a pre-Phase-233a binary has no
+	// A ledger written before session-skill cleanup checkpoints has no
 	// legacy_session_skills_deleted field, so JSON decoding leaves the flag
 	// false. The session record may already be absent on retry, but that absence
 	// proves only that StateStore.DeleteScope landed; it says nothing about the

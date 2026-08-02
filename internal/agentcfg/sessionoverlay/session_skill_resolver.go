@@ -196,7 +196,7 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 		}
 		skill, err := cfg.Base.GetScope(ctx, cfg.Run, name, skills.ScopeUser)
 		if err != nil {
-			// D-345 membership is only a selection hint for an independently
+			// User-scope membership is only a selection hint for an independently
 			// durable body. A deleted or not-yet-written ScopeUser body is
 			// harmlessly absent; unlike an admin-pinned body it is not an
 			// authority/configuration failure.
