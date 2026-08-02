@@ -36,6 +36,24 @@ safe rolling cutover from legacy `ScopeSession` bodies.
 - None. The older process-local-overlay premise is corrected by D-400; it was
   not a brief finding to preserve.
 
+## Permanent implementation deviations
+
+- The resolver does not use a portable frozen-candidate full-text proxy. Its
+  base is the configured mandatory `SkillStore`, whose
+  `SearchSnapshot(ctx, id, query, candidates, limit)` implementation ranks
+  only the immutable composed candidates while retaining the actual selected
+  driver's full-text availability, tokenizer, ranking, and fallback ladder.
+  The LocalDB driver builds a connection-local FTS5 view; PostgreSQL uses a
+  values CTE through its `to_tsvector`/`to_tsquery` path. This avoids labeling
+  a custom contains scorer as FTS5. Semantic snapshot search keeps the
+  established deterministic most-recent 256-candidate ceiling, so one billed
+  embedding batch is at most 257 texts including the query.
+- `StateStore.ListKindForIdentityBounded` is a new mandatory public API across
+  in-memory, SQLite, and PostgreSQL drivers. The state-only resolver asks for
+  its owned-record cap plus one and rejects overflow before candidate search or
+  embedding. A resolver-side length check after `ListKindForIdentity` would
+  still materialize an unbounded identity prefix and is therefore insufficient.
+
 ## Goals
 
 - Make the session overlay a cross-process-safe StateStore CAS consumer,
@@ -174,12 +192,16 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   `state_only`, eligible legacy names in `dual_read`. Upsert/delete reload the
   resolver view before responding, and never persist that projection back to
   `Overlay.PersonalSkills`, so responses cannot become stale.
-- [ ] The resolver's default search policy is lexical: deterministic canonical
-  name/title/trigger/tag matching and a stable merge with the existing
-  FTS5/regex/exact ladder. Its semantic policy is opt-in, requires the
-  existing Embedder, ranks the same composed candidate view, and fails loud
-  when unavailable; result and page limits are enforced without claiming an
-  atomically enforced stored-record count.
+- [ ] The resolver delegates frozen-candidate search to the configured
+  mandatory `SkillStore` driver, never a portable contains scorer. Default
+  retrieval preserves that driver's true full-text availability and behavior
+  (LocalDB FTS5 or fallback regex/exact; PostgreSQL full-text then the same
+  tail), with result paths truthful to the producing engine. Semantic retrieval
+  is opt-in, ranks only the frozen composed view, deterministically selects the
+  most-recent 256 candidates, honors cancellation through candidate/text/cosine
+  loops, and never bills an embedding batch above 256 candidates plus query.
+  State-only owned-record enumeration is storage-bounded to that cap plus one
+  and rejects overflow before candidate search/embedding.
 - [ ] `SkillStore.DeleteSessionScope(ctx, identity.Quadruple)` is mandatory,
   identity-exact, and idempotent across every driver. Session erasure records
   its completion in the durable ledger before `StateStore.DeleteScope`; it
@@ -205,8 +227,9 @@ safe rolling cutover from legacy `ScopeSession` bodies.
 - `internal/config/{config.go,loader.go}`, `examples/dev.yaml`, and
   `CHANGELOG.md`
 - `internal/sessions/erasure.go` and erasure tests
-- `internal/state/` typed record helpers plus `ScanKindForTenant` triad and
-  conformance; no migration files
+- `internal/state/` typed record helpers plus `ScanKindForTenant` and
+  `ListKindForIdentityBounded` mandatory-driver triads and conformance; no
+  migration files
 - `test/integration/session_personal_skills_test.go`
 - `scripts/smoke/phase-233a.sh`
 - `RFC-001-Harbor.md`, `docs/decisions.md`, `docs/glossary.md`, and plan index
@@ -226,6 +249,11 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   Kinds used in `SaveIf` expectations.
 - `ScanKindForTenant` and its opaque continuation/page types as a mandatory
   StateStore API.
+- `ListKindForIdentityBounded(ctx, id, literalKindPrefix, limit)` as a
+  mandatory StateStore API for storage-enforced identity-local admission caps.
+- Mandatory `SkillStore.SearchSnapshot` driver seam for immutable
+  run-start candidate views; no token URL, credential, or runtime
+  configuration surface is added by this phase.
 - `skills.session_personal_cutover.tenants` plus `CutoverScope(tenant)` and a
   bounded typed cutover record. `CutoverScope(tenant)` is exactly
   `{TenantID: tenant, UserID: "__agentcfg__", SessionID:
@@ -251,8 +279,10 @@ safe rolling cutover from legacy `ScopeSession` bodies.
   namespace prevents an agent ID equal to the session sentinel from aliasing;
   overlay and personal four-slot expectation construction; tombstone
   precedence; single-`SaveIf` personal mutation with no overlay mutation;
-  before/after read-generation retry/fail-closed rows; lexical ranking,
-  semantic embedder absence, stable pagination, `ScopeUser` preservation,
+  before/after read-generation retry/fail-closed rows; actual driver-owned
+  frozen-view full-text versus regex/exact fallback behavior, semantic
+  256-candidate/257-text batch cap and cancellation, bounded state-only owned
+  admission, stable pagination, `ScopeUser` preservation,
   raw-agent schema-1 overlay compatibility including `a`/`ab`, dynamic overlay
   projection, class-specific commit-then-error exact-re-read convergence, and
   three-attempt perpetual-fence-churn exhaustion with cancellation/deadline.
