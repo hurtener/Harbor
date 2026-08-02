@@ -171,6 +171,34 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 	return d.saveLocked(next)
 }
 
+// DeleteIf implements StateStore's exact-generation conditional delete. The
+// reference driver's mutex makes the generation check and removal one atomic
+// operation across both the primary slot and EventID index.
+func (d *driver) DeleteIf(ctx context.Context, expectation state.SlotExpectation) (bool, error) {
+	if d.closed.Load() {
+		return false, state.ErrStoreClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := state.ValidateDeleteIf(expectation); err != nil {
+		return false, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	key := keyFor(expectation.Identity, expectation.Kind)
+	rec, ok := d.records[key]
+	if !ok || rec.ID != expectation.ExpectedEventID {
+		return false, nil
+	}
+	delete(d.records, key)
+	delete(d.eventIdx, rec.ID)
+	return true, nil
+}
+
 // saveLocked implements Save after the caller has acquired d.mu.
 func (d *driver) saveLocked(r state.StateRecord) error {
 	key := keyFor(r.Identity, r.Kind)

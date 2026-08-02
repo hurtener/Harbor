@@ -46,8 +46,12 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestRemoveOAuthMCPCapability_ContinuesPairLifetimeReceipt \
     TestSignedOAuthMCPReconciler_Restart_ReattachesOnlyExactPublishedPair \
     TestSignedOAuthMCPReconciler_SQLiteRestart_ReattachesPublishedPair \
+    TestSignedOAuthMCPReconciler_ExpiredIncompleteNeutralizesCandidate \
+    TestSignedOAuthMCPReconciler_ExpiredIncompleteRestoresBootLifecycle \
     TestSignedOAuthMCPReconciler_RecoversRemovalAfterDetachFault \
-    TestSignedOAuthMCPReconciler_ConcurrentReuseN128_CancellationDoesNotLeak
+    TestSignedOAuthMCPReconciler_ConcurrentReuseN128_CancellationDoesNotLeak \
+    TestSetOAuthProvider_FirstInstallCommitThenErrorRestoresUnsetAgent \
+    TestSetOAuthProvider_BootLifecycleCommitThenErrorRestoresExactPrior
 
 assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./internal/agentcfg/drivers/statestore ./internal/tools/auth ./internal/tools/drivers/mcp ./internal/protocol/types ./internal/protocol/transports/stream ./internal/runtime/serve' \
     'phase 233b: authenticated preparation, selective discovery errors, rollback, scope, and closed-wire regressions execute under race' \
@@ -55,6 +59,9 @@ assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./intern
     TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors \
     TestIsJSONRPCMethodNotFound_OnlyCanonicalTypedError \
     TestRollback_ActiveRevisionReadFailureAbortsBeforePointerMutation \
+    TestDeactivateIfActive_RestoresAbsentAndSurvivesRestart \
+    TestDeactivateIfActive_TerminalOrCorruptFailsClosed \
+    TestDeactivateIfActive_CASRaceNeverDeletesReplacement \
     TestBuildSignedCapability_RequestedScopeOutsideBootCeilingRejected \
     TestRegisterOAuthMCPCapabilityWire_FieldSetsAreClosed \
     TestRegisterOAuthMCPCapabilityWire_HasNoCredentialOrSinkConfigurationField \

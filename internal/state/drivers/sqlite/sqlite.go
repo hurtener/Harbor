@@ -527,6 +527,31 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 	return nil
 }
 
+// DeleteIf atomically removes only the exact EventID generation named by the
+// caller. The generation predicate is part of the DELETE statement, so a
+// concurrent replacement is never removed.
+func (d *driver) DeleteIf(ctx context.Context, expectation state.SlotExpectation) (bool, error) {
+	if d.closed.Load() {
+		return false, fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateDeleteIf(expectation); err != nil {
+		return false, err
+	}
+	result, err := d.db.ExecContext(ctx, `
+        DELETE FROM state_records
+        WHERE tenant = ? AND user = ? AND session = ? AND run = ? AND kind = ? AND event_id = ?`,
+		expectation.Identity.TenantID, expectation.Identity.UserID, expectation.Identity.SessionID,
+		expectation.Identity.RunID, expectation.Kind, string(expectation.ExpectedEventID))
+	if err != nil {
+		return false, fmt.Errorf("state/sqlite: conditional delete: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state/sqlite: conditional delete rows affected: %w", err)
+	}
+	return changed == 1, nil
+}
+
 // slotKey mirrors `internal/state/drivers/inmem`'s indexKey: a
 // struct-typed composite primary key that cannot be confused by
 // delimiters in tenant / user / session strings.

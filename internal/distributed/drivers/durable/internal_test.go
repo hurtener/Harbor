@@ -27,6 +27,9 @@ func (f *fakeStore) Save(context.Context, state.StateRecord) error { return nil 
 func (f *fakeStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
 	return nil
 }
+func (f *fakeStore) DeleteIf(context.Context, state.SlotExpectation) (bool, error) {
+	return false, nil
+}
 func (f *fakeStore) Load(context.Context, identity.Quadruple, string) (state.StateRecord, error) {
 	return state.StateRecord{}, state.ErrNotFound
 }

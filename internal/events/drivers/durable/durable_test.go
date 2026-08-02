@@ -325,6 +325,9 @@ func (f *failingStore) Save(context.Context, state.StateRecord) error { return f
 func (f *failingStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
 	return f.saveErr
 }
+func (f *failingStore) DeleteIf(context.Context, state.SlotExpectation) (bool, error) {
+	return false, f.saveErr
+}
 func (f *failingStore) Load(context.Context, identity.Quadruple, string) (state.StateRecord, error) {
 	return state.StateRecord{}, state.ErrNotFound
 }

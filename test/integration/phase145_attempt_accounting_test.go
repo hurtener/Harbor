@@ -326,6 +326,10 @@ func (s *phase145SaveFailStore) SaveIf(_ context.Context, _ []state.SlotExpectat
 	return errors.New("io: simulated save failure")
 }
 
+func (s *phase145SaveFailStore) DeleteIf(ctx context.Context, expectation state.SlotExpectation) (bool, error) {
+	return s.inner.DeleteIf(ctx, expectation)
+}
+
 func (s *phase145SaveFailStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
 	return s.inner.Load(ctx, q, kind)
 }

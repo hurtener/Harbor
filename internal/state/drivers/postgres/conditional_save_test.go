@@ -67,3 +67,70 @@ func TestPostgres_SaveIf_TwoClientsOneWinner(t *testing.T) {
 		t.Fatalf("two-client winners = %d, want 1", got)
 	}
 }
+
+func TestPostgres_DeleteIf_TwoClientsCASWinnerSurvivesReopen(t *testing.T) {
+	dsn := freshSchema(t, requireDSN(t))
+	left, err := postgres.New(config.StateConfig{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatalf("open left: %v", err)
+	}
+	right, err := postgres.New(config.StateConfig{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatalf("open right: %v", err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	base := state.StateRecord{ID: "01HABXXX00000000PD", Identity: q, Kind: "conditional.delete.two-client", Bytes: []byte("candidate")}
+	next := state.StateRecord{ID: "01HABXXX00000000PW", Identity: q, Kind: base.Kind, Bytes: []byte("winner")}
+	if err := left.Save(context.Background(), base); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	start := make(chan struct{})
+	deleteResult := make(chan struct {
+		changed bool
+		err     error
+	}, 1)
+	saveResult := make(chan error, 1)
+	go func() {
+		<-start
+		changed, err := left.DeleteIf(context.Background(), state.SlotExpectation{Identity: q, Kind: base.Kind, ExpectedEventID: base.ID})
+		deleteResult <- struct {
+			changed bool
+			err     error
+		}{changed: changed, err: err}
+	}()
+	go func() {
+		<-start
+		saveResult <- right.SaveIf(context.Background(), []state.SlotExpectation{{Identity: q, Kind: base.Kind, ExpectedEventID: base.ID}}, next)
+	}()
+	close(start)
+	deleted, saveErr := <-deleteResult, <-saveResult
+	if deleted.err != nil {
+		t.Fatalf("DeleteIf: %v", deleted.err)
+	}
+	saved := saveErr == nil
+	if saveErr != nil && !errors.Is(saveErr, state.ErrConditionFailed) {
+		t.Fatalf("SaveIf: %v", saveErr)
+	}
+	if deleted.changed == saved {
+		t.Fatalf("CAS winners: deleted=%t saved=%t, want exactly one", deleted.changed, saved)
+	}
+	if err := left.Close(context.Background()); err != nil {
+		t.Fatalf("close left: %v", err)
+	}
+	if err := right.Close(context.Background()); err != nil {
+		t.Fatalf("close right: %v", err)
+	}
+	reopened, err := postgres.New(config.StateConfig{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close(context.Background()) })
+	got, loadErr := reopened.Load(context.Background(), q, base.Kind)
+	if saved {
+		if loadErr != nil || got.ID != next.ID {
+			t.Fatalf("reopened winner = %+v err=%v, want %q", got, loadErr, next.ID)
+		}
+	} else if !errors.Is(loadErr, state.ErrNotFound) {
+		t.Fatalf("reopened deleted slot = %+v err=%v, want ErrNotFound", got, loadErr)
+	}
+}

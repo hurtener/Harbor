@@ -12185,3 +12185,46 @@ release gate and was not duplicated locally.
 
 **Cross-references.** D-025, D-147, D-148, D-298. RFC §6.2, §6.5, §6.8,
 §6.13. Plan: `docs/plans/phase-233c-bifrost-reasoning-fidelity.md`.
+
+---
+
+## D-403 — Exact-generation conditional deletion restores an absent authority state without weakening lifecycle decoding
+
+**Date:** 2026-08-02
+
+**Status:** Accepted and shipped as the Phase 233b compensation correction.
+
+**Decision.** D-398's mandatory StateStore conditional-mutation surface adds
+`DeleteIf(ctx, SlotExpectation) (bool, error)` across in-memory, SQLite, and
+Postgres. The expectation names one complete identity-and-Kind slot and a
+non-empty exact EventID. Only that generation may be removed atomically. A
+different generation or absent slot returns `false, nil` and mutates nothing;
+invalid identity, empty Kind/EventID, cancellation, closed storage, and driver
+failure remain loud. All drivers run the same conformance suite, and durable
+drivers additionally race independent clients through conditional delete versus
+replacement and verify the one CAS winner after reopen. This is one mandatory
+interface, not an optional capability.
+
+The first consumer is `agentcfg.Registry.DeactivateIfActive`. A compensation
+whose pre-operation lifecycle slot was truly absent removes only its exact
+candidate pointer generation. A compensation with a prior boot/config revision
+repoints to that exact revision only while the candidate content hash remains
+active. A concurrent winner is never deleted or rolled back. Immutable
+candidate revision history remains for diagnosis; no provider, catalog binding,
+or signed pair remains authoritative.
+
+The earlier Phase 233b inactive-marker implementation is rejected because it
+added an `inactive` member to D-400's closed lifecycle envelope. D-400 correctly
+classified that unknown field as malformed. No reader or classifier is loosened:
+active, terminal, and corrupt lifecycle records retain their existing strict
+meanings; terminal and corrupt compensation attempts fail closed and preserve
+the exact bytes. The pending activation fence remains D-401's semantic security
+boundary; conditional deletion is only exact post-fence restoration of an
+absent physical authority state.
+
+**Wire consequence.** None. This changes the internal persistence and
+compensation contract only; Protocol types, methods, errors, events, version,
+and Console lockstep remain unchanged.
+
+**Cross-references.** D-025, D-366, D-398, D-400, D-401. RFC §6.11, §6.16,
+§9. Plan: `docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md`.

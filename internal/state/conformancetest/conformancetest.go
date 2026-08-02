@@ -52,6 +52,9 @@ type Factory func() (state.StateStore, func())
 //   - Save_OverwritesSlotWithDifferentEventID
 //   - SaveIf_MatchingStaleAbsentAndMultiSlot
 //   - SaveIf_ConcurrentOneWinner
+//   - DeleteIf_ExactStaleAndAbsent
+//   - DeleteIf_ConcurrentReplacementNeverDeleted
+//   - DeleteIf_CancelledAndClosedFailLoud
 //   - Load_NotFound
 //   - LoadByEventID_RoundTrip
 //   - LoadByEventID_NotFound
@@ -141,6 +144,86 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if got := winners.Load(); got != 1 {
 			t.Fatalf("SaveIf winners = %d, want exactly 1", got)
+		}
+	})
+
+	t.Run("DeleteIf_ExactStaleAndAbsent", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		rec := state.StateRecord{ID: "01HABXXX00000000DY", Identity: tripleA(), Kind: "conditional.delete", Bytes: []byte("candidate")}
+		if err := s.Save(ctx, rec); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		stale := state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind, ExpectedEventID: "01HABXXX00000000DZ"}
+		if changed, err := s.DeleteIf(ctx, stale); err != nil || changed {
+			t.Fatalf("stale DeleteIf = changed=%t err=%v, want false nil", changed, err)
+		}
+		if changed, err := s.DeleteIf(ctx, state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind, ExpectedEventID: rec.ID}); err != nil || !changed {
+			t.Fatalf("exact DeleteIf = changed=%t err=%v, want true nil", changed, err)
+		}
+		if _, err := s.Load(ctx, rec.Identity, rec.Kind); !errors.Is(err, state.ErrNotFound) {
+			t.Fatalf("Load after exact DeleteIf = %v, want ErrNotFound", err)
+		}
+		if changed, err := s.DeleteIf(ctx, state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind, ExpectedEventID: rec.ID}); err != nil || changed {
+			t.Fatalf("absent DeleteIf = changed=%t err=%v, want false nil", changed, err)
+		}
+	})
+
+	t.Run("DeleteIf_ConcurrentReplacementNeverDeleted", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		const rounds = 32
+		for i := range rounds {
+			kind := fmt.Sprintf("conditional.delete.race.%d", i)
+			base := state.StateRecord{ID: state.EventID(fmt.Sprintf("01HABDEL%018d", i)), Identity: tripleA(), Kind: kind, Bytes: []byte("candidate")}
+			next := state.StateRecord{ID: state.EventID(fmt.Sprintf("01HABWIN%018d", i)), Identity: tripleA(), Kind: kind, Bytes: []byte("winner")}
+			if err := s.Save(ctx, base); err != nil {
+				t.Fatalf("round %d seed: %v", i, err)
+			}
+			start := make(chan struct{})
+			errCh := make(chan error, 2)
+			go func() {
+				<-start
+				_, err := s.DeleteIf(ctx, state.SlotExpectation{Identity: base.Identity, Kind: base.Kind, ExpectedEventID: base.ID})
+				errCh <- err
+			}()
+			go func() {
+				<-start
+				errCh <- s.Save(ctx, next)
+			}()
+			close(start)
+			for range 2 {
+				if err := <-errCh; err != nil {
+					t.Fatalf("round %d concurrent mutation: %v", i, err)
+				}
+			}
+			got, err := s.Load(ctx, next.Identity, next.Kind)
+			if err != nil || got.ID != next.ID {
+				t.Fatalf("round %d winner was deleted: got=%+v err=%v", i, got, err)
+			}
+		}
+	})
+
+	t.Run("DeleteIf_CancelledAndClosedFailLoud", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		rec := state.StateRecord{ID: "01HABXXX00000000DC", Identity: tripleA(), Kind: "conditional.delete.cancel", Bytes: []byte("candidate")}
+		if err := s.Save(context.Background(), rec); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		expectation := state.SlotExpectation{Identity: rec.Identity, Kind: rec.Kind, ExpectedEventID: rec.ID}
+		cancelled, cancel := context.WithCancel(context.Background())
+		cancel()
+		if changed, err := s.DeleteIf(cancelled, expectation); !errors.Is(err, context.Canceled) || changed {
+			t.Fatalf("DeleteIf cancelled = changed=%t err=%v, want false context.Canceled", changed, err)
+		}
+		if err := s.Close(context.Background()); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if changed, err := s.DeleteIf(context.Background(), expectation); !errors.Is(err, state.ErrStoreClosed) || changed {
+			t.Fatalf("DeleteIf after Close = changed=%t err=%v, want false ErrStoreClosed", changed, err)
 		}
 	})
 

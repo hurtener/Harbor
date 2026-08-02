@@ -133,13 +133,9 @@ const recordSchema = 1
 
 // activeRecord is the JSON-encoded active-pointer record.
 type activeRecord struct {
-	Schema     int    `json:"schema"`
-	RevisionID string `json:"revision_id"`
-	// Inactive is a durable physical-pointer tombstone used only by exact
-	// first-write compensation. Keeping the old revision id makes the
-	// compensation auditable while Active still returns no-active.
-	Inactive  bool      `json:"inactive,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Schema     int       `json:"schema"`
+	RevisionID string    `json:"revision_id"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // revisionRecord is the JSON-encoded immutable revision record. Parent
@@ -426,10 +422,10 @@ func (r *registry) PhysicalActive(ctx context.Context, id identity.Quadruple, ag
 	return r.loadActiveRevision(ctx, keys.quad, keys.activeKind, keys.revPfx)
 }
 
-// DeactivateIfActive advances the physical active-pointer slot to an inactive
-// marker only when it still names revisionID. It uses the exact StateStore
-// EventID predicate, so a compensation can never erase another Runtime's
-// winner after the caller lost its acknowledgement.
+// DeactivateIfActive removes the physical active-pointer slot only when it
+// still names revisionID. StateStore.DeleteIf applies the exact EventID
+// predicate atomically, so compensation restores a genuinely absent authority
+// state and can never erase another Runtime's winner.
 func (r *registry) DeactivateIfActive(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope agentcfg.ConfigScope) (bool, error) {
 	if err := r.validate(id, agentID); err != nil {
 		return false, err
@@ -454,6 +450,12 @@ func (r *registry) DeactivateIfActive(ctx context.Context, id identity.Quadruple
 	if err != nil {
 		return false, fmt.Errorf("%w: load active pointer: %w", agentcfg.ErrStateUnavailable, err)
 	}
+	switch agentcfg.ClassifyLifecycleRecord(current.Bytes) {
+	case agentcfg.LifecycleRecordInvalid:
+		return false, fmt.Errorf("%w: lifecycle pointer is malformed", agentcfg.ErrStateUnavailable)
+	case agentcfg.LifecycleRecordTerminal:
+		return false, agentcfg.ErrAgentRetired
+	}
 	var pointer activeRecord
 	if err := json.Unmarshal(current.Bytes, &pointer); err != nil {
 		return false, fmt.Errorf("%w: unmarshal active pointer: %w", agentcfg.ErrStateUnavailable, err)
@@ -461,26 +463,14 @@ func (r *registry) DeactivateIfActive(ctx context.Context, id identity.Quadruple
 	if pointer.Schema != 0 && pointer.Schema != recordSchema {
 		return false, fmt.Errorf("%w: active pointer schema=%d, runtime supports %d", agentcfg.ErrStateUnavailable, pointer.Schema, recordSchema)
 	}
-	if pointer.Inactive || pointer.RevisionID != revisionID {
+	if pointer.RevisionID != revisionID {
 		return false, nil
 	}
-	pointer.Schema = recordSchema
-	pointer.Inactive = true
-	pointer.UpdatedAt = r.clock().UTC()
-	encoded, err := json.Marshal(pointer)
-	if err != nil {
-		return false, fmt.Errorf("agentcfg/statestore: marshal inactive pointer: %w", err)
-	}
-	err = r.state.SaveIf(ctx, []state.SlotExpectation{{Identity: keys.quad, Kind: keys.activeKind, ExpectedEventID: current.ID}}, state.StateRecord{
-		ID: state.NewEventID(), Identity: keys.quad, Kind: keys.activeKind, Bytes: encoded, UpdatedAt: pointer.UpdatedAt,
-	})
-	if errors.Is(err, state.ErrConditionFailed) {
-		return false, nil
-	}
+	changed, err := r.state.DeleteIf(ctx, state.SlotExpectation{Identity: keys.quad, Kind: keys.activeKind, ExpectedEventID: current.ID})
 	if err != nil {
 		return false, fmt.Errorf("%w: conditionally deactivate active pointer: %w", agentcfg.ErrStateUnavailable, err)
 	}
-	return true, nil
+	return changed, nil
 }
 
 func (r *registry) Get(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope agentcfg.ConfigScope) (agentcfg.Revision, error) {
@@ -771,7 +761,7 @@ func (r *registry) loadActiveRevision(ctx context.Context, q identity.Quadruple,
 	if ar.Schema != 0 && ar.Schema != recordSchema {
 		return agentcfg.Revision{}, false, fmt.Errorf("%w: active pointer schema=%d, runtime supports %d", agentcfg.ErrStateUnavailable, ar.Schema, recordSchema)
 	}
-	if ar.Inactive || ar.RevisionID == "" {
+	if ar.RevisionID == "" {
 		return agentcfg.Revision{}, false, nil
 	}
 	rr, err := r.loadRevision(ctx, q, revPfx, ar.RevisionID)
@@ -818,9 +808,6 @@ func (r *registry) loadActivePointerID(ctx context.Context, q identity.Quadruple
 	}
 	if ar.Schema != 0 && ar.Schema != recordSchema {
 		return "", fmt.Errorf("%w: active pointer schema=%d, runtime supports %d", agentcfg.ErrStateUnavailable, ar.Schema, recordSchema)
-	}
-	if ar.Inactive {
-		return "", nil
 	}
 	return ar.RevisionID, nil
 }

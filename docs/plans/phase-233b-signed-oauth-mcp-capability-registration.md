@@ -195,9 +195,13 @@ explicit signed-capability production opt-in; it is not enabled by default.
   resume. Success `SaveIf`-commits the fence; failure `SaveIf`-aborts it; every
   unknown transition stays safely pending across runtimes until exact reread
   proves committed or aborted. Immutable candidate history remains.
-  `DeactivateIfActive` may afterwards compact a physical pointer with its exact
-  EventID/inactive marker, but is not the security fence and cannot assert an
-  unknown result inactive.
+  Under D-403, `DeactivateIfActive` may afterwards remove a truly first-write
+  physical pointer only through mandatory StateStore `DeleteIf` against its
+  exact non-empty EventID. A prior boot/config revision is restored by rollback
+  only while the candidate content hash remains active. Wrong-generation and
+  absent deletes mutate nothing; terminal/corrupt lifecycle bytes fail closed.
+  This never loosens D-400's closed lifecycle decoder, and the physical repair
+  remains post-fence convergence rather than the security fence.
 - [x] All canonical method/type/error/event/Console manifest/docs lockstep
   gates cover the new surface. Events and audit carry only redacted identity,
   provider/capability names or hashes, revision, audience hash, and URL digest;
@@ -209,6 +213,8 @@ explicit signed-capability production opt-in; it is not enabled by default.
   posture; no configuration migration/docs are shipped in this planning phase.
 - `internal/agentcfg/`, `internal/runtime/agentcfg/protocol/`, projection, and
   `internal/runtime/serve/` provider/connection preparation and reconcile.
+- `internal/state/` plus the in-memory, SQLite, and Postgres drivers for the
+  mandatory exact-generation `DeleteIf` primitive and shared conformance.
 - `internal/tools/auth/` and MCP driver binding/cache/exchange checks.
 - `internal/protocol/{types,methods,errors,singlesource}/`, stream transport,
   generated Protocol docs and Console typed lockstep artifacts.
@@ -230,7 +236,8 @@ explicit signed-capability production opt-in; it is not enabled by default.
   the shared canonical-byte helper; cross-language golden fixtures are public
   testdata for signers.
 - `agentcfg.Registry.DeactivateIfActive` remains a post-fence physical-pointer
-  compaction/convergence seam, never the cross-runtime security fence.
+  convergence seam. It uses exact-generation StateStore deletion for a truly
+  absent prestate and never substitutes for the cross-runtime security fence.
 - A boot-only `ToolOAuthCredentialBrokerConfig` signed-capability authority
   block; none of its secrets, endpoints, host lists, or verifier material are
   Protocol-writable.
@@ -257,8 +264,11 @@ explicit signed-capability production opt-in; it is not enabled by default.
   cross-tenant/user/session/agent cache and bearer-bleed denials.
 - **Conformance:** all StateStore drivers run the same JTI operation and
   pending-activation fence phase/EventID/fault suite, including two-runtime
-  readers and recovery; Protocol/Console/generated-doc lockstep covers every
-  new canonical type, method, error, and event.
+  readers and recovery. Their mandatory `DeleteIf` suite covers exact-once,
+  wrong-generation/absent zero mutation, invalid/cancelled/closed failure,
+  conditional replacement races, and durable reopen; Protocol/Console/
+  generated-doc lockstep covers every new canonical type, method, error, and
+  event.
 - **Concurrency / leak:** N>=100 shared broker verifier/provider-set and MCP
   preparer invocations under `-race`; competing registration/removal/rollback/
   retirement and commit-then-error cases prove one winner, no incorrect

@@ -1189,6 +1189,132 @@ func TestRollback_LifecycleTerminalOrCorruptNeverOverwritten(t *testing.T) {
 	}
 }
 
+func TestDeactivateIfActive_RestoresAbsentAndSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "deactivate-restart.sqlite")
+	firstStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatalf("open first store: %v", err)
+	}
+	first := newRegistryOnStore(t, firstStore)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "deactivate-tenant", UserID: "u", SessionID: "s"}}
+	if changed, err := first.DeactivateIfActive(ctx, q, "absent-agent", "missing-revision", agentcfg.ConfigScopeAgent); err != nil || changed {
+		t.Fatalf("absent agent deactivation = changed=%t err=%v, want false nil", changed, err)
+	}
+	candidate, err := first.SetRevision(ctx, q, "absent-agent", agentcfg.ConfigScopeAgent, condPayload("candidate"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed candidate: %v", err)
+	}
+	if changed, err := first.DeactivateIfActive(ctx, q, "absent-agent", candidate.RevisionID, agentcfg.ConfigScopeAgent); err != nil || !changed {
+		t.Fatalf("exact deactivation = changed=%t err=%v, want true nil", changed, err)
+	}
+	slot, kind, err := agentcfg.LifecycleSlot(q.TenantID, "absent-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := firstStore.Load(ctx, slot, kind); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("deactivated lifecycle slot = %v, want ErrNotFound", err)
+	}
+	if err := first.Close(ctx); err != nil {
+		t.Fatalf("close first registry: %v", err)
+	}
+	secondStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	second := newRegistryOnStore(t, secondStore)
+	if active, set, err := second.Active(ctx, q, "absent-agent", agentcfg.ConfigScopeAgent); err != nil || set {
+		t.Fatalf("restart resurrected candidate: set=%t active=%+v err=%v", set, active, err)
+	}
+}
+
+func TestDeactivateIfActive_TerminalOrCorruptFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "deactivate-tenant", UserID: "u", SessionID: "s"}}
+	for _, tc := range []struct {
+		name  string
+		bytes []byte
+		want  error
+	}{
+		{name: "terminal", bytes: []byte(`{"schema":1,"revision_id":"","updated_at":"2026-08-02T00:00:00Z"}`), want: agentcfg.ErrAgentRetired},
+		{name: "corrupt", bytes: []byte(`{"schema":1,"revision_id":"candidate"}`), want: agentcfg.ErrStateUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newSharedStore(t)
+			reg := newRegistryOnStore(t, st)
+			slot, kind, err := agentcfg.LifecycleSlot(q.TenantID, condAgent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := state.StateRecord{ID: state.NewEventID(), Identity: slot, Kind: kind, Bytes: tc.bytes}
+			if err := st.Save(ctx, before); err != nil {
+				t.Fatalf("seed %s lifecycle: %v", tc.name, err)
+			}
+			if changed, err := reg.DeactivateIfActive(ctx, q, condAgent, "candidate", agentcfg.ConfigScopeAgent); !errors.Is(err, tc.want) || changed {
+				t.Fatalf("DeactivateIfActive %s = changed=%t err=%v, want false %v", tc.name, changed, err, tc.want)
+			}
+			after, err := st.Load(ctx, slot, kind)
+			if err != nil || after.ID != before.ID || string(after.Bytes) != string(before.Bytes) {
+				t.Fatalf("%s lifecycle changed: before=%+v after=%+v err=%v", tc.name, before, after, err)
+			}
+		})
+	}
+}
+
+type deleteIfBarrierStore struct {
+	state.StateStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *deleteIfBarrierStore) DeleteIf(ctx context.Context, expectation state.SlotExpectation) (bool, error) {
+	close(s.entered)
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	return s.StateStore.DeleteIf(ctx, expectation)
+}
+
+func TestDeactivateIfActive_CASRaceNeverDeletesReplacement(t *testing.T) {
+	ctx := context.Background()
+	base := newSharedStore(t)
+	barrier := &deleteIfBarrierStore{StateStore: base, entered: make(chan struct{}), release: make(chan struct{})}
+	deactivator := newRegistryOnStore(t, barrier)
+	winnerRegistry := newRegistryOnStore(t, base)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "deactivate-race", UserID: "u", SessionID: "s"}}
+	candidate, err := winnerRegistry.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("candidate"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed candidate: %v", err)
+	}
+	result := make(chan struct {
+		changed bool
+		err     error
+	}, 1)
+	go func() {
+		changed, deactivateErr := deactivator.DeactivateIfActive(ctx, q, condAgent, candidate.RevisionID, agentcfg.ConfigScopeAgent)
+		result <- struct {
+			changed bool
+			err     error
+		}{changed: changed, err: deactivateErr}
+	}()
+	<-barrier.entered
+	winner, err := winnerRegistry.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("winner"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("publish replacement: %v", err)
+	}
+	close(barrier.release)
+	gotResult := <-result
+	if gotResult.err != nil || gotResult.changed {
+		t.Fatalf("stale deactivation = changed=%t err=%v, want false nil", gotResult.changed, gotResult.err)
+	}
+	active, set, err := winnerRegistry.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.RevisionID != winner.RevisionID || active.Payload.SignedOAuthMCPPair != nil {
+		t.Fatalf("replacement authority lost or pair resurrected: set=%t active=%+v err=%v", set, active, err)
+	}
+}
+
 func TestSetRevision_SaveIfConditionFailureReportsCleanupFailure(t *testing.T) {
 	ctx := context.Background()
 	base := newSharedStore(t)

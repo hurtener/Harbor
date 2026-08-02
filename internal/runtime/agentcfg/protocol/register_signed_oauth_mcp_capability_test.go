@@ -197,6 +197,44 @@ func TestSignedOAuthMCPReconciler_ExpiredIncompleteNeutralizesCandidate(t *testi
 		t.Fatalf("expired candidate was published: activations=%d", deactivations)
 	}
 }
+
+func TestSignedOAuthMCPReconciler_ExpiredIncompleteRestoresBootLifecycle(t *testing.T) {
+	authorityNow := time.Now().UTC().Add(-2 * time.Hour)
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, authorityNow)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	boot, err := reg.SetRevision(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed boot lifecycle: %v", err)
+	}
+	preparer.mu.Lock()
+	preparer.failActivate = errors.New("injected activation failure")
+	preparer.mu.Unlock()
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, authorityNow, "jti-expired-boot", "aud-expired-boot")); err == nil {
+		t.Fatal("registration activation fault did not fail")
+	}
+	preparer.mu.Lock()
+	preparer.failActivate = nil
+	preparer.mu.Unlock()
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("expire reconcile: %v", err)
+	}
+	active, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.RevisionID != boot.RevisionID || active.ContentHash != boot.ContentHash {
+		t.Fatalf("boot lifecycle was not restored exactly: set=%t active=%+v boot=%+v err=%v", set, active, boot, err)
+	}
+	if active.Payload.SignedOAuthMCPPair != nil || active.Payload.OAuthProviders != nil {
+		t.Fatalf("expired candidate authority survived restoration: %+v", active.Payload)
+	}
+	preparer.mu.Lock()
+	defer preparer.mu.Unlock()
+	if preparer.activations != 0 || len(preparer.live) != 0 {
+		t.Fatalf("expired candidate was republished: activations=%d live=%d", preparer.activations, len(preparer.live))
+	}
+}
 func (capabilityPreparedConnection) Close(context.Context) error { return nil }
 
 func (p *capabilityPreparer) DetachConnection(_ context.Context, tenant, agentID, name string) error {

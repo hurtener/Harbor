@@ -343,6 +343,13 @@ jobs:
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
         run: go test -race -count=1 -timeout 240s ./internal/state/drivers/postgres/...
+      - name: Run exact-generation state deletion race against postgres:16
+        # D-403: select the DSN-gated two-client DeleteIf-vs-SaveIf durable
+        # reopen test explicitly so the new mandatory persistence seam cannot
+        # pass through a skipped or unmatched local-only path.
+        env:
+          HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
+        run: go test -race -count=10 -timeout 240s ./internal/state/drivers/postgres -run '^TestPostgres_DeleteIf_TwoClientsCASWinnerSurvivesReopen$'
       - name: Run artifacts/postgres tests against postgres:16
         # Phase 18: same container as the state/postgres step above.
         # Running both packages in the same job keeps CI overhead

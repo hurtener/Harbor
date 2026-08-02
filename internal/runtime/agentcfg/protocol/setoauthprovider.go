@@ -153,15 +153,15 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 		prevActiveRevID = active.RevisionID
 	}
 	payload := s.rebuildWithOAuthProvider(active, hasActive, prior, desc)
+	candidateHash, err := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
+	if err != nil {
+		return prototypes.AgentConfigSetOAuthProviderResponse{}, err
+	}
 	writeCtx := ctx
 	var activationFence agentcfg.SignedOAuthMCPActivationFence
 	if !hasActive {
 		if s.signedOAuthMCPFences == nil {
 			return prototypes.AgentConfigSetOAuthProviderResponse{}, fmt.Errorf("%w: first provider install requires durable activation fencing", ErrProviderInstallUnavailable)
-		}
-		candidateHash, hashErr := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
-		if hashErr != nil {
-			return prototypes.AgentConfigSetOAuthProviderResponse{}, hashErr
 		}
 		sum := sha256.Sum256([]byte(id.TenantID + "\x00" + req.AgentID + "\x00" + candidateHash))
 		operationKind := "agentcfg.oauth_provider.first_install." + hex.EncodeToString(sum[:])
@@ -181,7 +181,21 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 				if !hasActive {
 					return nil, s.compensateFirstProviderInstall(ctx, q, req.AgentID, activationFence, desc.Name, recErr)
 				}
-				return nil, recErr
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				candidate := written
+				if candidate.RevisionID == "" || candidate.ContentHash != candidateHash {
+					var found bool
+					candidate, found, err = findRevisionByContentHash(cleanupCtx, s.registry, q, req.AgentID, candidateHash)
+					if err != nil {
+						return nil, errors.Join(recErr, err)
+					}
+					if !found {
+						return nil, recErr
+					}
+				}
+				_, restoreErr := restorePreOperationAuthority(cleanupCtx, s.registry, q, req.AgentID, candidate, prevActiveRevID, "")
+				return nil, errors.Join(recErr, restoreErr)
 			}
 			rev = written
 			if instErr := s.providerInstaller.InstallProvider(ctx, id.TenantID, req.AgentID, desc); instErr != nil {
@@ -189,7 +203,7 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 				// owner collision) — roll the just-written revision back so the call
 				// has NO observable effect, then return the install error loud.
 				if hasActive {
-					if _, rbErr := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent, compensatingWrite()); rbErr != nil {
+					if _, rbErr := restorePreOperationAuthority(ctx, s.registry, q, req.AgentID, rev, prevActiveRevID, ""); rbErr != nil {
 						return nil, fmt.Errorf("provider install failed AND revision rollback failed (state may be inconsistent): %w", errors.Join(instErr, rbErr))
 					}
 				}
@@ -201,7 +215,7 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 					errs = append(errs, e)
 				}
 				if hasActive {
-					if _, e := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent, compensatingWrite()); e != nil {
+					if _, e := restorePreOperationAuthority(ctx, s.registry, q, req.AgentID, rev, prevActiveRevID, ""); e != nil {
 						errs = append(errs, e)
 					}
 				} else {
@@ -260,9 +274,8 @@ func (s *Service) compensateFirstProviderInstall(ctx context.Context, q identity
 			if candidate.ContentHash != fence.CandidateContentHash {
 				continue
 			}
-			fenceCtx := agentcfg.WithSignedOAuthMCPFenceOperation(cleanupCtx, fence.OperationKind)
-			if _, deactivateErr := s.registry.DeactivateIfActive(fenceCtx, q, agentID, candidate.RevisionID, agentcfg.ConfigScopeAgent); deactivateErr != nil {
-				errs = append(errs, deactivateErr)
+			if _, restoreErr := restorePreOperationAuthority(cleanupCtx, s.registry, q, agentID, candidate, fence.PriorRevisionID, fence.OperationKind); restoreErr != nil {
+				errs = append(errs, restoreErr)
 			}
 			break
 		}

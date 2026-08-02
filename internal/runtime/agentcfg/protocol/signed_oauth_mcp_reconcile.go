@@ -405,21 +405,14 @@ func (r *SignedOAuthMCPReconciler) expireIncomplete(ctx context.Context, q ident
 			fence.CandidateContentHash != revision.ContentHash || (fence.CandidateRevisionID != "" && fence.CandidateRevisionID != revision.RevisionID) {
 			return fmt.Errorf("%w: expiry fence does not bind candidate", agentcfg.ErrSignedCapabilityPending)
 		}
-		operationCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, kind)
-		if fence.PriorRevisionID != "" {
-			if _, err := r.registry.Rollback(operationCtx, q, agentID, fence.PriorRevisionID, agentcfg.ConfigScopeAgent, compensatingWrite()); err != nil {
-				return err
-			}
-		} else {
-			deactivated, err := r.registry.DeactivateIfActive(operationCtx, q, agentID, revision.RevisionID, agentcfg.ConfigScopeAgent)
-			if err != nil {
-				return err
-			}
-			if !deactivated {
-				physical, set, readErr := r.physical.PhysicalActive(ctx, q, agentID, agentcfg.ConfigScopeAgent)
-				if readErr != nil || (set && physical.RevisionID == revision.RevisionID) {
-					return errors.Join(fmt.Errorf("%w: expiry did not neutralize candidate", agentcfg.ErrSignedCapabilityPending), readErr)
-				}
+		restored, err := restorePreOperationAuthority(ctx, r.registry, q, agentID, revision, fence.PriorRevisionID, kind)
+		if err != nil {
+			return err
+		}
+		if !restored {
+			physical, set, readErr := r.physical.PhysicalActive(ctx, q, agentID, agentcfg.ConfigScopeAgent)
+			if readErr != nil || (set && physical.RevisionID == revision.RevisionID) {
+				return errors.Join(fmt.Errorf("%w: expiry did not neutralize candidate", agentcfg.ErrSignedCapabilityPending), readErr)
 			}
 		}
 	} else if fenceErr != nil && !errors.Is(fenceErr, state.ErrNotFound) {

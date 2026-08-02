@@ -41,6 +41,10 @@ func (f *failingStateStore) SaveIf(ctx context.Context, expectations []state.Slo
 	return f.inner.SaveIf(ctx, expectations, rec)
 }
 
+func (f *failingStateStore) DeleteIf(ctx context.Context, expectation state.SlotExpectation) (bool, error) {
+	return f.inner.DeleteIf(ctx, expectation)
+}
+
 func (f *failingStateStore) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
 	return f.inner.Load(ctx, id, kind)
 }

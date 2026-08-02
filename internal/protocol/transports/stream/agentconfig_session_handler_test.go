@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,16 +23,60 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/skills"
 	localdb "github.com/hurtener/Harbor/internal/skills/drivers/localdb"
+	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
 
+type sessionHandlerFixture struct {
+	handler   http.Handler
+	state     state.StateStore
+	registry  agentcfg.Registry
+	mutations *stateMutationSpy
+}
+
+type stateMutationSpy struct {
+	state.StateStore
+	count atomic.Int64
+}
+
+func (s *stateMutationSpy) Save(ctx context.Context, record state.StateRecord) error {
+	s.count.Add(1)
+	return s.StateStore.Save(ctx, record)
+}
+
+func (s *stateMutationSpy) SaveIf(ctx context.Context, expectations []state.SlotExpectation, record state.StateRecord) error {
+	s.count.Add(1)
+	return s.StateStore.SaveIf(ctx, expectations, record)
+}
+
+func (s *stateMutationSpy) DeleteIf(ctx context.Context, expectation state.SlotExpectation) (bool, error) {
+	s.count.Add(1)
+	return s.StateStore.DeleteIf(ctx, expectation)
+}
+
+func (s *stateMutationSpy) Delete(ctx context.Context, id identity.Quadruple, kind string) error {
+	s.count.Add(1)
+	return s.StateStore.Delete(ctx, id, kind)
+}
+
+func (s *stateMutationSpy) DeleteScope(ctx context.Context, id identity.Identity) (int, error) {
+	s.count.Add(1)
+	return s.StateStore.DeleteScope(ctx, id)
+}
+
 func sessionHandler(t *testing.T) http.Handler {
 	t.Helper()
+	return newSessionHandlerFixture(t).handler
+}
+
+func newSessionHandlerFixture(t *testing.T) sessionHandlerFixture {
+	t.Helper()
 	ctx := context.Background()
-	st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	rawState, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
 	if err != nil {
 		t.Fatalf("state: %v", err)
 	}
+	st := &stateMutationSpy{StateStore: rawState}
 	bus, err := eventsinmem.New(config.EventsConfig{
 		Driver: "inmem", MaxSubscribersPerSession: 8, SubscriberBufferSize: 32,
 		IdleTimeout: 30 * time.Second, DropWindow: time.Second,
@@ -81,7 +126,7 @@ func sessionHandler(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
-	return h
+	return sessionHandlerFixture{handler: h, state: st, registry: reg, mutations: st}
 }
 
 func acReq(t *testing.T, h http.Handler, route, body string, id *identity.Identity, scopes []auth.Scope) (int, []byte) {

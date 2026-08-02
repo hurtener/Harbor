@@ -126,6 +126,13 @@ type StateStore interface {
 	// all predicates match; it never bypasses a failed predicate.
 	SaveIf(ctx context.Context, expectations []SlotExpectation, next StateRecord) error
 
+	// DeleteIf atomically removes exactly one present slot generation. A
+	// different or absent generation is a normal concurrent-state outcome and
+	// returns (false, nil); only an exact EventID match may be deleted. This is
+	// the conditional-delete counterpart to SaveIf for compensations that must
+	// restore a genuinely absent pre-operation state without writing a marker.
+	DeleteIf(ctx context.Context, expectation SlotExpectation) (bool, error)
+
 	// Load returns the record at (id, kind). Returns ErrNotFound
 	// (wrapped) when no record exists for that key.
 	Load(ctx context.Context, id identity.Quadruple, kind string) (StateRecord, error)
@@ -347,6 +354,19 @@ func ValidateSaveIf(expectations []SlotExpectation, next StateRecord) error {
 		}
 	}
 	if !foundNext {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
+// ValidateDeleteIf validates the exact-present generation predicate used by
+// StateStore.DeleteIf. Conditional deletion never accepts the empty EventID
+// sentinel because absence is not something it can delete.
+func ValidateDeleteIf(expectation SlotExpectation) error {
+	if err := ValidateIdentity(expectation.Identity); err != nil {
+		return err
+	}
+	if expectation.Kind == "" || expectation.ExpectedEventID == "" {
 		return ErrInvalidRecord
 	}
 	return nil

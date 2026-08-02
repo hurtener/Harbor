@@ -33,6 +33,10 @@ func (failingStateStore) SaveIf(_ context.Context, _ []state.SlotExpectation, _ 
 	return errStateProbe
 }
 
+func (failingStateStore) DeleteIf(_ context.Context, _ state.SlotExpectation) (bool, error) {
+	return false, errStateProbe
+}
+
 func (failingStateStore) Load(_ context.Context, _ identity.Quadruple, _ string) (state.StateRecord, error) {
 	return state.StateRecord{}, errStateProbe
 }
