@@ -50,6 +50,7 @@ type OAuthProviderInstaller struct {
 }
 
 var _ agentcfgprotocol.ProviderPreparer = (*OAuthProviderInstaller)(nil)
+var _ agentcfgprotocol.SignedCapabilityProviderPreparer = (*OAuthProviderInstaller)(nil)
 
 // NewOAuthProviderInstaller builds the production installer. Both the builder
 // and the set are mandatory; a nil either returns a nil installer so the caller
@@ -124,6 +125,25 @@ func (i *OAuthProviderInstaller) PrepareProvider(ctx context.Context, tenant, ag
 		return nil, fmt.Errorf("%w: %w", agentcfgprotocol.ErrInvalidProvider, err)
 	}
 	return &preparedOAuthProvider{installer: i, owner: owner, name: desc.Name, provider: prov}, nil
+}
+
+// PrepareSignedCapabilityProvider builds the D-401 provider privately. It is
+// deliberately never staged in the general ProviderSet: the prepared MCP
+// connection receives this exact instance as an override, and activation of
+// that connection is the only dispatch linearization point.
+func (i *OAuthProviderInstaller) PrepareSignedCapabilityProvider(ctx context.Context, tenant, agentID, name, broker, audience, sink string, scopes []string) (agentcfgprotocol.PreparedOAuthProvider, error) {
+	owner := toolauth.Owner{Tenant: tenant, Agent: agentID}
+	if owner.IsZero() {
+		return nil, fmt.Errorf("%w: signed capability requires a (tenant, agent) owner", agentcfgprotocol.ErrInvalidProvider)
+	}
+	prov, err := i.builder.BuildSignedCapability(ctx, name, broker, audience, sink, scopes)
+	if err != nil {
+		if errors.Is(err, toolauth.ErrUnknownBroker) || errors.Is(err, toolauth.ErrBrokerMissingCredentialURL) {
+			return nil, fmt.Errorf("%w: %w", agentcfgprotocol.ErrProviderBrokerUnknown, err)
+		}
+		return nil, fmt.Errorf("%w: %w", agentcfgprotocol.ErrInvalidProvider, err)
+	}
+	return &preparedOAuthProvider{installer: i, owner: owner, name: name, provider: prov}, nil
 }
 
 type preparedOAuthProvider struct {

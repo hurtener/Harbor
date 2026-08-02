@@ -116,6 +116,14 @@ type ProviderPreparer interface {
 	PrepareProvider(ctx context.Context, tenant, agentID string, desc agentcfg.OAuthProviderDescriptor) (PreparedOAuthProvider, error)
 }
 
+// SignedCapabilityProviderPreparer constructs the pair-owned provider used by
+// D-401. It deliberately has no Publish-to-ProviderSet operation: the MCP
+// prepared connection receives the private binding directly and its catalog
+// activation is the sole data-plane publication point.
+type SignedCapabilityProviderPreparer interface {
+	PrepareSignedCapabilityProvider(ctx context.Context, tenant, agentID, name, broker, audience, sink string, scopes []string) (PreparedOAuthProvider, error)
+}
+
 // PreparedOAuthProvider owns one unpublished provider instance.
 type PreparedOAuthProvider interface {
 	Binding() toolauth.OAuthProvider
@@ -834,6 +842,7 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 		// other: this verb replaces only its own, so the blocks survive.
 		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		providers = active.Payload.OAuthProviderDescriptors()
+		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
 	}
 	servers = append(servers, desc)
 	payload.Connections = &agentcfg.ConnectionsSection{Servers: servers}

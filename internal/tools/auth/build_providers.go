@@ -26,6 +26,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"time"
@@ -285,6 +286,21 @@ func (b *ProviderBuilder) BuildWire(ctx context.Context, desc WireProviderDescri
 	})
 }
 
+// BuildSignedCapability constructs the D-401 production exception. The token
+// endpoint and credential source remain pinned by the named boot broker; only
+// the audience and downstream sink already authenticated by the signed
+// authority vary. It deliberately does not consult the development-only wire
+// descriptor gate.
+func (b *ProviderBuilder) BuildSignedCapability(ctx context.Context, name, brokerName, audience, sink string, scopes []string) (OAuthProvider, error) {
+	u, err := url.Parse(sink)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return nil, fmt.Errorf("auth: signed capability sink is not a canonical https origin")
+	}
+	return b.buildBrokerPull(ctx, name, brokerName, scopes, brokerPullOverride{
+		override: true, audience: audience, allowedHosts: []string{u.Hostname()},
+	})
+}
+
 // brokerPullOverride carries the wire-supplied per-server OAuth params that
 // override the boot broker's defaults for a wire-installed provider. The zero
 // value (override=false) is the plain boot broker-pull path.
@@ -335,7 +351,12 @@ func (b *ProviderBuilder) buildBrokerPull(ctx context.Context, name, brokerName 
 	audience := broker.Audience
 	allowedHosts := append([]string(nil), broker.AllowedDownstreamHosts...)
 	if ov.override {
-		tokenURL = ov.tokenURL
+		// D-401's signed-capability path intentionally leaves tokenURL empty:
+		// the exchange sink remains the boot broker's fixed endpoint. The
+		// development-only wire path supplies one and retains its old override.
+		if ov.tokenURL != "" {
+			tokenURL = ov.tokenURL
+		}
 		allowedHosts = append([]string(nil), ov.allowedHosts...)
 		if ov.audience != "" {
 			audience = ov.audience

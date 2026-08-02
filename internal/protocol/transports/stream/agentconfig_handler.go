@@ -202,6 +202,8 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveSetMCPDiscoveryOrigins(w, r, body, wireID)
 	case "set_oauth_provider":
 		h.serveSetOAuthProvider(w, r, body, wireID)
+	case "register_oauth_mcp_capability":
+		h.serveRegisterOAuthMCPCapability(w, r, body, wireID)
 	case "remove_oauth_provider":
 		h.serveRemoveOAuthProvider(w, r, body, wireID)
 	case "set_llm_provider":
@@ -310,6 +312,23 @@ func (h *AgentConfigHandler) serveSetRevision(w http.ResponseWriter, r *http.Req
 	resp, err := h.service.SetRevision(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigSetRevision, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveRegisterOAuthMCPCapability(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigRegisterOAuthMCPCapability) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.RegisterOAuthMCPCapability(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigRegisterOAuthMCPCapability, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)
@@ -953,6 +972,9 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	case errors.Is(err, agentcfgprotocol.ErrProviderInstallUnavailable):
 		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
 			m + ": oauth provider install is not wired on this runtime"
+	case errors.Is(err, agentcfgprotocol.ErrSignedCapabilityUnavailable):
+		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
+			m + ": signed oauth mcp capability registration is not boot-authorized"
 	case errors.Is(err, agentcfgprotocol.ErrLLMProviderInstallUnavailable):
 		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
 			m + ": llm provider install is not wired on this runtime"
@@ -978,6 +1000,15 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// sink) held by default. A wire credential-injection mapping with its own
 		// fail-closed opt-in off (ErrWireInjectionNotAllowed) is the same shape: a
 		// rejected bad request, the boot-declared-only injection posture by default.
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrSignedCapabilityPairReadOnly),
+		errors.Is(err, agentcfgprotocol.ErrSignedCapabilityPairExists),
+		errors.Is(err, agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor),
+		errors.Is(err, agentcfg.ErrSignedCapabilityAuthority),
+		errors.Is(err, agentcfg.ErrSignedCapabilityBinding),
+		errors.Is(err, agentcfg.ErrSignedCapabilityScopeWidening),
+		errors.Is(err, agentcfg.ErrSignedCapabilityReplay):
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrProviderNotFound):

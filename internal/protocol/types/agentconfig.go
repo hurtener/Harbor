@@ -392,6 +392,36 @@ type AgentConfigOAuthProvidersDiff struct {
 	Removed []string `json:"removed,omitempty"`
 }
 
+// SignedOAuthMCPConnectionDescriptor is the closed D-401 registration input.
+// It is intentionally distinct from AgentConfigMCPConnectionDescriptor: a
+// signed capability never accepts a general MCP descriptor or its credential,
+// injection, discovery, stdio, header, or host-list fields.
+type SignedOAuthMCPConnectionDescriptor struct {
+	Name             string   `json:"name"`
+	URL              string   `json:"url"`
+	ToolAllowlist    []string `json:"tool_allowlist,omitempty"`
+	ToolDenylist     []string `json:"tool_denylist,omitempty"`
+	ConnectTimeoutMS int      `json:"connect_timeout_ms,omitempty"`
+	RequestTimeoutMS int      `json:"request_timeout_ms,omitempty"`
+}
+
+// AgentConfigSignedOAuthMCPPair is the read-only projection of immutable
+// server-owned D-401 pair state. It excludes the raw authority envelope and
+// JTI, which are never exposed through revisions, events, or audit.
+type AgentConfigSignedOAuthMCPPair struct {
+	ProviderName       string                             `json:"provider_name"`
+	Broker             string                             `json:"broker"`
+	Audience           string                             `json:"audience"`
+	Scopes             []string                           `json:"scopes"`
+	CapabilityRevision string                             `json:"capability_revision"`
+	URLDigest          string                             `json:"url_digest"`
+	Sink               string                             `json:"sink"`
+	Connection         SignedOAuthMCPConnectionDescriptor `json:"connection"`
+	AuthorityIssuer    string                             `json:"authority_issuer"`
+	AuthorityKeyID     string                             `json:"authority_key_id"`
+	AuthorityJTIHash   string                             `json:"authority_jti_hash"`
+}
+
 // AgentConfigRunCompletionHook is the wire projection of an agent's durable
 // run-completion hook in a config revision: the catalog tool the run
 // transcript is dispatched to at the run loop's terminal boundary, plus an
@@ -469,6 +499,10 @@ type AgentConfigPayload struct {
 	// OAuthProviders, when non-nil, pins the agent's Protocol-installed
 	// (zero-URL) OAuth provider descriptors for the revision.
 	OAuthProviders *AgentConfigOAuthProviders `json:"oauth_providers,omitempty"`
+	// SignedOAuthMCPPair is read-only server-owned history. A generic
+	// set_revision request carrying it is rejected; it is present only on
+	// revision reads so clients can faithfully display immutable pair state.
+	SignedOAuthMCPPair *AgentConfigSignedOAuthMCPPair `json:"signed_oauth_mcp_pair,omitempty"`
 	// LLMParams, when non-nil, pins the agent's per-agent LLM-parameter
 	// section (model / temperature / max-tokens / reasoning-effort) for the
 	// revision.
@@ -1243,6 +1277,30 @@ type AgentConfigSetOAuthProviderResponse struct {
 	// Name is the installed provider name (echoed).
 	Name            string `json:"name"`
 	ProtocolVersion string `json:"protocol_version"`
+}
+
+// AgentConfigRegisterOAuthMCPCapabilityRequest is D-401's sole production
+// creator for an OAuth-fronted MCP pair. The raw signed authority is accepted
+// only here and is never echoed in a response or revision projection.
+type AgentConfigRegisterOAuthMCPCapabilityRequest struct {
+	Identity            IdentityScope                      `json:"identity"`
+	AgentID             string                             `json:"agent_id"`
+	ProviderName        string                             `json:"provider_name"`
+	Broker              string                             `json:"broker"`
+	Audience            string                             `json:"audience"`
+	Scopes              []string                           `json:"scopes"`
+	Connection          SignedOAuthMCPConnectionDescriptor `json:"connection"`
+	ExpectedContentHash string                             `json:"expected_content_hash,omitempty"`
+	AuthorityEnvelope   string                             `json:"authority_envelope"`
+}
+
+// AgentConfigRegisterOAuthMCPCapabilityResponse reports the committed pair
+// revision without returning the signed authority envelope or raw JTI.
+type AgentConfigRegisterOAuthMCPCapabilityResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProviderName    string                  `json:"provider_name"`
+	ConnectionName  string                  `json:"connection_name"`
+	ProtocolVersion string                  `json:"protocol_version"`
 }
 
 // AgentConfigRemoveOAuthProviderRequest is the admin-scoped

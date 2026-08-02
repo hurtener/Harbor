@@ -254,6 +254,34 @@ export interface AgentConfigNaming {
 	model?: string;
 }
 
+/** Closed MCP descriptor accepted only by D-401 signed capability registration.
+ * It intentionally has no generic transport, OAuth, header, injection, stdio,
+ * credential, secret, or host-list fields. */
+export interface SignedOAuthMCPConnectionDescriptor {
+	name: string;
+	url: string;
+	tool_allowlist?: string[];
+	tool_denylist?: string[];
+	connect_timeout_ms?: number;
+	request_timeout_ms?: number;
+}
+
+/** Read-only immutable signed OAuth MCP pair projected from a revision. The
+ * authority envelope and raw JTI are intentionally never exposed. */
+export interface AgentConfigSignedOAuthMCPPair {
+	provider_name: string;
+	broker: string;
+	audience: string;
+	scopes: string[];
+	capability_revision: string;
+	url_digest: string;
+	sink: string;
+	connection: SignedOAuthMCPConnectionDescriptor;
+	authority_issuer: string;
+	authority_key_id: string;
+	authority_jti_hash: string;
+}
+
 /** An agent-config envelope — every section optional and forward-compatible.
  * Mirrors `types.AgentConfigPayload`. */
 export interface AgentConfigPayload {
@@ -266,6 +294,8 @@ export interface AgentConfigPayload {
 	hooks?: AgentConfigHooks;
 	naming?: AgentConfigNaming;
 	extra_system_blocks?: AgentConfigExtraSystemBlocks;
+	/** Read-only; generic set_revision must not author or clear this field. */
+	signed_oauth_mcp_pair?: AgentConfigSignedOAuthMCPPair;
 }
 
 /** One immutable config revision. Mirrors `types.AgentConfigRevisionView`. */
@@ -755,6 +785,27 @@ export interface AgentConfigSetOAuthProviderRequest {
 export interface AgentConfigSetOAuthProviderResponse {
 	revision: AgentConfigRevisionView;
 	name: string;
+	protocol_version: string;
+}
+
+/** D-401's sole production creator for an OAuth provider + MCP connection
+ * pair. The signed authority envelope is write-only and is never echoed. */
+export interface AgentConfigRegisterOAuthMCPCapabilityRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	provider_name: string;
+	broker: string;
+	audience: string;
+	scopes: string[];
+	connection: SignedOAuthMCPConnectionDescriptor;
+	expected_content_hash?: string;
+	authority_envelope: string;
+}
+
+export interface AgentConfigRegisterOAuthMCPCapabilityResponse {
+	revision: AgentConfigRevisionView;
+	provider_name: string;
+	connection_name: string;
 	protocol_version: string;
 }
 

@@ -113,6 +113,20 @@ var (
 	// de-duplicated (CLAUDE.md §13). The message names the offender and,
 	// for a duplicate, BOTH offending positions.
 	ErrInvalidExtraSystemBlocks = errors.New("agentcfg/protocol: invalid extra system blocks section")
+	// ErrSignedCapabilityPairReadOnly rejects every generic authoring door for
+	// immutable D-401 signed-pair state. It is a client error, not a silently
+	// ignored field: callers must use register_oauth_mcp_capability.
+	ErrSignedCapabilityPairReadOnly = errors.New("agentcfg/protocol: signed oauth mcp capability pair is server-owned and read-only")
+	// ErrSignedCapabilityUnavailable means this Runtime was not booted with an
+	// explicitly enabled D-401 trust anchor or private preparation seams.
+	ErrSignedCapabilityUnavailable = errors.New("agentcfg/protocol: signed oauth mcp capability registration is not wired or boot-authorized")
+	// ErrSignedCapabilityPairExists rejects a second pair for an agent until the
+	// paired-removal lifecycle lands; generic provider/connection writers never
+	// compose with a signed pair.
+	ErrSignedCapabilityPairExists = errors.New("agentcfg/protocol: signed oauth mcp capability pair already exists")
+	// ErrInvalidSignedCapabilityDescriptor is the closed descriptor validation
+	// failure for D-401's HTTP-only MCP connection shape.
+	ErrInvalidSignedCapabilityDescriptor = errors.New("agentcfg/protocol: invalid signed oauth mcp capability descriptor")
 )
 
 // namingMaxTitleLenBounds is the inclusive [min,max] a set max_title_len must
@@ -920,6 +934,12 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
+	// D-401 pair state is server-owned. A generic whole-payload write must not
+	// be able to manufacture, alter, clear, or replay it; the dedicated signed
+	// registration lifecycle is the single authoring door.
+	if req.Payload.SignedOAuthMCPPair != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, fmt.Errorf("%w: signed_oauth_mcp_pair is read-only", ErrSignedCapabilityPairReadOnly)
+	}
 	// A full-payload set that pins per-agent LLM params is validated at set
 	// time (parity with set_llm_params / the tenant model-swap) so an invalid
 	// model or out-of-range sampling value can never be persisted.
@@ -1120,6 +1140,25 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 	if p.OAuthProviders != nil {
 		out.OAuthProviders = &prototypes.AgentConfigOAuthProviders{
 			Providers: oauthProvidersToWire(p.OAuthProviders.Providers),
+		}
+	}
+	if pair, ok := p.SignedOAuthMCPPairView(); ok {
+		out.SignedOAuthMCPPair = &prototypes.AgentConfigSignedOAuthMCPPair{
+			ProviderName:       pair.ProviderName,
+			Broker:             pair.Broker,
+			Audience:           pair.Audience,
+			Scopes:             append([]string(nil), pair.Scopes...),
+			CapabilityRevision: pair.CapabilityRevision,
+			URLDigest:          pair.URLDigest,
+			Sink:               pair.Sink,
+			Connection: prototypes.SignedOAuthMCPConnectionDescriptor{
+				Name: pair.Connection.Name, URL: pair.Connection.URL,
+				ToolAllowlist:    append([]string(nil), pair.Connection.ToolAllowlist...),
+				ToolDenylist:     append([]string(nil), pair.Connection.ToolDenylist...),
+				ConnectTimeoutMS: pair.Connection.ConnectTimeoutMS, RequestTimeoutMS: pair.Connection.RequestTimeoutMS,
+			},
+			AuthorityIssuer: pair.AuthorityIssuer, AuthorityKeyID: pair.AuthorityKeyID,
+			AuthorityJTIHash: pair.AuthorityJTIHash,
 		}
 	}
 	if p.LLMParams != nil {

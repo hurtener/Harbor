@@ -327,6 +327,7 @@ func carrySiblingsForward(active agentcfg.Revision, hasActive bool) agentcfg.Con
 		// The ordered additive prompt blocks are a sibling section like any
 		// other: this verb replaces only its own, so the blocks survive.
 		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
+		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
 	}
 	return payload
 }

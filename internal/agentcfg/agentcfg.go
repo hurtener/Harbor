@@ -642,6 +642,38 @@ type OAuthProvidersSection struct {
 	Providers []OAuthProviderDescriptor `json:"providers,omitempty"`
 }
 
+// SignedOAuthMCPConnectionDescriptor is the deliberately closed, non-secret
+// connection half of a D-401 signed capability pair. Unlike the generic MCP
+// descriptor it cannot carry a transport selector, headers, discovery policy,
+// injection mapping, command, environment, or a credential sink list. The
+// production registration verb is its sole author.
+type SignedOAuthMCPConnectionDescriptor struct {
+	Name             string   `json:"name"`
+	URL              string   `json:"url"`
+	ToolAllowlist    []string `json:"tool_allowlist,omitempty"`
+	ToolDenylist     []string `json:"tool_denylist,omitempty"`
+	ConnectTimeoutMS int      `json:"connect_timeout_ms,omitempty"`
+	RequestTimeoutMS int      `json:"request_timeout_ms,omitempty"`
+}
+
+// SignedOAuthMCPPair is immutable server-authored desired state for one
+// D-401 OAuth provider and MCP connection. It deliberately stores only the
+// verified, canonical binding facts; the untrusted authority envelope is never
+// projected from a revision or copied into audit/event payloads.
+type SignedOAuthMCPPair struct {
+	ProviderName       string                             `json:"provider_name"`
+	Broker             string                             `json:"broker"`
+	Audience           string                             `json:"audience"`
+	Scopes             []string                           `json:"scopes"`
+	CapabilityRevision string                             `json:"capability_revision"`
+	URLDigest          string                             `json:"url_digest"`
+	Sink               string                             `json:"sink"`
+	Connection         SignedOAuthMCPConnectionDescriptor `json:"connection"`
+	AuthorityIssuer    string                             `json:"authority_issuer"`
+	AuthorityKeyID     string                             `json:"authority_key_id"`
+	AuthorityJTIHash   string                             `json:"authority_jti_hash"`
+}
+
 // RunCompletionHook is the durable, versioned run-completion hook
 // configuration in a config revision: the catalog tool the run transcript is
 // dispatched to at the run loop's terminal boundary, plus an optional
@@ -720,9 +752,13 @@ type ConfigPayload struct {
 	Skills         *SkillsSelection       `json:"skills,omitempty"`
 	Connections    *ConnectionsSection    `json:"connections,omitempty"`
 	OAuthProviders *OAuthProvidersSection `json:"oauth_providers,omitempty"`
-	LLMParams      *LLMParams             `json:"llm_params,omitempty"`
-	Hooks          *HooksSection          `json:"hooks,omitempty"`
-	Naming         *NamingSection         `json:"naming,omitempty"`
+	// SignedOAuthMCPPair is server-owned immutable capability state. Generic
+	// writers carry an existing value exactly; only the bounded signed-pair
+	// registration/removal lifecycle may create or delete it.
+	SignedOAuthMCPPair *SignedOAuthMCPPair `json:"signed_oauth_mcp_pair,omitempty"`
+	LLMParams          *LLMParams          `json:"llm_params,omitempty"`
+	Hooks              *HooksSection       `json:"hooks,omitempty"`
+	Naming             *NamingSection      `json:"naming,omitempty"`
 	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
 	// named additive prompt blocks. Absent (nil) contributes nothing and
 	// leaves the system prompt byte-identical.
@@ -891,6 +927,9 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 		if len(providers) > 0 {
 			out.OAuthProviders = &OAuthProvidersSection{Providers: providers}
 		}
+	}
+	if p.SignedOAuthMCPPair != nil {
+		out.SignedOAuthMCPPair = cloneSignedOAuthMCPPair(p.SignedOAuthMCPPair)
 	}
 	if p.LLMParams != nil {
 		// Normalise empty Model / ReasoningEffort strings to nil so a

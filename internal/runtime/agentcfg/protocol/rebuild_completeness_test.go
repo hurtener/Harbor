@@ -54,6 +54,12 @@ func rcSeed(t *testing.T) agentcfg.ConfigPayload {
 		OAuthProviders: &agentcfg.OAuthProvidersSection{Providers: []agentcfg.OAuthProviderDescriptor{
 			{Name: "seed-provider", Driver: "tokenexchange", CredentialSource: "remote", CredentialBroker: "seed-broker", Scopes: []string{"seed.scope"}},
 		}},
+		SignedOAuthMCPPair: &agentcfg.SignedOAuthMCPPair{
+			ProviderName: "signed-seed-provider", Broker: "seed-broker", Audience: "seed-audience", Scopes: []string{"seed.scope"},
+			CapabilityRevision: "seed-v1", URLDigest: "seed-digest", Sink: "https://example.invalid:443",
+			Connection:      agentcfg.SignedOAuthMCPConnectionDescriptor{Name: "signed-seed-conn", URL: "https://example.invalid:443/seed"},
+			AuthorityIssuer: "seed-issuer", AuthorityKeyID: "seed-kid", AuthorityJTIHash: "seed-jti-hash",
+		},
 		LLMParams: &agentcfg.LLMParams{
 			Model:           strPtr("seed-model"),
 			Temperature:     f64(0.42),
