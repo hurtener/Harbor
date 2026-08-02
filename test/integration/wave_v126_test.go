@@ -6,19 +6,24 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	_ "github.com/hurtener/Harbor/internal/agentcfg/drivers/statestore"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	eventsinmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
 	statepostgres "github.com/hurtener/Harbor/internal/state/drivers/postgres"
+	statesqlite "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 )
 
 // TestE2E_WaveV126 is the v1.26 checkpoint. The non-Postgres legs reuse the
@@ -27,10 +32,130 @@ import (
 // proves a fresh runtime retains the terminal lifecycle and immutable history.
 func TestE2E_WaveV126(t *testing.T) {
 	t.Run("reach", TestE2E_AgentReach_AuthenticatedMuxMatrix)
-	t.Run("cas", TestE2E_AgentConfig_ConditionalWrite)
+	t.Run("conditional_writes", TestE2E_AgentConfig_ConditionalWrite)
+	t.Run("session_personal_resolver_cutover", func(t *testing.T) {
+		// This fixture is deliberately wire-level: it performs the session
+		// mutations through the real handler, then consumes the durable personal
+		// authority through the planner projection. Its lower-tier scope denial
+		// and concurrent session isolation make the four-slot boundary observable.
+		TestE2E_AgentConfig_SessionUserSafeSubset(t)
+		TestE2E_AgentConfig_SessionUser_ConcurrentIsolation(t)
+	})
+	t.Run("oauth_registration_restart_reconcile_removal", testE2EWaveV126SignedOAuth)
 	t.Run("erasure", TestE2E_Phase130_SessionErasure)
+	t.Run("retirement_cleanup_restart", testE2EWaveV126SQLiteRetirementRestart)
 	t.Run("isolation", TestE2E_AgentReach_SharedMuxConcurrentIsolationCancellationAndLeak)
 	t.Run("postgres", testE2EWaveV126Postgres)
+}
+
+// testE2EWaveV126SQLiteRetirementRestart is intentionally a small, fresh
+// driver composition rather than a call into the statestore package's unit
+// suite. It creates both session-owned four-slot records, checkpoints exactly
+// one retirement cleanup item, destroys the runtime, and proves the reopened
+// SQLite registry resumes the frozen manifest without resurrecting either
+// mutable authority or the immutable revision history.
+func testE2EWaveV126SQLiteRetirementRestart(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "wave-v126-retirement.db")
+	type runtime struct {
+		store    state.StateStore
+		bus      interface{ Close(context.Context) error }
+		reg      agentcfg.Registry
+		personal *sessionoverlay.DurableStore
+		overlay  sessionoverlay.Store
+	}
+	open := func() *runtime {
+		store, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+		if err != nil {
+			t.Fatalf("open SQLite StateStore: %v", err)
+		}
+		bus, err := eventsinmem.New(config.EventsConfig{Driver: "inmem", MaxSubscribersPerSession: 16, SubscriberBufferSize: 64, IdleTimeout: time.Minute, DropWindow: time.Second}, auditpatterns.New())
+		if err != nil {
+			_ = store.Close(ctx)
+			t.Fatalf("open event bus: %v", err)
+		}
+		reg, err := agentcfg.Open(ctx, agentcfg.Config{}, agentcfg.Deps{State: store, Bus: bus})
+		if err != nil {
+			_ = bus.Close(ctx)
+			_ = store.Close(ctx)
+			t.Fatalf("open registry: %v", err)
+		}
+		personal, err := sessionoverlay.NewDurableStore(store, nil)
+		if err != nil {
+			t.Fatalf("open personal store: %v", err)
+		}
+		overlay, err := sessionoverlay.NewStore(store, nil)
+		if err != nil {
+			t.Fatalf("open overlay store: %v", err)
+		}
+		return &runtime{store: store, bus: bus, reg: reg, personal: personal, overlay: overlay}
+	}
+	closeRuntime := func(r *runtime) { _ = r.reg.Close(ctx); _ = r.bus.Close(ctx); _ = r.store.Close(ctx) }
+
+	admin := identity.Quadruple{Identity: identity.Identity{TenantID: "wave-v126-sqlite", UserID: "admin", SessionID: "control"}}
+	sessions := []identity.Quadruple{
+		{Identity: identity.Identity{TenantID: admin.TenantID, UserID: "alice", SessionID: "one"}},
+		{Identity: identity.Identity{TenantID: admin.TenantID, UserID: "bob", SessionID: "two"}},
+	}
+	const agentID = "wave-v126-retirement-agent"
+	first := open()
+	revision, err := first.reg.SetRevision(ctx, admin, agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed revision: %v", err)
+	}
+	for i, id := range sessions {
+		if _, err := first.personal.SavePersonal(ctx, id, agentID, sessionoverlaySkill(fmt.Sprintf("personal-%d", i)), "", ""); err != nil {
+			t.Fatalf("seed personal %d: %v", i, err)
+		}
+		if _, err := first.overlay.SetUserPrompt(ctx, id, agentID, fmt.Sprintf("session-%d", i)); err != nil {
+			t.Fatalf("seed legacy overlay %d: %v", i, err)
+		}
+	}
+	retirer := first.reg.(agentcfg.RetirementRegistry)
+	status, err := retirer.Retire(ctx, admin, agentID, agentcfg.RetirementRequest{OperationID: "wave-v126-sqlite-retirement", ExpectedContentHash: revision.ContentHash})
+	if err != nil || status.Completed || len(status.Cleanup) != 1 {
+		t.Fatalf("admitted cleanup=(%+v,%v)", status, err)
+	}
+	step := status.Cleanup[0]
+	status, err = retirer.CompleteRetirementStep(ctx, admin, agentID, status.OperationID, step.Class, step.Resource)
+	if err != nil || status.Completed {
+		t.Fatalf("partial cleanup=(%+v,%v), want resumable operation", status, err)
+	}
+	closeRuntime(first) // process-crash boundary after one persisted side effect
+
+	second := open()
+	defer closeRuntime(second)
+	retirer = second.reg.(agentcfg.RetirementRegistry)
+	for !status.Completed {
+		status, err = retirer.Retire(ctx, admin, agentID, agentcfg.RetirementRequest{OperationID: status.OperationID, ExpectedContentHash: revision.ContentHash})
+		if err != nil || len(status.Cleanup) != 1 {
+			t.Fatalf("restart resume=(%+v,%v)", status, err)
+		}
+		step = status.Cleanup[0]
+		status, err = retirer.CompleteRetirementStep(ctx, admin, agentID, status.OperationID, step.Class, step.Resource)
+		if err != nil {
+			t.Fatalf("complete resumed cleanup: %v", err)
+		}
+	}
+	if _, _, err := second.reg.Active(ctx, admin, agentID, agentcfg.ConfigScopeAgent); !errors.Is(err, agentcfg.ErrAgentRetired) {
+		t.Fatalf("terminal active=%v, want retired", err)
+	}
+	if got, err := second.reg.Get(ctx, admin, agentID, revision.RevisionID, agentcfg.ConfigScopeAgent); err != nil || got.ContentHash != revision.ContentHash {
+		t.Fatalf("immutable history=(%+v,%v)", got, err)
+	}
+	for i, id := range sessions {
+		if _, _, err := second.personal.LoadPersonal(ctx, id, agentID, fmt.Sprintf("personal-%d", i)); err != nil && !errors.Is(err, agentcfg.ErrAgentRetired) {
+			t.Fatalf("retired personal read: %v", err)
+		}
+		if _, _, err := second.overlay.Get(ctx, id, agentID); !errors.Is(err, agentcfg.ErrAgentRetired) {
+			t.Fatalf("retired overlay read: %v", err)
+		}
+	}
+}
+
+func sessionoverlaySkill(name string) skills.Skill {
+	return skills.Skill{Name: name, Trigger: "when needed", Steps: []string{"do it"}, Origin: skills.OriginGenerated, Scope: skills.ScopeSession}
 }
 
 type waveV126PostgresRuntime struct {

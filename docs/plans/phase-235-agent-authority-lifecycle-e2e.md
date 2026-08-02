@@ -37,10 +37,13 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 
 ## Checkpoint status
 
-The composed SQLite checkpoint and CI-only Postgres two-runtime retirement
-restart leg are implemented. This is a release gate, not a release: the
-remaining audit, hosted preflight, release-build, and publication criteria
-below remain open until evidence is collected from `main`.
+The checkpoint is in progress. The named suite now executes real SQLite
+signed-capability registration/restart/reconcile/removal, four-slot
+session-personal authority, erasure, retirement/restart, and byte-exact
+reasoning durability; signed retirement cleanup also survives a fault and
+process restart. The remaining cross-operation Postgres race, audit, hosted
+preflight, release-build, and publication criteria remain open; this phase is
+not checkpointed yet.
 
 ## Non-goals
 

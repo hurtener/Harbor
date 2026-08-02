@@ -19,7 +19,7 @@ fi
 
 P235_LOG="${P235_TMP}/wave.log"
 if go test -v -race -count=1 ./test/integration -run '^TestE2E_WaveV126$' >"${P235_LOG}" 2>&1; then
-    for leg in reach cas erasure isolation; do
+    for leg in reasoning_durable reach conditional_writes session_personal_resolver_cutover oauth_registration_restart_reconcile_removal erasure retirement_cleanup_restart isolation; do
         if grep -qE "^[[:space:]]*--- PASS: TestE2E_WaveV126/${leg} \(" "${P235_LOG}"; then
             ok "phase 235: ${leg} checkpoint leg ran"
         else
