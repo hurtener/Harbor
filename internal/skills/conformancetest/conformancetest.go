@@ -34,10 +34,11 @@ import (
 // for future ephemeral providers) leave `ReopenedStore` nil and the
 // subtest skips.
 type Harness struct {
-	Store         skills.SkillStore
-	Bus           events.EventBus
-	Cleanup       func()
-	ReopenedStore func() (skills.SkillStore, error)
+	Store                skills.SkillStore
+	Bus                  events.EventBus
+	Cleanup              func()
+	ReopenedStore        func() (skills.SkillStore, error)
+	SnapshotFullTextPath string
 }
 
 // Run executes the shared suite against the harness returned by
@@ -310,7 +311,7 @@ func testSnapshotSearch(t *testing.T, h Harness) {
 	if err != nil {
 		t.Fatalf("SearchSnapshot: %v", err)
 	}
-	if len(result) != 1 || result[0].Skill.Name != candidate.Name || result[0].Path != skills.PathFTS5 || result[0].Score != 1 {
+	if len(result) != 1 || result[0].Skill.Name != candidate.Name || result[0].Path != h.SnapshotFullTextPath || result[0].Score != 1 {
 		t.Fatalf("SearchSnapshot result = %+v, want only configured-driver full-text frozen candidate", result)
 	}
 }

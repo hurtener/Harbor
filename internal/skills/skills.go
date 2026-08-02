@@ -171,7 +171,8 @@ type ListFilter struct {
 }
 
 // RankedSkill carries the search-time relevance score + the path
-// that produced it. `Path` is one of `"fts5" | "regex" | "exact"`;
+// that produced it. `Path` identifies the actual ranking engine (for example,
+// `"fts5"`, `"full_text"`, `"regex"`, `"exact"`, or `"semantic"`);
 // callers (the planner tools) surface it for observability
 // only — it is not part of the ranking math.
 //
@@ -206,6 +207,9 @@ type SnapshotCandidateSearcher interface {
 const (
 	// PathFTS5 — FTS5 virtual table produced the row.
 	PathFTS5 = "fts5"
+	// PathFullText — a non-FTS5 backend-native full-text engine produced the
+	// row. PostgreSQL's to_tsvector/to_tsquery path uses this value.
+	PathFullText = "full_text"
 	// PathRegex — regex fallback produced the row.
 	PathRegex = "regex"
 	// PathExact — exact lowercase-equality fallback produced the row.
@@ -221,7 +225,7 @@ type RetrievalMode string
 
 // RetrievalMode values.
 const (
-	// RetrievalDefault — the zero value: the token-savvy FTS5 →
+	// RetrievalDefault — the zero value: the driver's token-savvy full-text →
 	// regex → exact ladder.
 	RetrievalDefault RetrievalMode = ""
 	// RetrievalSemantic — rank by embedding similarity over the

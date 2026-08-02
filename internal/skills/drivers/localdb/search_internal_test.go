@@ -129,3 +129,83 @@ func TestRegexScore_Constants(t *testing.T) {
 		})
 	}
 }
+
+func newSnapshotSearchDriver(t *testing.T) *driver {
+	t.Helper()
+	ctx := context.Background()
+	bus, err := events.Open(ctx, config.EventsConfig{
+		Driver:                   "inmem",
+		MaxSubscribersPerSession: 16,
+		SubscriberBufferSize:     64,
+		IdleTimeout:              60 * time.Second,
+		DropWindow:               time.Second,
+	}, auditpatterns.New())
+	if err != nil {
+		t.Fatalf("events.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	store, err := New(skills.ConfigSnapshot{Driver: "localdb", DSN: filepath.Join(t.TempDir(), "snapshot.sqlite")}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	return store.(*driver)
+}
+
+func snapshotSearchID() identity.Quadruple {
+	return identity.Quadruple{
+		Identity: identity.Identity{TenantID: "t-snapshot", UserID: "u-snapshot", SessionID: "s-snapshot"},
+		RunID:    "r-snapshot",
+	}
+}
+
+func TestSearchSnapshot_FTSUnavailable_UsesRegexAndExactFallbacks(t *testing.T) {
+	d := newSnapshotSearchDriver(t)
+	d.ftsAvailable = false
+	candidates := []skills.Skill{
+		{Name: "regex-target", Description: "harbor planner reference", UpdatedAt: time.Unix(2, 0)},
+		{Name: "[", Description: "punctuation exact target", UpdatedAt: time.Unix(1, 0)},
+	}
+
+	regex, err := d.SearchSnapshot(context.Background(), snapshotSearchID(), "planner", candidates, 5)
+	if err != nil {
+		t.Fatalf("SearchSnapshot(regex): %v", err)
+	}
+	if len(regex) != 1 || regex[0].Skill.Name != "regex-target" || regex[0].Path != skills.PathRegex {
+		t.Fatalf("regex fallback = %+v, want regex-target via %q", regex, skills.PathRegex)
+	}
+
+	exact, err := d.SearchSnapshot(context.Background(), snapshotSearchID(), "[", candidates, 5)
+	if err != nil {
+		t.Fatalf("SearchSnapshot(exact): %v", err)
+	}
+	if len(exact) != 1 || exact[0].Skill.Name != "[" || exact[0].Path != skills.PathExact {
+		t.Fatalf("exact fallback = %+v, want punctuation target via %q", exact, skills.PathExact)
+	}
+}
+
+func TestSearchSnapshot_FTS5EqualRank_AppliesTieBreakBeforeLimit(t *testing.T) {
+	d := newSnapshotSearchDriver(t)
+	if !d.ftsAvailable {
+		t.Skip("reason: linked SQLite build does not provide FTS5")
+	}
+	newest := time.Unix(30, 0).UTC()
+	candidates := []skills.Skill{
+		{Name: "charl-old", Title: "same", Trigger: "same", Description: "harborneedle", UpdatedAt: time.Unix(10, 0).UTC()},
+		{Name: "bravo-new", Title: "same", Trigger: "same", Description: "harborneedle", UpdatedAt: newest},
+		{Name: "alpha-new", Title: "same", Trigger: "same", Description: "harborneedle", UpdatedAt: newest},
+	}
+
+	got, err := d.SearchSnapshot(context.Background(), snapshotSearchID(), "harborneedle", candidates, 2)
+	if err != nil {
+		t.Fatalf("SearchSnapshot: %v", err)
+	}
+	if len(got) != 2 || got[0].Skill.Name != "alpha-new" || got[1].Skill.Name != "bravo-new" {
+		t.Fatalf("equal-rank top two = %+v, want alpha-new then bravo-new", got)
+	}
+	for _, result := range got {
+		if result.Path != skills.PathFTS5 {
+			t.Fatalf("path = %q, want %q", result.Path, skills.PathFTS5)
+		}
+	}
+}

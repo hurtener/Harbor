@@ -12,6 +12,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/embeddings/embeddingstest"
@@ -38,9 +39,10 @@ func TestConformance(t *testing.T) {
 			t.Fatalf("postgres.New: %v", err)
 		}
 		return conformancetest.Harness{
-			Store:   store,
-			Bus:     bus,
-			Cleanup: func() { _ = store.Close(context.Background()) },
+			Store:                store,
+			Bus:                  bus,
+			Cleanup:              func() { _ = store.Close(context.Background()) },
+			SnapshotFullTextPath: skills.PathFullText,
 			ReopenedStore: func() (skills.SkillStore, error) {
 				return postgres.New(skills.ConfigSnapshot{Driver: "postgres", DSN: dsn},
 					skills.Deps{Bus: bus})
@@ -160,8 +162,8 @@ func TestSearch_LadderParity(t *testing.T) {
 		if r.Score < 0 || r.Score > 1 {
 			t.Errorf("score out of [0,1]: %q=%v", r.Skill.Name, r.Score)
 		}
-		if r.Path != skills.PathFTS5 {
-			t.Errorf("path=%q, want %q", r.Path, skills.PathFTS5)
+		if r.Path != skills.PathFullText {
+			t.Errorf("path=%q, want %q", r.Path, skills.PathFullText)
 		}
 	}
 	// alpha has the higher token frequency → best match → score 1.0
@@ -192,6 +194,49 @@ func TestSearch_LadderParity(t *testing.T) {
 	}
 	if len(gotOther) != 0 {
 		t.Fatalf("cross-session leak: other session saw %d rows", len(gotOther))
+	}
+}
+
+func TestSearchSnapshot_FrozenCTEEqualRank_AppliesTieBreakBeforeLimit(t *testing.T) {
+	baseDSN := requireDSN(t)
+	bus := buildBus(t)
+	dsn := freshSchema(t, baseDSN)
+	store, err := postgres.New(skills.ConfigSnapshot{Driver: "postgres", DSN: dsn}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("postgres.New: %v", err)
+	}
+	defer func() { _ = store.Close(context.Background()) }()
+
+	ctx := context.Background()
+	decoy := skills.Skill{
+		Name: "stored-decoy", Title: "Stored Decoy", Trigger: "when decoy",
+		Description: "harborneedle", Steps: []string{"do nothing"},
+		Origin: skills.OriginGenerated, Scope: skills.ScopeSession,
+	}
+	if err := store.Upsert(ctx, fixtureID, decoy); err != nil {
+		t.Fatalf("Upsert(decoy): %v", err)
+	}
+	newest := time.Unix(30, 0).UTC()
+	candidates := []skills.Skill{
+		{Name: "charl-old", Title: "same", Trigger: "same", Description: "harborneedle", UpdatedAt: time.Unix(10, 0).UTC()},
+		{Name: "bravo-new", Title: "same", Trigger: "same", Description: "harborneedle", UpdatedAt: newest},
+		{Name: "alpha-new", Title: "same", Trigger: "same", Description: "harborneedle", UpdatedAt: newest},
+	}
+
+	got, err := store.SearchSnapshot(ctx, fixtureID, "harborneedle", candidates, 2)
+	if err != nil {
+		t.Fatalf("SearchSnapshot: %v", err)
+	}
+	if len(got) != 2 || got[0].Skill.Name != "alpha-new" || got[1].Skill.Name != "bravo-new" {
+		t.Fatalf("frozen equal-rank top two = %+v, want alpha-new then bravo-new", got)
+	}
+	for _, result := range got {
+		if result.Path != skills.PathFullText {
+			t.Fatalf("path = %q, want %q", result.Path, skills.PathFullText)
+		}
+		if result.Skill.Name == decoy.Name {
+			t.Fatal("snapshot search consulted mutable stored rows")
+		}
 	}
 }
 

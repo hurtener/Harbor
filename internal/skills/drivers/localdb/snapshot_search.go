@@ -59,7 +59,7 @@ func (d *driver) searchSnapshotFTS5(ctx context.Context, query string, candidate
 	defer func() { _ = conn.Close() }()
 	const table = "snapshot_skills_fts"
 	if _, err := conn.ExecContext(ctx, `CREATE VIRTUAL TABLE temp.`+table+` USING fts5(
-        name, title, trigger, description, tags_text,
+        name, title, trigger, description, tags_text, updated_at UNINDEXED,
         tokenize='porter unicode61 remove_diacritics 1')`); err != nil {
 		return nil, fmt.Errorf("skills/localdb: snapshot fts5 create: %w", err)
 	}
@@ -78,13 +78,13 @@ func (d *driver) searchSnapshotFTS5(ctx context.Context, query string, candidate
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if _, err := conn.ExecContext(ctx, `INSERT INTO temp.`+table+`(rowid, name, title, trigger, description, tags_text) VALUES (?, ?, ?, ?, ?, ?)`,
-			i+1, skill.Name, skill.Title, skill.Trigger, skill.Description, strings.Join(skill.Tags, " ")); err != nil {
+		if _, err := conn.ExecContext(ctx, `INSERT INTO temp.`+table+`(rowid, name, title, trigger, description, tags_text, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			i+1, skill.Name, skill.Title, skill.Trigger, skill.Description, strings.Join(skill.Tags, " "), skill.UpdatedAt.UTC().UnixNano()); err != nil {
 			return nil, fmt.Errorf("skills/localdb: snapshot fts5 insert: %w", err)
 		}
 	}
 	search := func(expr string) ([]snapshotFTS5Hit, error) {
-		rows, err := conn.QueryContext(ctx, `SELECT rowid, bm25(`+table+`) FROM temp.`+table+` WHERE `+table+` MATCH ? ORDER BY bm25(`+table+`) ASC LIMIT ?`, expr, limit)
+		rows, err := conn.QueryContext(ctx, `SELECT rowid, bm25(`+table+`) FROM temp.`+table+` WHERE `+table+` MATCH ? ORDER BY bm25(`+table+`) ASC, updated_at DESC, name ASC LIMIT ?`, expr, limit)
 		if err != nil {
 			return nil, fmt.Errorf("skills/localdb: snapshot fts5 query: %w", err)
 		}

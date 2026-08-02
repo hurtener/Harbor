@@ -146,7 +146,7 @@ type SearchResult struct {
 	// default when zero).
 	Skills []skills.RankedSkill `json:"skills"`
 	// Path is the ranking ladder branch that produced the rows
-	// ("fts5" | "regex" | "exact"). Surfaced for observability;
+	// ("fts5" | "full_text" | "regex" | "exact" | "semantic"). Surfaced for observability;
 	// inert to the planner's reasoning.
 	Path string `json:"path"`
 }

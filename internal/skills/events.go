@@ -91,7 +91,7 @@ type SkillPackOverwriteRefusedPayload struct {
 type SkillSearchExecutedPayload struct {
 	events.SafeSealed
 	QueryHash string // first 16 hex chars of sha256(lowercased query)
-	Path      string // "fts5" | "regex" | "exact"
+	Path      string // "fts5" | "full_text" | "regex" | "exact" | "semantic"
 	Limit     int
 	ResultN   int
 }

@@ -98,7 +98,7 @@ func (d *driver) Search(ctx context.Context, id identity.Quadruple, query string
 func (d *driver) search(ctx context.Context, id identity.Quadruple, query string, limit int) ([]skills.RankedSkill, string, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil, skills.PathFTS5, nil
+		return nil, skills.PathFullText, nil
 	}
 
 	results, err := d.searchFTS(ctx, id, query, limit)
@@ -106,7 +106,7 @@ func (d *driver) search(ctx context.Context, id identity.Quadruple, query string
 		return nil, "", err
 	}
 	if len(results) > 0 {
-		return results, skills.PathFTS5, nil
+		return results, skills.PathFullText, nil
 	}
 
 	results, err = d.searchRegex(ctx, id, query, limit)
@@ -177,7 +177,7 @@ func (d *driver) searchFTS(ctx context.Context, id identity.Quadruple, query str
 		} else {
 			score = (h.raw - minRaw) / (maxRaw - minRaw)
 		}
-		out = append(out, skills.RankedSkill{Skill: h.skill, Score: score, Path: skills.PathFTS5})
+		out = append(out, skills.RankedSkill{Skill: h.skill, Score: score, Path: skills.PathFullText})
 	}
 	// Stable ordering: score DESC, updated_at DESC, name ASC.
 	sort.SliceStable(out, func(i, j int) bool {

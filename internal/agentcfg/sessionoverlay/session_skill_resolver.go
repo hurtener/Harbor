@@ -472,7 +472,7 @@ func (r *SessionSkillResolver) Search(ctx context.Context, id identity.Quadruple
 			return nil, fmt.Errorf("%w: candidate searcher returned invalid score", ErrInvalidSessionSkillResolver)
 		}
 		switch result[i].Path {
-		case skills.PathFTS5, skills.PathRegex, skills.PathExact, skills.PathSemantic:
+		case skills.PathFTS5, skills.PathFullText, skills.PathRegex, skills.PathExact, skills.PathSemantic:
 		default:
 			return nil, fmt.Errorf("%w: candidate searcher returned unknown path %q", ErrInvalidSessionSkillResolver, result[i].Path)
 		}

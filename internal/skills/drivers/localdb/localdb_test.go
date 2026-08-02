@@ -68,9 +68,10 @@ func TestConformance(t *testing.T) {
 			t.Fatalf("localdb.New: %v", err)
 		}
 		return conformancetest.Harness{
-			Store:   store,
-			Bus:     bus,
-			Cleanup: func() { _ = store.Close(context.Background()) },
+			Store:                store,
+			Bus:                  bus,
+			Cleanup:              func() { _ = store.Close(context.Background()) },
+			SnapshotFullTextPath: skills.PathFTS5,
 			ReopenedStore: func() (skills.SkillStore, error) {
 				return localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: dsn},
 					skills.Deps{Bus: bus})

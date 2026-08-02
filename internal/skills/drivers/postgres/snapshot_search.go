@@ -130,7 +130,7 @@ func snapshotFTSResults(candidates []skills.Skill, hits []snapshotFTSHit) ([]ski
 		if maxRaw != minRaw {
 			score = (hit.raw - minRaw) / (maxRaw - minRaw)
 		}
-		result = append(result, skills.RankedSkill{Skill: candidates[hit.ordinal], Score: score, Path: skills.PathFTS5})
+		result = append(result, skills.RankedSkill{Skill: candidates[hit.ordinal], Score: score, Path: skills.PathFullText})
 	}
 	skills.SortSnapshotResults(result)
 	return result, nil
