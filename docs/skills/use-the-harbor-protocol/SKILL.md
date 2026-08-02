@@ -587,7 +587,12 @@ It is available on all **seventeen** spine-writing doors — `set_revision`, `ro
 
 **Why a content hash and not a revision id.** `rollback` repoints the active pointer without necessarily changing the content. If the token were a revision id, an operator restoring exactly the content you read would be reported to you as a conflict — a false positive on the recovery path. The token tracks the value you computed against, which is what you actually depend on.
 
-**Know the bound before you rely on it.** The refusal is **exact within one Runtime process**. Its atomicity comes from the agent-config service's per-owner write lock — held across the whole read-modify-write — and **not** from the store, which has no compare-and-swap primitive. **Two Runtime processes sharing one Postgres or SQLite store can still lose an update**, and this feature does not claim otherwise. Single-instance deployments (including every `harbor dev`) get an exact guard; multi-process deployments get a large reduction in loss probability, not an elimination.
+**Know the authority before you rely on it.** The refusal is exact across
+Runtime processes sharing any shipped StateStore driver. Publication rechecks
+the active-pointer EventID through the triad-wide `StateStore.SaveIf` predicate;
+the agent-config service's per-owner write lock only reduces same-process
+contention. This does not make a token an exclusive lock: a concurrent writer
+that omits the token remains an unconditional last writer by design.
 
 Two more things worth knowing:
 

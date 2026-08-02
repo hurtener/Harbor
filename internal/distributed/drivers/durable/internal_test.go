@@ -24,6 +24,9 @@ type fakeStore struct {
 }
 
 func (f *fakeStore) Save(context.Context, state.StateRecord) error { return nil }
+func (f *fakeStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
+	return nil
+}
 func (f *fakeStore) Load(context.Context, identity.Quadruple, string) (state.StateRecord, error) {
 	return state.StateRecord{}, state.ErrNotFound
 }
@@ -39,6 +42,9 @@ func (f *fakeStore) ListKind(context.Context, state.ListScope, string) ([]state.
 }
 func (f *fakeStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
 	return f.listRecs, f.listErr
+}
+func (f *fakeStore) ScanKindForTenant(context.Context, state.ListScope, string, string, int, string) (state.StateScanPage, error) {
+	return state.StateScanPage{Records: f.listRecs}, f.listErr
 }
 func (f *fakeStore) Close(context.Context) error { return nil }
 

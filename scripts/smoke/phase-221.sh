@@ -127,19 +127,14 @@ assert_grep_present 'context\.WithoutCancel\(ctx\)' "${DRIVER_GO}" \
 assert_grep_present 'ProtocolVersion = "0\.1\.0"' "${VERSION_GO}" \
     'phase 221: ProtocolVersion is unchanged (the change is additive)'
 
-# (7) THE HONESTY GUARDS. These pin the TRUTHFULNESS of the claim, not only
-#     its existence: the compare-and-write is atomic in-process only (the
-#     StateStore has no CAS primitive), and no text may claim otherwise.
-#     Mutation 8 (delete the bound sentence from the godoc) turns the first
-#     of these OK -> FAIL.
-assert_grep_present 'NOT atomic across Runtime processes' "${AGENTCFG_GO}" \
-    'phase 221: the SetOptions godoc states the single-process bound'
-assert_grep_present 'CAN STILL LOSE AN UPDATE' "${AGENTCFG_GO}" \
-    'phase 221: the SetOptions godoc names the residual in plain words'
-assert_grep_present 'NOT a cross-process compare-and-swap' "${ERRORS_GO}" \
-    'phase 221: the CodeRevisionConflict godoc states the same bound'
-assert_grep_present 'CAN STILL LOSE AN UPDATE' "${ERRORS_MD}" \
-    'phase 221: the GENERATED Protocol reference carries the bound (D-209)'
+# (7) Phase 233 closes the former process-local residual. Both domain and
+# generated wire docs must name the durable conditional-save authority.
+assert_grep_present 'StateStore\.SaveIf' "${AGENTCFG_GO}" \
+    'phase 221: SetOptions names the durable cross-runtime predicate'
+assert_grep_present 'StateStore\.SaveIf' "${ERRORS_GO}" \
+    'phase 221: CodeRevisionConflict names the durable predicate'
+assert_grep_present 'StateStore\.SaveIf' "${ERRORS_MD}" \
+    'phase 221: generated Protocol reference carries the durable predicate (D-209)'
 
 # (8) The Console mirror — seventeen optional fields, hand-mirrored and
 #     lockstep-gated (D-223).
@@ -375,12 +370,16 @@ else
         'phase 221: both fault rows are REGISTERED (deregistering one compiles, so Go asserts it too)' \
         TestConformance_FaultRowsAreRegistered
 
+    # Phase 233 replaces the former process-local limitation with the durable
+    # predicate. Keep the in-process N=128 legs AND name the independent
+    # SQLite-driver/registry witness: removing that fourth test would restore
+    # a green smoke while multi-runtime writers could again both proceed.
     assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/agentcfg/drivers/statestore/' \
-        'phase 221: N=128 racing writers yield exactly one winner, and the cross-process residual is pinned AS ABSENT' \
+        'phase 221: N=128 racing writers and independent SQLite registries yield exactly one durable winner' \
         TestSetRevision_ConcurrentConditionalWriters_ExactlyOneWins \
         TestSetRevision_ConcurrentUnconditionalWriters_AllSucceed \
         TestConditionalWrite_ConcurrentReuse_NoCrossOwnerBleed \
-        TestConditionalWrite_CrossProcessBoundIsDocumented
+        TestConditionalWrite_SharedSQLiteTwoRegistries_OneWinner
 
     assert_go_tests_pass "${P221_GOLOG}" '-race -count=1 ./internal/runtime/agentcfg/protocol/' \
         'phase 221: all seventeen doors thread the token, and the token is never an authority' \

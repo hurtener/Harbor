@@ -39,6 +39,10 @@ type failingStore struct {
 
 func (f failingStore) Save(context.Context, state.StateRecord) error { return f.err }
 
+func (f failingStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
+	return f.err
+}
+
 // TestBackend_SaveNilRecords_FailLoud asserts the nil-record guards.
 func TestBackend_SaveNilRecords_FailLoud(t *testing.T) {
 	b := &backend{store: inmemStore(t)}

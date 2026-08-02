@@ -55,6 +55,16 @@ func (s *completionSaveAckLostStore) Save(ctx context.Context, rec state.StateRe
 	return nil
 }
 
+func (s *completionSaveAckLostStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if err := s.StateStore.SaveIf(ctx, expectations, next); err != nil {
+		return err
+	}
+	if strings.HasPrefix(next.Kind, flowCompletedKindPrefix) && s.failed.CompareAndSwap(false, true) {
+		return errors.New("injected completed marker acknowledgement loss")
+	}
+	return nil
+}
+
 func newFlowStoreFixture(t *testing.T) (state.StateStore, FlowStore, Sealer) {
 	t.Helper()
 	raw := mkStore(t)

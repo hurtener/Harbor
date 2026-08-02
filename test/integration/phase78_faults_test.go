@@ -96,6 +96,13 @@ func (f *faultyStateStore) Save(ctx context.Context, r state.StateRecord) error 
 	return f.inner.Save(ctx, r)
 }
 
+func (f *faultyStateStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if f.faulted() {
+		return errStateDisconnected
+	}
+	return f.inner.SaveIf(ctx, expectations, next)
+}
+
 func (f *faultyStateStore) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
 	if f.faulted() {
 		return state.StateRecord{}, errStateDisconnected
@@ -136,6 +143,13 @@ func (f *faultyStateStore) ListKindForIdentity(ctx context.Context, id identity.
 		return nil, errStateDisconnected
 	}
 	return f.inner.ListKindForIdentity(ctx, id, kindPrefix)
+}
+
+func (f *faultyStateStore) ScanKindForTenant(ctx context.Context, scope state.ListScope, tenantID, kindPrefix string, limit int, continuation string) (state.StateScanPage, error) {
+	if f.faulted() {
+		return state.StateScanPage{}, errStateDisconnected
+	}
+	return f.inner.ScanKindForTenant(ctx, scope, tenantID, kindPrefix, limit, continuation)
 }
 
 // Close delegates verbatim — teardown is never faulted (a faulted

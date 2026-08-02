@@ -537,6 +537,10 @@ type kindSelectiveDeleteFailStore struct {
 	failKind string
 }
 
+func (f *kindSelectiveDeleteFailStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	return f.StateStore.SaveIf(ctx, expectations, next)
+}
+
 func (f *kindSelectiveDeleteFailStore) setFailKind(kind string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -818,6 +822,10 @@ type flakyDeleteStore struct {
 	state.StateStore
 	mu        sync.Mutex
 	failsLeft int
+}
+
+func (f *flakyDeleteStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	return f.StateStore.SaveIf(ctx, expectations, next)
 }
 
 func (f *flakyDeleteStore) Delete(ctx context.Context, id identity.Quadruple, kind string) error {

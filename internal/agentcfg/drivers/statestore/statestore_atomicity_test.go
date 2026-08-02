@@ -123,6 +123,25 @@ func (f *faultStore) Save(ctx context.Context, r state.StateRecord) error {
 	return f.StateStore.Save(ctx, r)
 }
 
+// SaveIf keeps this fault injector on the conditional-publication boundary.
+// Its deliberate fault is about the NEXT pointer write, not the predicate, so
+// the embedded real store still performs the comparison first.
+func (f *faultStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if isActivePointerKind(next.Kind) {
+		if f.commitPointerThenFail {
+			if err := f.StateStore.SaveIf(ctx, expectations, next); err != nil {
+				return err
+			}
+		}
+		if f.cancelOnPointerWrite != nil {
+			f.cancelOnPointerWrite()
+		}
+		f.pointerFailed.Store(true)
+		return errPointerWrite
+	}
+	return f.StateStore.SaveIf(ctx, expectations, next)
+}
+
 func (f *faultStore) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
 	if f.blindAfterRevisionFailure && isRevisionKind(kind) && f.revisionFailed.Load() {
 		return state.StateRecord{}, errRevisionRead
@@ -666,6 +685,10 @@ func (b *liveCtxBus) Publish(ctx context.Context, ev events.Event) error {
 type countingDeleteStore struct {
 	state.StateStore
 	deletes *int
+}
+
+func (c *countingDeleteStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	return c.StateStore.SaveIf(ctx, expectations, next)
 }
 
 func (c *countingDeleteStore) Delete(ctx context.Context, id identity.Quadruple, kind string) error {

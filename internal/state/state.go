@@ -5,8 +5,9 @@
 //
 // The surface is generic by design: identity-scoped CRUD keyed
 // on `(identity.Quadruple, Kind string, Bytes []byte)` with idempotency
-// on a caller-supplied `EventID` (ULID), plus ONE explicitly-elevated
-// maintenance scan (`ListKind` — RFC §6.11). Consuming
+// on a caller-supplied `EventID` (ULID), plus explicitly-elevated
+// maintenance scans (`ListKind` and tenant-bounded `ScanKindForTenant` — RFC
+// §6.11). Consuming
 // subsystems land their typed wrappers at their own layer atop this
 // interface — a `SessionRegistry.Save(s Session)` reduces to
 // `StateStore.Save(StateRecord{Identity: s.Identity, Kind: "session.lifecycle", Bytes: marshal(s)})`.
@@ -27,9 +28,15 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -68,8 +75,8 @@ func NewEventID() EventID {
 //
 // `Version` is a hint for optimistic-concurrency at the typed-wrapper
 // layer (e.g. `SessionRegistry` MAY refuse to apply an update whose
-// Version is stale). The StateStore itself does NOT enforce CAS — it
-// stores and returns the int.
+// Version is stale). It is not a StateStore compare-and-swap token:
+// callers that need durable compare-and-swap use SaveIf with EventIDs.
 //
 // `UpdatedAt` is set by the store at `Save` time when zero; callers
 // MAY override (useful for tests with controllable clocks).
@@ -80,6 +87,17 @@ type StateRecord struct {
 	Version   int
 	Bytes     []byte
 	UpdatedAt time.Time
+}
+
+// SlotExpectation is one exact generation predicate for SaveIf. The complete
+// identity plus Kind names a single StateStore slot. ExpectedEventID == ""
+// means the slot must be absent; any other value must equal the current
+// record's EventID exactly. Event IDs, rather than Version, are used because
+// Save replaces a slot's EventID on every successful generation.
+type SlotExpectation struct {
+	Identity        identity.Quadruple
+	Kind            string
+	ExpectedEventID EventID
 }
 
 // StateStore is Harbor's persistence interface — single mandatory
@@ -100,6 +118,13 @@ type StateStore interface {
 	// the active one for that slot; the previous EventID is no
 	// longer LoadByEventID-resolvable).
 	Save(ctx context.Context, r StateRecord) error
+
+	// SaveIf atomically verifies every expectation and persists next. The
+	// expectation set is non-empty, has no duplicate slots, and must include
+	// next's slot. A mismatch returns ErrConditionFailed and leaves every slot
+	// unchanged. Save's EventID idempotency contract applies to next only after
+	// all predicates match; it never bypasses a failed predicate.
+	SaveIf(ctx context.Context, expectations []SlotExpectation, next StateRecord) error
 
 	// Load returns the record at (id, kind). Returns ErrNotFound
 	// (wrapped) when no record exists for that key.
@@ -134,7 +159,7 @@ type StateStore interface {
 	DeleteScope(ctx context.Context, id identity.Identity) (int, error)
 
 	// ListKind enumerates every record whose Kind starts with
-	// kindPrefix — the store's ONE maintenance-scan surface
+	// kindPrefix — the store's unbounded cross-tenant maintenance scan
 	// (RFC §6.11). Unlike every other method, the scan crosses
 	// identity boundaries: it exists so runtime maintenance loops (the
 	// pause sweeper's crash-orphan rescan is the first consumer) can
@@ -153,8 +178,8 @@ type StateStore interface {
 	//     grants visibility for the scan, never a widened mutation
 	//     scope.
 	//
-	// kindPrefix matches literally (no wildcard interpretation — SQL
-	// drivers escape LIKE metacharacters). Result order is
+	// kindPrefix matches literally (no wildcard or case-folding
+	// interpretation). Result order is
 	// unspecified; an empty result is ([]StateRecord{} or nil, nil),
 	// never an error.
 	ListKind(ctx context.Context, scope ListScope, kindPrefix string) ([]StateRecord, error)
@@ -165,13 +190,21 @@ type StateStore interface {
 	// Prefix matching is literal and kindPrefix must be non-empty.
 	ListKindForIdentity(ctx context.Context, id identity.Quadruple, kindPrefix string) ([]StateRecord, error)
 
+	// ScanKindForTenant returns one deterministic, tenant-bounded maintenance
+	// page whose Kind begins with literalKindPrefix. It is deliberately a
+	// keyset scan, not a database snapshot: callers that need convergence must
+	// quiesce writers and complete a final verification pass. continuation is
+	// an opaque cursor returned by the preceding page and is bound to this
+	// exact maintenance scope, tenant, and literal prefix.
+	ScanKindForTenant(ctx context.Context, scope ListScope, tenantID, literalKindPrefix string, limit int, continuation string) (StateScanPage, error)
+
 	// Close releases driver resources. Subsequent calls return
 	// ErrStoreClosed (wrapped). Implementations MUST honour ctx
 	// during long teardowns.
 	Close(ctx context.Context) error
 }
 
-// ListScope is the explicit scope claim ListKind requires. The zero
+// ListScope is the explicit scope claim maintenance scans require. The zero
 // value fails closed: a caller must set MaintenanceScoped to assert it
 // understands the call crosses identity boundaries (CLAUDE.md §6 rule
 // 5; the §13 elevated-scope-claim rule applied to the persistence
@@ -184,6 +217,24 @@ type ListScope struct {
 	MaintenanceScoped bool
 }
 
+// StateScanPage is one stable-ordered page from ScanKindForTenant. An empty
+// Continuation marks the terminal page. Records are ordered lexicographically
+// by (user_id, session_id, run_id, kind), which is also the cursor tuple.
+type StateScanPage struct {
+	Records      []StateRecord
+	Continuation string
+}
+
+// StateScanCursor is the decoded, driver-neutral keyset position used by
+// ScanKindForTenant. It is exposed only so all mandatory drivers share one
+// strict opaque-cursor codec; callers receive and replay only its encoding.
+type StateScanCursor struct {
+	UserID    string
+	SessionID string
+	RunID     string
+	Kind      string
+}
+
 // Sentinel errors. Callers compare via errors.Is.
 var (
 	// ErrNotFound — Load / LoadByEventID was called for a key that
@@ -193,6 +244,9 @@ var (
 	// but different Bytes (or routed to a different key). Tells the
 	// caller a retry policy bug exists upstream.
 	ErrIdempotencyConflict = errors.New("state: idempotency conflict")
+	// ErrConditionFailed — SaveIf observed a slot whose EventID did not match
+	// its exact expectation. No SaveIf write was applied.
+	ErrConditionFailed = errors.New("state: condition failed")
 	// ErrIdentityRequired — Save / Load / Delete called with a
 	// Quadruple missing one of (tenant, user, session). Empty RunID
 	// is allowed for session-scoped state.
@@ -205,10 +259,20 @@ var (
 	// ErrUnknownDriver — Open was asked for a driver name no
 	// registered factory handles.
 	ErrUnknownDriver = errors.New("state: unknown driver")
-	// ErrMaintenanceScopeRequired — ListKind was called without the
+	// ErrMaintenanceScopeRequired — a maintenance scan was called without the
 	// explicit ListScope.MaintenanceScoped claim. The cross-identity
 	// scan fails closed (CLAUDE.md §6).
-	ErrMaintenanceScopeRequired = errors.New("state: ListKind requires an explicit maintenance scope claim")
+	ErrMaintenanceScopeRequired = errors.New("state: maintenance scan requires an explicit maintenance scope claim")
+	// ErrInvalidScan — ScanKindForTenant received invalid bounds, scope,
+	// tenant/prefix, or an invalid/mismatched opaque continuation.
+	ErrInvalidScan = errors.New("state: invalid tenant scan")
+)
+
+const (
+	// MaxStateScanLimit bounds one maintenance page so no caller can turn the
+	// tenant scan into an accidental unbounded read.
+	MaxStateScanLimit       = 256
+	maxStateScanCursorBytes = 1024
 )
 
 // ValidateIdentity checks that the triple is fully specified. Empty
@@ -232,6 +296,46 @@ func ValidateRecord(r StateRecord) error {
 		return ErrInvalidRecord
 	}
 	if r.Kind == "" {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
+// ValidateSaveIf validates the common conditional-save invariants before a
+// driver touches storage. Every expected slot is identity scoped, unique, and
+// the next slot is one of the predicates so SaveIf cannot become an
+// unconstrained conditional write.
+func ValidateSaveIf(expectations []SlotExpectation, next StateRecord) error {
+	if err := ValidateRecord(next); err != nil {
+		return err
+	}
+	if len(expectations) == 0 {
+		return ErrInvalidRecord
+	}
+	type slot struct {
+		q    identity.Quadruple
+		kind string
+	}
+	seen := make(map[slot]struct{}, len(expectations))
+	nextSlot := slot{q: next.Identity, kind: next.Kind}
+	foundNext := false
+	for _, expectation := range expectations {
+		if err := ValidateIdentity(expectation.Identity); err != nil {
+			return err
+		}
+		if expectation.Kind == "" {
+			return ErrInvalidRecord
+		}
+		s := slot{q: expectation.Identity, kind: expectation.Kind}
+		if _, ok := seen[s]; ok {
+			return ErrInvalidRecord
+		}
+		seen[s] = struct{}{}
+		if s == nextSlot {
+			foundNext = true
+		}
+	}
+	if !foundNext {
 		return ErrInvalidRecord
 	}
 	return nil
@@ -262,6 +366,83 @@ func ValidateListKindForIdentity(id identity.Quadruple, kindPrefix string) error
 		return ErrInvalidRecord
 	}
 	return nil
+}
+
+// ValidateScanKindForTenant checks the fail-closed preconditions shared by
+// every ScanKindForTenant implementation. It intentionally returns
+// ErrInvalidScan for all malformed scan request details so operators do not
+// need driver-specific parsing errors to identify a bad continuation.
+func ValidateScanKindForTenant(scope ListScope, tenantID, literalKindPrefix string, limit int) error {
+	if !scope.MaintenanceScoped {
+		return ErrMaintenanceScopeRequired
+	}
+	if tenantID == "" || literalKindPrefix == "" || limit < 1 || limit > MaxStateScanLimit {
+		return ErrInvalidScan
+	}
+	return nil
+}
+
+type encodedStateScanCursor struct {
+	Version   int    `json:"v"`
+	TenantID  string `json:"t"`
+	Prefix    string `json:"p"`
+	Scoped    bool   `json:"m"`
+	UserID    string `json:"u"`
+	SessionID string `json:"s"`
+	RunID     string `json:"r"`
+	Kind      string `json:"k"`
+}
+
+// DecodeStateScanContinuation strictly decodes a ScanKindForTenant cursor.
+// The cursor is intentionally bound to the query dimensions, preventing a
+// cursor issued for one tenant or prefix from widening another scan.
+func DecodeStateScanContinuation(continuation, tenantID, literalKindPrefix string, scope ListScope) (StateScanCursor, error) {
+	if err := ValidateScanKindForTenant(scope, tenantID, literalKindPrefix, 1); err != nil {
+		return StateScanCursor{}, err
+	}
+	if continuation == "" {
+		return StateScanCursor{}, nil
+	}
+	if len(continuation) > base64.RawURLEncoding.EncodedLen(maxStateScanCursorBytes) {
+		return StateScanCursor{}, ErrInvalidScan
+	}
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(continuation)
+	if err != nil || len(raw) == 0 || len(raw) > maxStateScanCursorBytes {
+		return StateScanCursor{}, ErrInvalidScan
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var encoded encodedStateScanCursor
+	if err := decoder.Decode(&encoded); err != nil {
+		return StateScanCursor{}, ErrInvalidScan
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return StateScanCursor{}, ErrInvalidScan
+	}
+	if encoded.Version != 1 || !encoded.Scoped || encoded.TenantID != tenantID || encoded.Prefix != literalKindPrefix || encoded.UserID == "" || encoded.SessionID == "" || encoded.Kind == "" || !strings.HasPrefix(encoded.Kind, literalKindPrefix) {
+		return StateScanCursor{}, ErrInvalidScan
+	}
+	return StateScanCursor{UserID: encoded.UserID, SessionID: encoded.SessionID, RunID: encoded.RunID, Kind: encoded.Kind}, nil
+}
+
+// EncodeStateScanContinuation returns the sole opaque continuation format
+// accepted by DecodeStateScanContinuation. Driver code must only pass a tuple
+// it just returned, preserving strict monotonic keyset progression.
+func EncodeStateScanContinuation(cursor StateScanCursor, tenantID, literalKindPrefix string, scope ListScope) (string, error) {
+	if err := ValidateScanKindForTenant(scope, tenantID, literalKindPrefix, 1); err != nil {
+		return "", err
+	}
+	if cursor.UserID == "" || cursor.SessionID == "" || cursor.Kind == "" || !strings.HasPrefix(cursor.Kind, literalKindPrefix) {
+		return "", ErrInvalidScan
+	}
+	raw, err := json.Marshal(encodedStateScanCursor{Version: 1, TenantID: tenantID, Prefix: literalKindPrefix, Scoped: scope.MaintenanceScoped, UserID: cursor.UserID, SessionID: cursor.SessionID, RunID: cursor.RunID, Kind: cursor.Kind})
+	if err != nil {
+		return "", fmt.Errorf("state: encode scan continuation: %w", err)
+	}
+	if len(raw) > maxStateScanCursorBytes {
+		return "", ErrInvalidScan
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 // ctxKey is the unexported key under which a StateStore is propagated

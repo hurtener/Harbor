@@ -247,14 +247,15 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 		return agentcfg.Revision{}, err
 	}
 	q := keys.quad
+	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys)
+	if err != nil {
+		return agentcfg.Revision{}, err
+	}
 
-	// ONE read serves both the precondition and the idempotence check, so
-	// the expectation is compared against the LATEST active revision with
-	// no extra store round-trip. The whole read-modify-write below runs
-	// under the agent-config service's per-owner write lock, which is the
-	// ONLY source of atomicity here — the StateStore enforces no CAS, so
-	// the guarantee is exact in-process and absent across processes (see
-	// agentcfg.SetOptions).
+	// ONE read serves both the precondition and the idempotence check. The
+	// expected pointer generation captured above is rechecked by SaveIf at
+	// publication, so a concurrent Runtime cannot turn this read into a
+	// lost update. The per-owner write lock only reduces same-process churn.
 	active, hasActive, err := r.loadActiveRevision(ctx, q, keys.activeKind, keys.revPfx)
 	if err != nil {
 		return agentcfg.Revision{}, err
@@ -297,7 +298,15 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	if err := r.saveRevision(ctx, q, keys.revPfx, rec); err != nil {
 		return agentcfg.Revision{}, r.compensateFailedRevisionSave(ctx, q, keys.revPfx, rec, err)
 	}
-	if err := r.saveActive(ctx, q, keys.activeKind, revID, now); err != nil {
+	if err := r.saveActiveIf(ctx, expectations, q, keys.activeKind, revID, now); err != nil {
+		if errors.Is(err, state.ErrConditionFailed) {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensationTimeout)
+			defer cancel()
+			if deleteErr := r.state.Delete(cleanupCtx, q, keys.revPfx+revID); deleteErr != nil {
+				return agentcfg.Revision{}, fmt.Errorf("%w: conditional active-pointer conflict and candidate revision cleanup failed: %w", agentcfg.ErrRevisionConflict, deleteErr)
+			}
+			return agentcfg.Revision{}, fmt.Errorf("%w: active pointer changed during save", agentcfg.ErrRevisionConflict)
+		}
 		// The revision record landed and the pointer that would have named
 		// it did not — OR the pointer did land and the store reported
 		// otherwise. Compensate — see [registry.compensateOrphanRevision] for
@@ -432,6 +441,10 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 		return agentcfg.Revision{}, err
 	}
 	q := keys.quad
+	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys)
+	if err != nil {
+		return agentcfg.Revision{}, err
+	}
 	// Load the target revision — a missing target fails loud (never a
 	// silent repoint to nothing). This read also proves the revision was
 	// never mutated by the repoint below.
@@ -462,7 +475,10 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 		}
 	}
 	now := r.clock().UTC()
-	if err := r.saveActive(ctx, q, keys.activeKind, revisionID, now); err != nil {
+	if err := r.saveActiveIf(ctx, expectations, q, keys.activeKind, revisionID, now); err != nil {
+		if errors.Is(err, state.ErrConditionFailed) {
+			return agentcfg.Revision{}, fmt.Errorf("%w: active pointer changed during rollback", agentcfg.ErrRevisionConflict)
+		}
 		return agentcfg.Revision{}, err
 	}
 	rev := target.toRevision()
@@ -612,20 +628,53 @@ func (r *registry) saveRevision(ctx context.Context, q identity.Quadruple, revPf
 	return nil
 }
 
-func (r *registry) saveActive(ctx context.Context, q identity.Quadruple, activeKind, revisionID string, now time.Time) error {
+// activeExpectations returns the raw active-pointer generations a config write
+// must retain. Agent writes condition their own pointer. User writes additionally
+// condition the agent-tier lifecycle slot so a terminal lifecycle transition
+// wins over a user write that started earlier.
+func (r *registry) activeExpectations(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope, keys scopeKeys) ([]state.SlotExpectation, error) {
+	local, err := r.slotExpectation(ctx, keys.quad, keys.activeKind)
+	if err != nil {
+		return nil, err
+	}
+	if scope != agentcfg.ConfigScopeUser {
+		return []state.SlotExpectation{local}, nil
+	}
+	agent, err := r.slotExpectation(ctx, syntheticQuad(id.TenantID, agentID), kindActive)
+	if err != nil {
+		return nil, err
+	}
+	return []state.SlotExpectation{local, agent}, nil
+}
+
+func (r *registry) slotExpectation(ctx context.Context, q identity.Quadruple, kind string) (state.SlotExpectation, error) {
+	rec, err := r.state.Load(ctx, q, kind)
+	if errors.Is(err, state.ErrNotFound) {
+		return state.SlotExpectation{Identity: q, Kind: kind}, nil
+	}
+	if err != nil {
+		return state.SlotExpectation{}, fmt.Errorf("%w: load active pointer generation: %w", agentcfg.ErrStateUnavailable, err)
+	}
+	return state.SlotExpectation{Identity: q, Kind: kind, ExpectedEventID: rec.ID}, nil
+}
+
+func (r *registry) saveActiveIf(ctx context.Context, expectations []state.SlotExpectation, q identity.Quadruple, activeKind, revisionID string, now time.Time) error {
 	ar := activeRecord{Schema: recordSchema, RevisionID: revisionID, UpdatedAt: now}
 	buf, err := json.Marshal(ar)
 	if err != nil {
 		return fmt.Errorf("agentcfg/statestore: marshal active pointer: %w", err)
 	}
-	if err := r.state.Save(ctx, state.StateRecord{
+	if err := r.state.SaveIf(ctx, expectations, state.StateRecord{
 		ID:        state.NewEventID(),
 		Identity:  q,
 		Kind:      activeKind,
 		Bytes:     buf,
 		UpdatedAt: now,
 	}); err != nil {
-		return fmt.Errorf("%w: save active pointer: %w", agentcfg.ErrStateUnavailable, err)
+		if errors.Is(err, state.ErrConditionFailed) {
+			return err
+		}
+		return fmt.Errorf("%w: conditional save active pointer: %w", agentcfg.ErrStateUnavailable, err)
 	}
 	return nil
 }

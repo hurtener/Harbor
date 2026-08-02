@@ -29,6 +29,10 @@ func (failingStateStore) Save(_ context.Context, _ state.StateRecord) error {
 	return errStateProbe
 }
 
+func (failingStateStore) SaveIf(_ context.Context, _ []state.SlotExpectation, _ state.StateRecord) error {
+	return errStateProbe
+}
+
 func (failingStateStore) Load(_ context.Context, _ identity.Quadruple, _ string) (state.StateRecord, error) {
 	return state.StateRecord{}, errStateProbe
 }
@@ -51,6 +55,10 @@ func (failingStateStore) ListKind(_ context.Context, _ state.ListScope, _ string
 
 func (failingStateStore) ListKindForIdentity(_ context.Context, _ identity.Quadruple, _ string) ([]state.StateRecord, error) {
 	return nil, errStateProbe
+}
+
+func (failingStateStore) ScanKindForTenant(_ context.Context, _ state.ListScope, _ string, _ string, _ int, _ string) (state.StateScanPage, error) {
+	return state.StateScanPage{}, errStateProbe
 }
 
 func (failingStateStore) Close(_ context.Context) error { return nil }

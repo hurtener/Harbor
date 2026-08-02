@@ -2,6 +2,8 @@ package state_test
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -72,6 +74,168 @@ func TestValidateRecord_Cases(t *testing.T) {
 	noKind.Kind = ""
 	if err := state.ValidateRecord(noKind); !errors.Is(err, state.ErrInvalidRecord) {
 		t.Errorf("empty Kind: err=%v, want ErrInvalidRecord", err)
+	}
+}
+
+func TestValidateSaveIf_Cases(t *testing.T) {
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}}
+	next := state.StateRecord{ID: "01HABXXX", Identity: q, Kind: "next", Bytes: []byte("x")}
+	if err := state.ValidateSaveIf([]state.SlotExpectation{{Identity: q, Kind: next.Kind}}, next); err != nil {
+		t.Fatalf("matching expected-absence predicate: %v", err)
+	}
+	cases := []struct {
+		name         string
+		expectations []state.SlotExpectation
+		record       state.StateRecord
+	}{
+		{name: "invalid next", expectations: []state.SlotExpectation{{Identity: q, Kind: next.Kind}}, record: state.StateRecord{Identity: q, Kind: next.Kind}},
+		{name: "empty predicates", record: next},
+		{name: "incomplete expected identity", expectations: []state.SlotExpectation{{Kind: next.Kind}}, record: next},
+		{name: "empty expected kind", expectations: []state.SlotExpectation{{Identity: q}}, record: next},
+		{name: "duplicate slot", expectations: []state.SlotExpectation{{Identity: q, Kind: next.Kind}, {Identity: q, Kind: next.Kind}}, record: next},
+		{name: "next slot not conditioned", expectations: []state.SlotExpectation{{Identity: q, Kind: "other"}}, record: next},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := state.ValidateSaveIf(tc.expectations, tc.record); !errors.Is(err, state.ErrInvalidRecord) && !errors.Is(err, state.ErrIdentityRequired) {
+				t.Fatalf("ValidateSaveIf = %v, want validation sentinel", err)
+			}
+		})
+	}
+}
+
+func TestValidateListScopes_Cases(t *testing.T) {
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}}
+	validScope := state.ListScope{MaintenanceScoped: true}
+	if err := state.ValidateListKind(validScope, "prefix"); err != nil {
+		t.Fatalf("ValidateListKind valid: %v", err)
+	}
+	if err := state.ValidateListKind(state.ListScope{}, "prefix"); !errors.Is(err, state.ErrMaintenanceScopeRequired) {
+		t.Fatalf("ValidateListKind missing scope = %v", err)
+	}
+	if err := state.ValidateListKind(validScope, ""); !errors.Is(err, state.ErrInvalidRecord) {
+		t.Fatalf("ValidateListKind empty prefix = %v", err)
+	}
+	if err := state.ValidateListKindForIdentity(q, "prefix"); err != nil {
+		t.Fatalf("ValidateListKindForIdentity valid: %v", err)
+	}
+	if err := state.ValidateListKindForIdentity(identity.Quadruple{}, "prefix"); !errors.Is(err, state.ErrIdentityRequired) {
+		t.Fatalf("ValidateListKindForIdentity missing identity = %v", err)
+	}
+	if err := state.ValidateListKindForIdentity(q, ""); !errors.Is(err, state.ErrInvalidRecord) {
+		t.Fatalf("ValidateListKindForIdentity empty prefix = %v", err)
+	}
+}
+
+func TestTenantScanValidationAndContinuation_Cases(t *testing.T) {
+	scope := state.ListScope{MaintenanceScoped: true}
+	if err := state.ValidateScanKindForTenant(scope, "tenant", "prefix", 1); err != nil {
+		t.Fatalf("valid tenant scan rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name           string
+		scope          state.ListScope
+		tenant, prefix string
+		limit          int
+		want           error
+	}{
+		{name: "scope", tenant: "tenant", prefix: "prefix", limit: 1, want: state.ErrMaintenanceScopeRequired},
+		{name: "tenant", scope: scope, prefix: "prefix", limit: 1, want: state.ErrInvalidScan},
+		{name: "prefix", scope: scope, tenant: "tenant", limit: 1, want: state.ErrInvalidScan},
+		{name: "zero limit", scope: scope, tenant: "tenant", prefix: "prefix", want: state.ErrInvalidScan},
+		{name: "oversized limit", scope: scope, tenant: "tenant", prefix: "prefix", limit: state.MaxStateScanLimit + 1, want: state.ErrInvalidScan},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := state.ValidateScanKindForTenant(tc.scope, tc.tenant, tc.prefix, tc.limit); !errors.Is(err, tc.want) {
+				t.Fatalf("ValidateScanKindForTenant = %v, want %v", err, tc.want)
+			}
+		})
+	}
+
+	cursor := state.StateScanCursor{UserID: "user", SessionID: "session", RunID: "run", Kind: "prefix.record"}
+	encoded, err := state.EncodeStateScanContinuation(cursor, "tenant", "prefix", scope)
+	if err != nil {
+		t.Fatalf("EncodeStateScanContinuation: %v", err)
+	}
+	got, err := state.DecodeStateScanContinuation(encoded, "tenant", "prefix", scope)
+	if err != nil || got != cursor {
+		t.Fatalf("DecodeStateScanContinuation = %+v, %v; want %+v", got, err, cursor)
+	}
+	for _, tc := range []struct {
+		name     string
+		tenantID string
+		prefix   string
+		scope    state.ListScope
+		wantErr  error
+	}{
+		{name: "valid empty continuation", tenantID: "tenant", prefix: "prefix", scope: scope},
+		{name: "empty tenant", prefix: "prefix", scope: scope, wantErr: state.ErrInvalidScan},
+		{name: "empty prefix", tenantID: "tenant", scope: scope, wantErr: state.ErrInvalidScan},
+		{name: "missing maintenance scope", tenantID: "tenant", prefix: "prefix", wantErr: state.ErrMaintenanceScopeRequired},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := state.DecodeStateScanContinuation("", tc.tenantID, tc.prefix, tc.scope)
+			if tc.wantErr == nil {
+				if err != nil || got != (state.StateScanCursor{}) {
+					t.Fatalf("DecodeStateScanContinuation(empty) = (%+v, %v), want zero cursor and nil", got, err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("DecodeStateScanContinuation(empty) error = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+	if _, err := state.EncodeStateScanContinuation(state.StateScanCursor{}, "tenant", "prefix", scope); !errors.Is(err, state.ErrInvalidScan) {
+		t.Fatalf("empty cursor = %v, want ErrInvalidScan", err)
+	}
+	if _, err := state.EncodeStateScanContinuation(state.StateScanCursor{UserID: strings.Repeat("x", 2000), SessionID: "s", Kind: "prefix.k"}, "tenant", "prefix", scope); !errors.Is(err, state.ErrInvalidScan) {
+		t.Fatalf("oversized cursor = %v, want ErrInvalidScan", err)
+	}
+	encodeFixture := func(fields map[string]any) string {
+		raw, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatalf("marshal cursor fixture: %v", err)
+		}
+		return base64.RawURLEncoding.EncodeToString(raw)
+	}
+	baseFields := func() map[string]any {
+		return map[string]any{"v": 1, "t": "tenant", "p": "prefix", "m": true, "u": "u", "s": "s", "r": "", "k": "prefix.k"}
+	}
+	unknownFields := baseFields()
+	unknownFields["x"] = 1
+	wrongVersion := baseFields()
+	wrongVersion["v"] = 2
+	incompleteTuple := baseFields()
+	incompleteTuple["u"] = ""
+	kindOutsidePrefix := baseFields()
+	kindOutsidePrefix["k"] = "other.k"
+	trailingRaw, err := json.Marshal(baseFields())
+	if err != nil {
+		t.Fatalf("marshal trailing cursor fixture: %v", err)
+	}
+	trailing := base64.RawURLEncoding.EncodeToString(append(trailingRaw, []byte("{}")...))
+	for _, tc := range []struct {
+		name, continuation, tenant, prefix string
+		scope                              state.ListScope
+		want                               error
+	}{
+		{name: "scope", continuation: encoded, tenant: "tenant", prefix: "prefix", want: state.ErrMaintenanceScopeRequired},
+		{name: "base64", continuation: "%%%", tenant: "tenant", prefix: "prefix", scope: scope, want: state.ErrInvalidScan},
+		{name: "empty object", continuation: "e30", tenant: "tenant", prefix: "prefix", scope: scope, want: state.ErrInvalidScan},
+		{name: "unknown field", continuation: encodeFixture(unknownFields), tenant: "tenant", prefix: "prefix", scope: scope, want: state.ErrInvalidScan},
+		{name: "multiple values", continuation: trailing, tenant: "tenant", prefix: "prefix", scope: scope, want: state.ErrInvalidScan},
+		{name: "wrong version", continuation: encodeFixture(wrongVersion), tenant: "tenant", prefix: "prefix", scope: scope, want: state.ErrInvalidScan},
+		{name: "incomplete tuple", continuation: encodeFixture(incompleteTuple), tenant: "tenant", prefix: "prefix", scope: scope, want: state.ErrInvalidScan},
+		{name: "kind outside prefix", continuation: encodeFixture(kindOutsidePrefix), tenant: "tenant", prefix: "prefix", scope: scope, want: state.ErrInvalidScan},
+		{name: "too long", continuation: strings.Repeat("a", 2000), tenant: "tenant", prefix: "prefix", scope: scope, want: state.ErrInvalidScan},
+		{name: "query mismatch", continuation: encoded, tenant: "other", prefix: "prefix", scope: scope, want: state.ErrInvalidScan},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := state.DecodeStateScanContinuation(tc.continuation, tc.tenant, tc.prefix, tc.scope); !errors.Is(err, tc.want) {
+				t.Fatalf("DecodeStateScanContinuation = %v, want %v", err, tc.want)
+			}
+		})
 	}
 }
 

@@ -39,6 +39,14 @@ func (f *faultStore) Save(ctx context.Context, r state.StateRecord) error {
 	return f.StateStore.Save(ctx, r)
 }
 
+func (f *faultStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if f.faultSave {
+		f.faultSave = false
+		return errInjected
+	}
+	return f.StateStore.SaveIf(ctx, expectations, next)
+}
+
 func (f *faultStore) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
 	if f.faultLoad {
 		f.faultLoad = false

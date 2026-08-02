@@ -39,7 +39,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
+	"slices"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -233,6 +234,135 @@ func (d *driver) Save(ctx context.Context, r state.StateRecord) error {
 	return nil
 }
 
+// SaveIf atomically verifies exact event-ID generations and writes next.
+// Advisory transaction locks cover both present rows and absent slots; plain
+// SELECT FOR UPDATE cannot lock the latter and would permit a first-write
+// phantom. Sorting gives multi-slot callers one lock order.
+func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if d.closed.Load() {
+		return state.ErrStoreClosed
+	}
+	if err := state.ValidateSaveIf(expectations, next); err != nil {
+		return err
+	}
+	// The ordered advisory locks provide the serialisation guarantee, including
+	// absent slots. Read committed is intentional: a waiter must observe the
+	// winner that released its advisory lock, rather than retain a serializable
+	// snapshot from before the wait and report a retry-class database error.
+	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return d.translateErr(err, "postgres: begin conditional tx")
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback() //nolint:errcheck // the caller receives the original error
+		}
+	}()
+	lockIDs, err := conditionalAdvisoryLockIDs(ctx, tx, expectations, postgresAdvisoryLockID)
+	if err != nil {
+		return d.translateErr(err, "postgres: conditional advisory lock ID")
+	}
+	for _, lockID := range lockIDs {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockID); err != nil {
+			return d.translateErr(err, "postgres: conditional advisory lock")
+		}
+	}
+	for _, expectation := range expectations {
+		var actual string
+		err := tx.QueryRowContext(ctx, `SELECT event_id FROM state_records WHERE tenant_id=$1 AND user_id=$2 AND session_id=$3 AND run_id=$4 AND kind=$5`,
+			expectation.Identity.TenantID, expectation.Identity.UserID, expectation.Identity.SessionID, expectation.Identity.RunID, expectation.Kind).Scan(&actual)
+		if expectation.ExpectedEventID == "" {
+			if err == nil {
+				return fmt.Errorf("postgres: %w: expected absent slot is present", state.ErrConditionFailed)
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return d.translateErr(err, "postgres: conditional read")
+			}
+			continue
+		}
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && actual != string(expectation.ExpectedEventID)) {
+			return fmt.Errorf("postgres: %w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+		}
+		if err != nil {
+			return d.translateErr(err, "postgres: conditional read")
+		}
+	}
+	prev, prevOK, err := loadByEventIDTx(ctx, tx, next.ID)
+	if err != nil {
+		return err
+	}
+	if prevOK {
+		if prev.Identity != next.Identity || prev.Kind != next.Kind || !bytesEqual(prev.Bytes, next.Bytes) || prev.Version != next.Version {
+			return fmt.Errorf("postgres: %w: next EventID %q conflicts", state.ErrIdempotencyConflict, next.ID)
+		}
+		if err := tx.Commit(); err != nil {
+			return d.translateErr(err, "postgres: commit conditional idempotent no-op")
+		}
+		committed = true
+		return nil
+	}
+	payload := next.Bytes
+	if payload == nil {
+		payload = []byte{}
+	}
+	updatedAt := next.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	const upsert = `INSERT INTO state_records (tenant_id, user_id, session_id, run_id, kind, event_id, version, bytes, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (tenant_id, user_id, session_id, run_id, kind) DO UPDATE SET event_id=EXCLUDED.event_id, version=EXCLUDED.version, bytes=EXCLUDED.bytes, updated_at=EXCLUDED.updated_at`
+	if _, err := tx.ExecContext(ctx, upsert, next.Identity.TenantID, next.Identity.UserID, next.Identity.SessionID, next.Identity.RunID, next.Kind, string(next.ID), next.Version, payload, updatedAt); err != nil {
+		return d.translateUpsertErr(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return d.translateErr(err, "postgres: commit conditional save")
+	}
+	committed = true
+	return nil
+}
+
+func postgresSlotKey(expectation state.SlotExpectation) string {
+	q := expectation.Identity
+	// Length prefixes make this an injective representation even if a caller
+	// supplies delimiters inside an identity component or kind.
+	return fmt.Sprintf("%d:%s%d:%s%d:%s%d:%s%d:%s", len(q.TenantID), q.TenantID, len(q.UserID), q.UserID, len(q.SessionID), q.SessionID, len(q.RunID), q.RunID, len(expectation.Kind), expectation.Kind)
+}
+
+// advisoryLockID derives the exact signed bigint used as a PostgreSQL
+// advisory lock key. Keeping it injectable makes collision ordering testable
+// without requiring a deliberately collided PostgreSQL hash.
+type advisoryLockID func(context.Context, *sql.Tx, string) (int64, error)
+
+// conditionalAdvisoryLockIDs derives every PostgreSQL lock key before any
+// acquisition, then sorts and deduplicates the actual signed bigint values.
+// A hash collision is therefore only additional serialisation: it cannot
+// cause duplicate acquisition or reverse the multi-slot lock order.
+func conditionalAdvisoryLockIDs(ctx context.Context, tx *sql.Tx, expectations []state.SlotExpectation, lockID advisoryLockID) ([]int64, error) {
+	ids := make([]int64, 0, len(expectations))
+	for _, expectation := range expectations {
+		id, err := lockID(ctx, tx, postgresSlotKey(expectation))
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return slices.Compact(ids), nil
+}
+
+// postgresAdvisoryLockID asks PostgreSQL for the same hash value that the
+// advisory-lock call uses, so Go never assumes hash ordering matches slot-key
+// ordering.
+func postgresAdvisoryLockID(ctx context.Context, tx *sql.Tx, key string) (int64, error) {
+	var id int64
+	if err := tx.QueryRowContext(ctx, `SELECT hashtextextended($1, 0)`, key).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 // Load implements state.StateStore.
 func (d *driver) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
 	if d.closed.Load() {
@@ -340,9 +470,8 @@ func (d *driver) Delete(ctx context.Context, q identity.Quadruple, kind string) 
 }
 
 // ListKind implements state.StateStore — the explicitly-elevated
-// maintenance scan (RFC §6.11). The prefix matches literally:
-// LIKE metacharacters in kindPrefix are escaped so a prefix containing
-// `%` or `_` cannot widen the scan.
+// maintenance scan (RFC §6.11). The prefix is a literal, case-sensitive
+// C-collated substring; wildcard and backslash characters cannot widen it.
 // DeleteScope implements state.StateStore — the kind-agnostic cascade
 // primitive. A single DELETE removes every row whose (tenant, user,
 // session) matches id, regardless of run or kind. Identity-scoped and
@@ -381,9 +510,9 @@ func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix
 	const q1 = `
 		SELECT tenant_id, user_id, session_id, run_id, kind, event_id, version, bytes, updated_at
 		FROM state_records
-		WHERE kind LIKE $1 ESCAPE '\'
+		WHERE left(kind, char_length($1)) COLLATE "C" = $1 COLLATE "C"
 	`
-	rows, err := d.db.QueryContext(ctx, q1, escapeLikePrefix(kindPrefix)+"%")
+	rows, err := d.db.QueryContext(ctx, q1, kindPrefix)
 	if err != nil {
 		return nil, d.translateErr(err, "postgres: list kind")
 	}
@@ -430,9 +559,9 @@ func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple,
 		SELECT tenant_id, user_id, session_id, run_id, kind, event_id, version, bytes, updated_at
 		FROM state_records
 		WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND run_id = $4
-		  AND kind LIKE $5 ESCAPE '\'
+		  AND left(kind, char_length($5)) COLLATE "C" = $5 COLLATE "C"
 	`
-	rows, err := d.db.QueryContext(ctx, q1, id.TenantID, id.UserID, id.SessionID, id.RunID, escapeLikePrefix(kindPrefix)+"%")
+	rows, err := d.db.QueryContext(ctx, q1, id.TenantID, id.UserID, id.SessionID, id.RunID, kindPrefix)
 	if err != nil {
 		return nil, d.translateErr(err, "postgres: list kind for identity")
 	}
@@ -454,12 +583,67 @@ func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple,
 	return out, nil
 }
 
-// escapeLikePrefix escapes the SQL LIKE metacharacters (`%`, `_`, and
-// the escape character itself) so a caller-supplied kind prefix
-// matches literally under `LIKE $1 ESCAPE '\'`.
-func escapeLikePrefix(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
-	return r.Replace(s)
+// ScanKindForTenant implements the bounded deterministic maintenance scan.
+// The tenant and literal prefix are filtered in Postgres; keyset pagination
+// uses the same explicit lexicographic tuple as the cursor contract.
+func (d *driver) ScanKindForTenant(ctx context.Context, scope state.ListScope, tenantID, literalKindPrefix string, limit int, continuation string) (state.StateScanPage, error) {
+	if d.closed.Load() {
+		return state.StateScanPage{}, state.ErrStoreClosed
+	}
+	if err := state.ValidateScanKindForTenant(scope, tenantID, literalKindPrefix, limit); err != nil {
+		return state.StateScanPage{}, err
+	}
+	cursor, err := state.DecodeStateScanContinuation(continuation, tenantID, literalKindPrefix, scope)
+	if err != nil {
+		return state.StateScanPage{}, err
+	}
+	const base = `
+		SELECT tenant_id, user_id, session_id, run_id, kind, event_id, version, bytes, updated_at
+		FROM state_records
+		WHERE tenant_id = $1 AND left(kind, char_length($2)) COLLATE "C" = $2 COLLATE "C"
+	`
+	const after = `
+		  AND (user_id COLLATE "C" > $3 OR (user_id COLLATE "C" = $3 AND session_id COLLATE "C" > $4) OR (user_id COLLATE "C" = $3 AND session_id COLLATE "C" = $4 AND run_id COLLATE "C" > $5) OR (user_id COLLATE "C" = $3 AND session_id COLLATE "C" = $4 AND run_id COLLATE "C" = $5 AND kind COLLATE "C" > $6))
+	`
+	args := []any{tenantID, literalKindPrefix}
+	query := base
+	if cursor.UserID != "" {
+		query += after
+		args = append(args, cursor.UserID, cursor.SessionID, cursor.RunID, cursor.Kind)
+		query += ` ORDER BY user_id COLLATE "C" ASC, session_id COLLATE "C" ASC, run_id COLLATE "C" ASC, kind COLLATE "C" ASC LIMIT $7`
+	} else {
+		query += ` ORDER BY user_id COLLATE "C" ASC, session_id COLLATE "C" ASC, run_id COLLATE "C" ASC, kind COLLATE "C" ASC LIMIT $3`
+	}
+	args = append(args, limit+1)
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return state.StateScanPage{}, d.translateErr(err, "postgres: scan kind for tenant")
+	}
+	defer rows.Close()
+	page := state.StateScanPage{Records: make([]state.StateRecord, 0, limit)}
+	for rows.Next() {
+		var tenantID, userID, sessionID, runID, kind, eventID string
+		var version int
+		var buf []byte
+		var updatedAt time.Time
+		if err := rows.Scan(&tenantID, &userID, &sessionID, &runID, &kind, &eventID, &version, &buf, &updatedAt); err != nil {
+			return state.StateScanPage{}, d.translateErr(err, "postgres: scan kind for tenant row")
+		}
+		page.Records = append(page.Records, state.StateRecord{ID: state.EventID(eventID), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenantID, UserID: userID, SessionID: sessionID}, RunID: runID}, Kind: kind, Version: version, Bytes: buf, UpdatedAt: updatedAt})
+	}
+	if err := rows.Err(); err != nil {
+		return state.StateScanPage{}, d.translateErr(err, "postgres: scan kind for tenant rows")
+	}
+	if len(page.Records) <= limit {
+		return page, nil
+	}
+	page.Records = page.Records[:limit]
+	last := page.Records[len(page.Records)-1]
+	page.Continuation, err = state.EncodeStateScanContinuation(state.StateScanCursor{UserID: last.Identity.UserID, SessionID: last.Identity.SessionID, RunID: last.Identity.RunID, Kind: last.Kind}, tenantID, literalKindPrefix, scope)
+	if err != nil {
+		return state.StateScanPage{}, err
+	}
+	return page, nil
 }
 
 // Close implements state.StateStore. Idempotent — a second call is a

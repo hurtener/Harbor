@@ -239,8 +239,7 @@ func TestSessionReopenedPayload_ContentFree(t *testing.T) {
 
 // faultyLoadStore wraps a StateStore and forces Load to return a non-NotFound
 // error for any Kind carrying the erasure-observability prefix — the WARN-C
-// fault-injection seam for isErased's fail-closed path. All other methods
-// promote via embedding.
+// fault-injection seam for isErased's fail-closed path.
 type faultyLoadStore struct {
 	state.StateStore
 	failPrefix string
@@ -252,6 +251,10 @@ func (s *faultyLoadStore) Load(ctx context.Context, id identity.Quadruple, kind 
 		return state.StateRecord{}, s.failErr
 	}
 	return s.StateStore.Load(ctx, id, kind)
+}
+
+func (s *faultyLoadStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	return s.StateStore.SaveIf(ctx, expectations, next)
 }
 
 // TestRegistry_Reopen_IsErasedFailsClosed_WARNC pins WARN-C: a non-NotFound
@@ -355,6 +358,13 @@ func (s *faultySaveStore) Save(ctx context.Context, r state.StateRecord) error {
 		return s.failErr
 	}
 	return s.StateStore.Save(ctx, r)
+}
+
+func (s *faultySaveStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if s.failPrefix != "" && len(next.Kind) >= len(s.failPrefix) && next.Kind[:len(s.failPrefix)] == s.failPrefix {
+		return s.failErr
+	}
+	return s.StateStore.SaveIf(ctx, expectations, next)
 }
 
 // TestCascadeEraser_TombstoneSaveFailure_LoudAndKeepsLedger_WARN1 pins the

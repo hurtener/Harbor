@@ -92,6 +92,18 @@ func TestAugmentDSNForPragmas_RespectsExistingTxlock(t *testing.T) {
 	}
 }
 
+func TestAugmentDSNForPragmas_RejectsUnsafeTxlock(t *testing.T) {
+	for _, dsn := range []string{
+		"file:/tmp/x.sqlite?_txlock=deferred",
+		"/tmp/x.sqlite?_txlock=deferred",
+		"file:/tmp/x.sqlite?_txlock=immediate&_txlock=exclusive",
+	} {
+		if _, err := augmentDSNForPragmas(dsn); err == nil {
+			t.Errorf("augmentDSNForPragmas(%q) succeeded, want unsafe _txlock rejection", dsn)
+		}
+	}
+}
+
 func TestIsMemoryDSN(t *testing.T) {
 	cases := []struct {
 		dsn  string

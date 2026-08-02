@@ -249,6 +249,10 @@ type failingSaveStore struct {
 
 func (f failingSaveStore) Save(context.Context, state.StateRecord) error { return f.err }
 
+func (f failingSaveStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
+	return f.err
+}
+
 // TestE2E_DurableBus_WriteError_FailsLoud asserts a StateStore write
 // failure surfaces from Publish rather than being silently swallowed.
 func TestE2E_DurableBus_WriteError_FailsLoud(t *testing.T) {

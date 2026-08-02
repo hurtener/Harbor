@@ -322,6 +322,10 @@ func (s *phase145SaveFailStore) Save(_ context.Context, _ state.StateRecord) err
 	return errors.New("io: simulated save failure")
 }
 
+func (s *phase145SaveFailStore) SaveIf(_ context.Context, _ []state.SlotExpectation, _ state.StateRecord) error {
+	return errors.New("io: simulated save failure")
+}
+
 func (s *phase145SaveFailStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
 	return s.inner.Load(ctx, q, kind)
 }
@@ -344,6 +348,10 @@ func (s *phase145SaveFailStore) ListKind(ctx context.Context, scope state.ListSc
 
 func (s *phase145SaveFailStore) ListKindForIdentity(ctx context.Context, q identity.Quadruple, kind string) ([]state.StateRecord, error) {
 	return s.inner.ListKindForIdentity(ctx, q, kind)
+}
+
+func (s *phase145SaveFailStore) ScanKindForTenant(ctx context.Context, scope state.ListScope, tenantID, kind string, limit int, continuation string) (state.StateScanPage, error) {
+	return s.inner.ScanKindForTenant(ctx, scope, tenantID, kind, limit, continuation)
 }
 
 func (s *phase145SaveFailStore) Close(ctx context.Context) error { return s.inner.Close(ctx) }

@@ -195,8 +195,9 @@ func init() {
 //
 // Documented behavior (DSN format, RFC §10 stack-decisions): bare
 // file paths and the `:memory:` sentinel are the V1 supported inputs.
-// Operators who want richer URI forms can supply them directly; we
-// only add to whatever query string is present.
+// Operators who want richer URI forms can supply them directly. A supplied
+// `_txlock` must still be `immediate` or `exclusive`: a deferred transaction
+// can read a stale predicate before it tries to become the writer.
 func augmentDSNForPragmas(dsn string) (string, error) {
 	// Translate bare `:memory:` to a per-Open uniquely named
 	// shared-cache memory URI: shared across the pool, isolated
@@ -228,7 +229,10 @@ func augmentDSNForPragmas(dsn string) (string, error) {
 		for _, p := range pragmas {
 			q.Add("_pragma", p)
 		}
-		if q.Get("_txlock") == "" {
+		if err := validateTxlock(q["_txlock"]); err != nil {
+			return "", err
+		}
+		if len(q["_txlock"]) == 0 {
 			q.Set("_txlock", "immediate")
 		}
 		u.RawQuery = q.Encode()
@@ -236,18 +240,45 @@ func augmentDSNForPragmas(dsn string) (string, error) {
 	}
 
 	// Bare file path. We don't expect a `?` in a normal POSIX path,
-	// but we tolerate it: the substring after the first `?` is
-	// treated as an existing query string.
-	sep := "?"
-	if idx := strings.IndexByte(dsn, '?'); idx >= 0 {
-		sep = "&"
+	// but preserve the historic treatment of a suffix as query
+	// parameters so `_txlock` receives the same validation as URI DSNs.
+	base, rawQuery, hasQuery := strings.Cut(dsn, "?")
+	q := make(url.Values)
+	if hasQuery {
+		var err error
+		q, err = url.ParseQuery(rawQuery)
+		if err != nil {
+			return "", fmt.Errorf("parse path query: %w", err)
+		}
 	}
-	parts := make([]string, 0, len(pragmas)+1)
+	if err := validateTxlock(q["_txlock"]); err != nil {
+		return "", err
+	}
 	for _, p := range pragmas {
-		parts = append(parts, "_pragma="+url.QueryEscape(p))
+		q.Add("_pragma", p)
 	}
-	parts = append(parts, "_txlock=immediate")
-	return dsn + sep + strings.Join(parts, "&"), nil
+	if len(q["_txlock"]) == 0 {
+		q.Set("_txlock", "immediate")
+	}
+	return base + "?" + q.Encode(), nil
+}
+
+// validateTxlock preserves only transaction modes that acquire a write lock
+// before a conditional predicate is read. Multiple values are refused because
+// driver-specific precedence would make the conditional-write guarantee vague.
+func validateTxlock(values []string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	if len(values) != 1 {
+		return errors.New("multiple _txlock values are unsafe; expected immediate or exclusive")
+	}
+	switch strings.ToLower(values[0]) {
+	case "immediate", "exclusive":
+		return nil
+	default:
+		return fmt.Errorf("_txlock=%q is unsafe; expected immediate or exclusive", values[0])
+	}
 }
 
 // uniqueMemoryDSN mints a per-Open named in-memory database URI.
@@ -424,6 +455,78 @@ func (d *driver) Save(ctx context.Context, r state.StateRecord) error {
 	return nil
 }
 
+// SaveIf implements the mandatory multi-slot conditional save. SQLite permits
+// one writer at a time; the transaction keeps the predicate reads and next
+// write in that same serialized writer transaction.
+func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if d.closed.Load() {
+		return fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateSaveIf(expectations, next); err != nil {
+		return err
+	}
+	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return fmt.Errorf("state/sqlite: begin conditional tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback() //nolint:errcheck // the caller receives the original error
+		}
+	}()
+	for _, expectation := range expectations {
+		var actual string
+		err := tx.QueryRowContext(ctx, `SELECT event_id FROM state_records WHERE tenant=? AND user=? AND session=? AND run=? AND kind=?`,
+			expectation.Identity.TenantID, expectation.Identity.UserID, expectation.Identity.SessionID, expectation.Identity.RunID, expectation.Kind).Scan(&actual)
+		if expectation.ExpectedEventID == "" {
+			if err == nil {
+				return fmt.Errorf("state/sqlite: %w: expected absent slot is present", state.ErrConditionFailed)
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("state/sqlite: conditional read: %w", err)
+			}
+			continue
+		}
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && actual != string(expectation.ExpectedEventID)) {
+			return fmt.Errorf("state/sqlite: %w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+		}
+		if err != nil {
+			return fmt.Errorf("state/sqlite: conditional read: %w", err)
+		}
+	}
+	prevSlot, prevBytes, prevVersion, prevExists, err := lookupByEventID(ctx, tx, next.ID)
+	if err != nil {
+		return err
+	}
+	nextSlot := slotKey{Tenant: next.Identity.TenantID, User: next.Identity.UserID, Session: next.Identity.SessionID, Run: next.Identity.RunID, Kind: next.Kind}
+	if prevExists {
+		if prevSlot != nextSlot || !bytes.Equal(prevBytes, next.Bytes) || prevVersion != next.Version {
+			return fmt.Errorf("state/sqlite: %w: next EventID %q conflicts", state.ErrIdempotencyConflict, next.ID)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("state/sqlite: commit conditional idempotent no-op: %w", err)
+		}
+		committed = true
+		return nil
+	}
+	updatedAt := next.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	const upsert = `INSERT INTO state_records (tenant, user, session, run, kind, event_id, version, bytes, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tenant, user, session, run, kind) DO UPDATE SET event_id=excluded.event_id, version=excluded.version, bytes=excluded.bytes, updated_at=excluded.updated_at`
+	if _, err := tx.ExecContext(ctx, upsert, next.Identity.TenantID, next.Identity.UserID, next.Identity.SessionID, next.Identity.RunID, next.Kind, string(next.ID), next.Version, next.Bytes, updatedAt); err != nil {
+		return fmt.Errorf("state/sqlite: conditional upsert: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("state/sqlite: commit conditional save: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 // slotKey mirrors `internal/state/drivers/inmem`'s indexKey: a
 // struct-typed composite primary key that cannot be confused by
 // delimiters in tenant / user / session strings.
@@ -593,9 +696,8 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 }
 
 // ListKind implements state.StateStore — the explicitly-elevated
-// maintenance scan (RFC §6.11). The prefix matches literally:
-// LIKE metacharacters in kindPrefix are escaped so a prefix containing
-// `%` or `_` cannot widen the scan.
+// maintenance scan (RFC §6.11). The prefix is a literal, case-sensitive
+// BINARY substring; wildcard and backslash characters cannot widen it.
 func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix string) ([]state.StateRecord, error) {
 	if d.closed.Load() {
 		return nil, fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
@@ -607,8 +709,8 @@ func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix
 	const sel = `
         SELECT tenant, user, session, run, kind, event_id, version, bytes, updated_at
         FROM state_records
-        WHERE kind LIKE ? ESCAPE '\'`
-	rows, err := d.db.QueryContext(ctx, sel, escapeLikePrefix(kindPrefix)+"%")
+        WHERE substr(kind, 1, length(?)) = ? COLLATE BINARY`
+	rows, err := d.db.QueryContext(ctx, sel, kindPrefix, kindPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("state/sqlite: list kind: %w", err)
 	}
@@ -653,8 +755,8 @@ func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple,
         SELECT tenant, user, session, run, kind, event_id, version, bytes, updated_at
         FROM state_records
         WHERE tenant = ? AND user = ? AND session = ? AND run = ?
-          AND kind LIKE ? ESCAPE '\'`
-	rows, err := d.db.QueryContext(ctx, sel, id.TenantID, id.UserID, id.SessionID, id.RunID, escapeLikePrefix(kindPrefix)+"%")
+          AND substr(kind, 1, length(?)) = ? COLLATE BINARY`
+	rows, err := d.db.QueryContext(ctx, sel, id.TenantID, id.UserID, id.SessionID, id.RunID, kindPrefix, kindPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("state/sqlite: list kind for identity: %w", err)
 	}
@@ -676,12 +778,66 @@ func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple,
 	return out, nil
 }
 
-// escapeLikePrefix escapes the SQL LIKE metacharacters (`%`, `_`, and
-// the escape character itself) so a caller-supplied kind prefix
-// matches literally under `LIKE ? ESCAPE '\'`.
-func escapeLikePrefix(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
-	return r.Replace(s)
+// ScanKindForTenant implements the bounded deterministic maintenance scan.
+// SQLite evaluates the literal prefix and tenant predicate in storage, orders
+// by the complete cursor tuple, and asks for limit+1 rows solely to decide
+// whether a continuation exists.
+func (d *driver) ScanKindForTenant(ctx context.Context, scope state.ListScope, tenantID, literalKindPrefix string, limit int, continuation string) (state.StateScanPage, error) {
+	if d.closed.Load() {
+		return state.StateScanPage{}, fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateScanKindForTenant(scope, tenantID, literalKindPrefix, limit); err != nil {
+		return state.StateScanPage{}, err
+	}
+	cursor, err := state.DecodeStateScanContinuation(continuation, tenantID, literalKindPrefix, scope)
+	if err != nil {
+		return state.StateScanPage{}, err
+	}
+	const base = `
+        SELECT tenant, user, session, run, kind, event_id, version, bytes, updated_at
+        FROM state_records
+        WHERE tenant = ? AND substr(kind, 1, length(?)) = ? COLLATE BINARY
+    `
+	const after = `
+		  AND (user COLLATE BINARY > ? OR (user COLLATE BINARY = ? AND session COLLATE BINARY > ?) OR (user COLLATE BINARY = ? AND session COLLATE BINARY = ? AND run COLLATE BINARY > ?) OR (user COLLATE BINARY = ? AND session COLLATE BINARY = ? AND run COLLATE BINARY = ? AND kind COLLATE BINARY > ?))
+	`
+	const orderLimit = ` ORDER BY user COLLATE BINARY ASC, session COLLATE BINARY ASC, run COLLATE BINARY ASC, kind COLLATE BINARY ASC LIMIT ?`
+	args := []any{tenantID, literalKindPrefix, literalKindPrefix}
+	query := base
+	if cursor.UserID != "" {
+		query += after
+		args = append(args, cursor.UserID, cursor.UserID, cursor.SessionID, cursor.UserID, cursor.SessionID, cursor.RunID, cursor.UserID, cursor.SessionID, cursor.RunID, cursor.Kind)
+	}
+	args = append(args, limit+1)
+	rows, err := d.db.QueryContext(ctx, query+orderLimit, args...)
+	if err != nil {
+		return state.StateScanPage{}, fmt.Errorf("state/sqlite: scan kind for tenant: %w", err)
+	}
+	defer rows.Close()
+	page := state.StateScanPage{Records: make([]state.StateRecord, 0, limit)}
+	for rows.Next() {
+		var tenant, user, session, run, kind, eventID string
+		var version int
+		var data []byte
+		var updatedAt time.Time
+		if err := rows.Scan(&tenant, &user, &session, &run, &kind, &eventID, &version, &data, &updatedAt); err != nil {
+			return state.StateScanPage{}, fmt.Errorf("state/sqlite: scan kind for tenant row: %w", err)
+		}
+		page.Records = append(page.Records, state.StateRecord{ID: state.EventID(eventID), Identity: identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: user, SessionID: session}, RunID: run}, Kind: kind, Version: version, Bytes: data, UpdatedAt: updatedAt})
+	}
+	if err := rows.Err(); err != nil {
+		return state.StateScanPage{}, fmt.Errorf("state/sqlite: scan kind for tenant rows: %w", err)
+	}
+	if len(page.Records) <= limit {
+		return page, nil
+	}
+	page.Records = page.Records[:limit]
+	last := page.Records[len(page.Records)-1]
+	page.Continuation, err = state.EncodeStateScanContinuation(state.StateScanCursor{UserID: last.Identity.UserID, SessionID: last.Identity.SessionID, RunID: last.Identity.RunID, Kind: last.Kind}, tenantID, literalKindPrefix, scope)
+	if err != nil {
+		return state.StateScanPage{}, err
+	}
+	return page, nil
 }
 
 // Close implements state.StateStore. Setting the atomic flag BEFORE

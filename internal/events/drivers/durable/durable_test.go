@@ -322,6 +322,9 @@ func TestDurable_NoStateStore_DegradesLoudly(t *testing.T) {
 type failingStore struct{ saveErr error }
 
 func (f *failingStore) Save(context.Context, state.StateRecord) error { return f.saveErr }
+func (f *failingStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
+	return f.saveErr
+}
 func (f *failingStore) Load(context.Context, identity.Quadruple, string) (state.StateRecord, error) {
 	return state.StateRecord{}, state.ErrNotFound
 }
@@ -337,6 +340,9 @@ func (f *failingStore) ListKind(context.Context, state.ListScope, string) ([]sta
 }
 func (f *failingStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
 	return nil, nil
+}
+func (f *failingStore) ScanKindForTenant(context.Context, state.ListScope, string, string, int, string) (state.StateScanPage, error) {
+	return state.StateScanPage{}, f.saveErr
 }
 func (f *failingStore) Close(context.Context) error { return nil }
 

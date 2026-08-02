@@ -182,11 +182,10 @@ const (
 	// (Conflict) — the same state-forbids posture as CodeSessionRunning /
 	// CodeSessionErased.
 	//
-	// The refusal is exact within one Runtime process (the agent-config
-	// service holds a per-owner write lock across each door's whole
-	// read-modify-write). It is NOT a cross-process compare-and-swap: two
-	// Runtimes sharing one StateStore can still lose an update, because the
-	// StateStore enforces no CAS.
+	// The refusal is exact across Runtime processes sharing any shipped
+	// StateStore driver: publication rechecks the active-pointer EventID through
+	// StateStore.SaveIf. The service's per-owner write lock only reduces local
+	// contention; it is not the authority for this guarantee.
 	CodeRevisionConflict Code = "revision_conflict"
 )
 
