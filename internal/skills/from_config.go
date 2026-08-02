@@ -21,6 +21,9 @@ import "github.com/hurtener/Harbor/internal/config"
 // (or an explicit exclusion naming why). `Directory` is excluded —
 // the store snapshot and the directory config feed two different
 // constructors; `DirectoryFromConfig` is the directory's projection.
+// `SessionPersonalCutover` is also excluded: it is restart-required runtime
+// boot-maintenance authority consumed by session-overlay assembly, not a
+// SkillStore driver setting or Directory constructor input.
 func SnapshotFromConfig(cfg config.SkillsConfig) ConfigSnapshot {
 	return ConfigSnapshot{
 		Driver:    cfg.Driver,

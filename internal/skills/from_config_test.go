@@ -37,6 +37,10 @@ func TestSnapshotFromConfig_FieldParity_SkillsConfig(t *testing.T) {
 		// Phase 111d (D-201): the directory block feeds NewDirectory
 		// via DirectoryFromConfig, not the store snapshot.
 		"Directory": "projected by DirectoryFromConfig (separate constructor)",
+		// Phase 233a (D-400): the static cutover declaration is runtime
+		// boot-maintenance authority consumed by session-overlay assembly. It
+		// is not SkillStore driver configuration or Directory input.
+		"SessionPersonalCutover": "consumed by runtime session-overlay cutover assembly",
 	}
 	typ := reflect.TypeOf(config.SkillsConfig{})
 	for i := range typ.NumField() {
