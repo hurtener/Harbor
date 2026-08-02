@@ -1,0 +1,312 @@
+package sessionoverlay_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"testing"
+
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/state"
+)
+
+type resolverModeReader struct{ mode sessionoverlay.CutoverMode }
+
+func (r resolverModeReader) Mode(context.Context, string) (sessionoverlay.CutoverMode, error) {
+	return r.mode, nil
+}
+
+type resolverReader struct {
+	mu   sync.RWMutex
+	rows map[string]skills.Skill
+}
+
+func resolverKey(id identity.Quadruple, name string, scope skills.Scope) string {
+	return id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID + "\x00" + string(scope) + "\x00" + name
+}
+
+func (r *resolverReader) add(id identity.Quadruple, skill skills.Skill) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.rows == nil {
+		r.rows = make(map[string]skills.Skill)
+	}
+	if skill.ContentHash == "" {
+		skill.ContentHash = skills.CanonicalContentHash(skill)
+	}
+	r.rows[resolverKey(id, skill.Name, skill.Scope)] = skill
+}
+
+func (r *resolverReader) Get(ctx context.Context, id identity.Quadruple, name string) (skills.Skill, error) {
+	for _, scope := range []skills.Scope{skills.ScopeSession, skills.ScopeUser, skills.ScopeProject, skills.ScopeTenant, skills.ScopeGlobal} {
+		if skill, err := r.GetScope(ctx, id, name, scope); err == nil {
+			return skill, nil
+		}
+	}
+	return skills.Skill{}, skills.ErrSkillNotFound
+}
+
+func (r *resolverReader) GetScope(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) (skills.Skill, error) {
+	if err := ctx.Err(); err != nil {
+		return skills.Skill{}, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	skill, ok := r.rows[resolverKey(id, name, scope)]
+	if !ok {
+		return skills.Skill{}, skills.ErrSkillNotFound
+	}
+	return skill, nil
+}
+
+func (r *resolverReader) List(ctx context.Context, id identity.Quadruple, _ skills.ListFilter) ([]skills.Skill, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]skills.Skill, 0, len(r.rows))
+	for _, skill := range r.rows {
+		if skill.Scope == skills.ScopeUser {
+			if skill.ScopeTenantID == id.TenantID && skill.ScopeProjectID == id.UserID {
+				result = append(result, skill)
+			}
+			continue
+		}
+		// Test rows use ScopeTenantID/ScopeProjectID as the owning user/session
+		// to keep this reader small while retaining exact identity behavior.
+		if skill.ScopeTenantID == id.TenantID && skill.ScopeProjectID == id.SessionID {
+			result = append(result, skill)
+		}
+	}
+	return result, nil
+}
+
+func (r *resolverReader) Search(context.Context, identity.Quadruple, string, int) ([]skills.RankedSkill, error) {
+	return nil, errors.New("resolver must rank the composed view itself")
+}
+
+func resolverSkill(id identity.Quadruple, name string, scope skills.Scope) skills.Skill {
+	skill := durableSkill(name)
+	skill.Scope = scope
+	skill.ScopeTenantID = id.TenantID
+	if scope == skills.ScopeUser {
+		skill.ScopeProjectID = id.UserID
+	} else {
+		skill.ScopeProjectID = id.SessionID
+	}
+	return skill
+}
+
+func resolverConfig(id identity.Quadruple, personal *sessionoverlay.DurableStore, base skills.SkillReader, mode sessionoverlay.CutoverMode, membership sessionoverlay.SessionSkillMembership) sessionoverlay.SessionSkillResolverConfig {
+	return sessionoverlay.SessionSkillResolverConfig{
+		Run: id, AgentID: "agent-a", Base: base, Personal: personal, Cutover: resolverModeReader{mode: mode}, Membership: membership,
+	}
+}
+
+func TestSessionSkillResolver_DualReadComposesOnlyExactLegacySessionTier(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("resolver-dual")
+	id.RunID = "run-dual"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyID := id
+	legacyID.RunID = ""
+	if err := st.Save(context.Background(), legacyCandidate(t, legacyID, "agent-a", "legacy")); err != nil {
+		t.Fatal(err)
+	}
+	base := &resolverReader{}
+	for _, skill := range []skills.Skill{
+		resolverSkill(id, "admin", skills.ScopeGlobal),
+		resolverSkill(id, "user", skills.ScopeUser),
+		resolverSkill(id, "legacy", skills.ScopeSession),
+		resolverSkill(id, "unlisted-session", skills.ScopeSession),
+	} {
+		base.add(id, skill)
+	}
+	resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{
+		AdminMembershipSet: true, AdminNames: []string{"admin"}, UserPersonalNames: []string{"user"},
+	}))
+	if err != nil {
+		t.Fatalf("NewSessionSkillResolver: %v", err)
+	}
+	listed, err := resolver.List(context.Background(), id, skills.ListFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := skillNames(listed); fmt.Sprint(got) != "[admin legacy user]" {
+		t.Fatalf("composed names = %v", got)
+	}
+	session, err := resolver.SessionSkills(context.Background(), id)
+	if err != nil || fmt.Sprint(skillNames(session)) != "[legacy]" {
+		t.Fatalf("SessionSkills = (%v, %v)", skillNames(session), err)
+	}
+	if _, err := resolver.GetScope(context.Background(), id, "unlisted-session", skills.ScopeSession); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("unreferenced base session row = %v, want ErrSkillNotFound", err)
+	}
+	if _, err := resolver.Get(context.Background(), id, "legacy"); err != nil {
+		t.Fatalf("Get legacy: %v", err)
+	}
+	if _, err := resolver.Get(context.Background(), durableID("other"), "legacy"); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+		t.Fatalf("cross-session Get = %v, want identity error", err)
+	}
+	result, err := resolver.Search(context.Background(), id, "legacy", 10)
+	if err != nil || len(result) != 1 || result[0].Path != skills.PathExact {
+		t.Fatalf("Search = (%+v, %v)", result, err)
+	}
+}
+
+func TestSessionSkillResolver_FailsLoudForMissingPinnedAndLegacyBodies(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("resolver-missing")
+	id.RunID = "run-missing"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &resolverReader{}
+	if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{AdminMembershipSet: true, AdminNames: []string{"missing"}})); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+		t.Fatalf("missing admin pinned body = %v", err)
+	}
+	legacyID := id
+	legacyID.RunID = ""
+	if err := st.Save(context.Background(), legacyCandidate(t, legacyID, "agent-a", "missing-legacy")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{})); !errors.Is(err, sessionoverlay.ErrLegacySkillInvalid) {
+		t.Fatalf("missing legacy body = %v, want ErrLegacySkillInvalid", err)
+	}
+}
+
+func TestSessionSkillResolver_StateOnlyUsesOwnedExactPrefixAndTombstones(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("resolver-owned")
+	id.RunID = "run-owned"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := personal.SavePersonal(context.Background(), id, "agent-a", durableSkill("owned"), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := personal.DeletePersonal(context.Background(), id, "agent-a", "gone"); err != nil {
+		t.Fatal(err)
+	}
+	activateAgent(t, st, id, "agent-ab")
+	if _, err := personal.SavePersonal(context.Background(), id, "agent-ab", durableSkill("other-agent"), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	base := &resolverReader{}
+	base.add(id, resolverSkill(id, "legacy-session-must-not-leak", skills.ScopeSession))
+	resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverStateOnly, sessionoverlay.SessionSkillMembership{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := resolver.SessionSkills(context.Background(), id)
+	if err != nil || fmt.Sprint(skillNames(session)) != "[owned]" {
+		t.Fatalf("state-only SessionSkills = (%v, %v)", skillNames(session), err)
+	}
+	for _, name := range []string{"gone", "legacy-session-must-not-leak", "other-agent"} {
+		if _, err := resolver.Get(context.Background(), id, name); !errors.Is(err, skills.ErrSkillNotFound) {
+			t.Fatalf("Get(%q) = %v, want ErrSkillNotFound", name, err)
+		}
+	}
+}
+
+type flappingLifecycleStore struct {
+	state.StateStore
+	mu sync.Mutex
+}
+
+func (s *flappingLifecycleStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
+	record, err := s.StateStore.Load(ctx, q, kind)
+	if err == nil && kind == "agentcfg.active" {
+		s.mu.Lock()
+		_ = s.StateStore.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: record.Bytes})
+		s.mu.Unlock()
+	}
+	return record, err
+}
+
+func TestSessionSkillResolver_FenceChurnExhausts(t *testing.T) {
+	baseState := newDurableState(t)
+	id := durableID("resolver-churn")
+	id.RunID = "run-churn"
+	activateAgent(t, baseState, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(&flappingLifecycleStore{StateStore: baseState}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &resolverReader{}
+	if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{})); !errors.Is(err, sessionoverlay.ErrSessionSkillReadUnstable) {
+		t.Fatalf("churn build = %v, want ErrSessionSkillReadUnstable", err)
+	}
+}
+
+func TestSessionSkillResolver_ConcurrentReuseCancellationAndIsolation(t *testing.T) {
+	st := newDurableState(t)
+	const n = 128
+	seed := durableID("seed")
+	activateAgent(t, st, seed, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &resolverReader{}
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: fmt.Sprintf("user-%03d", i), SessionID: fmt.Sprintf("session-%03d", i)}, RunID: fmt.Sprintf("run-%03d", i)}
+			base.add(id, resolverSkill(id, fmt.Sprintf("skill-%03d", i), skills.ScopeGlobal))
+			ctx := context.Background()
+			if i%2 == 0 {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelled
+			}
+			resolver, err := sessionoverlay.NewSessionSkillResolver(ctx, resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{}))
+			if i%2 == 0 {
+				if !errors.Is(err, context.Canceled) {
+					errs <- fmt.Errorf("%d canceled build = %v", i, err)
+				}
+				return
+			}
+			if err != nil {
+				errs <- fmt.Errorf("%d build: %w", i, err)
+				return
+			}
+			got, err := resolver.Get(context.Background(), id, fmt.Sprintf("skill-%03d", i))
+			if err != nil || got.Name != fmt.Sprintf("skill-%03d", i) {
+				errs <- fmt.Errorf("%d own skill = (%q, %v)", i, got.Name, err)
+			}
+			other := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "other", SessionID: "other"}, RunID: "other"}
+			if _, err := resolver.Get(context.Background(), other, got.Name); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+				errs <- fmt.Errorf("%d cross identity = %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+}
+
+func skillNames(in []skills.Skill) []string {
+	result := make([]string, len(in))
+	for i, skill := range in {
+		result[i] = skill.Name
+	}
+	return result
+}
