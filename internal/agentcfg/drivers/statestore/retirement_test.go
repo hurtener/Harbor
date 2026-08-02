@@ -2,10 +2,13 @@ package statestore_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/events"
@@ -306,5 +309,62 @@ func TestRetirement_EventPublishFailureStaysCheckpointed(t *testing.T) {
 	}
 	if !status.Completed || !status.Cleanup[0].Completed {
 		t.Fatalf("completed retry status=%+v, want acknowledged cleanup", status)
+	}
+}
+
+// TestRetirement_EventsAreOrderedAndRedacted pins the lifecycle's canonical
+// audit projection. Empty cleanup still has two transitions, so subscribers
+// must see started before completed; the raw operation identity is retained
+// only in the admin replay record and is never present in event payload bytes.
+func TestRetirement_EventsAreOrderedAndRedacted(t *testing.T) {
+	ctx := context.Background()
+	bus := newBus(t)
+	reg := newRegistryOnBus(t, bus)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-events", UserID: "admin", SessionID: "control"}}
+	const (
+		agent     = "agent-events"
+		operation = "raw-operation-must-not-leak"
+	)
+	sub, err := bus.Subscribe(ctx, events.Filter{
+		Tenant:  id.TenantID,
+		User:    id.UserID,
+		Session: id.SessionID,
+		Types:   []events.EventType{agentcfg.EventTypeRetirementStarted, agentcfg.EventTypeRetirementCompleted},
+	})
+	if err != nil {
+		t.Fatalf("subscribe retirement events: %v", err)
+	}
+	defer sub.Cancel()
+	rev, err := reg.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, skills("seed"), agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := reg.(agentcfg.RetirementRegistry).Retire(ctx, id, agent, agentcfg.RetirementRequest{OperationID: operation, ExpectedContentHash: rev.ContentHash}); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+
+	for wantIndex, wantType := range []events.EventType{agentcfg.EventTypeRetirementStarted, agentcfg.EventTypeRetirementCompleted} {
+		select {
+		case event := <-sub.Events():
+			if event.Type != wantType {
+				t.Fatalf("event %d type=%q, want %q", wantIndex, event.Type, wantType)
+			}
+			payload, ok := event.Payload.(agentcfg.RetirementEventPayload)
+			if !ok {
+				t.Fatalf("event %d payload=%T, want RetirementEventPayload", wantIndex, event.Payload)
+			}
+			if payload.AgentID != agent || payload.OperationHash != agentcfg.RetirementOperationHash(operation) {
+				t.Fatalf("event %d payload=%+v, want agent and operation hash", wantIndex, payload)
+			}
+			encoded, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal event %d payload: %v", wantIndex, err)
+			}
+			if strings.Contains(string(encoded), operation) {
+				t.Fatalf("event %d leaked raw operation id: %s", wantIndex, encoded)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for retirement event %d (%q)", wantIndex, wantType)
+		}
 	}
 }

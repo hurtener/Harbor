@@ -35,6 +35,7 @@ assert_go_tests_pass "${P234_TMP}/retirement.log" '-race -count=1 ./cmd/harbor .
 	TestRetirement_ProgressIsFrozenCASState \
 	TestRetirement_CommitThenAckLossConverges \
 	TestRetirement_EventPublishFailureStaysCheckpointed \
+	TestRetirement_EventsAreOrderedAndRedacted \
 	TestRetirement_SQLiteRestartRetainsTerminalLifecycle \
 	TestDevComposition_RetiredDefaultRefusesExplicitAndImplicitStartBeforeSpawn \
 	TestAgentConfigHandler_Retire_AdminReplayAndTerminalRefusal \
