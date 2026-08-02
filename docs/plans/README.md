@@ -375,7 +375,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |232 | Signed agent reach (D-397): strict bounded `agent_reach` bearer authority enforced by one effective-agent gate on start, all session/user agent-config data-plane methods, and explicit `tools.describe` agent projection; default start is checked and config existence never grants authority | protocol auth/control/stream + runtime serve + token/devstack | §5.5, §6.16 | 151, 205, 221, 228 | §4.3: v1.25 package-baseline non-regression + 100% new authority paths | Shipped (v1.26) |
 |233 | StateStore conditional save (D-398): mandatory atomic multi-slot `SaveIf` plus deterministic tenant-bounded paged maintenance scan across inmem/SQLite/Postgres, with exact event-ID/absence expectations and agent/user config consumers closing D-366's cross-process residual | state triad + conformance + agentcfg statestore | §6.11, §6.16, §9 | 130, 221, 230 | 85–90% | Pending (v1.26) |
 |233a | Durable session overlay and personal-skill correction (D-400): four-slot lifecycle/erasure/record CAS, agent-owned StateStore personal bodies, admitted-tenant verified cutover, composite resolver, canonical 409 pending error, and ledgered exact legacy sweep | sessionoverlay + skills + sessions + agentcfg runtime + Protocol | §6.7, §6.9, §6.11, §6.13, §6.16 | 130, 221, 230, 233 | 85–90% | Pending (v1.26) |
-|233b | Signed OAuth MCP capability registration (HA-50, D-401): production-safe boot-authorized registration with a durable tenant-scoped JTI phase machine, pair-owned provider and catalog-only dispatch, committed agent activation fence, and shared canonical HTTPS URL bytes/sink | agentcfg + Protocol + tools/auth + MCP serve + config | §4, §5.5, §6.4, §6.11, §6.16 | 233 | 85–90% | Pending (v1.26) |
+|233b | Signed OAuth MCP capability registration (HA-50, D-401): production-safe boot-authorized closed descriptor registration with durable tenant-scoped JTI and paired-removal recovery, pair-owned provider/catalog-only dispatch, a committed agent activation fence, and canonical HTTPS URL bytes/sink | agentcfg + Protocol + tools/auth + MCP serve + config | §4, §5.5, §6.4, §6.11, §6.16 | 233 | 85–90% | Pending (v1.26) |
 |234 | Agent-config retirement (D-399/D-400/D-401): terminal CAS tombstone, immutable history, exact pre-retirement hash and operation identity, deterministic paged owner-scoped cleanup after tombstone, four-slot session-write freeze, signed OAuth pair cleanup, and explicit/default new-run refusal; `agents.deregister` remains fleet-only | agentcfg + runtime projection/serve + Protocol/Console lockstep | §5.5, §6.11, §6.13, §6.16 | 232, 233, 233a, 233b | 85–90% | Pending (v1.26) |
 |235 | Agent authority/lifecycle wave E2E + v1.26 checkpoint: real SQLite/Postgres composition of signed OAuth capability registration, session records, erasure, and retirement; two-runtime write races, N≥10 mixed-identity stress, read-only §17.5 audit and corrective gate before release | test/integration + scripts/smoke + release docs | §4, §5.5, §6.4, §6.9, §6.11, §6.13, §6.16, §9 | 232, 233, 233a, 233b, 234 | inherited floors | Pending (v1.26) |
 
@@ -389,19 +389,22 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
   exception to D-300's static audience/sink posture: one admin-only atomic
   `agent_config.register_oauth_mcp_capability` registration operation prepares an OAuth
   provider plus MCP connection, CAS-persists one signed capability-pair
-  revision, then catalog-publishes the pair-owned provider binding. One generic boot broker/trust anchor retains
+  revision, then catalog-publishes the pair-owned provider binding. Its closed
+  registration-only connection descriptor excludes OAuth/custody/sink fields;
+  one generic boot broker/trust anchor retains
   credential custody and its fixed exchange endpoint. A signed authority
   envelope, rather than administrator input, exactly binds tenant/agent,
   broker, provider/capability revision, URL digest, audience, normalized
   scopes, issuer/key/timing, and replay ID. A tenant-scoped operation record
-  advances by exact EventID through claim/revision/publish/removal phases, so
-  restart resumes rather than repeats a claim. One shared canonical URL helper
+  advances by exact EventID through claim/revision/publish and paired-removal
+  phases, so restart resumes rather than repeats a claim. One shared canonical URL helper
   governs signing, fingerprinting, transport, and reconcile. Pair provider
   resolution stays outside general ProviderSet; catalog source swap is the sole
   dispatch point. Generic revision edits cannot forge, omit, or split the
   server-owned pair; removal and retirement use frozen fingerprint. A durable
   pending activation fence preserves prior/no-active semantics across runtime
-  uncertainty before any first-install candidate can authorize.
+  uncertainty before any first-install candidate can authorize; every authority
+  mutator observes that fence and physical active revision.
 - **Ordering:** 233a and 233b are independent after 233; both gate 234. Phase
   235 gates release completion after 232, 233, 233a, 233b, and 234.
 - **Decision:** D-401. **Status:** Pending (v1.26).

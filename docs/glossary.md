@@ -1438,6 +1438,14 @@ broker-pull OAuth provider and one MCP connection registered by
 the **signed capability authority envelope**, persists in one agent-config
 revision, derives its single bearer sink from the canonical connection URL, and
 is prepared/published, reconciled, removed, and retired as one lifecycle unit.
+Its writable connection is the closed
+`SignedOAuthMCPConnectionDescriptor` exactly `{name, url, tool_allowlist,
+tool_denylist, connect_timeout_ms, request_timeout_ms}`, never a general MCP
+descriptor; strict decode/reflection reject OAuth/provider, credential/secret,
+injection/discovery, stdio, headers, and host/sink-list fields. Removal is the
+durable exact-EventID `SaveIf` sequence `removal_revision_committed`,
+`catalog_unpublished`, `teardown_receipted`, then terminal `removed`; unknown
+outcomes reread and resume the missing phase from its frozen fingerprint.
 Its provider is pair-owned outside the general ProviderSet; catalog source swap
 alone exposes dispatch, while Protocol projection comes from the immutable
 revision. Its broker retains all credential custody. It does not change the
@@ -1470,18 +1478,25 @@ removal/retirement lifecycle may close it from its frozen fingerprint. Phase
 **Canonical OAuth MCP URL** — the one byte canonicalization used by D-401
 signing, claim matching, pair fingerprinting, transport, and reconcile: absolute
 HTTPS; IDNA2008 lower-case ASCII host without a trailing root dot; normalized
-bracketed IPv6; no IP zone/userinfo/fragment; numeric explicit port (default
-443); RFC3986 dot-segment removal; `/` empty path; upper-case percent hex with
-only unreserved decoding; ordered duplicate query pairs retained and `+`
-literal. Its bytes are `https://host:port/path[?query]`; the bearer sink is the
-origin only. Golden fixtures make other signers reproduce it. Phase 233b, D-401.
+RFC5952 compressed lower-case IPv6 in brackets; no IP zone/userinfo/fragment;
+leading-zero explicit port rejected (omitted is 443); upper-case percent hex
+and unreserved decode before RFC3986 dot-segment removal (so `%2e` participates);
+`/` empty path; ordered duplicate query pairs retained and `+` literal. An absent
+query omits `?`, while explicit empty query retains it. Its bytes are
+`https://host:port/path[?query]`; the bearer sink is the origin only. Golden
+fixtures make other signers reproduce it. Phase 233b, D-401.
 
 **Pending activation/compensation fence** — an agent-scope durable record that
 precedes a first-install candidate's semantic activation. It binds operation and
 content fingerprint, candidate revision, prior active revision/EventID or
 no-active, phase, and EventID. While pending, Active, mutation, and reconcile
-expose only the prior/no-active state; `SaveIf` commit or abort decides the
-candidate. Unknown outcomes remain pending across runtimes. Phase 233b, D-401.
+expose only the prior/no-active state; every generic section writer and
+production registration/creation write, `set_revision`, rollback, pair removal,
+retirement, and reconcile must also consult the exact fence and physical active
+revision/EventID. A foreign operation
+gets typed pending/conflict while only the same operation can resume. `SaveIf`
+commit or abort decides the candidate. Unknown outcomes remain pending across
+runtimes. Phase 233b, D-401.
 
 ## T
 

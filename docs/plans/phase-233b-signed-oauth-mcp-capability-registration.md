@@ -77,10 +77,14 @@ explicit signed-capability production opt-in; it is not enabled by default.
 
 - [ ] The sole new production registration/creation write is admin-gated
   `agent_config.register_oauth_mcp_capability`. Its request contains provider
-  name, boot broker name, audience, requested scopes, an ordinary bounded MCP
-  connection descriptor, `expected_content_hash`, and signed authority
-  envelope only. Unknown fields reject at decode; no forbidden credential-sink
-  or custody field exists on any writable type.
+  name, boot broker name, audience, requested scopes, a dedicated closed
+  `SignedOAuthMCPConnectionDescriptor`, `expected_content_hash`, and signed
+  authority envelope only. It accepts no general MCP descriptor. The dedicated
+  shape is exactly `{name, url, tool_allowlist, tool_denylist,
+  connect_timeout_ms, request_timeout_ms}`; strict decode and reflection pin
+  that it excludes `oauth`, `oauth_provider`, `token_url`, injection, discovery
+  origins, stdio command/env/cwd, headers, credentials, secrets, and every
+  host/sink list. Unknown fields reject before side effects.
 - [ ] A boot-declared generic broker/trust anchor validates its static exchange
   endpoint, credential-pull endpoint, broker authentication, KEK, true scope
   ceiling, trusted issuer/key set, and explicit signed-capability production
@@ -121,11 +125,13 @@ explicit signed-capability production opt-in; it is not enabled by default.
   canonical-URL helper supplies signer/verifier request matching, fingerprinting,
   transport enforcement, and restart/reconcile. It requires absolute HTTPS;
   applies IDNA2008 ASCII lower-case host with trailing root dot removed and
-  bracket-normalized IPv6; rejects IP zone, userinfo, and fragment; canonicalizes
-  an explicit numeric port (omitted is `443`); applies RFC3986
-  remove-dot-segments with empty path `/`; uppercases percent hex and decodes
-  only unreserved bytes. Query preserves original pair order and duplicates while
-  canonicalizing percent encoding (no sorting; `+` remains literal plus).
+  RFC5952 compressed lower-case IPv6 in brackets; rejects IP zone, userinfo,
+  fragment, and a leading-zero explicit port (omitted is `443`). It uppercases
+  percent hex and decodes unreserved bytes *before* RFC3986 remove-dot-segments,
+  so `%2e` participates in the dot rule; empty path is `/`. Query preserves
+  original pair order and duplicates while canonicalizing percent encoding (no
+  sorting; `+` remains literal plus); absent query omits `?`, while explicit
+  empty query retains a terminal `?`. Golden fixtures pin each case.
   Canonical URL bytes are `https://host:port/path[?query]`; the only sink is
   origin `https://host:port`. The pair stores canonical URL digest/sink, never a
   host list; every bearer send rechecks it and refuses redirects.
@@ -145,6 +151,16 @@ explicit signed-capability production opt-in; it is not enabled by default.
   Rollback activation performs full binding verification, while paired removal
   and retirement use the frozen durable pair fingerprint to close/revoke even
   if envelope verification would now fail.
+- [ ] Paired removal is a durable operation, never a best-effort close. Its
+  exact EventID `SaveIf` subphases are `removal_revision_committed` (desired
+  pair absent by revision CAS), `catalog_unpublished`, `teardown_receipted`
+  (transport/provider close+revoke from frozen fingerprint), then terminal
+  `removed` checkpoint. Each commit-then-error or unknown outcome exact-rereads
+  the operation EventID/phase, desired revision, catalog source, and close/revoke
+  receipt; retry resumes the missing phase idempotently. Expiry, key revocation,
+  or lost verifier never block this teardown. It cannot report `removed` while
+  authority remains live, and retirement's terminal manifest invokes this same
+  state machine rather than a second teardown path.
 - [ ] Reconcile/restart/rollback activate only a stored immutable pair whose
   operation record is exactly `published`, whose fingerprint/bindings verify,
   and whose activation fence is committed; they never classify that stored JTI
@@ -155,14 +171,18 @@ explicit signed-capability production opt-in; it is not enabled by default.
   `set_oauth_provider` creates a durable pending-activation/compensation fence
   under the agent scope. The fence binds exact operation/content fingerprint,
   attempted revision identity, and prior active revision/EventID (or no-active),
-  and has its own phase/EventID. `Registry.Active`, revision mutation, and
-  reconcile consult it: while pending they return exactly the prior revision or
-  no-active, never authorize the candidate. Success `SaveIf`-commits the fence;
-  failure `SaveIf`-aborts it; every unknown transition stays safely pending
-  across runtimes until exact reread proves committed or aborted. Immutable
-  candidate history remains. `DeactivateIfActive` may afterwards compact a
-  physical pointer with its exact EventID/inactive marker, but is not the
-  security fence and cannot assert an unknown result inactive.
+  and has its own phase/EventID. `Registry.Active`, every generic section writer
+  and production registration/creation write, `set_revision`, rollback, pair
+  removal, retirement, and reconcile consult the exact fence and physical active
+  revision/EventID: while pending they return
+  exactly prior/no-active and never authorize the candidate. A foreign operation
+  rejects with typed pending/conflict; only the same operation may serialize and
+  resume. Success `SaveIf`-commits the fence; failure `SaveIf`-aborts it; every
+  unknown transition stays safely pending across runtimes until exact reread
+  proves committed or aborted. Immutable candidate history remains.
+  `DeactivateIfActive` may afterwards compact a physical pointer with its exact
+  EventID/inactive marker, but is not the security fence and cannot assert an
+  unknown result inactive.
 - [ ] All canonical method/type/error/event/Console manifest/docs lockstep
   gates cover the new surface. Events and audit carry only redacted identity,
   provider/capability names or hashes, revision, audience hash, and URL digest;
@@ -206,16 +226,18 @@ explicit signed-capability production opt-in; it is not enabled by default.
   construction; every operation/fence phase, EventID CAS, unknown-outcome reread,
   expiry/skew retention, remove terminality, and same-key/different-fingerprint
   refusal; scope-ceiling loud refusal; canonical URL golden bytes/digest/sink
-  equality including IDNA, IPv6, dot segments, percent/query edge cases;
-  forbidden-field reflection; pair fingerprint and writer/removal census;
-  pair-owned-provider/catalog-only dispatch; and first-write pending-fence
-  commit/abort/uncertain cross-runtime reader cases.
+  equality including IDNA, RFC5952 IPv6, encoded dot, leading-zero port,
+  absent-versus-empty query, and percent/query edge cases; dedicated descriptor
+  reflection/strict-decode rejection; pair fingerprint and writer/removal census;
+  removal subphase/receipt commit-then-error recovery; pair-owned-provider/
+  catalog-only dispatch; and first-write pending-fence commit/abort/uncertain
+  cross-runtime reader and foreign-mutator conflict cases.
 - **Integration:** real SQLite/Postgres operation-state recovery through every
   phase and restart/fault point; token exchange assertion capture; exact
   pair-owned catalog dispatch/no generic-provider binding; cross-language URL
-  signer fixtures; no-redirect enforcement; pair removal/retirement after
-  authority expiry/key rotation/revocation; and cross-tenant/user/session/agent
-  cache and bearer-bleed denials.
+  signer fixtures; no-redirect enforcement; paired removal/retirement after
+  authority expiry/key rotation/revocation and unknown outcomes; and
+  cross-tenant/user/session/agent cache and bearer-bleed denials.
 - **Conformance:** all StateStore drivers run the same JTI operation and
   pending-activation fence phase/EventID/fault suite, including two-runtime
   readers and recovery; Protocol/Console/generated-doc lockstep covers every

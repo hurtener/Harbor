@@ -46,9 +46,9 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 - [ ] HA-50 remains a v1.26 release gate. A narrow boot-pinned compatibility
   flow is not the generic capability contract and cannot substitute for the
   atomic production Protocol registration of one provider plus one connection,
-  its durable first-write pending-activation fence, fail-loud scope ceiling,
-  zero wire `token_url`/credential/host-list fields, or its race and restart
-  coverage.
+  its closed registration-only descriptor, durable paired-removal recovery and
+  first-write pending-activation fence, fail-loud scope ceiling, zero wire
+  `token_url`/credential/host-list fields, or its race and restart coverage.
 - [ ] The existing `state-postgres` Postgres 16 CI job runs the named
   `TestE2E_WaveV126...` integration suite under `-race` with
   `HARBOR_PG_DSN` set. A missing local DSN may skip only outside that CI step;

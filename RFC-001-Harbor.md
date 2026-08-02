@@ -1559,7 +1559,7 @@ event and then exactly CAS-acknowledges the checkpoint. An emit or ack failure
 fails loud and the same-operation retry resumes this sequence. Delivery is
 therefore at-least-once (duplicates are permitted; silent loss is not).
 
-**Signed OAuth MCP capability registration is atomic, production-safe, and boot-authorized (D-401).** A runtime may boot one generic OAuth credential broker/trust anchor: it alone retains the fixed exchange endpoint, credential-pull endpoint, runtime broker credential, KEK, true scope ceiling, and signed-capability authority verifier material. This production path is usable without a development flag only when that broker/trust anchor explicitly opts into signed capability authority; an absent anchor/opt-in remains fail-closed. An administrator then registers one new OAuth-fronted MCP capability with exactly one `agent_config.register_oauth_mcp_capability` operation. The operation prepares an unpublished provider and connection, CAS-persists one agent-config revision, and publishes the pair together; two public writes must never be composed to manufacture this state. Its writable request contains only a provider name, broker name, bounded ordinary MCP connection descriptor, audience, normalized requested scopes, `expected_content_hash`, and a signed authority envelope. It contains no token URL, credential URL, client secret, env-var name, KEK, or downstream-host list.
+**Signed OAuth MCP capability registration is atomic, production-safe, and boot-authorized (D-401).** A runtime may boot one generic OAuth credential broker/trust anchor: it alone retains the fixed exchange endpoint, credential-pull endpoint, runtime broker credential, KEK, true scope ceiling, and signed-capability authority verifier material. This production path is usable without a development flag only when that broker/trust anchor explicitly opts into signed capability authority; an absent anchor/opt-in remains fail-closed. An administrator then registers one new OAuth-fronted MCP capability with exactly one `agent_config.register_oauth_mcp_capability` operation. The operation prepares an unpublished provider and connection, CAS-persists one agent-config revision, and publishes the pair together; two public writes must never be composed to manufacture this state. Its writable request contains only a provider name, broker name, audience, normalized requested scopes, `SignedOAuthMCPConnectionDescriptor`, `expected_content_hash`, and a signed authority envelope. It accepts no general MCP descriptor: its closed shape is exactly `{name, url, tool_allowlist, tool_denylist, connect_timeout_ms, request_timeout_ms}`, and strict decode plus reflection reject OAuth/provider/token URL, injection, discovery, stdio command/env/cwd, headers, credential/secret, and host/sink-list fields.
 
 The envelope is authority, not administrator input. Its durable operation key is
 tenant-scoped `(tenant_id, trust_anchor_name, issuer, kid, jti)`; a reserved
@@ -1578,25 +1578,39 @@ ACID with the revision.
 
 One shared canonical URL-byte helper serves signing, matching, fingerprinting,
 transport, and reconcile: absolute HTTPS only; IDNA2008 lower-case ASCII host
-without root dot; bracket-normalized IPv6; no IP zone/userinfo/fragment; numeric
-port with omitted `443`; RFC3986 dot-segment removal, `/` empty path, uppercase
-percent hex and unreserved decode. Query order and duplicate pairs stay intact;
-`+` is literal. Bytes are `https://host:port/path[?query]`, sink is
-`https://host:port`, and redirects are refused.
+without root dot; RFC5952 compressed lower-case IPv6 in brackets; no IP
+zone/userinfo/fragment; numeric port with leading-zero explicit port rejected
+and omitted `443`; uppercase percent hex and unreserved decode before RFC3986
+dot-segment removal (so `%2e` participates), and `/` empty path. Query order
+and duplicate pairs stay intact; `+` is literal; absent query omits `?`, while
+an explicit empty query retains a terminal `?`. Bytes are
+`https://host:port/path[?query]`, sink is `https://host:port`, and redirects
+are refused.
 
 The signed provider is pair-owned and outside general `ProviderSet`; private MCP
 prepare binds directly to it, and only catalog source swap makes data-plane
 dispatch visible. Protocol projections come from immutable pair revision;
 generic provider resolution cannot bind it. A pair-owned registry holds only
-close/reconcile receipts. Generic writers remain closed against pair halves;
-teardown closes transport+provider from the frozen fingerprint. Before a
-first-install candidate is semantic active, a durable agent-scope pending-
-activation/compensation fence binds exact operation/content fingerprint,
-candidate revision, and prior active revision/EventID or no-active. `Active`,
-mutation, and reconcile return only prior/no-active while pending. Exact-EventID
-`SaveIf` commits or aborts it; uncertainty remains pending cross-runtime until
-reread proves its phase. `DeactivateIfActive` is post-fence pointer compaction,
-never this security fence. (Phase 233b.)
+close/reconcile receipts. Generic writers remain closed against pair halves.
+Paired removal is a durable `SaveIf` recovery sequence:
+`removal_revision_committed` (desired pair absent by revision CAS),
+`catalog_unpublished`, `teardown_receipted` (transport/provider close+revoke
+from frozen fingerprint), then `removed`. A commit-then-error or unknown
+outcome exact-rereads the operation EventID/phase, desired revision, catalog
+source, and teardown receipt, and resumes only the missing phase. Expiry, key
+revocation, or a lost verifier never block teardown; retirement invokes this
+same sequence. Before a first-install candidate is semantic active, a durable
+agent-scope pending-activation/compensation fence binds exact operation/content
+fingerprint, candidate revision, and prior active revision/EventID or no-active.
+`Active`, every generic section writer and production registration/creation
+write, `set_revision`, rollback, pair removal, retirement, and reconcile consult
+the exact fence and physical active
+revision/EventID: pending returns only prior/no-active and never authorizes the
+candidate. A foreign operation rejects with typed pending/conflict; only the
+same operation can serialize and resume. Exact-EventID `SaveIf` commits or
+aborts the fence; uncertainty remains pending cross-runtime until reread proves
+its phase. `DeactivateIfActive` is post-fence pointer compaction, never this
+security fence. (Phase 233b.)
 
 **Events.** The registry emits `agent.registered`, `agent.restarted`, `agent.health`, `agent.drained`, `agent.deregistered` on the typed event bus (§6.13), carrying the registration `agent_id`. The Console Agents page (§7) is a lens over these events plus a registry state snapshot — the Console never holds the agent list itself (D-061).
 

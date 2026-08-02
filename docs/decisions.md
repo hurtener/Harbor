@@ -11999,10 +11999,12 @@ unpublished provider and MCP connection, CAS-persists exactly one revision,
 and publishes the pair. It is forbidden to compose `set_oauth_provider` and
 `add_mcp_connection` to obtain this state. The writable request contains only
 provider name, boot broker name, per-capability audience and normalized
-requested scopes, a bounded ordinary MCP connection descriptor,
-`expected_content_hash`, and a signed authority envelope. It contains no token URL,
-credential URL, client secret, credential/env name, KEK, or downstream host
-list. `tools.allow_wire_oauth_descriptor` and its environment switch remain
+requested scopes, a dedicated closed `SignedOAuthMCPConnectionDescriptor`,
+`expected_content_hash`, and a signed authority envelope. It accepts no general
+MCP descriptor: the exact shape is `{name, url, tool_allowlist, tool_denylist,
+connect_timeout_ms, request_timeout_ms}`, and strict decode plus reflection
+reject OAuth/provider/token URL, injection, discovery, stdio command/env/cwd,
+headers, credential/secret, and host/sink-list fields. `tools.allow_wire_oauth_descriptor` and its environment switch remain
 development-only D-340 controls and are neither required nor consulted by this
 production path.
 
@@ -12032,12 +12034,14 @@ widening, or mismatch fails before a live side effect.
 One named shared canonical-URL helper supplies signer/verifier matching, pair
 fingerprinting, transport enforcement, and restart/reconcile. It requires
 absolute HTTPS; uses IDNA2008 ASCII lower-case host with trailing root dot
-removed and bracket-normalized IPv6; rejects IP zone, userinfo, and fragment;
-canonicalizes explicit numeric port (omitted `443`); applies RFC3986
-remove-dot-segments (empty path `/`); uppercases percent hex and decodes only
-unreserved bytes. Query preserves original pair order and duplicates while
-canonicalizing percent encoding (no sorting; `+` stays literal plus). Canonical
-URL bytes are `https://host:port/path[?query]`; sink is `https://host:port`.
+removed and RFC5952 compressed lower-case IPv6 in brackets; rejects IP zone,
+userinfo, fragment, and a leading-zero explicit port (omitted `443`);
+uppercases percent hex and decodes unreserved bytes before RFC3986
+remove-dot-segments (so `%2e` participates; empty path `/`). Query preserves
+original pair order and duplicates while canonicalizing percent encoding (no
+sorting; `+` stays literal plus); absent query omits `?`, while explicit empty
+query retains a terminal `?`. Canonical URL bytes are
+`https://host:port/path[?query]`; sink is `https://host:port`.
 Bearer send rechecks that sink and refuses redirects; no free-form host list is
 accepted. The exchange endpoint stays boot-pinned; the
 capability's signed audience is bounded by the envelope and independently
@@ -12056,15 +12060,24 @@ resolution cannot bind the pair. A pair-owned live registry may retain only
 close/reconcile receipts, never authority/projection/dispatch. General bare-name
 collision checking remains. Prepare is never durable and closes on failure or
 restart; teardown closes transport+provider as one receipt. Generic revision
-writers remain closed against a pair; paired removal/retirement uses the frozen
-fingerprint even after authority expiry.
+writers remain closed against a pair. Paired removal is the durable exact-EventID
+`SaveIf` sequence `removal_revision_committed` (desired pair absent by revision
+CAS), `catalog_unpublished`, `teardown_receipted` (close+revoke from frozen
+fingerprint), then terminal `removed`. Commit-then-error or unknown outcomes
+exact-reread the operation phase/EventID, desired revision, catalog source, and
+receipt, then resume only the missing phase. Expiry, key revocation, or a lost
+verifier never block it; retirement uses this same removal path.
 
 **First-install repair.** Before any candidate can become semantically active,
 `set_oauth_provider` writes a durable pending-activation/compensation fence
 under agent scope, bound to exact operation/content fingerprint, attempted
 revision, and prior active revision/EventID (or no-active), with phase/EventID.
-`Registry.Active`, revision mutation, and reconcile consult it: pending returns
-only prior active or no-active and never authorizes the candidate. Success
+`Registry.Active`, every generic section writer and production
+registration/creation write, `set_revision`, rollback, pair removal, retirement,
+and reconcile consult the exact fence and physical active revision/EventID:
+pending returns only prior active or no-active and never
+authorizes the candidate. A foreign operation rejects with typed
+pending/conflict; only the same operation may serialize and resume. Success
 `SaveIf` commits the fence; failure aborts it; unknown transitions remain safely
 pending across runtimes until exact reread proves either phase. Candidate history
 is immutable. `DeactivateIfActive` may compact the physical pointer afterward;
