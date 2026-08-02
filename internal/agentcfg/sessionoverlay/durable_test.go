@@ -886,7 +886,9 @@ func TestCutoverController_CommitThenErrorConvergesInitProgressAndFinal(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := legacy.SetUserPrompt(context.Background(), durableID("session-a"), "agent-a", "legacy"); err != nil {
+	id := durableID("session-a")
+	activateAgent(t, base, id, "agent-a")
+	if _, err := legacy.SetUserPrompt(context.Background(), id, "agent-a", "legacy"); err != nil {
 		t.Fatal(err)
 	}
 	mode, err := controller.Advance(context.Background(), "tenant", 8, &recordingMigrator{})
@@ -917,6 +919,7 @@ func TestCutoverController_ResumesLiteralTenantScanAndFreshVerifies(t *testing.T
 	}
 	for _, agent := range []string{"a", "ab", "%", "_", `\\`} {
 		id := durableID("session-" + agent)
+		activateAgent(t, st, id, agent)
 		if _, err := legacy.SetUserPrompt(context.Background(), id, agent, "legacy "+agent); err != nil {
 			t.Fatal(err)
 		}
