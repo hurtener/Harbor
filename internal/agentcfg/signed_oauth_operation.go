@@ -155,6 +155,28 @@ func (s *SignedOAuthMCPActivationFenceStore) Begin(ctx context.Context, tenant, 
 		return SignedOAuthMCPActivationFence{}, loadErr
 	}
 	if existing.OperationKind != operationKind || existing.Fingerprint != fingerprint || existing.CandidateContentHash != candidateHash || existing.PriorRevisionID != priorRevisionID {
+		// A terminal fence is a receipt for its immutable candidate, not a
+		// permanent agent-wide lease. Once its operation committed or aborted,
+		// the next signed capability may install its own exact pending fence.
+		// The replacement still CAS-compares the old EventID, so two new
+		// operations cannot both cross this boundary.
+		if existing.Phase == SignedOAuthMCPFencePending {
+			return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: foreign operation owns activation fence", ErrSignedCapabilityPending)
+		}
+		err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: signedOAuthMCPActivationFenceKind, ExpectedEventID: existing.EventID}}, state.StateRecord{ID: fence.EventID, Identity: quad, Kind: signedOAuthMCPActivationFenceKind, Bytes: encoded})
+		if err == nil {
+			return fence, nil
+		}
+		if !errors.Is(err, state.ErrConditionFailed) {
+			return SignedOAuthMCPActivationFence{}, fmt.Errorf("replace signed capability activation fence: %w", err)
+		}
+		latest, latestErr := s.Load(ctx, tenant, agentID)
+		if latestErr != nil {
+			return SignedOAuthMCPActivationFence{}, latestErr
+		}
+		if latest.OperationKind == operationKind && latest.Fingerprint == fingerprint && latest.CandidateContentHash == candidateHash && latest.PriorRevisionID == priorRevisionID {
+			return latest, nil
+		}
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: foreign operation owns activation fence", ErrSignedCapabilityPending)
 	}
 	return existing, nil

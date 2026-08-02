@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: static-only
+# PREFLIGHT_REQUIRES: unit-tests
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -7,8 +7,8 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# Planning-stage guards: the surface is intentionally not implemented yet, but
-# the binding plan/RFC must retain the production-safe boot-authorized contract.
+# D-401's surface is deliberately unavailable without a boot trust anchor, but
+# these are live implementation guards, not planning-only assertions.
 assert_file "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "phase 233b plan exists"
 assert_grep_present 'agent_config\.register_oauth_mcp_capability' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "canonical atomic capability method is specified"
 assert_grep_present 'D-401' "RFC-001-Harbor.md" "RFC carries the D-401 production contract"
@@ -28,6 +28,21 @@ assert_grep_present 'IDNA2008' "docs/plans/phase-233b-signed-oauth-mcp-capabilit
 assert_grep_present 'RFC5952' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "IPv6 canonical form is pinned"
 assert_grep_present 'foreign operation' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "activation fence rejects foreign authority mutators"
 assert_grep_present 'redirects' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "bearer redirects are fail-closed"
+assert_grep_present 'CanonicalOAuthMCPURL' internal/runtime/agentcfg/protocol/register_signed_oauth_mcp_capability.go "registration derives its URL bytes and sink through the canonical helper"
+assert_grep_absent 'AllowWireOAuthDescriptor|allowWireOAuthDescriptor' internal/runtime/agentcfg/protocol/register_signed_oauth_mcp_capability.go "D-401 registration does not consult the development-only wire OAuth descriptor opt-in"
 
-skip "phase 233b: implementation endpoint/tests pending; static D-401 design guards ran"
+P233B_TMP="$(mktemp -d "${TMPDIR:-/tmp}/harbor-phase-233b.XXXXXX")"
+trap 'rm -rf "${P233B_TMP}"' EXIT
+
+assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agentcfg ./internal/runtime/agentcfg/protocol' \
+    'phase 233b: signed capability authority, recovery, removal, and fence regressions execute under race' \
+    TestVerifySignedOAuthMCPAuthority_ExactBindingAndScopeCeiling \
+    TestSignedOAuthMCPOperationStore_ClaimsTenantScopedReplayAndTransitions \
+    TestSignedOAuthMCPActivationFenceStore_TerminalFenceYieldsToNextOperation \
+    TestRegisterOAuthMCPCapability_DurableReplayResumesPublishedOperation \
+    TestRegisterOAuthMCPCapability_CommittedRevisionThenError_RecoversExactCandidate \
+    TestRegisterOAuthMCPCapability_ConcurrentReplaySharesOnePublication \
+    TestRegisterOAuthMCPCapability_ConcurrentMixedIdentityN128 \
+    TestRemoveOAuthMCPCapability_ContinuesPairLifetimeReceipt
+
 smoke_summary

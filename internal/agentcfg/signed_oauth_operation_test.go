@@ -56,3 +56,32 @@ func TestSignedOAuthMCPOperationStore_TenantSeparatesIdenticalJTI(t *testing.T) 
 		}
 	}
 }
+
+func TestSignedOAuthMCPActivationFenceStore_TerminalFenceYieldsToNextOperation(t *testing.T) {
+	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	fences, err := NewSignedOAuthMCPActivationFenceStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := fences.Begin(context.Background(), "tenant-a", "agent", "operation-one", "fingerprint-one", "candidate-one", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fences.Advance(context.Background(), first, SignedOAuthMCPFenceCommitted, "revision-one"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := fences.Begin(context.Background(), "tenant-a", "agent", "operation-two", "fingerprint-two", "candidate-two", "revision-one")
+	if err != nil {
+		t.Fatalf("terminal fence must yield to the next operation: %v", err)
+	}
+	if second.Phase != SignedOAuthMCPFencePending || second.OperationKind != "operation-two" {
+		t.Fatalf("replacement fence = %+v, want pending operation-two", second)
+	}
+	if _, err := fences.Begin(context.Background(), "tenant-a", "agent", "foreign", "foreign", "foreign", "revision-one"); !errors.Is(err, ErrSignedCapabilityPending) {
+		t.Fatalf("foreign pending operation = %v, want ErrSignedCapabilityPending", err)
+	}
+}

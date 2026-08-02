@@ -190,7 +190,6 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 				closePrepared()
 				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 			}
-			rev = active
 		}
 		op, err = s.signedOAuthMCPOperations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhaseRevisionCommitted, rev.RevisionID)
 		if err != nil {
