@@ -18,6 +18,7 @@ assert_grep_present 'trust_anchor_name' "docs/plans/phase-233b-signed-oauth-mcp-
 assert_grep_present 'claimed -> revision_committed -> published -> removal_revision_committed -> catalog_unpublished -> teardown_receipted -> removed' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "complete pair-lifetime JTI graph is specified"
 assert_grep_present 'pair-history lifetime despite registration-authority expiry' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "published record survives registration-authority expiry"
 assert_grep_present 'anti-replay tombstone' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "removed pair cannot be recreated or replayed"
+assert_grep_present 'cleanup/maintenance applies only to `claimed`, `revision_committed`,' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "expiry maintenance excludes published and removed records"
 assert_grep_present 'SignedOAuthMCPConnectionDescriptor' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "registration uses a closed dedicated descriptor"
 assert_grep_present 'removal_revision_committed' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "paired removal has durable recovery phases"
 assert_grep_present 'outside the general `ProviderSet`' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "signed provider is pair-owned"

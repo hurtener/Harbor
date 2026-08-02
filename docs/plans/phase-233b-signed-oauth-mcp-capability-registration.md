@@ -287,9 +287,12 @@ explicit signed-capability production opt-in; it is not enabled by default.
 - Signature format and verifier key rotation must use an existing approved
   asymmetric validator or receive an RFC ruling before implementation; request
   parsing must not select algorithms or issuers.
-- Operation retention needs a bounded expiry+skew maintenance path without
-  weakening exact tuple lookup. It must distinguish exact phase-resume from a
-  fresh mutation; neither may be a best-effort cache.
+- Expiry+skew cleanup/maintenance applies only to `claimed`, `revision_committed`,
+  and `expired_incomplete` records, without weakening exact tuple lookup.
+  `published` persists for the full immutable pair-history lifetime; `removed`
+  remains a durable anti-replay tombstone with that pair history. Maintenance
+  must distinguish exact phase-resume from a fresh mutation; neither may be a
+  best-effort cache.
 - A previously registered capability can expire before rollback/reconcile. The
   safe behavior is inactive/unavailable with loud diagnostics, not an implicit
   renewal or acceptance of administrator input; removal/retirement remains
