@@ -847,9 +847,9 @@ type AgentConfigRollbackResponse struct {
 	ProtocolVersion string                  `json:"protocol_version"`
 }
 
-// AgentConfigRetirementCleanupStep is one redacted, bounded cleanup manifest
-// entry. It deliberately carries no URL, secret, credential, or raw runtime
-// descriptor.
+// AgentConfigRetirementCleanupStep is the redacted current window onto a
+// bounded durable cleanup-manifest item. It deliberately carries no URL,
+// secret, credential, or raw runtime descriptor.
 type AgentConfigRetirementCleanupStep struct {
 	Class     string `json:"class"`
 	Resource  string `json:"resource"`
@@ -857,8 +857,10 @@ type AgentConfigRetirementCleanupStep struct {
 }
 
 // AgentConfigRetirementStatus is the replay-safe terminal lifecycle view.
-// The raw operation id is returned only to the authenticated admin caller who
-// supplied it; lifecycle events use its hash instead.
+// Cleanup contains at most one pending item (or the final completed item), so
+// status size is independent of the full operation-owned manifest. The raw
+// operation id is returned only to the authenticated admin caller who supplied
+// it; lifecycle events use its hash instead.
 type AgentConfigRetirementStatus struct {
 	OperationID      string                             `json:"operation_id"`
 	RetiredAt        time.Time                          `json:"retired_at"`

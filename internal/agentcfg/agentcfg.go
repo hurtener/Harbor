@@ -807,18 +807,20 @@ type RetirementRequest struct {
 	ExpectedContentHash string
 }
 
-// CleanupStep is a bounded, immutable cleanup manifest entry. It carries no
-// secret or credential material; resource identity is only a durable owner
-// label captured before the tombstone wins.
+// CleanupStep is the bounded current window onto an immutable cleanup
+// manifest. It carries no secret or credential material; resource identity is
+// only a durable owner label captured after the tombstone freezes writers.
 type CleanupStep struct {
 	Class     string
 	Resource  string
 	Completed bool
 }
 
-// RetirementStatus is the durable tombstone projection. Prior revision data
-// remains addressable through Get/List/Diff; Active and every mutation return
-// ErrAgentRetired instead.
+// RetirementStatus is the durable tombstone projection. Cleanup contains at
+// most the next pending item, or the final completed item once converged; the
+// full operation-owned manifest remains in bounded durable records. Prior
+// revision data remains addressable through Get/List/Diff; Active and every
+// mutation return ErrAgentRetired instead.
 type RetirementStatus struct {
 	OperationID      string
 	RetiredAt        time.Time

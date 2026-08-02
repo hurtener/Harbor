@@ -493,14 +493,14 @@ func TestRetirement_PendingProgressMustFlushBeforeLaterStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second completion should flush pending progress: %v", err)
 	}
-	if status.Completed || len(status.Cleanup) != 2 || !status.Cleanup[0].Completed || status.Cleanup[1].Completed {
+	if status.Completed || len(status.Cleanup) != 1 || status.Cleanup[0].Resource != "two" || status.Cleanup[0].Completed {
 		t.Fatalf("later completion overwrote pending progress: %+v", status)
 	}
 	status, err = retirer.CompleteRetirementStep(ctx, id, agent, "order-op", "mcp_connection", "two")
 	if err != nil {
 		t.Fatalf("retry later completion after progress acknowledgement: %v", err)
 	}
-	if !status.Completed || !status.Cleanup[0].Completed || !status.Cleanup[1].Completed {
+	if !status.Completed || len(status.Cleanup) != 1 || status.Cleanup[0].Resource != "two" || !status.Cleanup[0].Completed {
 		t.Fatalf("ordered cleanup did not finish: %+v", status)
 	}
 }

@@ -136,6 +136,15 @@ and the Phase 233a personal/legacy cleanup is integrated here. The combined
 cleanup acceptance criterion above and Phase 234's master-plan status remain
 open until Phase 233b lands and the pair path is integrated and verified.
 
+The fixed cleanup manifest is operation-owned and stored as bounded immutable
+StateStore records, one deterministic ordinal at a time. The lifecycle
+tombstone retains only bounded discovery/cleanup cursors, item counts, and the
+rolling frozen digest. A same-operation response exposes only the next pending
+item (or final completed item), so neither a large scan page nor the complete
+target population can exceed the lifecycle envelope. Persisting an item
+precedes advancing its lifecycle cursor; an interrupted replay accepts only
+the exact existing item and then advances, preventing post-tombstone livelock.
+
 ## Risks / open questions
 
 - In-flight projection preservation requires cleanup to avoid destructive process-global teardown until no pre-retirement snapshot can reference it; the cleaner records a deferred step rather than violating that boundary.

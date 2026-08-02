@@ -165,7 +165,7 @@ func InspectRetirementPersonalCandidate(candidate state.StateRecord, tenantID, a
 	var key struct {
 		CanonicalName *string `json:"canonical_name"`
 	}
-	if err := rejectDuplicateJSONObjectFields(candidate.Bytes); err != nil {
+	if err := agentcfg.ValidateUniqueJSONFields(candidate.Bytes); err != nil {
 		return "", fmt.Errorf("%w: retirement candidate duplicate/trailing fields: %w", ErrPersonalRecordInvalid, err)
 	}
 	if err := json.Unmarshal(candidate.Bytes, &key); err != nil || key.CanonicalName == nil {

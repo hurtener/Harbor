@@ -1178,10 +1178,11 @@ func (s *Service) Retire(ctx context.Context, req prototypes.AgentConfigRetireRe
 // side effect and before its CAS acknowledgement is safe to retry. No current
 // reach token is consulted: retirement must finish after authority expiry.
 func (s *Service) completeRetirementCleanup(ctx context.Context, reg agentcfg.RetirementRegistry, q identity.Quadruple, agentID string, status agentcfg.RetirementStatus) (agentcfg.RetirementStatus, error) {
-	for _, step := range status.Cleanup {
-		if step.Completed {
-			continue
+	for !status.Completed {
+		if len(status.Cleanup) != 1 || status.Cleanup[0].Completed {
+			return agentcfg.RetirementStatus{}, fmt.Errorf("%w: frozen cleanup status has no next item", agentcfg.ErrRetirementConflict)
 		}
+		step := status.Cleanup[0]
 		switch step.Class {
 		case "mcp_connection":
 			if s.detacher == nil {

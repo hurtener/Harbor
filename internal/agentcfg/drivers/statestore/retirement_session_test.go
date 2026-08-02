@@ -99,7 +99,11 @@ func TestRetirement_Phase233aManifestExactAndFourSlotCleanup(t *testing.T) {
 		t.Fatalf("retire: %v", err)
 	}
 	counts := map[string]int{}
-	for _, step := range status.Cleanup {
+	for !status.Completed {
+		if len(status.Cleanup) != 1 {
+			t.Fatalf("bounded pending status=%+v", status)
+		}
+		step := status.Cleanup[0]
 		counts[step.Class]++
 		status, err = retirer.CompleteRetirementStep(ctx, admin, "a", status.OperationID, step.Class, step.Resource)
 		if err != nil {
