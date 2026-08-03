@@ -9,6 +9,18 @@ custody; a signed, bounded authority envelope permits a new capability without
 a runtime-config edit or redeploy. It requires the broker/trust anchor's
 explicit signed-capability production opt-in; it is not enabled by default.
 
+## v1.26.1 patch note
+
+The v1.26.0 serving composition incorrectly supplied the run-loop projection
+detacher to signed-pair recovery. That concrete deliberately lacks the exact
+Protocol teardown/fencing receipt required for a private signed pair, causing
+an enabled authority to fail boot despite passing configuration validation.
+The v1.26.1 repair supplies the MCP attacher's paired preparation/teardown
+seam instead, while retaining the separate projection detacher for ordinary
+run-start reconciliation. Regression coverage boots the authority-enabled
+shared composition and repeats the boot to pin restart safety; the existing
+real MCP registration/removal/recovery path remains the end-to-end pair proof.
+
 ## RFC anchor
 
 - RFC §4.

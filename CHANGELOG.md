@@ -17,6 +17,16 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Signed OAuth MCP capability authority is now wired through the shared serving
+  composition. A valid boot-declared authority no longer fails before recovery
+  because the run-loop projection detacher was selected in place of the MCP
+  attacher's exact signed-pair teardown seam. This restores authority-enabled
+  boot for `harbor serve`, dev/Console compositions, and the production server
+  facade without changing the Protocol version or making any credential,
+  verifier, or sink field writable.
+
 ## [1.26.0] — 2026-08-02
 
 This release strengthens the authority and lifecycle boundaries for
