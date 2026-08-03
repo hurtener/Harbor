@@ -21,6 +21,17 @@ run-start reconciliation. Regression coverage boots the authority-enabled
 shared composition and repeats the boot to pin restart safety; the existing
 real MCP registration/removal/recovery path remains the end-to-end pair proof.
 
+## Signed artifact-egress amendment
+
+The closed signed connection descriptor also carries
+`artifact_byte_eligible` and `artifact_params`. They are signer-authorized,
+non-secret connection policy, not a credential or destination field. The
+mapping is canonicalized into the immutable binding and replay fingerprint,
+bounded to 32 tools, 128 total parameters, and 16 KiB of canonical JSON, and
+validated against discovered string input schemas before the pair publishes.
+Revision projection and restart reconciliation preserve the exact declaration;
+invalid or tampered mappings fail before persistence and leave no partial pair.
+
 ## RFC anchor
 
 - RFC §4.
@@ -97,7 +108,8 @@ real MCP registration/removal/recovery path remains the end-to-end pair proof.
   `SignedOAuthMCPConnectionDescriptor`, `expected_content_hash`, and signed
   authority envelope only. It accepts no general MCP descriptor. The dedicated
   shape is exactly `{name, url, tool_allowlist, tool_denylist,
-  connect_timeout_ms, request_timeout_ms}`; strict decode and reflection pin
+  connect_timeout_ms, request_timeout_ms, artifact_byte_eligible,
+  artifact_params}`; strict decode and reflection pin
   that it excludes `oauth`, `oauth_provider`, `token_url`, injection, discovery
   origins, stdio command/env/cwd, headers, credentials, secrets, and every
   host/sink list. Unknown fields reject before side effects.

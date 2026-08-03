@@ -12,6 +12,8 @@ source "scripts/smoke/common.sh"
 assert_file "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "phase 233b plan exists"
 assert_grep_present 'agent_config\.register_oauth_mcp_capability' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "canonical atomic capability method is specified"
 assert_grep_present 'D-401' "RFC-001-Harbor.md" "RFC carries the D-401 production contract"
+assert_grep_present 'D-404' "RFC-001-Harbor.md" "RFC carries the bounded signed artifact-egress extension"
+assert_grep_present 'artifact_byte_eligible.*artifact_params' "RFC-001-Harbor.md" "closed signed descriptor includes only the trusted egress extension"
 assert_grep_present 'production-safe, boot-authorized' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "production path requires boot authorization"
 assert_grep_present 'explicit signed-capability production opt-in' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "broker opt-in is explicit"
 assert_grep_present 'trust_anchor_name' "docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md" "JTI operation key includes the trust anchor"
@@ -40,6 +42,7 @@ trap 'rm -rf "${P233B_TMP}"' EXIT
 assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agentcfg ./internal/runtime/agentcfg/protocol' \
     'phase 233b: signed capability authority, recovery, removal, and fence regressions execute under race' \
     TestVerifySignedOAuthMCPAuthority_ExactBindingAndScopeCeiling \
+    TestSignedOAuthMCPPairFingerprint_ArtifactEgressIsImmutableBinding \
     TestSignedOAuthMCPOperationStore_ClaimsTenantScopedReplayAndTransitions \
     TestSignedOAuthMCPOperationStore_ExpiryAdmissionRenewalIsExactAndCASBound \
     TestSignedOAuthMCPOperationStore_SQLiteTwoHandleRenewalRaceHasOneWinner \
@@ -47,6 +50,9 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestSignedOAuthMCPActivationFenceStore_ReopensOnlyExactRenewedGeneration \
     TestSignedOAuthMCPOperationStore_PublisherEpochCASAndRemovalFenceUse \
     TestRegisterOAuthMCPCapability_DurableReplayResumesPublishedOperation \
+    TestRegisterOAuthMCPCapability_SignedArtifactEgressRoundTripsAndBindsAttach \
+    TestRegisterOAuthMCPCapability_ArtifactEgressTamperAndBoundsFailBeforePersistence \
+    TestRegisterOAuthMCPCapability_InvalidDiscoveredArtifactMappingRollsBackAtomically \
     TestRegisterOAuthMCPCapability_StableJTIRecoversClaimedBeforeFenceAndPreservesPrior \
     TestRegisterOAuthMCPCapability_StableJTIClaimedBeforeFenceReplacesOlderAbortedFence \
     TestRegisterOAuthMCPCapability_StableJTIRecoversExpiredRevisionCommittedOnce \
@@ -81,6 +87,8 @@ assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./intern
     TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDiscovery \
     TestBearerInjectingTransport_StaleSignedPublisherNeverReachesNetwork \
     TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors \
+    TestEgress_SchemaCheck_Refusals \
+    TestEgress_SchemaCheck_AcceptsAStringDeclaredParameter \
     TestIsJSONRPCMethodNotFound_OnlyCanonicalTypedError \
     TestDetachSourceExpected_CloseFailureIsRetryableAndNeverAbsentSuccess \
     TestRegistry_DeregisterExact_CloseFailureRetainsExactRetryReceiptAndBlocksReplacement \

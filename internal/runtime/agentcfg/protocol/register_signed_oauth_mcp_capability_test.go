@@ -31,6 +31,7 @@ import (
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	statepostgres "github.com/hurtener/Harbor/internal/state/drivers/postgres"
 	statesqlite "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
+	"github.com/hurtener/Harbor/internal/tools"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
@@ -199,11 +200,13 @@ func (c *cleanupCapabilityConnection) Close(ctx context.Context) error {
 
 type capabilityPreparer struct {
 	mu                 sync.Mutex
+	lastReq            agentcfgprotocol.AttachRequest
 	activations        int
 	detaches           int
 	preparedCloses     int
 	live               map[string]string
 	failActivate       error
+	failPrepare        error
 	failDetach         error
 	detachEntered      chan struct{}
 	detachRelease      <-chan struct{}
@@ -333,9 +336,14 @@ func (r *capabilityLandedThenErroredRegistry) SetRevision(ctx context.Context, i
 
 func (p *capabilityPreparer) PrepareConnection(ctx context.Context, req agentcfgprotocol.AttachRequest) (agentcfgprotocol.PreparedConnection, error) {
 	p.mu.Lock()
+	p.lastReq = req
+	failPrepare := p.failPrepare
 	block := p.prepareBlockTenant == req.Identity.TenantID
 	entered, release := p.prepareEntered, p.prepareRelease
 	p.mu.Unlock()
+	if failPrepare != nil {
+		return nil, failPrepare
+	}
 	if block && entered != nil {
 		select {
 		case entered <- struct{}{}:
@@ -1103,7 +1111,15 @@ func signedJTIHashForTest(jti string) string {
 func TestSignedOAuthMCPReconciler_Restart_ReattachesFrozenOwnerForLaterSubject(t *testing.T) {
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
-	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-reconcile-restart", "aud-reconcile")); err != nil {
+	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://example.test/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-reconcile-restart", "aud-reconcile", prototypes.SignedOAuthMCPConnectionDescriptor{
+		Name: "cap", URL: canonical, ArtifactByteEligible: true,
+		ArtifactParams: map[string][]string{"knowledge.ingest": {"content_base64"}},
+	}, sink)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), req); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	preparer.mu.Lock()
@@ -1119,9 +1135,13 @@ func TestSignedOAuthMCPReconciler_Restart_ReattachesFrozenOwnerForLaterSubject(t
 	}
 	preparer.mu.Lock()
 	activations := preparer.activations
+	reattached := preparer.lastReq
 	preparer.mu.Unlock()
 	if activations != 2 {
 		t.Fatalf("activations = %d, want register plus one restart reattach", activations)
+	}
+	if !reattached.ArtifactByteEligible || len(reattached.ArtifactParams["knowledge.ingest"]) != 1 || reattached.ArtifactParams["knowledge.ingest"][0] != "content_base64" {
+		t.Fatalf("restart reattach lost signed egress declaration: %+v", reattached)
 	}
 	owner := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
 	active, set, err := reg.Active(context.Background(), owner, testAgentID, agentcfg.ConfigScopeAgent)
@@ -1920,10 +1940,20 @@ func signedCapabilityRequestFor(t *testing.T, key *rsa.PrivateKey, now time.Time
 	if err != nil {
 		t.Fatal(err)
 	}
+	connection := prototypes.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonical}
+	return signedCapabilityRequestWithConnection(t, key, now, scope, agentID, jti, audience, connection, sink)
+}
+
+func signedCapabilityRequestWithConnection(t *testing.T, key *rsa.PrivateKey, now time.Time, scope prototypes.IdentityScope, agentID, jti, audience string, connection prototypes.SignedOAuthMCPConnectionDescriptor, sink string) prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest {
+	t.Helper()
 	claims := agentcfg.SignedOAuthMCPAuthorityClaims{
 		TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session, AgentID: agentID, Broker: "broker", ProviderName: "provider", CapabilityRevision: "v1",
-		URLDigest: agentcfg.OAuthMCPURLDigest(canonical), SinkDigest: agentcfg.OAuthMCPURLDigest(sink), Audience: audience, Scopes: []string{"read"},
-		Connection:       agentcfg.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonical},
+		URLDigest: agentcfg.OAuthMCPURLDigest(connection.URL), SinkDigest: agentcfg.OAuthMCPURLDigest(sink), Audience: audience, Scopes: []string{"read"},
+		Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{
+			Name: connection.Name, URL: connection.URL, ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist,
+			ConnectTimeoutMS: connection.ConnectTimeoutMS, RequestTimeoutMS: connection.RequestTimeoutMS,
+			ArtifactByteEligible: connection.ArtifactByteEligible, ArtifactParams: cloneTestArtifactParams(connection.ArtifactParams),
+		},
 		RegisteredClaims: jwt.RegisteredClaims{Issuer: "issuer", ID: jti, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(30 * time.Minute))},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
@@ -1934,7 +1964,118 @@ func signedCapabilityRequestFor(t *testing.T, key *rsa.PrivateKey, now time.Time
 	}
 	return prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest{
 		Identity: scope, AgentID: agentID, ProviderName: "provider", Broker: "broker", Audience: audience, Scopes: []string{"read"},
-		Connection: prototypes.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonical}, AuthorityEnvelope: raw,
+		Connection: connection, AuthorityEnvelope: raw,
+	}
+}
+
+func cloneTestArtifactParams(in map[string][]string) map[string][]string {
+	out := make(map[string][]string, len(in))
+	for tool, params := range in {
+		out[tool] = append([]string(nil), params...)
+	}
+	return out
+}
+
+func TestRegisterOAuthMCPCapability_SignedArtifactEgressRoundTripsAndBindsAttach(t *testing.T) {
+	now := time.Date(2026, 8, 3, 14, 0, 0, 0, time.UTC)
+	svc, key, _, preparer := signedCapabilityService(t, now)
+	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://example.test/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := prototypes.SignedOAuthMCPConnectionDescriptor{
+		Name: "soundings", URL: canonical, ArtifactByteEligible: true,
+		ArtifactParams: map[string][]string{"knowledge.ingest": {"content_base64"}},
+	}
+	req := signedCapabilityRequestWithConnection(t, key, now, prototypes.IdentityScope{Tenant: "t", User: "u", Session: "s"}, testAgentID, "jti-egress", "aud-egress", connection, sink)
+	got, err := svc.RegisterOAuthMCPCapability(context.Background(), req)
+	if err != nil {
+		t.Fatalf("register signed egress: %v", err)
+	}
+	pair := got.Revision.Payload.SignedOAuthMCPPair
+	if pair == nil || !pair.Connection.ArtifactByteEligible || len(pair.Connection.ArtifactParams["knowledge.ingest"]) != 1 || pair.Connection.ArtifactParams["knowledge.ingest"][0] != "content_base64" {
+		t.Fatalf("applied echo lost signed egress declaration: %+v", pair)
+	}
+	preparer.mu.Lock()
+	if preparer.lastReq.ArtifactByteEligible != true || len(preparer.lastReq.ArtifactParams["knowledge.ingest"]) != 1 || preparer.lastReq.ArtifactParams["knowledge.ingest"][0] != "content_base64" {
+		t.Fatalf("attach lost signed egress declaration: %+v", preparer.lastReq)
+	}
+	preparer.mu.Unlock()
+	widened := connection
+	widened.ArtifactParams = map[string][]string{"knowledge.ingest": {"content_base64", "metadata"}}
+	replay := signedCapabilityRequestWithConnection(t, key, now, prototypes.IdentityScope{Tenant: "t", User: "u", Session: "s"}, testAgentID, "jti-egress", "aud-egress", widened, sink)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), replay); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
+		t.Fatalf("same-JTI mapping widening = %v, want replay refusal", err)
+	}
+	preparer.mu.Lock()
+	defer preparer.mu.Unlock()
+	if preparer.activations != 1 {
+		t.Fatalf("same-JTI widening activated %d connections, want original one", preparer.activations)
+	}
+}
+
+func TestRegisterOAuthMCPCapability_ArtifactEgressTamperAndBoundsFailBeforePersistence(t *testing.T) {
+	now := time.Date(2026, 8, 3, 14, 0, 0, 0, time.UTC)
+	svc, key, reg, _, _ := signedCapabilityServiceWithRegistry(t, now)
+	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://example.test/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed := prototypes.SignedOAuthMCPConnectionDescriptor{Name: "soundings", URL: canonical, ArtifactByteEligible: true, ArtifactParams: map[string][]string{"knowledge.ingest": {"content_base64"}}}
+	tampered := signedCapabilityRequestWithConnection(t, key, now, prototypes.IdentityScope{Tenant: "t", User: "u", Session: "s"}, testAgentID, "jti-tamper", "aud", signed, sink)
+	tampered.Connection.ArtifactParams["knowledge.ingest"] = []string{"widened"}
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), tampered); !errors.Is(err, agentcfg.ErrSignedCapabilityBinding) {
+		t.Fatalf("tampered mapping error = %v, want binding mismatch", err)
+	}
+
+	oversized := signed
+	oversized.ArtifactParams = make(map[string][]string)
+	for i := range 33 {
+		oversized.ArtifactParams[fmt.Sprintf("tool-%02d", i)] = []string{"content_base64"}
+	}
+	bounded := signedCapabilityRequestWithConnection(t, key, now, prototypes.IdentityScope{Tenant: "t", User: "u", Session: "s"}, testAgentID, "jti-bounds", "aud", oversized, sink)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), bounded); !errors.Is(err, agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor) {
+		t.Fatalf("oversized mapping error = %v, want invalid descriptor", err)
+	}
+	tooManyBytes := signed
+	tooManyBytes.ArtifactParams = map[string][]string{"knowledge.ingest": {strings.Repeat("p", 17*1024)}}
+	byteBounded := signedCapabilityRequestWithConnection(t, key, now, prototypes.IdentityScope{Tenant: "t", User: "u", Session: "s"}, testAgentID, "jti-byte-bounds", "aud", tooManyBytes, sink)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), byteBounded); !errors.Is(err, agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor) {
+		t.Fatalf("over-byte mapping error = %v, want invalid descriptor", err)
+	}
+	duplicateCanonicalTool := signed
+	duplicateCanonicalTool.ArtifactParams = map[string][]string{
+		"knowledge.ingest":   {"content_base64"},
+		" knowledge.ingest ": {"content"},
+	}
+	duplicateBounded := signedCapabilityRequestWithConnection(t, key, now, prototypes.IdentityScope{Tenant: "t", User: "u", Session: "s"}, testAgentID, "jti-duplicate-canonical-tool", "aud", duplicateCanonicalTool, sink)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), duplicateBounded); !errors.Is(err, agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor) {
+		t.Fatalf("duplicate canonical tool error = %v, want invalid descriptor", err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	if _, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); err != nil || set {
+		t.Fatalf("rejected mapping persisted active state: set=%t err=%v", set, err)
+	}
+}
+
+func TestRegisterOAuthMCPCapability_InvalidDiscoveredArtifactMappingRollsBackAtomically(t *testing.T) {
+	now := time.Date(2026, 8, 3, 14, 0, 0, 0, time.UTC)
+	svc, key, reg, _, preparer := signedCapabilityServiceWithRegistry(t, now)
+	preparer.failPrepare = tools.ErrArtifactEgressSchema
+	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://example.test/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-schema-rollback", "aud", prototypes.SignedOAuthMCPConnectionDescriptor{
+		Name: "soundings", URL: canonical, ArtifactByteEligible: true,
+		ArtifactParams: map[string][]string{"knowledge.ingest": {"unknown_or_non_string"}},
+	}, sink)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), req); !errors.Is(err, tools.ErrArtifactEgressSchema) {
+		t.Fatalf("schema refusal = %v, want artifact schema sentinel", err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	if _, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); err != nil || set {
+		t.Fatalf("invalid discovered mapping left active authority: set=%t err=%v", set, err)
 	}
 }
 

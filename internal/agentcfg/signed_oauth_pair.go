@@ -11,7 +11,19 @@ func cloneSignedOAuthMCPPair(in *SignedOAuthMCPPair) *SignedOAuthMCPPair {
 	out.Scopes = sortDedup(in.Scopes)
 	out.Connection.ToolAllowlist = sortDedup(in.Connection.ToolAllowlist)
 	out.Connection.ToolDenylist = sortDedup(in.Connection.ToolDenylist)
+	out.Connection.ArtifactParams = cloneSignedOAuthArtifactParams(in.Connection.ArtifactParams)
 	return &out
+}
+
+func cloneSignedOAuthArtifactParams(in map[string][]string) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for tool, params := range in {
+		out[tool] = sortDedup(params)
+	}
+	return out
 }
 
 // SignedOAuthMCPPairView returns a defensive copy of the immutable pair.

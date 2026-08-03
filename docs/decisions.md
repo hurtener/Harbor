@@ -12332,3 +12332,55 @@ and Console lockstep remain unchanged.
 
 **Cross-references.** D-025, D-366, D-398, D-400, D-401. RFC §6.11, §6.16,
 §9. Plan: `docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md`.
+
+---
+
+## D-404 — Signed OAuth MCP connections may carry only the existing bounded artifact-egress policy extension
+
+**Date:** 2026-08-03
+
+**Status:** Accepted for the v1.26 signed-capability contract correction.
+
+**Decision.** The closed `SignedOAuthMCPConnectionDescriptor` adds only
+`artifact_byte_eligible` and `artifact_params`, matching the trusted content
+egress declaration already available to generic HTTP MCP connections. The
+fields are non-secret connection policy. They add no header, host, credential
+sink, token endpoint, discovery origin, or provider-controlled opt-in, and the
+signed path remains HTTP-only.
+
+The registration request is untrusted until the boot-pinned asymmetric signer
+verifies the exact canonical descriptor. Canonicalization trims tool and
+parameter names, sorts each parameter set, and rejects an empty or duplicate
+shape. Signed registrations additionally cap the declaration at 32 tools, 128
+total parameters, and 16 KiB of canonical JSON. The canonical mapping and
+eligibility bit participate in authority matching, pair fingerprinting, the
+tenant-scoped JTI replay oracle, revision content hashing, and staged
+attachment fingerprints. A same-JTI mapping change is therefore a replay
+conflict, never an in-place widening. An omitted false/nil declaration appends
+no new fingerprint components, preserving every pre-extension v1.26 pair and
+operation receipt byte-for-byte across upgrade and restart.
+
+The immutable pair revision stores and projects the declaration, and both the
+initial attach and run-start restart reconcile pass it into the existing MCP
+artifact-egress engine. That engine validates every mapped method and parameter
+against the server's discovered input schema before catalog publication: the
+tool and property must exist and the property must be string-typed. Any shape,
+bound, signature, schema, persistence, or attach failure is loud and leaves no
+published or partially authoritative pair; the existing activation fence and
+compensation state machine remain the atomicity mechanism. Removal continues
+to retire the exact immutable pair and operation receipt without a second
+mapping-specific lifecycle.
+
+Artifact resolution and the `mcp.artifact_egressed` audit event are unchanged:
+the acting run's verified tenant, user, session, and exact effective agent
+bound reach, and audit records the artifact id, destination tool and parameter,
+byte count, and digest but never the bytes. No second egress implementation or
+audit path is introduced.
+
+**Wire consequence.** Two additive optional fields on an existing canonical
+wire type. The generated Protocol and Console manifests move in lockstep;
+`ProtocolVersion` remains `0.1.0` and the product release is a v1.26 patch.
+
+**Cross-references.** D-026, D-359, D-397, D-401, D-403. RFC §5.3, §6.4,
+§6.11, §6.16. Plan:
+`docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md`.
