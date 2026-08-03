@@ -67,7 +67,7 @@ elif grep -q 'tools.WithEffectiveAgentConfig' internal/runtime/serve/runloop.go 
     || grep -q 'EffectiveAgentConfigFrom' internal/tools/auth/drivers/tokenexchange/tokenexchange.go 2>/dev/null; then
     fail "phase 215 static: signed-capability admission is incomplete — restore reach receipt, stamp effective agent, and require it at token exchange"
 else
-    skip "phase 215 static: signed-capability admission seams not present (unexpected build shape)"
+    fail "phase 215 static: signed-capability admission seams absent — this shipped phase must restore reach admission, stamp the effective agent, and enforce it at token exchange"
 fi
 
 # --- The run-start ORDERING guard: tasks.Get must precede
