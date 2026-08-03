@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -2753,7 +2754,7 @@ func ReservedMCPMetaPathToken(k string) (string, bool) {
 	return "", false
 }
 
-// ValidateMCPArtifactParams validates the SHAPE of an egress-substitution
+// ValidateMCPArtifactParams validates the bounded SHAPE of an egress-substitution
 // artifact-parameter mapping: every tool name non-empty, every tool
 // mapping at least one parameter, every parameter name non-empty, and no
 // parameter named twice for one tool.
@@ -2764,7 +2765,7 @@ func ReservedMCPMetaPathToken(k string) (string, bool) {
 // two Protocol persistence doors and the driver's attach differ only in
 // how they report it.
 //
-// It validates SHAPE only. Two further rules are the caller's, because
+// It validates and bounds SHAPE only. Two further rules are the caller's, because
 // each needs state this function does not have: the eligibility and
 // transport rules (the caller knows the connection), and the check that
 // each mapped parameter is declared string-typed in the server's own
@@ -2774,26 +2775,66 @@ func ReservedMCPMetaPathToken(k string) (string, bool) {
 // connection with no mapping takes an outbound path byte-identical to a
 // build without the feature.
 func ValidateMCPArtifactParams(params MCPArtifactParams) error {
+	_, err := NormalizeMCPArtifactParams(params)
+	return err
+}
+
+// NormalizeMCPArtifactParams returns the one canonical representation used by
+// boot config, Protocol admission, signed-envelope comparison, persistence,
+// and attach. Names are trimmed, parameters are sorted, and every resource
+// ceiling is measured on that canonical representation.
+func NormalizeMCPArtifactParams(params MCPArtifactParams) (MCPArtifactParams, error) {
+	if len(params) == 0 {
+		return nil, nil
+	}
+	if len(params) > MaxMCPArtifactMethods {
+		return nil, fmt.Errorf("maps %d methods, exceeding the cap of %d", len(params), MaxMCPArtifactMethods)
+	}
+	canonical := make(MCPArtifactParams, len(params))
 	for tool, names := range params {
-		if strings.TrimSpace(tool) == "" {
-			return errors.New("tool name must not be empty")
+		canonicalTool := strings.TrimSpace(tool)
+		if canonicalTool == "" {
+			return nil, errors.New("tool name must not be empty")
+		}
+		if len(canonicalTool) > MaxMCPArtifactNameBytes {
+			return nil, fmt.Errorf("tool name is %d bytes, exceeding the cap of %d", len(canonicalTool), MaxMCPArtifactNameBytes)
+		}
+		if _, duplicate := canonical[canonicalTool]; duplicate {
+			return nil, fmt.Errorf("maps canonical tool %q more than once", canonicalTool)
 		}
 		if len(names) == 0 {
-			return fmt.Errorf("tool %q maps no parameter names (remove the entry rather than declaring an empty one)", tool)
+			return nil, fmt.Errorf("tool %q maps no parameter names (remove the entry rather than declaring an empty one)", canonicalTool)
+		}
+		if len(names) > MaxMCPArtifactParamsPerMethod {
+			return nil, fmt.Errorf("tool %q maps %d parameters, exceeding the cap of %d", canonicalTool, len(names), MaxMCPArtifactParamsPerMethod)
 		}
 		seen := make(map[string]struct{}, len(names))
+		canonicalNames := make([]string, 0, len(names))
 		for _, name := range names {
 			trimmed := strings.TrimSpace(name)
 			if trimmed == "" {
-				return fmt.Errorf("tool %q maps an empty parameter name", tool)
+				return nil, fmt.Errorf("tool %q maps an empty parameter name", canonicalTool)
+			}
+			if len(trimmed) > MaxMCPArtifactNameBytes {
+				return nil, fmt.Errorf("tool %q parameter name is %d bytes, exceeding the cap of %d", canonicalTool, len(trimmed), MaxMCPArtifactNameBytes)
 			}
 			if _, dup := seen[trimmed]; dup {
-				return fmt.Errorf("tool %q maps parameter %q twice (must be unique)", tool, trimmed)
+				return nil, fmt.Errorf("tool %q maps parameter %q twice (must be unique)", canonicalTool, trimmed)
 			}
 			seen[trimmed] = struct{}{}
+			canonicalNames = append(canonicalNames, trimmed)
 		}
+		sort.Strings(canonicalNames)
+		canonical[canonicalTool] = canonicalNames
 	}
-	return nil
+	encoded, err := json.Marshal(canonical)
+	if err != nil {
+		return nil, fmt.Errorf("encode canonical artifact mapping: %w", err)
+	}
+	if len(encoded) > MaxMCPArtifactParamsJSONBytes {
+		return nil, fmt.Errorf("canonical artifact mapping is %d bytes, exceeding the cap of %d", len(encoded), MaxMCPArtifactParamsJSONBytes)
+	}
+	return canonical, nil
 }
 
 // ValidateMCPMetaAnnotationKey validates ONE `meta_annotations` key as a

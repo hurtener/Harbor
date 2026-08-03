@@ -453,6 +453,12 @@ var (
 	// ErrToolDuplicateName — Register called with a Name already
 	// in the catalog.
 	ErrToolDuplicateName = errors.New("tools: duplicate tool name")
+	// ErrArtifactEgressSchema marks a deterministic attach refusal: an
+	// artifact-parameter mapping names a tool or string parameter absent from
+	// the server's discovered schema. It lives at the transport-agnostic seam so
+	// a control-plane transaction can compensate without importing an MCP
+	// concrete.
+	ErrArtifactEgressSchema = errors.New("tools: artifact_params mapping does not match the discovered input schema")
 )
 
 // wrap formats a sentinel error with %w plus contextual key=value

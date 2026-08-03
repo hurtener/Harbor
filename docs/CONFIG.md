@@ -1577,6 +1577,11 @@ the same shape `tool_policies` and `tool_oauth_providers` use (the
 server-side MCP tool name, not the `<source>_<tool>` Harbor-facing one).
 It requires `artifact_byte_eligible` on the same connection.
 
+The mapping is canonicalized and bounded at config validation: at most 32
+methods, at most 8 parameters per method, at most 128 UTF-8 bytes per method or
+parameter name, and at most 8 KiB of canonical JSON. Values above a boundary
+fail validation; Harbor never truncates the declaration.
+
 Each mapped parameter is validated at attach against the server's **own
 discovered `inputSchema`**: it must be declared there, and declared
 string-typed. Harbor declaring "this parameter takes artifact bytes"

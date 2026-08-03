@@ -12,6 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/state"
@@ -83,7 +84,8 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	domainConnection := agentcfg.SignedOAuthMCPConnectionDescriptor{
 		Name: connection.Name, URL: canonicalURL, ToolAllowlist: connection.ToolAllowlist,
 		ToolDenylist: connection.ToolDenylist, ConnectTimeoutMS: connection.ConnectTimeoutMS,
-		RequestTimeoutMS: connection.RequestTimeoutMS,
+		RequestTimeoutMS: connection.RequestTimeoutMS, ArtifactByteEligible: connection.ArtifactByteEligible,
+		ArtifactParams: cloneArtifactParams(connection.ArtifactParams),
 	}
 	binding := agentcfg.SignedOAuthMCPBinding{
 		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, AgentID: req.AgentID, Broker: broker,
@@ -261,10 +263,16 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		URL: canonicalURL, OAuthProvider: providerName, OAuthProviderOverride: preparedProvider.Binding(), OwnOAuthProvider: true,
 		ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist,
 		ConnectTimeoutMS: connection.ConnectTimeoutMS, RequestTimeoutMS: connection.RequestTimeoutMS,
+		ArtifactByteEligible: connection.ArtifactByteEligible, ArtifactParams: cloneArtifactParams(connection.ArtifactParams),
 		DescriptorFingerprint: signedCapabilityPublisherAttachmentFingerprint(domainConnection, operationKind, op.PublisherEpoch),
 	})
 	if err != nil {
-		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closePreparedSignedCapability(ctx, nil, preparedProvider))
+		closeErr := closePreparedSignedCapability(ctx, nil, preparedProvider)
+		if errors.Is(err, tools.ErrArtifactEgressSchema) {
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closeErr,
+				s.compensateInvalidSignedArtifactMapping(ctx, q, req.AgentID, op, rev))
+		}
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closeErr)
 	}
 	closePrepared := func() error {
 		return closePreparedSignedCapability(ctx, preparedConnection, preparedProvider)
@@ -306,6 +314,20 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
 	return signedCapabilityResponse(rev, providerName, connection.Name), nil
+}
+
+func (s *Service) compensateInvalidSignedArtifactMapping(ctx context.Context, q identity.Quadruple, agentID string, op agentcfg.SignedOAuthMCPOperation, candidate agentcfg.Revision) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if op.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted || op.RevisionID != candidate.RevisionID {
+		return fmt.Errorf("%w: signed artifact mapping rejection does not bind committed candidate", agentcfg.ErrSignedCapabilityReplay)
+	}
+	physical, ok := s.registry.(physicalActiveRegistry)
+	if !ok {
+		return ErrSignedCapabilityUnavailable
+	}
+	reconciler := &SignedOAuthMCPReconciler{registry: s.registry, physical: physical, operations: s.signedOAuthMCPOperations, fences: s.signedOAuthMCPFences}
+	return reconciler.rejectPreparation(cleanupCtx, q, agentID, op, candidate)
 }
 
 func (s *Service) resumeAndRenewSignedOAuthMCPAuthority(ctx context.Context, physical physicalActiveRegistry, exactDetacher ExactConnectionDetacher, op agentcfg.SignedOAuthMCPOperation, key agentcfg.SignedOAuthMCPReplayKey, binding agentcfg.SignedOAuthMCPBinding, verifiedExpiresAt time.Time) (agentcfg.SignedOAuthMCPOperation, error) {
@@ -527,6 +549,18 @@ func normalizeSignedCapabilityConnection(in prototypes.SignedOAuthMCPConnectionD
 	}
 	if out.ToolDenylist, err = agentcfg.CanonicalScopes(out.ToolDenylist); err != nil {
 		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: tool_denylist: %w", ErrInvalidSignedCapabilityDescriptor, err)
+	}
+	if len(out.ArtifactParams) > 0 && !out.ArtifactByteEligible {
+		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: artifact_params requires artifact_byte_eligible", ErrInvalidSignedCapabilityDescriptor)
+	}
+	canonicalParams, err := config.NormalizeMCPArtifactParams(config.MCPArtifactParams(out.ArtifactParams))
+	if err != nil {
+		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: artifact_params: %s", ErrInvalidSignedCapabilityDescriptor, err.Error())
+	}
+	if len(canonicalParams) == 0 {
+		out.ArtifactParams = nil
+	} else {
+		out.ArtifactParams = canonicalParams
 	}
 	return out, nil
 }

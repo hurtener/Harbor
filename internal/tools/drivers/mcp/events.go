@@ -113,7 +113,7 @@ var ErrArtifactEgressUnrecorded = errors.New("mcp: artifact egress substitution 
 // changes its schema out from under a validated mapping is caught at
 // the next attach loudly instead of at the next call silently. Callers
 // compare with errors.Is.
-var ErrArtifactEgressSchema = errors.New("mcp: artifact_params mapping does not match the server's discovered inputSchema")
+var ErrArtifactEgressSchema = tools.ErrArtifactEgressSchema
 
 // ErrArtifactEgressNotEligible — a connection carries an
 // artifact-parameter mapping without the operator's byte-eligibility

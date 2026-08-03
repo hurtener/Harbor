@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/hurtener/Harbor/internal/config"
 )
 
 var (
@@ -190,9 +192,25 @@ func sameSignedOAuthMCPConnection(left, right SignedOAuthMCPConnectionDescriptor
 	rightAllow, rightAllowErr := CanonicalScopes(right.ToolAllowlist)
 	leftDeny, leftDenyErr := CanonicalScopes(left.ToolDenylist)
 	rightDeny, rightDenyErr := CanonicalScopes(right.ToolDenylist)
-	return leftAllowErr == nil && rightAllowErr == nil && leftDenyErr == nil && rightDenyErr == nil &&
+	leftParams, leftParamsErr := config.NormalizeMCPArtifactParams(config.MCPArtifactParams(left.ArtifactParams))
+	rightParams, rightParamsErr := config.NormalizeMCPArtifactParams(config.MCPArtifactParams(right.ArtifactParams))
+	return leftAllowErr == nil && rightAllowErr == nil && leftDenyErr == nil && rightDenyErr == nil && leftParamsErr == nil && rightParamsErr == nil &&
 		left.Name == right.Name && left.URL == right.URL && left.ConnectTimeoutMS == right.ConnectTimeoutMS &&
-		left.RequestTimeoutMS == right.RequestTimeoutMS && sameStrings(leftAllow, rightAllow) && sameStrings(leftDeny, rightDeny)
+		left.RequestTimeoutMS == right.RequestTimeoutMS && left.ArtifactByteEligible == right.ArtifactByteEligible &&
+		sameStrings(leftAllow, rightAllow) && sameStrings(leftDeny, rightDeny) && sameArtifactParams(leftParams, rightParams)
+}
+
+func sameArtifactParams(left, right map[string][]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for tool, leftParams := range left {
+		rightParams, ok := right[tool]
+		if !ok || !sameStrings(leftParams, rightParams) {
+			return false
+		}
+	}
+	return true
 }
 
 func sameStrings(left, right []string) bool {
@@ -224,7 +242,12 @@ func SignedOAuthMCPPairFingerprint(binding SignedOAuthMCPBinding) string {
 	if denyErr != nil {
 		deny = append([]string(nil), binding.Connection.ToolDenylist...)
 	}
-	parts := make([]string, 0, 20+len(canonicalScopes)+len(allow)+len(deny))
+	artifactTools := make([]string, 0, len(binding.Connection.ArtifactParams))
+	for tool := range binding.Connection.ArtifactParams {
+		artifactTools = append(artifactTools, tool)
+	}
+	sort.Strings(artifactTools)
+	parts := make([]string, 0, 22+len(canonicalScopes)+len(allow)+len(deny)+len(artifactTools))
 	parts = append(parts, binding.TenantID, binding.UserID, binding.SessionID, binding.AgentID, binding.Broker, binding.ProviderName, binding.CapabilityRevision,
 		binding.URLDigest, binding.SinkDigest, binding.Audience, binding.Connection.Name, binding.Connection.URL,
 		fmt.Sprintf("%d", binding.Connection.ConnectTimeoutMS), fmt.Sprintf("%d", binding.Connection.RequestTimeoutMS),
@@ -234,6 +257,20 @@ func SignedOAuthMCPPairFingerprint(binding SignedOAuthMCPBinding) string {
 	parts = append(parts, allow...)
 	parts = append(parts, "tool_denylist", fmt.Sprintf("%d", len(deny)))
 	parts = append(parts, deny...)
+	// Preserve the pre-extension fingerprint byte-for-byte for every existing
+	// signed pair. The additive policy contributes bytes only when declared;
+	// an omitted false/nil extension must survive an upgrade and restart under
+	// the operation receipt minted by the older binary.
+	if binding.Connection.ArtifactByteEligible || len(artifactTools) > 0 {
+		parts = append(parts, "artifact_byte_eligible", fmt.Sprintf("%t", binding.Connection.ArtifactByteEligible),
+			"artifact_params", fmt.Sprintf("%d", len(artifactTools)))
+		for _, tool := range artifactTools {
+			params := append([]string(nil), binding.Connection.ArtifactParams[tool]...)
+			sort.Strings(params)
+			parts = append(parts, tool, fmt.Sprintf("%d", len(params)))
+			parts = append(parts, params...)
+		}
+	}
 	h := sha256.New()
 	for _, part := range parts {
 		_, _ = fmt.Fprintf(h, "%d:", len(part))

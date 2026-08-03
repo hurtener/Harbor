@@ -1244,6 +1244,16 @@ func (t ToolsConfig) MCPAppHostDisplayModes() []string {
 // the mapping is checked rather than trusted.
 type MCPArtifactParams map[string][]string
 
+// Signed and operator-authored artifact mappings share these exact admission
+// ceilings. They bound both config validation and Protocol normalization so a
+// declaration cannot be accepted at one door and refused at another.
+const (
+	MaxMCPArtifactMethods         = 32
+	MaxMCPArtifactParamsPerMethod = 8
+	MaxMCPArtifactNameBytes       = 128
+	MaxMCPArtifactParamsJSONBytes = 8 * 1024
+)
+
 // DefaultMCPArtifactEgressMaxBytes bounds ONE substituted artifact value
 // on one outbound MCP tool call.
 //

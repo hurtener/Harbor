@@ -67,6 +67,15 @@ const (
 	SignedOAuthMCPPhaseRemoved                  SignedOAuthMCPOperationPhase = "removed"
 	SignedOAuthMCPPhaseExpiryAdmitted           SignedOAuthMCPOperationPhase = "expiry_admitted"
 	SignedOAuthMCPPhaseExpiredIncomplete        SignedOAuthMCPOperationPhase = "expired_incomplete"
+	// SignedOAuthMCPPhasePreparationRejectionAdmitted freezes the exact
+	// committed candidate before compensation changes active authority.
+	SignedOAuthMCPPhasePreparationRejectionAdmitted SignedOAuthMCPOperationPhase = "preparation_rejection_admitted"
+	// SignedOAuthMCPPhasePreparationRejected is the terminal receipt for a
+	// committed candidate whose discovered MCP schema rejected the signed
+	// artifact mapping before publication. Recovery uses the frozen revision
+	// and activation fence to finish restoring prior authority; the JTI can
+	// never be replayed or renewed into a different mapping.
+	SignedOAuthMCPPhasePreparationRejected SignedOAuthMCPOperationPhase = "preparation_rejected"
 	// RetirementCleanupClassSignedOAuthMCPPair is the frozen retirement
 	// manifest class for one durable signed OAuth MCP pair lifetime. Its
 	// resource is two SHA-256 digests only; owner identity and capability
@@ -792,7 +801,9 @@ func signedOAuthMCPTransitionAllowed(from, to SignedOAuthMCPOperationPhase) bool
 	case SignedOAuthMCPPhaseClaimed:
 		return to == SignedOAuthMCPPhaseRevisionCommitted
 	case SignedOAuthMCPPhaseRevisionCommitted:
-		return to == SignedOAuthMCPPhasePublished
+		return to == SignedOAuthMCPPhasePublished || to == SignedOAuthMCPPhasePreparationRejectionAdmitted
+	case SignedOAuthMCPPhasePreparationRejectionAdmitted:
+		return to == SignedOAuthMCPPhasePreparationRejected
 	case SignedOAuthMCPPhasePublished:
 		return to == SignedOAuthMCPPhaseRemovalAdmitted
 	case SignedOAuthMCPPhaseRemovalAdmitted:
@@ -813,7 +824,8 @@ func signedOAuthMCPOperationPhaseKnown(phase SignedOAuthMCPOperationPhase) bool 
 	case SignedOAuthMCPPhaseClaimed, SignedOAuthMCPPhaseRevisionCommitted,
 		SignedOAuthMCPPhasePublished, SignedOAuthMCPPhaseRemovalAdmitted, SignedOAuthMCPPhaseRemovalRevisionCommitted,
 		SignedOAuthMCPPhaseCatalogUnpublished, SignedOAuthMCPPhaseTeardownReceipted,
-		SignedOAuthMCPPhaseRemoved, SignedOAuthMCPPhaseExpiryAdmitted, SignedOAuthMCPPhaseExpiredIncomplete:
+		SignedOAuthMCPPhaseRemoved, SignedOAuthMCPPhaseExpiryAdmitted, SignedOAuthMCPPhaseExpiredIncomplete,
+		SignedOAuthMCPPhasePreparationRejectionAdmitted, SignedOAuthMCPPhasePreparationRejected:
 		return true
 	default:
 		return false

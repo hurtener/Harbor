@@ -3283,6 +3283,8 @@ Declared in `internal/protocol/types`.
 | `tool_denylist` | `[]string` | optional (`omitempty`) |
 | `connect_timeout_ms` | `int` | optional (`omitempty`) |
 | `request_timeout_ms` | `int` | optional (`omitempty`) |
+| `artifact_byte_eligible` | `bool` | optional (`omitempty`) |
+| `artifact_params` | `map[string][]string` | optional (`omitempty`) |
 
 ## SizeRange
 

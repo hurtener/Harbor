@@ -6892,6 +6892,16 @@
           "key": "request_timeout_ms",
           "type": "number",
           "optional": true
+        },
+        {
+          "key": "artifact_byte_eligible",
+          "type": "boolean",
+          "optional": true
+        },
+        {
+          "key": "artifact_params",
+          "type": "object",
+          "optional": true
         }
       ]
     },

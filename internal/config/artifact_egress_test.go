@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -34,6 +36,81 @@ func TestValidateMCPArtifactParams_ShapeRefusals(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNormalizeMCPArtifactParams_ExactContractCeilings(t *testing.T) {
+	methods := make(config.MCPArtifactParams, config.MaxMCPArtifactMethods)
+	for i := range config.MaxMCPArtifactMethods {
+		methods[fmt.Sprintf("tool-%02d", i)] = []string{"content"}
+	}
+	if _, err := config.NormalizeMCPArtifactParams(methods); err != nil {
+		t.Fatalf("exact method boundary refused: %v", err)
+	}
+	methods["tool-over"] = []string{"content"}
+	if _, err := config.NormalizeMCPArtifactParams(methods); err == nil {
+		t.Fatal("method boundary + 1 was accepted")
+	}
+
+	params := make([]string, config.MaxMCPArtifactParamsPerMethod)
+	for i := range params {
+		params[i] = fmt.Sprintf("param-%02d", i)
+	}
+	if _, err := config.NormalizeMCPArtifactParams(config.MCPArtifactParams{"tool": params}); err != nil {
+		t.Fatalf("exact per-method parameter boundary refused: %v", err)
+	}
+	if _, err := config.NormalizeMCPArtifactParams(config.MCPArtifactParams{"tool": append(params, "param-over")}); err == nil {
+		t.Fatal("per-method parameter boundary + 1 was accepted")
+	}
+
+	exactName := strings.Repeat("n", config.MaxMCPArtifactNameBytes)
+	if _, err := config.NormalizeMCPArtifactParams(config.MCPArtifactParams{exactName: {exactName}}); err != nil {
+		t.Fatalf("exact name-byte boundary refused: %v", err)
+	}
+	if _, err := config.NormalizeMCPArtifactParams(config.MCPArtifactParams{exactName + "x": {"content"}}); err == nil {
+		t.Fatal("method name boundary + 1 was accepted")
+	}
+	if _, err := config.NormalizeMCPArtifactParams(config.MCPArtifactParams{"tool": {exactName + "x"}}); err == nil {
+		t.Fatal("parameter name boundary + 1 was accepted")
+	}
+
+	exactJSON := artifactMappingAtJSONSize(t, config.MaxMCPArtifactParamsJSONBytes)
+	if _, err := config.NormalizeMCPArtifactParams(exactJSON); err != nil {
+		t.Fatalf("exact canonical JSON boundary refused: %v", err)
+	}
+	exactJSON["tool-31"][7] += "x"
+	if _, err := config.NormalizeMCPArtifactParams(exactJSON); err == nil {
+		t.Fatal("canonical JSON boundary + 1 was accepted")
+	}
+}
+
+func artifactMappingAtJSONSize(t *testing.T, target int) config.MCPArtifactParams {
+	t.Helper()
+	mapping := make(config.MCPArtifactParams, config.MaxMCPArtifactMethods)
+	for tool := range config.MaxMCPArtifactMethods {
+		params := make([]string, config.MaxMCPArtifactParamsPerMethod)
+		for param := range config.MaxMCPArtifactParamsPerMethod {
+			params[param] = fmt.Sprintf("p%02d", param)
+		}
+		mapping[fmt.Sprintf("tool-%02d", tool)] = params
+	}
+	encoded, err := json.Marshal(mapping)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := target - len(encoded)
+	for tool := 0; tool < config.MaxMCPArtifactMethods && remaining > 0; tool++ {
+		for param := 0; param < config.MaxMCPArtifactParamsPerMethod && remaining > 0; param++ {
+			name := mapping[fmt.Sprintf("tool-%02d", tool)][param]
+			add := min(remaining, config.MaxMCPArtifactNameBytes-len(name))
+			mapping[fmt.Sprintf("tool-%02d", tool)][param] = name + strings.Repeat("x", add)
+			remaining -= add
+		}
+	}
+	encoded, err = json.Marshal(mapping)
+	if err != nil || len(encoded) != target {
+		t.Fatalf("could not construct %d-byte mapping: size=%d remaining=%d err=%v", target, len(encoded), remaining, err)
+	}
+	return mapping
 }
 
 func TestValidateMCPArtifactParams_EmptyIsValid(t *testing.T) {

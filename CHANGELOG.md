@@ -17,6 +17,22 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- Signed OAuth MCP capability registration now accepts the same trusted
+  artifact-egress declaration as a generic HTTP MCP connection:
+  `artifact_byte_eligible` plus `artifact_params` bounded to 32 methods, 8
+  parameters per method, 128 bytes per name, and 8 KiB canonical JSON. Both
+  fields are covered by the signed immutable binding, replay fingerprint, persisted
+  revision, applied echo, and restart reconciliation. Mappings are rejected
+  atomically when unsigned, tampered, over-bound, or inconsistent with the
+  server's discovered string input schema. The closed descriptor still accepts
+  no headers, arbitrary hosts, credential sinks, or secrets. This is an
+  additive Protocol field change; `ProtocolVersion` remains `0.1.0`.
+  A schema-rejected committed candidate is durably compensated and terminally
+  non-replayable across restart. Existing signed pairs with both fields omitted
+  preserve their prior replay fingerprint across upgrade and restart.
+
 ## [1.26.5] — 2026-08-03
 
 ### Fixed

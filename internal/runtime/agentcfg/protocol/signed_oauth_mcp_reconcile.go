@@ -139,6 +139,13 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 			if err := r.resumeExpiryCompensation(ctx, ownerQ, agentID, op); err != nil {
 				return err
 			}
+		case agentcfg.SignedOAuthMCPPhasePreparationRejectionAdmitted:
+			if err := r.resumePreparationRejection(ctx, ownerQ, agentID, op); err != nil {
+				return err
+			}
+		case agentcfg.SignedOAuthMCPPhasePreparationRejected:
+			// Terminal cleanup receipt. A later signed operation may already own
+			// the agent fence, so historical rejection is deliberately inert.
 		case agentcfg.SignedOAuthMCPPhasePublished:
 			// A published historical receipt is never authority to reattach. If
 			// the current physical desired state has no pair, the paired removal
@@ -243,7 +250,13 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 			}
 		}
 		if err := r.publish(ctx, q, agentID, pair, op, revision); err != nil {
-			return err
+			if !errors.Is(err, tools.ErrArtifactEgressSchema) {
+				return err
+			}
+			if rejectErr := r.rejectPreparation(ctx, q, agentID, op, revision); rejectErr != nil {
+				return errors.Join(err, rejectErr)
+			}
+			return nil
 		}
 		latest, err := r.operations.LoadForPair(ctx, q.TenantID, pair)
 		if err != nil {
@@ -259,6 +272,10 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 		return err
 	case agentcfg.SignedOAuthMCPPhaseExpiryAdmitted:
 		return r.resumeExpiryCompensation(ctx, q, agentID, op)
+	case agentcfg.SignedOAuthMCPPhasePreparationRejectionAdmitted:
+		return r.resumePreparationRejection(ctx, q, agentID, op)
+	case agentcfg.SignedOAuthMCPPhasePreparationRejected:
+		return nil
 	case agentcfg.SignedOAuthMCPPhasePublished:
 		if err := r.commitFence(ctx, q.TenantID, agentID, op, revision); err != nil {
 			return err
@@ -403,6 +420,7 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 		OAuthProviderOverride: provider.Binding(), OwnOAuthProvider: true,
 		ToolAllowlist: pair.Connection.ToolAllowlist, ToolDenylist: pair.Connection.ToolDenylist,
 		ConnectTimeoutMS: pair.Connection.ConnectTimeoutMS, RequestTimeoutMS: pair.Connection.RequestTimeoutMS,
+		ArtifactByteEligible: pair.Connection.ArtifactByteEligible, ArtifactParams: cloneArtifactParams(pair.Connection.ArtifactParams),
 		DescriptorFingerprint: fingerprint})
 	if err != nil {
 		return agentcfg.SignedOAuthMCPOperation{}, errors.Join(err, closePreparedSignedCapability(ctx, nil, provider))
@@ -684,6 +702,88 @@ func (r *SignedOAuthMCPReconciler) resumeExpiryCompensation(ctx context.Context,
 		return nil
 	}
 	return errors.Join(err, loadErr)
+}
+
+// resumePreparationRejection finishes the durable compensation begun after a
+// discovered MCP schema rejected a signed artifact mapping. The operation is
+// durably admitted before authority is restored, so every crash boundary
+// remains recoverable; it becomes terminal only after restoration and exact
+// fence abort, and the rejected JTI can never publish on restart.
+func (r *SignedOAuthMCPReconciler) resumePreparationRejection(ctx context.Context, q identity.Quadruple, agentID string, op agentcfg.SignedOAuthMCPOperation) error {
+	if op.Phase != agentcfg.SignedOAuthMCPPhasePreparationRejectionAdmitted || op.RevisionID == "" {
+		return fmt.Errorf("%w: phase %q has no rejected preparation", agentcfg.ErrSignedCapabilityTransition, op.Phase)
+	}
+	kind, err := r.operations.Kind(op.ReplayKey)
+	if err != nil {
+		return err
+	}
+	if q.TenantID != op.Binding.TenantID || q.UserID != op.Binding.UserID || q.SessionID != op.Binding.SessionID || agentID != op.Binding.AgentID {
+		return fmt.Errorf("%w: rejected preparation owner does not match frozen registrar", agentcfg.ErrSignedCapabilityReplay)
+	}
+	candidate, err := r.registry.Get(ctx, q, agentID, op.RevisionID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return err
+	}
+	if !signedCapabilityPairMatchesOperation(candidate.Payload.SignedOAuthMCPPair, q.TenantID, op.Binding, kind) {
+		return fmt.Errorf("%w: rejected preparation candidate does not bind the exact operation", agentcfg.ErrSignedCapabilityReplay)
+	}
+	fence, err := r.fences.Load(ctx, q.TenantID, agentID)
+	if err != nil {
+		return err
+	}
+	if fence.OperationKind != kind || fence.Fingerprint != op.Fingerprint || fence.CandidateContentHash != candidate.ContentHash ||
+		(fence.CandidateRevisionID != "" && fence.CandidateRevisionID != candidate.RevisionID) {
+		return fmt.Errorf("%w: rejected preparation fence does not bind frozen candidate", agentcfg.ErrSignedCapabilityPending)
+	}
+	if fence.Phase == agentcfg.SignedOAuthMCPFenceAborted {
+		_, err = r.operations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhasePreparationRejected, candidate.RevisionID)
+		return err
+	}
+	if fence.Phase != agentcfg.SignedOAuthMCPFencePending {
+		return fmt.Errorf("%w: rejected preparation fence is %q", agentcfg.ErrSignedCapabilityPending, fence.Phase)
+	}
+	physical, set, err := r.physical.PhysicalActive(ctx, q, agentID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return err
+	}
+	if set && physical.RevisionID == candidate.RevisionID {
+		if err := restorePreOperationAuthority(ctx, r.registry, q, agentID, candidate, fence.PriorRevisionID, kind); err != nil {
+			return err
+		}
+	}
+	if _, err = r.fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceAborted, candidate.RevisionID); err != nil {
+		return err
+	}
+	_, err = r.operations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhasePreparationRejected, candidate.RevisionID)
+	return err
+}
+
+func (r *SignedOAuthMCPReconciler) rejectPreparation(ctx context.Context, q identity.Quadruple, agentID string, expected agentcfg.SignedOAuthMCPOperation, candidate agentcfg.Revision) error {
+	for range 3 {
+		current, err := r.operations.Load(ctx, expected.ReplayKey)
+		if err != nil {
+			return err
+		}
+		if current.Fingerprint != expected.Fingerprint || current.RevisionID != candidate.RevisionID {
+			return fmt.Errorf("%w: rejected preparation no longer binds committed candidate", agentcfg.ErrSignedCapabilityReplay)
+		}
+		switch current.Phase {
+		case agentcfg.SignedOAuthMCPPhaseRevisionCommitted:
+			if _, err := r.operations.Advance(ctx, current, agentcfg.SignedOAuthMCPPhasePreparationRejectionAdmitted, candidate.RevisionID); err != nil {
+				if errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
+					continue
+				}
+				return err
+			}
+		case agentcfg.SignedOAuthMCPPhasePreparationRejectionAdmitted:
+			return r.resumePreparationRejection(ctx, q, agentID, current)
+		case agentcfg.SignedOAuthMCPPhasePreparationRejected:
+			return nil
+		default:
+			return fmt.Errorf("%w: phase %q cannot reject preparation", agentcfg.ErrSignedCapabilityTransition, current.Phase)
+		}
+	}
+	return fmt.Errorf("%w: preparation rejection admission did not converge", agentcfg.ErrSignedCapabilityPending)
 }
 
 func (r *SignedOAuthMCPReconciler) advanceOperation(ctx context.Context, current agentcfg.SignedOAuthMCPOperation, next agentcfg.SignedOAuthMCPOperationPhase, revisionID string) (agentcfg.SignedOAuthMCPOperation, error) {

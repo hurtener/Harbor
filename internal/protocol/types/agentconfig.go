@@ -397,12 +397,14 @@ type AgentConfigOAuthProvidersDiff struct {
 // signed capability never accepts a general MCP descriptor or its credential,
 // injection, discovery, stdio, header, or host-list fields.
 type SignedOAuthMCPConnectionDescriptor struct {
-	Name             string   `json:"name"`
-	URL              string   `json:"url"`
-	ToolAllowlist    []string `json:"tool_allowlist,omitempty"`
-	ToolDenylist     []string `json:"tool_denylist,omitempty"`
-	ConnectTimeoutMS int      `json:"connect_timeout_ms,omitempty"`
-	RequestTimeoutMS int      `json:"request_timeout_ms,omitempty"`
+	Name                 string              `json:"name"`
+	URL                  string              `json:"url"`
+	ToolAllowlist        []string            `json:"tool_allowlist,omitempty"`
+	ToolDenylist         []string            `json:"tool_denylist,omitempty"`
+	ConnectTimeoutMS     int                 `json:"connect_timeout_ms,omitempty"`
+	RequestTimeoutMS     int                 `json:"request_timeout_ms,omitempty"`
+	ArtifactByteEligible bool                `json:"artifact_byte_eligible,omitempty"`
+	ArtifactParams       map[string][]string `json:"artifact_params,omitempty"`
 }
 
 // AgentConfigSignedOAuthMCPPair is the read-only projection of immutable

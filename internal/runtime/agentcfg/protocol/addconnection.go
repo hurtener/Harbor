@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -1351,17 +1350,13 @@ func normalizeArtifactParams(eligible bool, in map[string][]string) (map[string]
 	if !eligible {
 		return nil, fmt.Errorf("%w: artifact_params requires artifact_byte_eligible on the same connection — the eligibility declaration is the containment boundary for egress substitution, so a mapping without it is refused rather than persisted inert", ErrInvalidConnection)
 	}
-	if err := config.ValidateMCPArtifactParams(in); err != nil {
+	canonical, err := config.NormalizeMCPArtifactParams(config.MCPArtifactParams(in))
+	if err != nil {
 		return nil, fmt.Errorf("%w: artifact_params: %s", ErrInvalidConnection, err.Error())
 	}
-	out := make(map[string][]string, len(in))
-	for tool, params := range in {
-		normalised := make([]string, 0, len(params))
-		for _, p := range params {
-			normalised = append(normalised, strings.TrimSpace(p))
-		}
-		sort.Strings(normalised)
-		out[strings.TrimSpace(tool)] = normalised
+	out := make(map[string][]string, len(canonical))
+	for tool, params := range canonical {
+		out[tool] = append([]string(nil), params...)
 	}
 	return out, nil
 }
