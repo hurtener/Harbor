@@ -227,7 +227,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
-	attachCtx := tools.WithInvokingAgent(ctx, req.AgentID)
+	attachCtx := tools.WithEffectiveAgentConfig(tools.WithInvokingAgent(ctx, req.AgentID), req.AgentID)
 	preparedConnection, err := s.preparer.PrepareConnection(attachCtx, AttachRequest{
 		Identity: id, AgentID: req.AgentID, Name: connection.Name, Transport: agentcfg.MCPTransportHTTP,
 		URL: canonicalURL, OAuthProvider: providerName, OAuthProviderOverride: preparedProvider.Binding(), OwnOAuthProvider: true,

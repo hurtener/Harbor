@@ -23,13 +23,19 @@ import (
 // provenanceProbePlanner records the invoking-agent provenance carried on
 // the ctx the RunLoop hands the planner, then finishes immediately.
 type provenanceProbePlanner struct {
-	got chan string // receives InvokingAgentFrom's value ("" when absent)
+	got       chan string // receives InvokingAgentFrom's value ("" when absent)
+	effective chan string // receives EffectiveAgentConfigFrom's value ("" when absent)
 }
 
 func (p *provenanceProbePlanner) Next(ctx context.Context, _ planner.RunContext) (planner.Decision, error) {
 	agentID, _ := tools.InvokingAgentFrom(ctx)
+	effectiveAgentID, _ := tools.EffectiveAgentConfigFrom(ctx)
 	select {
 	case p.got <- agentID:
+	default:
+	}
+	select {
+	case p.effective <- effectiveAgentID:
 	default:
 	}
 	return planner.Finish{Reason: planner.FinishGoal}, nil
@@ -49,7 +55,7 @@ func runProvenanceProbe(t *testing.T, agentConfigID string) string {
 	if err != nil {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
-	p := &provenanceProbePlanner{got: make(chan string, 1)}
+	p := &provenanceProbePlanner{got: make(chan string, 1), effective: make(chan string, 1)}
 	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
 		Bus:           bus,
 		RunLoop:       rl,
@@ -76,11 +82,47 @@ func runProvenanceProbe(t *testing.T, agentConfigID string) string {
 	}
 }
 
+func runEffectiveAgentConfigProbe(t *testing.T, agentConfigID string) string {
+	t.Helper()
+	red := auditpatterns.New()
+	bus := mkDriverTestBus(t, red)
+	reg := mkDriverTestTaskRegistry(t, bus, red)
+	steerReg := steering.NewRegistry()
+	coord := pauseresume.New(pauseresume.WithBus(bus))
+	rl, err := steering.NewRunLoop(steerReg, coord, steering.WithRunLoopBus(bus))
+	if err != nil {
+		t.Fatalf("steering.NewRunLoop: %v", err)
+	}
+	p := &provenanceProbePlanner{got: make(chan string, 1), effective: make(chan string, 1)}
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{Bus: bus, RunLoop: rl, Planner: p, Tasks: reg, AgentConfigID: agentConfigID})
+	if err != nil {
+		t.Fatalf("NewRunLoopDriver: %v", err)
+	}
+	if err := driver.Start(context.Background()); err != nil {
+		t.Fatalf("driver.Start: %v", err)
+	}
+	defer func() { _ = driver.Close(context.Background()) }()
+	_ = spawnDriverTestTask(t, reg)
+	select {
+	case got := <-p.effective:
+		return got
+	case <-time.After(2 * time.Second):
+		t.Fatal("planner.Next never fired — driver did not pick up task.spawned")
+		return ""
+	}
+}
+
 // TestPerTaskRunLoopDriver_StampsInvokingAgentProvenance — the run loop
 // stamps its non-empty agentConfigID as ctx provenance at run start.
 func TestPerTaskRunLoopDriver_StampsInvokingAgentProvenance(t *testing.T) {
 	if got := runProvenanceProbe(t, "agent-prov-1"); got != "agent-prov-1" {
 		t.Fatalf("run ctx provenance = %q, want %q (run loop did not stamp WithInvokingAgent)", got, "agent-prov-1")
+	}
+}
+
+func TestPerTaskRunLoopDriver_StampsEffectiveAgentConfigAdmission(t *testing.T) {
+	if got := runEffectiveAgentConfigProbe(t, "agent-selected-1"); got != "agent-selected-1" {
+		t.Fatalf("run ctx effective configuration = %q, want reach-admitted agent-selected-1", got)
 	}
 }
 

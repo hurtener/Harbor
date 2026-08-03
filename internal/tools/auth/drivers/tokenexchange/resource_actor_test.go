@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
@@ -28,7 +29,9 @@ type jwtBroker struct {
 	calls    int
 	// tokenFn maps the request form to the access_token string the broker
 	// returns. Set per test.
-	tokenFn func(form map[string][]string) string
+	tokenFn          func(form map[string][]string) string
+	responseAudience string
+	responseResource string
 }
 
 func newJWTBroker(t *testing.T) *jwtBroker {
@@ -79,13 +82,20 @@ func (b *jwtBroker) handle(w http.ResponseWriter, r *http.Request) {
 		tok = fn(r.Form)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	response := map[string]any{
 		"access_token":      tok,
 		"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
 		"token_type":        "Bearer",
 		"expires_in":        3600,
 		"scope":             r.Form.Get("scope"),
-	})
+	}
+	if b.responseAudience != "" {
+		response["audience"] = b.responseAudience
+	}
+	if b.responseResource != "" {
+		response["resource"] = b.responseResource
+	}
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // mkJWT builds an unsigned JWT-shaped token with the given `aud` claim (string
@@ -337,5 +347,92 @@ func TestExchange_ActorToken_PresentIffOptedInAndAgentOnCtx(t *testing.T) {
 	}
 	if _, present := broker.form()["actor_token"]; present {
 		t.Fatalf("actor_token present without an invoking agent on ctx")
+	}
+}
+
+type allowSignedCapabilityUseAuthorizer struct{}
+
+func (allowSignedCapabilityUseAuthorizer) AuthorizeSignedCapabilityUse(context.Context, string, string, string, bool) error {
+	return nil
+}
+
+func TestSignedCapability_RegistrarActorAndInvokerSubjectAreSeparated(t *testing.T) {
+	broker := newJWTBroker(t)
+	broker.tokenFn = func(_ map[string][]string) string { return mkJWT(t, "https://downstream.example") }
+	broker.responseAudience = "https://downstream.example"
+	broker.responseResource = "https://downstream.example"
+	deps, _, _ := mkDeps(t)
+	registrar := aliceID()
+	binding := auth.SignedCapabilityExchangeBinding{
+		TenantID: registrar.TenantID, UserID: registrar.UserID, SessionID: registrar.SessionID,
+		AgentID: "agent-selected", ProviderName: "signed-provider", CapabilityRevision: "revision-1",
+		PairFingerprint: "pair-fingerprint", URLDigest: "url-digest", SinkDigest: "sink-digest",
+		Audience: "https://downstream.example", Resource: "https://downstream.example",
+		AuthorityOperationKind: "signed-operation", PublisherEpoch: "publisher-epoch", UseAuthorizer: allowSignedCapabilityUseAuthorizer{},
+	}
+	prov, err := tokenexchange.New(auth.ProviderConfig{
+		Name: "signed-provider", CredentialSource: credsource.Static(tDummyBrokerClient, tDummyBrokerSecret),
+		Scopes: []string{"Mail.Read"}, TokenURL: broker.tokenURL(), Audience: binding.Audience,
+		AllowedDownstreamHosts: []string{"downstream.example"}, ResourceIndicator: binding.Resource, SignedCapability: &binding,
+	}, deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = prov.Close(context.Background()) })
+
+	invoker := registrar
+	invoker.UserID, invoker.SessionID = "user-invoker", "session-invoker"
+	invokerCtx := tools.WithEffectiveAgentConfig(mkCtx(t, invoker), binding.AgentID)
+	if _, err := prov.Token(invokerCtx, tools.ToolSourceID("any")); err != nil {
+		t.Fatalf("invoker Token: %v", err)
+	}
+	if got := decodeSubject(broker.formValue("subject_token")); got != (subjectTriple{TenantID: invoker.TenantID, UserID: invoker.UserID, SessionID: invoker.SessionID}) {
+		t.Fatalf("subject_token = %+v, want live invoker", got)
+	}
+	actorRaw, err := base64.RawURLEncoding.DecodeString(broker.formValue("actor_token"))
+	if err != nil {
+		t.Fatalf("decode immutable registrar actor: %v", err)
+	}
+	var actor map[string]any
+	if err := json.Unmarshal(actorRaw, &actor); err != nil {
+		t.Fatalf("decode immutable registrar actor JSON: %v", err)
+	}
+	if actor["user_id"] != registrar.UserID || actor["session_id"] != registrar.SessionID || actor["agent_id"] != binding.AgentID {
+		t.Fatalf("actor = %#v, want immutable registrar and agent", actor)
+	}
+
+	secondInvoker := invoker
+	secondInvoker.UserID, secondInvoker.SessionID = "user-second", "session-second"
+	if _, err := prov.Token(tools.WithEffectiveAgentConfig(mkCtx(t, secondInvoker), binding.AgentID), tools.ToolSourceID("any")); err != nil {
+		t.Fatalf("second invoker Token: %v", err)
+	}
+	if broker.callCount() != 2 {
+		t.Fatalf("broker calls = %d, want distinct live-subject cache entries", broker.callCount())
+	}
+	useAuthorizer, ok := prov.(interface{ AuthorizeUse(context.Context) error })
+	if !ok {
+		t.Fatal("signed provider does not expose final bearer authorization")
+	}
+	if err := useAuthorizer.AuthorizeUse(mkCtx(t, invoker)); err == nil {
+		t.Fatal("cached bearer final authorization accepted absent run admission")
+	}
+
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+	}{
+		{name: "absent_admission", ctx: mkCtx(t, invoker)},
+		{name: "wrong_agent", ctx: tools.WithEffectiveAgentConfig(mkCtx(t, invoker), "other-agent")},
+		{name: "wrong_tenant", ctx: tools.WithEffectiveAgentConfig(mkCtx(t, func() identity.Identity { id := invoker; id.TenantID = "other-tenant"; return id }()), binding.AgentID)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := broker.callCount()
+			if _, err := prov.Token(tc.ctx, tools.ToolSourceID("any")); err == nil {
+				t.Fatal("Token succeeded without exact caller admission")
+			}
+			if got := broker.callCount(); got != before {
+				t.Fatalf("denied caller broker calls = %d, want %d", got, before)
+			}
+		})
 	}
 }

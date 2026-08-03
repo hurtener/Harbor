@@ -1608,6 +1608,11 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// selects CONFIGURATION only — the two agent-id carriers on a run have
 	// different provenance and MUST NOT be unified by a tidying refactor.
 	runCtx := tools.WithInvokingAgent(d.subCtx, d.agentConfigID)
+	// Keep the reach-admitted configuration selection separate from the
+	// boot-derived southbound actor provenance above. Pair-owned credentials use
+	// this internal capability to prove the exact selected agent without making
+	// agent_id an isolation principal or changing the actor token contract.
+	runCtx = tools.WithEffectiveAgentConfig(runCtx, effectiveAgentID)
 	if hasSkillSnapshot {
 		runCtx = skills.WithRunSkillReaderSnapshot(runCtx, skillSnapshot)
 	}

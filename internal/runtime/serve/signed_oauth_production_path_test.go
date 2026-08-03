@@ -395,6 +395,10 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		t.Fatal(err)
 	}
 	dispatchCtx = tools.WithInvokingAgent(dispatchCtx, agentID)
+	// This fixture invokes the catalog directly instead of via control.start.
+	// Model the run loop's already reach-admitted effective configuration; a
+	// bare direct catalog context is deliberately denied by signed providers.
+	dispatchCtx = tools.WithEffectiveAgentConfig(dispatchCtx, agentID)
 	runtimeATool, ok := catalog.Resolve(connectionName + "_echo")
 	if !ok {
 		t.Fatal("runtime A tool is not published")

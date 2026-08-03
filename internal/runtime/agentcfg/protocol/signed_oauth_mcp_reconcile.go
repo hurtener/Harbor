@@ -90,17 +90,6 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 	if strings.TrimSpace(q.TenantID) == "" || strings.TrimSpace(q.UserID) == "" || strings.TrimSpace(q.SessionID) == "" || strings.TrimSpace(agentID) == "" {
 		return ErrIdentityRequired
 	}
-	active, hasActive, err := r.physical.PhysicalActive(ctx, q, agentID, agentcfg.ConfigScopeAgent)
-	if err != nil {
-		return fmt.Errorf("load physical active signed capability revision: %w", err)
-	}
-	activeOperationKind := ""
-	if hasActive && active.Payload.SignedOAuthMCPPair != nil {
-		activeOperationKind = active.Payload.SignedOAuthMCPPair.AuthorityOperationKind
-		if err := r.reconcilePair(ctx, q, agentID, active, active.Payload.SignedOAuthMCPPair); err != nil {
-			return err
-		}
-	}
 	cursorKey := strings.Join([]string{q.TenantID, agentID}, "\x00")
 	ops, continuation, err := r.operations.ScanTenantPage(ctx, q.TenantID, state.MaxStateScanLimit, r.continuations[cursorKey])
 	if err != nil {
@@ -111,28 +100,38 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 		if op.Binding.AgentID != agentID {
 			continue
 		}
+		ownerQ, err := signedCapabilityOwnerQuadruple(q.TenantID, op.Binding)
+		if err != nil {
+			return err
+		}
+		active, hasActive, err := r.physical.PhysicalActive(ctx, ownerQ, agentID, agentcfg.ConfigScopeAgent)
+		if err != nil {
+			return fmt.Errorf("load physical active signed capability revision: %w", err)
+		}
 		kind, kindErr := r.operations.Kind(op.ReplayKey)
 		if kindErr != nil {
 			return kindErr
 		}
-		if kind == activeOperationKind {
+		if hasActive && signedCapabilityPairMatchesOperation(active.Payload.SignedOAuthMCPPair, q.TenantID, op.Binding, kind) {
+			if err := r.reconcilePair(ctx, ownerQ, agentID, active, active.Payload.SignedOAuthMCPPair); err != nil {
+				return err
+			}
 			continue
 		}
-		sameSubject := op.Binding.UserID == q.UserID && op.Binding.SessionID == q.SessionID
 		switch op.Phase {
 		case agentcfg.SignedOAuthMCPPhaseClaimed:
 			if signedCapabilityOperationExpired(op) {
-				if err := r.expireIncomplete(ctx, q, agentID, op, agentcfg.Revision{}, false); err != nil {
+				if err := r.expireIncomplete(ctx, ownerQ, agentID, op, agentcfg.Revision{}, false); err != nil {
 					return err
 				}
 			}
 		case agentcfg.SignedOAuthMCPPhaseRevisionCommitted:
 			if signedCapabilityOperationExpired(op) {
-				revision, getErr := r.registry.Get(ctx, q, agentID, op.RevisionID, agentcfg.ConfigScopeAgent)
+				revision, getErr := r.registry.Get(ctx, ownerQ, agentID, op.RevisionID, agentcfg.ConfigScopeAgent)
 				if getErr != nil {
 					return getErr
 				}
-				if err := r.expireIncomplete(ctx, q, agentID, op, revision, true); err != nil {
+				if err := r.expireIncomplete(ctx, ownerQ, agentID, op, revision, true); err != nil {
 					return err
 				}
 			}
@@ -141,9 +140,6 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 			// the current physical desired state has no pair, the paired removal
 			// revision landed before its receipt checkpoint; continue teardown.
 			if hasActive && active.Payload.SignedOAuthMCPPair == nil {
-				if !sameSubject {
-					return fmt.Errorf("%w: prior subject signed capability pair lifetime is awaiting removal recovery", agentcfg.ErrSignedCapabilityPending)
-				}
 				op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalAdmitted, active.RevisionID)
 				if err != nil {
 					return err
@@ -152,14 +148,11 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 				if err != nil {
 					return err
 				}
-				if err := r.resumeRemoval(ctx, q, agentID, op); err != nil {
+				if err := r.resumeRemoval(ctx, ownerQ, agentID, op); err != nil {
 					return err
 				}
 			}
 		case agentcfg.SignedOAuthMCPPhaseRemovalAdmitted, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, agentcfg.SignedOAuthMCPPhaseCatalogUnpublished, agentcfg.SignedOAuthMCPPhaseTeardownReceipted:
-			if !sameSubject {
-				return fmt.Errorf("%w: prior subject signed capability pair lifetime is still %q", agentcfg.ErrSignedCapabilityPending, op.Phase)
-			}
 			if hasActive && active.Payload.SignedOAuthMCPPair != nil {
 				return fmt.Errorf("%w: stale removal cannot detach the active pair", agentcfg.ErrSignedCapabilityReplay)
 			}
@@ -169,26 +162,35 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 					return err
 				}
 			}
-			if err := r.resumeRemoval(ctx, q, agentID, op); err != nil {
+			if err := r.resumeRemoval(ctx, ownerQ, agentID, op); err != nil {
 				return err
 			}
 		case agentcfg.SignedOAuthMCPPhaseRemoved:
 			// A different runtime may have published before removal won the
 			// shared operation-slot fence. Its process-local handle converges from
 			// the terminal durable receipt on the next reconciliation pass.
-			if sameSubject {
-				operationKind, kindErr := r.operations.Kind(op.ReplayKey)
-				if kindErr != nil {
-					return kindErr
-				}
-				fingerprint := signedCapabilityPublisherAttachmentFingerprint(op.Binding.Connection, operationKind, op.PublisherEpoch)
-				if err := r.exactDetacher.DetachExactConnection(ctx, q.TenantID, agentID, op.Binding.Connection.Name, fingerprint); err != nil {
-					return err
-				}
+			operationKind, kindErr := r.operations.Kind(op.ReplayKey)
+			if kindErr != nil {
+				return kindErr
+			}
+			fingerprint := signedCapabilityPublisherAttachmentFingerprint(op.Binding.Connection, operationKind, op.PublisherEpoch)
+			if err := r.exactDetacher.DetachExactConnection(ctx, ownerQ.TenantID, agentID, op.Binding.Connection.Name, fingerprint); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
+}
+
+// signedCapabilityOwnerQuadruple rebuilds the immutable registrar slot from a
+// tenant-scoped durable receipt. Reconciliation may be invoked by a later
+// tenant user/session, but persistence and recovery must use the frozen owner
+// slot; the live run subject remains only the exchange/cache subject.
+func signedCapabilityOwnerQuadruple(tenant string, binding agentcfg.SignedOAuthMCPBinding) (identity.Quadruple, error) {
+	if strings.TrimSpace(tenant) == "" || binding.TenantID != tenant || strings.TrimSpace(binding.UserID) == "" || strings.TrimSpace(binding.SessionID) == "" {
+		return identity.Quadruple{}, fmt.Errorf("%w: corrupt signed capability owner binding", agentcfg.ErrSignedCapabilityReplay)
+	}
+	return identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: binding.UserID, SessionID: binding.SessionID}}, nil
 }
 
 func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity.Quadruple, agentID string, revision agentcfg.Revision, pair *agentcfg.SignedOAuthMCPPair) error {
@@ -389,7 +391,7 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 	if err != nil {
 		return agentcfg.SignedOAuthMCPOperation{}, err
 	}
-	attachCtx := tools.WithInvokingAgent(ctx, agentID)
+	attachCtx := tools.WithEffectiveAgentConfig(tools.WithInvokingAgent(ctx, agentID), agentID)
 	prepared, err := r.preparer.PrepareConnection(attachCtx, AttachRequest{Identity: q.Identity, AgentID: agentID, Name: pair.Connection.Name,
 		Transport: agentcfg.MCPTransportHTTP, URL: pair.Connection.URL, OAuthProvider: pair.ProviderName,
 		OAuthProviderOverride: provider.Binding(), OwnOAuthProvider: true,

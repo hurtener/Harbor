@@ -48,6 +48,19 @@ func TestWithInvokingAgent_ChildOverrides(t *testing.T) {
 	}
 }
 
+func TestWithEffectiveAgentConfig_RoundTripAndAbsence(t *testing.T) {
+	ctx := WithEffectiveAgentConfig(context.Background(), "agent-selected")
+	if got, ok := EffectiveAgentConfigFrom(ctx); !ok || got != "agent-selected" {
+		t.Fatalf("EffectiveAgentConfigFrom = (%q, %v), want (agent-selected, true)", got, ok)
+	}
+	if got, ok := EffectiveAgentConfigFrom(context.Background()); ok || got != "" {
+		t.Fatalf("EffectiveAgentConfigFrom(empty) = (%q, %v), want (empty, false)", got, ok)
+	}
+	if got, ok := EffectiveAgentConfigFrom(WithEffectiveAgentConfig(context.Background(), "")); ok || got != "" {
+		t.Fatalf("empty effective selection leaked authority: (%q, %v)", got, ok)
+	}
+}
+
 // TestWithInvokingAgent_ConcurrentDistinctAgents proves the seam is a pure
 // ctx value carrier with no shared state: N goroutines stamp distinct agent
 // ids on independent child ctxs and each reads back only its own.

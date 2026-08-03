@@ -868,7 +868,7 @@ func signedCapabilityServiceWithStore(t *testing.T, now time.Time, st state.Stat
 	return svc, key, reg, st, preparer
 }
 
-func TestSignedOAuthMCPReconciler_Restart_ReattachesOnlyExactPublishedPair(t *testing.T) {
+func TestSignedOAuthMCPReconciler_Restart_ReattachesFrozenOwnerForLaterSubject(t *testing.T) {
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
 	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-reconcile-restart", "aud-reconcile")); err != nil {
@@ -881,8 +881,8 @@ func TestSignedOAuthMCPReconciler_Restart_ReattachesOnlyExactPublishedPair(t *te
 	if err != nil {
 		t.Fatalf("NewSignedOAuthMCPReconciler: %v", err)
 	}
-	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
-	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+	invoker := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "later-user", SessionID: "later-session"}}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), invoker, testAgentID); err != nil {
 		t.Fatalf("reconcile restart: %v", err)
 	}
 	preparer.mu.Lock()
@@ -890,6 +890,14 @@ func TestSignedOAuthMCPReconciler_Restart_ReattachesOnlyExactPublishedPair(t *te
 	preparer.mu.Unlock()
 	if activations != 2 {
 		t.Fatalf("activations = %d, want register plus one restart reattach", activations)
+	}
+	owner := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, set, err := reg.Active(context.Background(), owner, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set {
+		t.Fatalf("frozen owner active pair = set:%v err:%v, want owner slot", set, err)
+	}
+	if active.Payload.SignedOAuthMCPPair == nil || active.Payload.SignedOAuthMCPPair.OwnerUserID != owner.UserID || active.Payload.SignedOAuthMCPPair.OwnerSessionID != owner.SessionID {
+		t.Fatalf("reattached pair owner = %+v, want frozen owner %s/%s", active.Payload.SignedOAuthMCPPair, owner.UserID, owner.SessionID)
 	}
 	// An exact tenant/agent scan must not turn a same-named foreign slot into a
 	// dispatch target.

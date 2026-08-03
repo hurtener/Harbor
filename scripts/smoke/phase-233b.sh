@@ -51,7 +51,7 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestRegisterOAuthMCPCapability_ConcurrentReplaySharesOnePublication \
     TestRegisterOAuthMCPCapability_ConcurrentMixedIdentityN128 \
     TestRemoveOAuthMCPCapability_ContinuesPairLifetimeReceipt \
-    TestSignedOAuthMCPReconciler_Restart_ReattachesOnlyExactPublishedPair \
+    TestSignedOAuthMCPReconciler_Restart_ReattachesFrozenOwnerForLaterSubject \
     TestSignedOAuthMCPReconciler_SQLiteRestart_ReattachesPublishedPair \
     TestSignedOAuthMCPReconciler_ExpiredIncompleteNeutralizesCandidate \
     TestSignedOAuthMCPReconciler_ExpiredIncompleteRestoresBootLifecycle \
@@ -95,6 +95,7 @@ assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./intern
     TestDeactivateIfActive_TerminalOrCorruptFailsClosed \
     TestDeactivateIfActive_CASRaceNeverDeletesReplacement \
     TestBuildSignedCapability_RequestedScopeOutsideBootCeilingRejected \
+    TestSignedCapability_RegistrarActorAndInvokerSubjectAreSeparated \
     TestRegisterOAuthMCPCapabilityWire_FieldSetsAreClosed \
     TestRegisterOAuthMCPCapabilityWire_HasNoCredentialOrSinkConfigurationField \
     TestAgentConfigHandler_RegisterOAuthMCPCapabilityRejectsForbiddenFieldsWithoutSideEffects
