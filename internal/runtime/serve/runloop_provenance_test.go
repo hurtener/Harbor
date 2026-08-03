@@ -20,6 +20,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // provenanceProbePlanner records the invoking-agent provenance carried on
@@ -96,7 +97,15 @@ func runEffectiveAgentConfigProbe(t *testing.T, agentConfigID string, admitted b
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	p := &provenanceProbePlanner{got: make(chan string, 1), effective: make(chan string, 1)}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{Bus: bus, RunLoop: rl, Planner: p, Tasks: reg, AgentConfigID: agentConfigID})
+	sealer, err := toolauth.NewAESGCMSealer(make([]byte, toolauth.KEKSizeBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := tasks.NewAgentReachAdmissionAuthority(sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{Bus: bus, RunLoop: rl, Planner: p, Tasks: reg, AgentConfigID: agentConfigID, AgentReachAdmissions: authority})
 	if err != nil {
 		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
@@ -109,7 +118,10 @@ func runEffectiveAgentConfigProbe(t *testing.T, agentConfigID string, admitted b
 		t.Fatalf("identity.With: %v", err)
 	}
 	if admitted {
-		spawnCtx = tasks.WithAgentReachAdmission(spawnCtx, runLoopDriverTestID, agentConfigID)
+		spawnCtx, err = authority.Admit(spawnCtx, runLoopDriverTestID, agentConfigID)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := reg.Spawn(spawnCtx, tasks.SpawnRequest{
 		Identity: identity.Quadruple{Identity: runLoopDriverTestID}, Kind: tasks.KindForeground,

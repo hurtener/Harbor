@@ -97,6 +97,7 @@ assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./intern
     TestBuildSignedCapability_RequestedScopeOutsideBootCeilingRejected \
     TestSignedCapability_RegistrarActorAndInvokerSubjectAreSeparated \
     TestAgentReachAdmission_SealedCaptureRestoreAndTamperDenial \
+    TestAgentReachAdmission_IdenticalSubjectResealIsIdempotent \
     TestAgentReachAdmission_ConcurrentCaptureNoBleed \
     TestDurable_RestartSurvival_TasksGroupsPatches \
     TestExecutor_SpawnTask_InheritsExactAgentReachAdmission \

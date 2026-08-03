@@ -33,6 +33,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // bootAgentID is the documented dummy "runtime's configured default"
@@ -44,9 +45,10 @@ const bootAgentID = "test-boot-agent"
 // the production AgentResolver adapter over a real agent-config registry,
 // plus the real task registry the spawn lands in.
 type agentFixture struct {
-	surface *protocol.ControlSurface
-	tasks   tasks.TaskRegistry
-	cfg     agentcfg.Registry
+	surface   *protocol.ControlSurface
+	tasks     tasks.TaskRegistry
+	cfg       agentcfg.Registry
+	authority *tasks.AgentReachAdmissionAuthority
 }
 
 // newAgentFixture builds the rig. Pass wireResolver=false to build the
@@ -92,6 +94,15 @@ func newAgentFixture(t *testing.T, wireResolver bool) *agentFixture {
 	t.Cleanup(func() { _ = cfgReg.Close(context.Background()) })
 
 	opts := []protocol.Option{}
+	sealer, err := toolauth.NewAESGCMSealer(make([]byte, toolauth.KEKSizeBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := tasks.NewAgentReachAdmissionAuthority(sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts = append(opts, protocol.WithAgentReachAdmissionAuthority(authority))
 	if wireResolver {
 		opts = append(opts,
 			protocol.WithAgentResolver(serve.NewAgentResolverAdapter(cfgReg, bootAgentID)))
@@ -101,7 +112,7 @@ func newAgentFixture(t *testing.T, wireResolver bool) *agentFixture {
 		t.Fatalf("protocol.NewControlSurface: %v", err)
 	}
 
-	return &agentFixture{surface: surface, tasks: taskReg, cfg: cfgReg}
+	return &agentFixture{surface: surface, tasks: taskReg, cfg: cfgReg, authority: authority}
 }
 
 // ident is a documented dummy identity triple — no secrets.
@@ -145,9 +156,9 @@ func (f *agentFixture) start(t *testing.T, id identity.Identity, agentID, key st
 	return sr, nil
 }
 
-func assertTaskReachAdmission(t *testing.T, task *tasks.Task, wantAgent string) {
+func (f *agentFixture) assertTaskReachAdmission(t *testing.T, task *tasks.Task, wantAgent string) {
 	t.Helper()
-	_, gotAgent, admitted := tasks.RestoreAgentReachAdmission(context.Background(), task)
+	_, gotAgent, admitted := f.authority.Restore(context.Background(), task)
 	if !admitted || gotAgent != wantAgent {
 		t.Fatalf("task reach admission = (%q, %v), want (%q, true); receipt=%+v", gotAgent, admitted, wantAgent, task.AgentReachAdmission)
 	}
@@ -175,7 +186,7 @@ func TestDispatchStart_NamedAgent_TwoCheckRule(t *testing.T) {
 		if task.AgentID != "" {
 			t.Fatalf("task.AgentID = %q, want empty (the unchanged default path)", task.AgentID)
 		}
-		assertTaskReachAdmission(t, task, bootAgentID)
+		f.assertTaskReachAdmission(t, task, bootAgentID)
 	})
 
 	t.Run("ConfiguredDefaultIsAcceptedWithoutAnyRevision", func(t *testing.T) {
@@ -196,7 +207,7 @@ func TestDispatchStart_NamedAgent_TwoCheckRule(t *testing.T) {
 		if task.AgentID != bootAgentID {
 			t.Fatalf("task.AgentID = %q, want %q", task.AgentID, bootAgentID)
 		}
-		assertTaskReachAdmission(t, task, bootAgentID)
+		f.assertTaskReachAdmission(t, task, bootAgentID)
 	})
 
 	t.Run("AgentWithARevisionIsAccepted", func(t *testing.T) {
@@ -211,7 +222,7 @@ func TestDispatchStart_NamedAgent_TwoCheckRule(t *testing.T) {
 		if task.AgentID != "configured-agent" {
 			t.Fatalf("task.AgentID = %q, want configured-agent", task.AgentID)
 		}
-		assertTaskReachAdmission(t, task, "configured-agent")
+		f.assertTaskReachAdmission(t, task, "configured-agent")
 	})
 
 	t.Run("UnknownAgentIsRefusedAndNoTaskIsCreated", func(t *testing.T) {

@@ -145,6 +145,7 @@ type ProviderBuilder struct {
 	factoryDeps FactoryDeps
 	bus         events.EventBus
 	redactor    audit.Redactor
+	sealer      Sealer
 }
 
 // ProviderBuilder sentinel errors.
@@ -198,7 +199,18 @@ func NewProviderBuilder(ctx context.Context, cfg config.ToolsConfig, deps BuildD
 		Redactor:    deps.Redactor,
 		Coordinator: deps.Coordinator,
 	}
+	pb.sealer = sealer
 	return pb, nil
+}
+
+// AdmissionSealer returns the broker KEK-backed opaque sealing capability used
+// to authenticate durable signed-capability run admissions. It is nil when no
+// credential broker is boot-declared.
+func (b *ProviderBuilder) AdmissionSealer() Sealer {
+	if b == nil {
+		return nil
+	}
+	return b.sealer
 }
 
 // BrokerNames returns the sorted boot-declared broker names (for a fail-loud

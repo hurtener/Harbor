@@ -33,6 +33,7 @@ import (
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess" // §4.4: registers the V1 "inprocess" task driver
 )
@@ -156,7 +157,18 @@ func TestExecutor_SpawnTask_InheritsExactAgentReachAdmission(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
-	ctx := tasks.WithAgentReachAdmission(context.Background(), dispatchTestID, "agent-selected")
+	sealer, err := toolauth.NewAESGCMSealer(make([]byte, toolauth.KEKSizeBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := tasks.NewAgentReachAdmissionAuthority(sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := authority.Admit(context.Background(), dispatchTestID, "agent-selected")
+	if err != nil {
+		t.Fatal(err)
+	}
 	raw, _, err := exec.ExecuteDecision(ctx, rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{Query: "child"}})
 	if err != nil {
 		t.Fatalf("ExecuteDecision: %v", err)
@@ -169,7 +181,7 @@ func TestExecutor_SpawnTask_InheritsExactAgentReachAdmission(t *testing.T) {
 	if child.AgentID != "" {
 		t.Fatalf("child raw AgentID = %q, want omitted", child.AgentID)
 	}
-	if _, got, admitted := tasks.RestoreAgentReachAdmission(context.Background(), child); !admitted || got != "agent-selected" {
+	if _, got, admitted := authority.Restore(context.Background(), child); !admitted || got != "agent-selected" {
 		t.Fatalf("child admission = (%q, %v), want inherited agent-selected", got, admitted)
 	}
 
@@ -188,7 +200,7 @@ func TestExecutor_SpawnTask_InheritsExactAgentReachAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get cross-identity child: %v", err)
 	}
-	if _, _, admitted := tasks.RestoreAgentReachAdmission(context.Background(), otherChild); admitted {
+	if _, _, admitted := authority.Restore(context.Background(), otherChild); admitted {
 		t.Fatal("cross-identity child inherited credential admission")
 	}
 }

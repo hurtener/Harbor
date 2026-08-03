@@ -541,7 +541,15 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		return nil, err
 	}
 
-	spawnCtx := tasks.WithAgentReachAdmission(ctx, id, effectiveAgentID)
+	spawnCtx := ctx
+	if s.reachAdmissions != nil {
+		var admissionErr error
+		spawnCtx, admissionErr = s.reachAdmissions.Admit(ctx, id, effectiveAgentID)
+		if admissionErr != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+				"method %q: authenticate agent reach admission: %v", string(method), admissionErr)
+		}
+	}
 	handle, err := s.tasks.Spawn(spawnCtx, tasks.SpawnRequest{
 		Identity:                  identity.Quadruple{Identity: id},
 		Kind:                      tasks.KindForeground,

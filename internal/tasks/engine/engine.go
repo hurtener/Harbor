@@ -458,7 +458,10 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 		cp.ParentTaskID = &p
 	}
 	if t.AgentReachAdmission != nil {
-		admission := *t.AgentReachAdmission
+		admission := tasks.AgentReachAdmission{
+			Envelope:      append([]byte(nil), t.AgentReachAdmission.Envelope...),
+			BindingDigest: append([]byte(nil), t.AgentReachAdmission.BindingDigest...),
+		}
 		cp.AgentReachAdmission = &admission
 	}
 	return &cp, nil
@@ -617,7 +620,10 @@ func copyTask(t *tasks.Task) *tasks.Task {
 		cp.ParentTaskID = &p
 	}
 	if t.AgentReachAdmission != nil {
-		admission := *t.AgentReachAdmission
+		admission := tasks.AgentReachAdmission{
+			Envelope:      append([]byte(nil), t.AgentReachAdmission.Envelope...),
+			BindingDigest: append([]byte(nil), t.AgentReachAdmission.BindingDigest...),
+		}
 		cp.AgentReachAdmission = &admission
 	}
 	return &cp
@@ -1345,15 +1351,7 @@ func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReach
 	}
 	if admission != nil {
 		h.Write([]byte{0x1F})
-		h.Write([]byte(admission.Schema))
-		h.Write([]byte{0x1E})
-		h.Write([]byte(admission.TenantID))
-		h.Write([]byte{0x1E})
-		h.Write([]byte(admission.UserID))
-		h.Write([]byte{0x1E})
-		h.Write([]byte(admission.SessionID))
-		h.Write([]byte{0x1E})
-		h.Write([]byte(admission.EffectiveAgentID))
+		h.Write(admission.BindingDigest)
 	}
 	// fold the caller-supplied memory block in so "same key, different
 	// caller_memory" surfaces as ErrIdempotencyConflict rather than a

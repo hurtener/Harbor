@@ -466,11 +466,20 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	// registry + boot agent id the run-loop driver projects from, so the
 	// edge cannot accept an agent the run loop would not honour.
 	agentReach := auth.NewAgentReachAuthorizer()
+	var agentReachAdmissions *tasks.AgentReachAdmissionAuthority
+	if stack.OAuthProviderBuilder != nil && stack.OAuthProviderBuilder.AdmissionSealer() != nil {
+		agentReachAdmissions, err = tasks.NewAgentReachAdmissionAuthority(stack.OAuthProviderBuilder.AdmissionSealer())
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("agent reach admission authority: %w", err)
+		}
+	}
 	agentResolver := NewAgentResolverAdapter(agentConfigRegistry, devAgentConfigID, WithBootLifecycleEnsurer(bootLifecycleEnsurer))
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
 		protocol.WithSessionEnsurer(NewSessionEnsurerAdapter(sessionRegistry)),
 		protocol.WithAgentResolver(agentResolver),
 		protocol.WithAgentReachAuthorizer(agentReach),
+		protocol.WithAgentReachAdmissionAuthority(agentReachAdmissions),
 	)
 	if err != nil {
 		closeAll(ctx)
@@ -669,6 +678,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		AgentConfigID:            devAgentConfigID,
 		EnsureBootAgentLifecycle: bootLifecycleEnsurer,
 		RunSnapshots:             runSnapshots,
+		AgentReachAdmissions:     agentReachAdmissions,
 		SessionOverlay:           sessionOverlayStore,
 		RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 		ConnectionDetacher:       mcpDetacher,

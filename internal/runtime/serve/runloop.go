@@ -226,6 +226,9 @@ type RunLoopDriverOptions struct {
 	// agent-config retirement. A lease is acquired before every config/reconcile
 	// snapshot and held through the run's terminal handling.
 	RunSnapshots *runsnapshot.Gate
+	// AgentReachAdmissions authenticates durable control.start reach receipts
+	// before any effective agent context can authorize signed credentials.
+	AgentReachAdmissions *tasks.AgentReachAdmissionAuthority
 
 	// sessionOverlay resolves the SESSION-scoped safe-subset overlay (the
 	// non-admin lower tier) at run start: the session's user prompt layer,
@@ -368,6 +371,7 @@ type RunLoopDriver struct {
 	agentConfigID            string
 	ensureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
 	runSnapshots             *runsnapshot.Gate
+	agentReachAdmissions     *tasks.AgentReachAdmissionAuthority
 
 	// session-scoped safe-subset overlay store, read once at run start to
 	// compose the session user layer + narrow-only disables + personal skills
@@ -487,6 +491,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		agentConfigID:            opts.AgentConfigID,
 		ensureBootAgentLifecycle: opts.EnsureBootAgentLifecycle,
 		runSnapshots:             opts.RunSnapshots,
+		agentReachAdmissions:     opts.AgentReachAdmissions,
 		sessionOverlay:           opts.SessionOverlay,
 		runCompletionHook:        opts.RunCompletionHook,
 		connectionDetacher:       opts.ConnectionDetacher,
@@ -1082,7 +1087,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// credential authority. A valid child receipt also supplies the parent's
 	// exact admitted effective agent when the child intentionally omits the raw
 	// caller-selection field.
-	admissionCtx, admittedAgentID, agentReachAdmitted := tasks.RestoreAgentReachAdmission(d.subCtx, task)
+	admissionCtx, admittedAgentID, agentReachAdmitted := d.agentReachAdmissions.Restore(d.subCtx, task)
 	if agentReachAdmitted {
 		effectiveAgentID = admittedAgentID
 	}
