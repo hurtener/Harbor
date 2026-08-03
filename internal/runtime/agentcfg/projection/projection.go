@@ -271,14 +271,21 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 	if rerr != nil {
 		return 0, 0, fmt.Errorf("%w: agent %q: %w", ErrReconcileRead, agentID, rerr)
 	}
-	// The declared set carries the full DESCRIPTOR, not just the name: the detach
-	// pass needs the name, the attach pass needs everything the attach lifecycle
-	// re-validates (transport, url/command, the provider NAME binding, the
-	// injection mapping, the annotation set, the discovery allowance).
+	// The generic declared set carries the full DESCRIPTOR, not just the name:
+	// the attach pass needs everything the generic attach lifecycle re-validates
+	// (transport, url/command, the provider NAME binding, the injection mapping,
+	// the annotation set, the discovery allowance). The detach keep-set is wider:
+	// it also includes the immutable signed OAuth MCP pair, whose dedicated
+	// reconciler owns reattachment and authority validation.
 	declared := make(map[string]agentcfg.MCPConnectionDescriptor)
+	keep := make(map[string]struct{})
 	if ok {
 		for _, d := range rev.Payload.ConnectionDescriptors() {
 			declared[d.Name] = d
+			keep[d.Name] = struct{}{}
+		}
+		if pair, set := rev.Payload.SignedOAuthMCPPairView(); set && pair.Connection.Name != "" {
+			keep[pair.Connection.Name] = struct{}{}
 		}
 	}
 	// The owner-scoped reconcile view: the (tenant, agent) owner whose
@@ -290,7 +297,7 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 		if _, boot := bootDeclared[src]; boot {
 			continue // defense-in-depth: the owner view already excludes boot servers.
 		}
-		if _, stillDeclared := declared[src]; stillDeclared {
+		if _, stillDeclared := keep[src]; stillDeclared {
 			continue // still declared — keep it attached.
 		}
 		if derr := detacher.Detach(ctx, src, owner); derr != nil {

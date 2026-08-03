@@ -83,6 +83,26 @@ func seedConnections(t *testing.T, reg agentcfg.Registry, names ...string) {
 	}
 }
 
+// seedSignedConnection writes the immutable signed OAuth MCP pair through its
+// owning write door. Its dedicated reconciler, not the generic connection
+// reattacher, owns recovery of this connection.
+func seedSignedConnection(t *testing.T, reg agentcfg.Registry, name string) {
+	t.Helper()
+	pair := &agentcfg.SignedOAuthMCPPair{
+		ProviderName: "provider", Broker: "broker", Audience: "audience", CapabilityRevision: "v1",
+		URLDigest: "url-digest", SinkDigest: "sink-digest", Sink: "https://mcp.example.test:8443",
+		Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{
+			Name: name, URL: "https://mcp.example.test:8443/mcp", ToolAllowlist: []string{"read"},
+		},
+		OwnerAgentID: projAgent, OwnerUserID: projUser, OwnerSessionID: projSess,
+		AuthorityOperationKind: "signed-reconcile-operation",
+	}
+	ctx := agentcfg.WithSignedOAuthMCPFenceOperation(context.Background(), pair.AuthorityOperationKind)
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{SignedOAuthMCPPair: pair}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("seed signed connection: %v", err)
+	}
+}
+
 func TestReconcileConnections_DetachesUndeclared_KeepsDeclared(t *testing.T) {
 	ctx := context.Background()
 	reg := newRegistry(t)
@@ -98,6 +118,29 @@ func TestReconcileConnections_DetachesUndeclared_KeepsDeclared(t *testing.T) {
 	}
 	if got := det.detachedNames(); len(got) != 1 || got[0] != "drop" {
 		t.Fatalf("detached = %v, want [drop]", got)
+	}
+}
+
+func TestReconcileConnections_KeepsSignedPairOutOfGenericAttach(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	seedSignedConnection(t, reg, "signed")
+	det := newFakeDetacher("signed", "stale")
+	live := newMutableDetacher()
+	reattacher := newFakeReattacher(live)
+
+	detached, attached, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, reattacher, nil)
+	if err != nil {
+		t.Fatalf("ReconcileConnections: %v", err)
+	}
+	if detached != 1 || attached != 0 {
+		t.Fatalf("counts = detached %d attached %d, want 1,0", detached, attached)
+	}
+	if got := det.detachedNames(); len(got) != 1 || got[0] != "stale" {
+		t.Fatalf("detached = %v, want [stale] (signed must stay attached)", got)
+	}
+	if got := reattacher.attachedNames(); len(got) != 0 {
+		t.Fatalf("generic reattacher saw %v, want none (signed pair has a dedicated reconciler)", got)
 	}
 }
 
