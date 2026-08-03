@@ -227,6 +227,12 @@ type Task struct {
 	// provenance and its RFC 8693 acting principal stay boot-derived and
 	// are never read from here.
 	AgentID string `json:",omitempty"`
+	// AgentReachAdmission is the server-minted durable receipt for the exact
+	// effective agent authorized by control.start. It has no Protocol
+	// projection and cannot be supplied through SpawnRequest. Historical and
+	// direct SDK tasks omit it and therefore carry no signed-capability
+	// credential authority.
+	AgentReachAdmission *AgentReachAdmission `json:",omitempty"`
 	// CallerMemory is the caller-supplied content this task's run admits
 	// into its `<read_only_external_memory>` tier under the fixed
 	// runtime-owned `caller_supplied` map key. Empty means the caller

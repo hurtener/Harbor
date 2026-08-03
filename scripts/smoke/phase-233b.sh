@@ -67,7 +67,7 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestSetOAuthProvider_FirstInstallCommitThenErrorRestoresUnsetAgent \
     TestSetOAuthProvider_BootLifecycleCommitThenErrorRestoresExactPrior
 
-assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./internal/agentcfg/drivers/statestore ./internal/tools/auth ./internal/tools/auth/drivers/tokenexchange ./internal/tools/drivers/mcp ./internal/protocol/types ./internal/protocol/transports/stream ./internal/runtime/serve' \
+assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./internal/agentcfg/drivers/statestore ./internal/tasks ./internal/tasks/drivers/durable ./internal/runtime/dispatch ./internal/tools/auth ./internal/tools/auth/drivers/tokenexchange ./internal/tools/drivers/mcp ./internal/protocol ./internal/protocol/types ./internal/protocol/transports/stream ./internal/runtime/serve' \
     'phase 233b: authenticated preparation, selective discovery errors, rollback, scope, and closed-wire regressions execute under race' \
     TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDiscovery \
     TestBearerInjectingTransport_StaleSignedPublisherNeverReachesNetwork \
@@ -96,6 +96,13 @@ assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./intern
     TestDeactivateIfActive_CASRaceNeverDeletesReplacement \
     TestBuildSignedCapability_RequestedScopeOutsideBootCeilingRejected \
     TestSignedCapability_RegistrarActorAndInvokerSubjectAreSeparated \
+    TestAgentReachAdmission_SealedCaptureRestoreAndTamperDenial \
+    TestAgentReachAdmission_ConcurrentCaptureNoBleed \
+    TestDurable_RestartSurvival_TasksGroupsPatches \
+    TestExecutor_SpawnTask_InheritsExactAgentReachAdmission \
+    TestPerTaskRunLoopDriver_ForgedSDKAgentIDHasNoCredentialAdmission \
+    TestPerTaskRunLoopDriver_StampsEffectiveAgentConfigAdmission \
+    TestDispatchStart_NamedAgent_TwoCheckRule \
     TestRegisterOAuthMCPCapabilityWire_FieldSetsAreClosed \
     TestRegisterOAuthMCPCapabilityWire_HasNoCredentialOrSinkConfigurationField \
     TestAgentConfigHandler_RegisterOAuthMCPCapabilityRejectsForbiddenFieldsWithoutSideEffects

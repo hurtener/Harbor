@@ -152,6 +152,47 @@ func TestExecutor_SpawnTask_NonRetain_SpawnsBackgroundTask(t *testing.T) {
 	}
 }
 
+func TestExecutor_SpawnTask_InheritsExactAgentReachAdmission(t *testing.T) {
+	bus := mkSpawnAwaitTestBus(t)
+	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	ctx := tasks.WithAgentReachAdmission(context.Background(), dispatchTestID, "agent-selected")
+	raw, _, err := exec.ExecuteDecision(ctx, rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{Query: "child"}})
+	if err != nil {
+		t.Fatalf("ExecuteDecision: %v", err)
+	}
+	taskID := tasks.TaskID(raw.(map[string]any)["task_id"].(string))
+	child, err := reg.Get(spawnAwaitIDCtx(t), taskID)
+	if err != nil {
+		t.Fatalf("Get child: %v", err)
+	}
+	if child.AgentID != "" {
+		t.Fatalf("child raw AgentID = %q, want omitted", child.AgentID)
+	}
+	if _, got, admitted := tasks.RestoreAgentReachAdmission(context.Background(), child); !admitted || got != "agent-selected" {
+		t.Fatalf("child admission = (%q, %v), want inherited agent-selected", got, admitted)
+	}
+
+	other := dispatchTestID
+	other.SessionID = "other-session"
+	otherRC := planner.RunContext{Quadruple: identity.Quadruple{Identity: other}}
+	raw, _, err = exec.ExecuteDecision(ctx, otherRC, planner.SpawnTask{Spec: planner.SpawnSpec{Query: "cross identity"}})
+	if err != nil {
+		t.Fatalf("cross-identity behavior compatibility spawn: %v", err)
+	}
+	otherCtx, err := identity.With(context.Background(), other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherChild, err := reg.Get(otherCtx, tasks.TaskID(raw.(map[string]any)["task_id"].(string)))
+	if err != nil {
+		t.Fatalf("Get cross-identity child: %v", err)
+	}
+	if _, _, admitted := tasks.RestoreAgentReachAdmission(context.Background(), otherChild); admitted {
+		t.Fatal("cross-identity child inherited credential admission")
+	}
+}
+
 // TestExecutor_SpawnTask_NilRegistry_Unsupported — with no TaskRegistry
 // wired the dispatch fails loud with ErrDecisionShapeUnsupported (never
 // a panic / silent no-op).

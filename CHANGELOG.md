@@ -22,9 +22,11 @@ Two versions move independently in Harbor (RFC §5.3):
 - Signed OAuth MCP capability dispatch now keeps immutable registrar identity
   for the broker actor assertion, removal, and audit while exchanging and
   caching for the verified live run subject. Reconciliation reattaches through
-  the frozen owner receipt for a later same-tenant subject, and denied or
-  unadmitted callers cannot use a cached bearer. No Protocol wire or runtime
-  configuration surface changed.
+  the frozen owner receipt for a later same-tenant subject. A durable
+  `control.start` admission receipt now gates the exact effective agent across
+  restart and child spawns, so denied, tampered, or bare SDK-created tasks
+  cannot use a cached bearer. No Protocol wire or runtime configuration
+  surface changed.
 
 ## [1.26.2] — 2026-08-03
 

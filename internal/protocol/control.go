@@ -390,7 +390,7 @@ const agentNotResolvableMsg = "agent_id is not resolvable for the caller's tenan
 //
 // A resolver ERROR fails the request loud with CodeRuntimeError; it
 // never falls through to the default agent.
-func (s *ControlSurface) validateNamedAgent(ctx context.Context, method string, id identity.Identity, agentID string) error {
+func (s *ControlSurface) validateNamedAgent(ctx context.Context, method string, id identity.Identity, agentID string) (string, error) {
 	// Determine the effective target without consulting tenant-local state.
 	// Reach is the authority boundary, so it MUST run before ResolveAgent:
 	// otherwise an untrusted caller can distinguish configured targets from
@@ -402,33 +402,33 @@ func (s *ControlSurface) validateNamedAgent(ctx context.Context, method string, 
 		var err error
 		effectiveID, err = resolver.EffectiveAgentID(agentID)
 		if err != nil {
-			return protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %s", method, agentNotResolvableMsg)
+			return "", protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %s", method, agentNotResolvableMsg)
 		}
 	} else if s.agents != nil && effectiveID == "" {
-		return protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %s", method, agentNotResolvableMsg)
+		return "", protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %s", method, agentNotResolvableMsg)
 	}
 	if err := s.reach.AuthorizeAgentReach(ctx, effectiveID); err != nil {
-		return protoerrors.Newf(protoerrors.CodeScopeMismatch,
+		return "", protoerrors.Newf(protoerrors.CodeScopeMismatch,
 			"method %q: caller is not authorized for the effective agent", method)
 	}
 	if s.agents == nil {
-		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+		return "", protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: %s", method, agentNotResolvableMsg)
 	}
 	allowed, err := s.agents.ResolveAgent(ctx, id, effectiveID)
 	if err != nil {
 		if errors.Is(err, ErrAgentRetired) {
-			return protoerrors.Newf(protoerrors.CodeAgentRetired,
+			return "", protoerrors.Newf(protoerrors.CodeAgentRetired,
 				"method %q: agent is retired", method)
 		}
-		return protoerrors.Newf(protoerrors.CodeRuntimeError,
+		return "", protoerrors.Newf(protoerrors.CodeRuntimeError,
 			"method %q: agent_id resolution failed: %v", method, err)
 	}
 	if !allowed {
-		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+		return "", protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: %s", method, agentNotResolvableMsg)
 	}
-	return nil
+	return effectiveID, nil
 }
 
 // dispatchStart handles the `start` method: it spawns a foreground task
@@ -467,7 +467,8 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 	// row OR a task. The refusal is never a fallback to the default agent
 	// — a caller that named A and silently got B was told it succeeded,
 	// which is the defect this field closes.
-	if err := s.validateNamedAgent(ctx, string(method), id, sr.AgentID); err != nil {
+	effectiveAgentID, err := s.validateNamedAgent(ctx, string(method), id, sr.AgentID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -540,7 +541,8 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		return nil, err
 	}
 
-	handle, err := s.tasks.Spawn(ctx, tasks.SpawnRequest{
+	spawnCtx := tasks.WithAgentReachAdmission(ctx, id, effectiveAgentID)
+	handle, err := s.tasks.Spawn(spawnCtx, tasks.SpawnRequest{
 		Identity:                  identity.Quadruple{Identity: id},
 		Kind:                      tasks.KindForeground,
 		Description:               sr.Description,

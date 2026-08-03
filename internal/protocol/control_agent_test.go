@@ -145,6 +145,14 @@ func (f *agentFixture) start(t *testing.T, id identity.Identity, agentID, key st
 	return sr, nil
 }
 
+func assertTaskReachAdmission(t *testing.T, task *tasks.Task, wantAgent string) {
+	t.Helper()
+	_, gotAgent, admitted := tasks.RestoreAgentReachAdmission(context.Background(), task)
+	if !admitted || gotAgent != wantAgent {
+		t.Fatalf("task reach admission = (%q, %v), want (%q, true); receipt=%+v", gotAgent, admitted, wantAgent, task.AgentReachAdmission)
+	}
+}
+
 // TestDispatchStart_NamedAgent_TwoCheckRule is the validation table.
 func TestDispatchStart_NamedAgent_TwoCheckRule(t *testing.T) {
 	f := newAgentFixture(t, true)
@@ -167,6 +175,7 @@ func TestDispatchStart_NamedAgent_TwoCheckRule(t *testing.T) {
 		if task.AgentID != "" {
 			t.Fatalf("task.AgentID = %q, want empty (the unchanged default path)", task.AgentID)
 		}
+		assertTaskReachAdmission(t, task, bootAgentID)
 	})
 
 	t.Run("ConfiguredDefaultIsAcceptedWithoutAnyRevision", func(t *testing.T) {
@@ -187,6 +196,7 @@ func TestDispatchStart_NamedAgent_TwoCheckRule(t *testing.T) {
 		if task.AgentID != bootAgentID {
 			t.Fatalf("task.AgentID = %q, want %q", task.AgentID, bootAgentID)
 		}
+		assertTaskReachAdmission(t, task, bootAgentID)
 	})
 
 	t.Run("AgentWithARevisionIsAccepted", func(t *testing.T) {
@@ -201,6 +211,7 @@ func TestDispatchStart_NamedAgent_TwoCheckRule(t *testing.T) {
 		if task.AgentID != "configured-agent" {
 			t.Fatalf("task.AgentID = %q, want configured-agent", task.AgentID)
 		}
+		assertTaskReachAdmission(t, task, "configured-agent")
 	})
 
 	t.Run("UnknownAgentIsRefusedAndNoTaskIsCreated", func(t *testing.T) {

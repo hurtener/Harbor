@@ -43,7 +43,8 @@ func TestDurable_RestartSurvival_TasksGroupsPatches(t *testing.T) {
 	if err := r1.MarkComplete(ctx, done.ID, tasks.TaskResult{Value: []byte(`{"answer":42}`)}); err != nil {
 		t.Fatalf("MarkComplete: %v", err)
 	}
-	pending, err := r1.Spawn(ctx, tasks.SpawnRequest{Identity: id, Kind: tasks.KindForeground, Description: "pending-task"})
+	admittedCtx := tasks.WithAgentReachAdmission(ctx, id.Identity, "agent-restart")
+	pending, err := r1.Spawn(admittedCtx, tasks.SpawnRequest{Identity: id, Kind: tasks.KindForeground, Description: "pending-task"})
 	if err != nil {
 		t.Fatalf("Spawn pending: %v", err)
 	}
@@ -95,6 +96,9 @@ func TestDurable_RestartSurvival_TasksGroupsPatches(t *testing.T) {
 	}
 	if gotPending.Status != tasks.StatusPending {
 		t.Errorf("pending task status = %q, want Pending", gotPending.Status)
+	}
+	if _, gotAgent, admitted := tasks.RestoreAgentReachAdmission(context.Background(), gotPending); !admitted || gotAgent != "agent-restart" {
+		t.Errorf("pending task admission after restart = (%q, %v), want (agent-restart, true)", gotAgent, admitted)
 	}
 
 	// List returns all three tasks.

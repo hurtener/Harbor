@@ -1077,6 +1077,15 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	if task.AgentID != "" {
 		effectiveAgentID = task.AgentID
 	}
+	// A persisted agent id selects configuration for backward compatibility,
+	// but only the private control.start receipt can confer signed-capability
+	// credential authority. A valid child receipt also supplies the parent's
+	// exact admitted effective agent when the child intentionally omits the raw
+	// caller-selection field.
+	admissionCtx, admittedAgentID, agentReachAdmitted := tasks.RestoreAgentReachAdmission(d.subCtx, task)
+	if agentReachAdmitted {
+		effectiveAgentID = admittedAgentID
+	}
 	if d.runSnapshots != nil {
 		lease, admissionErr := d.runSnapshots.Acquire(taskCtx, q.TenantID, effectiveAgentID)
 		if admissionErr != nil {
@@ -1607,12 +1616,14 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// silently nondeterministic across a cached TTL. A caller-named agent
 	// selects CONFIGURATION only — the two agent-id carriers on a run have
 	// different provenance and MUST NOT be unified by a tidying refactor.
-	runCtx := tools.WithInvokingAgent(d.subCtx, d.agentConfigID)
+	runCtx := tools.WithInvokingAgent(admissionCtx, d.agentConfigID)
 	// Keep the reach-admitted configuration selection separate from the
 	// boot-derived southbound actor provenance above. Pair-owned credentials use
 	// this internal capability to prove the exact selected agent without making
 	// agent_id an isolation principal or changing the actor token contract.
-	runCtx = tools.WithEffectiveAgentConfig(runCtx, effectiveAgentID)
+	if agentReachAdmitted {
+		runCtx = tools.WithEffectiveAgentConfig(runCtx, effectiveAgentID)
+	}
 	if hasSkillSnapshot {
 		runCtx = skills.WithRunSkillReaderSnapshot(runCtx, skillSnapshot)
 	}

@@ -14,9 +14,11 @@ import (
 	"time"
 
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -82,7 +84,7 @@ func runProvenanceProbe(t *testing.T, agentConfigID string) string {
 	}
 }
 
-func runEffectiveAgentConfigProbe(t *testing.T, agentConfigID string) string {
+func runEffectiveAgentConfigProbe(t *testing.T, agentConfigID string, admitted bool) string {
 	t.Helper()
 	red := auditpatterns.New()
 	bus := mkDriverTestBus(t, red)
@@ -102,7 +104,19 @@ func runEffectiveAgentConfigProbe(t *testing.T, agentConfigID string) string {
 		t.Fatalf("driver.Start: %v", err)
 	}
 	defer func() { _ = driver.Close(context.Background()) }()
-	_ = spawnDriverTestTask(t, reg)
+	spawnCtx, err := identity.With(context.Background(), runLoopDriverTestID)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	if admitted {
+		spawnCtx = tasks.WithAgentReachAdmission(spawnCtx, runLoopDriverTestID, agentConfigID)
+	}
+	if _, err := reg.Spawn(spawnCtx, tasks.SpawnRequest{
+		Identity: identity.Quadruple{Identity: runLoopDriverTestID}, Kind: tasks.KindForeground,
+		Query: "effective admission probe", AgentID: agentConfigID,
+	}); err != nil {
+		t.Fatalf("reg.Spawn: %v", err)
+	}
 	select {
 	case got := <-p.effective:
 		return got
@@ -121,8 +135,14 @@ func TestPerTaskRunLoopDriver_StampsInvokingAgentProvenance(t *testing.T) {
 }
 
 func TestPerTaskRunLoopDriver_StampsEffectiveAgentConfigAdmission(t *testing.T) {
-	if got := runEffectiveAgentConfigProbe(t, "agent-selected-1"); got != "agent-selected-1" {
+	if got := runEffectiveAgentConfigProbe(t, "agent-selected-1", true); got != "agent-selected-1" {
 		t.Fatalf("run ctx effective configuration = %q, want reach-admitted agent-selected-1", got)
+	}
+}
+
+func TestPerTaskRunLoopDriver_ForgedSDKAgentIDHasNoCredentialAdmission(t *testing.T) {
+	if got := runEffectiveAgentConfigProbe(t, "agent-selected-1", false); got != "" {
+		t.Fatalf("bare SDK AgentID minted credential admission %q", got)
 	}
 }
 
