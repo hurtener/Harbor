@@ -42,9 +42,41 @@ func TestVerifySignedOAuthMCPAuthority_ExactBindingAndScopeCeiling(t *testing.T)
 	}
 }
 
+func TestVerifySignedOAuthMCPAuthority_ArtifactMappingCanonicalEquivalence(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	binding := SignedOAuthMCPBinding{
+		TenantID: "tenant", UserID: "user", SessionID: "session", AgentID: "agent", Broker: "broker",
+		ProviderName: "provider", CapabilityRevision: "1", URLDigest: "url", SinkDigest: "sink", Audience: "api",
+		Connection: SignedOAuthMCPConnectionDescriptor{Name: "knowledge", URL: "https://example.test/mcp", ArtifactByteEligible: true,
+			ArtifactParams: map[string][]string{"knowledge.ingest": {"content_base64", "metadata"}}},
+	}
+	whitespaceTool := " " + binding.Connection.Name + ".ingest "
+	claims := SignedOAuthMCPAuthorityClaims{
+		TenantID: binding.TenantID, UserID: binding.UserID, SessionID: binding.SessionID, AgentID: binding.AgentID,
+		Broker: binding.Broker, ProviderName: binding.ProviderName, CapabilityRevision: binding.CapabilityRevision,
+		URLDigest: binding.URLDigest, SinkDigest: binding.SinkDigest, Audience: binding.Audience,
+		Connection: SignedOAuthMCPConnectionDescriptor{Name: binding.Connection.Name, URL: binding.Connection.URL, ArtifactByteEligible: true,
+			ArtifactParams: map[string][]string{whitespaceTool: {" metadata ", " content_base64 "}}},
+		RegisteredClaims: jwt.RegisteredClaims{Issuer: "issuer", ID: "jti-canonical", IssuedAt: jwt.NewNumericDate(now.Add(-time.Minute)), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute))},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = "kid"
+	raw, err := token.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifySignedOAuthMCPAuthority(raw, "issuer", "kid", &key.PublicKey, now, binding, nil); err != nil {
+		t.Fatalf("canonical-equivalent signed mapping refused: %v", err)
+	}
+}
+
 func TestSignedOAuthMCPPairFingerprint_ArtifactEgressIsImmutableBinding(t *testing.T) {
-	base := SignedOAuthMCPBinding{TenantID: "t", AgentID: "a", Connection: SignedOAuthMCPConnectionDescriptor{Name: "soundings", URL: "https://example.test/mcp"}}
-	const preExtensionFingerprint = "cad3ad7928620d98e471d6dceec8a24de5fa06e40e27e790183d4e17404889da"
+	base := SignedOAuthMCPBinding{TenantID: "t", AgentID: "a", Connection: SignedOAuthMCPConnectionDescriptor{Name: "knowledge", URL: "https://example.test/mcp"}}
+	const preExtensionFingerprint = "cdf881db05c3c01691a7277fbb0f8b0bd4d87d34e5916797e45987dba2d52951"
 	if got := SignedOAuthMCPPairFingerprint(base); got != preExtensionFingerprint {
 		t.Fatalf("omitted extension changed the pre-extension fingerprint: got %s want %s", got, preExtensionFingerprint)
 	}

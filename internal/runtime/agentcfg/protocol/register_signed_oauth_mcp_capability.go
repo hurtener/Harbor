@@ -4,10 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -272,7 +270,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		closeErr := closePreparedSignedCapability(ctx, nil, preparedProvider)
 		if errors.Is(err, tools.ErrArtifactEgressSchema) {
 			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closeErr,
-				s.compensateInvalidSignedArtifactMapping(ctx, q, req.AgentID, operationKind, rev))
+				s.compensateInvalidSignedArtifactMapping(ctx, q, req.AgentID, op, rev))
 		}
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closeErr)
 	}
@@ -318,21 +316,18 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	return signedCapabilityResponse(rev, providerName, connection.Name), nil
 }
 
-func (s *Service) compensateInvalidSignedArtifactMapping(ctx context.Context, q identity.Quadruple, agentID, operationKind string, candidate agentcfg.Revision) error {
+func (s *Service) compensateInvalidSignedArtifactMapping(ctx context.Context, q identity.Quadruple, agentID string, op agentcfg.SignedOAuthMCPOperation, candidate agentcfg.Revision) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	fence, err := s.signedOAuthMCPFences.Load(cleanupCtx, q.TenantID, agentID)
-	if err != nil {
-		return err
+	if op.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted || op.RevisionID != candidate.RevisionID {
+		return fmt.Errorf("%w: signed artifact mapping rejection does not bind committed candidate", agentcfg.ErrSignedCapabilityReplay)
 	}
-	if fence.Phase != agentcfg.SignedOAuthMCPFencePending || fence.OperationKind != operationKind || fence.CandidateContentHash != candidate.ContentHash {
-		return fmt.Errorf("%w: signed artifact mapping compensation does not own the active fence", agentcfg.ErrSignedCapabilityPending)
+	physical, ok := s.registry.(physicalActiveRegistry)
+	if !ok {
+		return ErrSignedCapabilityUnavailable
 	}
-	if err := restorePreOperationAuthority(cleanupCtx, s.registry, q, agentID, candidate, fence.PriorRevisionID, operationKind); err != nil {
-		return err
-	}
-	_, err = s.signedOAuthMCPFences.Advance(cleanupCtx, fence, agentcfg.SignedOAuthMCPFenceAborted, candidate.RevisionID)
-	return err
+	reconciler := &SignedOAuthMCPReconciler{registry: s.registry, physical: physical, operations: s.signedOAuthMCPOperations, fences: s.signedOAuthMCPFences}
+	return reconciler.rejectPreparation(cleanupCtx, q, agentID, op, candidate)
 }
 
 func (s *Service) resumeAndRenewSignedOAuthMCPAuthority(ctx context.Context, physical physicalActiveRegistry, exactDetacher ExactConnectionDetacher, op agentcfg.SignedOAuthMCPOperation, key agentcfg.SignedOAuthMCPReplayKey, binding agentcfg.SignedOAuthMCPBinding, verifiedExpiresAt time.Time) (agentcfg.SignedOAuthMCPOperation, error) {
@@ -541,12 +536,7 @@ func signedCapabilityPairAttachmentFingerprint(pair *agentcfg.SignedOAuthMCPPair
 }
 
 func normalizeSignedCapabilityConnection(in prototypes.SignedOAuthMCPConnectionDescriptor, canonicalURL string) (prototypes.SignedOAuthMCPConnectionDescriptor, error) {
-	const (
-		maxSignedCapabilityTimeoutMS          = int((5 * time.Minute) / time.Millisecond)
-		maxSignedCapabilityArtifactTools      = 32
-		maxSignedCapabilityArtifactParameters = 128
-		maxSignedCapabilityArtifactBytes      = 16 * 1024
-	)
+	const maxSignedCapabilityTimeoutMS = int((5 * time.Minute) / time.Millisecond)
 	out := in
 	out.Name = strings.TrimSpace(out.Name)
 	out.URL = canonicalURL
@@ -563,36 +553,9 @@ func normalizeSignedCapabilityConnection(in prototypes.SignedOAuthMCPConnectionD
 	if len(out.ArtifactParams) > 0 && !out.ArtifactByteEligible {
 		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: artifact_params requires artifact_byte_eligible", ErrInvalidSignedCapabilityDescriptor)
 	}
-	if err := config.ValidateMCPArtifactParams(out.ArtifactParams); err != nil {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: artifact_params: %s", ErrInvalidSignedCapabilityDescriptor, err.Error())
-	}
-	if len(out.ArtifactParams) > maxSignedCapabilityArtifactTools {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: artifact_params maps %d tools, exceeding the cap of %d", ErrInvalidSignedCapabilityDescriptor, len(out.ArtifactParams), maxSignedCapabilityArtifactTools)
-	}
-	parameterCount := 0
-	canonicalParams := make(map[string][]string, len(out.ArtifactParams))
-	for rawTool, rawParams := range out.ArtifactParams {
-		tool := strings.TrimSpace(rawTool)
-		if _, duplicate := canonicalParams[tool]; duplicate {
-			return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: artifact_params maps canonical tool %q more than once", ErrInvalidSignedCapabilityDescriptor, tool)
-		}
-		params := make([]string, 0, len(rawParams))
-		for _, rawParam := range rawParams {
-			params = append(params, strings.TrimSpace(rawParam))
-		}
-		sort.Strings(params)
-		parameterCount += len(params)
-		canonicalParams[tool] = params
-	}
-	if parameterCount > maxSignedCapabilityArtifactParameters {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: artifact_params maps %d parameters, exceeding the cap of %d", ErrInvalidSignedCapabilityDescriptor, parameterCount, maxSignedCapabilityArtifactParameters)
-	}
-	encodedParams, err := json.Marshal(canonicalParams)
+	canonicalParams, err := config.NormalizeMCPArtifactParams(config.MCPArtifactParams(out.ArtifactParams))
 	if err != nil {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: encode artifact_params: %w", ErrInvalidSignedCapabilityDescriptor, err)
-	}
-	if len(encodedParams) > maxSignedCapabilityArtifactBytes {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: artifact_params is %d bytes, exceeding the cap of %d", ErrInvalidSignedCapabilityDescriptor, len(encodedParams), maxSignedCapabilityArtifactBytes)
+		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: artifact_params: %s", ErrInvalidSignedCapabilityDescriptor, err.Error())
 	}
 	if len(canonicalParams) == 0 {
 		out.ArtifactParams = nil

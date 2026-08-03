@@ -1976,6 +1976,37 @@ func cloneTestArtifactParams(in map[string][]string) map[string][]string {
 	return out
 }
 
+func signedArtifactMappingAtJSONSize(t *testing.T, target int) map[string][]string {
+	t.Helper()
+	mapping := make(map[string][]string, config.MaxMCPArtifactMethods)
+	for tool := range config.MaxMCPArtifactMethods {
+		params := make([]string, config.MaxMCPArtifactParamsPerMethod)
+		for param := range config.MaxMCPArtifactParamsPerMethod {
+			params[param] = fmt.Sprintf("p%02d", param)
+		}
+		mapping[fmt.Sprintf("tool-%02d", tool)] = params
+	}
+	encoded, err := json.Marshal(mapping)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := target - len(encoded)
+	for tool := 0; tool < config.MaxMCPArtifactMethods && remaining > 0; tool++ {
+		for param := 0; param < config.MaxMCPArtifactParamsPerMethod && remaining > 0; param++ {
+			key := fmt.Sprintf("tool-%02d", tool)
+			name := mapping[key][param]
+			add := min(remaining, config.MaxMCPArtifactNameBytes-len(name))
+			mapping[key][param] = name + strings.Repeat("x", add)
+			remaining -= add
+		}
+	}
+	encoded, err = json.Marshal(mapping)
+	if err != nil || len(encoded) != target {
+		t.Fatalf("could not construct %d-byte signed mapping: size=%d remaining=%d err=%v", target, len(encoded), remaining, err)
+	}
+	return mapping
+}
+
 func TestRegisterOAuthMCPCapability_SignedArtifactEgressRoundTripsAndBindsAttach(t *testing.T) {
 	now := time.Date(2026, 8, 3, 14, 0, 0, 0, time.UTC)
 	svc, key, _, preparer := signedCapabilityService(t, now)
@@ -1984,7 +2015,7 @@ func TestRegisterOAuthMCPCapability_SignedArtifactEgressRoundTripsAndBindsAttach
 		t.Fatal(err)
 	}
 	connection := prototypes.SignedOAuthMCPConnectionDescriptor{
-		Name: "soundings", URL: canonical, ArtifactByteEligible: true,
+		Name: "knowledge", URL: canonical, ArtifactByteEligible: true,
 		ArtifactParams: map[string][]string{"knowledge.ingest": {"content_base64"}},
 	}
 	req := signedCapabilityRequestWithConnection(t, key, now, prototypes.IdentityScope{Tenant: "t", User: "u", Session: "s"}, testAgentID, "jti-egress", "aud-egress", connection, sink)
@@ -2021,7 +2052,7 @@ func TestRegisterOAuthMCPCapability_ArtifactEgressTamperAndBoundsFailBeforePersi
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed := prototypes.SignedOAuthMCPConnectionDescriptor{Name: "soundings", URL: canonical, ArtifactByteEligible: true, ArtifactParams: map[string][]string{"knowledge.ingest": {"content_base64"}}}
+	signed := prototypes.SignedOAuthMCPConnectionDescriptor{Name: "knowledge", URL: canonical, ArtifactByteEligible: true, ArtifactParams: map[string][]string{"knowledge.ingest": {"content_base64"}}}
 	tampered := signedCapabilityRequestWithConnection(t, key, now, prototypes.IdentityScope{Tenant: "t", User: "u", Session: "s"}, testAgentID, "jti-tamper", "aud", signed, sink)
 	tampered.Connection.ArtifactParams["knowledge.ingest"] = []string{"widened"}
 	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), tampered); !errors.Is(err, agentcfg.ErrSignedCapabilityBinding) {
@@ -2037,16 +2068,30 @@ func TestRegisterOAuthMCPCapability_ArtifactEgressTamperAndBoundsFailBeforePersi
 	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), bounded); !errors.Is(err, agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor) {
 		t.Fatalf("oversized mapping error = %v, want invalid descriptor", err)
 	}
+	tooManyParams := signed
+	tooManyParams.ArtifactParams = map[string][]string{"knowledge.ingest": {"p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"}}
+	paramBounded := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-param-bounds", "aud", tooManyParams, sink)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), paramBounded); !errors.Is(err, agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor) {
+		t.Fatalf("over-parameter mapping error = %v, want invalid descriptor", err)
+	}
+	tooLongName := signed
+	tooLongName.ArtifactParams = map[string][]string{strings.Repeat("m", config.MaxMCPArtifactNameBytes+1): {"content"}}
+	nameBounded := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-name-bounds", "aud", tooLongName, sink)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), nameBounded); !errors.Is(err, agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor) {
+		t.Fatalf("over-name mapping error = %v, want invalid descriptor", err)
+	}
 	tooManyBytes := signed
-	tooManyBytes.ArtifactParams = map[string][]string{"knowledge.ingest": {strings.Repeat("p", 17*1024)}}
+	tooManyBytes.ArtifactParams = signedArtifactMappingAtJSONSize(t, config.MaxMCPArtifactParamsJSONBytes)
+	tooManyBytes.ArtifactParams["tool-31"][7] += "x"
 	byteBounded := signedCapabilityRequestWithConnection(t, key, now, prototypes.IdentityScope{Tenant: "t", User: "u", Session: "s"}, testAgentID, "jti-byte-bounds", "aud", tooManyBytes, sink)
 	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), byteBounded); !errors.Is(err, agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor) {
 		t.Fatalf("over-byte mapping error = %v, want invalid descriptor", err)
 	}
 	duplicateCanonicalTool := signed
+	canonicalTool := strings.TrimSpace(" knowledge.ingest ")
 	duplicateCanonicalTool.ArtifactParams = map[string][]string{
-		"knowledge.ingest":   {"content_base64"},
-		" knowledge.ingest ": {"content"},
+		canonicalTool:             {"content_base64"},
+		" " + canonicalTool + " ": {"content"},
 	}
 	duplicateBounded := signedCapabilityRequestWithConnection(t, key, now, prototypes.IdentityScope{Tenant: "t", User: "u", Session: "s"}, testAgentID, "jti-duplicate-canonical-tool", "aud", duplicateCanonicalTool, sink)
 	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), duplicateBounded); !errors.Is(err, agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor) {
@@ -2060,14 +2105,14 @@ func TestRegisterOAuthMCPCapability_ArtifactEgressTamperAndBoundsFailBeforePersi
 
 func TestRegisterOAuthMCPCapability_InvalidDiscoveredArtifactMappingRollsBackAtomically(t *testing.T) {
 	now := time.Date(2026, 8, 3, 14, 0, 0, 0, time.UTC)
-	svc, key, reg, _, preparer := signedCapabilityServiceWithRegistry(t, now)
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
 	preparer.failPrepare = tools.ErrArtifactEgressSchema
 	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://example.test/mcp")
 	if err != nil {
 		t.Fatal(err)
 	}
 	req := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-schema-rollback", "aud", prototypes.SignedOAuthMCPConnectionDescriptor{
-		Name: "soundings", URL: canonical, ArtifactByteEligible: true,
+		Name: "knowledge", URL: canonical, ArtifactByteEligible: true,
 		ArtifactParams: map[string][]string{"knowledge.ingest": {"unknown_or_non_string"}},
 	}, sink)
 	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), req); !errors.Is(err, tools.ErrArtifactEgressSchema) {
@@ -2076,6 +2121,101 @@ func TestRegisterOAuthMCPCapability_InvalidDiscoveredArtifactMappingRollsBackAto
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
 	if _, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); err != nil || set {
 		t.Fatalf("invalid discovered mapping left active authority: set=%t err=%v", set, err)
+	}
+	history, err := reg.ListRevisions(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, 0)
+	if err != nil || len(history) != 1 || history[0].Payload.SignedOAuthMCPPair == nil {
+		t.Fatalf("rejected mapping history = %+v, err=%v", history, err)
+	}
+	operations, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := operations.LoadForPair(context.Background(), q.TenantID, history[0].Payload.SignedOAuthMCPPair)
+	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhasePreparationRejected || op.RevisionID != history[0].RevisionID {
+		t.Fatalf("rejected operation = phase %q revision %q err=%v", op.Phase, op.RevisionID, err)
+	}
+	fences, err := agentcfg.NewSignedOAuthMCPActivationFenceStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := fences.Load(context.Background(), q.TenantID, testAgentID)
+	if err != nil || fence.Phase != agentcfg.SignedOAuthMCPFenceAborted || fence.CandidateRevisionID != history[0].RevisionID {
+		t.Fatalf("rejected fence = phase %q revision %q err=%v", fence.Phase, fence.CandidateRevisionID, err)
+	}
+	restarted, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("restart reconciliation of rejected mapping: %v", err)
+	}
+
+	preparer.failPrepare = nil
+	correctedConnection := req.Connection
+	correctedConnection.ArtifactParams = map[string][]string{"knowledge.ingest": {"content_base64"}}
+	corrected := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-schema-corrected", "aud", correctedConnection, sink)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), corrected); err != nil {
+		t.Fatalf("corrected new-JTI registration: %v", err)
+	}
+	if err := restarted.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("post-correction expiry/restart reconciliation was poisoned by rejected history: %v", err)
+	}
+	latest, err := operations.Load(context.Background(), op.ReplayKey)
+	if err != nil || latest.Phase != agentcfg.SignedOAuthMCPPhasePreparationRejected {
+		t.Fatalf("rejected receipt changed after corrected registration: phase=%q err=%v", latest.Phase, err)
+	}
+}
+
+func TestSignedOAuthMCPReconciler_RestartCompletesArtifactSchemaRejectionAdmission(t *testing.T) {
+	now := time.Date(2026, 8, 3, 23, 0, 0, 0, time.UTC)
+	base, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected rejection admission failure")
+	store := &capabilityOperationPhaseStore{StateStore: base, phase: agentcfg.SignedOAuthMCPPhasePreparationRejectionAdmitted, failErr: injected}
+	svc, key, reg, st, preparer := signedCapabilityServiceWithStore(t, now, store)
+	preparer.failPrepare = tools.ErrArtifactEgressSchema
+	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://example.test/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-schema-restart", "aud", prototypes.SignedOAuthMCPConnectionDescriptor{
+		Name: "knowledge", URL: canonical, ArtifactByteEligible: true,
+		ArtifactParams: map[string][]string{"knowledge.ingest": {"unknown_or_non_string"}},
+	}, sink)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), req); !errors.Is(err, tools.ErrArtifactEgressSchema) || !errors.Is(err, injected) {
+		t.Fatalf("initial schema rejection = %v, want schema plus injected admission failure", err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, set, err := reg.(interface {
+		PhysicalActive(context.Context, identity.Quadruple, string, agentcfg.ConfigScope) (agentcfg.Revision, bool, error)
+	}).PhysicalActive(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.Payload.SignedOAuthMCPPair == nil {
+		t.Fatalf("pre-restart physical candidate = (%+v, %t, %v)", active, set, err)
+	}
+	operations, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := operations.LoadForPair(context.Background(), q.TenantID, active.Payload.SignedOAuthMCPPair)
+	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted {
+		t.Fatalf("pre-restart operation phase=%q err=%v", op.Phase, err)
+	}
+
+	restarted, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("restart schema-rejection reconciliation: %v", err)
+	}
+	latest, err := operations.Load(context.Background(), op.ReplayKey)
+	if err != nil || latest.Phase != agentcfg.SignedOAuthMCPPhasePreparationRejected {
+		t.Fatalf("post-restart operation phase=%q err=%v", latest.Phase, err)
+	}
+	if _, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); err != nil || set {
+		t.Fatalf("restart left rejected candidate active: set=%t err=%v", set, err)
 	}
 }
 

@@ -12351,8 +12351,9 @@ signed path remains HTTP-only.
 The registration request is untrusted until the boot-pinned asymmetric signer
 verifies the exact canonical descriptor. Canonicalization trims tool and
 parameter names, sorts each parameter set, and rejects an empty or duplicate
-shape. Signed registrations additionally cap the declaration at 32 tools, 128
-total parameters, and 16 KiB of canonical JSON. The canonical mapping and
+shape. Every admission/config/normalization door caps the declaration at 32
+methods, 8 parameters per method, 128 bytes per method or parameter name, and
+8 KiB of canonical JSON. The canonical mapping and
 eligibility bit participate in authority matching, pair fingerprinting, the
 tenant-scoped JTI replay oracle, revision content hashing, and staged
 attachment fingerprints. A same-JTI mapping change is therefore a replay
@@ -12369,7 +12370,10 @@ bound, signature, schema, persistence, or attach failure is loud and leaves no
 published or partially authoritative pair; the existing activation fence and
 compensation state machine remain the atomicity mechanism. Removal continues
 to retire the exact immutable pair and operation receipt without a second
-mapping-specific lifecycle.
+mapping-specific lifecycle. A schema-rejected committed candidate remains only
+as immutable diagnostic history: its operation enters a durable rejection
+compensation phase, restores prior/absent authority, aborts the exact activation
+fence, and terminates as non-replayable before a corrected new JTI may publish.
 
 Artifact resolution and the `mcp.artifact_egressed` audit event are unchanged:
 the acting run's verified tenant, user, session, and exact effective agent

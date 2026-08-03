@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/hurtener/Harbor/internal/config"
 )
 
 var (
@@ -190,10 +192,12 @@ func sameSignedOAuthMCPConnection(left, right SignedOAuthMCPConnectionDescriptor
 	rightAllow, rightAllowErr := CanonicalScopes(right.ToolAllowlist)
 	leftDeny, leftDenyErr := CanonicalScopes(left.ToolDenylist)
 	rightDeny, rightDenyErr := CanonicalScopes(right.ToolDenylist)
-	return leftAllowErr == nil && rightAllowErr == nil && leftDenyErr == nil && rightDenyErr == nil &&
+	leftParams, leftParamsErr := config.NormalizeMCPArtifactParams(config.MCPArtifactParams(left.ArtifactParams))
+	rightParams, rightParamsErr := config.NormalizeMCPArtifactParams(config.MCPArtifactParams(right.ArtifactParams))
+	return leftAllowErr == nil && rightAllowErr == nil && leftDenyErr == nil && rightDenyErr == nil && leftParamsErr == nil && rightParamsErr == nil &&
 		left.Name == right.Name && left.URL == right.URL && left.ConnectTimeoutMS == right.ConnectTimeoutMS &&
 		left.RequestTimeoutMS == right.RequestTimeoutMS && left.ArtifactByteEligible == right.ArtifactByteEligible &&
-		sameStrings(leftAllow, rightAllow) && sameStrings(leftDeny, rightDeny) && sameArtifactParams(left.ArtifactParams, right.ArtifactParams)
+		sameStrings(leftAllow, rightAllow) && sameStrings(leftDeny, rightDeny) && sameArtifactParams(leftParams, rightParams)
 }
 
 func sameArtifactParams(left, right map[string][]string) bool {

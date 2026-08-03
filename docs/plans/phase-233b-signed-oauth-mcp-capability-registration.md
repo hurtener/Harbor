@@ -27,10 +27,13 @@ The closed signed connection descriptor also carries
 `artifact_byte_eligible` and `artifact_params`. They are signer-authorized,
 non-secret connection policy, not a credential or destination field. The
 mapping is canonicalized into the immutable binding and replay fingerprint,
-bounded to 32 tools, 128 total parameters, and 16 KiB of canonical JSON, and
-validated against discovered string input schemas before the pair publishes.
-Revision projection and restart reconciliation preserve the exact declaration;
-invalid or tampered mappings fail before persistence and leave no partial pair.
+bounded to 32 methods, 8 parameters per method, 128 bytes per method or
+parameter name, and 8 KiB of canonical JSON, and validated against discovered
+string input schemas before the pair publishes. Revision projection and
+restart reconciliation preserve the exact declaration. A schema-rejected
+candidate may remain in immutable revision history for diagnosis, but its
+operation is terminally compensated before publication and no rejected pair
+remains active or authoritative.
 
 ## RFC anchor
 
