@@ -37,16 +37,25 @@ Compose signed reach, triad-wide conditional save, durable session overlays/pers
 
 ## Checkpoint status
 
-The checkpoint implementation is complete and publication remains in progress.
+The checkpoint and v1.26.0 publication are complete.
 The named suite executes real SQLite signed-capability registration, publisher
 takeover, stale-publisher denial, empty-runtime removal, restart/reconcile,
 four-slot session-personal authority, erasure, inflight-run retirement drain,
 retirement cleanup restart, and byte-exact reasoning durability. Its isolated-
 schema Postgres leg races two independent runtimes across retirement versus
 agent/user config, rollback, second retirement, signed registration/removal,
-and erasure versus overlay/personal writes. The read-only audit, hosted
-preflight, release-build, and publication criteria remain open; this phase is
-not checkpointed yet.
+and erasure versus overlay/personal writes. The read-only audit and hosted
+PR-to-main preflight passed before the annotated `v1.26.0` tag. The tag object
+is `d4208deaaf89f0f836dd4ca20ad583cfc40ce5ed`, pointing at release commit
+`173dd53beb72eae1bc9a1c9bf402446ea9726c16`. Release workflow `30771486167`
+completed successfully: six CGo-free matrix builds produced six binaries and
+six SHA-256 sidecars; the publish job verified `checksums.txt` against all six;
+all six build provenance attestations verified; and the GitHub Release contains
+13 assets (six binaries, six sidecars, and `checksums.txt`). Native
+linux/arm64 `harbor version --json` reports exactly
+`{"harbor":"v1.26.0","protocol":"0.1.0","build_hash":"173dd53beb72eae1bc9a1c9bf402446ea9726c16"}`.
+This separate post-tag `chore(release)` change updates the scaffold pin and its
+goldens; cloud validation for that follow-up remains an explicit PR gate.
 
 ## Non-goals
 
@@ -54,30 +63,30 @@ not checkpointed yet.
 
 ## Acceptance criteria
 
-- [ ] `test/integration/wave_v126_test.go` exercises reach-authorized start/config/tools paths, D-401 signed OAuth capability registration/restart/reconcile/removal, durable session overlay/personal resolution, erasure, and retirement over real SQLite, with identity propagation and at least one denial per seam.
-- [ ] Two independent runtimes over shared Postgres race retirement and session erasure against agent write, signed-capability registration/removal, user write, rollback, overlay write, personal-record write/delete, and second retirement; exactly one valid transition wins and restart preserves the result.
-- [ ] HA-50 remains a v1.26 release gate. A narrow boot-pinned compatibility
+- [x] `test/integration/wave_v126_test.go` exercises reach-authorized start/config/tools paths, D-401 signed OAuth capability registration/restart/reconcile/removal, durable session overlay/personal resolution, erasure, and retirement over real SQLite, with identity propagation and at least one denial per seam.
+- [x] Two independent runtimes over shared Postgres race retirement and session erasure against agent write, signed-capability registration/removal, user write, rollback, overlay write, personal-record write/delete, and second retirement; exactly one valid transition wins and restart preserves the result.
+- [x] HA-50 remains a v1.26 release gate. A narrow boot-pinned compatibility
   flow is not the generic capability contract and cannot substitute for the
   atomic production Protocol registration of one provider plus one connection,
   its closed registration-only descriptor, durable paired-removal recovery and
   first-write pending-activation fence, fail-loud scope ceiling, zero wire
   `token_url`/credential/host-list fields, or its race and restart coverage.
-- [ ] HA-51 remains a v1.26 release gate. The decoded Bifrost JSON/SSE
+- [x] HA-51 remains a v1.26 release gate. The decoded Bifrost JSON/SSE
   reasoning fixture is byte-identical from raw callback through completed
   response, planner decision, live `tasks.get`, durable restart history, and
   Console rendering; details-only multi-block behavior and N>=100 shared-driver
   race/cancel/no-bleed/leak coverage remain green.
-- [ ] The existing `state-postgres` Postgres 16 CI job runs the named
+- [x] The existing `state-postgres` Postgres 16 CI job runs the named
   `TestE2E_WaveV126...` integration suite under `-race` with
   `HARBOR_PG_DSN` set. A missing local DSN may skip only outside that CI step;
   the real Postgres leg is never skipped in CI.
-- [ ] The immutable per-run resolver gives Directory and
+- [x] The immutable per-run resolver gives Directory and
   `skill_get`/`skill_list`/`skill_search` the same current personal,
   legacy-fallback, `ScopeUser`, lexical, and semantic view; session-skills
   list returns only the session tier. `ActiveSkillViews` is no second
   membership authority, logical tombstones suppress fallback, and no new
   session body reaches the shared SkillStore.
-- [ ] Missing/invalid/false or unlisted `skills.session_personal_cutover.tenants`
+- [x] Missing/invalid/false or unlisted `skills.session_personal_cutover.tenants`
   declarations keep that tenant in `dual_read`: legacy session rows remain
   visible and session-personal mutations return
   `session_skill_cutover_pending` (HTTP 409). A valid declared tenant persists
@@ -86,40 +95,40 @@ not checkpointed yet.
   reference copied or terminal before `state_only`; the phase does not invent
   runtime membership, unknown-tenant discovery, or a restart-surviving DB
   snapshot.
-- [ ] Release evidence explicitly asks v1.26 reviewers to accept the default
+- [x] Release evidence explicitly asks v1.26 reviewers to accept the default
   `dual_read` session-personal mutation refusal as a compatibility/deployment
   change. `docs/CONFIG.md`, `CHANGELOG.md`, `configure-memory-and-skills`, its
   docs-site stub, and example config describe the drain attestation, resumable
   scan, and final `state_only` condition.
-- [ ] A retirement or erasure fence change during overlay/personal/composite
+- [x] A retirement or erasure fence change during overlay/personal/composite
   read enumeration yields only a retry or typed failure, never a returned
   post-fence record; personal upsert/delete proves one `SaveIf` target mutation
   and no companion overlay-membership mutation. Deterministic perpetual churn
   exhausts after `MaxSessionSkillReadAttempts = 3`, honors cancellation/deadline,
   and externally maps `ErrSessionSkillReadUnstable` to HTTP 409
   `session_skill_read_unstable`.
-- [ ] Commit-then-error injections across every Phase 233a `SaveIf` writer
+- [x] Commit-then-error injections across every Phase 233a `SaveIf` writer
   separately prove overlay/personal, cutover, retirement, and cleanup-item
   reread convergence with their own expectations and no unconditional
   compensation. Raw-agent schema-1 overlays remain readable/migratable; the
   `a`/`ab` adjacency test proves migration and retirement exact-kind equality,
   and retirement uses no unconditional delete.
-- [ ] N≥10 mixed tenants/users/sessions/reach sets against shared runtime artifacts show no authority, config, or cancellation bleed; goroutine baseline restores.
-- [ ] Faults after tombstone, cleanup side effect, and progress persistence resume only for the same operation and never alter immutable history or boot/global resources.
-- [ ] Canonical error registry/matrix, HTTP mapping, Protocol docs, Console
+- [x] N≥10 mixed tenants/users/sessions/reach sets against shared runtime artifacts show no authority, config, or cancellation bleed; goroutine baseline restores.
+- [x] Faults after tombstone, cleanup side effect, and progress persistence resume only for the same operation and never alter immutable history or boot/global resources.
+- [x] Canonical error registry/matrix, HTTP mapping, Protocol docs, Console
   types/manifest, operator skills, config examples, glossary, plans, and
   CHANGELOG are current.
-- [ ] A separate read-only reviewer audits phases 232–235 against RFC/plans/code/tests; the coordinator fixes and re-verifies every release-blocking finding.
-- [ ] Before tagging `v1.26.0` from `main`, the cloud PR-to-main preflight is
+- [x] A separate read-only reviewer audits phases 232–235 against RFC/plans/code/tests; the coordinator fixes and re-verifies every release-blocking finding.
+- [x] Before tagging `v1.26.0` from `main`, the cloud PR-to-main preflight is
   green and authoritative. Maintainers run focused local race, smoke, lint,
   drift, mirror, release-dryrun, and Linux release-build gates; they do not
   claim or run the full local preflight for this release process.
-- [ ] Release evidence records six CGo-free binaries
+- [x] Release evidence records six CGo-free binaries
   (`linux`/`darwin`/`windows` × `amd64`/`arm64`), every per-binary SHA-256
   sidecar, successful `checksums.txt` verification, build provenance
   attestations, every GitHub Release asset, and native `harbor version --json`
   reporting `v1.26.0`.
-- [ ] After the tag publishes, a separate `chore(release)` commit bumps `cmd/harbor/scaffold.FallbackModuleVersion` to `v1.26.0`, regenerates scaffold goldens, and passes its targeted/cloud validation.
+- [x] After the tag publishes, a separate `chore(release)` commit bumps `cmd/harbor/scaffold.FallbackModuleVersion` to `v1.26.0` and regenerates scaffold goldens; targeted validation passes and the PR-to-main cloud gate remains the merge gate.
 
 ## Files added or changed
 
@@ -171,19 +180,19 @@ not checkpointed yet.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] Focused local race, smoke, lint, drift, mirror, release-dryrun, and Linux
+- [x] `make drift-audit` passes
+- [x] Focused local race, smoke, lint, drift, mirror, release-dryrun, and Linux
   release-build gates pass; local full preflight is intentionally not run
-- [ ] Cloud PR-to-main `make preflight` passes before merge/tag
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] Cross-session and cross-tenant wave stress passes
-- [ ] N≥10 wave stress and inherited N≥100 artifact tests pass under `-race` with no leak
-- [ ] Real-driver integration covers identity and at least one failure per seam
-- [ ] `state-postgres` CI runs the named v1.26 Postgres E2E with
+- [x] Cloud PR-to-main `make preflight` passes before merge/tag
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] Cross-session and cross-tenant wave stress passes
+- [x] N≥10 wave stress and inherited N≥100 artifact tests pass under `-race` with no leak
+- [x] Real-driver integration covers identity and at least one failure per seam
+- [x] `state-postgres` CI runs the named v1.26 Postgres E2E with
   `HARBOR_PG_DSN`; no Postgres skip is accepted there
-- [ ] Release evidence verifies the six artifacts, SHA-256 sidecars,
+- [x] Release evidence verifies the six artifacts, SHA-256 sidecars,
   `checksums.txt`, provenance, GitHub Release assets, and native version JSON
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed
