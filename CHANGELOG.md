@@ -17,6 +17,16 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.26.4] — 2026-08-03
+
+### Fixed
+
+- Run-start connection reconciliation now preserves an active signed OAuth MCP
+  capability instead of treating it as an undeclared generic MCP connection.
+  Generic stale-connection cleanup remains intact, while recovery of a missing
+  signed connection stays exclusively with the dedicated signed lifecycle.
+  No Protocol wire or runtime configuration surface changed.
+
 ## [1.26.3] — 2026-08-03
 
 ### Fixed
@@ -4299,7 +4309,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.3...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.4...HEAD
+[1.26.4]: https://github.com/hurtener/Harbor/compare/v1.26.3...v1.26.4
 [1.26.3]: https://github.com/hurtener/Harbor/compare/v1.26.2...v1.26.3
 [1.26.2]: https://github.com/hurtener/Harbor/compare/v1.26.1...v1.26.2
 [1.26.1]: https://github.com/hurtener/Harbor/compare/v1.26.0...v1.26.1
