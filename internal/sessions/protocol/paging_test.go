@@ -2,7 +2,9 @@ package protocol
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -61,6 +63,25 @@ type blockingEnricher struct {
 	peak    atomic.Int64
 	started chan struct{}
 	release <-chan struct{}
+}
+
+type cancelBlockingEnricher struct {
+	calls      atomic.Int64
+	active     atomic.Int64
+	started    chan struct{}
+	cancelSeen chan struct{}
+	release    <-chan struct{}
+}
+
+func (e *cancelBlockingEnricher) Counters(ctx context.Context, _ identity.Identity, _ string) SessionCounters {
+	e.calls.Add(1)
+	e.active.Add(1)
+	e.started <- struct{}{}
+	<-ctx.Done()
+	e.cancelSeen <- struct{}{}
+	<-e.release
+	e.active.Add(-1)
+	return SessionCounters{Partial: true}
 }
 
 func (e *blockingEnricher) Counters(_ context.Context, _ identity.Identity, _ string) SessionCounters {
@@ -201,5 +222,139 @@ func TestListerProjector_ListSessions_CounterEnrichmentBounded(t *testing.T) {
 	close(release)
 	if listErr := <-done; listErr != nil {
 		t.Fatalf("ListSessions: %v", listErr)
+	}
+}
+
+// TestListerProjector_ListSessions_CancellationStopsDispatchAndJoinsWorkers
+// pins the full-candidate fallback cancellation contract. Cancellation must
+// stop dispatching untouched catalog rows, wait for in-flight counter reads to
+// exit, and return context.Canceled instead of successful partial counters.
+func TestListerProjector_ListSessions_CancellationStopsDispatchAndJoinsWorkers(t *testing.T) {
+	snapshots := cancellationSnapshots(maxCounterEnrichmentWorkers + 20)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWorkers := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseWorkers)
+	enricher := &cancelBlockingEnricher{
+		started:    make(chan struct{}, maxCounterEnrichmentWorkers),
+		cancelSeen: make(chan struct{}, maxCounterEnrichmentWorkers),
+		release:    release,
+	}
+	projector, err := NewListerProjector(catalogLister{snapshots: snapshots}, WithEnricher(enricher))
+	if err != nil {
+		t.Fatalf("NewListerProjector: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, listErr := projector.ListSessions(ctx, identity.Identity{TenantID: "tenant-1", UserID: "user-1", SessionID: "request-session"}, prototypes.SessionFilter{}, false)
+		done <- listErr
+	}()
+	waitForEnrichmentSignals(t, enricher.started, maxCounterEnrichmentWorkers, "worker starts")
+	cancel()
+	waitForEnrichmentSignals(t, enricher.cancelSeen, maxCounterEnrichmentWorkers, "worker cancellation")
+	assertListStillJoining(t, done)
+	releaseWorkers()
+	assertCanceledListResult(t, done)
+	if got := enricher.calls.Load(); got != int64(maxCounterEnrichmentWorkers) {
+		t.Fatalf("counter enrichments after cancellation = %d, want only %d in-flight workers", got, maxCounterEnrichmentWorkers)
+	}
+	if got := enricher.active.Load(); got != 0 {
+		t.Fatalf("active counter enrichments after return = %d, want 0 joined workers", got)
+	}
+}
+
+// TestService_List_PageEnrichmentCancellationJoinsWorkers applies the same
+// cancellation guarantee to lifecycle-only requests after paging. Only the
+// returned page is eligible for enrichment, and no partial page may escape.
+func TestService_List_PageEnrichmentCancellationJoinsWorkers(t *testing.T) {
+	snapshots := cancellationSnapshots(200)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWorkers := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseWorkers)
+	enricher := &cancelBlockingEnricher{
+		started:    make(chan struct{}, maxCounterEnrichmentWorkers),
+		cancelSeen: make(chan struct{}, maxCounterEnrichmentWorkers),
+		release:    release,
+	}
+	projector, err := NewListerProjector(catalogLister{snapshots: snapshots}, WithEnricher(enricher))
+	if err != nil {
+		t.Fatalf("NewListerProjector: %v", err)
+	}
+	svc, err := NewService(projector)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, listErr := svc.List(ctx, prototypes.SessionsListRequest{
+			Identity: prototypes.IdentityScope{Tenant: "tenant-1", User: "user-1", Session: "request-session"},
+			Sort:     prototypes.SessionSortLastActivityDesc,
+			Limit:    50,
+		}, false)
+		done <- listErr
+	}()
+	waitForEnrichmentSignals(t, enricher.started, maxCounterEnrichmentWorkers, "page worker starts")
+	cancel()
+	waitForEnrichmentSignals(t, enricher.cancelSeen, maxCounterEnrichmentWorkers, "page worker cancellation")
+	assertListStillJoining(t, done)
+	releaseWorkers()
+	assertCanceledListResult(t, done)
+	if got := enricher.calls.Load(); got != int64(maxCounterEnrichmentWorkers) {
+		t.Fatalf("page counter enrichments after cancellation = %d, want only %d in-flight workers", got, maxCounterEnrichmentWorkers)
+	}
+	if got := enricher.active.Load(); got != 0 {
+		t.Fatalf("active page counter enrichments after return = %d, want 0 joined workers", got)
+	}
+}
+
+func cancellationSnapshots(count int) []sessions.SessionSnapshot {
+	base := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	snapshots := make([]sessions.SessionSnapshot, 0, count)
+	for i := 0; i < count; i++ {
+		sessionID := fmt.Sprintf("cancel-%03d", i)
+		snapshots = append(snapshots, sessions.SessionSnapshot{Session: sessions.Session{
+			ID:       sessionID,
+			Identity: identity.Identity{TenantID: "tenant-1", UserID: "user-1", SessionID: sessionID},
+			OpenedAt: base,
+			LastSeen: base.Add(time.Duration(i) * time.Minute),
+		}})
+	}
+	return snapshots
+}
+
+func waitForEnrichmentSignals(t *testing.T, signals <-chan struct{}, count int, label string) {
+	t.Helper()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for range count {
+		select {
+		case <-signals:
+		case <-timer.C:
+			t.Fatalf("timed out waiting for %s", label)
+		}
+	}
+}
+
+func assertListStillJoining(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		t.Fatalf("list returned %v before canceled enrichment workers exited", err)
+	default:
+	}
+}
+
+func assertCanceledListResult(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("list error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for canceled list to join workers")
 	}
 }

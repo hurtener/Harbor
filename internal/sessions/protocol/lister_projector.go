@@ -129,7 +129,9 @@ func (p *ListerProjector) ListSessions(ctx context.Context, id identity.Identity
 	for _, snap := range snaps {
 		rows = append(rows, projectRow(snap))
 	}
-	p.enrichRows(ctx, snaps, rows)
+	if err := p.enrichRows(ctx, snaps, rows); err != nil {
+		return nil, fmt.Errorf("sessions/protocol: enrich session rows: %w", err)
+	}
 	return rows, nil
 }
 
@@ -137,9 +139,12 @@ func (p *ListerProjector) ListSessions(ctx context.Context, id identity.Identity
 // writes one distinct row index, preserving the catalog order for the Service
 // filter/sort layer while preventing a large counter-dependent list from
 // opening one event/task/pause scan per goroutine.
-func (p *ListerProjector) enrichRows(ctx context.Context, snaps []sessions.SessionSnapshot, rows []prototypes.SessionRow) {
+func (p *ListerProjector) enrichRows(ctx context.Context, snaps []sessions.SessionSnapshot, rows []prototypes.SessionRow) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if p.enricher == nil || len(rows) == 0 {
-		return
+		return nil
 	}
 	workers := min(maxCounterEnrichmentWorkers, len(rows))
 	jobs := make(chan int)
@@ -148,16 +153,36 @@ func (p *ListerProjector) enrichRows(ctx context.Context, snaps []sessions.Sessi
 	for range workers {
 		go func() {
 			defer wg.Done()
-			for i := range jobs {
-				p.enrich(ctx, snaps[i], &rows[i])
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case i, ok := <-jobs:
+					if !ok {
+						return
+					}
+					if ctx.Err() != nil {
+						return
+					}
+					p.enrich(ctx, snaps[i], &rows[i])
+				}
 			}
 		}()
 	}
+	dispatchCanceled := false
 	for i := range rows {
-		jobs <- i
+		select {
+		case <-ctx.Done():
+			dispatchCanceled = true
+		case jobs <- i:
+		}
+		if dispatchCanceled {
+			break
+		}
 	}
 	close(jobs)
 	wg.Wait()
+	return ctx.Err()
 }
 
 // listSnapshots resolves the identity-scoped lifecycle catalog shared by the
@@ -231,10 +256,13 @@ func (p *ListerProjector) pageBeforeEnrichment(
 	}
 	start, end, truncated, next := pageBounds(rows, cursor, srt, limit)
 	page := make([]prototypes.SessionRow, end-start)
+	pageSnapshots := make([]sessions.SessionSnapshot, end-start)
 	for i := start; i < end; i++ {
-		row := candidates[i].row
-		p.enrich(ctx, candidates[i].snapshot, &row)
-		page[i-start] = row
+		page[i-start] = candidates[i].row
+		pageSnapshots[i-start] = candidates[i].snapshot
+	}
+	if err := p.enrichRows(ctx, pageSnapshots, page); err != nil {
+		return prototypes.SessionsListResponse{}, fmt.Errorf("sessions/protocol: enrich session page: %w", err)
 	}
 	return prototypes.SessionsListResponse{Rows: page, NextCursor: next, Truncated: truncated}, nil
 }
