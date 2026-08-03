@@ -17,6 +17,19 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.26.5] — 2026-08-03
+
+### Fixed
+
+- Identity-scoped OAuth MCP connections no longer open the optional
+  connection-level standalone SSE stream, which could retain a short-lived
+  preparation bearer beyond its lifetime. Streamable JSON-RPC calls continue
+  resolving fresh tenant/user credentials per invocation. Per-entry-only OAuth
+  now injects those credentials on calls and refuses redirects when no single
+  provider can authorize the hop. Unbound and static-header MCP connections
+  retain standalone SSE. No Protocol wire or runtime configuration surface
+  changed.
+
 ## [1.26.4] — 2026-08-03
 
 ### Fixed
@@ -4309,7 +4322,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.4...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.5...HEAD
+[1.26.5]: https://github.com/hurtener/Harbor/compare/v1.26.4...v1.26.5
 [1.26.4]: https://github.com/hurtener/Harbor/compare/v1.26.3...v1.26.4
 [1.26.3]: https://github.com/hurtener/Harbor/compare/v1.26.2...v1.26.3
 [1.26.2]: https://github.com/hurtener/Harbor/compare/v1.26.1...v1.26.2
