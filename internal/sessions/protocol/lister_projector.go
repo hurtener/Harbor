@@ -3,6 +3,8 @@ package protocol
 import (
 	"context"
 	"fmt"
+	"sort"
+	"sync"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -46,6 +48,13 @@ type ListerProjector struct {
 	lister   sessions.SessionLister
 	enricher Enricher
 }
+
+// maxCounterEnrichmentWorkers bounds the counter reads for requests whose
+// filter or sort needs every candidate enriched. Lifecycle-only requests take
+// pageBeforeEnrichment instead; the remaining counter-dependent path must see
+// the full candidate set for exact Protocol semantics, but it must not spawn a
+// goroutine per catalog row.
+const maxCounterEnrichmentWorkers = 8
 
 // ListerProjectorOption configures NewListerProjector.
 type ListerProjectorOption func(*ListerProjector)
@@ -112,6 +121,48 @@ func (p *ListerProjector) enrich(ctx context.Context, snap sessions.SessionSnaps
 // identity-scoped registry filter, lists the snapshots, and projects
 // each onto a SessionRow.
 func (p *ListerProjector) ListSessions(ctx context.Context, id identity.Identity, f prototypes.SessionFilter, adminScoped bool) ([]prototypes.SessionRow, error) {
+	snaps, err := p.listSnapshots(ctx, id, f, adminScoped)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]prototypes.SessionRow, 0, len(snaps))
+	for _, snap := range snaps {
+		rows = append(rows, projectRow(snap))
+	}
+	p.enrichRows(ctx, snaps, rows)
+	return rows, nil
+}
+
+// enrichRows applies counter rollups with bounded parallelism. Each worker
+// writes one distinct row index, preserving the catalog order for the Service
+// filter/sort layer while preventing a large counter-dependent list from
+// opening one event/task/pause scan per goroutine.
+func (p *ListerProjector) enrichRows(ctx context.Context, snaps []sessions.SessionSnapshot, rows []prototypes.SessionRow) {
+	if p.enricher == nil || len(rows) == 0 {
+		return
+	}
+	workers := min(maxCounterEnrichmentWorkers, len(rows))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				p.enrich(ctx, snaps[i], &rows[i])
+			}
+		}()
+	}
+	for i := range rows {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+}
+
+// listSnapshots resolves the identity-scoped lifecycle catalog shared by the
+// full projection and the lifecycle-only paging path.
+func (p *ListerProjector) listSnapshots(ctx context.Context, id identity.Identity, f prototypes.SessionFilter, adminScoped bool) ([]sessions.SessionSnapshot, error) {
 	regFilter := sessions.SessionListFilter{
 		// IncludeClosed is always true — the Sessions page is the
 		// past-and-active record; the Service's status facet narrows
@@ -137,13 +188,55 @@ func (p *ListerProjector) ListSessions(ctx context.Context, id identity.Identity
 	if err != nil {
 		return nil, fmt.Errorf("sessions/protocol: list snapshots: %w", err)
 	}
-	rows := make([]prototypes.SessionRow, 0, len(snaps))
+	return snaps, nil
+}
+
+// pageBeforeEnrichment applies only lifecycle-backed filter/sort/cursor work
+// before enriching the returned page. Service calls it exclusively for
+// requests without counter predicates or a cost sort; applying it to those
+// requests would be wrong because their values are supplied by Enricher.
+func (p *ListerProjector) pageBeforeEnrichment(
+	ctx context.Context,
+	id identity.Identity,
+	f prototypes.SessionFilter,
+	adminScoped bool,
+	srt prototypes.SessionSort,
+	cursor *pageCursor,
+	limit int,
+) (prototypes.SessionsListResponse, error) {
+	if requiresCounters(f, srt) {
+		return prototypes.SessionsListResponse{}, fmt.Errorf("%w: counter filter or cost sort cannot page before enrichment", ErrInvalidRequest)
+	}
+	snaps, err := p.listSnapshots(ctx, id, f, adminScoped)
+	if err != nil {
+		return prototypes.SessionsListResponse{}, err
+	}
+	type candidate struct {
+		snapshot sessions.SessionSnapshot
+		row      prototypes.SessionRow
+	}
+	candidates := make([]candidate, 0, len(snaps))
 	for _, snap := range snaps {
 		row := projectRow(snap)
-		p.enrich(ctx, snap, &row)
-		rows = append(rows, row)
+		if filterMatches(f, row) {
+			candidates = append(candidates, candidate{snapshot: snap, row: row})
+		}
 	}
-	return rows, nil
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return lessForSort(candidates[i].row, candidates[j].row, srt)
+	})
+	rows := make([]prototypes.SessionRow, len(candidates))
+	for i := range candidates {
+		rows[i] = candidates[i].row
+	}
+	start, end, truncated, next := pageBounds(rows, cursor, srt, limit)
+	page := make([]prototypes.SessionRow, end-start)
+	for i := start; i < end; i++ {
+		row := candidates[i].row
+		p.enrich(ctx, candidates[i].snapshot, &row)
+		page[i-start] = row
+	}
+	return prototypes.SessionsListResponse{Rows: page, NextCursor: next, Truncated: truncated}, nil
 }
 
 // InspectSession implements Projector.InspectSession. It lists the one
