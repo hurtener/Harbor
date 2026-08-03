@@ -115,6 +115,55 @@ func TestMCPBearerClient_RefusesRedirectToUnlistedHost(t *testing.T) {
 	}
 }
 
+// TestMCPBearerClient_PerEntryOAuthRefusesRedirect pins the per-entry-only
+// redirect policy: there is no connection-level provider whose host policy can
+// authorize a hop, so a request carrying an entry-scoped bearer must stop at
+// the first redirect even when that entry's provider lists both hosts.
+func TestMCPBearerClient_PerEntryOAuthRefusesRedirect(t *testing.T) {
+	gotTarget := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		gotTarget = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/target", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(origin.Close)
+
+	provider := &stubOAuthProvider{
+		token: "entry-bearer",
+		allowedHosts: []string{
+			config.NormalizeDownstreamHost(origin.URL),
+			config.NormalizeDownstreamHost(target.URL),
+		},
+	}
+	client := buildHTTPClient(Config{
+		ToolOAuthProviders: map[string]auth.OAuthProvider{"echo": provider},
+	})
+	if client.CheckRedirect == nil {
+		t.Fatal("per-entry OAuth client must install a CheckRedirect guard")
+	}
+
+	req, err := http.NewRequestWithContext(
+		withBearer(context.Background(), "entry-bearer"),
+		http.MethodGet, origin.URL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, ErrRedirectToUnlistedHost) {
+		t.Fatalf("want ErrRedirectToUnlistedHost, got %v", err)
+	}
+	if gotTarget {
+		t.Fatal("redirect target received a request from a per-entry-only OAuth client")
+	}
+}
+
 type strictRedirectProvider struct{ *stubOAuthProvider }
 
 func (strictRedirectProvider) RefuseRedirects() bool { return true }

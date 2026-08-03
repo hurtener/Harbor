@@ -20,6 +20,15 @@ func newStreamableTransport(cfg Config) mcpsdk.Transport {
 	return &mcpsdk.StreamableClientTransport{
 		Endpoint:   cfg.URL,
 		HTTPClient: client,
+		// A standalone SSE GET is connection-scoped and inherits the Connect
+		// context. Ordinary shared/per-entry OAuth connects are bearerless; a
+		// pair-private OwnOAuthProvider connect carries one short-lived preparation
+		// bearer, but the SDK detaches and preserves that fixed value for a stream
+		// that may outlive it. Neither context can provide a refreshable,
+		// tenant/user-safe credential for one long-lived shared stream. Disable the
+		// optional stream whenever the connection or any entry resolves OAuth per
+		// identity. Fully unbound and static-header connections retain the default.
+		DisableStandaloneSSE: cfg.OAuthProvider != nil || len(cfg.ToolOAuthProviders) > 0,
 		// Negative disables retries; zero defaults to 5. We pass zero
 		// so the SDK's default applies; ToolPolicy retries on top.
 		MaxRetries: 0,

@@ -103,8 +103,8 @@ func (b *cancelOnCloseBody) Close() error {
 }
 
 // buildHTTPClient returns an *http.Client whose transport injects the
-// operator's static cfg.Headers and — when the connection binds an OAuth
-// provider — the per-identity bearer carried on each call's ctx. Every
+// operator's static cfg.Headers and — when the connection or any entry binds an
+// OAuth provider — the per-identity bearer carried on each call's ctx. Every
 // connection gets its own client, so the unowned-request liveness bound is
 // installed whether or not the connection injects anything.
 //
@@ -118,7 +118,7 @@ func buildHTTPClient(cfg Config) *http.Client {
 	// network), so it sees the request as it will actually be sent and every
 	// injecting wrapper above it has already run.
 	rt := http.RoundTripper(&unownedBoundingTransport{base: http.DefaultTransport})
-	if cfg.OAuthProvider != nil {
+	if cfg.OAuthProvider != nil || len(cfg.ToolOAuthProviders) > 0 {
 		var authorizer interface{ AuthorizeUse(context.Context) error }
 		if signed, ok := cfg.OAuthProvider.(interface{ AuthorizeUse(context.Context) error }); ok {
 			authorizer = signed
@@ -174,6 +174,12 @@ func buildHTTPClient(cfg Config) *http.Client {
 		} else {
 			client.CheckRedirect = redirectGuardFor(cfg.OAuthProvider.AllowedDownstreamHosts())
 		}
+	case len(cfg.ToolOAuthProviders) > 0:
+		// A per-entry-only connection has no single provider whose host policy can
+		// safely authorize a redirect for every entry. Refuse redirects instead of
+		// computing a permissive union that could send one identity's bearer to a
+		// host allowed only by another binding.
+		client.CheckRedirect = refuseEveryCredentialRedirect
 	case cfg.Injection != nil:
 		client.CheckRedirect = redirectGuardFor(cfg.Injection.Provider.AllowedDownstreamHosts())
 	}
