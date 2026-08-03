@@ -483,7 +483,14 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 		_, inspectErr := secondClient.SessionsInspect(t.Context(), types.SessionsInspectRequest{SessionID: second.Session})
 		return inspectErr != nil
 	}, "PTY canonical session erase")
-	session.waitContains(t, "Start Fresh required")
+	// The canonical delete may finish before Bubble Tea has emitted a complete
+	// visual frame. Cell-diff output can carry only the changed glyphs, which
+	// makes a contiguous phrase an invalid acknowledgement of the rendered
+	// erased state. Request one full repaint after the authoritative deletion
+	// and then require the terminal-only Start Fresh guidance from that frame.
+	mark = len(session.snapshot())
+	session.resize(t, 101, 30)
+	session.waitContainsAfter(t, mark, "Start Fresh required")
 	// Start Fresh mints a random session id. A standalone attach holds only
 	// the credentials in --token-file, so the switch must fail HONESTLY and
 	// non-destructively — no dead disconnected surface, no dialog trap.
