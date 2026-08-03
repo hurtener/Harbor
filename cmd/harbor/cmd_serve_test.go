@@ -78,6 +78,31 @@ memory:
 `
 }
 
+// serveBootSignedAuthorityYAML adds the smallest production-shaped broker
+// authority onto the hermetic production boot fixture. The broker endpoints are
+// never contacted during an empty recovery pass; the important composition is
+// that the real Serve assembly can construct all signed-pair collaborators once
+// the authority enables recovery at boot.
+func serveBootSignedAuthorityYAML(jwksFile string) string {
+	return serveBootYAML(jwksFile) + `
+tools:
+  oauth_token_kek_env: HARBOR_SERVE_SIGNED_CAPABILITY_KEK
+  oauth_credential_brokers:
+    - name: signed-capability-broker
+      credential_url: https://broker.example.test/credential
+      auth_token_env: HARBOR_SERVE_SIGNED_CAPABILITY_BROKER_TOKEN
+      token_url: https://broker.example.test/exchange/token
+      allowed_downstream_hosts:
+        - mcp.example.test
+      audience: https://mcp.example.test
+      signed_oauth_mcp_capability_authority:
+        enabled: true
+        issuer: https://issuer.example.com
+        jwks_file: ` + jwksFile + `
+        max_authority_lifetime: 10m
+`
+}
+
 // writeServeBootJWKS emits a single-key RS256 JWK Set file from pub.
 func writeServeBootJWKS(t *testing.T, pub *rsa.PublicKey, kid string) string {
 	t.Helper()
@@ -257,4 +282,58 @@ func TestBootDevStack_ServeProductionBoot_GatesDevSurfacesAndVerifiesJWKS(t *tes
 			t.Fatalf("runtime fixture seeder fired on a production boot despite signer==nil; stderr=%q", stderr.String())
 		}
 	})
+}
+
+// TestBootDevStack_ServeSignedOAuthMCPCapabilityAuthorityWiresRecovery is the
+// production-composition regression for D-401. Enabling the boot broker
+// authority must wire the MCP attacher's private preparation AND exact teardown
+// seams into the recovery reconciler; the separate run-loop detacher intentionally
+// lacks those Protocol methods. This boots the real serve assembly twice, proving
+// the authority-enabled recovery path remains restart-safe even with no durable
+// pair awaiting recovery.
+func TestBootDevStack_ServeSignedOAuthMCPCapabilityAuthorityWiresRecovery(t *testing.T) {
+	const kid = "serve-signed-capability-rsa"
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa key: %v", err)
+	}
+	jwksPath := writeServeBootJWKS(t, &priv.PublicKey, kid)
+	cfgPath := filepath.Join(t.TempDir(), "harbor.yaml")
+	if err := os.WriteFile(cfgPath, []byte(serveBootSignedAuthorityYAML(jwksPath)), 0o600); err != nil {
+		t.Fatalf("write signed authority config: %v", err)
+	}
+	t.Setenv("HARBOR_SERVE_SIGNED_CAPABILITY_KEK", "0101010101010101010101010101010101010101010101010101010101010101")
+	t.Setenv("HARBOR_SERVE_SIGNED_CAPABILITY_BROKER_TOKEN", "fixture-broker-token")
+
+	boot := func() *serve.Handle {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		handle, bootErr := serve.Boot(ctx, serve.Options{
+			ConfigPath:           cfgPath,
+			Logger:               slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Stderr:               io.Discard,
+			AuthValidatorFactory: serve.NewJWKSAuthValidatorFactory(),
+			BuildLLMSnapshot:     newLLMSnapshotBuilder(true),
+			MCPDefaultIdentity:   identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession},
+			DisplayName:          "harbor serve signed authority test",
+			InstanceID:           devInstanceID(),
+			BuildVersion:         HarborVersion,
+			BuildCommit:          "test",
+			SubcommandLabel:      "serve",
+		})
+		if bootErr != nil {
+			t.Fatalf("serve.Boot with signed capability authority: %v", bootErr)
+		}
+		return handle
+	}
+	closeHandle := func(h *serve.Handle) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		h.Close(ctx)
+	}
+
+	closeHandle(boot())
+	closeHandle(boot())
 }

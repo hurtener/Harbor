@@ -586,7 +586,12 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 	if len(signedOAuthMCPCapabilityAuthorities) > 0 {
 		preparer, prepared := mcpAttacher.(agentcfgprotocol.ConnectionPreparer)
-		detacher, detachable := mcpDetacher.(agentcfgprotocol.ConnectionDetacher)
+		// Signed-pair teardown is coupled to private preparation and needs the
+		// exact generation/fence receipt carried by the attacher. The separate
+		// mcpDetacher deliberately implements only the run-loop projection seam
+		// (AttachedSources/Detach), so asking it for this Protocol seam leaves a
+		// correctly composed runtime unable to boot whenever an authority is on.
+		detacher, detachable := mcpAttacher.(agentcfgprotocol.ConnectionDetacher)
 		providers, providerReady := oauthProviderInstaller.(agentcfgprotocol.SignedCapabilityProviderPreparer)
 		if !prepared || !detachable || !providerReady {
 			closeAll(ctx)
