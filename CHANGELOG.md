@@ -90,6 +90,12 @@ client actions below are required for a safe upgrade.
 
 ### Security
 
+- Stable-JTI signed OAuth MCP registration now durably admits expiry before
+  compensation and can resume the same exact operation with a later freshly
+  verified envelope. Recovery preserves the original registrar and receipt,
+  restores only the frozen prior/absent authority, and cannot reopen published,
+  removal, removed, or widened bindings.
+
 - Signed OAuth MCP capability registration now recovers only exact durable
   signed pairs at boot and run start. Recovery verifies the pair descriptor,
   owner, operation receipt, and activation fence before it can attach or

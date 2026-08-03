@@ -41,9 +41,16 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     'phase 233b: signed capability authority, recovery, removal, and fence regressions execute under race' \
     TestVerifySignedOAuthMCPAuthority_ExactBindingAndScopeCeiling \
     TestSignedOAuthMCPOperationStore_ClaimsTenantScopedReplayAndTransitions \
+    TestSignedOAuthMCPOperationStore_ExpiryAdmissionRenewalIsExactAndCASBound \
+    TestSignedOAuthMCPOperationStore_SQLiteTwoHandleRenewalRaceHasOneWinner \
     TestSignedOAuthMCPActivationFenceStore_TerminalFenceYieldsToNextOperation \
+    TestSignedOAuthMCPActivationFenceStore_ReopensOnlyExactRenewedGeneration \
     TestSignedOAuthMCPOperationStore_PublisherEpochCASAndRemovalFenceUse \
     TestRegisterOAuthMCPCapability_DurableReplayResumesPublishedOperation \
+    TestRegisterOAuthMCPCapability_StableJTIRecoversClaimedBeforeFenceAndPreservesPrior \
+    TestRegisterOAuthMCPCapability_StableJTIRecoversExpiredRevisionCommittedOnce \
+    TestRegisterOAuthMCPCapability_ExpiredClaimedMatchingCandidateWithoutFenceFailsClosed \
+    TestRegisterOAuthMCPCapability_SQLiteTwoHandleStableJTIExpiryRecovery \
     TestRegisterOAuthMCPCapability_CommittedRevisionThenError_RecoversExactCandidate \
     TestRegisterOAuthMCPCapability_PointerAndCompensationFailure_DoesNotPublishMatchingOrphan \
     TestRegisterOAuthMCPCapability_CrossSessionServiceCannotReplaceDuringRemoval \

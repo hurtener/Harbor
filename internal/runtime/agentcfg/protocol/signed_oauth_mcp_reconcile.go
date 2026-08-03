@@ -135,6 +135,10 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 					return err
 				}
 			}
+		case agentcfg.SignedOAuthMCPPhaseExpiryAdmitted:
+			if err := r.resumeExpiryCompensation(ctx, ownerQ, agentID, op); err != nil {
+				return err
+			}
 		case agentcfg.SignedOAuthMCPPhasePublished:
 			// A published historical receipt is never authority to reattach. If
 			// the current physical desired state has no pair, the paired removal
@@ -253,6 +257,8 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 			return r.commitFence(ctx, q.TenantID, agentID, latest, revision)
 		}
 		return err
+	case agentcfg.SignedOAuthMCPPhaseExpiryAdmitted:
+		return r.resumeExpiryCompensation(ctx, q, agentID, op)
 	case agentcfg.SignedOAuthMCPPhasePublished:
 		if err := r.commitFence(ctx, q.TenantID, agentID, op, revision); err != nil {
 			return err
@@ -557,6 +563,7 @@ func (r *SignedOAuthMCPReconciler) expireIncomplete(ctx context.Context, q ident
 	if !signedCapabilityOperationExpired(op) {
 		return fmt.Errorf("%w: operation has not expired", agentcfg.ErrSignedCapabilityAuthority)
 	}
+	candidateRevisionID := ""
 	if hasRevision {
 		pair := revision.Payload.SignedOAuthMCPPair
 		if pair == nil || pair.AuthorityOperationKind == "" {
@@ -566,58 +573,117 @@ func (r *SignedOAuthMCPReconciler) expireIncomplete(ctx context.Context, q ident
 		if err != nil || loaded.EventID != op.EventID {
 			return fmt.Errorf("%w: expiring revision does not bind operation", agentcfg.ErrSignedCapabilityReplay)
 		}
-		if err := r.detach(ctx, q, agentID, pair, op); err != nil {
-			return err
-		}
+		candidateRevisionID = revision.RevisionID
 	}
-
-	fence, fenceErr := r.fences.Load(ctx, q.TenantID, agentID)
-	if hasRevision {
-		if fenceErr != nil {
-			return fenceErr
-		}
-		kind, err := r.operations.Kind(op.ReplayKey)
-		if err != nil {
-			return err
-		}
-		if fence.Phase != agentcfg.SignedOAuthMCPFencePending || fence.OperationKind != kind || fence.Fingerprint != op.Fingerprint ||
-			fence.CandidateContentHash != revision.ContentHash || (fence.CandidateRevisionID != "" && fence.CandidateRevisionID != revision.RevisionID) {
-			return fmt.Errorf("%w: expiry fence does not bind candidate", agentcfg.ErrSignedCapabilityPending)
-		}
-		restored, err := restorePreOperationAuthority(ctx, r.registry, q, agentID, revision, fence.PriorRevisionID, kind)
-		if err != nil {
-			return err
-		}
-		if !restored {
-			physical, set, readErr := r.physical.PhysicalActive(ctx, q, agentID, agentcfg.ConfigScopeAgent)
-			if readErr != nil || (set && physical.RevisionID == revision.RevisionID) {
-				return errors.Join(fmt.Errorf("%w: expiry did not neutralize candidate", agentcfg.ErrSignedCapabilityPending), readErr)
-			}
-		}
-	} else if fenceErr != nil && !errors.Is(fenceErr, state.ErrNotFound) {
-		return fenceErr
-	}
-
-	advanced, err := r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseExpiredIncomplete, op.RevisionID)
+	admitted, err := r.operations.AdmitExpiry(ctx, op, candidateRevisionID, nowUTC())
 	if err != nil {
 		return err
 	}
-	if fenceErr == nil && fence.Phase == agentcfg.SignedOAuthMCPFencePending {
-		kind, kindErr := r.operations.Kind(advanced.ReplayKey)
-		if kindErr != nil {
-			return kindErr
+	return r.resumeExpiryCompensation(ctx, q, agentID, admitted)
+}
+
+func (r *SignedOAuthMCPReconciler) resumeExpiryCompensation(ctx context.Context, q identity.Quadruple, agentID string, op agentcfg.SignedOAuthMCPOperation) error {
+	if op.Phase != agentcfg.SignedOAuthMCPPhaseExpiryAdmitted {
+		return fmt.Errorf("%w: phase %q has no admitted expiry", agentcfg.ErrSignedCapabilityTransition, op.Phase)
+	}
+	kind, err := r.operations.Kind(op.ReplayKey)
+	if err != nil {
+		return err
+	}
+	if q.TenantID != op.Binding.TenantID || q.UserID != op.Binding.UserID || q.SessionID != op.Binding.SessionID || agentID != op.Binding.AgentID {
+		return fmt.Errorf("%w: expiry owner does not match frozen registrar", agentcfg.ErrSignedCapabilityReplay)
+	}
+	// The exact generation fingerprint makes detach idempotent across every
+	// crash boundary, including a prior attempt that already closed the cache.
+	fingerprint := signedCapabilityPublisherAttachmentFingerprint(op.Binding.Connection, kind, op.PublisherEpoch)
+	if err := r.exactDetacher.DetachExactConnection(ctx, q.TenantID, agentID, op.Binding.Connection.Name, fingerprint); err != nil {
+		return err
+	}
+
+	fence, fenceErr := r.fences.Load(ctx, q.TenantID, agentID)
+	if fenceErr != nil && !errors.Is(fenceErr, state.ErrNotFound) {
+		return fenceErr
+	}
+	hasOwnFence := fenceErr == nil && fence.OperationKind == kind && fence.Fingerprint == op.Fingerprint
+	if fenceErr == nil && !hasOwnFence && fence.Phase == agentcfg.SignedOAuthMCPFencePending {
+		return fmt.Errorf("%w: expiry found a foreign pending activation fence", agentcfg.ErrSignedCapabilityPending)
+	}
+
+	if op.ExpiryCandidateRevisionID != "" {
+		candidate, getErr := r.registry.Get(ctx, q, agentID, op.ExpiryCandidateRevisionID, agentcfg.ConfigScopeAgent)
+		if getErr != nil {
+			return getErr
 		}
-		if fence.OperationKind != kind || fence.Fingerprint != advanced.Fingerprint {
-			return fmt.Errorf("%w: expiry found a foreign pending fence", agentcfg.ErrSignedCapabilityPending)
+		if !signedCapabilityPairMatchesOperation(candidate.Payload.SignedOAuthMCPPair, q.TenantID, op.Binding, kind) {
+			return fmt.Errorf("%w: expiry candidate does not bind the exact operation", agentcfg.ErrSignedCapabilityReplay)
 		}
-		if _, err := r.fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceAborted, op.RevisionID); err != nil {
-			latest, loadErr := r.fences.Load(context.WithoutCancel(ctx), q.TenantID, agentID)
-			if loadErr != nil || latest.Phase != agentcfg.SignedOAuthMCPFenceAborted || latest.OperationKind != kind {
-				return errors.Join(err, loadErr)
+		if !hasOwnFence || fence.CandidateContentHash != candidate.ContentHash ||
+			(fence.CandidateRevisionID != "" && fence.CandidateRevisionID != candidate.RevisionID) {
+			return fmt.Errorf("%w: expiry fence does not bind frozen candidate", agentcfg.ErrSignedCapabilityPending)
+		}
+		physical, set, readErr := r.physical.PhysicalActive(ctx, q, agentID, agentcfg.ConfigScopeAgent)
+		if readErr != nil {
+			return readErr
+		}
+		if set && physical.RevisionID == candidate.RevisionID {
+			if _, err := restorePreOperationAuthority(ctx, r.registry, q, agentID, candidate, fence.PriorRevisionID, kind); err != nil {
+				return err
 			}
 		}
 	}
-	return nil
+
+	physical, set, err := r.physical.PhysicalActive(ctx, q, agentID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return err
+	}
+	if !hasOwnFence && op.ExpiryCandidateRevisionID == "" {
+		if set && signedCapabilityPairMatchesOperation(physical.Payload.SignedOAuthMCPPair, q.TenantID, op.Binding, kind) {
+			return fmt.Errorf("%w: matching expiry candidate has no activation fence", agentcfg.ErrSignedCapabilityPending)
+		}
+		_, err = r.operations.CompleteExpiry(ctx, op)
+		if err == nil {
+			return nil
+		}
+		latest, loadErr := r.operations.Load(context.WithoutCancel(ctx), op.ReplayKey)
+		if loadErr == nil && latest.Phase == agentcfg.SignedOAuthMCPPhaseExpiredIncomplete && latest.AuthorityGeneration == op.AuthorityGeneration {
+			return nil
+		}
+		return errors.Join(err, loadErr)
+	}
+	priorRevisionID := ""
+	if hasOwnFence {
+		priorRevisionID = fence.PriorRevisionID
+	}
+	if (priorRevisionID == "" && set) || (priorRevisionID != "" && (!set || physical.RevisionID != priorRevisionID)) ||
+		(set && physical.RevisionID == op.ExpiryCandidateRevisionID) {
+		return fmt.Errorf("%w: expiry did not restore frozen prior authority", agentcfg.ErrSignedCapabilityPending)
+	}
+	if hasOwnFence {
+		switch fence.Phase {
+		case agentcfg.SignedOAuthMCPFencePending:
+			if _, err := r.fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceAborted, op.ExpiryCandidateRevisionID); err != nil {
+				latest, loadErr := r.fences.Load(context.WithoutCancel(ctx), q.TenantID, agentID)
+				if loadErr != nil || latest.Phase != agentcfg.SignedOAuthMCPFenceAborted || latest.OperationKind != kind || latest.Fingerprint != op.Fingerprint || latest.CandidateRevisionID != op.ExpiryCandidateRevisionID {
+					return errors.Join(err, loadErr)
+				}
+			}
+		case agentcfg.SignedOAuthMCPFenceAborted:
+			if fence.CandidateRevisionID != op.ExpiryCandidateRevisionID {
+				return fmt.Errorf("%w: aborted expiry fence names another candidate", agentcfg.ErrSignedCapabilityPending)
+			}
+		default:
+			return fmt.Errorf("%w: expiry cannot abort activation fence in phase %q", agentcfg.ErrSignedCapabilityPending, fence.Phase)
+		}
+	}
+	_, err = r.operations.CompleteExpiry(ctx, op)
+	if err == nil {
+		return nil
+	}
+	latest, loadErr := r.operations.Load(context.WithoutCancel(ctx), op.ReplayKey)
+	if loadErr == nil && latest.Phase == agentcfg.SignedOAuthMCPPhaseExpiredIncomplete && latest.AuthorityGeneration == op.AuthorityGeneration && latest.LastExpiredRevisionID == op.ExpiryCandidateRevisionID {
+		return nil
+	}
+	return errors.Join(err, loadErr)
 }
 
 func (r *SignedOAuthMCPReconciler) advanceOperation(ctx context.Context, current agentcfg.SignedOAuthMCPOperation, next agentcfg.SignedOAuthMCPOperationPhase, revisionID string) (agentcfg.SignedOAuthMCPOperation, error) {

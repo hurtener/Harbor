@@ -120,8 +120,17 @@ real MCP registration/removal/recovery path remains the end-to-end pair proof.
   generic `aborted` phase: a prepared-but-incomplete claim retries its recorded
   phase. Only `claimed` or `revision_committed` may terminally enter
   `expired_incomplete`, after safe close/compensation and a preserved
-  prior/no-active activation fence; that tombstone cleans only after expiry plus
-  bounded skew. No claim+revision cross-record ACID is asserted: this durable
+  prior/no-active activation fence. Expiry first CAS-enters `expiry_admitted`
+  with the frozen source phase and candidate revision before any detach or
+  pointer compensation; restart repeats exact detach, exact prior/absence
+  restoration, candidate-inactive proof, and exact fence abort before
+  `expired_incomplete`. A later freshly verified envelope may reuse the SAME
+  deterministic JTI only with the byte-exact frozen binding and a strictly
+  later expiry: it increments a durable authority generation and explicitly
+  reopens only that operation's exact aborted fence. It never deletes or
+  reclaims the receipt, changes the original registrar, widens sink/audience/
+  scopes/connection, or reopens published/removal/removed phases. The tombstone
+  cleans only after expiry plus bounded skew. No claim+revision cross-record ACID is asserted: this durable
   state machine is recovery. Exact tuple+fingerprint retries resume phase; the
   same key with a different fingerprint rejects. A `claimed` retry re-prepares;
   uncertain revision write exact-rereads active revision/fingerprint to advance,
