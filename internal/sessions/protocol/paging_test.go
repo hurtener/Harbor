@@ -107,7 +107,7 @@ func (e *blockingEnricher) Counters(_ context.Context, _ identity.Identity, _ st
 func TestService_List_LastActivityPage_EnrichesOnlyReturnedRows(t *testing.T) {
 	base := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	snapshots := make([]sessions.SessionSnapshot, 0, 1_000)
-	for i := 0; i < 1_000; i++ {
+	for i := range 1_000 {
 		sessionID := fmt.Sprintf("session-%03d", i)
 		tenantID, userID := "tenant-1", "user-1"
 		if i%2 != 0 {
@@ -193,7 +193,7 @@ func TestService_List_LastActivityPage_EnrichesOnlyReturnedRows(t *testing.T) {
 func TestListerProjector_ListSessions_CounterEnrichmentBounded(t *testing.T) {
 	snapshots := make([]sessions.SessionSnapshot, 0, maxCounterEnrichmentWorkers+2)
 	base := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
-	for i := 0; i < cap(snapshots); i++ {
+	for i := range cap(snapshots) {
 		sessionID := fmt.Sprintf("bounded-%d", i)
 		snapshots = append(snapshots, sessions.SessionSnapshot{Session: sessions.Session{
 			ID:       sessionID,
@@ -250,9 +250,9 @@ func TestListerProjector_ListSessions_CancellationStopsDispatchAndJoinsWorkers(t
 		_, listErr := projector.ListSessions(ctx, identity.Identity{TenantID: "tenant-1", UserID: "user-1", SessionID: "request-session"}, prototypes.SessionFilter{}, false)
 		done <- listErr
 	}()
-	waitForEnrichmentSignals(t, enricher.started, maxCounterEnrichmentWorkers, "worker starts")
+	waitForEnrichmentSignals(t, enricher.started, "worker starts")
 	cancel()
-	waitForEnrichmentSignals(t, enricher.cancelSeen, maxCounterEnrichmentWorkers, "worker cancellation")
+	waitForEnrichmentSignals(t, enricher.cancelSeen, "worker cancellation")
 	assertListStillJoining(t, done)
 	releaseWorkers()
 	assertCanceledListResult(t, done)
@@ -296,9 +296,9 @@ func TestService_List_PageEnrichmentCancellationJoinsWorkers(t *testing.T) {
 		}, false)
 		done <- listErr
 	}()
-	waitForEnrichmentSignals(t, enricher.started, maxCounterEnrichmentWorkers, "page worker starts")
+	waitForEnrichmentSignals(t, enricher.started, "page worker starts")
 	cancel()
-	waitForEnrichmentSignals(t, enricher.cancelSeen, maxCounterEnrichmentWorkers, "page worker cancellation")
+	waitForEnrichmentSignals(t, enricher.cancelSeen, "page worker cancellation")
 	assertListStillJoining(t, done)
 	releaseWorkers()
 	assertCanceledListResult(t, done)
@@ -313,7 +313,7 @@ func TestService_List_PageEnrichmentCancellationJoinsWorkers(t *testing.T) {
 func cancellationSnapshots(count int) []sessions.SessionSnapshot {
 	base := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	snapshots := make([]sessions.SessionSnapshot, 0, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		sessionID := fmt.Sprintf("cancel-%03d", i)
 		snapshots = append(snapshots, sessions.SessionSnapshot{Session: sessions.Session{
 			ID:       sessionID,
@@ -325,11 +325,11 @@ func cancellationSnapshots(count int) []sessions.SessionSnapshot {
 	return snapshots
 }
 
-func waitForEnrichmentSignals(t *testing.T, signals <-chan struct{}, count int, label string) {
+func waitForEnrichmentSignals(t *testing.T, signals <-chan struct{}, label string) {
 	t.Helper()
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
-	for range count {
+	for range maxCounterEnrichmentWorkers {
 		select {
 		case <-signals:
 		case <-timer.C:
