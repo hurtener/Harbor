@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.26.2] — 2026-08-03
+
 ### Fixed
 
 - `sessions.list` now applies lifecycle-only filters, ordering, and cursor
@@ -4278,7 +4280,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.1...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.2...HEAD
+[1.26.2]: https://github.com/hurtener/Harbor/compare/v1.26.1...v1.26.2
 [1.26.1]: https://github.com/hurtener/Harbor/compare/v1.26.0...v1.26.1
 [1.26.0]: https://github.com/hurtener/Harbor/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/hurtener/Harbor/compare/v1.24.0...v1.25.0
