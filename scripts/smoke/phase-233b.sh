@@ -62,6 +62,7 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestSignedOAuthMCPReconciler_SQLiteRestart_ReattachesPublishedPair \
     TestSignedOAuthMCPReconciler_ExpiredIncompleteNeutralizesCandidate \
     TestSignedOAuthMCPReconciler_ExpiredIncompleteRestoresBootLifecycle \
+    TestSignedOAuthMCPReconciler_CorruptExpiryAdmittedScanFailsBeforeSideEffects \
     TestSignedOAuthMCPReconciler_HistoricalPublishedPairCannotReattach \
     TestSignedOAuthMCPReconciler_RemovalDuringPrepareCannotRepublish \
     TestSignedOAuthMCPReconciler_TwoRegistriesRemovalCannotCrossPublicationFence \

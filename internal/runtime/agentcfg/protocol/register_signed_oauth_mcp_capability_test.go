@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -732,6 +733,53 @@ func TestSignedOAuthMCPReconciler_ExpiredIncompleteRestoresBootLifecycle(t *test
 	defer preparer.mu.Unlock()
 	if preparer.activations != 0 || len(preparer.live) != 0 {
 		t.Fatalf("expired candidate was republished: activations=%d live=%d", preparer.activations, len(preparer.live))
+	}
+}
+
+func TestSignedOAuthMCPReconciler_CorruptExpiryAdmittedScanFailsBeforeSideEffects(t *testing.T) {
+	now := time.Now().UTC()
+	_, _, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	prior, err := reg.SetRevision(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := agentcfg.SignedOAuthMCPBinding{TenantID: "t", UserID: "u", SessionID: "s", AgentID: testAgentID, Broker: "broker", ProviderName: "provider", CapabilityRevision: "v1", URLDigest: "url", SinkDigest: "sink", Audience: "aud", Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{Name: "cap", URL: "https://example.test/mcp"}}
+	key := agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: "corrupt-expiry-admitted"}
+	ops, _ := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	op, _, err := ops.Claim(context.Background(), key, binding, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind, _ := ops.Kind(key)
+	corrupt := op
+	corrupt.Phase = agentcfg.SignedOAuthMCPPhaseExpiryAdmitted
+	corrupt.EventID = ""
+	encoded, err := json.Marshal(corrupt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlQ := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "__agentcfg__", SessionID: "__signed_oauth_mcp__"}}
+	nextID := state.NewEventID()
+	if err := st.SaveIf(context.Background(), []state.SlotExpectation{{Identity: controlQ, Kind: kind, ExpectedEventID: op.EventID}}, state.StateRecord{ID: nextID, Identity: controlQ, Kind: kind, Bytes: encoded}); err != nil {
+		t.Fatal(err)
+	}
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
+		t.Fatalf("corrupt expiry_admitted reconcile = %v, want replay refusal", err)
+	}
+	preparer.mu.Lock()
+	detaches, activations := preparer.detaches, preparer.activations
+	preparer.mu.Unlock()
+	if detaches != 0 || activations != 0 {
+		t.Fatalf("corrupt scan caused side effects: detaches=%d activations=%d", detaches, activations)
+	}
+	active, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.RevisionID != prior.RevisionID || active.ContentHash != prior.ContentHash {
+		t.Fatalf("corrupt scan mutated registry: active=%+v prior=%+v set=%t err=%v", active, prior, set, err)
 	}
 }
 func (c capabilityPreparedConnection) Close(context.Context) error {

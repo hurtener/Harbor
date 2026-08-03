@@ -469,6 +469,9 @@ func (s *SignedOAuthMCPOperationStore) ScanTenantPage(ctx context.Context, tenan
 		if err := json.Unmarshal(record.Bytes, &op); err != nil {
 			return nil, "", fmt.Errorf("%w: decode tenant operation %q", ErrSignedCapabilityReplay, record.Kind)
 		}
+		if err := validateSignedOAuthMCPOperation(op); err != nil {
+			return nil, "", err
+		}
 		_, expectedKind, err := signedOAuthMCPOperationSlot(op.ReplayKey)
 		if err != nil || expectedKind != record.Kind || op.ReplayKey.TenantID != tenant || op.Binding.TenantID != tenant ||
 			op.Fingerprint != SignedOAuthMCPPairFingerprint(op.Binding) || !signedOAuthMCPOperationPhaseKnown(op.Phase) {
