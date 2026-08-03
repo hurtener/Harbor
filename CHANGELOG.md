@@ -17,6 +17,12 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.26.1] — 2026-08-03
+
+This patch restores authority-enabled serving composition for signed OAuth MCP
+capability recovery. The Protocol version remains `0.1.0`; there is no wire
+surface change.
+
 ### Fixed
 
 - Signed OAuth MCP capability authority is now wired through the shared serving
@@ -4263,7 +4269,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.0...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.1...HEAD
+[1.26.1]: https://github.com/hurtener/Harbor/compare/v1.26.0...v1.26.1
 [1.26.0]: https://github.com/hurtener/Harbor/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/hurtener/Harbor/compare/v1.24.0...v1.25.0
 [1.10.0]: https://github.com/hurtener/Harbor/releases/tag/v1.10.0
