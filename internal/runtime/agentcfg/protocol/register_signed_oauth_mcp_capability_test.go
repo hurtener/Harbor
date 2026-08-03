@@ -972,6 +972,57 @@ func TestRegisterOAuthMCPCapability_StableJTIRecoversClaimedBeforeFenceAndPreser
 	}
 }
 
+func TestRegisterOAuthMCPCapability_StableJTIClaimedBeforeFenceReplacesOlderAbortedFence(t *testing.T) {
+	oldNow := time.Now().UTC().Add(-3 * time.Hour)
+	_, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, oldNow)
+	req := signedCapabilityRequest(t, key, oldNow, "stable-after-older-aborted", "aud-stable-aborted")
+	canonical, sink, _ := agentcfg.CanonicalOAuthMCPURL(req.Connection.URL)
+	binding := agentcfg.SignedOAuthMCPBinding{TenantID: "t", UserID: "u", SessionID: "s", AgentID: testAgentID, Broker: req.Broker, ProviderName: req.ProviderName, CapabilityRevision: "v1", URLDigest: agentcfg.OAuthMCPURLDigest(canonical), SinkDigest: agentcfg.OAuthMCPURLDigest(sink), Audience: req.Audience, Scopes: req.Scopes, Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{Name: req.Connection.Name, URL: canonical}}
+	ops, _ := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	fences, _ := agentcfg.NewSignedOAuthMCPActivationFenceStore(st)
+	olderKey := agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: "older-aborted-operation"}
+	older, _, err := ops.Claim(context.Background(), olderKey, binding, oldNow.Add(4*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	olderKind, _ := ops.Kind(olderKey)
+	olderFence, err := fences.Begin(context.Background(), "t", testAgentID, olderKind, older.Fingerprint, "older-candidate-hash", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fences.Advance(context.Background(), olderFence, agentcfg.SignedOAuthMCPFenceAborted, ""); err != nil {
+		t.Fatal(err)
+	}
+	currentKey := agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: "stable-after-older-aborted"}
+	if _, claimed, err := ops.Claim(context.Background(), currentKey, binding, oldNow.Add(30*time.Minute)); err != nil || !claimed {
+		t.Fatalf("seed current expired claim = claimed=%t err=%v", claimed, err)
+	}
+	renewNow := oldNow.Add(2 * time.Hour)
+	renewedSvc := signedCapabilityServiceForExisting(t, renewNow, reg, st, preparer, key)
+	renewedReq := signedCapabilityRequest(t, key, renewNow, currentKey.JTI, req.Audience)
+	first, err := renewedSvc.RegisterOAuthMCPCapability(context.Background(), renewedReq)
+	if err != nil {
+		t.Fatalf("stable JTI behind older aborted fence: %v", err)
+	}
+	second, err := renewedSvc.RegisterOAuthMCPCapability(context.Background(), renewedReq)
+	if err != nil || second.Revision.RevisionID != first.Revision.RevisionID {
+		t.Fatalf("exact stable-JTI retry = revisions %q/%q err=%v", first.Revision.RevisionID, second.Revision.RevisionID, err)
+	}
+	olderAfter, err := ops.Load(context.Background(), olderKey)
+	if err != nil || olderAfter.EventID != older.EventID || olderAfter.Phase != older.Phase || olderAfter.ExpiresAt != older.ExpiresAt {
+		t.Fatalf("older operation receipt changed: before=%+v after=%+v err=%v", older, olderAfter, err)
+	}
+	current, err := ops.Load(context.Background(), currentKey)
+	if err != nil || current.Phase != agentcfg.SignedOAuthMCPPhasePublished || current.AuthorityGeneration != 2 {
+		t.Fatalf("current stable-JTI operation = %+v err=%v", current, err)
+	}
+	preparer.mu.Lock()
+	defer preparer.mu.Unlock()
+	if preparer.activations != 1 || len(preparer.live) != 1 {
+		t.Fatalf("stable-JTI publication = activations=%d live=%d", preparer.activations, len(preparer.live))
+	}
+}
+
 func TestRegisterOAuthMCPCapability_StableJTIRecoversExpiredRevisionCommittedOnce(t *testing.T) {
 	oldNow := time.Now().UTC().Add(-3 * time.Hour)
 	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, oldNow)

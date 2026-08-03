@@ -48,6 +48,7 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestSignedOAuthMCPOperationStore_PublisherEpochCASAndRemovalFenceUse \
     TestRegisterOAuthMCPCapability_DurableReplayResumesPublishedOperation \
     TestRegisterOAuthMCPCapability_StableJTIRecoversClaimedBeforeFenceAndPreservesPrior \
+    TestRegisterOAuthMCPCapability_StableJTIClaimedBeforeFenceReplacesOlderAbortedFence \
     TestRegisterOAuthMCPCapability_StableJTIRecoversExpiredRevisionCommittedOnce \
     TestRegisterOAuthMCPCapability_ExpiredClaimedMatchingCandidateWithoutFenceFailsClosed \
     TestRegisterOAuthMCPCapability_SQLiteTwoHandleStableJTIExpiryRecovery \

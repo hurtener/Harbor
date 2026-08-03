@@ -186,15 +186,23 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		if op.AuthorityGeneration > 1 && op.ExpiredAttemptCount > 0 {
 			fence, fenceErr := s.signedOAuthMCPFences.Load(ctx, ownerID.TenantID, req.AgentID)
 			switch {
-			case fenceErr == nil && fence.Phase == agentcfg.SignedOAuthMCPFenceAborted:
+			case fenceErr == nil && fence.Phase == agentcfg.SignedOAuthMCPFenceAborted &&
+				fence.OperationKind == operationKind && fence.Fingerprint == op.Fingerprint &&
+				fence.CandidateRevisionID == op.LastExpiredRevisionID:
 				if _, err := s.signedOAuthMCPFences.ReopenForRenewedAuthority(ctx, fence, op, candidateHash, priorRevisionID); err != nil {
 					return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 				}
+			case fenceErr == nil && fence.Phase == agentcfg.SignedOAuthMCPFenceCommitted:
+				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: committed foreign activation fence cannot be replaced by renewal", agentcfg.ErrSignedCapabilityPending)
 			case fenceErr != nil && !errors.Is(fenceErr, state.ErrNotFound):
 				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fenceErr
 			default:
-				if _, err := s.signedOAuthMCPFences.Begin(ctx, ownerID.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID); err != nil {
+				begun, err := s.signedOAuthMCPFences.Begin(ctx, ownerID.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID)
+				if err != nil {
 					return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+				}
+				if begun.Phase != agentcfg.SignedOAuthMCPFencePending {
+					return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: renewed activation fence did not become pending", agentcfg.ErrSignedCapabilityPending)
 				}
 			}
 		} else if _, err := s.signedOAuthMCPFences.Begin(ctx, ownerID.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID); err != nil {
