@@ -5,6 +5,9 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -732,6 +735,53 @@ func TestSignedOAuthMCPReconciler_ExpiredIncompleteRestoresBootLifecycle(t *test
 		t.Fatalf("expired candidate was republished: activations=%d live=%d", preparer.activations, len(preparer.live))
 	}
 }
+
+func TestSignedOAuthMCPReconciler_CorruptExpiryAdmittedScanFailsBeforeSideEffects(t *testing.T) {
+	now := time.Now().UTC()
+	_, _, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	prior, err := reg.SetRevision(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := agentcfg.SignedOAuthMCPBinding{TenantID: "t", UserID: "u", SessionID: "s", AgentID: testAgentID, Broker: "broker", ProviderName: "provider", CapabilityRevision: "v1", URLDigest: "url", SinkDigest: "sink", Audience: "aud", Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{Name: "cap", URL: "https://example.test/mcp"}}
+	key := agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: "corrupt-expiry-admitted"}
+	ops, _ := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	op, _, err := ops.Claim(context.Background(), key, binding, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind, _ := ops.Kind(key)
+	corrupt := op
+	corrupt.Phase = agentcfg.SignedOAuthMCPPhaseExpiryAdmitted
+	corrupt.EventID = ""
+	encoded, err := json.Marshal(corrupt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlQ := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "__agentcfg__", SessionID: "__signed_oauth_mcp__"}}
+	nextID := state.NewEventID()
+	if err := st.SaveIf(context.Background(), []state.SlotExpectation{{Identity: controlQ, Kind: kind, ExpectedEventID: op.EventID}}, state.StateRecord{ID: nextID, Identity: controlQ, Kind: kind, Bytes: encoded}); err != nil {
+		t.Fatal(err)
+	}
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
+		t.Fatalf("corrupt expiry_admitted reconcile = %v, want replay refusal", err)
+	}
+	preparer.mu.Lock()
+	detaches, activations := preparer.detaches, preparer.activations
+	preparer.mu.Unlock()
+	if detaches != 0 || activations != 0 {
+		t.Fatalf("corrupt scan caused side effects: detaches=%d activations=%d", detaches, activations)
+	}
+	active, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.RevisionID != prior.RevisionID || active.ContentHash != prior.ContentHash {
+		t.Fatalf("corrupt scan mutated registry: active=%+v prior=%+v set=%t err=%v", active, prior, set, err)
+	}
+}
 func (c capabilityPreparedConnection) Close(context.Context) error {
 	c.parent.mu.Lock()
 	c.parent.preparedCloses++
@@ -868,7 +918,189 @@ func signedCapabilityServiceWithStore(t *testing.T, now time.Time, st state.Stat
 	return svc, key, reg, st, preparer
 }
 
-func TestSignedOAuthMCPReconciler_Restart_ReattachesOnlyExactPublishedPair(t *testing.T) {
+func signedCapabilityServiceForExisting(t *testing.T, now time.Time, reg agentcfg.Registry, st state.StateStore, preparer *capabilityPreparer, key *rsa.PrivateKey) *agentcfgprotocol.Service {
+	t.Helper()
+	svc, err := agentcfgprotocol.NewService(reg,
+		agentcfgprotocol.WithClock(func() time.Time { return now }),
+		agentcfgprotocol.WithConnectionPreparer(preparer),
+		agentcfgprotocol.WithConnectionDetacher(preparer),
+		agentcfgprotocol.WithProviderInstaller(capabilityInstaller{}),
+		agentcfgprotocol.WithSignedOAuthMCPOperationState(st),
+		agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority{
+			"broker": {Broker: "broker", Issuer: "issuer", Keys: capabilityKeySet{key: &key.PublicKey}, ScopeCeiling: []string{"read"}, MaxAuthorityLifetime: time.Hour},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
+func TestRegisterOAuthMCPCapability_StableJTIRecoversClaimedBeforeFenceAndPreservesPrior(t *testing.T) {
+	oldNow := time.Now().UTC().Add(-3 * time.Hour)
+	_, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, oldNow)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	prior, err := reg.SetRevision(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := signedCapabilityRequest(t, key, oldNow, "stable-claimed", "aud-stable")
+	canonical, sink, _ := agentcfg.CanonicalOAuthMCPURL(req.Connection.URL)
+	binding := agentcfg.SignedOAuthMCPBinding{TenantID: "t", UserID: "u", SessionID: "s", AgentID: testAgentID, Broker: req.Broker, ProviderName: req.ProviderName, CapabilityRevision: "v1", URLDigest: agentcfg.OAuthMCPURLDigest(canonical), SinkDigest: agentcfg.OAuthMCPURLDigest(sink), Audience: req.Audience, Scopes: req.Scopes, Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{Name: req.Connection.Name, URL: canonical}}
+	ops, _ := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	operationKey := agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: "stable-claimed"}
+	if _, claimed, err := ops.Claim(context.Background(), operationKey, binding, oldNow.Add(30*time.Minute)); err != nil || !claimed {
+		t.Fatalf("seed claimed receipt = claimed=%t err=%v", claimed, err)
+	}
+	renewNow := oldNow.Add(2 * time.Hour)
+	renewedReq := signedCapabilityRequest(t, key, renewNow, "stable-claimed", "aud-stable")
+	renewedSvc := signedCapabilityServiceForExisting(t, renewNow, reg, st, preparer, key)
+	registered, err := renewedSvc.RegisterOAuthMCPCapability(context.Background(), renewedReq)
+	if err != nil {
+		t.Fatalf("stable-JTI claimed recovery: %v", err)
+	}
+	if registered.Revision.ParentRevisionID != prior.RevisionID {
+		t.Fatalf("renewed candidate parent = %q, want preserved prior %q", registered.Revision.ParentRevisionID, prior.RevisionID)
+	}
+	preserved, err := reg.Get(context.Background(), q, testAgentID, prior.RevisionID, agentcfg.ConfigScopeAgent)
+	if err != nil || preserved.ContentHash != prior.ContentHash {
+		t.Fatalf("unrelated prior revision changed: preserved=%+v prior=%+v err=%v", preserved, prior, err)
+	}
+	op, err := ops.Load(context.Background(), operationKey)
+	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhasePublished || op.AuthorityGeneration != 2 || op.ExpiredAttemptCount != 1 {
+		t.Fatalf("stable-JTI operation = %+v err=%v", op, err)
+	}
+}
+
+func TestRegisterOAuthMCPCapability_StableJTIClaimedBeforeFenceReplacesOlderAbortedFence(t *testing.T) {
+	oldNow := time.Now().UTC().Add(-3 * time.Hour)
+	_, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, oldNow)
+	req := signedCapabilityRequest(t, key, oldNow, "stable-after-older-aborted", "aud-stable-aborted")
+	canonical, sink, _ := agentcfg.CanonicalOAuthMCPURL(req.Connection.URL)
+	binding := agentcfg.SignedOAuthMCPBinding{TenantID: "t", UserID: "u", SessionID: "s", AgentID: testAgentID, Broker: req.Broker, ProviderName: req.ProviderName, CapabilityRevision: "v1", URLDigest: agentcfg.OAuthMCPURLDigest(canonical), SinkDigest: agentcfg.OAuthMCPURLDigest(sink), Audience: req.Audience, Scopes: req.Scopes, Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{Name: req.Connection.Name, URL: canonical}}
+	ops, _ := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	fences, _ := agentcfg.NewSignedOAuthMCPActivationFenceStore(st)
+	olderKey := agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: "older-aborted-operation"}
+	older, _, err := ops.Claim(context.Background(), olderKey, binding, oldNow.Add(4*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	olderKind, _ := ops.Kind(olderKey)
+	olderFence, err := fences.Begin(context.Background(), "t", testAgentID, olderKind, older.Fingerprint, "older-candidate-hash", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fences.Advance(context.Background(), olderFence, agentcfg.SignedOAuthMCPFenceAborted, ""); err != nil {
+		t.Fatal(err)
+	}
+	currentKey := agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: "stable-after-older-aborted"}
+	if _, claimed, err := ops.Claim(context.Background(), currentKey, binding, oldNow.Add(30*time.Minute)); err != nil || !claimed {
+		t.Fatalf("seed current expired claim = claimed=%t err=%v", claimed, err)
+	}
+	renewNow := oldNow.Add(2 * time.Hour)
+	renewedSvc := signedCapabilityServiceForExisting(t, renewNow, reg, st, preparer, key)
+	renewedReq := signedCapabilityRequest(t, key, renewNow, currentKey.JTI, req.Audience)
+	first, err := renewedSvc.RegisterOAuthMCPCapability(context.Background(), renewedReq)
+	if err != nil {
+		t.Fatalf("stable JTI behind older aborted fence: %v", err)
+	}
+	second, err := renewedSvc.RegisterOAuthMCPCapability(context.Background(), renewedReq)
+	if err != nil || second.Revision.RevisionID != first.Revision.RevisionID {
+		t.Fatalf("exact stable-JTI retry = revisions %q/%q err=%v", first.Revision.RevisionID, second.Revision.RevisionID, err)
+	}
+	olderAfter, err := ops.Load(context.Background(), olderKey)
+	if err != nil || olderAfter.EventID != older.EventID || olderAfter.Phase != older.Phase || olderAfter.ExpiresAt != older.ExpiresAt {
+		t.Fatalf("older operation receipt changed: before=%+v after=%+v err=%v", older, olderAfter, err)
+	}
+	current, err := ops.Load(context.Background(), currentKey)
+	if err != nil || current.Phase != agentcfg.SignedOAuthMCPPhasePublished || current.AuthorityGeneration != 2 {
+		t.Fatalf("current stable-JTI operation = %+v err=%v", current, err)
+	}
+	preparer.mu.Lock()
+	defer preparer.mu.Unlock()
+	if preparer.activations != 1 || len(preparer.live) != 1 {
+		t.Fatalf("stable-JTI publication = activations=%d live=%d", preparer.activations, len(preparer.live))
+	}
+}
+
+func TestRegisterOAuthMCPCapability_StableJTIRecoversExpiredRevisionCommittedOnce(t *testing.T) {
+	oldNow := time.Now().UTC().Add(-3 * time.Hour)
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, oldNow)
+	preparer.mu.Lock()
+	preparer.failActivate = errors.New("injected first-generation activation failure")
+	preparer.mu.Unlock()
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, oldNow, "stable-committed", "aud-stable-committed")); err == nil {
+		t.Fatal("first generation unexpectedly published")
+	}
+	preparer.mu.Lock()
+	preparer.failActivate = nil
+	preparer.mu.Unlock()
+	renewNow := oldNow.Add(2 * time.Hour)
+	renewedSvc := signedCapabilityServiceForExisting(t, renewNow, reg, st, preparer, key)
+	renewedReq := signedCapabilityRequest(t, key, renewNow, "stable-committed", "aud-stable-committed")
+	first, err := renewedSvc.RegisterOAuthMCPCapability(context.Background(), renewedReq)
+	if err != nil {
+		t.Fatalf("stable-JTI committed recovery: %v", err)
+	}
+	second, err := renewedSvc.RegisterOAuthMCPCapability(context.Background(), renewedReq)
+	if err != nil || second.Revision.RevisionID != first.Revision.RevisionID {
+		t.Fatalf("repeated stable-JTI convergence = revision %q/%q err=%v", first.Revision.RevisionID, second.Revision.RevisionID, err)
+	}
+	ops, _ := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	op, err := ops.Load(context.Background(), agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: "stable-committed"})
+	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhasePublished || op.AuthorityGeneration != 2 || op.LastExpiredRevisionID == "" {
+		t.Fatalf("stable-JTI committed operation = %+v err=%v", op, err)
+	}
+	preparer.mu.Lock()
+	defer preparer.mu.Unlock()
+	if preparer.activations != 1 || len(preparer.live) != 1 {
+		t.Fatalf("publication convergence = activations=%d live=%d, want 1/1", preparer.activations, len(preparer.live))
+	}
+}
+
+func TestRegisterOAuthMCPCapability_ExpiredClaimedMatchingCandidateWithoutFenceFailsClosed(t *testing.T) {
+	oldNow := time.Now().UTC().Add(-3 * time.Hour)
+	_, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, oldNow)
+	req := signedCapabilityRequest(t, key, oldNow, "stable-no-fence", "aud-no-fence")
+	canonical, sink, _ := agentcfg.CanonicalOAuthMCPURL(req.Connection.URL)
+	binding := agentcfg.SignedOAuthMCPBinding{TenantID: "t", UserID: "u", SessionID: "s", AgentID: testAgentID, Broker: req.Broker, ProviderName: req.ProviderName, CapabilityRevision: "v1", URLDigest: agentcfg.OAuthMCPURLDigest(canonical), SinkDigest: agentcfg.OAuthMCPURLDigest(sink), Audience: req.Audience, Scopes: req.Scopes, Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{Name: req.Connection.Name, URL: canonical}}
+	operationKey := agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: "stable-no-fence"}
+	ops, _ := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	op, _, err := ops.Claim(context.Background(), operationKey, binding, oldNow.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind, _ := ops.Kind(operationKey)
+	pair := &agentcfg.SignedOAuthMCPPair{ProviderName: binding.ProviderName, Broker: binding.Broker, Audience: binding.Audience, Scopes: binding.Scopes, CapabilityRevision: binding.CapabilityRevision, URLDigest: binding.URLDigest, Sink: sink, SinkDigest: binding.SinkDigest, Connection: binding.Connection, AuthorityIssuer: "issuer", AuthorityKeyID: "kid", AuthorityJTIHash: signedJTIHashForTest(operationKey.JTI), AuthorityOperationKind: kind, OwnerAgentID: binding.AgentID, OwnerUserID: binding.UserID, OwnerSessionID: binding.SessionID}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	candidate, err := reg.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(context.Background(), kind), q, testAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{SignedOAuthMCPPair: pair}, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewNow := oldNow.Add(2 * time.Hour)
+	renewedSvc := signedCapabilityServiceForExisting(t, renewNow, reg, st, preparer, key)
+	if _, err := renewedSvc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, renewNow, "stable-no-fence", "aud-no-fence")); !errors.Is(err, agentcfg.ErrSignedCapabilityPending) {
+		t.Fatalf("matching candidate without fence = %v, want pending refusal", err)
+	}
+	physical := reg.(interface {
+		PhysicalActive(context.Context, identity.Quadruple, string, agentcfg.ConfigScope) (agentcfg.Revision, bool, error)
+	})
+	active, set, err := physical.PhysicalActive(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.RevisionID != candidate.RevisionID || active.ContentHash != candidate.ContentHash {
+		t.Fatalf("unfenced candidate was mutated: active=%+v set=%t err=%v", active, set, err)
+	}
+	latest, err := ops.Load(context.Background(), operationKey)
+	if err != nil || latest.Phase != agentcfg.SignedOAuthMCPPhaseExpiryAdmitted || latest.ExpiryCandidateRevisionID != candidate.RevisionID || latest.EventID == op.EventID {
+		t.Fatalf("expiry admission receipt = %+v err=%v", latest, err)
+	}
+}
+
+func signedJTIHashForTest(jti string) string {
+	sum := sha256.Sum256([]byte(jti))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestSignedOAuthMCPReconciler_Restart_ReattachesFrozenOwnerForLaterSubject(t *testing.T) {
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
 	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-reconcile-restart", "aud-reconcile")); err != nil {
@@ -881,8 +1113,8 @@ func TestSignedOAuthMCPReconciler_Restart_ReattachesOnlyExactPublishedPair(t *te
 	if err != nil {
 		t.Fatalf("NewSignedOAuthMCPReconciler: %v", err)
 	}
-	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
-	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+	invoker := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "later-user", SessionID: "later-session"}}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), invoker, testAgentID); err != nil {
 		t.Fatalf("reconcile restart: %v", err)
 	}
 	preparer.mu.Lock()
@@ -890,6 +1122,14 @@ func TestSignedOAuthMCPReconciler_Restart_ReattachesOnlyExactPublishedPair(t *te
 	preparer.mu.Unlock()
 	if activations != 2 {
 		t.Fatalf("activations = %d, want register plus one restart reattach", activations)
+	}
+	owner := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, set, err := reg.Active(context.Background(), owner, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set {
+		t.Fatalf("frozen owner active pair = set:%v err:%v, want owner slot", set, err)
+	}
+	if active.Payload.SignedOAuthMCPPair == nil || active.Payload.SignedOAuthMCPPair.OwnerUserID != owner.UserID || active.Payload.SignedOAuthMCPPair.OwnerSessionID != owner.SessionID {
+		t.Fatalf("reattached pair owner = %+v, want frozen owner %s/%s", active.Payload.SignedOAuthMCPPair, owner.UserID, owner.SessionID)
 	}
 	// An exact tenant/agent scan must not turn a same-named foreign slot into a
 	// dispatch target.
@@ -938,6 +1178,80 @@ func TestSignedOAuthMCPReconciler_SQLiteRestart_ReattachesPublishedPair(t *testi
 	defer secondPreparer.mu.Unlock()
 	if secondPreparer.activations != 1 {
 		t.Fatalf("restart activations = %d, want 1", secondPreparer.activations)
+	}
+}
+
+func TestRegisterOAuthMCPCapability_SQLiteTwoHandleStableJTIExpiryRecovery(t *testing.T) {
+	for _, phase := range []agentcfg.SignedOAuthMCPOperationPhase{agentcfg.SignedOAuthMCPPhaseClaimed, agentcfg.SignedOAuthMCPPhaseRevisionCommitted} {
+		t.Run(string(phase), func(t *testing.T) {
+			dsn := filepath.Join(t.TempDir(), "stable-jti.sqlite")
+			firstStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+			if err != nil {
+				t.Fatal(err)
+			}
+			secondStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstBus, _ := eventsinmem.New(config.EventsConfig{Driver: "inmem", MaxSubscribersPerSession: 8, SubscriberBufferSize: 32, IdleTimeout: time.Minute, DropWindow: time.Second}, auditpatterns.New())
+			secondBus, _ := eventsinmem.New(config.EventsConfig{Driver: "inmem", MaxSubscribersPerSession: 8, SubscriberBufferSize: 32, IdleTimeout: time.Minute, DropWindow: time.Second}, auditpatterns.New())
+			firstRegistry, err := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: firstStore, Bus: firstBus})
+			if err != nil {
+				t.Fatal(err)
+			}
+			secondRegistry, err := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: secondStore, Bus: secondBus})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = secondRegistry.Close(context.Background())
+				_ = firstRegistry.Close(context.Background())
+				_ = secondBus.Close(context.Background())
+				_ = firstBus.Close(context.Background())
+				_ = secondStore.Close(context.Background())
+				_ = firstStore.Close(context.Background())
+			})
+			key, err := rsa.GenerateKey(rand.Reader, 2048)
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldNow := time.Now().UTC().Add(-3 * time.Hour)
+			renewNow := oldNow.Add(2 * time.Hour)
+			jti := "sqlite-stable-" + string(phase)
+			firstPreparer := &capabilityPreparer{}
+			first := signedCapabilityServiceForExisting(t, oldNow, firstRegistry, firstStore, firstPreparer, key)
+			if phase == agentcfg.SignedOAuthMCPPhaseClaimed {
+				req := signedCapabilityRequest(t, key, oldNow, jti, "aud-sqlite-stable")
+				canonical, sink, _ := agentcfg.CanonicalOAuthMCPURL(req.Connection.URL)
+				binding := agentcfg.SignedOAuthMCPBinding{TenantID: "t", UserID: "u", SessionID: "s", AgentID: testAgentID, Broker: req.Broker, ProviderName: req.ProviderName, CapabilityRevision: "v1", URLDigest: agentcfg.OAuthMCPURLDigest(canonical), SinkDigest: agentcfg.OAuthMCPURLDigest(sink), Audience: req.Audience, Scopes: req.Scopes, Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{Name: req.Connection.Name, URL: canonical}}
+				ops, _ := agentcfg.NewSignedOAuthMCPOperationStore(firstStore)
+				_, claimed, claimErr := ops.Claim(context.Background(), agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: jti}, binding, oldNow.Add(30*time.Minute))
+				if claimErr != nil || !claimed {
+					t.Fatalf("seed SQLite claim = claimed=%t err=%v", claimed, claimErr)
+				}
+			} else {
+				firstPreparer.failActivate = errors.New("injected first-handle activation failure")
+				if _, err := first.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, oldNow, jti, "aud-sqlite-stable")); err == nil {
+					t.Fatal("first SQLite handle unexpectedly published")
+				}
+			}
+
+			secondPreparer := &capabilityPreparer{}
+			second := signedCapabilityServiceForExisting(t, renewNow, secondRegistry, secondStore, secondPreparer, key)
+			if _, err := second.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, renewNow, jti, "aud-sqlite-stable")); err != nil {
+				t.Fatalf("second SQLite handle stable-JTI recovery: %v", err)
+			}
+			ops, _ := agentcfg.NewSignedOAuthMCPOperationStore(secondStore)
+			op, err := ops.Load(context.Background(), agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: jti})
+			if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhasePublished || op.AuthorityGeneration != 2 || op.ExpiredAttemptCount != 1 {
+				t.Fatalf("SQLite stable-JTI operation = %+v err=%v", op, err)
+			}
+			secondPreparer.mu.Lock()
+			defer secondPreparer.mu.Unlock()
+			if secondPreparer.activations != 1 || len(secondPreparer.live) != 1 {
+				t.Fatalf("SQLite stable-JTI publication = activations=%d live=%d", secondPreparer.activations, len(secondPreparer.live))
+			}
+		})
 	}
 }
 
@@ -1850,6 +2164,23 @@ func TestRegisterOAuthMCPCapability_PostgresTwoIndependentRuntimes(t *testing.T)
 	}
 	if _, err := first.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{Identity: scope(), AgentID: testAgentID, ExpectedContentHash: registered.Revision.ContentHash}); err != nil {
 		t.Fatalf("first runtime terminal removal replay: %v", err)
+	}
+	oldNow := time.Now().UTC().Add(-3 * time.Hour)
+	now = oldNow
+	stableJTI := fmt.Sprintf("jti-postgres-stable-%d", time.Now().UnixNano())
+	stableFirstPreparer := &capabilityPreparer{failActivate: errors.New("injected first-runtime stable-JTI activation failure")}
+	stableFirst := newService(firstRegistry, firstStore, stableFirstPreparer)
+	if _, err := stableFirst.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, oldNow, stableJTI, "aud-postgres-stable")); err == nil {
+		t.Fatal("first Postgres runtime unexpectedly published stable-JTI generation")
+	}
+	now = oldNow.Add(2 * time.Hour)
+	if _, err := second.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, stableJTI, "aud-postgres-stable")); err != nil {
+		t.Fatalf("second Postgres runtime stable-JTI recovery: %v", err)
+	}
+	ops, _ := agentcfg.NewSignedOAuthMCPOperationStore(secondStore)
+	stable, err := ops.Load(context.Background(), agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: stableJTI})
+	if err != nil || stable.Phase != agentcfg.SignedOAuthMCPPhasePublished || stable.AuthorityGeneration != 2 || stable.ExpiredAttemptCount != 1 {
+		t.Fatalf("Postgres stable-JTI operation = %+v err=%v", stable, err)
 	}
 }
 

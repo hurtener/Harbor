@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -64,6 +65,7 @@ const (
 	SignedOAuthMCPPhaseCatalogUnpublished       SignedOAuthMCPOperationPhase = "catalog_unpublished"
 	SignedOAuthMCPPhaseTeardownReceipted        SignedOAuthMCPOperationPhase = "teardown_receipted"
 	SignedOAuthMCPPhaseRemoved                  SignedOAuthMCPOperationPhase = "removed"
+	SignedOAuthMCPPhaseExpiryAdmitted           SignedOAuthMCPOperationPhase = "expiry_admitted"
 	SignedOAuthMCPPhaseExpiredIncomplete        SignedOAuthMCPOperationPhase = "expired_incomplete"
 	// RetirementCleanupClassSignedOAuthMCPPair is the frozen retirement
 	// manifest class for one durable signed OAuth MCP pair lifetime. Its
@@ -85,14 +87,20 @@ type SignedOAuthMCPReplayKey struct {
 // SignedOAuthMCPOperation is the bounded durable recovery record. EventID is
 // the StateStore generation used by Advance's exact SaveIf predicate.
 type SignedOAuthMCPOperation struct {
-	ReplayKey      SignedOAuthMCPReplayKey      `json:"replay_key"`
-	Binding        SignedOAuthMCPBinding        `json:"binding"`
-	Fingerprint    string                       `json:"fingerprint"`
-	ExpiresAt      time.Time                    `json:"expires_at"`
-	Phase          SignedOAuthMCPOperationPhase `json:"phase"`
-	RevisionID     string                       `json:"revision_id,omitempty"`
-	PublisherEpoch string                       `json:"publisher_epoch,omitempty"`
-	EventID        state.EventID                `json:"-"`
+	ReplayKey                 SignedOAuthMCPReplayKey      `json:"replay_key"`
+	Binding                   SignedOAuthMCPBinding        `json:"binding"`
+	Fingerprint               string                       `json:"fingerprint"`
+	ExpiresAt                 time.Time                    `json:"expires_at"`
+	Phase                     SignedOAuthMCPOperationPhase `json:"phase"`
+	RevisionID                string                       `json:"revision_id,omitempty"`
+	PublisherEpoch            string                       `json:"publisher_epoch,omitempty"`
+	ExpiryFromPhase           SignedOAuthMCPOperationPhase `json:"expiry_from_phase,omitempty"`
+	ExpiryCandidateRevisionID string                       `json:"expiry_candidate_revision_id,omitempty"`
+	AuthorityGeneration       uint64                       `json:"authority_generation,omitempty"`
+	ExpiredAttemptCount       uint64                       `json:"expired_attempt_count,omitempty"`
+	LastExpiredAt             time.Time                    `json:"last_expired_at,omitempty"`
+	LastExpiredRevisionID     string                       `json:"last_expired_revision_id,omitempty"`
+	EventID                   state.EventID                `json:"-"`
 }
 
 // SignedOAuthMCPOperationStore persists the signed-capability tenant-scoped anti-replay
@@ -243,6 +251,49 @@ func (s *SignedOAuthMCPActivationFenceStore) Advance(ctx context.Context, curren
 	return next, nil
 }
 
+// ReopenForRenewedAuthority changes only the exact aborted fence left by this
+// operation's completed expiry compensation back to pending. Begin remains
+// intentionally strict: an ordinary retry can never reopen a terminal fence.
+func (s *SignedOAuthMCPActivationFenceStore) ReopenForRenewedAuthority(ctx context.Context, current SignedOAuthMCPActivationFence, renewed SignedOAuthMCPOperation, candidateHash, priorRevisionID string) (SignedOAuthMCPActivationFence, error) {
+	if err := ctx.Err(); err != nil {
+		return SignedOAuthMCPActivationFence{}, err
+	}
+	operationKind := ""
+	operationQuad := identity.Quadruple{}
+	if quad, kind, err := signedOAuthMCPOperationSlot(renewed.ReplayKey); err == nil {
+		operationQuad = quad
+		operationKind = kind
+	}
+	if current.Phase != SignedOAuthMCPFenceAborted || renewed.Phase != SignedOAuthMCPPhaseClaimed || renewed.AuthorityGeneration < 2 ||
+		renewed.ExpiredAttemptCount == 0 || renewed.LastExpiredAt.IsZero() || renewed.Binding.TenantID != current.TenantID ||
+		renewed.Binding.AgentID != current.AgentID || current.OperationKind != operationKind || current.Fingerprint != renewed.Fingerprint ||
+		current.CandidateRevisionID != renewed.LastExpiredRevisionID || renewed.EventID == "" || strings.TrimSpace(candidateHash) == "" {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: activation fence is not the exact completed expiry fence", ErrSignedCapabilityTransition)
+	}
+	next := current
+	next.Phase = SignedOAuthMCPFencePending
+	next.CandidateContentHash = candidateHash
+	next.PriorRevisionID = priorRevisionID
+	next.CandidateRevisionID = ""
+	next.EventID = state.NewEventID()
+	encoded, err := json.Marshal(next)
+	if err != nil {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("marshal renewed signed capability activation fence: %w", err)
+	}
+	quad := signedOAuthMCPActivationFenceQuad(current.TenantID, current.AgentID)
+	err = s.state.SaveIf(ctx, []state.SlotExpectation{
+		{Identity: quad, Kind: signedOAuthMCPActivationFenceKind, ExpectedEventID: current.EventID},
+		{Identity: operationQuad, Kind: operationKind, ExpectedEventID: renewed.EventID},
+	}, state.StateRecord{ID: next.EventID, Identity: quad, Kind: signedOAuthMCPActivationFenceKind, Bytes: encoded})
+	if errors.Is(err, state.ErrConditionFailed) {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: activation fence changed concurrently", ErrSignedCapabilityPending)
+	}
+	if err != nil {
+		return SignedOAuthMCPActivationFence{}, fmt.Errorf("reopen renewed signed capability activation fence: %w", err)
+	}
+	return next, nil
+}
+
 func signedOAuthMCPActivationFenceQuad(tenant, agentID string) identity.Quadruple {
 	return identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "__agentcfg__", SessionID: agentID}}
 }
@@ -266,7 +317,7 @@ func (s *SignedOAuthMCPOperationStore) Claim(ctx context.Context, key SignedOAut
 		return SignedOAuthMCPOperation{}, false, err
 	}
 	fingerprint := SignedOAuthMCPPairFingerprint(binding)
-	operation := SignedOAuthMCPOperation{ReplayKey: key, Binding: binding, Fingerprint: fingerprint, ExpiresAt: expiresAt.UTC(), Phase: SignedOAuthMCPPhaseClaimed, EventID: state.NewEventID()}
+	operation := SignedOAuthMCPOperation{ReplayKey: key, Binding: binding, Fingerprint: fingerprint, ExpiresAt: expiresAt.UTC(), Phase: SignedOAuthMCPPhaseClaimed, AuthorityGeneration: 1, EventID: state.NewEventID()}
 	bytes, err := json.Marshal(operation)
 	if err != nil {
 		return SignedOAuthMCPOperation{}, false, fmt.Errorf("marshal signed capability operation: %w", err)
@@ -282,10 +333,95 @@ func (s *SignedOAuthMCPOperationStore) Claim(ctx context.Context, key SignedOAut
 	if loadErr != nil {
 		return SignedOAuthMCPOperation{}, false, loadErr
 	}
-	if existing.ReplayKey != key || existing.Fingerprint != fingerprint {
+	if existing.ReplayKey != key || existing.Fingerprint != fingerprint || !reflect.DeepEqual(existing.Binding, binding) {
 		return SignedOAuthMCPOperation{}, false, fmt.Errorf("%w: jti already binds another capability", ErrSignedCapabilityReplay)
 	}
 	return existing, false, nil
+}
+
+// RenewAuthority consumes a later, freshly verified envelope for the exact
+// same replay key and immutable registration binding. It reopens only a fully
+// compensated expired_incomplete receipt; published, removal, and in-progress
+// expiry records are never renewable.
+func (s *SignedOAuthMCPOperationStore) RenewAuthority(ctx context.Context, current SignedOAuthMCPOperation, key SignedOAuthMCPReplayKey, binding SignedOAuthMCPBinding, expiresAt time.Time) (SignedOAuthMCPOperation, error) {
+	if err := ctx.Err(); err != nil {
+		return SignedOAuthMCPOperation{}, err
+	}
+	fingerprint := SignedOAuthMCPPairFingerprint(binding)
+	if current.Phase != SignedOAuthMCPPhaseExpiredIncomplete || current.ReplayKey != key || current.Fingerprint != fingerprint ||
+		current.Fingerprint != SignedOAuthMCPPairFingerprint(current.Binding) || !reflect.DeepEqual(current.Binding, binding) {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: authority renewal does not exactly bind the expired operation", ErrSignedCapabilityReplay)
+	}
+	expiresAt = expiresAt.UTC()
+	if expiresAt.IsZero() || !expiresAt.After(current.ExpiresAt) {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: renewed authority expiry must be later", ErrSignedCapabilityAuthority)
+	}
+	next := current
+	next.ExpiresAt = expiresAt
+	next.Phase = SignedOAuthMCPPhaseClaimed
+	next.RevisionID = ""
+	next.PublisherEpoch = ""
+	next.ExpiryFromPhase = ""
+	next.ExpiryCandidateRevisionID = ""
+	next.AuthorityGeneration = effectiveAuthorityGeneration(current.AuthorityGeneration) + 1
+	if next.ExpiredAttemptCount == 0 {
+		next.ExpiredAttemptCount = 1
+	}
+	if next.LastExpiredAt.IsZero() {
+		next.LastExpiredAt = current.ExpiresAt.Add(SignedOAuthMCPAuthorityClockSkew)
+	}
+	if next.LastExpiredRevisionID == "" {
+		next.LastExpiredRevisionID = current.RevisionID
+	}
+	return s.saveExact(ctx, current, next, "renew signed capability authority")
+}
+
+// AdmitExpiry wins the operation-slot CAS before compensation may detach or
+// move any active pointer. It freezes the source phase and exact candidate so
+// every restart resumes the same bounded work.
+func (s *SignedOAuthMCPOperationStore) AdmitExpiry(ctx context.Context, current SignedOAuthMCPOperation, candidateRevisionID string, expiredAt time.Time) (SignedOAuthMCPOperation, error) {
+	if err := ctx.Err(); err != nil {
+		return SignedOAuthMCPOperation{}, err
+	}
+	if current.Phase != SignedOAuthMCPPhaseClaimed && current.Phase != SignedOAuthMCPPhaseRevisionCommitted {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: phase %q is not expirable", ErrSignedCapabilityTransition, current.Phase)
+	}
+	if current.Phase == SignedOAuthMCPPhaseRevisionCommitted && (candidateRevisionID == "" || candidateRevisionID != current.RevisionID) {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: expiry candidate does not match committed revision", ErrSignedCapabilityReplay)
+	}
+	if current.Phase == SignedOAuthMCPPhaseClaimed && current.RevisionID != "" && candidateRevisionID != current.RevisionID {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: expiry candidate does not match claimed revision", ErrSignedCapabilityReplay)
+	}
+	expiredAt = expiredAt.UTC()
+	if expiredAt.IsZero() || current.ExpiresAt.Add(SignedOAuthMCPAuthorityClockSkew).After(expiredAt) {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: operation has not expired", ErrSignedCapabilityAuthority)
+	}
+	next := current
+	next.Phase = SignedOAuthMCPPhaseExpiryAdmitted
+	next.ExpiryFromPhase = current.Phase
+	next.ExpiryCandidateRevisionID = candidateRevisionID
+	next.AuthorityGeneration = effectiveAuthorityGeneration(current.AuthorityGeneration)
+	next.ExpiredAttemptCount++
+	next.LastExpiredAt = expiredAt
+	next.LastExpiredRevisionID = candidateRevisionID
+	return s.saveExact(ctx, current, next, "admit signed capability expiry")
+}
+
+// CompleteExpiry records the terminal compensated state. Callers invoke it
+// only after exact detach, prior/absence restoration, candidate inactivity,
+// and exact activation-fence abort have all succeeded.
+func (s *SignedOAuthMCPOperationStore) CompleteExpiry(ctx context.Context, current SignedOAuthMCPOperation) (SignedOAuthMCPOperation, error) {
+	if err := ctx.Err(); err != nil {
+		return SignedOAuthMCPOperation{}, err
+	}
+	if current.Phase != SignedOAuthMCPPhaseExpiryAdmitted ||
+		(current.ExpiryFromPhase != SignedOAuthMCPPhaseClaimed && current.ExpiryFromPhase != SignedOAuthMCPPhaseRevisionCommitted) {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: phase %q cannot complete expiry", ErrSignedCapabilityTransition, current.Phase)
+	}
+	next := current
+	next.Phase = SignedOAuthMCPPhaseExpiredIncomplete
+	next.AuthorityGeneration = effectiveAuthorityGeneration(current.AuthorityGeneration)
+	return s.saveExact(ctx, current, next, "complete signed capability expiry")
 }
 
 // Load returns the exact tenant-scoped operation record. It is intentionally a
@@ -332,6 +468,9 @@ func (s *SignedOAuthMCPOperationStore) ScanTenantPage(ctx context.Context, tenan
 		var op SignedOAuthMCPOperation
 		if err := json.Unmarshal(record.Bytes, &op); err != nil {
 			return nil, "", fmt.Errorf("%w: decode tenant operation %q", ErrSignedCapabilityReplay, record.Kind)
+		}
+		if err := validateSignedOAuthMCPOperation(op); err != nil {
+			return nil, "", err
 		}
 		_, expectedKind, err := signedOAuthMCPOperationSlot(op.ReplayKey)
 		if err != nil || expectedKind != record.Kind || op.ReplayKey.TenantID != tenant || op.Binding.TenantID != tenant ||
@@ -463,6 +602,37 @@ func (s *SignedOAuthMCPOperationStore) Advance(ctx context.Context, current Sign
 	return nextRecord, nil
 }
 
+func (s *SignedOAuthMCPOperationStore) saveExact(ctx context.Context, current, next SignedOAuthMCPOperation, action string) (SignedOAuthMCPOperation, error) {
+	quad, kind, err := signedOAuthMCPOperationSlot(current.ReplayKey)
+	if err != nil {
+		return SignedOAuthMCPOperation{}, err
+	}
+	if current.EventID == "" || next.ReplayKey != current.ReplayKey || next.Fingerprint != current.Fingerprint ||
+		!reflect.DeepEqual(next.Binding, current.Binding) {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: operation mutation changed immutable authority", ErrSignedCapabilityReplay)
+	}
+	next.EventID = state.NewEventID()
+	encoded, err := json.Marshal(next)
+	if err != nil {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("marshal signed capability operation: %w", err)
+	}
+	err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: kind, ExpectedEventID: current.EventID}}, state.StateRecord{ID: next.EventID, Identity: quad, Kind: kind, Bytes: encoded})
+	if errors.Is(err, state.ErrConditionFailed) {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%w: operation changed concurrently", ErrSignedCapabilityReplay)
+	}
+	if err != nil {
+		return SignedOAuthMCPOperation{}, fmt.Errorf("%s: %w", action, err)
+	}
+	return next, nil
+}
+
+func effectiveAuthorityGeneration(generation uint64) uint64 {
+	if generation == 0 {
+		return 1
+	}
+	return generation
+}
+
 // AcquirePublisher CAS-mints one opaque publisher epoch for an operation whose
 // desired revision is committed or already published. A successor runtime
 // takes over by replacing the epoch under the exact operation EventID; every
@@ -568,8 +738,37 @@ func (s *SignedOAuthMCPOperationStore) load(ctx context.Context, quad identity.Q
 	if err := json.Unmarshal(record.Bytes, &operation); err != nil {
 		return SignedOAuthMCPOperation{}, fmt.Errorf("decode signed capability operation: %w", err)
 	}
+	if err := validateSignedOAuthMCPOperation(operation); err != nil {
+		return SignedOAuthMCPOperation{}, err
+	}
 	operation.EventID = record.ID
 	return operation, nil
+}
+
+func validateSignedOAuthMCPOperation(op SignedOAuthMCPOperation) error {
+	if op.Fingerprint == "" || op.Fingerprint != SignedOAuthMCPPairFingerprint(op.Binding) || !signedOAuthMCPOperationPhaseKnown(op.Phase) {
+		return fmt.Errorf("%w: corrupt signed capability operation", ErrSignedCapabilityReplay)
+	}
+	legacyExpired := op.Phase == SignedOAuthMCPPhaseExpiredIncomplete && op.ExpiryFromPhase == "" &&
+		op.ExpiryCandidateRevisionID == "" && op.ExpiredAttemptCount == 0 && op.LastExpiredAt.IsZero() && op.LastExpiredRevisionID == ""
+	if legacyExpired {
+		return nil
+	}
+	switch op.Phase {
+	case SignedOAuthMCPPhaseExpiryAdmitted, SignedOAuthMCPPhaseExpiredIncomplete:
+		if (op.ExpiryFromPhase != SignedOAuthMCPPhaseClaimed && op.ExpiryFromPhase != SignedOAuthMCPPhaseRevisionCommitted) ||
+			op.ExpiredAttemptCount == 0 || op.LastExpiredAt.IsZero() || op.LastExpiredRevisionID != op.ExpiryCandidateRevisionID {
+			return fmt.Errorf("%w: inconsistent signed capability expiry metadata", ErrSignedCapabilityReplay)
+		}
+		if op.ExpiryFromPhase == SignedOAuthMCPPhaseRevisionCommitted && (op.ExpiryCandidateRevisionID == "" || op.RevisionID != op.ExpiryCandidateRevisionID) {
+			return fmt.Errorf("%w: committed expiry metadata lost its candidate", ErrSignedCapabilityReplay)
+		}
+	default:
+		if op.ExpiryFromPhase != "" || op.ExpiryCandidateRevisionID != "" {
+			return fmt.Errorf("%w: non-expiry phase carries pending expiry metadata", ErrSignedCapabilityReplay)
+		}
+	}
+	return nil
 }
 
 func signedOAuthMCPOperationSlot(key SignedOAuthMCPReplayKey) (identity.Quadruple, string, error) {
@@ -589,9 +788,6 @@ func signedOAuthMCPOperationSlot(key SignedOAuthMCPReplayKey) (identity.Quadrupl
 }
 
 func signedOAuthMCPTransitionAllowed(from, to SignedOAuthMCPOperationPhase) bool {
-	if to == SignedOAuthMCPPhaseExpiredIncomplete {
-		return from == SignedOAuthMCPPhaseClaimed || from == SignedOAuthMCPPhaseRevisionCommitted
-	}
 	switch from {
 	case SignedOAuthMCPPhaseClaimed:
 		return to == SignedOAuthMCPPhaseRevisionCommitted
@@ -617,7 +813,7 @@ func signedOAuthMCPOperationPhaseKnown(phase SignedOAuthMCPOperationPhase) bool 
 	case SignedOAuthMCPPhaseClaimed, SignedOAuthMCPPhaseRevisionCommitted,
 		SignedOAuthMCPPhasePublished, SignedOAuthMCPPhaseRemovalAdmitted, SignedOAuthMCPPhaseRemovalRevisionCommitted,
 		SignedOAuthMCPPhaseCatalogUnpublished, SignedOAuthMCPPhaseTeardownReceipted,
-		SignedOAuthMCPPhaseRemoved, SignedOAuthMCPPhaseExpiredIncomplete:
+		SignedOAuthMCPPhaseRemoved, SignedOAuthMCPPhaseExpiryAdmitted, SignedOAuthMCPPhaseExpiredIncomplete:
 		return true
 	default:
 		return false

@@ -41,9 +41,17 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     'phase 233b: signed capability authority, recovery, removal, and fence regressions execute under race' \
     TestVerifySignedOAuthMCPAuthority_ExactBindingAndScopeCeiling \
     TestSignedOAuthMCPOperationStore_ClaimsTenantScopedReplayAndTransitions \
+    TestSignedOAuthMCPOperationStore_ExpiryAdmissionRenewalIsExactAndCASBound \
+    TestSignedOAuthMCPOperationStore_SQLiteTwoHandleRenewalRaceHasOneWinner \
     TestSignedOAuthMCPActivationFenceStore_TerminalFenceYieldsToNextOperation \
+    TestSignedOAuthMCPActivationFenceStore_ReopensOnlyExactRenewedGeneration \
     TestSignedOAuthMCPOperationStore_PublisherEpochCASAndRemovalFenceUse \
     TestRegisterOAuthMCPCapability_DurableReplayResumesPublishedOperation \
+    TestRegisterOAuthMCPCapability_StableJTIRecoversClaimedBeforeFenceAndPreservesPrior \
+    TestRegisterOAuthMCPCapability_StableJTIClaimedBeforeFenceReplacesOlderAbortedFence \
+    TestRegisterOAuthMCPCapability_StableJTIRecoversExpiredRevisionCommittedOnce \
+    TestRegisterOAuthMCPCapability_ExpiredClaimedMatchingCandidateWithoutFenceFailsClosed \
+    TestRegisterOAuthMCPCapability_SQLiteTwoHandleStableJTIExpiryRecovery \
     TestRegisterOAuthMCPCapability_CommittedRevisionThenError_RecoversExactCandidate \
     TestRegisterOAuthMCPCapability_PointerAndCompensationFailure_DoesNotPublishMatchingOrphan \
     TestRegisterOAuthMCPCapability_CrossSessionServiceCannotReplaceDuringRemoval \
@@ -51,10 +59,11 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestRegisterOAuthMCPCapability_ConcurrentReplaySharesOnePublication \
     TestRegisterOAuthMCPCapability_ConcurrentMixedIdentityN128 \
     TestRemoveOAuthMCPCapability_ContinuesPairLifetimeReceipt \
-    TestSignedOAuthMCPReconciler_Restart_ReattachesOnlyExactPublishedPair \
+    TestSignedOAuthMCPReconciler_Restart_ReattachesFrozenOwnerForLaterSubject \
     TestSignedOAuthMCPReconciler_SQLiteRestart_ReattachesPublishedPair \
     TestSignedOAuthMCPReconciler_ExpiredIncompleteNeutralizesCandidate \
     TestSignedOAuthMCPReconciler_ExpiredIncompleteRestoresBootLifecycle \
+    TestSignedOAuthMCPReconciler_CorruptExpiryAdmittedScanFailsBeforeSideEffects \
     TestSignedOAuthMCPReconciler_HistoricalPublishedPairCannotReattach \
     TestSignedOAuthMCPReconciler_RemovalDuringPrepareCannotRepublish \
     TestSignedOAuthMCPReconciler_TwoRegistriesRemovalCannotCrossPublicationFence \
@@ -67,7 +76,7 @@ assert_go_tests_pass "${P233B_TMP}/go-test.log" '-race -count=1 ./internal/agent
     TestSetOAuthProvider_FirstInstallCommitThenErrorRestoresUnsetAgent \
     TestSetOAuthProvider_BootLifecycleCommitThenErrorRestoresExactPrior
 
-assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./internal/agentcfg/drivers/statestore ./internal/tools/auth ./internal/tools/auth/drivers/tokenexchange ./internal/tools/drivers/mcp ./internal/protocol/types ./internal/protocol/transports/stream ./internal/runtime/serve' \
+assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./internal/agentcfg/drivers/statestore ./internal/tasks ./internal/tasks/drivers/durable ./internal/runtime/dispatch ./internal/tools/auth ./internal/tools/auth/drivers/tokenexchange ./internal/tools/drivers/mcp ./internal/protocol ./internal/protocol/types ./internal/protocol/transports/stream ./internal/runtime/serve' \
     'phase 233b: authenticated preparation, selective discovery errors, rollback, scope, and closed-wire regressions execute under race' \
     TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDiscovery \
     TestBearerInjectingTransport_StaleSignedPublisherNeverReachesNetwork \
@@ -95,6 +104,15 @@ assert_go_tests_pass "${P233B_TMP}/security-repair.log" '-race -count=1 ./intern
     TestDeactivateIfActive_TerminalOrCorruptFailsClosed \
     TestDeactivateIfActive_CASRaceNeverDeletesReplacement \
     TestBuildSignedCapability_RequestedScopeOutsideBootCeilingRejected \
+    TestSignedCapability_RegistrarActorAndInvokerSubjectAreSeparated \
+    TestAgentReachAdmission_SealedCaptureRestoreAndTamperDenial \
+    TestAgentReachAdmission_IdenticalSubjectResealIsIdempotent \
+    TestAgentReachAdmission_ConcurrentCaptureNoBleed \
+    TestDurable_RestartSurvival_TasksGroupsPatches \
+    TestExecutor_SpawnTask_InheritsExactAgentReachAdmission \
+    TestPerTaskRunLoopDriver_ForgedSDKAgentIDHasNoCredentialAdmission \
+    TestPerTaskRunLoopDriver_StampsEffectiveAgentConfigAdmission \
+    TestDispatchStart_NamedAgent_TwoCheckRule \
     TestRegisterOAuthMCPCapabilityWire_FieldSetsAreClosed \
     TestRegisterOAuthMCPCapabilityWire_HasNoCredentialOrSinkConfigurationField \
     TestAgentConfigHandler_RegisterOAuthMCPCapabilityRejectsForbiddenFieldsWithoutSideEffects

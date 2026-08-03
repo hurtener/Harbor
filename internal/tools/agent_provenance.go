@@ -23,7 +23,10 @@ import "context"
 // identity / events / audit ctx keys.
 type agentCtxKey int
 
-const invokingAgentCtxKey agentCtxKey = iota
+const (
+	invokingAgentCtxKey agentCtxKey = iota
+	effectiveAgentConfigCtxKey
+)
 
 // WithInvokingAgent returns a child ctx carrying agentID as the acting
 // agent's registration id (RFC §6.16 registration identity — provenance, not
@@ -47,6 +50,36 @@ func InvokingAgentFrom(ctx context.Context) (string, bool) {
 		return "", false
 	}
 	v, ok := ctx.Value(invokingAgentCtxKey).(string)
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
+}
+
+// WithEffectiveAgentConfig carries the effective agent-config selection that
+// admitted a run. The control surface establishes that selection only after
+// the verified caller's signed agent_reach authorizes it; the run loop then
+// carries it to pair-owned credentials. It is distinct from InvokingAgent:
+// the latter is boot-derived southbound attribution, while this value binds a
+// run to the agent configuration it is permitted to consume.
+//
+// This is an internal execution capability, never an isolation principal or a
+// Protocol field. An empty id carries no authority, so pair-owned credentials
+// fail closed for bare or incompletely admitted calls.
+func WithEffectiveAgentConfig(ctx context.Context, agentID string) context.Context {
+	if agentID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, effectiveAgentConfigCtxKey, agentID)
+}
+
+// EffectiveAgentConfigFrom returns the run's reach-admitted agent-config
+// selection. Absence means the caller has no runtime admission capability.
+func EffectiveAgentConfigFrom(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	v, ok := ctx.Value(effectiveAgentConfigCtxKey).(string)
 	if !ok || v == "" {
 		return "", false
 	}

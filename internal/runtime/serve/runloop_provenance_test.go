@@ -14,22 +14,31 @@ import (
 	"time"
 
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // provenanceProbePlanner records the invoking-agent provenance carried on
 // the ctx the RunLoop hands the planner, then finishes immediately.
 type provenanceProbePlanner struct {
-	got chan string // receives InvokingAgentFrom's value ("" when absent)
+	got       chan string // receives InvokingAgentFrom's value ("" when absent)
+	effective chan string // receives EffectiveAgentConfigFrom's value ("" when absent)
 }
 
 func (p *provenanceProbePlanner) Next(ctx context.Context, _ planner.RunContext) (planner.Decision, error) {
 	agentID, _ := tools.InvokingAgentFrom(ctx)
+	effectiveAgentID, _ := tools.EffectiveAgentConfigFrom(ctx)
 	select {
 	case p.got <- agentID:
+	default:
+	}
+	select {
+	case p.effective <- effectiveAgentID:
 	default:
 	}
 	return planner.Finish{Reason: planner.FinishGoal}, nil
@@ -49,7 +58,7 @@ func runProvenanceProbe(t *testing.T, agentConfigID string) string {
 	if err != nil {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
-	p := &provenanceProbePlanner{got: make(chan string, 1)}
+	p := &provenanceProbePlanner{got: make(chan string, 1), effective: make(chan string, 1)}
 	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
 		Bus:           bus,
 		RunLoop:       rl,
@@ -76,11 +85,76 @@ func runProvenanceProbe(t *testing.T, agentConfigID string) string {
 	}
 }
 
+func runEffectiveAgentConfigProbe(t *testing.T, agentConfigID string, admitted bool) string {
+	t.Helper()
+	red := auditpatterns.New()
+	bus := mkDriverTestBus(t, red)
+	reg := mkDriverTestTaskRegistry(t, bus, red)
+	steerReg := steering.NewRegistry()
+	coord := pauseresume.New(pauseresume.WithBus(bus))
+	rl, err := steering.NewRunLoop(steerReg, coord, steering.WithRunLoopBus(bus))
+	if err != nil {
+		t.Fatalf("steering.NewRunLoop: %v", err)
+	}
+	p := &provenanceProbePlanner{got: make(chan string, 1), effective: make(chan string, 1)}
+	sealer, err := toolauth.NewAESGCMSealer(make([]byte, toolauth.KEKSizeBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := tasks.NewAgentReachAdmissionAuthority(sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{Bus: bus, RunLoop: rl, Planner: p, Tasks: reg, AgentConfigID: agentConfigID, AgentReachAdmissions: authority})
+	if err != nil {
+		t.Fatalf("NewRunLoopDriver: %v", err)
+	}
+	if err := driver.Start(context.Background()); err != nil {
+		t.Fatalf("driver.Start: %v", err)
+	}
+	defer func() { _ = driver.Close(context.Background()) }()
+	spawnCtx, err := identity.With(context.Background(), runLoopDriverTestID)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	if admitted {
+		spawnCtx, err = authority.Admit(spawnCtx, runLoopDriverTestID, agentConfigID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := reg.Spawn(spawnCtx, tasks.SpawnRequest{
+		Identity: identity.Quadruple{Identity: runLoopDriverTestID}, Kind: tasks.KindForeground,
+		Query: "effective admission probe", AgentID: agentConfigID,
+	}); err != nil {
+		t.Fatalf("reg.Spawn: %v", err)
+	}
+	select {
+	case got := <-p.effective:
+		return got
+	case <-time.After(2 * time.Second):
+		t.Fatal("planner.Next never fired — driver did not pick up task.spawned")
+		return ""
+	}
+}
+
 // TestPerTaskRunLoopDriver_StampsInvokingAgentProvenance — the run loop
 // stamps its non-empty agentConfigID as ctx provenance at run start.
 func TestPerTaskRunLoopDriver_StampsInvokingAgentProvenance(t *testing.T) {
 	if got := runProvenanceProbe(t, "agent-prov-1"); got != "agent-prov-1" {
 		t.Fatalf("run ctx provenance = %q, want %q (run loop did not stamp WithInvokingAgent)", got, "agent-prov-1")
+	}
+}
+
+func TestPerTaskRunLoopDriver_StampsEffectiveAgentConfigAdmission(t *testing.T) {
+	if got := runEffectiveAgentConfigProbe(t, "agent-selected-1", true); got != "agent-selected-1" {
+		t.Fatalf("run ctx effective configuration = %q, want reach-admitted agent-selected-1", got)
+	}
+}
+
+func TestPerTaskRunLoopDriver_ForgedSDKAgentIDHasNoCredentialAdmission(t *testing.T) {
+	if got := runEffectiveAgentConfigProbe(t, "agent-selected-1", false); got != "" {
+		t.Fatalf("bare SDK AgentID minted credential admission %q", got)
 	}
 }
 

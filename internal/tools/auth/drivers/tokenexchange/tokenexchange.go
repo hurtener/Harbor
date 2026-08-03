@@ -1390,12 +1390,25 @@ func (p *provider) validateSignedCapabilityCaller(ctx context.Context, id identi
 	if p.signedBinding == nil {
 		return nil
 	}
-	if id.TenantID != p.signedBinding.TenantID || id.UserID != p.signedBinding.UserID || id.SessionID != p.signedBinding.SessionID {
-		return fmt.Errorf("%w: signed capability subject mismatch", auth.ErrIdentityRequired)
+	if id.TenantID != p.signedBinding.TenantID {
+		return fmt.Errorf("%w: signed capability tenant mismatch", auth.ErrIdentityRequired)
 	}
-	agentID, ok := tools.InvokingAgentFrom(ctx)
+	// Private MCP preparation happens only after registration/recovery has
+	// authenticated the exact signed pair. Normal data-plane use instead needs
+	// the run-loop's reach-admitted effective configuration selection. The
+	// boot-derived invoking-agent provenance is intentionally not reused here:
+	// it is an actor attribution value, not caller-selected configuration.
+	var (
+		agentID string
+		ok      bool
+	)
+	if auth.IsSignedCapabilityPreparation(ctx) {
+		agentID, ok = tools.InvokingAgentFrom(ctx)
+	} else {
+		agentID, ok = tools.EffectiveAgentConfigFrom(ctx)
+	}
 	if !ok || agentID == "" || agentID != p.signedBinding.AgentID {
-		return fmt.Errorf("%w: signed capability acting agent mismatch", auth.ErrIdentityRequired)
+		return fmt.Errorf("%w: signed capability effective agent mismatch", auth.ErrIdentityRequired)
 	}
 	return nil
 }
@@ -1405,6 +1418,15 @@ func (p *provider) validateSignedCapabilityCaller(ctx context.Context, id identi
 // local-only capability of pair-owned providers; general OAuth providers do
 // not implement it.
 func (p *provider) AuthorizeUse(ctx context.Context) error {
+	if p.signedBinding != nil {
+		id, err := p.identityFromCtx(ctx)
+		if err != nil {
+			return err
+		}
+		if err := p.validateSignedCapabilityCaller(ctx, id); err != nil {
+			return err
+		}
+	}
 	return p.authorizeSignedCapabilityUse(ctx)
 }
 

@@ -16,8 +16,9 @@ back — and no run will ever use it.
 This phase adds the missing argument, and answers the two questions the first draft got
 wrong. Both are settled here rather than left to the implementor:
 
-1. **The credential acting principal stays BOOT-DERIVED.** A caller-named agent changes
-   config projections. It does NOT change credential identity. §"Ruling A".
+1. **Signed-capability invocation is bound to the reach-admitted live run.** The
+   immutable registrar remains the pair's assertion/removal/audit identity; the
+   live verified `(tenant, user, session)` remains the exchange subject. §"Ruling A".
 2. **Validation accepts an agent if EITHER its id equals the runtime's configured
    default OR a config revision exists for `(tenant, agentID)`.** There is no
    registry-membership check to reuse — the one the first draft named does not exist —
@@ -98,60 +99,29 @@ registry lookup at all (Ruling B), and the owner tag is at `projection.go:184`
 per §4.2 item 11 a permanent deviation is reflected in the master plan's detail block in
 the SAME PR. Both corrections land here.
 
-## Ruling A — the credential acting principal stays boot-derived
+## Ruling A — signed-capability use carries authenticated live-run admission
 
-**Verified chain.** `internal/runtime/serve/runloop.go:1285`:
+Phase 233b/D-401 narrows the earlier Phase 215 credential assertion. The durable signed
+pair freezes its registrar for pair assertion, removal, and audit. That frozen identity
+does not make the registrar the later runtime caller: a tool call is authorized only when
+the run loop restored a durable, authenticated `control.start` reach receipt and stamped
+its exact effective agent with `tools.WithEffectiveAgentConfig`. A bare SDK context or a
+forged task agent id carries no such capability and fails closed.
 
-```go
-runCtx := tools.WithInvokingAgent(d.subCtx, d.agentConfigID)
-```
+The RFC 8693 exchange therefore preserves two distinct identities:
 
-`tools.WithInvokingAgent` (`internal/tools/agent_provenance.go:33`) stamps a ctx value;
-`tools.InvokingAgentFrom` (`:45`) reads it. It has two consumers:
+| value | source | purpose |
+|---|---|---|
+| signed pair actor | immutable registrar/pair binding | broker assertion, removal, and audit |
+| `subject_token` | verified live `(tenant, user, session)` run identity | the person/session for whom the exchange is minted |
+| effective agent-config | authenticated durable reach admission | exact selected-agent authorization for the pair |
 
-- `internal/tools/drivers/mcp/mcp.go:1400` — southbound `_meta.agent_id` attribution.
-- `internal/tools/auth/drivers/tokenexchange/tokenexchange.go:857-859` —
-  `form.Set("actor_token", agentID)` + `form.Set("actor_token_type", …)`, the RFC 8693
-  actor token, gated on the operator's `include_actor_token` opt-in.
-
-`internal/config/config.go:1330-1331` states verbatim: *"The actor token is the runtime's
-VERIFIED acting principal — never a client-supplied field."* `:1334-1341` documents that
-the exchanged token is cached at `(scope, tenant, user, source)` granularity with the
-acting principal **deliberately not in the key** — so within one cached token's TTL a
-second acting principal under the same `(tenant, user)` reuses a token minted under the
-first.
-
-**Ruling: `runloop.go:1285` continues to read `d.agentConfigID` — the BOOT value —
-unchanged.** A caller-named agent changes prompts, tools, skills, LLM overrides,
-completion hooks, naming policy and the reconcile legs. It changes NOTHING on the
-credential plane.
-
-Two independent reasons, either sufficient:
-
-1. **Threading the caller's value through would make a client-supplied string the RFC 8693
-   actor token**, contradicting the config godoc's own invariant by name and handing a
-   caller the ability to assert an acting principal to an external authorization server.
-   That is a §7 credential-plane change, not a control-surface convenience.
-2. **The cache would not honour it anyway.** Because the acting principal is not in the
-   cache key, a run naming agent B under an already-cached `(tenant, user)` would present
-   a token minted under agent A's assertion — the exchange would not even re-run. A
-   "fix" that threads the value through therefore produces an actor token that is
-   *sometimes* the named agent and *sometimes* a stale different one: silently
-   nondeterministic credential identity, which is the §13 silent-degradation shape on the
-   most sensitive plane Harbor has.
-
-**Consequence for the implementor: there are now TWO agent-id carriers on a run, with
-different provenance, and they must not be conflated.**
-
-| carrier | value | consumers | may a caller influence it? |
-|---|---|---|---|
-| `d.agentConfigID` → `tools.WithInvokingAgent` (`runloop.go:1285`) | boot-derived | MCP `_meta.agent_id`, RFC 8693 `actor_token` | **No** |
-| the run's effective config agent id (this phase) | caller-named, else boot | the eleven `projection.*` reads | Yes, after validation |
-
-This is stated as an acceptance criterion AND recorded in D-360 so a later contributor
-does not "unify" the two as a tidying refactor. If a future phase genuinely wants a
-caller-influenced actor token, the prerequisites are (i) the cache key gains the acting
-principal and (ii) an RFC PR on §7 — both named here so they are not re-derived.
+`tools.WithInvokingAgent(..., d.agentConfigID)` remains provenance for ordinary
+boot-configured attribution; it is not the signed-capability data-plane admission. The
+run loop must restore admission before it records `WithEffectiveAgentConfig`, and the
+pair-owned token-exchange provider must reject absent, wrong-agent, or wrong-tenant
+admission before contacting the broker. The immutable registrar and live invocation
+subject must not be conflated.
 
 ## Ruling B — the two-check validation rule
 
@@ -233,14 +203,16 @@ byte-identical to today.
   task exists — never substituted.
 - The named agent is persisted on the task and drives every one of the eleven
   `projection.*` reads for that run.
-- The credential plane is provably untouched (Ruling A), pinned by a test.
+- Signed-capability use is provably bound to the authenticated live run while preserving
+  immutable registrar/removal/audit identity (Ruling A), pinned by tests.
 
 ## Non-goals
 
 - **Any change to how a run binds an agent when none is named.** Unchanged for every
   caller that omits the field.
-- **Any change to the credential plane.** Ruling A. No change to `tools.WithInvokingAgent`,
-  its call site, the token-exchange actor token, or the token cache key.
+- **A caller-writable credential identity.** Ruling A keeps registration/removal/audit
+  identity immutable and admits data-plane use only from the verified live run; it does
+  not add a wire-selected actor, credential, or sink.
 - **`SessionRow.agent_id` / `agent_name`.** D-309 stands; see the departure section. The
   session projector is not touched and its field-set pin test is not relaxed.
 - **A new entitlement or publication plane.** "Which agents may this user run" and "which
@@ -313,13 +285,11 @@ criterion pins it.
       A `start` naming `harbor-dev-agent` on a runtime that has never had a revision
       written for it succeeds — check (i). Mutation-verified: deleting check (i) must turn
       this into a FAIL.
-- [ ] **CREDENTIAL PLANE UNCHANGED (Ruling A).** `runloop.go:1285` still reads
-      `d.agentConfigID`. A run naming agent B under a runtime booted as agent A stamps
-      `_meta.agent_id = A` southbound and, with `include_actor_token: true`, sends
-      `actor_token = A`. Asserted directly, not by inspection: a test drives a
-      caller-named run through the MCP `_meta` builder
-      (`internal/tools/drivers/mcp/mcp.go:1400`) and through the token-exchange form
-      builder (`tokenexchange.go:857`) and asserts the BOOT value on both.
+- [ ] **SIGNED-CAPABILITY ADMISSION (Ruling A).** A signed pair preserves its immutable
+      registrar for assertion/removal/audit, but a later tool call succeeds only with the
+      durable authenticated effective-agent admission restored for the live run. Tests
+      prove two live sessions may invoke the pair, while absent admission, a wrong agent,
+      or a wrong tenant are refused before broker I/O.
 - [ ] **The run's effective config agent id is per-run state, never a field on
       `RunLoopDriver`.** It is a local in `runOne` threaded as a parameter (the shape the
       projections already take), or an equivalent per-run ctx value — D-025. A mutable
@@ -373,11 +343,12 @@ internal/tasks/
 internal/runtime/serve/
 ├── runloop.go                # the per-run effective agent id: tasks.Get moves
 │                             #   above reconcileConnections (:840/:849); the
-│                             #   eleven projection reads take it; :1285 UNCHANGED
+│                             #   eleven projection reads take it; signed-pair use
+│                             #   restores authenticated effective-agent admission
 ├── mux.go                    # wires the agent resolver onto the control surface
 │                             #   from the same AgentConfig registry + AgentConfigID
 │                             #   it already holds (:107, :384)
-└── runloop_agent_selection_test.go  # NEW — incl. the credential-plane pin
+└── runloop_agent_selection_test.go  # NEW — incl. the signed-admission pin
 
 harbortest/devstack/devstack.go      # the twin (§17.6)
 
@@ -414,9 +385,9 @@ type StartRequest struct {
     // or when a config revision exists for the caller's tenant; anything
     // else is refused, never substituted — a caller that named A and
     // silently got B was told it succeeded, which is the defect this field
-    // closes. It selects CONFIGURATION only: the run's southbound
-    // provenance and its RFC 8693 acting principal remain the runtime's
-    // boot-derived value and are never influenced by this field.
+    // closes. A signed-capability use additionally requires durable
+    // authenticated reach admission for the exact effective agent; the field
+    // alone grants no credential authority.
     AgentID string `json:"agent_id,omitempty"`
 }
 
@@ -469,11 +440,11 @@ type Task struct {
 - **Unit** (`internal/runtime/serve/runloop_agent_selection_test.go`): the per-run
   effective agent id drives each of the eleven projection reads (table-driven over the
   projection functions, two agents with divergent revisions); a run whose task carries no
-  `AgentID` resolves the boot value; **the credential-plane pin** — a run whose task names
-  agent B under a runtime booted as agent A asserts `tools.InvokingAgentFrom(runCtx) == A`,
-  that the MCP `_meta` builder emits `agent_id: A`, and that the token-exchange form
-  carries `actor_token = A`. Mutation-verified: threading the named value into
-  `runloop.go:1285` must fail this test.
+  `AgentID` resolves the boot value; **the signed-capability pin** — a reach-admitted run
+  stamps the exact effective agent for pair-owned credentials, while a forged SDK task
+  does not mint that admission. Token-exchange coverage proves immutable registrar actor
+  material is distinct from the live verified subject and denies absent/wrong admission
+  before broker I/O.
 - **Integration** (`test/integration/agent_selection_test.go`, §17.1 — this phase consumes
   the agent-config registry's surface and closes the edge↔run-loop seam): real
   StateStore-backed `agentcfg.Registry`, real task registry, real control transport.
@@ -514,11 +485,12 @@ type Task struct {
    exists" property, which a status-code-only assertion would not catch).
 5. `start` with an `agent_id` registered under another tenant → the response body is
    byte-identical to step 4's (the non-oracle property).
-6. A static guard that `internal/runtime/serve/runloop.go`'s `tools.WithInvokingAgent`
-   call site still passes `d.agentConfigID` and not a task-derived value — the Ruling A
-   trip-wire, cheap and mechanical, so a later "unification" refactor fails preflight.
+6. Static guards prove the run loop restores authenticated reach admission before it
+   stamps `tools.WithEffectiveAgentConfig`, and prove the pair-owned provider reads that
+   capability rather than boot provenance for normal data-plane use — the Ruling A
+   trip-wire, cheap and mechanical, so a later authority conflation fails preflight.
 7. `go test -race` gates on the edge-validation suite, the run-loop selection suite
-   (including the credential-plane pin) and the integration test.
+   (including the signed-admission pin) and the integration test.
 
 ## Coverage target
 
@@ -585,9 +557,9 @@ already takes `agentID` as an ordinary parameter, so the package gains no lines.
 
 - **Caller-named agent** — an agent explicitly identified on a run-start request
   (`StartRequest.agent_id`), as opposed to the runtime's configured default. Accepted only
-  under the two-check rule; refused loudly otherwise, never substituted. Selects
-  CONFIGURATION only — the run's southbound provenance and RFC 8693 acting principal stay
-  boot-derived (D-360).
+  under the two-check rule; refused loudly otherwise, never substituted. A
+  signed-capability invocation also requires the exact durable authenticated reach
+  admission; selection alone grants no credential authority (D-360, D-401).
 - **Agent-selection two-check rule** — the edge validation a caller-named agent passes: its
   id equals the runtime's configured default agent id, OR a `ConfigScopeAgent` revision
   exists for `(caller tenant, agent id)`. Neither the agent registry nor a base revision is
@@ -597,9 +569,9 @@ already takes `agentID` as an ordinary parameter, so the package gains no lines.
   nobody has configured, which is the default agent's normal state
   (`internal/agentcfg/agentcfg.go:555-557`). D-360.
 
-The existing **Agent provenance** entry (`docs/glossary.md:18`) is reconciled with the two
-carriers Ruling A separates: it gains a sentence stating that the provenance `agent_id` is
-boot-derived and is NOT the caller-named selection field.
+The existing **Agent provenance** entry (`docs/glossary.md:18`) remains distinct from the
+authenticated effective-agent capability: provenance is attribution, while signed-pair
+use requires the durable reach admission named in Ruling A.
 
 ## Pre-merge checklist
 
@@ -617,8 +589,8 @@ boot-derived and is NOT the caller-named selection field.
 - [ ] **Integration test exists** — real drivers on the seam, identity propagation
       asserted, ≥2 failure modes (foreign-tenant refusal with no task row; a resolver
       store error failing loud rather than defaulting), under `-race`
-- [ ] The credential-plane pin passes and the static smoke guard on `runloop.go:1285` is in
-      place
+- [ ] The signed-admission pin passes and the static smoke guards for restored reach
+      admission and effective-agent enforcement are in place
 - [ ] `docs/plans/README.md`'s Phase 215 row is flipped to `Shipped` and its two false
       claims are corrected (§4.2 item 11)
 - [ ] Glossary updated (two new terms + the Agent-provenance reconciliation)

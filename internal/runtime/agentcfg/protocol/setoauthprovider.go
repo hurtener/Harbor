@@ -194,7 +194,7 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 						return nil, recErr
 					}
 				}
-				_, restoreErr := restorePreOperationAuthority(cleanupCtx, s.registry, q, req.AgentID, candidate, prevActiveRevID, "")
+				restoreErr := restorePreOperationAuthority(cleanupCtx, s.registry, q, req.AgentID, candidate, prevActiveRevID, "")
 				return nil, errors.Join(recErr, restoreErr)
 			}
 			rev = written
@@ -203,7 +203,7 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 				// owner collision) — roll the just-written revision back so the call
 				// has NO observable effect, then return the install error loud.
 				if hasActive {
-					if _, rbErr := restorePreOperationAuthority(ctx, s.registry, q, req.AgentID, rev, prevActiveRevID, ""); rbErr != nil {
+					if rbErr := restorePreOperationAuthority(ctx, s.registry, q, req.AgentID, rev, prevActiveRevID, ""); rbErr != nil {
 						return nil, fmt.Errorf("provider install failed AND revision rollback failed (state may be inconsistent): %w", errors.Join(instErr, rbErr))
 					}
 				}
@@ -215,7 +215,7 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 					errs = append(errs, e)
 				}
 				if hasActive {
-					if _, e := restorePreOperationAuthority(ctx, s.registry, q, req.AgentID, rev, prevActiveRevID, ""); e != nil {
+					if e := restorePreOperationAuthority(ctx, s.registry, q, req.AgentID, rev, prevActiveRevID, ""); e != nil {
 						errs = append(errs, e)
 					}
 				} else {
@@ -274,7 +274,7 @@ func (s *Service) compensateFirstProviderInstall(ctx context.Context, q identity
 			if candidate.ContentHash != fence.CandidateContentHash {
 				continue
 			}
-			if _, restoreErr := restorePreOperationAuthority(cleanupCtx, s.registry, q, agentID, candidate, fence.PriorRevisionID, fence.OperationKind); restoreErr != nil {
+			if restoreErr := restorePreOperationAuthority(cleanupCtx, s.registry, q, agentID, candidate, fence.PriorRevisionID, fence.OperationKind); restoreErr != nil {
 				errs = append(errs, restoreErr)
 			}
 			break

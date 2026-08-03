@@ -17,6 +17,17 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Signed OAuth MCP capability dispatch now keeps immutable registrar identity
+  for the broker actor assertion, removal, and audit while exchanging and
+  caching for the verified live run subject. Reconciliation reattaches through
+  the frozen owner receipt for a later same-tenant subject. An authenticated durable
+  `control.start` admission receipt now gates the exact effective agent across
+  restart and child spawns, so denied, tampered, or bare SDK-created tasks
+  cannot use a cached bearer. No Protocol wire or runtime configuration
+  surface changed.
+
 ## [1.26.2] — 2026-08-03
 
 ### Fixed
@@ -78,6 +89,12 @@ client actions below are required for a safe upgrade.
    retirement automation.
 
 ### Security
+
+- Stable-JTI signed OAuth MCP registration now durably admits expiry before
+  compensation and can resume the same exact operation with a later freshly
+  verified envelope. Recovery preserves the original registrar and receipt,
+  restores only the frozen prior/absent authority, and cannot reopen published,
+  removal, removed, or widened bindings.
 
 - Signed OAuth MCP capability registration now recovers only exact durable
   signed pairs at boot and run start. Recovery verifies the pair descriptor,

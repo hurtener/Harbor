@@ -47,6 +47,10 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if !ok || providerPreparer == nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
 	}
+	exactDetacher, ok := s.detacher.(ExactConnectionDetacher)
+	if !ok || exactDetacher == nil {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
+	}
 	canonicalURL, sink, err := agentcfg.CanonicalOAuthMCPURL(req.Connection.URL)
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: %w", ErrInvalidSignedCapabilityDescriptor, err)
@@ -117,7 +121,12 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
-	q := identity.Quadruple{Identity: id}
+	op, err = s.resumeAndRenewSignedOAuthMCPAuthority(ctx, physical, exactDetacher, op, operationKey, binding, claims.ExpiresAt.Time)
+	if err != nil {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+	}
+	ownerID := identity.Identity{TenantID: op.Binding.TenantID, UserID: op.Binding.UserID, SessionID: op.Binding.SessionID}
+	q := identity.Quadruple{Identity: ownerID}
 	operationCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, operationKind)
 	if op.Phase == agentcfg.SignedOAuthMCPPhasePublished {
 		if err := s.commitSignedOAuthMCPFence(ctx, id.TenantID, req.AgentID, operationKind, op); err != nil {
@@ -127,9 +136,6 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	active, hasActive, err := s.registry.Active(operationCtx, q, req.AgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
-	}
-	if !op.ExpiresAt.After(s.now().UTC()) && (op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed || op.Phase == agentcfg.SignedOAuthMCPPhaseRevisionCommitted) {
-		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: incomplete authority operation has expired", agentcfg.ErrSignedCapabilityAuthority)
 	}
 	if op.Phase == agentcfg.SignedOAuthMCPPhasePublished {
 		if hasActive && signedCapabilityPairMatchesOperation(active.Payload.SignedOAuthMCPPair, id.TenantID, binding, operationKind) {
@@ -177,7 +183,29 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		if hasActive {
 			priorRevisionID = active.RevisionID
 		}
-		if _, err := s.signedOAuthMCPFences.Begin(ctx, id.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID); err != nil {
+		if op.AuthorityGeneration > 1 && op.ExpiredAttemptCount > 0 {
+			fence, fenceErr := s.signedOAuthMCPFences.Load(ctx, ownerID.TenantID, req.AgentID)
+			switch {
+			case fenceErr == nil && fence.Phase == agentcfg.SignedOAuthMCPFenceAborted &&
+				fence.OperationKind == operationKind && fence.Fingerprint == op.Fingerprint &&
+				fence.CandidateRevisionID == op.LastExpiredRevisionID:
+				if _, err := s.signedOAuthMCPFences.ReopenForRenewedAuthority(ctx, fence, op, candidateHash, priorRevisionID); err != nil {
+					return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+				}
+			case fenceErr == nil && fence.Phase == agentcfg.SignedOAuthMCPFenceCommitted:
+				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: committed foreign activation fence cannot be replaced by renewal", agentcfg.ErrSignedCapabilityPending)
+			case fenceErr != nil && !errors.Is(fenceErr, state.ErrNotFound):
+				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fenceErr
+			default:
+				begun, err := s.signedOAuthMCPFences.Begin(ctx, ownerID.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID)
+				if err != nil {
+					return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+				}
+				if begun.Phase != agentcfg.SignedOAuthMCPFencePending {
+					return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: renewed activation fence did not become pending", agentcfg.ErrSignedCapabilityPending)
+				}
+			}
+		} else if _, err := s.signedOAuthMCPFences.Begin(ctx, ownerID.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID); err != nil {
 			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 		}
 		fenceCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, operationKind)
@@ -227,7 +255,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
-	attachCtx := tools.WithInvokingAgent(ctx, req.AgentID)
+	attachCtx := tools.WithEffectiveAgentConfig(tools.WithInvokingAgent(ctx, req.AgentID), req.AgentID)
 	preparedConnection, err := s.preparer.PrepareConnection(attachCtx, AttachRequest{
 		Identity: id, AgentID: req.AgentID, Name: connection.Name, Transport: agentcfg.MCPTransportHTTP,
 		URL: canonicalURL, OAuthProvider: providerName, OAuthProviderOverride: preparedProvider.Binding(), OwnOAuthProvider: true,
@@ -278,6 +306,84 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
 	return signedCapabilityResponse(rev, providerName, connection.Name), nil
+}
+
+func (s *Service) resumeAndRenewSignedOAuthMCPAuthority(ctx context.Context, physical physicalActiveRegistry, exactDetacher ExactConnectionDetacher, op agentcfg.SignedOAuthMCPOperation, key agentcfg.SignedOAuthMCPReplayKey, binding agentcfg.SignedOAuthMCPBinding, verifiedExpiresAt time.Time) (agentcfg.SignedOAuthMCPOperation, error) {
+	if op.ReplayKey != key || op.Fingerprint != agentcfg.SignedOAuthMCPPairFingerprint(binding) {
+		return agentcfg.SignedOAuthMCPOperation{}, fmt.Errorf("%w: renewed authority does not bind the claimed operation", agentcfg.ErrSignedCapabilityReplay)
+	}
+	ownerQ, err := signedCapabilityOwnerQuadruple(key.TenantID, op.Binding)
+	if err != nil {
+		return agentcfg.SignedOAuthMCPOperation{}, err
+	}
+	expiry := &SignedOAuthMCPReconciler{
+		registry: s.registry, physical: physical, operations: s.signedOAuthMCPOperations,
+		fences: s.signedOAuthMCPFences, exactDetacher: exactDetacher,
+	}
+	for range 6 {
+		switch op.Phase {
+		case agentcfg.SignedOAuthMCPPhaseClaimed, agentcfg.SignedOAuthMCPPhaseRevisionCommitted:
+			if op.ExpiresAt.Add(agentcfg.SignedOAuthMCPAuthorityClockSkew).After(s.now().UTC()) {
+				return op, nil
+			}
+			if !verifiedExpiresAt.After(op.ExpiresAt) {
+				return agentcfg.SignedOAuthMCPOperation{}, fmt.Errorf("%w: renewed authority expiry is not later", agentcfg.ErrSignedCapabilityAuthority)
+			}
+			candidateRevisionID := ""
+			if op.Phase == agentcfg.SignedOAuthMCPPhaseRevisionCommitted {
+				candidateRevisionID = op.RevisionID
+			} else {
+				active, set, activeErr := physical.PhysicalActive(ctx, ownerQ, binding.AgentID, agentcfg.ConfigScopeAgent)
+				if activeErr != nil {
+					return agentcfg.SignedOAuthMCPOperation{}, activeErr
+				}
+				operationKind, kindErr := s.signedOAuthMCPOperations.Kind(key)
+				if kindErr != nil {
+					return agentcfg.SignedOAuthMCPOperation{}, kindErr
+				}
+				if set && signedCapabilityPairMatchesOperation(active.Payload.SignedOAuthMCPPair, key.TenantID, op.Binding, operationKind) {
+					candidateRevisionID = active.RevisionID
+				}
+			}
+			op, err = s.signedOAuthMCPOperations.AdmitExpiry(ctx, op, candidateRevisionID, s.now().UTC())
+			if err != nil {
+				op, err = s.signedOAuthMCPOperations.Load(context.WithoutCancel(ctx), key)
+				if err != nil {
+					return agentcfg.SignedOAuthMCPOperation{}, err
+				}
+				continue
+			}
+		case agentcfg.SignedOAuthMCPPhaseExpiryAdmitted:
+			if err := expiry.resumeExpiryCompensation(ctx, ownerQ, binding.AgentID, op); err != nil {
+				latest, loadErr := s.signedOAuthMCPOperations.Load(context.WithoutCancel(ctx), key)
+				if loadErr != nil || latest.Phase == agentcfg.SignedOAuthMCPPhaseExpiryAdmitted {
+					return agentcfg.SignedOAuthMCPOperation{}, errors.Join(err, loadErr)
+				}
+				op = latest
+				continue
+			}
+			op, err = s.signedOAuthMCPOperations.Load(ctx, key)
+			if err != nil {
+				return agentcfg.SignedOAuthMCPOperation{}, err
+			}
+		case agentcfg.SignedOAuthMCPPhaseExpiredIncomplete:
+			renewed, renewErr := s.signedOAuthMCPOperations.RenewAuthority(ctx, op, key, binding, verifiedExpiresAt)
+			if renewErr == nil {
+				return renewed, nil
+			}
+			latest, loadErr := s.signedOAuthMCPOperations.Load(context.WithoutCancel(ctx), key)
+			if loadErr != nil {
+				return agentcfg.SignedOAuthMCPOperation{}, errors.Join(renewErr, loadErr)
+			}
+			if latest.Phase == agentcfg.SignedOAuthMCPPhaseClaimed && latest.ExpiresAt.Equal(verifiedExpiresAt.UTC()) && latest.Fingerprint == op.Fingerprint {
+				return latest, nil
+			}
+			op = latest
+		default:
+			return op, nil
+		}
+	}
+	return agentcfg.SignedOAuthMCPOperation{}, fmt.Errorf("%w: authority renewal did not converge", agentcfg.ErrSignedCapabilityPending)
 }
 
 func signedCapabilityExchangeBinding(binding agentcfg.SignedOAuthMCPBinding, sink, operationKind string, op agentcfg.SignedOAuthMCPOperation, authorizer toolauth.SignedCapabilityUseAuthorizer) toolauth.SignedCapabilityExchangeBinding {

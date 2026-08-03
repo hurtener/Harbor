@@ -9,6 +9,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tasks/engine"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // seeder exposes the two driver-internal helpers the conformance suite
@@ -43,7 +44,19 @@ func TestDurable_RestartSurvival_TasksGroupsPatches(t *testing.T) {
 	if err := r1.MarkComplete(ctx, done.ID, tasks.TaskResult{Value: []byte(`{"answer":42}`)}); err != nil {
 		t.Fatalf("MarkComplete: %v", err)
 	}
-	pending, err := r1.Spawn(ctx, tasks.SpawnRequest{Identity: id, Kind: tasks.KindForeground, Description: "pending-task"})
+	sealer, err := toolauth.NewAESGCMSealer(make([]byte, toolauth.KEKSizeBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := tasks.NewAgentReachAdmissionAuthority(sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admittedCtx, err := authority.Admit(ctx, id.Identity, "agent-restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := r1.Spawn(admittedCtx, tasks.SpawnRequest{Identity: id, Kind: tasks.KindForeground, Description: "pending-task"})
 	if err != nil {
 		t.Fatalf("Spawn pending: %v", err)
 	}
@@ -95,6 +108,9 @@ func TestDurable_RestartSurvival_TasksGroupsPatches(t *testing.T) {
 	}
 	if gotPending.Status != tasks.StatusPending {
 		t.Errorf("pending task status = %q, want Pending", gotPending.Status)
+	}
+	if _, gotAgent, admitted := authority.Restore(context.Background(), gotPending); !admitted || gotAgent != "agent-restart" {
+		t.Errorf("pending task admission after restart = (%q, %v), want (agent-restart, true)", gotAgent, admitted)
 	}
 
 	// List returns all three tasks.

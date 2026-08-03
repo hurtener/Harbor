@@ -121,7 +121,7 @@ func TestBuildSignedCapability_ProductionBuilder_BindsExchangeAndCloseKillsCache
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = tools.WithInvokingAgent(ctx, "agent")
+	ctx = tools.WithEffectiveAgentConfig(ctx, "agent")
 	first, err := provider.Token(ctx, tools.ToolSourceID("provider"))
 	if err != nil || first.AccessToken != "fixture-downstream-token" {
 		t.Fatalf("first token: %+v err=%v", first, err)

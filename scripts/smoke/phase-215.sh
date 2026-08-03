@@ -55,18 +55,19 @@ else
     fail "phase 215 static: agent_id absent from StartRequest in wire-manifest.gen.json — regenerate with 'make protocol-ts-gen' (D-223 lockstep)"
 fi
 
-# --- RULING A TRIP-WIRE (the one this smoke exists to protect long-term).
-#     The run loop's southbound-provenance call site MUST keep reading the
-#     BOOT value. A later "unification" refactor that threads the run's
-#     effective (caller-named) agent into WithInvokingAgent would make a
-#     client-supplied string the RFC 8693 actor_token — a credential-plane
-#     change. Cheap and mechanical, so it fails preflight, not review. ---
-if grep -q 'tools.WithInvokingAgent(d.subCtx, d.agentConfigID)' internal/runtime/serve/runloop.go 2>/dev/null; then
-    ok "phase 215 static: WithInvokingAgent still stamps the BOOT agent id (the credential plane is untouched)"
-elif grep -q 'tools.WithInvokingAgent' internal/runtime/serve/runloop.go 2>/dev/null; then
-    fail "phase 215 static: runloop.go's WithInvokingAgent no longer passes d.agentConfigID — a caller-named agent must NEVER reach the RFC 8693 actor_token"
+# --- RULING A TRIP-WIRE. A signed pair's immutable registrar remains its
+#     assertion/removal/audit identity, but normal data-plane use MUST carry
+#     the exact effective agent restored from durable authenticated reach
+#     admission. Keep the two channels distinct. ---
+if grep -q 'admissionCtx, admittedAgentID, agentReachAdmitted := d.agentReachAdmissions.Restore(d.subCtx, task)' internal/runtime/serve/runloop.go 2>/dev/null \
+    && grep -q 'runCtx = tools.WithEffectiveAgentConfig(runCtx, effectiveAgentID)' internal/runtime/serve/runloop.go 2>/dev/null \
+    && grep -q 'agentID, ok = tools.EffectiveAgentConfigFrom(ctx)' internal/tools/auth/drivers/tokenexchange/tokenexchange.go 2>/dev/null; then
+    ok "phase 215 static: signed-capability use is bound to restored reach admission, not boot provenance"
+elif grep -q 'tools.WithEffectiveAgentConfig' internal/runtime/serve/runloop.go 2>/dev/null \
+    || grep -q 'EffectiveAgentConfigFrom' internal/tools/auth/drivers/tokenexchange/tokenexchange.go 2>/dev/null; then
+    fail "phase 215 static: signed-capability admission is incomplete — restore reach receipt, stamp effective agent, and require it at token exchange"
 else
-    skip "phase 215 static: no WithInvokingAgent call site in runloop.go (unexpected build shape)"
+    fail "phase 215 static: signed-capability admission seams absent — this shipped phase must restore reach admission, stamp the effective agent, and enforce it at token exchange"
 fi
 
 # --- The run-start ORDERING guard: tasks.Get must precede

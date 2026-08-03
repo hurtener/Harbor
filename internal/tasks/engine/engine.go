@@ -183,6 +183,7 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	if err := tasks.ValidateRequest(req); err != nil {
 		return tasks.TaskHandle{}, err
 	}
+	agentReachAdmission := tasks.CaptureAgentReachAdmission(ctx, req.Identity.Identity, req.AgentID)
 	propagate := req.PropagateOnCancel
 	if propagate == "" {
 		propagate = tasks.PropagateCascade
@@ -194,7 +195,7 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	// Idempotency check: same (tenant, user, session, IdempotencyKey)
 	// seen? Empty IdempotencyKey disables dedup (every Spawn yields a
 	// fresh handle).
-	contentHash := spawnRequestContentHash(req)
+	contentHash := spawnRequestContentHash(req, agentReachAdmission)
 	if req.IdempotencyKey != "" {
 		idemK := idemKeyFor(req.Identity.Identity, req.IdempotencyKey)
 		if existing, ok := e.idemIdx[idemK]; ok {
@@ -206,7 +207,7 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 				// the stale entry and spawn fresh.
 				delete(e.idemIdx, idemK)
 			} else {
-				if !spawnRequestsEqual(stored, existing.ContentHash, req, contentHash, propagate) {
+				if !spawnRequestsEqual(stored, existing.ContentHash, req, contentHash, propagate, agentReachAdmission) {
 					return tasks.TaskHandle{}, fmt.Errorf("%w: key=%q",
 						tasks.ErrIdempotencyConflict, req.IdempotencyKey)
 				}
@@ -298,7 +299,8 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		OutputSchema: outputSchema,
 		// the caller-named agent (edge-validated; "" = the runtime's
 		// configured default).
-		AgentID: req.AgentID,
+		AgentID:             req.AgentID,
+		AgentReachAdmission: agentReachAdmission,
 		// the caller-supplied memory block (edge-validated; nil = none).
 		CallerMemory:          callerMemory,
 		CallerMemoryWireBytes: len(req.CallerMemory),
@@ -455,6 +457,13 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 		p := *t.ParentTaskID
 		cp.ParentTaskID = &p
 	}
+	if t.AgentReachAdmission != nil {
+		admission := tasks.AgentReachAdmission{
+			Envelope:      append([]byte(nil), t.AgentReachAdmission.Envelope...),
+			BindingDigest: append([]byte(nil), t.AgentReachAdmission.BindingDigest...),
+		}
+		cp.AgentReachAdmission = &admission
+	}
 	return &cp, nil
 }
 
@@ -609,6 +618,13 @@ func copyTask(t *tasks.Task) *tasks.Task {
 	if t.ParentTaskID != nil {
 		p := *t.ParentTaskID
 		cp.ParentTaskID = &p
+	}
+	if t.AgentReachAdmission != nil {
+		admission := tasks.AgentReachAdmission{
+			Envelope:      append([]byte(nil), t.AgentReachAdmission.Envelope...),
+			BindingDigest: append([]byte(nil), t.AgentReachAdmission.BindingDigest...),
+		}
+		cp.AgentReachAdmission = &admission
 	}
 	return &cp
 }
@@ -1192,7 +1208,7 @@ func (e *Engine) redactRawJSON(ctx context.Context, raw json.RawMessage) (json.R
 // caller that resends the same key with new bytes hits the conflict
 // path even when the redactor produces identical post-redaction
 // strings (e.g. both inputs contain only secret-shaped tokens).
-func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.SpawnRequest, reqHash [32]byte, propagate string) bool {
+func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.SpawnRequest, reqHash [32]byte, propagate string, admission *tasks.AgentReachAdmission) bool {
 	if existing.Identity != req.Identity {
 		return false
 	}
@@ -1239,6 +1255,9 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	// reused idempotency key naming a DIFFERENT agent must surface as a
 	// loud conflict, never silently adopt the original task's agent.
 	if existing.AgentID != req.AgentID {
+		return false
+	}
+	if !tasks.AgentReachAdmissionsEqual(existing.AgentReachAdmission, admission) {
 		return false
 	}
 	// The caller-supplied memory block is part of the task's content
@@ -1289,7 +1308,7 @@ func stringSliceEqual(a, b []string) bool {
 // The separator byte (0x1F — ASCII Unit Separator) prevents
 // preimage attacks where two distinct (Description, Query) pairs
 // concatenate to the same byte sequence ("ab" + "c" vs "a" + "bc").
-func spawnRequestContentHash(req tasks.SpawnRequest) [32]byte {
+func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReachAdmission) [32]byte {
 	h := sha256.New()
 	h.Write([]byte(req.Description))
 	h.Write([]byte{0x1F})
@@ -1329,6 +1348,10 @@ func spawnRequestContentHash(req tasks.SpawnRequest) [32]byte {
 	if req.AgentID != "" {
 		h.Write([]byte{0x1F})
 		h.Write([]byte(req.AgentID))
+	}
+	if admission != nil {
+		h.Write([]byte{0x1F})
+		h.Write(admission.BindingDigest)
 	}
 	// fold the caller-supplied memory block in so "same key, different
 	// caller_memory" surfaces as ErrIdempotencyConflict rather than a

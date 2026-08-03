@@ -3,13 +3,206 @@ package agentcfg
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	statesqlite "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 )
+
+func TestSignedOAuthMCPOperationStore_ExpiryAdmissionRenewalIsExactAndCASBound(t *testing.T) {
+	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	ops, _ := NewSignedOAuthMCPOperationStore(store)
+	key := SignedOAuthMCPReplayKey{TenantID: "tenant-a", TrustAnchorName: "anchor", Issuer: "issuer", KeyID: "kid", JTI: "stable-jti"}
+	binding := SignedOAuthMCPBinding{TenantID: "tenant-a", UserID: "registrar", SessionID: "session", AgentID: "agent", Broker: "broker", ProviderName: "provider", CapabilityRevision: "1", URLDigest: "url", SinkDigest: "sink", Audience: "aud", Scopes: []string{"read"}, Connection: SignedOAuthMCPConnectionDescriptor{Name: "server", URL: "https://example.test/mcp"}}
+	expiry := time.Now().UTC().Add(-time.Hour)
+	claimed, _, err := ops.Claim(context.Background(), key, binding, expiry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := ops.AdmitExpiry(context.Background(), claimed, "", time.Now().UTC())
+	if err != nil || admitted.Phase != SignedOAuthMCPPhaseExpiryAdmitted || admitted.ExpiryFromPhase != SignedOAuthMCPPhaseClaimed || admitted.ExpiredAttemptCount != 1 {
+		t.Fatalf("admit expiry = %+v err=%v", admitted, err)
+	}
+	if _, err := ops.RenewAuthority(context.Background(), admitted, key, binding, time.Now().Add(time.Hour)); !errors.Is(err, ErrSignedCapabilityReplay) {
+		t.Fatalf("renew before compensation = %v, want replay refusal", err)
+	}
+	completed, err := ops.CompleteExpiry(context.Background(), admitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutations := map[string]func(*SignedOAuthMCPBinding){
+		"scope":      func(b *SignedOAuthMCPBinding) { b.Scopes = []string{"read", "write"} },
+		"sink":       func(b *SignedOAuthMCPBinding) { b.SinkDigest = "other-sink" },
+		"audience":   func(b *SignedOAuthMCPBinding) { b.Audience = "other-audience" },
+		"registrar":  func(b *SignedOAuthMCPBinding) { b.UserID = "other-user" },
+		"connection": func(b *SignedOAuthMCPBinding) { b.Connection.Name = "other-server" },
+	}
+	for name, mutate := range mutations {
+		changed := binding
+		mutate(&changed)
+		if _, err := ops.RenewAuthority(context.Background(), completed, key, changed, time.Now().Add(time.Hour)); !errors.Is(err, ErrSignedCapabilityReplay) {
+			t.Fatalf("%s binding renewal = %v, want replay refusal", name, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			_, renewErr := ops.RenewAuthority(context.Background(), completed, key, binding, time.Now().Add(time.Hour))
+			results <- renewErr
+		}()
+	}
+	wg.Wait()
+	close(results)
+	winners := 0
+	for renewErr := range results {
+		if renewErr == nil {
+			winners++
+		} else if !errors.Is(renewErr, ErrSignedCapabilityReplay) {
+			t.Fatalf("concurrent renewal error = %v", renewErr)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("concurrent renewal winners = %d, want 1", winners)
+	}
+	renewed, err := ops.Load(context.Background(), key)
+	if err != nil || renewed.Phase != SignedOAuthMCPPhaseClaimed || renewed.AuthorityGeneration != 2 || renewed.LastExpiredAt.IsZero() {
+		t.Fatalf("renewed receipt = %+v err=%v", renewed, err)
+	}
+	if _, err := ops.RenewAuthority(context.Background(), renewed, key, binding, time.Now().Add(2*time.Hour)); !errors.Is(err, ErrSignedCapabilityReplay) {
+		t.Fatalf("nonterminal claimed reopen = %v, want replay refusal", err)
+	}
+	committed, err := ops.Advance(context.Background(), renewed, SignedOAuthMCPPhaseRevisionCommitted, "revision-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err := ops.Advance(context.Background(), committed, SignedOAuthMCPPhasePublished, "revision-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ops.RenewAuthority(context.Background(), published, key, binding, time.Now().Add(3*time.Hour)); !errors.Is(err, ErrSignedCapabilityReplay) {
+		t.Fatalf("published reopen = %v, want replay refusal", err)
+	}
+	removal, _ := ops.Advance(context.Background(), published, SignedOAuthMCPPhaseRemovalAdmitted, "revision-2")
+	removalRevision, _ := ops.Advance(context.Background(), removal, SignedOAuthMCPPhaseRemovalRevisionCommitted, "revision-3")
+	unpublished, _ := ops.Advance(context.Background(), removalRevision, SignedOAuthMCPPhaseCatalogUnpublished, "revision-3")
+	teardown, _ := ops.Advance(context.Background(), unpublished, SignedOAuthMCPPhaseTeardownReceipted, "revision-3")
+	removed, err := ops.Advance(context.Background(), teardown, SignedOAuthMCPPhaseRemoved, "revision-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ops.RenewAuthority(context.Background(), removed, key, binding, time.Now().Add(4*time.Hour)); !errors.Is(err, ErrSignedCapabilityReplay) {
+		t.Fatalf("removed reopen = %v, want replay refusal", err)
+	}
+}
+
+func TestSignedOAuthMCPOperationStore_SQLiteTwoHandleRenewalRaceHasOneWinner(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "stable-jti-renewal.sqlite")
+	leftStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = rightStore.Close(context.Background())
+		_ = leftStore.Close(context.Background())
+	})
+	left, _ := NewSignedOAuthMCPOperationStore(leftStore)
+	right, _ := NewSignedOAuthMCPOperationStore(rightStore)
+	key := SignedOAuthMCPReplayKey{TenantID: "tenant-a", TrustAnchorName: "anchor", Issuer: "issuer", KeyID: "kid", JTI: "sqlite-stable-jti"}
+	binding := SignedOAuthMCPBinding{TenantID: "tenant-a", UserID: "registrar", SessionID: "session", AgentID: "agent", Broker: "broker", ProviderName: "provider", CapabilityRevision: "1", URLDigest: "url", SinkDigest: "sink", Audience: "aud", Connection: SignedOAuthMCPConnectionDescriptor{Name: "server", URL: "https://example.test/mcp"}}
+	claimed, _, err := left.Claim(context.Background(), key, binding, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := left.AdmitExpiry(context.Background(), claimed, "", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := left.CompleteExpiry(context.Background(), admitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, ops := range []*SignedOAuthMCPOperationStore{left, right} {
+		wg.Add(1)
+		go func(operations *SignedOAuthMCPOperationStore) {
+			defer wg.Done()
+			<-start
+			_, renewErr := operations.RenewAuthority(context.Background(), completed, key, binding, time.Now().Add(time.Hour))
+			results <- renewErr
+		}(ops)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	winners := 0
+	for renewErr := range results {
+		if renewErr == nil {
+			winners++
+		} else if !errors.Is(renewErr, ErrSignedCapabilityReplay) {
+			t.Fatalf("SQLite renewal race error = %v", renewErr)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("SQLite renewal race winners = %d, want 1", winners)
+	}
+	latest, err := right.Load(context.Background(), key)
+	if err != nil || latest.Phase != SignedOAuthMCPPhaseClaimed || latest.AuthorityGeneration != 2 {
+		t.Fatalf("SQLite renewed receipt = %+v err=%v", latest, err)
+	}
+}
+
+func TestSignedOAuthMCPActivationFenceStore_ReopensOnlyExactRenewedGeneration(t *testing.T) {
+	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	fences, _ := NewSignedOAuthMCPActivationFenceStore(store)
+	ops, _ := NewSignedOAuthMCPOperationStore(store)
+	key := SignedOAuthMCPReplayKey{TenantID: "tenant-a", TrustAnchorName: "anchor", Issuer: "issuer", KeyID: "kid", JTI: "reopen-jti"}
+	binding := SignedOAuthMCPBinding{TenantID: "tenant-a", UserID: "registrar", SessionID: "session", AgentID: "agent", Broker: "broker", ProviderName: "provider", CapabilityRevision: "1", URLDigest: "url", SinkDigest: "sink", Audience: "aud", Connection: SignedOAuthMCPConnectionDescriptor{Name: "server", URL: "https://example.test/mcp"}}
+	claimed, _, _ := ops.Claim(context.Background(), key, binding, time.Now().Add(-time.Hour))
+	kind, _ := ops.Kind(key)
+	pending, err := fences.Begin(context.Background(), binding.TenantID, binding.AgentID, kind, claimed.Fingerprint, "candidate-hash", "prior-revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	aborted, err := fences.Advance(context.Background(), pending, SignedOAuthMCPFenceAborted, "candidate-revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, _ := ops.AdmitExpiry(context.Background(), claimed, "candidate-revision", time.Now())
+	completed, _ := ops.CompleteExpiry(context.Background(), admitted)
+	renewed, _ := ops.RenewAuthority(context.Background(), completed, key, binding, time.Now().Add(time.Hour))
+	forged := renewed
+	forged.AuthorityGeneration = 1
+	if _, err := fences.ReopenForRenewedAuthority(context.Background(), aborted, forged, "next-hash", "prior-revision"); !errors.Is(err, ErrSignedCapabilityTransition) {
+		t.Fatalf("forged generation reopen = %v, want transition refusal", err)
+	}
+	reopened, err := fences.ReopenForRenewedAuthority(context.Background(), aborted, renewed, "next-hash", "prior-revision")
+	if err != nil || reopened.Phase != SignedOAuthMCPFencePending || reopened.CandidateContentHash != "next-hash" || reopened.CandidateRevisionID != "" {
+		t.Fatalf("exact reopen = %+v err=%v", reopened, err)
+	}
+}
 
 func TestSignedOAuthMCPOperationStore_ClaimsTenantScopedReplayAndTransitions(t *testing.T) {
 	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})

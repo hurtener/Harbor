@@ -12068,6 +12068,21 @@ less than the authority expiry+skew horizon, preventing recreation or replay.
 Unknown broker/issuer/key, malformed authority, scope widening, or mismatch
 fails before a live side effect.
 
+**Stable-JTI expiry recovery amendment (2026-08-03).** A signer may
+deliberately derive a stable JTI for one immutable OAuth MCP operation. A later
+freshly verified envelope for that same JTI may renew only an
+`expired_incomplete` receipt with the exact replay tuple, registrar, pair
+fingerprint, sink, audience, canonical scopes, and connection, and must carry a
+strictly later expiry. Expiry compensation first CAS-enters
+`expiry_admitted`, freezing its source phase and candidate revision before any
+detach or active-pointer side effect; restart completes exact detach, frozen
+prior/absence restoration, candidate-inactive proof, and exact pending-fence
+abort before `expired_incomplete`. Renewal increments the durable authority
+generation and explicitly reopens only the matching aborted activation fence
+under a joint exact receipt/fence generation predicate. No receipt is deleted
+or reclaimed, the original registrar remains owner, and published, removal,
+removed, foreign-binding, or widened requests never reopen.
+
 One named shared canonical-URL helper supplies signer/verifier matching, pair
 fingerprinting, transport enforcement, and restart/reconcile. It requires
 absolute HTTPS; uses IDNA2008 ASCII lower-case host with trailing root dot

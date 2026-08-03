@@ -33,6 +33,7 @@ import (
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess" // §4.4: registers the V1 "inprocess" task driver
 )
@@ -149,6 +150,58 @@ func TestExecutor_SpawnTask_NonRetain_SpawnsBackgroundTask(t *testing.T) {
 	}
 	if task.ParentTaskID != nil {
 		t.Errorf("root spawn (empty RunID) should have nil ParentTaskID, got %v", *task.ParentTaskID)
+	}
+}
+
+func TestExecutor_SpawnTask_InheritsExactAgentReachAdmission(t *testing.T) {
+	bus := mkSpawnAwaitTestBus(t)
+	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	sealer, err := toolauth.NewAESGCMSealer(make([]byte, toolauth.KEKSizeBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := tasks.NewAgentReachAdmissionAuthority(sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := authority.Admit(context.Background(), dispatchTestID, "agent-selected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := exec.ExecuteDecision(ctx, rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{Query: "child"}})
+	if err != nil {
+		t.Fatalf("ExecuteDecision: %v", err)
+	}
+	taskID := tasks.TaskID(raw.(map[string]any)["task_id"].(string))
+	child, err := reg.Get(spawnAwaitIDCtx(t), taskID)
+	if err != nil {
+		t.Fatalf("Get child: %v", err)
+	}
+	if child.AgentID != "" {
+		t.Fatalf("child raw AgentID = %q, want omitted", child.AgentID)
+	}
+	if _, got, admitted := authority.Restore(context.Background(), child); !admitted || got != "agent-selected" {
+		t.Fatalf("child admission = (%q, %v), want inherited agent-selected", got, admitted)
+	}
+
+	other := dispatchTestID
+	other.SessionID = "other-session"
+	otherRC := planner.RunContext{Quadruple: identity.Quadruple{Identity: other}}
+	raw, _, err = exec.ExecuteDecision(ctx, otherRC, planner.SpawnTask{Spec: planner.SpawnSpec{Query: "cross identity"}})
+	if err != nil {
+		t.Fatalf("cross-identity behavior compatibility spawn: %v", err)
+	}
+	otherCtx, err := identity.With(context.Background(), other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherChild, err := reg.Get(otherCtx, tasks.TaskID(raw.(map[string]any)["task_id"].(string)))
+	if err != nil {
+		t.Fatalf("Get cross-identity child: %v", err)
+	}
+	if _, _, admitted := authority.Restore(context.Background(), otherChild); admitted {
+		t.Fatal("cross-identity child inherited credential admission")
 	}
 }
 

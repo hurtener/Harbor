@@ -779,10 +779,19 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		// every named agent, which is the fail-closed posture, never a
 		// silent accept.
 		stack.AgentReach = auth.NewAgentReachAuthorizer()
+		var agentReachAdmissions *tasks.AgentReachAdmissionAuthority
+		if stack.OAuthProviderBuilder != nil && stack.OAuthProviderBuilder.AdmissionSealer() != nil {
+			var admissionErr error
+			agentReachAdmissions, admissionErr = tasks.NewAgentReachAdmissionAuthority(stack.OAuthProviderBuilder.AdmissionSealer())
+			if admissionErr != nil {
+				return stack, fmt.Errorf("devstack agent reach admission authority: %w", admissionErr)
+			}
+		}
 		agentResolver = serve.NewAgentResolverAdapter(stack.AgentConfig, stack.AgentConfigID, serve.WithBootLifecycleEnsurer(bootLifecycleEnsurer))
 		surfaceOpts = append(surfaceOpts,
 			protocol.WithAgentResolver(agentResolver),
-			protocol.WithAgentReachAuthorizer(stack.AgentReach))
+			protocol.WithAgentReachAuthorizer(stack.AgentReach),
+			protocol.WithAgentReachAdmissionAuthority(agentReachAdmissions))
 		surface, surfaceErr := protocol.NewControlSurface(taskReg, core.Steering, surfaceOpts...)
 		if surfaceErr != nil {
 			return stack, fmt.Errorf("protocol.NewControlSurface: %w", surfaceErr)
@@ -897,6 +906,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				AgentConfigID:            stack.AgentConfigID,
 				EnsureBootAgentLifecycle: bootLifecycleEnsurer,
 				RunSnapshots:             runSnapshots,
+				AgentReachAdmissions:     agentReachAdmissions,
 				SessionOverlay:           stack.SessionOverlay,
 				RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 				ConnectionDetacher:       devDetacher,
