@@ -626,7 +626,7 @@ func (r *SignedOAuthMCPReconciler) resumeExpiryCompensation(ctx context.Context,
 			return readErr
 		}
 		if set && physical.RevisionID == candidate.RevisionID {
-			if _, err := restorePreOperationAuthority(ctx, r.registry, q, agentID, candidate, fence.PriorRevisionID, kind); err != nil {
+			if err := restorePreOperationAuthority(ctx, r.registry, q, agentID, candidate, fence.PriorRevisionID, kind); err != nil {
 				return err
 			}
 		}

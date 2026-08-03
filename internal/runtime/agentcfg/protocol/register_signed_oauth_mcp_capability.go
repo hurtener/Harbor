@@ -320,7 +320,7 @@ func (s *Service) resumeAndRenewSignedOAuthMCPAuthority(ctx context.Context, phy
 		registry: s.registry, physical: physical, operations: s.signedOAuthMCPOperations,
 		fences: s.signedOAuthMCPFences, exactDetacher: exactDetacher,
 	}
-	for attempts := 0; attempts < 6; attempts++ {
+	for range 6 {
 		switch op.Phase {
 		case agentcfg.SignedOAuthMCPPhaseClaimed, agentcfg.SignedOAuthMCPPhaseRevisionCommitted:
 			if op.ExpiresAt.Add(agentcfg.SignedOAuthMCPAuthorityClockSkew).After(s.now().UTC()) {
