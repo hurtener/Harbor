@@ -17,6 +17,15 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- `sessions.list` now applies lifecycle-only filters, ordering, and cursor
+  pagination before counter enrichment. A `last_activity_desc` request with
+  `limit=50` enriches only its returned rows instead of scanning counters for
+  the full matching catalog; counter-dependent filters and `cost_desc` retain
+  their exact results with bounded (eight-worker) enrichment concurrency. No
+  Protocol wire change.
+
 ## [1.26.1] — 2026-08-03
 
 This patch restores authority-enabled serving composition for signed OAuth MCP

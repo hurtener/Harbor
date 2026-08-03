@@ -157,6 +157,28 @@ type Projector interface {
 	CountersAvailable() bool
 }
 
+// preEnrichmentPager is an internal fast path for projectors that can apply
+// lifecycle-only filters, sort, and cursor pagination before counter
+// enrichment. The Service selects it only when the request has no
+// counter-dependent filter or sort, so it preserves the general ListSessions
+// filter, ordering, cursor, and truncation semantics while avoiding reads for
+// rows outside the requested page.
+//
+// It is deliberately private: Projector remains the complete read seam and a
+// future projector that does not implement this optimization retains the
+// general, semantics-preserving path.
+type preEnrichmentPager interface {
+	pageBeforeEnrichment(
+		ctx context.Context,
+		id identity.Identity,
+		f prototypes.SessionFilter,
+		adminScoped bool,
+		srt prototypes.SessionSort,
+		cursor *pageCursor,
+		limit int,
+	) (prototypes.SessionsListResponse, error)
+}
+
 // requiresCounters reports whether the request's filter or sort operates
 // over the numeric / boolean SessionRow counters — the axes that are
 // permanently zero on a projector with no Enricher wired. When true and the
@@ -354,6 +376,22 @@ func (s *Service) List(ctx context.Context, req prototypes.SessionsListRequest, 
 	if err != nil {
 		return prototypes.SessionsListResponse{}, err
 	}
+	// Lifecycle-only requests can be filtered, sorted, and cursor-paged from
+	// the registry projection before the expensive per-row counter reads. The
+	// non-counter condition is load-bearing: a counter filter or cost sort must
+	// retain the general path because enrichment supplies its predicate/key.
+	if !requiresCounters(req.Filter, srt) {
+		if pager, ok := s.projector.(preEnrichmentPager); ok {
+			resp, pageErr := pager.pageBeforeEnrichment(ctx, id, req.Filter, adminScoped, srt, cursor, limit)
+			if pageErr != nil {
+				return prototypes.SessionsListResponse{}, fmt.Errorf("sessions/protocol: list: %w", pageErr)
+			}
+			if crossTenant && adminScoped {
+				s.emitAdminAudit(ctx, id, "sessions.list")
+			}
+			return resp, nil
+		}
+	}
 
 	rows, err := s.projector.ListSessions(ctx, id, req.Filter, adminScoped)
 	if err != nil {
@@ -370,33 +408,8 @@ func (s *Service) List(ctx context.Context, req prototypes.SessionsListRequest, 
 	}
 	sortRows(filtered, srt)
 
-	// Cursor pagination: drop every row up to and including the cursor
-	// position, then page Limit rows. The cursor is the (sort-key,
-	// SessionID) of the last row of the previous page.
-	start := 0
-	if cursor != nil {
-		for i, r := range filtered {
-			if afterCursor(r, *cursor, srt) {
-				start = i
-				break
-			}
-			start = i + 1
-		}
-	}
-	page := filtered[start:]
-
-	// Truncated: the candidate set has more than Limit rows past the
-	// cursor — fail-loudly, never a silent total.
-	truncated := len(page) > limit
-	if truncated {
-		page = page[:limit]
-	}
-
-	next := ""
-	if truncated && len(page) > 0 {
-		last := page[len(page)-1]
-		next = encodeCursor(last, srt)
-	}
+	start, end, truncated, next := pageBounds(filtered, cursor, srt, limit)
+	page := filtered[start:end]
 
 	if crossTenant && adminScoped {
 		s.emitAdminAudit(ctx, id, "sessions.list")
@@ -577,6 +590,31 @@ func sortRows(rows []prototypes.SessionRow, srt prototypes.SessionSort) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		return lessForSort(rows[i], rows[j], srt)
 	})
+}
+
+// pageBounds returns the slice range and cursor metadata for an already
+// filtered and sorted row set. Keeping this calculation shared by the
+// general Service path and ListerProjector's lifecycle-only fast path pins
+// their pagination semantics together.
+func pageBounds(rows []prototypes.SessionRow, cursor *pageCursor, srt prototypes.SessionSort, limit int) (start, end int, truncated bool, next string) {
+	if cursor != nil {
+		for i, r := range rows {
+			if afterCursor(r, *cursor, srt) {
+				start = i
+				break
+			}
+			start = i + 1
+		}
+	}
+	end = len(rows)
+	truncated = end-start > limit
+	if truncated {
+		end = start + limit
+	}
+	if truncated && start < end {
+		next = encodeCursor(rows[end-1], srt)
+	}
+	return start, end, truncated, next
 }
 
 // lessForSort reports whether row a sorts before row b under srt. Ties
