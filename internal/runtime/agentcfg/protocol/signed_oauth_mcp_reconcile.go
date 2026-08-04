@@ -450,10 +450,10 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 }
 
 func (r *SignedOAuthMCPReconciler) revalidateAttachmentAuthority(ctx context.Context, q identity.Quadruple, agentID string, revision agentcfg.Revision, pair *agentcfg.SignedOAuthMCPPair, expected agentcfg.SignedOAuthMCPOperation) error {
-	return revalidateSignedAttachmentAuthority(ctx, r.physical, r.operations, r.fences, q, agentID, revision, pair, expected)
+	return revalidateSignedAttachmentAuthority(ctx, r.registry, r.physical, r.operations, r.fences, q, agentID, revision, pair, expected)
 }
 
-func revalidateSignedAttachmentAuthority(ctx context.Context, physicalRegistry physicalActiveRegistry, operations *agentcfg.SignedOAuthMCPOperationStore, fences *agentcfg.SignedOAuthMCPActivationFenceStore, q identity.Quadruple, agentID string, revision agentcfg.Revision, pair *agentcfg.SignedOAuthMCPPair, expected agentcfg.SignedOAuthMCPOperation) error {
+func revalidateSignedAttachmentAuthority(ctx context.Context, registry agentcfg.Registry, physicalRegistry physicalActiveRegistry, operations *agentcfg.SignedOAuthMCPOperationStore, fences *agentcfg.SignedOAuthMCPActivationFenceStore, q identity.Quadruple, agentID string, revision agentcfg.Revision, pair *agentcfg.SignedOAuthMCPPair, expected agentcfg.SignedOAuthMCPOperation) error {
 	physical, err := requirePhysicalActiveRevision(ctx, physicalRegistry, q, agentID, revision.RevisionID, revision.ContentHash)
 	if err != nil {
 		return errors.Join(
@@ -487,10 +487,27 @@ func revalidateSignedAttachmentAuthority(ctx context.Context, physicalRegistry p
 		return err
 	}
 	candidateRevisionMismatch := fence.CandidateRevisionID != "" && fence.CandidateRevisionID != revision.RevisionID
+	candidateContentMismatch := fence.CandidateContentHash != revision.ContentHash
 	if wantFencePhase == agentcfg.SignedOAuthMCPFenceCommitted {
-		candidateRevisionMismatch = fence.CandidateRevisionID != revision.RevisionID
+		// A committed fence binds the immutable pair's ORIGINAL candidate. Later
+		// section-scoped writes legitimately carry that exact server-owned pair
+		// into a sibling revision. After a process restart the current physical
+		// revision is that sibling, while the durable fence must remain anchored
+		// to the operation's original candidate rather than being rewritten by an
+		// unrelated config edit. Re-read and validate both ends: the immutable
+		// candidate still binds this operation, and the current physical revision
+		// above still carries the same exact pair. A changed/foreign pair, missing
+		// candidate, stale active pointer, or mismatched operation therefore stays
+		// fail-closed.
+		candidateRevisionMismatch = fence.CandidateRevisionID != expected.RevisionID
+		candidate, candidateErr := registry.Get(ctx, q, agentID, expected.RevisionID, agentcfg.ConfigScopeAgent)
+		if candidateErr != nil {
+			return errors.Join(fmt.Errorf("%w: committed attachment candidate is unavailable", agentcfg.ErrSignedCapabilityPending), candidateErr)
+		}
+		candidateContentMismatch = candidate.ContentHash != fence.CandidateContentHash ||
+			!signedCapabilityPairMatchesOperation(candidate.Payload.SignedOAuthMCPPair, q.TenantID, expected.Binding, kind)
 	}
-	if fence.Phase != wantFencePhase || fence.OperationKind != kind || fence.Fingerprint != expected.Fingerprint || fence.CandidateContentHash != revision.ContentHash || candidateRevisionMismatch {
+	if fence.Phase != wantFencePhase || fence.OperationKind != kind || fence.Fingerprint != expected.Fingerprint || candidateContentMismatch || candidateRevisionMismatch {
 		return fmt.Errorf("%w: attachment fence no longer binds the exact pair lifetime", agentcfg.ErrSignedCapabilityPending)
 	}
 	return nil

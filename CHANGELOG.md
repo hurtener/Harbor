@@ -17,6 +17,19 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.26.7] — 2026-08-04
+
+### Fixed
+
+- Signed OAuth MCP restart reconciliation now reattaches an immutable pair after
+  an unrelated agent-config edit carried that pair into a newer active sibling
+  revision. The committed activation fence remains anchored to its original
+  candidate and authorizes the current sibling only when both revisions carry
+  the exact same pair and durable operation receipt. Changed pairs, foreign
+  operations, stale active pointers, missing candidates, and non-committed
+  fences remain fail-closed. No Protocol wire or runtime configuration surface
+  changed.
+
 ## [1.26.6] — 2026-08-03
 
 ### Added
