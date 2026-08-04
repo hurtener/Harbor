@@ -293,7 +293,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		)
 	}
 	if err := authorityPrepared.ActivateUnder(ctx, func(proofCtx context.Context, publish func() error) error {
-		if err := revalidateSignedAttachmentAuthority(proofCtx, physical, s.signedOAuthMCPOperations, s.signedOAuthMCPFences, q, req.AgentID, rev, pair, op); err != nil {
+		if err := revalidateSignedAttachmentAuthority(proofCtx, s.registry, physical, s.signedOAuthMCPOperations, s.signedOAuthMCPFences, q, req.AgentID, rev, pair, op); err != nil {
 			return err
 		}
 		return s.signedOAuthMCPOperations.FencePublication(proofCtx, op, publish)

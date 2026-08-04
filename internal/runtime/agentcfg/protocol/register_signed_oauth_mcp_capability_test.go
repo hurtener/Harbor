@@ -1827,7 +1827,7 @@ func TestRemoveOAuthMCPCapability_DefinitiveCASFailureRollsBackAdmissionAndSurfa
 
 func TestRegisterOAuthMCPCapability_PublishedReplayAcceptsCarriedPairSiblingRevision(t *testing.T) {
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
-	svc, key, reg, _, preparer := signedCapabilityServiceWithRegistry(t, now)
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
 	req := signedCapabilityRequest(t, key, now, "jti-sibling-replay", "aud-sibling")
 	registered, err := svc.RegisterOAuthMCPCapability(context.Background(), req)
 	if err != nil {
@@ -1857,6 +1857,30 @@ func TestRegisterOAuthMCPCapability_PublishedReplayAcceptsCarriedPairSiblingRevi
 	preparer.mu.Unlock()
 	if activations != 1 {
 		t.Fatalf("published replay activations = %d, want one", activations)
+	}
+
+	// A published replay is historical success, not a live-attach trigger. Lose
+	// the process-local catalog exactly as a runtime restart does, then drive the
+	// run-start reconciler. The committed activation fence names the ORIGINAL
+	// signed-pair revision while the active pointer names the carried sibling;
+	// both must authorize reattachment only because they carry the same exact
+	// immutable pair and durable operation receipt.
+	preparer.mu.Lock()
+	preparer.live = make(map[string]string)
+	preparer.mu.Unlock()
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatalf("NewSignedOAuthMCPReconciler: %v", err)
+	}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("restart reconcile carried sibling: %v", err)
+	}
+	preparer.mu.Lock()
+	activations = preparer.activations
+	live := len(preparer.live)
+	preparer.mu.Unlock()
+	if activations != 2 || live != 1 {
+		t.Fatalf("restart carried-sibling reattach: activations=%d live=%d, want 2/1", activations, live)
 	}
 	if _, err := svc.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
 		Identity: scope(), AgentID: testAgentID, ExpectedContentHash: replayed.Revision.ContentHash,
@@ -2167,7 +2191,7 @@ func TestRegisterOAuthMCPCapability_InvalidDiscoveredArtifactMappingRollsBackAto
 }
 
 func TestSignedOAuthMCPReconciler_RestartCompletesArtifactSchemaRejectionAdmission(t *testing.T) {
-	now := time.Date(2026, 8, 3, 23, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	base, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
 	if err != nil {
 		t.Fatal(err)
