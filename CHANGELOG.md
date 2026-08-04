@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.26.8] — 2026-08-04
+
 ### Fixed
 
 - An exact replay of a published signed OAuth MCP capability now restores its
@@ -4364,7 +4366,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.7...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.8...HEAD
+[1.26.8]: https://github.com/hurtener/Harbor/compare/v1.26.7...v1.26.8
 [1.26.7]: https://github.com/hurtener/Harbor/compare/v1.26.6...v1.26.7
 [1.26.6]: https://github.com/hurtener/Harbor/compare/v1.26.5...v1.26.6
 [1.26.5]: https://github.com/hurtener/Harbor/compare/v1.26.4...v1.26.5
