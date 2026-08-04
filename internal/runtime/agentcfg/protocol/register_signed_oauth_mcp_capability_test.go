@@ -1859,12 +1859,32 @@ func TestRegisterOAuthMCPCapability_PublishedReplayAcceptsCarriedPairSiblingRevi
 		t.Fatalf("published replay activations = %d, want one", activations)
 	}
 
-	// A published replay is historical success, not a live-attach trigger. Lose
-	// the process-local catalog exactly as a runtime restart does, then drive the
-	// run-start reconciler. The committed activation fence names the ORIGINAL
-	// signed-pair revision while the active pointer names the carried sibling;
-	// both must authorize reattachment only because they carry the same exact
-	// immutable pair and durable operation receipt.
+	// Lose the process-local catalog exactly as a runtime restart does. An exact
+	// published replay must restore live tools before returning success; a
+	// control-plane convergence loop cannot wait for a later user run to trigger
+	// recovery. The committed activation fence names the ORIGINAL signed-pair
+	// revision while the active pointer names the carried sibling, so both must
+	// authorize reattachment only because they carry the same exact immutable
+	// pair and durable operation receipt.
+	preparer.mu.Lock()
+	preparer.live = make(map[string]string)
+	preparer.mu.Unlock()
+	replayed, err = svc.RegisterOAuthMCPCapability(context.Background(), req)
+	if err != nil {
+		t.Fatalf("published replay after catalog loss: %v", err)
+	}
+	if replayed.Revision.RevisionID != sibling.RevisionID {
+		t.Fatalf("catalog-loss replay revision = %q, want current carried pair %q", replayed.Revision.RevisionID, sibling.RevisionID)
+	}
+	preparer.mu.Lock()
+	activations = preparer.activations
+	live := len(preparer.live)
+	preparer.mu.Unlock()
+	if activations != 2 || live != 1 {
+		t.Fatalf("published replay carried-sibling reattach: activations=%d live=%d, want 2/1", activations, live)
+	}
+
+	// Run-start remains the second consumer of the same proof.
 	preparer.mu.Lock()
 	preparer.live = make(map[string]string)
 	preparer.mu.Unlock()
@@ -1877,10 +1897,10 @@ func TestRegisterOAuthMCPCapability_PublishedReplayAcceptsCarriedPairSiblingRevi
 	}
 	preparer.mu.Lock()
 	activations = preparer.activations
-	live := len(preparer.live)
+	live = len(preparer.live)
 	preparer.mu.Unlock()
-	if activations != 2 || live != 1 {
-		t.Fatalf("restart carried-sibling reattach: activations=%d live=%d, want 2/1", activations, live)
+	if activations != 3 || live != 1 {
+		t.Fatalf("restart carried-sibling reattach: activations=%d live=%d, want 3/1", activations, live)
 	}
 	if _, err := svc.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
 		Identity: scope(), AgentID: testAgentID, ExpectedContentHash: replayed.Revision.ContentHash,

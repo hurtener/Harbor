@@ -141,6 +141,17 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	}
 	if op.Phase == agentcfg.SignedOAuthMCPPhasePublished {
 		if hasActive && signedCapabilityPairMatchesOperation(active.Payload.SignedOAuthMCPPair, id.TenantID, binding, operationKind) {
+			matcher, matchable := s.preparer.(connectionMatcher)
+			if !matchable || matcher == nil {
+				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
+			}
+			reconciler := &SignedOAuthMCPReconciler{
+				registry: s.registry, physical: physical, operations: s.signedOAuthMCPOperations, fences: s.signedOAuthMCPFences,
+				preparer: s.preparer, providers: providerPreparer, matcher: matcher,
+			}
+			if _, err := reconciler.ensureAttached(ctx, q, req.AgentID, active.Payload.SignedOAuthMCPPair, active, op); err != nil {
+				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+			}
 			return signedCapabilityResponse(active, providerName, connection.Name), nil
 		}
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: published operation does not match active pair", agentcfg.ErrSignedCapabilityReplay)
