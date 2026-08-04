@@ -151,8 +151,9 @@ remains active or authoritative.
   uncertain revision write exact-rereads active revision/fingerprint to advance,
   retry, or conflict; `revision_committed` re-prepares/re-publishes after
   restart; publish-then-checkpoint error verifies the exact live pair before
-  advancing; `published` returns the original response; `removed` never
-  recreates. A `published` record remains durable for the full immutable
+  advancing; an exact `published` replay restores the same local publication
+  generation when absent and then returns the original response; `removed`
+  never recreates. A `published` record remains durable for the full immutable
   pair-history lifetime despite registration-authority expiry or verifier-key
   revocation, so removal/retirement resumes from the frozen fingerprint. It is
   a recovery/replay constraint rather than a bearer grant: exchange still

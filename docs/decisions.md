@@ -12388,3 +12388,34 @@ wire type. The generated Protocol and Console manifests move in lockstep;
 **Cross-references.** D-026, D-359, D-397, D-401, D-403. RFC §5.3, §6.4,
 §6.11, §6.16. Plan:
 `docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md`.
+
+---
+
+## D-405 — Exact published signed-capability replay restores local publication before success
+
+**Date:** 2026-08-04
+
+**Status:** Accepted for the post-v1.26.7 signed-capability recovery correction.
+
+**Decision.** `agent_config.register_oauth_mcp_capability` remains the single
+bounded public creation and retry operation. When an exact verified retry finds
+its durable operation already `published`, it must not treat the historical
+response as evidence that this process has a live provider, MCP connection, or
+tool catalog. It first drives the same exact attachment proof used by run-start
+reconciliation and only then returns the response for the current active
+revision. A matching live generation remains a no-op.
+
+The replay may CAS-take a new publisher epoch only after revalidating the
+committed activation fence, original immutable candidate, current physical
+active revision, exact operation generation and pair binding. A missing,
+changed, foreign, removed, pending, aborted, or stale pair remains fail-closed;
+the retry cannot create a new pair, alter desired state, or revive a removed
+lifetime. This makes control-plane convergence a complete recovery consumer
+without inventing a second reconcile verb or requiring an unrelated user run.
+
+**Wire consequence.** None. The existing method becomes truthful about live
+success; request, response, error, event, version, and configuration shapes are
+unchanged.
+
+**Cross-references.** D-339, D-401, D-403, D-404. RFC §6.11 and §6.16. Plan:
+`docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md`.

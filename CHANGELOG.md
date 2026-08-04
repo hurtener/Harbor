@@ -17,6 +17,17 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- An exact replay of a published signed OAuth MCP capability now restores its
+  process-local provider, connection, and tools before returning success. This
+  lets an authenticated control-plane convergence pass recover a restarted
+  runtime without waiting for an unrelated user run, while retaining the same
+  committed-fence, immutable-pair, active-revision, operation-generation, and
+  publisher-epoch checks as run-start recovery. Changed, foreign, removed, or
+  incompletely fenced pairs remain fail-closed. No Protocol wire or runtime
+  configuration surface changed.
+
 ## [1.26.7] — 2026-08-04
 
 ### Fixed
