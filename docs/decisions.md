@@ -12419,3 +12419,41 @@ unchanged.
 
 **Cross-references.** D-339, D-401, D-403, D-404. RFC §6.11 and §6.16. Plan:
 `docs/plans/phase-233b-signed-oauth-mcp-capability-registration.md`.
+
+---
+
+## D-406 — Signed capability authority may bind receiver-style per-user injection
+
+**Date:** 2026-08-04
+
+**Status:** Accepted for v1.26.9.
+
+**Decision.** The production-safe `agent_config.register_oauth_mcp_capability`
+door accepts the existing bounded credential-injection descriptor as an
+optional field of its closed signed connection. It does not enable or weaken
+the development-only generic `allow_wire_injection` door. Every injection
+field participates in signature comparison, immutable-pair fingerprints,
+durable replay identity, applied projection, and restart reconciliation.
+
+The mapping's provider must equal the registration's private `provider_name`.
+Harbor prepares that provider only from the boot-declared broker/trust anchor,
+never publishes it into the shared provider set, and gives the receiver lane
+access to that exact private instance. The connection carries no OAuth bearer
+binding: initialize and discovery remain credential-neutral, while each tool
+call resolves the acting user's credential from its verified context and
+injects it through the existing header/basic/meta engine. Removal and failed
+preparation close the private provider with the connection.
+
+All existing containment remains mandatory and is re-used, not copied: the
+canonical connection URL derives the only reachable downstream sink; the
+provider's boot ceiling must permit that host; header and meta targets must be
+redaction-covered; reserved meta paths and `Authorization` header injection are
+rejected; missing identity or credential fails the call closed. An injection
+provider mismatch or any post-signature mapping change fails before desired
+state or live publication. Omitting injection preserves every pre-v1.26.9 pair
+and attachment fingerprint byte-for-byte.
+
+**Wire consequence.** One additive optional `injection` field on
+`SignedOAuthMCPConnectionDescriptor`; ProtocolVersion remains `0.1.0`.
+
+**Cross-references.** D-300, D-346, D-401, D-404, D-405. RFC §6.11 and §6.16.

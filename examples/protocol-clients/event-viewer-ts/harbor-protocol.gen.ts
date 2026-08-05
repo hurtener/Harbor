@@ -2396,6 +2396,7 @@ export interface SignedOAuthMCPConnectionDescriptor {
   tool_denylist?: string[];
   connect_timeout_ms?: number;
   request_timeout_ms?: number;
+  injection?: AgentConfigMCPCredentialInjectionDescriptor;
   artifact_byte_eligible?: boolean;
   artifact_params?: Record<string, string[]>;
 }

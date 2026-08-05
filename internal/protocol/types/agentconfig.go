@@ -395,16 +395,19 @@ type AgentConfigOAuthProvidersDiff struct {
 // SignedOAuthMCPConnectionDescriptor is the closed signed-capability registration input.
 // It is intentionally distinct from AgentConfigMCPConnectionDescriptor: a
 // signed capability never accepts a general MCP descriptor or its credential,
-// injection, discovery, stdio, header, or host-list fields.
+// discovery, stdio, arbitrary header, or host-list fields. Injection is the
+// single bounded exception: the complete non-secret receiver mapping is signed
+// and must name the same private provider as the enclosing registration.
 type SignedOAuthMCPConnectionDescriptor struct {
-	Name                 string              `json:"name"`
-	URL                  string              `json:"url"`
-	ToolAllowlist        []string            `json:"tool_allowlist,omitempty"`
-	ToolDenylist         []string            `json:"tool_denylist,omitempty"`
-	ConnectTimeoutMS     int                 `json:"connect_timeout_ms,omitempty"`
-	RequestTimeoutMS     int                 `json:"request_timeout_ms,omitempty"`
-	ArtifactByteEligible bool                `json:"artifact_byte_eligible,omitempty"`
-	ArtifactParams       map[string][]string `json:"artifact_params,omitempty"`
+	Name                 string                                       `json:"name"`
+	URL                  string                                       `json:"url"`
+	ToolAllowlist        []string                                     `json:"tool_allowlist,omitempty"`
+	ToolDenylist         []string                                     `json:"tool_denylist,omitempty"`
+	ConnectTimeoutMS     int                                          `json:"connect_timeout_ms,omitempty"`
+	RequestTimeoutMS     int                                          `json:"request_timeout_ms,omitempty"`
+	Injection            *AgentConfigMCPCredentialInjectionDescriptor `json:"injection,omitempty"`
+	ArtifactByteEligible bool                                         `json:"artifact_byte_eligible,omitempty"`
+	ArtifactParams       map[string][]string                          `json:"artifact_params,omitempty"`
 }
 
 // AgentConfigSignedOAuthMCPPair is the read-only projection of immutable

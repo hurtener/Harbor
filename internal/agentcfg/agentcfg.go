@@ -647,18 +647,21 @@ type OAuthProvidersSection struct {
 
 // SignedOAuthMCPConnectionDescriptor is the deliberately closed, non-secret
 // connection half of a signed capability pair. Unlike the generic MCP
-// descriptor it cannot carry a transport selector, headers, discovery policy,
-// injection mapping, command, environment, or a credential sink list. The
-// production registration verb is its sole author.
+// descriptor it cannot carry a transport selector, arbitrary headers,
+// discovery policy, command, environment, or a credential sink list. Its one
+// bounded receiver-style extension is an exact signed injection mapping whose
+// provider must equal the pair's private provider. The production registration
+// verb is its sole author.
 type SignedOAuthMCPConnectionDescriptor struct {
-	Name                 string              `json:"name"`
-	URL                  string              `json:"url"`
-	ToolAllowlist        []string            `json:"tool_allowlist,omitempty"`
-	ToolDenylist         []string            `json:"tool_denylist,omitempty"`
-	ConnectTimeoutMS     int                 `json:"connect_timeout_ms,omitempty"`
-	RequestTimeoutMS     int                 `json:"request_timeout_ms,omitempty"`
-	ArtifactByteEligible bool                `json:"artifact_byte_eligible,omitempty"`
-	ArtifactParams       map[string][]string `json:"artifact_params,omitempty"`
+	Name                 string                            `json:"name"`
+	URL                  string                            `json:"url"`
+	ToolAllowlist        []string                          `json:"tool_allowlist,omitempty"`
+	ToolDenylist         []string                          `json:"tool_denylist,omitempty"`
+	ConnectTimeoutMS     int                               `json:"connect_timeout_ms,omitempty"`
+	RequestTimeoutMS     int                               `json:"request_timeout_ms,omitempty"`
+	Injection            *MCPCredentialInjectionDescriptor `json:"injection,omitempty"`
+	ArtifactByteEligible bool                              `json:"artifact_byte_eligible,omitempty"`
+	ArtifactParams       map[string][]string               `json:"artifact_params,omitempty"`
 }
 
 // SignedOAuthMCPPair is immutable server-authored desired state for one

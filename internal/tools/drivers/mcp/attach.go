@@ -344,8 +344,9 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 	if resolver == nil {
 		resolver = mapProviderResolver(deps.OAuthProviders)
 	}
-	if deps.OAuthProviderOverride != nil && ms.OAuthProvider != "" {
-		resolver = overrideProviderResolver{base: resolver, name: ms.OAuthProvider, provider: deps.OAuthProviderOverride}
+	overrideProviderName := privateOverrideProviderName(ms)
+	if deps.OAuthProviderOverride != nil && overrideProviderName != "" {
+		resolver = overrideProviderResolver{base: resolver, name: overrideProviderName, provider: deps.OAuthProviderOverride}
 	}
 	oauthProvider, bindErr := resolveOAuthBinding(ms, mode, resolver)
 	if bindErr != nil {
@@ -381,24 +382,25 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 	}
 	observations := &preparationObservations{}
 	provider, err := New(Config{
-		Name:               ms.Name,
-		TransportMode:      mode,
-		URL:                ms.URL,
-		Command:            append([]string(nil), ms.Command...),
-		Headers:            cloneHeaderMap(ms.Headers),
-		KeepAlive:          ms.KeepAlive,
-		Logger:             deps.Logger,
-		Bus:                deps.Bus,
-		DefaultPolicy:      defaultPolicy,
-		ToolPolicies:       toolPolicies,
-		DefaultIdentity:    deps.DefaultIdentity,
-		HostDisplayModes:   append([]string(nil), deps.HostDisplayModes...),
-		ToolContext:        deps.ToolContext,
-		OAuthProvider:      oauthProvider,
-		OwnOAuthProvider:   deps.OAuthProviderOverride != nil && ms.OAuthProvider != "" && deps.OwnOAuthProvider,
-		ToolOAuthProviders: toolProviders,
-		Injection:          injection,
-		MetaAnnotations:    cloneHeaderMap(ms.MetaAnnotations),
+		Name:                   ms.Name,
+		TransportMode:          mode,
+		URL:                    ms.URL,
+		Command:                append([]string(nil), ms.Command...),
+		Headers:                cloneHeaderMap(ms.Headers),
+		KeepAlive:              ms.KeepAlive,
+		Logger:                 deps.Logger,
+		Bus:                    deps.Bus,
+		DefaultPolicy:          defaultPolicy,
+		ToolPolicies:           toolPolicies,
+		DefaultIdentity:        deps.DefaultIdentity,
+		HostDisplayModes:       append([]string(nil), deps.HostDisplayModes...),
+		ToolContext:            deps.ToolContext,
+		OAuthProvider:          oauthProvider,
+		OwnOAuthProvider:       deps.OAuthProviderOverride != nil && ms.OAuthProvider != "" && deps.OwnOAuthProvider,
+		OwnedInjectionProvider: ownedInjectionProvider(ms, deps),
+		ToolOAuthProviders:     toolProviders,
+		Injection:              injection,
+		MetaAnnotations:        cloneHeaderMap(ms.MetaAnnotations),
 		// Egress substitution: the compiled, immutable per-tool mapping and
 		// the operator's ceiling. Empty leaves every outbound call
 		// byte-identical to a build without the feature.
@@ -438,6 +440,23 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 		ms: ms, deps: deps, mode: mode, defaultPolicy: defaultPolicy,
 		provider: provider, closeFn: provider.Close, descriptors: descriptors, observations: observations,
 	}, nil
+}
+
+func privateOverrideProviderName(ms config.MCPServerConfig) string {
+	if name := strings.TrimSpace(ms.OAuthProvider); name != "" {
+		return name
+	}
+	if ms.Injection != nil {
+		return strings.TrimSpace(ms.Injection.Provider)
+	}
+	return ""
+}
+
+func ownedInjectionProvider(ms config.MCPServerConfig, deps AttachDeps) auth.OAuthProvider {
+	if deps.OwnOAuthProvider && deps.OAuthProviderOverride != nil && ms.OAuthProvider == "" && ms.Injection != nil {
+		return deps.OAuthProviderOverride
+	}
+	return nil
 }
 
 func filterDiscoveredTools(descriptors []tools.ToolDescriptor, source string, allowlist, denylist []string) []tools.ToolDescriptor {

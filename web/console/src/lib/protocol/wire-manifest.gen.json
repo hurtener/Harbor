@@ -6894,6 +6894,12 @@
           "optional": true
         },
         {
+          "key": "injection",
+          "type": "object",
+          "ref": "AgentConfigMCPCredentialInjectionDescriptor",
+          "optional": true
+        },
+        {
           "key": "artifact_byte_eligible",
           "type": "boolean",
           "optional": true

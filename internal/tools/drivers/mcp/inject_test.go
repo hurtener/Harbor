@@ -242,6 +242,30 @@ func TestInjection_OneAuthModeGuard(t *testing.T) {
 	}
 }
 
+func TestSignedPrivateProviderOverride_ResolvesReceiverInjection(t *testing.T) {
+	prov := &identityCredProvider{allowedHosts: []string{"bamboo.example.test"}}
+	server := config.MCPServerConfig{
+		Name: "bamboo", URL: "https://bamboo.example.test/t/cleartech/mcp",
+		Injection: &config.MCPCredentialInjectionConfig{
+			Provider: "capability-bamboo", Form: config.MCPInjectionFormHeader, Header: "x-bamboohr-api-key",
+		},
+	}
+	name := privateOverrideProviderName(server)
+	resolver := overrideProviderResolver{base: mapProviderResolver(nil), name: name, provider: prov}
+	got, err := resolveInjectionBinding(server, TransportStreamableHTTP, resolver)
+	if err != nil {
+		t.Fatalf("resolve signed private injection provider: %v", err)
+	}
+	if name != "capability-bamboo" || got == nil || got.Provider != prov || got.Form != InjectionFormHeader || got.Header != "x-bamboohr-api-key" {
+		t.Fatalf("signed private injection binding = name %q, binding %+v", name, got)
+	}
+
+	server.URL = "https://other.example.test/mcp"
+	if _, err := resolveInjectionBinding(server, TransportStreamableHTTP, resolver); !errors.Is(err, ErrOAuthBinding) {
+		t.Fatalf("private provider sink widening error = %v, want ErrOAuthBinding", err)
+	}
+}
+
 // TestResolveInjectionBinding_MetaReservedKey_Rejected proves an injection
 // mapping targeting a reserved _meta key is rejected at attach time (fail-loud).
 func TestResolveInjectionBinding_MetaReservedKey_Rejected(t *testing.T) {

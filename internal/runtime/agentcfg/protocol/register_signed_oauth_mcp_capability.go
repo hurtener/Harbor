@@ -56,7 +56,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: %w", ErrInvalidSignedCapabilityDescriptor, err)
 	}
-	connection, err := normalizeSignedCapabilityConnection(req.Connection, canonicalURL)
+	connection, domainInjection, err := normalizeSignedCapabilityConnection(req.Connection, canonicalURL)
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
@@ -69,6 +69,10 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	audience := strings.TrimSpace(req.Audience)
 	if providerName == "" || broker == "" || audience == "" {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: provider_name, broker, and audience are required", ErrInvalidSignedCapabilityDescriptor)
+	}
+	if domainInjection != nil && domainInjection.Provider != providerName {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf(
+			"%w: injection.provider %q must equal provider_name %q", ErrInvalidSignedCapabilityDescriptor, domainInjection.Provider, providerName)
 	}
 	authority, ok := s.signedOAuthMCPCapabilityAuthorities[broker]
 	if !ok {
@@ -84,7 +88,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	domainConnection := agentcfg.SignedOAuthMCPConnectionDescriptor{
 		Name: connection.Name, URL: canonicalURL, ToolAllowlist: connection.ToolAllowlist,
 		ToolDenylist: connection.ToolDenylist, ConnectTimeoutMS: connection.ConnectTimeoutMS,
-		RequestTimeoutMS: connection.RequestTimeoutMS, ArtifactByteEligible: connection.ArtifactByteEligible,
+		RequestTimeoutMS: connection.RequestTimeoutMS, Injection: domainInjection.Clone(), ArtifactByteEligible: connection.ArtifactByteEligible,
 		ArtifactParams: cloneArtifactParams(connection.ArtifactParams),
 	}
 	binding := agentcfg.SignedOAuthMCPBinding{
@@ -271,7 +275,8 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	attachCtx := tools.WithEffectiveAgentConfig(tools.WithInvokingAgent(ctx, req.AgentID), req.AgentID)
 	preparedConnection, err := s.preparer.PrepareConnection(attachCtx, AttachRequest{
 		Identity: id, AgentID: req.AgentID, Name: connection.Name, Transport: agentcfg.MCPTransportHTTP,
-		URL: canonicalURL, OAuthProvider: providerName, OAuthProviderOverride: preparedProvider.Binding(), OwnOAuthProvider: true,
+		URL: canonicalURL, OAuthProvider: signedCapabilityOAuthProvider(providerName, domainInjection),
+		OAuthProviderOverride: preparedProvider.Binding(), OwnOAuthProvider: true, Injection: domainInjection.Clone(),
 		ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist,
 		ConnectTimeoutMS: connection.ConnectTimeoutMS, RequestTimeoutMS: connection.RequestTimeoutMS,
 		ArtifactByteEligible: connection.ArtifactByteEligible, ArtifactParams: cloneArtifactParams(connection.ArtifactParams),
@@ -546,34 +551,49 @@ func signedCapabilityPairAttachmentFingerprint(pair *agentcfg.SignedOAuthMCPPair
 	return signedCapabilityPublisherAttachmentFingerprint(pair.Connection, pair.AuthorityOperationKind, publisherEpoch)
 }
 
-func normalizeSignedCapabilityConnection(in prototypes.SignedOAuthMCPConnectionDescriptor, canonicalURL string) (prototypes.SignedOAuthMCPConnectionDescriptor, error) {
+func normalizeSignedCapabilityConnection(in prototypes.SignedOAuthMCPConnectionDescriptor, canonicalURL string) (prototypes.SignedOAuthMCPConnectionDescriptor, *agentcfg.MCPCredentialInjectionDescriptor, error) {
 	const maxSignedCapabilityTimeoutMS = int((5 * time.Minute) / time.Millisecond)
 	out := in
 	out.Name = strings.TrimSpace(out.Name)
 	out.URL = canonicalURL
 	if out.Name == "" || out.ConnectTimeoutMS < 0 || out.RequestTimeoutMS < 0 || out.ConnectTimeoutMS > maxSignedCapabilityTimeoutMS || out.RequestTimeoutMS > maxSignedCapabilityTimeoutMS {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: name is required and timeouts must be between 0 and %d ms", ErrInvalidSignedCapabilityDescriptor, maxSignedCapabilityTimeoutMS)
+		return prototypes.SignedOAuthMCPConnectionDescriptor{}, nil, fmt.Errorf("%w: name is required and timeouts must be between 0 and %d ms", ErrInvalidSignedCapabilityDescriptor, maxSignedCapabilityTimeoutMS)
 	}
 	var err error
 	if out.ToolAllowlist, err = agentcfg.CanonicalScopes(out.ToolAllowlist); err != nil {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: tool_allowlist: %w", ErrInvalidSignedCapabilityDescriptor, err)
+		return prototypes.SignedOAuthMCPConnectionDescriptor{}, nil, fmt.Errorf("%w: tool_allowlist: %w", ErrInvalidSignedCapabilityDescriptor, err)
 	}
 	if out.ToolDenylist, err = agentcfg.CanonicalScopes(out.ToolDenylist); err != nil {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: tool_denylist: %w", ErrInvalidSignedCapabilityDescriptor, err)
+		return prototypes.SignedOAuthMCPConnectionDescriptor{}, nil, fmt.Errorf("%w: tool_denylist: %w", ErrInvalidSignedCapabilityDescriptor, err)
+	}
+	var injection *agentcfg.MCPCredentialInjectionDescriptor
+	if out.Injection != nil {
+		injection, err = validateWireInjectionDescriptor(out.Injection)
+		if err != nil {
+			return prototypes.SignedOAuthMCPConnectionDescriptor{}, nil, fmt.Errorf("%w: injection: %w", ErrInvalidSignedCapabilityDescriptor, err)
+		}
+		out.Injection = injectionDescriptorToWire(injection)
 	}
 	if len(out.ArtifactParams) > 0 && !out.ArtifactByteEligible {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: artifact_params requires artifact_byte_eligible", ErrInvalidSignedCapabilityDescriptor)
+		return prototypes.SignedOAuthMCPConnectionDescriptor{}, nil, fmt.Errorf("%w: artifact_params requires artifact_byte_eligible", ErrInvalidSignedCapabilityDescriptor)
 	}
 	canonicalParams, err := config.NormalizeMCPArtifactParams(config.MCPArtifactParams(out.ArtifactParams))
 	if err != nil {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, fmt.Errorf("%w: artifact_params: %s", ErrInvalidSignedCapabilityDescriptor, err.Error())
+		return prototypes.SignedOAuthMCPConnectionDescriptor{}, nil, fmt.Errorf("%w: artifact_params: %s", ErrInvalidSignedCapabilityDescriptor, err.Error())
 	}
 	if len(canonicalParams) == 0 {
 		out.ArtifactParams = nil
 	} else {
 		out.ArtifactParams = canonicalParams
 	}
-	return out, nil
+	return out, injection, nil
+}
+
+func signedCapabilityOAuthProvider(providerName string, injection *agentcfg.MCPCredentialInjectionDescriptor) string {
+	if injection != nil {
+		return ""
+	}
+	return providerName
 }
 
 func signedCapabilityEnvelopeKID(raw string) (string, error) {

@@ -22,12 +22,15 @@ import (
 // `Authorization: Basic` value / a `_meta` key). The mapping is NON-SECRET — the
 // credential is still pulled per-user from the named broker at call time; nothing
 // secret rides the wire. But wiring a credential to a receiver at runtime is an
-// admin-writable field that determines credential delivery, so it is accepted
-// ONLY behind the fail-closed, boot-only `tools.allow_wire_injection` opt-in
-// (config flag OR `HARBOR_ALLOW_WIRE_INJECTION` boot env, default off). With the
-// opt-in OFF (all of production) a connection carrying ANY injection field is
-// REJECTED, fail-loud, naming the opt-in key. This gate is INDEPENDENT of the
-// wire-OAuth-descriptor opt-in — an operator may enable one without the other.
+// admin-writable field that determines credential delivery, so the GENERIC
+// `add_mcp_connection` / `set_revision` doors accept it ONLY behind the
+// fail-closed, boot-only `tools.allow_wire_injection` opt-in (config flag OR
+// `HARBOR_ALLOW_WIRE_INJECTION` boot env, default off). With the opt-in OFF a
+// generic connection carrying any injection field is REJECTED, fail-loud,
+// naming the opt-in key. D-406's separate production door accepts only an exact
+// authority-signed injection mapping whose provider is the pair-private
+// provider; it never calls this dev gate. The generic gate remains independent
+// of the wire-OAuth-descriptor opt-in.
 //
 // # The credential-plane invariant stays honest even when opted in
 //

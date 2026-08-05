@@ -202,6 +202,11 @@ type Config struct {
 	// connection. It is reserved for a privately prepared signed capability;
 	// ordinary boot/shared providers remain owned by their provider set.
 	OwnOAuthProvider bool
+	// OwnedInjectionProvider is the pair-private provider owned by a signed
+	// receiver-style connection. It is deliberately separate from OAuthProvider:
+	// receiver initialize/discovery stays unauthenticated, while each tool call
+	// pulls the acting user's credential through Injection.Provider.
+	OwnedInjectionProvider auth.OAuthProvider
 
 	// MetaAnnotations is a static, non-secret set of operator-declared
 	// key/values merged into the `_meta` map on every identity-stamped
@@ -502,12 +507,13 @@ type Provider struct {
 	session *mcpsdk.ClientSession
 	closed  bool
 	// closeMu serializes teardown retries. closed blocks new dispatch as soon as
-	// teardown begins; session and oauthProviderClosed are the independent
+	// teardown begins; session and provider-close receipts are independent
 	// positive receipts. A failed Close keeps the outstanding handle so the
 	// exact registry generation can retry it instead of observing a false
 	// idempotent success.
-	closeMu             sync.Mutex
-	oauthProviderClosed bool
+	closeMu                 sync.Mutex
+	oauthProviderClosed     bool
+	injectionProviderClosed bool
 
 	// selectedMode is the actual transport mode chosen by
 	// selectTransport — useful for tests and observability.
@@ -1612,6 +1618,7 @@ func (p *Provider) Close(ctx context.Context) error {
 	p.closed = true
 	session := p.session
 	oauthProviderClosed := p.oauthProviderClosed
+	injectionProviderClosed := p.injectionProviderClosed
 	p.mu.Unlock()
 	var errs []error
 	if session != nil {
@@ -1631,6 +1638,15 @@ func (p *Provider) Close(ctx context.Context) error {
 		} else {
 			p.mu.Lock()
 			p.oauthProviderClosed = true
+			p.mu.Unlock()
+		}
+	}
+	if p.cfg.OwnedInjectionProvider != nil && !injectionProviderClosed {
+		if err := p.cfg.OwnedInjectionProvider.Close(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("mcp: close private injection provider: %w", err))
+		} else {
+			p.mu.Lock()
+			p.injectionProviderClosed = true
 			p.mu.Unlock()
 		}
 	}

@@ -1342,6 +1342,7 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 				ToolAllowlist:    append([]string(nil), pair.Connection.ToolAllowlist...),
 				ToolDenylist:     append([]string(nil), pair.Connection.ToolDenylist...),
 				ConnectTimeoutMS: pair.Connection.ConnectTimeoutMS, RequestTimeoutMS: pair.Connection.RequestTimeoutMS,
+				Injection:            injectionDescriptorToWire(pair.Connection.Injection),
 				ArtifactByteEligible: pair.Connection.ArtifactByteEligible,
 				ArtifactParams:       cloneArtifactParams(pair.Connection.ArtifactParams),
 			},
