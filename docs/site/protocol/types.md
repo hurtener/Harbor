@@ -2177,6 +2177,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` | optional (`omitempty`) |
 | `tool` | `string` |  |
 | `arguments` | `json.RawMessage` | optional (`omitempty`) |
 
@@ -2199,6 +2200,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `agent_id` | `string` | optional (`omitempty`) |
 | `server_id` | `string` | optional (`omitempty`) |
 | `tool_call_id` | `string` | optional (`omitempty`) |
 | `resource_uri` | `string` |  |
@@ -2960,6 +2962,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` | optional (`omitempty`) |
 | `server_id` | `string` |  |
 | `resource_uri` | `string` |  |
 

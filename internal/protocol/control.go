@@ -391,6 +391,15 @@ const agentNotResolvableMsg = "agent_id is not resolvable for the caller's tenan
 // A resolver ERROR fails the request loud with CodeRuntimeError; it
 // never falls through to the default agent.
 func (s *ControlSurface) validateNamedAgent(ctx context.Context, method string, id identity.Identity, agentID string) (string, error) {
+	return admitEffectiveAgent(ctx, method, id, agentID, s.agents, s.reach)
+}
+
+// admitEffectiveAgent is the shared reach-before-resolver admission used by
+// every Protocol edge that consumes agent-addressed runtime authority. Reach
+// MUST run before tenant-local resolution so the edge cannot become an agent
+// existence oracle. The returned id is the sole value callers may stamp as an
+// EffectiveAgentConfig execution capability.
+func admitEffectiveAgent(ctx context.Context, method string, id identity.Identity, agentID string, agents AgentResolver, reach auth.AgentReachAuthorizer) (string, error) {
 	// Determine the effective target without consulting tenant-local state.
 	// Reach is the authority boundary, so it MUST run before ResolveAgent:
 	// otherwise an untrusted caller can distinguish configured targets from
@@ -398,24 +407,28 @@ func (s *ControlSurface) validateNamedAgent(ctx context.Context, method string, 
 	// id is an effective selection too; a bare surface deliberately leaves it
 	// empty, which the same fail-closed gate rejects.
 	effectiveID := agentID
-	if resolver, ok := s.agents.(EffectiveAgentResolver); ok {
+	if resolver, ok := agents.(EffectiveAgentResolver); ok {
 		var err error
 		effectiveID, err = resolver.EffectiveAgentID(agentID)
 		if err != nil {
 			return "", protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %s", method, agentNotResolvableMsg)
 		}
-	} else if s.agents != nil && effectiveID == "" {
+	} else if agents != nil && effectiveID == "" {
 		return "", protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %s", method, agentNotResolvableMsg)
 	}
-	if err := s.reach.AuthorizeAgentReach(ctx, effectiveID); err != nil {
+	if reach == nil {
 		return "", protoerrors.Newf(protoerrors.CodeScopeMismatch,
 			"method %q: caller is not authorized for the effective agent", method)
 	}
-	if s.agents == nil {
+	if err := reach.AuthorizeAgentReach(ctx, effectiveID); err != nil {
+		return "", protoerrors.Newf(protoerrors.CodeScopeMismatch,
+			"method %q: caller is not authorized for the effective agent", method)
+	}
+	if agents == nil {
 		return "", protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: %s", method, agentNotResolvableMsg)
 	}
-	allowed, err := s.agents.ResolveAgent(ctx, id, effectiveID)
+	allowed, err := agents.ResolveAgent(ctx, id, effectiveID)
 	if err != nil {
 		if errors.Is(err, ErrAgentRetired) {
 			return "", protoerrors.Newf(protoerrors.CodeAgentRetired,

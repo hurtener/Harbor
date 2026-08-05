@@ -10,7 +10,7 @@ import "encoding/json"
 // that crosses to the Console — runtime Go structs never leak (RFC §5.1
 // / CLAUDE.md §13 single-source rule).
 //
-// Two methods consume these types:
+// Three methods consume these types:
 //
 //   - mcp.servers.read_resource — ReadMCPResourceRequest →
 //     ReadMCPResourceResponse. Fetches a `ui://` resource's HTML scoped
@@ -20,6 +20,9 @@ import "encoding/json"
 //     MCPAppCallToolResponse. An app-initiated tool invocation proxied
 //     back through the SAME identity + approval-gate + tool-side-OAuth
 //     path a planner-initiated call uses — never a parallel path.
+//   - mcp.apps.tool_context — ToolContextRequest → ToolContextResponse.
+//     Reads the identity-scoped captured input/result that produced an app;
+//     it performs no credential or agent-config selection.
 //
 // Identity is mandatory on every request (RFC §5.5 / CLAUDE.md §6
 // rule 9): an incomplete IdentityScope fails closed at the wire edge
@@ -32,6 +35,12 @@ import "encoding/json"
 // advertised capability set; RawHTMLTrusted is the per-server raw-HTML
 // trust posture (default-deny).
 type MCPAppRef struct {
+	// AgentID is the effective agent configuration that produced this app.
+	// It is runtime-authored discovery authority, not an isolation principal:
+	// the Console echoes it on resource reads and app tool calls, and the
+	// Runtime re-runs signed reach + tenant-local resolution before use.
+	// Empty is the backward-compatible pre-v1.26.11/default-agent shape.
+	AgentID string `json:"agent_id,omitempty"`
 	// ServerID is the MCP server (source id) hosting the app's UI document
 	// and tools. The Console pairs it with ResourceURI to fetch the
 	// document via mcp.servers.read_resource — without it the renderer
@@ -84,6 +93,10 @@ type ReadMCPResourceRequest struct {
 	// Identity is the (tenant, user, session) scope the read runs under.
 	// Mandatory — an incomplete triple fails closed.
 	Identity IdentityScope `json:"identity"`
+	// AgentID selects the effective agent configuration whose MCP provider
+	// authority the read may consume. The Runtime resolves an omitted value to
+	// its configured default, then re-authorizes signed reach before lookup.
+	AgentID string `json:"agent_id,omitempty"`
 	// ServerID is the MCP server (source id) hosting the resource.
 	ServerID string `json:"server_id"`
 	// ResourceURI is the resource to fetch — the `ui://`-scheme URI of
@@ -125,6 +138,11 @@ type MCPAppCallToolRequest struct {
 	// Identity is the (tenant, user, session) scope the tool call runs
 	// under. Mandatory — an incomplete triple fails closed.
 	Identity IdentityScope `json:"identity"`
+	// AgentID selects the effective agent configuration whose current tool
+	// exposure and provider authority govern this call. It is copied from the
+	// runtime-authored app reference; the Runtime re-authorizes it before use.
+	// Omission resolves to the configured default for older clients.
+	AgentID string `json:"agent_id,omitempty"`
 	// Tool is the catalog tool name to invoke (the Harbor-side
 	// `<source>_<tool>` name).
 	Tool string `json:"tool"`

@@ -1686,6 +1686,7 @@ export interface LLMPostureResponse {
 
 export interface MCPAppCallToolRequest {
   identity: IdentityScope;
+  agent_id?: string;
   tool: string;
   arguments?: unknown;
 }
@@ -1700,6 +1701,7 @@ export interface MCPAppCallToolResponse {
 }
 
 export interface MCPAppRef {
+  agent_id?: string;
   server_id?: string;
   tool_call_id?: string;
   resource_uri: string;
@@ -2181,6 +2183,7 @@ export interface RateLimitView {
 
 export interface ReadMCPResourceRequest {
   identity: IdentityScope;
+  agent_id?: string;
   server_id: string;
   resource_uri: string;
 }

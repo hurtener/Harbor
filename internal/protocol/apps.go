@@ -7,16 +7,19 @@ import (
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // AppsSurface is the transport-agnostic Harbor Protocol MCP Apps
-// handler. It owns the two MCP Apps host methods — the
+// handler. It owns the three MCP Apps host methods — the
 // `mcp.servers.read_resource` `ui://` UI-document fetch and the
-// `mcp.apps.call_tool` app-tool-call proxy — that back the Console's
+// `mcp.apps.call_tool` app-tool-call proxy, and the identity-scoped
+// `mcp.apps.tool_context` read — that back the Console's
 // sandboxed-iframe MCP App renderer.
 //
 // AppsSurface is a sibling of the MCPSurface (the twelve Console
@@ -40,7 +43,9 @@ import (
 // (internal/protocol/types) — never as a re-export of the `mcp` driver
 // or `tools` Go structs. The MCPResourceReader / AppToolInvoker seams
 // are narrow adapters the Runtime wires at boot; the `protocol` package
-// never imports the `mcp` driver or the tool catalog.
+// never imports the `mcp` driver or the tool catalog. The only tools
+// dependency is the context capability used by every execution path to
+// carry an already reach-admitted effective-agent selection.
 //
 // AppsSurface is immutable after construction and safe for concurrent
 // use by N goroutines — Dispatch reads request-specific data from ctx +
@@ -49,6 +54,8 @@ type AppsSurface struct {
 	resource    MCPResourceReader
 	invoker     AppToolInvoker
 	toolContext AppToolContextReader
+	agents      AgentResolver
+	reach       auth.AgentReachAuthorizer
 }
 
 // MCPResourceArtifactRow is the runtime-side projection of a by-reference
@@ -168,6 +175,13 @@ type AppsDeps struct {
 	// ToolContext is the tool-context reader (the StateStore + ArtifactStore
 	// adapter) backing `mcp.apps.tool_context`. Mandatory.
 	ToolContext AppToolContextReader
+	// AgentResolver selects the configured default for older clients and
+	// verifies that an explicit agent exists under the caller's tenant.
+	// Mandatory; Apps data-plane calls fail closed without it.
+	AgentResolver AgentResolver
+	// AgentReach is the shared signed-agent-reach gate. Nil installs the
+	// canonical fail-closed implementation, matching ControlSurface.
+	AgentReach auth.AgentReachAuthorizer
 }
 
 // ErrAppsMisconfigured — NewAppsSurface was called with a missing
@@ -206,9 +220,10 @@ var ErrAccessorNotFound = stderrors.New("protocol: accessor target not found")
 // be reachable from wording Harbor does not author.
 var ErrAccessorScopeDenied = stderrors.New("protocol: accessor refused the request")
 
-// NewAppsSurface builds the Protocol MCP Apps surface. Both the resource
-// reader and the tool-call invoker are mandatory; a nil fails loud with a
-// wrapped ErrAppsMisconfigured.
+// NewAppsSurface builds the Protocol MCP Apps surface. All three accessors and
+// the agent resolver are mandatory; a nil fails loud with a wrapped
+// ErrAppsMisconfigured. A nil reach authorizer installs the canonical
+// fail-closed signed-reach gate.
 //
 // The returned AppsSurface is immutable after construction and safe for
 // concurrent use by N goroutines.
@@ -222,11 +237,21 @@ func NewAppsSurface(deps AppsDeps) (*AppsSurface, error) {
 	if deps.ToolContext == nil {
 		return nil, fmt.Errorf("%w: tool-context reader is nil", ErrAppsMisconfigured)
 	}
-	return &AppsSurface{resource: deps.Resource, invoker: deps.Invoker, toolContext: deps.ToolContext}, nil
+	if deps.AgentResolver == nil {
+		return nil, fmt.Errorf("%w: AgentResolver is nil", ErrAppsMisconfigured)
+	}
+	reach := deps.AgentReach
+	if reach == nil {
+		reach = auth.NewAgentReachAuthorizer()
+	}
+	return &AppsSurface{
+		resource: deps.Resource, invoker: deps.Invoker, toolContext: deps.ToolContext,
+		agents: deps.AgentResolver, reach: reach,
+	}, nil
 }
 
 // Dispatch is the single transport-agnostic entry point for an MCP Apps
-// method call. method MUST be one of the two MCP Apps methods
+// method call. method MUST be one of the three MCP Apps methods
 // (methods.IsMCPAppsMethod); req MUST be the wire request type the
 // method expects.
 //
@@ -282,6 +307,11 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 	if perr != nil {
 		return nil, perr
 	}
+	effectiveID, err := admitEffectiveAgent(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
+	if err != nil {
+		return nil, err
+	}
+	idCtx = tools.WithEffectiveAgentConfig(idCtx, effectiveID)
 	content, err := s.resource.ReadResource(idCtx, r.ServerID, r.ResourceURI)
 	if err != nil {
 		return nil, mapMCPError(string(method), err)
@@ -322,6 +352,11 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	if perr != nil {
 		return nil, perr
 	}
+	effectiveID, err := admitEffectiveAgent(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
+	if err != nil {
+		return nil, err
+	}
+	idCtx = tools.WithEffectiveAgentConfig(idCtx, effectiveID)
 	// The invoker re-enters the EXISTING approval / OAuth / identity
 	// tool-invocation path — a gated tool parks on the unified pause
 	// primitive here, never bypassed.
@@ -344,6 +379,7 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	}
 	if res.App != nil {
 		resp.App = &types.MCPAppRef{
+			AgentID:        effectiveID,
 			ServerID:       res.App.ServerID,
 			ToolCallID:     res.App.ToolCallID,
 			ResourceURI:    res.App.ResourceURI,

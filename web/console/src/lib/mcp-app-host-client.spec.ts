@@ -70,8 +70,8 @@ describe('makeMCPAppHostClient', () => {
   it('readResource routes to mcp.servers.read_resource and maps the response', async () => {
     const { client, readResource } = fakeProtocolClient();
     const host = makeMCPAppHostClient(client);
-    const res = await host.readResource('srv', 'ui://srv/app.html');
-    expect(readResource).toHaveBeenCalledWith('srv', 'ui://srv/app.html');
+    const res = await host.readResource('srv', 'ui://srv/app.html', 'agent-weather');
+    expect(readResource).toHaveBeenCalledWith('srv', 'ui://srv/app.html', 'agent-weather');
     expect(res.content).toBe('<p>app</p>');
     expect(res.mimeType).toBe('text/html');
   });
@@ -79,8 +79,8 @@ describe('makeMCPAppHostClient', () => {
   it('callTool routes to mcp.apps.call_tool and maps is_error', async () => {
     const { client, callTool } = fakeProtocolClient();
     const host = makeMCPAppHostClient(client);
-    const res = await host.callTool('srv_echo', { q: 1 });
-    expect(callTool).toHaveBeenCalledWith('srv_echo', { q: 1 });
+    const res = await host.callTool('srv_echo', { q: 1 }, 'agent-weather');
+    expect(callTool).toHaveBeenCalledWith('srv_echo', { q: 1 }, 'agent-weather');
     expect(res.isError).toBe(false);
     expect(res.content).toEqual({ ok: true });
   });

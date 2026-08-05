@@ -295,6 +295,7 @@ const appAvailableFrame = JSON.stringify({
 	payload: {
 		SafePayload: null,
 		Identity: { TenantID: 'dev', UserID: 'dev', SessionID: 'dev', RunID: '01KSTH74S20BDDP1BK6ZSGABJG' },
+		AgentID: 'agent-weather',
 		ServerID: 'weather-server',
 		ToolCallID: 'tc_01weather',
 		ToolName: 'get_forecast',
@@ -308,6 +309,7 @@ describe('decodeAppAvailable', () => {
 	it('decodes the discovery frame, correlating to the run', () => {
 		expect(decodeAppAvailable(appAvailableFrame)).toEqual({
 			taskID: '01KSTH74S20BDDP1BK6ZSGABJG',
+			agentID: 'agent-weather',
 			serverID: 'weather-server',
 			resourceUri: 'ui://weather/main.html',
 			displayMode: 'inline',

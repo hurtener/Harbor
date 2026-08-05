@@ -68,6 +68,11 @@ import type {
  * chat module stays free of any `$lib/protocol` import.
  */
 export interface MCPAppRefView {
+  /**
+   * Runtime-authored effective agent configuration. The host echoes this
+   * value; it never accepts an agent id from the sandboxed App.
+   */
+  agentId?: string;
   /** The `ui://`-scheme URI of the app's UI document. */
   resourceUri: string;
   /** The negotiated display mode; the inline host consumes only `inline`. */
@@ -259,7 +264,7 @@ export interface MCPAppToolContext {
  */
 export interface MCPAppHostClient {
   /** Route `resources/read` → `mcp.servers.read_resource`. */
-  readResource(serverID: string, resourceURI: string): Promise<MCPAppResource>;
+  readResource(serverID: string, resourceURI: string, agentID?: string): Promise<MCPAppResource>;
   /**
    * Route `tools/call` → `mcp.apps.call_tool` (re-enters the tool-safety gates).
    *
@@ -271,7 +276,7 @@ export interface MCPAppHostClient {
    * not-found, so the confinement rejection is distinguishable from a transport
    * failure.
    */
-  callTool(tool: string, args?: unknown): Promise<MCPAppToolResult>;
+  callTool(tool: string, args?: unknown, agentID?: string): Promise<MCPAppToolResult>;
   /** Route `resources/list` → `mcp.servers.resources`. */
   listResources(serverID: string): Promise<MCPAppResourceListing[]>;
   /**
@@ -380,6 +385,12 @@ export interface AppBridgeHostOptions {
   client: MCPAppHostClient;
   /** The MCP server (source id) hosting the app's tools + resources. */
   serverID: string;
+  /**
+   * Effective agent id copied from runtime-authored discovery. Optional only
+   * for replay/backward compatibility; the Runtime resolves omission to its
+   * configured default and still applies signed reach.
+   */
+  agentID?: string;
   /**
    * Called when the app requests a display mode. The request is recorded and
    * acked with the GRANTED mode (see {@link availableDisplayModes}). The
@@ -560,7 +571,7 @@ export function containerDimensionsFromBox(box: {
  * with network spies installed and asserts zero network calls.
  */
 export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
-  const { client, serverID } = opts;
+  const { client, serverID, agentID } = opts;
   return {
     async oncalltool({ name, arguments: args }) {
       // → mcp.apps.call_tool: re-enters the SAME identity + approval-gate +
@@ -573,7 +584,7 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
       const qualified = qualifyAppToolName(serverID, name);
       let result: MCPAppToolResult;
       try {
-        result = await client.callTool(qualified, args);
+        result = await client.callTool(qualified, args, agentID);
       } catch (err) {
         if (err instanceof MCPAppToolNotFoundError) {
           // Re-raise naming what the APP asked for (the bare name) and the
@@ -620,7 +631,7 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
 
     async onreadresource({ uri }) {
       // → mcp.servers.read_resource, identity-scoped + heavy-content aware.
-      const res = await client.readResource(serverID, uri);
+      const res = await client.readResource(serverID, uri, agentID);
       if (res.artifactRef) {
         // The app asked to read a heavy resource inline — refuse loudly
         // rather than truncate or return an empty resource silently.

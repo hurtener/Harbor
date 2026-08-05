@@ -424,7 +424,9 @@ export function reduceHistoryTurns(events: readonly StateEvent[]): HistoryTurn[]
 			const resourceUri = readString(p, ['ResourceURI', 'resource_uri']);
 			if (serverID !== '' && resourceUri !== '') {
 				const mode = readString(p, ['DisplayMode', 'display_mode']);
+				const agentID = readString(p, ['AgentID', 'agent_id']);
 				turn.app = {
+					...(agentID !== '' ? { agentId: agentID } : {}),
 					resourceUri,
 					displayMode: KNOWN_DISPLAY_MODES.has(mode) ? (mode as McpUiDisplayMode) : '',
 					rawHtmlTrusted: readBool(p, ['RawHTMLTrusted', 'raw_html_trusted']),

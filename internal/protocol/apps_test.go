@@ -7,22 +7,49 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/tools"
 )
+
+const appsDefaultAgentID = "apps-default-agent"
+
+type stubAppsAgentResolver struct {
+	resolveCalls int
+}
+
+func (s *stubAppsAgentResolver) ResolveAgent(_ context.Context, _ identity.Identity, agentID string) (bool, error) {
+	s.resolveCalls++
+	return agentID != "", nil
+}
+
+func (*stubAppsAgentResolver) EffectiveAgentID(requested string) (string, error) {
+	if requested == "" {
+		return appsDefaultAgentID, nil
+	}
+	return requested, nil
+}
+
+type allowAppsAgentReach struct{}
+
+func (allowAppsAgentReach) AuthorizeAgentReach(context.Context, string) error { return nil }
 
 // stubResourceReader / stubInvoker are deterministic Apps seams.
 type stubResourceReader struct {
-	content protocol.MCPResourceContent
-	err     error
-	gotID   string
-	gotURI  string
+	content  protocol.MCPResourceContent
+	err      error
+	gotID    string
+	gotURI   string
+	gotAgent string
 }
 
-func (s *stubResourceReader) ReadResource(_ context.Context, serverID, uri string) (protocol.MCPResourceContent, error) {
+func (s *stubResourceReader) ReadResource(ctx context.Context, serverID, uri string) (protocol.MCPResourceContent, error) {
 	s.gotID, s.gotURI = serverID, uri
+	s.gotAgent, _ = tools.EffectiveAgentConfigFrom(ctx)
 	if s.err != nil {
 		return protocol.MCPResourceContent{}, s.err
 	}
@@ -30,13 +57,15 @@ func (s *stubResourceReader) ReadResource(_ context.Context, serverID, uri strin
 }
 
 type stubInvoker struct {
-	res     protocol.MCPAppToolResultRow
-	err     error
-	gotTool string
+	res      protocol.MCPAppToolResultRow
+	err      error
+	gotTool  string
+	gotAgent string
 }
 
-func (s *stubInvoker) CallTool(_ context.Context, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+func (s *stubInvoker) CallTool(ctx context.Context, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	s.gotTool = tool
+	s.gotAgent, _ = tools.EffectiveAgentConfigFrom(ctx)
 	if s.err != nil {
 		return protocol.MCPAppToolResultRow{}, s.err
 	}
@@ -66,7 +95,10 @@ func newAppsSurface(t *testing.T, r protocol.MCPResourceReader, inv protocol.App
 
 func newAppsSurfaceTC(t *testing.T, r protocol.MCPResourceReader, inv protocol.AppToolInvoker, tc protocol.AppToolContextReader) *protocol.AppsSurface {
 	t.Helper()
-	s, err := protocol.NewAppsSurface(protocol.AppsDeps{Resource: r, Invoker: inv, ToolContext: tc})
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource: r, Invoker: inv, ToolContext: tc,
+		AgentResolver: &stubAppsAgentResolver{}, AgentReach: allowAppsAgentReach{},
+	})
 	if err != nil {
 		t.Fatalf("NewAppsSurface: %v", err)
 	}
@@ -82,6 +114,11 @@ func TestAppsSurface_NewRejectsNilDeps(t *testing.T) {
 	}
 	if _, err := protocol.NewAppsSurface(protocol.AppsDeps{Resource: &stubResourceReader{}, Invoker: &stubInvoker{}}); !errors.Is(err, protocol.ErrAppsMisconfigured) {
 		t.Errorf("nil ToolContext: err = %v, want ErrAppsMisconfigured", err)
+	}
+	if _, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource: &stubResourceReader{}, Invoker: &stubInvoker{}, ToolContext: &stubToolContextReader{},
+	}); !errors.Is(err, protocol.ErrAppsMisconfigured) {
+		t.Errorf("nil AgentResolver: err = %v, want ErrAppsMisconfigured", err)
 	}
 }
 
@@ -102,6 +139,9 @@ func TestAppsSurface_ReadResource_InlineProjection(t *testing.T) {
 	}
 	if rr.gotID != "srv-a" || rr.gotURI != "ui://app/main.html" {
 		t.Errorf("accessor args wrong: id=%q uri=%q", rr.gotID, rr.gotURI)
+	}
+	if rr.gotAgent != appsDefaultAgentID {
+		t.Errorf("effective agent = %q, want %q", rr.gotAgent, appsDefaultAgentID)
 	}
 }
 
@@ -148,7 +188,7 @@ func TestAppsSurface_CallTool_AppRefProjection(t *testing.T) {
 	}}
 	s := newAppsSurface(t, &stubResourceReader{}, inv)
 	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
-		Identity: validScope(), Tool: "srv-a_weather", Arguments: json.RawMessage(`{}`),
+		Identity: validScope(), AgentID: "named-agent", Tool: "srv-a_weather", Arguments: json.RawMessage(`{}`),
 	})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -160,11 +200,36 @@ func TestAppsSurface_CallTool_AppRefProjection(t *testing.T) {
 	if out.App != nil && out.App.ServerID != "srv-a" {
 		t.Errorf("app-ref server_id projection wrong: got %q, want srv-a", out.App.ServerID)
 	}
+	if out.App != nil && out.App.AgentID != "named-agent" {
+		t.Errorf("app-ref agent_id projection wrong: got %q, want named-agent", out.App.AgentID)
+	}
 	if string(out.Content) != `{"ok":true}` {
 		t.Errorf("content wrong: %s", out.Content)
 	}
 	if inv.gotTool != "srv-a_weather" {
 		t.Errorf("invoker got tool %q", inv.gotTool)
+	}
+	if inv.gotAgent != "named-agent" {
+		t.Errorf("invoker effective agent = %q, want named-agent", inv.gotAgent)
+	}
+}
+
+func TestAppsSurface_AgentReachRunsBeforeTenantResolution(t *testing.T) {
+	resolver := &stubAppsAgentResolver{}
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource: &stubResourceReader{}, Invoker: &stubInvoker{}, ToolContext: &stubToolContextReader{},
+		AgentResolver: resolver, AgentReach: auth.NewAgentReachAuthorizer(),
+	})
+	if err != nil {
+		t.Fatalf("NewAppsSurface: %v", err)
+	}
+	ctx := auth.WithAgentReach(verifiedCtx(t), []string{"allowed-agent"})
+	_, err = s.Dispatch(ctx, methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+		Identity: validScope(), AgentID: "forbidden-agent", ServerID: "srv-a", ResourceURI: "ui://x",
+	})
+	assertCode(t, err, protoerrors.CodeScopeMismatch)
+	if resolver.resolveCalls != 0 {
+		t.Fatalf("tenant-local resolver calls = %d, want 0 before signed reach refusal", resolver.resolveCalls)
 	}
 }
 

@@ -1255,12 +1255,14 @@ func (p *Provider) publishAppAvailable(ctx context.Context, ref *AppRef, toolNam
 	if quad, qok := identity.QuadrupleFrom(ctx); qok {
 		q.RunID = quad.RunID
 	}
+	effectiveAgentID, _ := tools.EffectiveAgentConfigFrom(ctx)
 	ev := events.Event{
 		Type:       EventTypeMCPAppAvailable,
 		Identity:   q,
 		OccurredAt: time.Now(),
 		Payload: AppAvailablePayload{
 			Identity:    q,
+			AgentID:     effectiveAgentID,
 			ServerID:    p.source,
 			ToolCallID:  ref.ToolCallID,
 			ToolName:    toolName,

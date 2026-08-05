@@ -665,6 +665,7 @@ Payload `AppAvailablePayload` — safe payload (delivered typed, verbatim).
 | Wire key | Go type | Notes |
 |---|---|---|
 | `Identity` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
 | `ServerID` | `tools.ToolSourceID` |  |
 | `ToolCallID` | `string` |  |
 | `ToolName` | `string` |  |

@@ -27,7 +27,7 @@ import (
 // fail-closed, boot-only `tools.allow_wire_injection` opt-in (config flag OR
 // `HARBOR_ALLOW_WIRE_INJECTION` boot env, default off). With the opt-in OFF a
 // generic connection carrying any injection field is REJECTED, fail-loud,
-// naming the opt-in key. D-406's separate production door accepts only an exact
+// naming the opt-in key. The separate production door accepts only an exact
 // authority-signed injection mapping whose provider is the pair-private
 // provider; it never calls this dev gate. The generic gate remains independent
 // of the wire-OAuth-descriptor opt-in.

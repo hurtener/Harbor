@@ -32,8 +32,8 @@ import {
 /* ------------------------------------------------------------------ */
 
 interface FakeCalls {
-  readResource: Array<[string, string]>;
-  callTool: Array<[string, unknown]>;
+  readResource: Array<[string, string, string | undefined]>;
+  callTool: Array<[string, unknown, string | undefined]>;
   listResources: string[];
   listTools: string[];
 }
@@ -44,12 +44,12 @@ function makeFakeClient(overrides: Partial<MCPAppHostClient> = {}): {
 } {
   const calls: FakeCalls = { readResource: [], callTool: [], listResources: [], listTools: [] };
   const client: MCPAppHostClient = {
-    async readResource(serverID, uri): Promise<MCPAppResource> {
-      calls.readResource.push([serverID, uri]);
+    async readResource(serverID, uri, agentID): Promise<MCPAppResource> {
+      calls.readResource.push([serverID, uri, agentID]);
       return { resourceUri: uri, mimeType: 'text/html', content: '<p>hi</p>' };
     },
-    async callTool(tool, args): Promise<MCPAppToolResult> {
-      calls.callTool.push([tool, args]);
+    async callTool(tool, args, agentID): Promise<MCPAppToolResult> {
+      calls.callTool.push([tool, args, agentID]);
       return { tool, content: { ok: true }, isError: false };
     },
     async listResources(serverID) {
@@ -165,9 +165,9 @@ describe('manual handlers dispatch to the injected client', () => {
     // Harbor's `<source>_<tool>` catalog keys. The host qualifies the name so
     // the call resolves at all — and so the app is confined (next case).
     const { client, calls } = makeFakeClient();
-    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    const handlers = createAppHandlers({ client, serverID: 'srv', agentID: 'agent-app' });
     const result = await handlers.oncalltool({ name: 'echo', arguments: { q: 1 } });
-    expect(calls.callTool).toEqual([['srv_echo', { q: 1 }]]);
+    expect(calls.callTool).toEqual([['srv_echo', { q: 1 }, 'agent-app']]);
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toEqual({ ok: true });
   });
@@ -202,7 +202,7 @@ describe('manual handlers dispatch to the injected client', () => {
     const { client, calls } = makeFakeClient();
     const handlers = createAppHandlers({ client, serverID: 'srv' });
     await handlers.oncalltool({ name: 'srv_echo' });
-    expect(calls.callTool).toEqual([['srv_srv_echo', undefined]]);
+    expect(calls.callTool).toEqual([['srv_srv_echo', undefined, undefined]]);
   });
 
   it('qualifyAppToolName is unconditional — every name lands inside the server namespace', () => {
@@ -224,7 +224,7 @@ describe('manual handlers dispatch to the injected client', () => {
         throw new MCPAppToolNotFoundError(tool);
       },
     });
-    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    const handlers = createAppHandlers({ client, serverID: 'srv', agentID: 'agent-app' });
     await expect(handlers.oncalltool({ name: 'nope' })).rejects.toBeInstanceOf(
       MCPAppToolNotFoundError,
     );
@@ -315,9 +315,9 @@ describe('manual handlers dispatch to the injected client', () => {
 
   it('onreadresource routes to read_resource and returns inline contents', async () => {
     const { client, calls } = makeFakeClient();
-    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    const handlers = createAppHandlers({ client, serverID: 'srv', agentID: 'agent-app' });
     const res = await handlers.onreadresource({ uri: 'ui://srv/app.html' });
-    expect(calls.readResource).toEqual([['srv', 'ui://srv/app.html']]);
+    expect(calls.readResource).toEqual([['srv', 'ui://srv/app.html', 'agent-app']]);
     expect((res.contents[0] as { text: string }).text).toContain('hi');
   });
 

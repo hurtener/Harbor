@@ -25,10 +25,15 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	_ "github.com/hurtener/Harbor/internal/agentcfg/drivers/statestore"
+	artifactsinmem "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	eventsinmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/mcpconsole"
+	"github.com/hurtener/Harbor/internal/protocol"
+	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
+	protocolmethods "github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
@@ -78,8 +83,10 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "ok"}}}, nil, nil
 	})
 	mcpServer.AddResource(&mcpsdk.Resource{URI: "mem://fixture", Name: "fixture", MIMEType: "text/plain"},
-		func(context.Context, *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
-			return &mcpsdk.ReadResourceResult{}, nil
+		func(_ context.Context, req *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
+			return &mcpsdk.ReadResourceResult{Contents: []*mcpsdk.ResourceContents{
+				{URI: req.Params.URI, MIMEType: "text/plain", Text: "signed-resource"},
+			}}, nil
 		})
 	mcpServer.AddPrompt(&mcpsdk.Prompt{Name: "fixture"},
 		func(context.Context, *mcpsdk.GetPromptRequest) (*mcpsdk.GetPromptResult, error) {
@@ -390,22 +397,77 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		t.Fatalf("actor binding lost exact signed authority: %+v", actor)
 	}
 
-	dispatchCtx, err := identity.With(context.Background(), id)
+	dispatchCtx, err := identity.WithVerified(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dispatchCtx = tools.WithInvokingAgent(dispatchCtx, agentID)
-	// This fixture invokes the catalog directly instead of via control.start.
-	// Model the run loop's already reach-admitted effective configuration; a
-	// bare direct catalog context is deliberately denied by signed providers.
-	dispatchCtx = tools.WithEffectiveAgentConfig(dispatchCtx, agentID)
+	dispatchCtx = protocolauth.WithAgentReach(dispatchCtx, []string{agentID})
 	runtimeATool, ok := catalog.Resolve(connectionName + "_echo")
 	if !ok {
 		t.Fatal("runtime A tool is not published")
 	}
-	if _, err := runtimeATool.Invoke(dispatchCtx, json.RawMessage(`{}`)); err != nil {
-		t.Fatalf("runtime A cached-bearer dispatch: %v", err)
+	artifactStore, err := artifactsinmem.New(config.ArtifactsConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = artifactStore.Close(context.Background()) })
+	toolContext, err := mcpconsole.NewToolContextStore(mcpconsole.ToolContextDeps{
+		State: store, Store: artifactStore, Bus: bus,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appsAccessor, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
+		Registry: mcpRegistry, Catalog: catalog, Store: artifactStore, Bus: bus,
+		ToolContext: toolContext, AgentConfig: registry, AgentID: agentID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appsSurface, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource: appsAccessor, Invoker: appsAccessor, ToolContext: appsAccessor,
+		AgentResolver: NewAgentResolverAdapter(registry, agentID),
+		AgentReach:    protocolauth.NewAgentReachAuthorizer(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readResp, err := appsSurface.Dispatch(dispatchCtx, protocolmethods.MethodMCPReadResource, &prototypes.ReadMCPResourceRequest{
+		Identity: prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
+		AgentID:  agentID, ServerID: connectionName, ResourceURI: "mem://fixture",
+	})
+	if err != nil {
+		t.Fatalf("Apps signed resource dispatch: %v", err)
+	}
+	if got := readResp.(*prototypes.ReadMCPResourceResponse).Content; got != "signed-resource" {
+		t.Fatalf("Apps signed resource content = %q, want signed-resource", got)
+	}
+	if _, err := appsSurface.Dispatch(dispatchCtx, protocolmethods.MethodMCPAppsCallTool, &prototypes.MCPAppCallToolRequest{
+		Identity: prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
+		AgentID:  agentID, Tool: connectionName + "_echo", Arguments: json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatalf("Apps signed tool dispatch: %v", err)
+	}
+	requestMu.Lock()
+	for _, method := range []string{"resources/read", "tools/call"} {
+		if methods[method] == 0 {
+			requestMu.Unlock()
+			t.Fatalf("Apps signed dispatch omitted %s; methods=%v", method, methods)
+		}
+		for _, header := range authHeaders[method] {
+			if header != "Bearer "+downstreamBearer {
+				requestMu.Unlock()
+				t.Fatalf("Apps %s authorization = %q, want exact downstream bearer", method, header)
+			}
+		}
+	}
+	requestMu.Unlock()
+	// The remaining half of this fixture invokes saved descriptors directly to
+	// prove stale publisher epochs become inert. Model the run loop for those
+	// direct calls; the Apps calls above deliberately received no pre-stamped
+	// effective-agent capability and therefore prove the Protocol surface adds
+	// it only after reach + tenant resolution.
+	dispatchCtx = tools.WithEffectiveAgentConfig(dispatchCtx, agentID)
 	operationKey := agentcfg.SignedOAuthMCPReplayKey{
 		TenantID: id.TenantID, TrustAnchorName: "broker", Issuer: claims.Issuer,
 		KeyID: "kid", JTI: claims.ID,

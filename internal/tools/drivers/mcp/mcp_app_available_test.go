@@ -188,6 +188,7 @@ func TestE2E_MCPAppAvailable_PlannerPathEmitsEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity.WithRun: %v", err)
 	}
+	ctx = tools.WithEffectiveAgentConfig(ctx, "agent-weather")
 
 	desc := resolveTool(t, p, "weather-server_weather")
 	res, err := desc.Invoke(ctx, json.RawMessage(`{}`))
@@ -218,6 +219,9 @@ func TestE2E_MCPAppAvailable_PlannerPathEmitsEvent(t *testing.T) {
 		}
 		if payload.ServerID != p.source {
 			t.Errorf("payload ServerID = %q, want %q", payload.ServerID, p.source)
+		}
+		if payload.AgentID != "agent-weather" {
+			t.Errorf("payload AgentID = %q, want agent-weather", payload.AgentID)
 		}
 		if payload.ResourceURI != resourceURI {
 			t.Errorf("payload ResourceURI = %q, want %q", payload.ResourceURI, resourceURI)

@@ -196,6 +196,31 @@ func TestAppCallGate_NotPaused_Allowed(t *testing.T) {
 	}
 }
 
+// TestAppCallGate_EffectiveAgentOverridesBootSlot proves a named agent's Apps
+// callback is governed by that agent's current exposure, not by the Runtime's
+// boot/default slot retained on the compiled accessor. Production Protocol
+// dispatch stamps this value only after signed reach + tenant resolution.
+func TestAppCallGate_EffectiveAgentOverridesBootSlot(t *testing.T) {
+	ctx := idCtx(t)
+	cat := gateCatalog(t)
+	reg := gateRegistry(t)
+	const namedAgentID = "named-agent"
+	if _, err := reg.SetRevision(ctx, gateID(), namedAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srv-a"}},
+	}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("set named-agent pause: %v", err)
+	}
+	acc := newGatedAccessor(t, cat, reg) // compiled with gateAgentID as boot slot
+
+	namedCtx := tools.WithEffectiveAgentConfig(ctx, namedAgentID)
+	if _, err := acc.CallTool(namedCtx, "srv-a_echo", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
+		t.Fatalf("named-agent paused call err = %v, want ErrAppToolExposureDenied", err)
+	}
+	if _, err := acc.CallTool(ctx, "srv-a_echo", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("legacy boot-slot call unexpectedly inherited named-agent pause: %v", err)
+	}
+}
+
 // TestAppCallGate_Inert_WhenUnwired proves the gate is inert (backward
 // compatible) when no agent-config registry is wired into the accessor.
 func TestAppCallGate_Inert_WhenUnwired(t *testing.T) {

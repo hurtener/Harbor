@@ -204,6 +204,18 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
   -d '{"identity": {}, "query": "Draft the release note.", "agent_id": "reporting-agent"}'
 ```
 
+**Keep that agent binding when you render an MCP App.** The runtime-authored
+`mcp.app_available` payload carries `AgentID` beside `ServerID` and
+`ResourceURI`; a nested `MCPAppRef` uses the JSON field `agent_id`. Treat this
+value as opaque host state and echo it as `agent_id` on both
+`mcp.servers.read_resource` and `mcp.apps.call_tool`. Never accept an agent id
+from inside the sandboxed App. Harbor resolves an omitted value to the runtime
+default for older clients, then applies the same signed `agent_reach` check
+before tenant-local resolution and credential/exposure use, so the echo is not
+trusted authority. `mcp.apps.tool_context` takes no agent id: its record is
+already scoped to the verified tenant/user/session triple and it performs no
+agent-config or credential selection.
+
 A named agent is accepted when EITHER its id equals the runtime's configured default agent id, OR a config revision exists for your tenant under that id (write one with `agent_config.set_revision` — see §7). Anything else is refused with a `400 {"code": "invalid_request"}` envelope **before any task is created**, never quietly replaced by the default: a caller that named agent A, silently got agent B, and was told it succeeded is exactly the failure this rule prevents. The refusal is deliberately uninformative — an id belonging to another tenant and an id that never existed produce the identical error, so the edge cannot be probed for cross-tenant existence.
 
 To contribute **content you already retrieved** — recalled conversation memory, a document your own store fetched, anything you want the model to consider without asserting it as instruction — add the optional `caller_memory` field (D-364). **This is the field to reach for, NOT `system_prompt_override`.**

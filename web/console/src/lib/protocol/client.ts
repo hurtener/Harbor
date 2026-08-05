@@ -504,10 +504,11 @@ export class MCPServersNamespace {
 	 * transport — D-173). The Runtime mounts it on the control surface at
 	 * `POST /v1/control/mcp.servers.read_resource`.
 	 */
-	readResource<R = unknown>(serverID: string, resourceURI: string): Promise<R> {
+	readResource<R = unknown>(serverID: string, resourceURI: string, agentID?: string): Promise<R> {
 		return this.#t.request<R>('/v1/control/mcp.servers.read_resource', {
 			server_id: serverID,
-			resource_uri: resourceURI
+			resource_uri: resourceURI,
+			...(agentID ? { agent_id: agentID } : {})
 		});
 	}
 }
@@ -530,10 +531,11 @@ export class MCPAppsNamespace {
 	 * the Harbor catalog tool name (`<source>_<tool>`); `args` is the raw JSON
 	 * argument object the tool's schema validates on the wire.
 	 */
-	callTool<R = unknown>(tool: string, args?: unknown): Promise<R> {
+	callTool<R = unknown>(tool: string, args?: unknown, agentID?: string): Promise<R> {
 		return this.#t.request<R>('/v1/control/mcp.apps.call_tool', {
 			tool,
-			arguments: args
+			arguments: args,
+			...(agentID ? { agent_id: agentID } : {})
 		});
 	}
 	/**

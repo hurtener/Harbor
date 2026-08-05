@@ -4534,6 +4534,11 @@
           "ref": "IdentityScope"
         },
         {
+          "key": "agent_id",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "tool",
           "type": "string"
         },
@@ -4581,6 +4586,11 @@
     "MCPAppRef": {
       "home": "types",
       "fields": [
+        {
+          "key": "agent_id",
+          "type": "string",
+          "optional": true
+        },
         {
           "key": "server_id",
           "type": "string",
@@ -6145,6 +6155,11 @@
           "key": "identity",
           "type": "object",
           "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string",
+          "optional": true
         },
         {
           "key": "server_id",
