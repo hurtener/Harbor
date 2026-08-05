@@ -238,6 +238,50 @@ func TestSignedOAuthMCPActivationFence_HidesCandidateAndRejectsForeignWriters(t 
 	}
 }
 
+func TestSignedOAuthMCPPairScopedActivationFence_HidesSecondPairCandidate(t *testing.T) {
+	ctx := context.Background()
+	reg, st := newRegistryWithStore(t)
+	q := agentQuad(condAgent)
+	legacy := &agentcfg.SignedOAuthMCPPair{ProviderName: "legacy", AuthorityOperationKind: "legacy-operation"}
+	prior, err := reg.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, legacy.AuthorityOperationKind), q, condAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{SignedOAuthMCPPair: legacy}, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed first pair: %v", err)
+	}
+	second := agentcfg.SignedOAuthMCPPair{ProviderName: "second", AuthorityOperationKind: "second-operation"}
+	pairs := agentcfg.SignedOAuthMCPPairs{"second": second}
+	payload := agentcfg.ConfigPayload{SignedOAuthMCPPair: legacy, SignedOAuthMCPPairs: &pairs}
+	candidateHash, err := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fences, err := agentcfg.NewSignedOAuthMCPActivationFenceStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := fences.BeginForOperation(ctx, tenantT, condAgent, second.AuthorityOperationKind, "fingerprint", candidateHash, prior.RevisionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := reg.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, second.AuthorityOperationKind), q, condAgent, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{ExpectedContentHash: prior.ContentHash})
+	if err != nil {
+		t.Fatalf("second-pair candidate: %v", err)
+	}
+	visible, set, err := reg.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || visible.RevisionID != prior.RevisionID {
+		t.Fatalf("pending second-pair Active = (%q, %t, %v), want prior %q", visible.RevisionID, set, err, prior.RevisionID)
+	}
+	if _, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, condPayload("foreign"), agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityPending) {
+		t.Fatalf("generic writer during second-pair activation = %v, want pending", err)
+	}
+	if _, err := fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceCommitted, candidate.RevisionID); err != nil {
+		t.Fatal(err)
+	}
+	visible, set, err = reg.Active(ctx, q, condAgent, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || visible.RevisionID != candidate.RevisionID {
+		t.Fatalf("committed second-pair Active = (%q, %t, %v), want candidate %q", visible.RevisionID, set, err, candidate.RevisionID)
+	}
+}
+
 func TestSignedOAuthMCPPair_GenericWritesCarryForwardAndRollbackCannotMutate(t *testing.T) {
 	ctx := context.Background()
 	reg, _ := newRegistryWithStore(t)
@@ -268,6 +312,9 @@ func TestSignedOAuthMCPPair_GenericWritesCarryForwardAndRollbackCannotMutate(t *
 	altered.SignedOAuthMCPPair = &mutated
 	if _, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, altered, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
 		t.Fatalf("generic pair alteration = %v, want replay refusal", err)
+	}
+	if _, err := reg.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, condAgent, agentcfg.ConfigScopeAgent, altered, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
+		t.Fatalf("operation-fenced pair mutation = %v, want replay refusal", err)
 	}
 	if _, err := reg.Rollback(ctx, q, condAgent, prior.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
 		t.Fatalf("generic rollback removed pair: %v", err)

@@ -158,6 +158,7 @@ func (s *Service) SetExtraSystemBlocks(ctx context.Context, req prototypes.Agent
 		payload.Naming = active.Payload.Naming
 		payload.OAuthProviders = active.Payload.OAuthProviders
 		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
+		payload.SignedOAuthMCPPairs = active.Payload.SignedOAuthMCPPairs
 	}
 
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,

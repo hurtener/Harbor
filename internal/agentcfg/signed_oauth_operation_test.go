@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	statesqlite "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 )
@@ -340,6 +341,91 @@ func TestSignedOAuthMCPActivationFenceStore_TerminalFenceYieldsToNextOperation(t
 	}
 	if _, err := fences.Begin(context.Background(), "tenant-a", "agent", "foreign", "foreign", "foreign", "revision-one"); !errors.Is(err, ErrSignedCapabilityPending) {
 		t.Fatalf("foreign pending operation = %v, want ErrSignedCapabilityPending", err)
+	}
+}
+
+func TestSignedOAuthMCPActivationFenceStore_PairScopedOperationsCoexist(t *testing.T) {
+	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	fences, err := NewSignedOAuthMCPActivationFenceStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := fences.BeginForOperation(context.Background(), "tenant", "agent", "operation-left", "fingerprint-left", "candidate-left", "prior")
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := fences.BeginForOperation(context.Background(), "tenant", "agent", "operation-right", "fingerprint-right", "candidate-right", "prior")
+	if err != nil {
+		t.Fatalf("independent pair fence: %v", err)
+	}
+	if left.StateKind == right.StateKind || left.EventID == right.EventID {
+		t.Fatalf("pair fences share durable slot: left=%+v right=%+v", left, right)
+	}
+	if _, err := fences.Advance(context.Background(), left, SignedOAuthMCPFenceCommitted, "revision-left"); err != nil {
+		t.Fatal(err)
+	}
+	stillPending, err := fences.LoadForOperation(context.Background(), "tenant", "agent", "operation-right")
+	if err != nil || stillPending.Phase != SignedOAuthMCPFencePending || stillPending.EventID != right.EventID {
+		t.Fatalf("right fence changed with left: %+v err=%v", stillPending, err)
+	}
+	ops, err := NewSignedOAuthMCPOperationStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, _, err := ops.ScanTenantPage(context.Background(), "tenant", 10, "")
+	if err != nil || len(page) != 0 {
+		t.Fatalf("pair fences leaked into operation scan: %+v err=%v", page, err)
+	}
+}
+
+func TestSignedOAuthMCPActivationFenceStore_ReleasePendingAllowsRebasedRetry(t *testing.T) {
+	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	fences, err := NewSignedOAuthMCPActivationFenceStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := fences.BeginForOperation(context.Background(), "tenant", "agent", "operation", "fingerprint", "candidate-one", "prior-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fences.ReleasePending(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fences.LoadForOperation(context.Background(), "tenant", "agent", "operation"); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("released fence load = %v, want ErrNotFound", err)
+	}
+	rebased, err := fences.BeginForOperation(context.Background(), "tenant", "agent", "operation", "fingerprint", "candidate-two", "prior-two")
+	if err != nil {
+		t.Fatalf("rebased retry: %v", err)
+	}
+	if rebased.CandidateContentHash != "candidate-two" || rebased.PriorRevisionID != "prior-two" || rebased.Phase != SignedOAuthMCPFencePending {
+		t.Fatalf("rebased fence = %+v", rebased)
+	}
+}
+
+func TestSignedOAuthMCPActivationFenceStore_LoadForOperationRejectsForeignLegacyFallback(t *testing.T) {
+	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	fences, err := NewSignedOAuthMCPActivationFenceStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fences.Begin(context.Background(), "tenant", "agent", "legacy-operation", "fingerprint", "candidate", "prior"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fences.LoadForOperation(context.Background(), "tenant", "agent", "foreign-operation"); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("foreign legacy fallback = %v, want ErrNotFound", err)
 	}
 }
 

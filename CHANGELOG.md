@@ -17,6 +17,22 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.26.10] — 2026-08-05
+
+### Fixed
+
+- Signed OAuth MCP desired state now retains multiple independently signed
+  provider capabilities for one agent instead of replacing the existing pair.
+  The first pair keeps the v1.26.9 `signed_oauth_mcp_pair` storage and content
+  hash shape; later pairs use the provider-keyed `signed_oauth_mcp_pairs`
+  collection. Each pair keeps its own immutable operation, activation fence,
+  replay, restart-recovery, and retirement identity. A pending pair candidate
+  remains hidden until its fence commits, while a definitive concurrent CAS
+  loser releases only its unpublished fence so the same signed authority can
+  retry against the new active revision. Removal targets the exact requested
+  provider and preserves siblings; omitting `provider_name` remains compatible
+  only when the selected revision contains exactly one pair.
+
 ## [1.26.9] — 2026-08-04
 
 ### Added
@@ -4380,7 +4396,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.9...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.10...HEAD
+[1.26.10]: https://github.com/hurtener/Harbor/compare/v1.26.9...v1.26.10
 [1.26.9]: https://github.com/hurtener/Harbor/compare/v1.26.8...v1.26.9
 [1.26.8]: https://github.com/hurtener/Harbor/compare/v1.26.7...v1.26.8
 [1.26.7]: https://github.com/hurtener/Harbor/compare/v1.26.6...v1.26.7

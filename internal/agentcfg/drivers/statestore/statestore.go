@@ -357,17 +357,6 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
-	if scope == agentcfg.ConfigScopeAgent {
-		payload, err = preserveSignedOAuthMCPPair(ctx, active, hasActive, payload)
-		if err != nil {
-			return agentcfg.Revision{}, err
-		}
-	}
-	norm := agentcfg.NormalizePayload(payload)
-	hash, err := agentcfg.ContentHash(norm)
-	if err != nil {
-		return agentcfg.Revision{}, err
-	}
 
 	// ORDER IS LOAD-BEARING — the precondition is evaluated BEFORE the
 	// idempotent-re-set short-circuit below. Transposing the two blocks
@@ -380,6 +369,17 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 		if err := agentcfg.CheckExpectedRevision(opts, active, hasActive); err != nil {
 			return agentcfg.Revision{}, err
 		}
+	}
+	if scope == agentcfg.ConfigScopeAgent {
+		payload, err = preserveSignedOAuthMCPPairs(ctx, active, hasActive, payload)
+		if err != nil {
+			return agentcfg.Revision{}, err
+		}
+	}
+	norm := agentcfg.NormalizePayload(payload)
+	hash, err := agentcfg.ContentHash(norm)
+	if err != nil {
+		return agentcfg.Revision{}, err
 	}
 
 	// Idempotent re-set: if the current active revision pins byte-identical
@@ -449,36 +449,78 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	return rev, nil
 }
 
-func preserveSignedOAuthMCPPair(ctx context.Context, active agentcfg.Revision, hasActive bool, payload agentcfg.ConfigPayload) (agentcfg.ConfigPayload, error) {
+func preserveSignedOAuthMCPPairs(ctx context.Context, active agentcfg.Revision, hasActive bool, payload agentcfg.ConfigPayload) (agentcfg.ConfigPayload, error) {
 	operation := agentcfg.SignedOAuthMCPFenceOperation(ctx)
-	var current *agentcfg.SignedOAuthMCPPair
+	current := agentcfg.ConfigPayload{}
 	if hasActive {
-		current = active.Payload.SignedOAuthMCPPair
+		current.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
+		current.SignedOAuthMCPPairs = active.Payload.SignedOAuthMCPPairs
 	}
-	requested := payload.SignedOAuthMCPPair
-	switch {
-	case current == nil && requested == nil:
+	requestedOmitted := payload.SignedOAuthMCPPair == nil && payload.SignedOAuthMCPPairs == nil
+	if operation == "" && requestedOmitted {
+		payload.SignedOAuthMCPPair = current.SignedOAuthMCPPair
+		payload.SignedOAuthMCPPairs = current.SignedOAuthMCPPairs
 		return payload, nil
-	case current == nil && requested != nil:
-		if operation == "" || operation != requested.AuthorityOperationKind {
-			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: generic writer cannot add signed capability pair", agentcfg.ErrSignedCapabilityReplay)
-		}
-		return payload, nil
-	case current != nil && requested == nil:
-		if operation == current.AuthorityOperationKind {
-			return payload, nil
-		}
-		payload.SignedOAuthMCPPair = current
-		return payload, nil
-	default:
-		currentNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: current}).SignedOAuthMCPPair
-		requestedNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: requested}).SignedOAuthMCPPair
+	}
+	if err := validateSignedOAuthMCPStateTransition(current, payload, operation); err != nil {
+		return agentcfg.ConfigPayload{}, err
+	}
+	if operation == "" {
+		payload.SignedOAuthMCPPair = current.SignedOAuthMCPPair
+		payload.SignedOAuthMCPPairs = current.SignedOAuthMCPPairs
+	}
+	return payload, nil
+}
+
+func validateSignedOAuthMCPStateTransition(current, requested agentcfg.ConfigPayload, operation string) error {
+	currentNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: current.SignedOAuthMCPPair, SignedOAuthMCPPairs: current.SignedOAuthMCPPairs})
+	requestedNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: requested.SignedOAuthMCPPair, SignedOAuthMCPPairs: requested.SignedOAuthMCPPairs})
+	currentPairs, err := currentNorm.EffectiveSignedOAuthMCPPairs()
+	if err != nil {
+		return fmt.Errorf("%w: current signed capability state is invalid: %w", agentcfg.ErrSignedCapabilityReplay, err)
+	}
+	requestedPairs, err := requestedNorm.EffectiveSignedOAuthMCPPairs()
+	if err != nil {
+		return fmt.Errorf("%w: requested signed capability state is invalid: %w", agentcfg.ErrSignedCapabilityReplay, err)
+	}
+	if operation == "" {
 		if !reflect.DeepEqual(currentNorm, requestedNorm) {
-			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: generic writer cannot alter signed capability pair", agentcfg.ErrSignedCapabilityReplay)
+			return fmt.Errorf("%w: generic writer cannot alter signed capability pairs", agentcfg.ErrSignedCapabilityReplay)
 		}
-		payload.SignedOAuthMCPPair = current
-		return payload, nil
+		return nil
 	}
+	if reflect.DeepEqual(currentNorm, requestedNorm) {
+		return nil
+	}
+	changed := 0
+	seen := make(map[string]struct{}, len(currentPairs)+len(requestedPairs))
+	for provider, pair := range currentPairs {
+		seen[provider] = struct{}{}
+		requestedPair, ok := requestedPairs[provider]
+		if ok {
+			if !reflect.DeepEqual(pair, requestedPair) {
+				return fmt.Errorf("%w: fenced writer cannot mutate immutable signed capability %q", agentcfg.ErrSignedCapabilityReplay, provider)
+			}
+			continue
+		}
+		if pair.AuthorityOperationKind != operation {
+			return fmt.Errorf("%w: fenced writer would alter foreign signed capability %q", agentcfg.ErrSignedCapabilityReplay, provider)
+		}
+		changed++
+	}
+	for provider, pair := range requestedPairs {
+		if _, ok := seen[provider]; ok {
+			continue
+		}
+		if pair.AuthorityOperationKind != operation {
+			return fmt.Errorf("%w: fenced writer would create foreign signed capability %q", agentcfg.ErrSignedCapabilityReplay, provider)
+		}
+		changed++
+	}
+	if changed != 1 {
+		return fmt.Errorf("%w: fenced writer must change exactly one signed capability pair", agentcfg.ErrSignedCapabilityReplay)
+	}
+	return nil
 }
 
 func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
@@ -700,13 +742,7 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	}
 	if scope == agentcfg.ConfigScopeAgent {
 		operation := agentcfg.SignedOAuthMCPFenceOperation(ctx)
-		currentPair := active.Payload.SignedOAuthMCPPair
-		targetPair := target.Payload.SignedOAuthMCPPair
-		if currentPair != nil && operation == currentPair.AuthorityOperationKind {
-			// Paired removal/expiry compensation may repoint through the exact
-			// frozen operation. No other internal marker authorizes this path.
-		} else if !reflect.DeepEqual(agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: currentPair}).SignedOAuthMCPPair,
-			agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: targetPair}).SignedOAuthMCPPair) {
+		if err := validateSignedOAuthMCPStateTransition(active.Payload, target.Payload, operation); err != nil {
 			return agentcfg.Revision{}, fmt.Errorf("%w: rollback would alter immutable signed capability pair", agentcfg.ErrSignedCapabilityReplay)
 		}
 	}
@@ -1891,12 +1927,26 @@ func (r *registry) guardSignedOAuthMCPFenceWriter(ctx context.Context, id identi
 	if scope != agentcfg.ConfigScopeAgent {
 		return nil
 	}
-	fence, set, err := r.signedOAuthMCPFence(ctx, id.TenantID, agentID)
-	if err != nil || !set || fence.Phase != agentcfg.SignedOAuthMCPFencePending {
+	fences, err := r.signedOAuthMCPFences(ctx, id.TenantID, agentID)
+	if err != nil {
 		return err
 	}
-	if agentcfg.SignedOAuthMCPFenceOperation(ctx) != fence.OperationKind {
-		return fmt.Errorf("%w: foreign writer cannot mutate agent %q while operation %q is pending", agentcfg.ErrSignedCapabilityPending, agentID, fence.OperationKind)
+	operation := agentcfg.SignedOAuthMCPFenceOperation(ctx)
+	for _, fence := range fences {
+		if fence.Phase != agentcfg.SignedOAuthMCPFencePending {
+			continue
+		}
+		if operation == fence.OperationKind {
+			return nil
+		}
+		if operation == "" {
+			return fmt.Errorf("%w: foreign writer cannot mutate agent %q while operation %q is pending", agentcfg.ErrSignedCapabilityPending, agentID, fence.OperationKind)
+		}
+	}
+	for _, fence := range fences {
+		if fence.Phase == agentcfg.SignedOAuthMCPFencePending {
+			return fmt.Errorf("%w: operation %q does not own a pending fence for agent %q", agentcfg.ErrSignedCapabilityPending, operation, agentID)
+		}
 	}
 	return nil
 }
@@ -1908,40 +1958,53 @@ func (r *registry) applySignedOAuthMCPFence(ctx context.Context, id identity.Qua
 	if !set {
 		return active, set, nil
 	}
-	fence, fenceSet, err := r.signedOAuthMCPFence(ctx, id.TenantID, agentID)
-	if err != nil || !fenceSet || fence.Phase != agentcfg.SignedOAuthMCPFencePending {
-		return active, set, err
+	fences, err := r.signedOAuthMCPFences(ctx, id.TenantID, agentID)
+	if err != nil {
+		return agentcfg.Revision{}, false, err
 	}
-	if active.ContentHash != fence.CandidateContentHash ||
-		(fence.CandidateRevisionID != "" && active.RevisionID != fence.CandidateRevisionID) {
+	var match *agentcfg.SignedOAuthMCPActivationFence
+	for i := range fences {
+		fence := &fences[i]
+		if fence.Phase != agentcfg.SignedOAuthMCPFencePending || active.ContentHash != fence.CandidateContentHash ||
+			(fence.CandidateRevisionID != "" && active.RevisionID != fence.CandidateRevisionID) {
+			continue
+		}
+		if match != nil && match.PriorRevisionID != fence.PriorRevisionID {
+			return agentcfg.Revision{}, false, fmt.Errorf("%w: conflicting signed capability activation fences", agentcfg.ErrStateUnavailable)
+		}
+		match = fence
+	}
+	if match == nil {
 		return active, set, nil
 	}
-	if fence.PriorRevisionID == "" {
+	if match.PriorRevisionID == "" {
 		return agentcfg.Revision{}, false, nil
 	}
-	prior, err := r.loadRevision(ctx, keys.quad, keys.revPfx, fence.PriorRevisionID)
+	prior, err := r.loadRevision(ctx, keys.quad, keys.revPfx, match.PriorRevisionID)
 	if err != nil {
 		return agentcfg.Revision{}, false, fmt.Errorf("%w: load activation-fence prior revision: %w", agentcfg.ErrStateUnavailable, err)
 	}
 	return prior.toRevision(), true, nil
 }
 
-func (r *registry) signedOAuthMCPFence(ctx context.Context, tenant, agentID string) (agentcfg.SignedOAuthMCPActivationFence, bool, error) {
+func (r *registry) signedOAuthMCPFences(ctx context.Context, tenant, agentID string) ([]agentcfg.SignedOAuthMCPActivationFence, error) {
 	quad := identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: agentCfgUser, SessionID: agentID}}
-	record, err := r.state.Load(ctx, quad, agentcfg.SignedOAuthMCPActivationFenceKind())
-	if errors.Is(err, state.ErrNotFound) {
-		return agentcfg.SignedOAuthMCPActivationFence{}, false, nil
-	}
+	records, err := r.state.ListKindForIdentity(ctx, quad, agentcfg.SignedOAuthMCPActivationFenceKind())
 	if err != nil {
-		return agentcfg.SignedOAuthMCPActivationFence{}, false, fmt.Errorf("%w: load signed capability activation fence: %w", agentcfg.ErrStateUnavailable, err)
+		return nil, fmt.Errorf("%w: list signed capability activation fences: %w", agentcfg.ErrStateUnavailable, err)
 	}
-	var fence agentcfg.SignedOAuthMCPActivationFence
-	if err := json.Unmarshal(record.Bytes, &fence); err != nil || fence.TenantID != tenant || fence.AgentID != agentID || fence.OperationKind == "" || fence.CandidateContentHash == "" ||
-		(fence.Phase != agentcfg.SignedOAuthMCPFencePending && fence.Phase != agentcfg.SignedOAuthMCPFenceCommitted && fence.Phase != agentcfg.SignedOAuthMCPFenceAborted) {
-		return agentcfg.SignedOAuthMCPActivationFence{}, false, fmt.Errorf("%w: corrupt signed capability activation fence", agentcfg.ErrStateUnavailable)
+	fences := make([]agentcfg.SignedOAuthMCPActivationFence, 0, len(records))
+	for _, record := range records {
+		var fence agentcfg.SignedOAuthMCPActivationFence
+		if err := json.Unmarshal(record.Bytes, &fence); err != nil || fence.TenantID != tenant || fence.AgentID != agentID || fence.OperationKind == "" || fence.CandidateContentHash == "" ||
+			(fence.Phase != agentcfg.SignedOAuthMCPFencePending && fence.Phase != agentcfg.SignedOAuthMCPFenceCommitted && fence.Phase != agentcfg.SignedOAuthMCPFenceAborted) {
+			return nil, fmt.Errorf("%w: corrupt signed capability activation fence", agentcfg.ErrStateUnavailable)
+		}
+		fence.EventID = record.ID
+		fence.StateKind = record.Kind
+		fences = append(fences, fence)
 	}
-	fence.EventID = record.ID
-	return fence, true, nil
+	return fences, nil
 }
 
 func (r *registry) loadActiveRevision(ctx context.Context, q identity.Quadruple, activeKind, revPfx string) (agentcfg.Revision, bool, error) {

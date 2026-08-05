@@ -416,6 +416,7 @@ func carrySiblingsForward(active agentcfg.Revision, hasActive bool) agentcfg.Con
 		// other: this verb replaces only its own, so the blocks survive.
 		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
+		payload.SignedOAuthMCPPairs = active.Payload.SignedOAuthMCPPairs
 	}
 	return payload
 }

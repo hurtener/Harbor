@@ -144,7 +144,11 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
 	if op.Phase == agentcfg.SignedOAuthMCPPhasePublished {
-		if hasActive && signedCapabilityPairMatchesOperation(active.Payload.SignedOAuthMCPPair, id.TenantID, binding, operationKind) {
+		activePair, _, pairErr := active.Payload.SignedOAuthMCPPairByProvider(providerName)
+		if pairErr != nil {
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, pairErr
+		}
+		if hasActive && signedCapabilityPairMatchesOperation(activePair, id.TenantID, binding, operationKind) {
 			matcher, matchable := s.preparer.(connectionMatcher)
 			if !matchable || matcher == nil {
 				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
@@ -153,7 +157,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 				registry: s.registry, physical: physical, operations: s.signedOAuthMCPOperations, fences: s.signedOAuthMCPFences,
 				preparer: s.preparer, providers: providerPreparer, matcher: matcher,
 			}
-			if _, err := reconciler.ensureAttached(ctx, q, req.AgentID, active.Payload.SignedOAuthMCPPair, active, op); err != nil {
+			if _, err := reconciler.ensureAttached(ctx, q, req.AgentID, activePair, active, op); err != nil {
 				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 			}
 			return signedCapabilityResponse(active, providerName, connection.Name), nil
@@ -163,15 +167,19 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if op.Phase != agentcfg.SignedOAuthMCPPhaseClaimed && op.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: operation is terminal in phase %q", agentcfg.ErrSignedCapabilityReplay, op.Phase)
 	}
-	if hasActive && active.Payload.SignedOAuthMCPPair != nil && !signedCapabilityPairMatchesOperation(active.Payload.SignedOAuthMCPPair, id.TenantID, binding, operationKind) {
-		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityPairExists
-	}
-	if err := s.rejectIncompletePriorSignedPairLifetime(ctx, id, req.AgentID, operationKind); err != nil {
+	activePair, activePairSet, err := active.Payload.SignedOAuthMCPPairByProvider(providerName)
+	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
-	if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed && hasActive && signedCapabilityPairMatchesOperation(active.Payload.SignedOAuthMCPPair, id.TenantID, binding, operationKind) {
+	if hasActive && activePairSet && !signedCapabilityPairMatchesOperation(activePair, id.TenantID, binding, operationKind) {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityPairExists
+	}
+	if err := s.rejectIncompletePriorSignedPairLifetime(ctx, id, req.AgentID, operationKind, binding); err != nil {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+	}
+	if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed && hasActive && signedCapabilityPairMatchesOperation(activePair, id.TenantID, binding, operationKind) {
 		physicalRevision, physicalErr := requirePhysicalActiveRevision(ctx, physical, q, req.AgentID, active.RevisionID, active.ContentHash)
-		if physicalErr != nil || !signedCapabilityPairMatches(physicalRevision.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
+		if physicalErr != nil || !signedCapabilityPayloadMatches(physicalRevision.Payload, id.TenantID, binding) {
 			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(fmt.Errorf("%w: claimed operation does not match physical desired pair", agentcfg.ErrSignedCapabilityReplay), physicalErr)
 		}
 		active = physicalRevision
@@ -189,8 +197,27 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	}
 	var rev agentcfg.Revision
 	if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed {
+		var activationFence agentcfg.SignedOAuthMCPActivationFence
 		payload := carrySiblingsForward(active, hasActive)
-		payload.SignedOAuthMCPPair = pair
+		existingPairs, pairsErr := payload.EffectiveSignedOAuthMCPPairs()
+		if pairsErr != nil {
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, pairsErr
+		}
+		if len(existingPairs) == 0 {
+			// Preserve the exact v1.26.9 storage and hash shape for the first
+			// capability. The collection is additive and begins at pair two.
+			payload.SignedOAuthMCPPair = pair
+		} else {
+			if payload.SignedOAuthMCPPairs == nil {
+				pairs := make(agentcfg.SignedOAuthMCPPairs)
+				payload.SignedOAuthMCPPairs = &pairs
+			}
+			(*payload.SignedOAuthMCPPairs)[providerName] = *pair
+		}
+		beginFence := s.signedOAuthMCPFences.BeginForOperation
+		if len(existingPairs) == 0 {
+			beginFence = s.signedOAuthMCPFences.Begin
+		}
 		normalized := agentcfg.NormalizePayload(payload)
 		candidateHash, hashErr := agentcfg.ContentHash(normalized)
 		if hashErr != nil {
@@ -201,12 +228,13 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			priorRevisionID = active.RevisionID
 		}
 		if op.AuthorityGeneration > 1 && op.ExpiredAttemptCount > 0 {
-			fence, fenceErr := s.signedOAuthMCPFences.Load(ctx, ownerID.TenantID, req.AgentID)
+			fence, fenceErr := s.signedOAuthMCPFences.LoadForOperation(ctx, ownerID.TenantID, req.AgentID, operationKind)
 			switch {
 			case fenceErr == nil && fence.Phase == agentcfg.SignedOAuthMCPFenceAborted &&
 				fence.OperationKind == operationKind && fence.Fingerprint == op.Fingerprint &&
 				fence.CandidateRevisionID == op.LastExpiredRevisionID:
-				if _, err := s.signedOAuthMCPFences.ReopenForRenewedAuthority(ctx, fence, op, candidateHash, priorRevisionID); err != nil {
+				activationFence, err = s.signedOAuthMCPFences.ReopenForRenewedAuthority(ctx, fence, op, candidateHash, priorRevisionID)
+				if err != nil {
 					return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 				}
 			case fenceErr == nil && fence.Phase == agentcfg.SignedOAuthMCPFenceCommitted:
@@ -214,27 +242,35 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			case fenceErr != nil && !errors.Is(fenceErr, state.ErrNotFound):
 				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fenceErr
 			default:
-				begun, err := s.signedOAuthMCPFences.Begin(ctx, ownerID.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID)
+				begun, err := beginFence(ctx, ownerID.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID)
 				if err != nil {
 					return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 				}
 				if begun.Phase != agentcfg.SignedOAuthMCPFencePending {
 					return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: renewed activation fence did not become pending", agentcfg.ErrSignedCapabilityPending)
 				}
+				activationFence = begun
 			}
-		} else if _, err := s.signedOAuthMCPFences.Begin(ctx, ownerID.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID); err != nil {
-			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+		} else {
+			activationFence, err = beginFence(ctx, ownerID.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID)
+			if err != nil {
+				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+			}
 		}
 		fenceCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, operationKind)
 		rev, err = s.registry.SetRevision(fenceCtx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 		if err != nil {
+			if errors.Is(err, agentcfg.ErrRevisionConflict) {
+				releaseErr := s.signedOAuthMCPFences.ReleasePending(context.WithoutCancel(ctx), activationFence)
+				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, releaseErr)
+			}
 			// A StateStore acknowledgement can be lost after the pointer commits.
 			// Exact immutable pair equality identifies the candidate, but immutable
 			// history alone is not authority: compensation may have left an orphan.
 			// The physical pointer must also name this exact revision.
 			history, readErr := s.registry.ListRevisions(context.WithoutCancel(ctx), q, req.AgentID, agentcfg.ConfigScopeAgent, 0)
 			for _, candidate := range history {
-				if candidate.ContentHash == candidateHash && signedCapabilityPairMatches(candidate.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
+				if candidate.ContentHash == candidateHash && signedCapabilityPayloadMatches(candidate.Payload, id.TenantID, binding) {
 					rev = candidate
 					readErr = nil
 					break
@@ -245,7 +281,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			}
 		}
 		physicalRevision, physicalErr := requirePhysicalActiveRevision(context.WithoutCancel(ctx), physical, q, req.AgentID, rev.RevisionID, candidateHash)
-		if physicalErr != nil || !signedCapabilityPairMatches(physicalRevision.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
+		if physicalErr != nil || !signedCapabilityPayloadMatches(physicalRevision.Payload, id.TenantID, binding) {
 			if physicalErr == nil {
 				physicalErr = fmt.Errorf("%w: physical active candidate does not bind signed pair", agentcfg.ErrSignedCapabilityPending)
 			}
@@ -258,7 +294,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		}
 	} else {
 		physicalRevision, physicalErr := requirePhysicalActiveRevision(ctx, physical, q, req.AgentID, op.RevisionID, "")
-		if physicalErr != nil || !signedCapabilityPairMatches(physicalRevision.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
+		if physicalErr != nil || !signedCapabilityPayloadMatches(physicalRevision.Payload, id.TenantID, binding) {
 			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(fmt.Errorf("%w: revision-committed operation has no matching physical desired pair", agentcfg.ErrSignedCapabilityReplay), physicalErr)
 		}
 		rev = physicalRevision
@@ -294,7 +330,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		return closePreparedSignedCapability(ctx, preparedConnection, preparedProvider)
 	}
 	physicalRevision, err := requirePhysicalActiveRevision(ctx, physical, q, req.AgentID, rev.RevisionID, rev.ContentHash)
-	if err != nil || !signedCapabilityPairMatches(physicalRevision.Payload.SignedOAuthMCPPair, id.TenantID, binding) {
+	if err != nil || !signedCapabilityPayloadMatches(physicalRevision.Payload, id.TenantID, binding) {
 		if err == nil {
 			err = fmt.Errorf("%w: physical active candidate changed before activation", agentcfg.ErrSignedCapabilityPending)
 		}
@@ -379,7 +415,7 @@ func (s *Service) resumeAndRenewSignedOAuthMCPAuthority(ctx context.Context, phy
 				if kindErr != nil {
 					return agentcfg.SignedOAuthMCPOperation{}, kindErr
 				}
-				if set && signedCapabilityPairMatchesOperation(active.Payload.SignedOAuthMCPPair, key.TenantID, op.Binding, operationKind) {
+				if set && signedCapabilityPayloadMatchesOperation(active.Payload, key.TenantID, op.Binding, operationKind) {
 					candidateRevisionID = active.RevisionID
 				}
 			}
@@ -438,7 +474,7 @@ func (s *Service) commitSignedOAuthMCPFence(ctx context.Context, tenant, agentID
 	if !ok || physical == nil {
 		return ErrSignedCapabilityUnavailable
 	}
-	fence, err := s.signedOAuthMCPFences.Load(ctx, tenant, agentID)
+	fence, err := s.signedOAuthMCPFences.LoadForOperation(ctx, tenant, agentID, operationKind)
 	if err != nil {
 		return err
 	}
@@ -450,14 +486,14 @@ func (s *Service) commitSignedOAuthMCPFence(ctx context.Context, tenant, agentID
 		candidate, getErr := s.registry.Get(ctx, q, agentID, op.RevisionID, agentcfg.ConfigScopeAgent)
 		active, activeSet, activeErr := physical.PhysicalActive(ctx, q, agentID, agentcfg.ConfigScopeAgent)
 		if getErr == nil && activeErr == nil && activeSet && fence.CandidateRevisionID == op.RevisionID && candidate.ContentHash == fence.CandidateContentHash &&
-			signedCapabilityPairMatchesOperation(candidate.Payload.SignedOAuthMCPPair, tenant, op.Binding, operationKind) &&
-			signedCapabilityPairMatchesOperation(active.Payload.SignedOAuthMCPPair, tenant, op.Binding, operationKind) {
+			signedCapabilityPayloadMatchesOperation(candidate.Payload, tenant, op.Binding, operationKind) &&
+			signedCapabilityPayloadMatchesOperation(active.Payload, tenant, op.Binding, operationKind) {
 			return nil
 		}
 		return errors.Join(fmt.Errorf("%w: committed fence or active revision does not bind published pair", agentcfg.ErrSignedCapabilityPending), getErr, activeErr)
 	}
 	revision, err := requirePhysicalActiveRevision(ctx, physical, q, agentID, op.RevisionID, fence.CandidateContentHash)
-	if err != nil || !signedCapabilityPairMatchesOperation(revision.Payload.SignedOAuthMCPPair, tenant, op.Binding, operationKind) {
+	if err != nil || !signedCapabilityPayloadMatchesOperation(revision.Payload, tenant, op.Binding, operationKind) {
 		return fmt.Errorf("%w: published operation candidate is not physically active", agentcfg.ErrSignedCapabilityPending)
 	}
 	_, err = s.signedOAuthMCPFences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceCommitted, op.RevisionID)
@@ -483,7 +519,17 @@ func signedCapabilityPairMatchesOperation(pair *agentcfg.SignedOAuthMCPPair, ten
 	return pair != nil && pair.AuthorityOperationKind == operationKind && signedCapabilityPairMatches(pair, tenant, binding)
 }
 
-func (s *Service) rejectIncompletePriorSignedPairLifetime(ctx context.Context, id identity.Identity, agentID, operationKind string) error {
+func signedCapabilityPayloadMatches(payload agentcfg.ConfigPayload, tenant string, binding agentcfg.SignedOAuthMCPBinding) bool {
+	pair, ok, err := payload.SignedOAuthMCPPairByProvider(binding.ProviderName)
+	return err == nil && ok && signedCapabilityPairMatches(pair, tenant, binding)
+}
+
+func signedCapabilityPayloadMatchesOperation(payload agentcfg.ConfigPayload, tenant string, binding agentcfg.SignedOAuthMCPBinding, operationKind string) bool {
+	pair, ok, err := payload.SignedOAuthMCPPairByProvider(binding.ProviderName)
+	return err == nil && ok && signedCapabilityPairMatchesOperation(pair, tenant, binding, operationKind)
+}
+
+func (s *Service) rejectIncompletePriorSignedPairLifetime(ctx context.Context, id identity.Identity, agentID, operationKind string, binding agentcfg.SignedOAuthMCPBinding) error {
 	continuation := ""
 	for {
 		operations, next, err := s.signedOAuthMCPOperations.ScanTenantPage(ctx, id.TenantID, state.MaxStateScanLimit, continuation)
@@ -495,12 +541,11 @@ func (s *Service) rejectIncompletePriorSignedPairLifetime(ctx context.Context, i
 			if err != nil {
 				return err
 			}
-			// Pair lifetime exclusivity is tenant+agent scoped. User/session remain
-			// frozen ownership fields for authorization and exchange, but a second
-			// subject cannot use a different Service/process lock to replace the
-			// process-global attachment while the prior generation is published or
-			// closing.
-			if kind == operationKind || operation.Binding.AgentID != agentID {
+			// Provider and connection names remain unique within an agent because
+			// both address process-global live resources. Independent names have
+			// independent durable lifetimes and may coexist.
+			if kind == operationKind || operation.Binding.AgentID != agentID ||
+				(operation.Binding.ProviderName != binding.ProviderName && operation.Binding.Connection.Name != binding.Connection.Name) {
 				continue
 			}
 			switch operation.Phase {

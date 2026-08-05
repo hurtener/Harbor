@@ -693,6 +693,11 @@ type SignedOAuthMCPPair struct {
 	OwnerSessionID string `json:"owner_session_id"`
 }
 
+// SignedOAuthMCPPairs is the canonical provider-keyed multi-capability
+// section. It is a named map so ConfigPayload can retain its all-optional-
+// pointer envelope while encoding the field directly as a JSON object.
+type SignedOAuthMCPPairs map[string]SignedOAuthMCPPair
+
 // RunCompletionHook is the durable, versioned run-completion hook
 // configuration in a config revision: the catalog tool the run transcript is
 // dispatched to at the run loop's terminal boundary, plus an optional
@@ -773,11 +778,19 @@ type ConfigPayload struct {
 	OAuthProviders *OAuthProvidersSection `json:"oauth_providers,omitempty"`
 	// SignedOAuthMCPPair is server-owned immutable capability state. Generic
 	// writers carry an existing value exactly; only the bounded signed-pair
-	// registration/removal lifecycle may create or delete it.
+	// registration/removal lifecycle may create or delete it. It is the legacy
+	// singular storage slot retained unchanged for backward wire and content-hash
+	// compatibility. It remains the authoritative first-pair slot for new
+	// revisions; SignedOAuthMCPPairs carries only additional providers.
 	SignedOAuthMCPPair *SignedOAuthMCPPair `json:"signed_oauth_mcp_pair,omitempty"`
-	LLMParams          *LLMParams          `json:"llm_params,omitempty"`
-	Hooks              *HooksSection       `json:"hooks,omitempty"`
-	Naming             *NamingSection      `json:"naming,omitempty"`
+	// SignedOAuthMCPPairs is the canonical multi-capability storage keyed by
+	// ProviderName. Registrations after the first write this map. Readers consume
+	// the strict union with SignedOAuthMCPPair; a provider may exist in exactly
+	// one slot.
+	SignedOAuthMCPPairs *SignedOAuthMCPPairs `json:"signed_oauth_mcp_pairs,omitempty"`
+	LLMParams           *LLMParams           `json:"llm_params,omitempty"`
+	Hooks               *HooksSection        `json:"hooks,omitempty"`
+	Naming              *NamingSection       `json:"naming,omitempty"`
 	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
 	// named additive prompt blocks. Absent (nil) contributes nothing and
 	// leaves the system prompt byte-identical.
@@ -995,6 +1008,9 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 	}
 	if p.SignedOAuthMCPPair != nil {
 		out.SignedOAuthMCPPair = cloneSignedOAuthMCPPair(p.SignedOAuthMCPPair)
+	}
+	if p.SignedOAuthMCPPairs != nil && len(*p.SignedOAuthMCPPairs) > 0 {
+		out.SignedOAuthMCPPairs = cloneSignedOAuthMCPPairs(p.SignedOAuthMCPPairs)
 	}
 	if p.LLMParams != nil {
 		// Normalise empty Model / ReasoningEffort strings to nil so a

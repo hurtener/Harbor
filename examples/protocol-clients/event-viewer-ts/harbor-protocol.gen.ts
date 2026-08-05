@@ -573,6 +573,7 @@ export interface AgentConfigPayload {
   connections?: AgentConfigConnections;
   oauth_providers?: AgentConfigOAuthProviders;
   signed_oauth_mcp_pair?: AgentConfigSignedOAuthMCPPair;
+  signed_oauth_mcp_pairs?: Record<string, AgentConfigSignedOAuthMCPPair>;
   llm_params?: AgentConfigLLMParams;
   hooks?: AgentConfigHooks;
   naming?: AgentConfigNaming;
@@ -628,6 +629,7 @@ export interface AgentConfigRemoveMCPConnectionResponse {
 export interface AgentConfigRemoveOAuthMCPCapabilityRequest {
   identity: IdentityScope;
   agent_id: string;
+  provider_name?: string;
   expected_content_hash: string;
 }
 

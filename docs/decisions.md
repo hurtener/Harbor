@@ -12457,3 +12457,42 @@ and attachment fingerprint byte-for-byte.
 `SignedOAuthMCPConnectionDescriptor`; ProtocolVersion remains `0.1.0`.
 
 **Cross-references.** D-300, D-346, D-401, D-404, D-405. RFC §6.11 and §6.16.
+
+---
+
+## D-407 — Signed OAuth MCP capability lifetime is per immutable pair, not per agent
+
+**Date:** 2026-08-04
+
+**Status:** Accepted for the post-v1.26.9 multi-capability correction.
+
+**Decision.** A `(tenant, agent)` may carry multiple independently signed OAuth
+MCP capability pairs concurrently. Provider and connection names remain unique
+within the agent because each addresses a live process resource, but one pair
+does not lease the whole agent. Anti-replay operation receipts remain keyed by
+their signed authority/JTI, and activation fences are now keyed by the exact
+opaque operation kind. Registration, publication, restart reconciliation,
+expiry compensation, paired removal, and retirement therefore advance only the
+selected immutable pair lifetime and preserve every sibling.
+
+The existing singular `signed_oauth_mcp_pair` field remains the authoritative
+first-pair slot for both old and new revisions. Additional providers use the
+optional `signed_oauth_mcp_pairs` object keyed by `provider_name`. Readers use a
+strict union: a key/provider mismatch or a provider appearing in both storage
+slots is corrupt and fails loud. This avoids a data migration and preserves the
+canonical JSON and content hash of every pre-extension singular revision.
+
+Paired removal adds optional `provider_name`. It is mandatory when the named
+revision contains multiple effective pairs; omission remains compatible for a
+revision containing exactly one. The expected content hash still CAS-binds the
+complete revision, while the provider selects the one receipt and live
+connection to retire. A generic config writer cannot add, remove, move, or
+mutate any pair.
+
+**Wire consequence.** One additive optional map field on
+`AgentConfigPayload` and one additive optional string on
+`AgentConfigRemoveOAuthMCPCapabilityRequest`. `ProtocolVersion` remains
+`0.1.0`.
+
+**Cross-references.** D-339, D-401, D-403, D-404, D-405, D-406. RFC §5.3,
+§6.11 and §6.16.

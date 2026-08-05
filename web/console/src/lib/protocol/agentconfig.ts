@@ -299,6 +299,9 @@ export interface AgentConfigPayload {
 	extra_system_blocks?: AgentConfigExtraSystemBlocks;
 	/** Read-only; generic set_revision must not author or clear this field. */
 	signed_oauth_mcp_pair?: AgentConfigSignedOAuthMCPPair;
+	/** Read-only additional signed capability pairs keyed by provider_name. The
+	 * first pair remains in signed_oauth_mcp_pair for wire compatibility. */
+	signed_oauth_mcp_pairs?: Record<string, AgentConfigSignedOAuthMCPPair>;
 }
 
 /** One immutable config revision. Mirrors `types.AgentConfigRevisionView`. */
@@ -850,6 +853,7 @@ export interface AgentConfigRegisterOAuthMCPCapabilityResponse {
 export interface AgentConfigRemoveOAuthMCPCapabilityRequest {
 	identity: IdentityScope;
 	agent_id: string;
+	provider_name?: string;
 	expected_content_hash: string;
 }
 

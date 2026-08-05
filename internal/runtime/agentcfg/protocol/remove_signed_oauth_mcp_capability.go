@@ -36,7 +36,8 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: expected_content_hash is required to identify the immutable signed pair", agentcfg.ErrRevisionConflict)
 	}
 
-	targetRevision, pair, err := s.signedCapabilityRemovalTarget(ctx, q, req.AgentID, expectedContentHash)
+	providerName := strings.TrimSpace(req.ProviderName)
+	targetRevision, pair, err := s.signedCapabilityRemovalTarget(ctx, q, req.AgentID, expectedContentHash, providerName)
 	if err != nil {
 		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
 	}
@@ -71,9 +72,13 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: signed capability removal has no active desired revision", agentcfg.ErrSignedCapabilityReplay)
 	}
 	removalRevision := active
+	activePair, activePairSet, pairErr := active.Payload.SignedOAuthMCPPairByProvider(pair.ProviderName)
+	if pairErr != nil {
+		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, pairErr
+	}
 	if op.Phase == agentcfg.SignedOAuthMCPPhasePublished {
-		if active.RevisionID != targetRevision.RevisionID || active.ContentHash != expectedContentHash || active.Payload.SignedOAuthMCPPair == nil ||
-			active.Payload.SignedOAuthMCPPair.AuthorityOperationKind != pair.AuthorityOperationKind {
+		if active.RevisionID != targetRevision.RevisionID || active.ContentHash != expectedContentHash || !activePairSet ||
+			activePair.AuthorityOperationKind != pair.AuthorityOperationKind {
 			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: removal target is not the active signed pair", agentcfg.ErrRevisionConflict)
 		}
 		op, err = s.signedOAuthMCPOperations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalAdmitted, targetRevision.RevisionID)
@@ -98,24 +103,27 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 
 	if op.Phase == agentcfg.SignedOAuthMCPPhaseRemovalAdmitted {
 		removalBase := targetRevision
-		if active.Payload.SignedOAuthMCPPair != nil {
+		if activePairSet {
 			// Admission freezes the pair lifetime, not unrelated sibling
 			// sections. A generic writer may have carried the exact immutable
 			// operation-bound pair into a newer revision while removal was
 			// admitted. Preserve those current siblings and CAS that generation;
 			// a foreign or replacement pair remains a hard conflict.
-			if !signedCapabilityPairMatchesOperation(active.Payload.SignedOAuthMCPPair, id.TenantID, op.Binding, pair.AuthorityOperationKind) {
+			if !signedCapabilityPairMatchesOperation(activePair, id.TenantID, op.Binding, pair.AuthorityOperationKind) {
 				return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: removal target changed after admission", agentcfg.ErrRevisionConflict)
 			}
 			removalBase = active
 		}
 		payload := carrySiblingsForward(removalBase, true)
-		payload.SignedOAuthMCPPair = nil
+		payload, removed, removeErr := payload.RemoveSignedOAuthMCPPair(pair.ProviderName)
+		if removeErr != nil || !removed {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, errors.Join(fmt.Errorf("%w: removal target pair is absent", agentcfg.ErrSignedCapabilityReplay), removeErr)
+		}
 		candidateHash, hashErr := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
 		if hashErr != nil {
 			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, hashErr
 		}
-		if active.Payload.SignedOAuthMCPPair == nil {
+		if !activePairSet {
 			if active.ContentHash != candidateHash {
 				return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: removal admission does not bind active pair absence", agentcfg.ErrSignedCapabilityReplay)
 			}
@@ -130,12 +138,13 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 				// this caller is permitted to advance the lifetime graph.
 				current, currentSet, readErr := s.registry.Active(context.WithoutCancel(ctx), q, req.AgentID, agentcfg.ConfigScopeAgent)
 				if readErr == nil && currentSet && current.ContentHash == removalBase.ContentHash &&
-					signedCapabilityPairMatchesOperation(current.Payload.SignedOAuthMCPPair, id.TenantID, op.Binding, pair.AuthorityOperationKind) {
+					signedCapabilityPayloadMatchesOperation(current.Payload, id.TenantID, op.Binding, pair.AuthorityOperationKind) {
 					_, rollbackErr := s.signedOAuthMCPOperations.Advance(context.WithoutCancel(ctx), op, agentcfg.SignedOAuthMCPPhasePublished, targetRevision.RevisionID)
 					return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, errors.Join(err, rollbackErr)
 				}
-				if readErr != nil || !currentSet || current.Payload.SignedOAuthMCPPair != nil || current.ContentHash != candidateHash {
-					return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, errors.Join(err, readErr)
+				_, currentPairSet, currentPairErr := current.Payload.SignedOAuthMCPPairByProvider(pair.ProviderName)
+				if readErr != nil || !currentSet || currentPairErr != nil || currentPairSet || current.ContentHash != candidateHash {
+					return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, errors.Join(err, readErr, currentPairErr)
 				}
 				removalRevision = current
 			}
@@ -153,7 +162,11 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 		if err != nil {
 			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
 		}
-		if active.Payload.SignedOAuthMCPPair != nil {
+		_, stillSet, stillErr := active.Payload.SignedOAuthMCPPairByProvider(pair.ProviderName)
+		if stillErr != nil {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, stillErr
+		}
+		if stillSet {
 			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: stale removal cannot detach the active pair", agentcfg.ErrSignedCapabilityReplay)
 		}
 	}
@@ -188,14 +201,31 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 	return signedCapabilityRemovalResponse(removalRevision, pair, op), nil
 }
 
-func (s *Service) signedCapabilityRemovalTarget(ctx context.Context, q identity.Quadruple, agentID, expectedContentHash string) (agentcfg.Revision, *agentcfg.SignedOAuthMCPPair, error) {
+func (s *Service) signedCapabilityRemovalTarget(ctx context.Context, q identity.Quadruple, agentID, expectedContentHash, providerName string) (agentcfg.Revision, *agentcfg.SignedOAuthMCPPair, error) {
 	history, err := s.registry.ListRevisions(ctx, q, agentID, agentcfg.ConfigScopeAgent, 0)
 	if err != nil {
 		return agentcfg.Revision{}, nil, err
 	}
 	for _, revision := range history {
-		if revision.ContentHash == expectedContentHash && revision.Payload.SignedOAuthMCPPair != nil {
-			return revision, revision.Payload.SignedOAuthMCPPair, nil
+		if revision.ContentHash != expectedContentHash {
+			continue
+		}
+		pairs, pairErr := revision.Payload.EffectiveSignedOAuthMCPPairs()
+		if pairErr != nil {
+			return agentcfg.Revision{}, nil, pairErr
+		}
+		if providerName != "" {
+			pair, ok := pairs[providerName]
+			if !ok {
+				return agentcfg.Revision{}, nil, fmt.Errorf("%w: expected_content_hash does not contain provider %q", agentcfg.ErrRevisionConflict, providerName)
+			}
+			return revision, pair, nil
+		}
+		if len(pairs) != 1 {
+			return agentcfg.Revision{}, nil, fmt.Errorf("%w: provider_name is required when expected_content_hash contains %d signed capability pairs", agentcfg.ErrRevisionConflict, len(pairs))
+		}
+		for _, pair := range pairs {
+			return revision, pair, nil
 		}
 	}
 	return agentcfg.Revision{}, nil, fmt.Errorf("%w: expected_content_hash does not identify a signed capability pair revision", agentcfg.ErrRevisionConflict)
