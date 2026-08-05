@@ -104,10 +104,11 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
     };
   }
   return {
-    async readResource(serverID, resourceURI): Promise<MCPAppResource> {
+    async readResource(serverID, resourceURI, agentID): Promise<MCPAppResource> {
       const res = await client.mcp.servers.readResource<ReadMCPResourceResponse>(
         serverID,
         resourceURI,
+        agentID,
       );
       return {
         resourceUri: res.resource_uri,
@@ -123,10 +124,10 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
       };
     },
 
-    async callTool(tool, args): Promise<MCPAppToolResult> {
+    async callTool(tool, args, agentID): Promise<MCPAppToolResult> {
       let res: MCPAppCallToolResponse;
       try {
-        res = await client.mcp.apps.callTool<MCPAppCallToolResponse>(tool, args);
+        res = await client.mcp.apps.callTool<MCPAppCallToolResponse>(tool, args, agentID);
       } catch (err) {
         // `tool` is already server-qualified by the caller (the confinement
         // control), so a `not_found` means the name does not exist WITHIN the
@@ -153,8 +154,11 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
       };
     },
 
-    async listResources(serverID): Promise<MCPAppResourceListing[]> {
-      const res = await client.mcp.servers.resources<MCPServerResourcesResponse>(serverID);
+    async listResources(serverID, agentID): Promise<MCPAppResourceListing[]> {
+      const res = await client.mcp.servers.resources<MCPServerResourcesResponse>(
+        serverID,
+        agentID,
+      );
       return res.resources.map((r) => ({
         uri: r.uri,
         name: r.name ?? r.title,

@@ -49,7 +49,7 @@ type AppsAccessor struct {
 	bus      events.EventBus
 	toolCtx  *ToolContextStore
 	agentCfg agentcfg.Registry // optional — nil ⇒ the app-call exposure gate is inert
-	agentID  string            // the agent slot the gate reads current desired-state from
+	agentID  string            // legacy/default slot; effective ctx selection wins
 	// sessionOverlay is the session-safe narrow-only disable set the gate
 	// UNIONS into the admin exposure (parity with the run-start planner-view
 	// projection, which unions it too). Optional — nil ⇒ only the admin
@@ -90,8 +90,10 @@ type AppsDeps struct {
 	// compatible). The transport is NEVER consulted — pause is desired-state,
 	// not transport state; the live transport stays warm.
 	AgentConfig agentcfg.Registry
-	// AgentID is the agent slot the gate reads desired-state from. Required
-	// when AgentConfig is set; ignored when it is nil.
+	// AgentID is the legacy/default slot the gate reads only when a direct
+	// embedder did not seat EffectiveAgentConfig on ctx. Production Protocol
+	// dispatch always seats its reach-admitted effective selection first.
+	// Required when AgentConfig is set; ignored when it is nil.
 	AgentID string
 	// SessionOverlay is the session-safe narrow-only disable set the app→host
 	// gate UNIONS into the admin exposure, so a tool a SESSION user disabled
@@ -325,14 +327,23 @@ func (a *AppsAccessor) CallTool(ctx context.Context, tool string, args json.RawM
 // without a triple fails closed. A registry read error fails the call loud
 // (no silent fall-through, CLAUDE.md §13).
 func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, source tools.ToolSourceID) error {
-	if a.agentCfg == nil || a.agentID == "" {
+	if a.agentCfg == nil {
+		return nil
+	}
+	agentID, ok := tools.EffectiveAgentConfigFrom(ctx)
+	if !ok {
+		// Compatibility for direct pre-v1.26.11 embedders. Production Protocol
+		// dispatch always stamps the reach-admitted effective agent.
+		agentID = a.agentID
+	}
+	if agentID == "" {
 		return nil
 	}
 	id, ok := identity.From(ctx)
 	if !ok || id.TenantID == "" || id.UserID == "" || id.SessionID == "" {
 		return fmt.Errorf("mcpconsole: app-call exposure gate: %w", mcp.ErrIdentityMissing)
 	}
-	rev, has, err := a.agentCfg.Active(ctx, identity.Quadruple{Identity: id}, a.agentID, agentcfg.ConfigScopeAgent)
+	rev, has, err := a.agentCfg.Active(ctx, identity.Quadruple{Identity: id}, agentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return fmt.Errorf("mcpconsole: app-call exposure gate: read active config: %w", err)
 	}
@@ -347,7 +358,7 @@ func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, so
 		disabledTools = rev.Payload.DisabledTools()
 	}
 	if a.sessionOverlay != nil {
-		overlay, _, oerr := a.sessionOverlay.Get(ctx, identity.Quadruple{Identity: id}, a.agentID)
+		overlay, _, oerr := a.sessionOverlay.Get(ctx, identity.Quadruple{Identity: id}, agentID)
 		if oerr != nil {
 			return fmt.Errorf("mcpconsole: app-call exposure gate: read session overlay: %w", oerr)
 		}

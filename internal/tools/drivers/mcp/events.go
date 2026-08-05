@@ -151,15 +151,19 @@ type ArtifactEgressedPayload struct {
 
 // AppAvailablePayload is the typed payload for EventTypeMCPAppAvailable.
 // SafePayload: no caller-controlled MCP content survives on the payload —
-// only the server source id, the `ui://` resource URI, the per-result
-// display-mode hint, the default-deny raw-HTML trust posture, and the
-// actor identity quadruple (its RunID correlates the discovery to the
+// only the effective agent id, server source id, the `ui://` resource URI,
+// the per-result display-mode hint, the default-deny raw-HTML trust posture,
+// and the actor identity quadruple (its RunID correlates the discovery to the
 // turn that produced it).
 type AppAvailablePayload struct {
 	events.SafeSealed
 	// Identity scopes the discovery to the (tenant, user, session) triple
 	// the tool ran under; its RunID is the turn-correlation key.
 	Identity identity.Quadruple
+	// AgentID is the reach-admitted effective agent configuration that
+	// produced the app. It is server-derived execution authority which clients
+	// echo on Apps data-plane calls; it is never caller or MCP content.
+	AgentID string
 	// ServerID is the MCP server (source id) hosting the app — the value a
 	// client passes to mcp.servers.read_resource to fetch the document.
 	ServerID tools.ToolSourceID

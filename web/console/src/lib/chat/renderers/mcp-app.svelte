@@ -88,18 +88,12 @@
   // Non-reactive on purpose — it must not itself re-trigger the effect.
   let loadedKey: string | undefined;
 
-  /** The dedup identity of an app ref: its document AND its tool context. */
-  function appKey(ref: { resourceUri: string; toolCallId?: string }): string {
-    // The separator is written as an ESCAPE, never as a literal NUL byte in
-    // the source. A raw NUL makes git classify this file as binary, so
-    // `git diff` and PR review render nothing at all for the most
-    // security-relevant file in the Console — and text-mode grep guards over
-    // it silently stop matching. Given this component exists because a
-    // wholesale Console revert went unnoticed for four phases, a review
-    // blind spot here is the wrong trade. NUL stays the separator (it cannot
-    // occur in a URI or a tool-call id, so the key stays unambiguous); only
-    // its SPELLING changes.
-    return `${ref.resourceUri}\u0000${ref.toolCallId ?? ''}`;
+  /** The dedup identity of an app ref: document, tool context, and agent authority. */
+  function appKey(ref: { resourceUri: string; toolCallId?: string; agentId?: string }): string {
+    // JSON array encoding stays collision-free even if a configured agent id
+    // contains delimiter-like characters. A raw NUL separator would also make
+    // this security-relevant source appear binary to git and text-mode guards.
+    return JSON.stringify([ref.resourceUri, ref.toolCallId ?? '', ref.agentId ?? '']);
   }
 
   // Monotonic preload token. `preload` awaits twice (the document, then the
@@ -268,7 +262,7 @@
     loadState = 'loading';
     errorMessage = '';
     try {
-      const resource = await appHostClient.readResource(serverID, app.resourceUri);
+      const resource = await appHostClient.readResource(serverID, app.resourceUri, app.agentId);
       if (stale()) return;
       let documentHTML: string;
       if (resource.artifactRef) {
@@ -385,6 +379,7 @@
     const created: AppBridgeHost = new AppBridgeHost({
       client: s.client,
       serverID: s.serverID,
+      agentID: s.app.agentId,
       availableDisplayModes: s.availableDisplayModes,
       onDisplayModeRequest: s.onDisplayModeRequest,
       // Host identity is injected through the seam (not baked into the module).

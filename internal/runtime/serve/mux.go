@@ -295,10 +295,12 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			return nil, wrapErr("mcp accessor", aErr)
 		}
 		mcpSurface, sErr := protocol.NewMCPSurface(protocol.MCPDeps{
-			MCP:      mcpRegAccessor,
-			OAuth:    mcpconsole.NewNoOAuthAccessor(),
-			Redactor: red,
-			Bus:      bus,
+			MCP:           mcpRegAccessor,
+			OAuth:         mcpconsole.NewNoOAuthAccessor(),
+			Redactor:      red,
+			Bus:           bus,
+			AgentResolver: in.AgentResolver,
+			AgentReach:    in.AgentReach,
 		})
 		if sErr != nil {
 			return nil, wrapErr("mcp surface", sErr)
@@ -325,9 +327,11 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			return nil, wrapErr("mcp apps accessor", aaErr)
 		}
 		appsSurface, asErr := protocol.NewAppsSurface(protocol.AppsDeps{
-			Resource:    appsAccessor,
-			Invoker:     appsAccessor,
-			ToolContext: appsAccessor,
+			Resource:      appsAccessor,
+			Invoker:       appsAccessor,
+			ToolContext:   appsAccessor,
+			AgentResolver: in.AgentResolver,
+			AgentReach:    in.AgentReach,
 		})
 		if asErr != nil {
 			return nil, wrapErr("mcp apps surface", asErr)

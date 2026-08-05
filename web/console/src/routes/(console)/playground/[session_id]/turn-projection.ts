@@ -45,6 +45,7 @@ export function appViewFromDiscovery(ev: AppAvailableEvent): AppAttachment {
 	const known = (KNOWN_DISPLAY_MODES as readonly string[]).includes(ev.displayMode);
 	return {
 		app: {
+			...(ev.agentID !== '' ? { agentId: ev.agentID } : {}),
 			resourceUri: ev.resourceUri,
 			displayMode: known ? (ev.displayMode as McpUiDisplayMode) : '',
 			rawHtmlTrusted: ev.rawHtmlTrusted,

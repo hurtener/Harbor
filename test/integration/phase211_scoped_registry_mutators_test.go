@@ -50,6 +50,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -155,10 +156,11 @@ func buildP211Env(t *testing.T) *p211Env {
 		t.Fatalf("NewRegistryAccessor: %v", err)
 	}
 	surface, err := protocol.NewMCPSurface(protocol.MCPDeps{
-		MCP:      accessor,
-		OAuth:    p211NoopOAuth{},
-		Redactor: red,
-		Bus:      bus,
+		MCP:           accessor,
+		OAuth:         p211NoopOAuth{},
+		Redactor:      red,
+		Bus:           bus,
+		AgentResolver: serve.NewAgentResolverAdapter(nil, p211Owner().Agent),
 	})
 	if err != nil {
 		t.Fatalf("NewMCPSurface: %v", err)

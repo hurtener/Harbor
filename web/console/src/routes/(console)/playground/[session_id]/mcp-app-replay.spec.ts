@@ -27,6 +27,7 @@ import { decodeAppAvailable } from './wire-events.js';
 
 /** The runtime's `AppAvailablePayload`, PascalCase as the durable log persists it. */
 const APP_PAYLOAD: Record<string, unknown> = {
+  AgentID: 'agent-reports',
   ServerID: 'reports',
   ToolCallID: 'tc_9f2c1a',
   ToolName: 'reports_render',
@@ -97,14 +98,14 @@ function replayedMessage(turn: HistoryTurn): ChatMessage {
 /** A fake injected Protocol surface (D-173) recording what it was asked for. */
 function fakeHostClient(
   toolContext: () => Promise<MCPAppToolContext | null> = async () => CONTEXT
-): MCPAppHostClient & { reads: Array<[string, string]>; contexts: Array<[string, string]> } {
-  const reads: Array<[string, string]> = [];
+): MCPAppHostClient & { reads: Array<[string, string, string | undefined]>; contexts: Array<[string, string]> } {
+  const reads: Array<[string, string, string | undefined]> = [];
   const contexts: Array<[string, string]> = [];
   return {
     reads,
     contexts,
-    async readResource(serverID, resourceURI) {
-      reads.push([serverID, resourceURI]);
+    async readResource(serverID, resourceURI, agentID) {
+      reads.push([serverID, resourceURI, agentID]);
       return { resourceUri: resourceURI, mimeType: 'text/html', content: '<p>dashboard</p>' };
     },
     async callTool(tool) {
@@ -189,7 +190,7 @@ describe('session-reopen MCP App replay (D-348)', () => {
 
     // Same document, resolved from the same server, through the injected client.
     expect(replayClient.reads).toEqual(liveClient.reads);
-    expect(replayClient.reads).toEqual([['reports', 'ui://reports/dashboard.html']]);
+    expect(replayClient.reads).toEqual([['reports', 'ui://reports/dashboard.html', 'agent-reports']]);
 
     // Same PERSISTED tool context, read by the same deterministic id — no new
     // storage and no caller-controlled identifier on the replay path.

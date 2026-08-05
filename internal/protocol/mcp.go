@@ -16,6 +16,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // MCPSurface is the transport-agnostic Harbor Protocol MCP-Connections
@@ -45,6 +46,12 @@ import (
 // plane verbs mutate the runtime's view of upstream state) — there is
 // NO new scope minted for MCP (closed-set).
 //
+// `mcp.servers.resources` is additionally agent-addressed because it performs
+// live discovery and may consume a pair-owned credential. It reuses the shared
+// reach-before-resolver admission and seats only the admitted effective agent
+// on the accessor ctx; an omitted id selects the configured default and still
+// requires signed reach.
+//
 // # The raw-HTML trust audit
 //
 // A successful `mcp.servers.set_raw_html_trust` emits a
@@ -68,6 +75,8 @@ type MCPSurface struct {
 	redactor audit.Redactor
 	bus      events.EventBus
 	clock    func() time.Time
+	agents   AgentResolver
+	reach    auth.AgentReachAuthorizer
 }
 
 // MCPServerRow is the runtime-side projection of one MCP server. The
@@ -293,6 +302,13 @@ type MCPDeps struct {
 	// Bus is the canonical event bus the `mcp.raw_html_trust_toggled`
 	// audit event is published onto. Mandatory.
 	Bus events.EventBus
+	// AgentResolver selects the configured default for older clients and
+	// verifies that an explicit agent exists under the caller's tenant.
+	// Mandatory; live resource discovery can consume agent-bound credentials.
+	AgentResolver AgentResolver
+	// AgentReach is the shared signed-agent-reach gate. Nil installs the
+	// canonical fail-closed implementation, matching ControlSurface.
+	AgentReach auth.AgentReachAuthorizer
 	// Clock returns the current wall-clock time. Optional — defaults
 	// to time.Now.
 	Clock func() time.Time
@@ -303,8 +319,9 @@ type MCPDeps struct {
 var ErrMCPMisconfigured = stderrors.New("protocol: MCPSurface missing a mandatory dependency")
 
 // NewMCPSurface builds the Protocol MCP-Connections surface. The MCP /
-// OAuth accessors, the Redactor, and the Bus are all mandatory; a nil
-// fails loud with a wrapped ErrMCPMisconfigured.
+// OAuth accessors, the Redactor, the Bus, and the agent resolver are all
+// mandatory; a nil fails loud with a wrapped ErrMCPMisconfigured. A nil reach
+// authorizer installs the canonical fail-closed signed-reach gate.
 //
 // The returned MCPSurface is immutable after construction and
 // safe for concurrent use by N goroutines.
@@ -321,9 +338,16 @@ func NewMCPSurface(deps MCPDeps) (*MCPSurface, error) {
 	if deps.Bus == nil {
 		return nil, fmt.Errorf("%w: Bus is nil", ErrMCPMisconfigured)
 	}
+	if deps.AgentResolver == nil {
+		return nil, fmt.Errorf("%w: AgentResolver is nil", ErrMCPMisconfigured)
+	}
 	clock := deps.Clock
 	if clock == nil {
 		clock = time.Now
+	}
+	reach := deps.AgentReach
+	if reach == nil {
+		reach = auth.NewAgentReachAuthorizer()
 	}
 	return &MCPSurface{
 		mcp:      deps.MCP,
@@ -331,6 +355,8 @@ func NewMCPSurface(deps MCPDeps) (*MCPSurface, error) {
 		redactor: deps.Redactor,
 		bus:      deps.Bus,
 		clock:    clock,
+		agents:   deps.AgentResolver,
+		reach:    reach,
 	}, nil
 }
 
@@ -608,6 +634,11 @@ func (s *MCPSurface) handleResources(ctx context.Context, id identity.Identity, 
 	if perr != nil {
 		return nil, perr
 	}
+	effectiveID, err := admitEffectiveAgent(idCtx, string(methods.MethodMCPServersResources), id, r.AgentID, s.agents, s.reach)
+	if err != nil {
+		return nil, err
+	}
+	idCtx = tools.WithEffectiveAgentConfig(idCtx, effectiveID)
 	rows, err := s.mcp.ListResources(idCtx, r.Name)
 	if err != nil {
 		return nil, mapMCPError(string(methods.MethodMCPServersResources), err)

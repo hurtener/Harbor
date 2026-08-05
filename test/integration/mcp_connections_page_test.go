@@ -49,6 +49,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -62,6 +63,7 @@ const (
 	mcpPageUser    = "user-mcp-page"
 	mcpPageSession = "session-mcp-page"
 	mcpPageServer  = "github-server"
+	mcpPageAgent   = "agent-mcp-page"
 )
 
 // mcpPageStubProvider is a deterministic MCP provider for the
@@ -184,10 +186,11 @@ func buildMCPPageEnv(t *testing.T) *mcpPageEnv {
 
 	// Real MCPSurface dispatcher.
 	mcpSurface, err := protocol.NewMCPSurface(protocol.MCPDeps{
-		MCP:      regAccessor,
-		OAuth:    oauthAccessor,
-		Redactor: red,
-		Bus:      bus,
+		MCP:           regAccessor,
+		OAuth:         oauthAccessor,
+		Redactor:      red,
+		Bus:           bus,
+		AgentResolver: serve.NewAgentResolverAdapter(nil, mcpPageAgent),
 	})
 	if err != nil {
 		t.Fatalf("protocol.NewMCPSurface: %v", err)
@@ -206,7 +209,13 @@ func buildMCPPageEnv(t *testing.T) *mcpPageEnv {
 	if err != nil {
 		t.Fatalf("transports.NewMux: %v", err)
 	}
-	srv := httptest.NewServer(mux)
+	// This bearer-less integration fixture models the signed token's bounded
+	// agent reach explicitly so live resource discovery exercises the same
+	// canonical reach gate as production.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := protoauth.WithAgentReach(r.Context(), []string{mcpPageAgent})
+		mux.ServeHTTP(w, r.WithContext(ctx))
+	}))
 
 	return &mcpPageEnv{
 		srv: srv,
@@ -492,10 +501,11 @@ func mcpToggleRawHTMLTrust(t *testing.T, env *mcpPageEnv) {
 		t.Fatalf("NewRegistryAccessor: %v", err)
 	}
 	surface, err := protocol.NewMCPSurface(protocol.MCPDeps{
-		MCP:      regAccessor,
-		OAuth:    &mcpPageNoopOAuth{},
-		Redactor: auditpatterns.New(),
-		Bus:      env.bus,
+		MCP:           regAccessor,
+		OAuth:         &mcpPageNoopOAuth{},
+		Redactor:      auditpatterns.New(),
+		Bus:           env.bus,
+		AgentResolver: serve.NewAgentResolverAdapter(nil, mcpPageAgent),
 	})
 	if err != nil {
 		t.Fatalf("NewMCPSurface: %v", err)

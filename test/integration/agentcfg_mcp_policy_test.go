@@ -158,7 +158,11 @@ func newMPHarness(t *testing.T) *mpHarness {
 	if err != nil {
 		t.Fatalf("apps accessor: %v", err)
 	}
-	surface, err := protocol.NewAppsSurface(protocol.AppsDeps{Resource: apps, Invoker: apps, ToolContext: apps})
+	surface, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource: apps, Invoker: apps, ToolContext: apps,
+		AgentResolver: explicitAgentReachResolver{effective: mpAgent},
+		AgentReach:    auth.NewAgentReachAuthorizer(),
+	})
 	if err != nil {
 		t.Fatalf("apps surface: %v", err)
 	}
@@ -281,6 +285,7 @@ func TestE2E_AgentConfig_MCPPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
+	idCtx = auth.WithAgentReach(idCtx, []string{mpAgent})
 	_, dErr := h.surface.Dispatch(idCtx, methods.MethodMCPAppsCallTool, &prototypes.MCPAppCallToolRequest{
 		Identity:  prototypes.IdentityScope{Tenant: mpTenant, User: mpUser, Session: mpSession},
 		Tool:      "srvA_x",

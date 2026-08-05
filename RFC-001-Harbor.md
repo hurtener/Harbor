@@ -255,10 +255,14 @@ over-limit entries reject the bearer; an absent or empty claim authenticates
 for unrelated surfaces but authorizes no agent-addressed data-plane call. One
 shared effective-agent gate enforces the claim before side effects on
 `control.start`, all `agent_config.session.*` and `agent_config.user.*`
-methods, and an explicitly agent-projected `tools.describe`. Omitted
+methods, an explicitly agent-projected `tools.describe`, and the MCP Apps
+data-plane callbacks `mcp.servers.resources`, `mcp.servers.read_resource`, and
+`mcp.apps.call_tool`. Omitted
 `control.start.agent_id` resolves to the configured default before the gate;
-an omitted `tools.describe.agent_id` retains its distinct boot-effective
-projection and is not an agent choice. Tenant-local configuration proves only
+an omitted Apps `agent_id` likewise resolves to the configured default so a
+v1.26.10 host remains compatible, while an omitted `tools.describe.agent_id`
+retains its distinct boot-effective projection and is not an agent choice.
+Tenant-local configuration proves only
 that an agent can be selected; it never grants reach. Bearer-less carrier
 identity supplies no signed reach and therefore cannot use these methods.
 `agent_id` remains registration metadata under §6.16 and does not join the
@@ -276,6 +280,22 @@ retired agent, and no lifecycle/config read becomes an authority oracle. All
 three steps complete before session creation or task spawn. A configured
 default receives the same lifecycle lookup as an explicit id: it never
 short-circuits around a tombstone.
+
+**MCP Apps carry runtime-authored effective-agent authority (D-408).** An
+`mcp.app_available` event and a nested `MCPAppRef` returned by
+`mcp.apps.call_tool` carry the effective `agent_id` that produced the App. The
+Console treats it as opaque host state: it echoes it on the App's subsequent
+resource listings, resource reads, and tool calls, but the sandboxed App never
+supplies or changes it. The Runtime does not trust the echo. It resolves
+omission/defaults, checks signed reach before tenant-local lookup, and only
+then seats the internal effective-agent execution capability used by pair-owned
+credentials and the current per-agent tool-exposure gate. Live resource discovery is normal
+data-plane use, never private preparation and never an `InvokingAgent`
+fallback. `mcp.apps.tool_context` is deliberately
+not agent-addressed: its persisted record is already scoped to the verified
+`(tenant,user,session)` and it performs neither credential selection nor an
+agent-config read. `agent_id` remains resource authority, never a fourth
+isolation component and never southbound MCP content.
 
 ### 5.6 External Protocol serving (Settled — D-291)
 

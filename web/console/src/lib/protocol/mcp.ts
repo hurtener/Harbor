@@ -247,9 +247,10 @@ export interface MCPServerSetRawHTMLTrustResponse {
 /* MCP Apps host wire types                                            */
 /*                                                                     */
 /* Hand-synced field-for-field from internal/protocol/types/mcp_apps.go */
-/* (the Go-side single source, D-002). Two methods consume these:      */
+/* (the Go-side single source, D-002). Three methods consume these:    */
 /*   - mcp.servers.read_resource — ReadMCPResourceResponse             */
 /*   - mcp.apps.call_tool        — MCPAppCallToolResponse              */
+/*   - mcp.apps.tool_context     — ToolContextResponse                 */
 /* The request bodies fold identity at the Transport choke point, so   */
 /* the TS request shapes are constructed inline by the namespace        */
 /* methods and only the response + projection types are declared here. */
@@ -261,6 +262,12 @@ export interface MCPServerSetRawHTMLTrustResponse {
  * (absent on the response) for an ordinary, non-app tool result.
  */
 export interface MCPAppRef {
+  /**
+   * Runtime-authored effective agent configuration that produced this App.
+   * The host echoes it on resource reads and App tool calls; the Runtime
+   * re-authorizes signed reach before consuming any agent-owned authority.
+   */
+  agent_id?: string;
   /**
    * The MCP server (source id) hosting the app — paired with
    * `resource_uri` to fetch the document via `mcp.servers.read_resource`.

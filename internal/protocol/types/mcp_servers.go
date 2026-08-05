@@ -291,6 +291,11 @@ type MCPResourceView struct {
 type MCPServerResourcesRequest struct {
 	// Identity is the mandatory caller identity scope.
 	Identity IdentityScope `json:"identity"`
+	// AgentID is the runtime-authored effective agent configuration echoed by
+	// an MCP Apps host. Omitted values select the configured default before
+	// signed reach and tenant-local resolution; the value is routing input,
+	// never trusted authority and never an isolation component.
+	AgentID string `json:"agent_id,omitempty"`
 	// Name is the MCP server name. Required.
 	Name string `json:"name"`
 }

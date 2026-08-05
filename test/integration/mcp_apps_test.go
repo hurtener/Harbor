@@ -15,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -25,6 +26,8 @@ import (
 	"github.com/hurtener/Harbor/internal/tools/catalog"
 	mcp "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
+
+const appsIntegrationAgentID = "apps-integration-agent"
 
 // TestE2E_MCPApps_ProxyParksOnGate is the load-bearing MCP Apps proxy
 // test: an app-initiated tool call to a GATED tool, routed through the
@@ -87,7 +90,8 @@ func TestE2E_MCPApps_ProxyParksOnGate(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		resp, derr := surface.Dispatch(mustVerifiedCtx(t, id), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		ctx := auth.WithAgentReach(mustVerifiedCtx(t, id), []string{appsIntegrationAgentID})
+		resp, derr := surface.Dispatch(ctx, methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
 			Identity:  types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 			Tool:      "srv-a_sensitive",
 			Arguments: json.RawMessage(`{}`),
@@ -205,7 +209,11 @@ func mkAppsSurface(t *testing.T, cat tools.ToolCatalog, bus events.EventBus) *pr
 	if err != nil {
 		t.Fatalf("NewAppsAccessor: %v", err)
 	}
-	s, err := protocol.NewAppsSurface(protocol.AppsDeps{Resource: acc, Invoker: acc, ToolContext: acc})
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource: acc, Invoker: acc, ToolContext: acc,
+		AgentResolver: explicitAgentReachResolver{effective: appsIntegrationAgentID},
+		AgentReach:    auth.NewAgentReachAuthorizer(),
+	})
 	if err != nil {
 		t.Fatalf("NewAppsSurface: %v", err)
 	}

@@ -32,9 +32,10 @@ func TestMCPAppCallToolRequest_CarriesNoServerScope(t *testing.T) {
 		}
 	}
 	// Guard the guard: the fields the request DOES carry are identity + the
-	// already-qualified tool name + arguments. A rename that dodged the scan
-	// above would also drop one of these.
-	want := map[string]bool{"Identity": true, "Tool": true, "Arguments": true}
+	// runtime-authored agent binding + the already-qualified tool name +
+	// arguments. AgentID is resource authority, not a server namespace. A
+	// rename that dodged the scan above would also drop one of these.
+	want := map[string]bool{"Identity": true, "AgentID": true, "Tool": true, "Arguments": true}
 	got := make(map[string]bool, rt.NumField())
 	for i := range rt.NumField() {
 		got[rt.Field(i).Name] = true

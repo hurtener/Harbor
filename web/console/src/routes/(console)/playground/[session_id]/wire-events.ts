@@ -245,6 +245,8 @@ export function decodeToolLifecycle(data: string): ToolLifecycleEvent | null {
  */
 export interface AppAvailableEvent {
 	taskID: string;
+	/** Runtime-authored effective agent configuration for Apps data-plane calls. */
+	agentID: string;
 	serverID: string;
 	resourceUri: string;
 	/** The per-result display-mode hint (`inline` / `fullscreen` / `pip`), or ''. */
@@ -280,6 +282,7 @@ export function decodeAppAvailable(data: string): AppAvailableEvent | null {
 	if (taskID === '' || serverID === '' || resourceUri === '') return null;
 	return {
 		taskID,
+		agentID: str(frame.payload.AgentID),
 		serverID,
 		resourceUri,
 		displayMode: str(frame.payload.DisplayMode),
