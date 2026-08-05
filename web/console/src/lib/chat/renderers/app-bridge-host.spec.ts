@@ -34,7 +34,7 @@ import {
 interface FakeCalls {
   readResource: Array<[string, string, string | undefined]>;
   callTool: Array<[string, unknown, string | undefined]>;
-  listResources: string[];
+  listResources: Array<[string, string | undefined]>;
   listTools: string[];
 }
 
@@ -52,8 +52,8 @@ function makeFakeClient(overrides: Partial<MCPAppHostClient> = {}): {
       calls.callTool.push([tool, args, agentID]);
       return { tool, content: { ok: true }, isError: false };
     },
-    async listResources(serverID) {
-      calls.listResources.push(serverID);
+    async listResources(serverID, agentID) {
+      calls.listResources.push([serverID, agentID]);
       return [{ uri: 'ui://srv/app.html', name: 'app', mimeType: 'text/html' }];
     },
     async listResourceTemplates() {
@@ -333,9 +333,9 @@ describe('manual handlers dispatch to the injected client', () => {
 
   it('onlistresources routes to the resource list', async () => {
     const { client, calls } = makeFakeClient();
-    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    const handlers = createAppHandlers({ client, serverID: 'srv', agentID: 'agent-app' });
     const res = await handlers.onlistresources();
-    expect(calls.listResources).toEqual(['srv']);
+    expect(calls.listResources).toEqual([['srv', 'agent-app']]);
     expect(res.resources[0].uri).toBe('ui://srv/app.html');
   });
 

@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	stderrors "errors"
 	"io"
 	"log/slog"
 	"maps"
@@ -33,6 +34,7 @@ import (
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/protocol"
 	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
+	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	protocolmethods "github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
@@ -424,13 +426,65 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	if err != nil {
 		t.Fatal(err)
 	}
-	appsSurface, err := protocol.NewAppsSurface(protocol.AppsDeps{
-		Resource: appsAccessor, Invoker: appsAccessor, ToolContext: appsAccessor,
-		AgentResolver: NewAgentResolverAdapter(registry, agentID),
-		AgentReach:    protocolauth.NewAgentReachAuthorizer(),
+	resolver := NewAgentResolverAdapter(registry, agentID)
+	reach := protocolauth.NewAgentReachAuthorizer()
+	mcpRegAccessor, err := mcpconsole.NewRegistryAccessor(mcpRegistry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpSurface, err := protocol.NewMCPSurface(protocol.MCPDeps{
+		MCP: mcpRegAccessor, OAuth: mcpconsole.NewNoOAuthAccessor(), Redactor: redactor, Bus: bus,
+		AgentResolver: resolver, AgentReach: reach,
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	appsSurface, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource: appsAccessor, Invoker: appsAccessor, ToolContext: appsAccessor,
+		AgentResolver: resolver,
+		AgentReach:    reach,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestMu.Lock()
+	resourcesListBefore := methods["resources/list"]
+	requestMu.Unlock()
+	listResp, err := mcpSurface.Dispatch(dispatchCtx, protocolmethods.MethodMCPServersResources, &prototypes.MCPServerResourcesRequest{
+		Identity: prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
+		AgentID:  agentID, Name: connectionName,
+	})
+	if err != nil {
+		t.Fatalf("MCP signed resources dispatch: %v", err)
+	}
+	resources := listResp.(*prototypes.MCPServerResourcesResponse).Resources
+	if len(resources) != 1 || resources[0].URI != "mem://fixture" {
+		t.Fatalf("MCP signed resources = %+v, want mem://fixture", resources)
+	}
+	requestMu.Lock()
+	resourcesListAfter := methods["resources/list"]
+	resourcesListAuth := append([]string(nil), authHeaders["resources/list"]...)
+	requestMu.Unlock()
+	if len(resourcesListAuth) == 0 {
+		t.Fatal("signed resources/list made no authenticated downstream request")
+	}
+	latestResourcesAuth := resourcesListAuth[len(resourcesListAuth)-1]
+	if resourcesListAfter != resourcesListBefore+1 || latestResourcesAuth != "Bearer "+downstreamBearer {
+		t.Fatalf("signed resources/list = calls %d->%d auth %q", resourcesListBefore, resourcesListAfter, latestResourcesAuth)
+	}
+	_, err = mcpSurface.Dispatch(dispatchCtx, protocolmethods.MethodMCPServersResources, &prototypes.MCPServerResourcesRequest{
+		Identity: prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
+		AgentID:  "other-agent", Name: connectionName,
+	})
+	var denied *protoerrors.Error
+	if !stderrors.As(err, &denied) || denied.Code != protoerrors.CodeScopeMismatch {
+		t.Fatalf("cross-agent resources denial = %v, want scope_mismatch", err)
+	}
+	requestMu.Lock()
+	resourcesListAfterDenial := methods["resources/list"]
+	requestMu.Unlock()
+	if resourcesListAfterDenial != resourcesListAfter {
+		t.Fatalf("cross-agent denial reached resources/list: calls %d->%d", resourcesListAfter, resourcesListAfterDenial)
 	}
 	readResp, err := appsSurface.Dispatch(dispatchCtx, protocolmethods.MethodMCPReadResource, &prototypes.ReadMCPResourceRequest{
 		Identity: prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},

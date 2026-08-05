@@ -17,14 +17,17 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // stubMCP is a deterministic protocol.MCPAccessor for the MCPSurface
 // unit tests — no `mcp` driver, no wire.
 type stubMCP struct {
-	servers   map[string]protocol.MCPServerRow
-	notFound  bool
-	missingID bool
+	servers        map[string]protocol.MCPServerRow
+	notFound       bool
+	missingID      bool
+	resourcesCalls int
+	gotAgent       string
 }
 
 // The accessor STATES the not-found verdict by wrapping the Protocol
@@ -58,7 +61,9 @@ func (s *stubMCP) GetServer(_ context.Context, name string) (protocol.MCPServerR
 	return v, nil
 }
 
-func (s *stubMCP) ListResources(_ context.Context, name string) ([]protocol.MCPResourceRow, error) {
+func (s *stubMCP) ListResources(ctx context.Context, name string) ([]protocol.MCPResourceRow, error) {
+	s.resourcesCalls++
+	s.gotAgent, _ = tools.EffectiveAgentConfigFrom(ctx)
 	if s.notFound {
 		return nil, mcpNotFoundErr()
 	}
@@ -153,9 +158,11 @@ func newMCPSurface(t *testing.T) (*protocol.MCPSurface, events.EventBus) {
 		OAuth: &stubOAuth{bindings: []protocol.MCPBindingRow{
 			{PrincipalID: "u-1", BindingScope: "user", Scopes: []string{"repo"}},
 		}},
-		Redactor: patterns.New(),
-		Bus:      bus,
-		Clock:    func() time.Time { return time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC) },
+		Redactor:      patterns.New(),
+		Bus:           bus,
+		AgentResolver: &stubAppsAgentResolver{},
+		AgentReach:    allowAppsAgentReach{},
+		Clock:         func() time.Time { return time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC) },
 	})
 	if err != nil {
 		t.Fatalf("NewMCPSurface: %v", err)
@@ -207,11 +214,13 @@ func TestMCPSurface_NewMCPSurface_FailsClosed(t *testing.T) {
 		{"nil OAuth", func(d *protocol.MCPDeps) { d.OAuth = nil }},
 		{"nil Redactor", func(d *protocol.MCPDeps) { d.Redactor = nil }},
 		{"nil Bus", func(d *protocol.MCPDeps) { d.Bus = nil }},
+		{"nil AgentResolver", func(d *protocol.MCPDeps) { d.AgentResolver = nil }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d := protocol.MCPDeps{
 				MCP: &stubMCP{}, OAuth: &stubOAuth{}, Redactor: patterns.New(), Bus: newMCPBus(t),
+				AgentResolver: &stubAppsAgentResolver{}, AgentReach: allowAppsAgentReach{},
 			}
 			tc.mut(&d)
 			if _, err := protocol.NewMCPSurface(d); !stderrors.Is(err, protocol.ErrMCPMisconfigured) {
@@ -316,6 +325,44 @@ func TestMCPSurface_Resources_Prompts_Health_Policy_Bindings(t *testing.T) {
 	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersBindingsList,
 		&types.MCPServerBindingsListRequest{Identity: validScope(), Name: "github-server"}); err != nil {
 		t.Fatalf("bindings.list: %v", err)
+	}
+}
+
+func TestMCPSurface_Resources_SeatsReachAdmittedEffectiveAgent(t *testing.T) {
+	mcp := &stubMCP{}
+	resolver := &stubAppsAgentResolver{}
+	s, err := protocol.NewMCPSurface(protocol.MCPDeps{
+		MCP: mcp, OAuth: &stubOAuth{}, Redactor: patterns.New(), Bus: newMCPBus(t),
+		AgentResolver: resolver, AgentReach: allowAppsAgentReach{},
+	})
+	if err != nil {
+		t.Fatalf("NewMCPSurface: %v", err)
+	}
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersResources,
+		&types.MCPServerResourcesRequest{Identity: validScope(), AgentID: "agent-resources", Name: "github-server"}); err != nil {
+		t.Fatalf("resources: %v", err)
+	}
+	if mcp.gotAgent != "agent-resources" || mcp.resourcesCalls != 1 || resolver.resolveCalls != 1 {
+		t.Fatalf("effective-agent path = agent %q resources %d resolves %d", mcp.gotAgent, mcp.resourcesCalls, resolver.resolveCalls)
+	}
+}
+
+func TestMCPSurface_Resources_RejectsCrossAgentBeforeResolverOrDiscovery(t *testing.T) {
+	mcp := &stubMCP{}
+	resolver := &stubAppsAgentResolver{}
+	s, err := protocol.NewMCPSurface(protocol.MCPDeps{
+		MCP: mcp, OAuth: &stubOAuth{}, Redactor: patterns.New(), Bus: newMCPBus(t),
+		AgentResolver: resolver, AgentReach: auth.NewAgentReachAuthorizer(),
+	})
+	if err != nil {
+		t.Fatalf("NewMCPSurface: %v", err)
+	}
+	ctx := auth.WithAgentReach(verifiedCtx(t), []string{"agent-allowed"})
+	_, err = s.Dispatch(ctx, methods.MethodMCPServersResources,
+		&types.MCPServerResourcesRequest{Identity: validScope(), AgentID: "agent-denied", Name: "github-server"})
+	assertCode(t, err, protoerrors.CodeScopeMismatch)
+	if resolver.resolveCalls != 0 || mcp.resourcesCalls != 0 {
+		t.Fatalf("denied target reached resolver/discovery: resolves %d resources %d", resolver.resolveCalls, mcp.resourcesCalls)
 	}
 }
 

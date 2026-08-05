@@ -652,7 +652,7 @@ func (p *Provider) Connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	connectCtx, err := p.resolvePreparationBearerCtx(ctx)
+	connectCtx, err := p.resolveSessionBearerCtx(ctx)
 	if err != nil {
 		return fmt.Errorf("mcp: resolve bearer before initialize: %w", err)
 	}
@@ -677,7 +677,7 @@ func (p *Provider) Connect(ctx context.Context) error {
 	}
 
 	sseTransport := newSSETransport(p.cfg)
-	fallbackCtx, bearerErr := p.resolvePreparationBearerCtx(ctx)
+	fallbackCtx, bearerErr := p.resolveSessionBearerCtx(ctx)
 	if bearerErr != nil {
 		return fmt.Errorf("mcp: resolve bearer before SSE initialize fallback: %w", bearerErr)
 	}
@@ -722,7 +722,7 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	}
 
 	// Tools.
-	toolsCtx, err := p.resolvePreparationBearerCtx(ctx)
+	toolsCtx, err := p.resolveSessionBearerCtx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: resolve bearer before tools discovery: %w", err)
 	}
@@ -765,7 +765,7 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	}
 
 	// Resources.
-	resourcesCtx, err := p.resolvePreparationBearerCtx(ctx)
+	resourcesCtx, err := p.resolveSessionBearerCtx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: resolve bearer before resources discovery: %w", err)
 	}
@@ -786,7 +786,7 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	// server simply doesn't expose resources.
 
 	// Prompts.
-	promptsCtx, err := p.resolvePreparationBearerCtx(ctx)
+	promptsCtx, err := p.resolveSessionBearerCtx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: resolve bearer before prompts discovery: %w", err)
 	}
@@ -1800,16 +1800,20 @@ func (p *Provider) resolveBearerCtx(ctx context.Context, key string) (context.Co
 	return withBearer(ctx, tok.AccessToken), nil
 }
 
-// resolvePreparationBearerCtx authenticates the pair-private signed
-// capability path before initialize and discovery. OwnOAuthProvider is the
-// ownership marker carried only by that private binding (registration and
-// reconcile); ordinary shared providers deliberately keep credential-neutral
-// preparation so run-start reattachment does not require interactive consent.
-func (p *Provider) resolvePreparationBearerCtx(ctx context.Context) (context.Context, error) {
+// resolveSessionBearerCtx authenticates pair-private signed capability
+// traffic before initialize or discovery. The caller decides whether the call
+// is private preparation by carrying auth.WithSignedCapabilityPreparation:
+// Attach stamps it around connect + initial discovery, while live Registry
+// discovery deliberately does not. That distinction keeps normal data-plane
+// discovery on reach-admitted EffectiveAgentConfig and prevents it from
+// falling back to boot-derived InvokingAgent provenance. OwnOAuthProvider is
+// the ownership marker carried only by that private binding; ordinary shared
+// providers deliberately keep credential-neutral preparation.
+func (p *Provider) resolveSessionBearerCtx(ctx context.Context) (context.Context, error) {
 	if !p.cfg.OwnOAuthProvider {
 		return ctx, nil
 	}
-	return p.resolveBearerCtx(auth.WithSignedCapabilityPreparation(ctx), "")
+	return p.resolveBearerCtx(ctx, "")
 }
 
 // resolveInjection sources the acting principal's credential from the bound

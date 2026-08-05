@@ -12506,21 +12506,24 @@ mutate any pair.
 **Status:** Accepted for v1.26.11.
 
 **Decision.** An App discovered while executing one effective agent must keep
-that agent binding when the browser later reads its `ui://` resource or calls
-one of its tools. The runtime-authored `mcp.app_available` payload and nested
-`MCPAppRef` therefore carry an additive optional `agent_id`. The host treats it
-as opaque state and echoes it on `mcp.servers.read_resource` and
+that agent binding when the browser later lists its server's resources, reads
+its `ui://` resource, or calls one of its tools. The runtime-authored
+`mcp.app_available` payload and nested `MCPAppRef` therefore carry an additive
+optional `agent_id`. The host treats it as opaque state and echoes it on
+`mcp.servers.resources`, `mcp.servers.read_resource`, and
 `mcp.apps.call_tool`; no sandbox message can supply or replace it.
 
-The echo is routing input, never authority. Both Protocol methods use the same
-reach-before-resolver admission as `control.start`: resolve an omitted id to
-the configured default, enforce verified signed `agent_reach`, then consult
+The echo is routing input, never authority. All three Protocol methods use the
+same reach-before-resolver admission as `control.start`: resolve an omitted id
+to the configured default, enforce verified signed `agent_reach`, then consult
 tenant-local lifecycle/configuration under the caller's identity. Only a
 successful admission seats `tools.WithEffectiveAgentConfig` on the accessor
 context. Signed pair-owned providers retain their exact effective-agent match,
 and the Apps exposure gate reads the current desired state for that effective
-agent rather than the compiled runtime's boot agent. `InvokingAgent` remains
-boot-derived provenance and is not reused for either decision.
+agent rather than the compiled runtime's boot agent. A live resource listing is
+normal data-plane discovery: it does not carry the private-preparation marker
+and never falls back to `InvokingAgent`. `InvokingAgent` remains boot-derived
+provenance and is not reused for either decision.
 
 Omission preserves v1.26.10 clients for default-agent Apps without bypassing
 authorization: the default is still selected and checked against signed reach.
@@ -12530,9 +12533,10 @@ record is already keyed under the verified `(tenant,user,session)` and the
 method neither chooses a credential nor reads agent configuration.
 
 **Wire consequence.** Additive optional `agent_id` fields on `MCPAppRef`,
-`ReadMCPResourceRequest`, and `MCPAppCallToolRequest`, plus server-derived
-`AgentID` on `mcp.app_available`. ProtocolVersion remains `0.1.0`; all three
-wire generators move in lockstep. The product release is v1.26.11.
+`MCPServerResourcesRequest`, `ReadMCPResourceRequest`, and
+`MCPAppCallToolRequest`, plus server-derived `AgentID` on
+`mcp.app_available`. ProtocolVersion remains `0.1.0`; all three wire generators
+move in lockstep. The product release is v1.26.11.
 
 **Cross-references.** D-173, D-227, D-351, D-397, D-407. RFC §5.3, §5.5,
 §6.11 and §6.16.

@@ -278,7 +278,7 @@ export interface MCPAppHostClient {
    */
   callTool(tool: string, args?: unknown, agentID?: string): Promise<MCPAppToolResult>;
   /** Route `resources/list` → `mcp.servers.resources`. */
-  listResources(serverID: string): Promise<MCPAppResourceListing[]>;
+  listResources(serverID: string, agentID?: string): Promise<MCPAppResourceListing[]>;
   /**
    * Route `resources/templates/list` → the server's advertised resource
    * templates. Harbor's Protocol surfaces no resource-template method, so the
@@ -652,7 +652,7 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
     },
 
     async onlistresources() {
-      const rows = await client.listResources(serverID);
+      const rows = await client.listResources(serverID, agentID);
       return {
         resources: rows.map((r) => ({ uri: r.uri, name: r.name ?? r.uri, mimeType: r.mimeType })),
       };

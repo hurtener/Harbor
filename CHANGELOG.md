@@ -19,9 +19,10 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Fixed
 
-- MCP Apps resource reads and app-initiated tool calls now retain the effective
-  agent configuration that produced the App. The runtime-authored discovery
-  reference carries an optional `agent_id`; the host echoes it, and Harbor
+- MCP Apps resource listings, resource reads, and app-initiated tool calls now
+  retain the effective agent configuration that produced the App. The
+  runtime-authored discovery reference carries an optional `agent_id`; the host
+  echoes it, and Harbor
   re-runs signed reach before tenant-local resolution and before seating
   pair-owned credentials or reading current per-agent tool exposure. Omission
   still resolves to the configured default for v1.26.10 clients. This restores

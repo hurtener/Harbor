@@ -2508,6 +2508,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` | optional (`omitempty`) |
 | `name` | `string` |  |
 
 ## MCPServerResourcesResponse

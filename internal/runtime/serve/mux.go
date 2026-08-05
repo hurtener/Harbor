@@ -295,10 +295,12 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			return nil, wrapErr("mcp accessor", aErr)
 		}
 		mcpSurface, sErr := protocol.NewMCPSurface(protocol.MCPDeps{
-			MCP:      mcpRegAccessor,
-			OAuth:    mcpconsole.NewNoOAuthAccessor(),
-			Redactor: red,
-			Bus:      bus,
+			MCP:           mcpRegAccessor,
+			OAuth:         mcpconsole.NewNoOAuthAccessor(),
+			Redactor:      red,
+			Bus:           bus,
+			AgentResolver: in.AgentResolver,
+			AgentReach:    in.AgentReach,
 		})
 		if sErr != nil {
 			return nil, wrapErr("mcp surface", sErr)

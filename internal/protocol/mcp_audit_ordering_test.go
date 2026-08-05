@@ -33,11 +33,13 @@ func TestSetRawHTMLTrust_AuditEmitFailure_LeavesTrustUnchanged(t *testing.T) {
 	}}
 	bus := newMCPBus(t)
 	s, err := protocol.NewMCPSurface(protocol.MCPDeps{
-		MCP:      stub,
-		OAuth:    &stubOAuth{},
-		Redactor: failingRedactor{}, // forces the emit to fail
-		Bus:      bus,
-		Clock:    func() time.Time { return time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC) },
+		MCP:           stub,
+		OAuth:         &stubOAuth{},
+		Redactor:      failingRedactor{}, // forces the emit to fail
+		Bus:           bus,
+		AgentResolver: &stubAppsAgentResolver{},
+		AgentReach:    allowAppsAgentReach{},
+		Clock:         func() time.Time { return time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC) },
 	})
 	if err != nil {
 		t.Fatalf("NewMCPSurface: %v", err)
@@ -69,11 +71,13 @@ func TestSetRawHTMLTrust_AuditSucceeds_TrustApplied(t *testing.T) {
 	}}
 	bus := newMCPBus(t)
 	s, err := protocol.NewMCPSurface(protocol.MCPDeps{
-		MCP:      stub,
-		OAuth:    &stubOAuth{},
-		Redactor: patterns.New(),
-		Bus:      bus,
-		Clock:    func() time.Time { return time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC) },
+		MCP:           stub,
+		OAuth:         &stubOAuth{},
+		Redactor:      patterns.New(),
+		Bus:           bus,
+		AgentResolver: &stubAppsAgentResolver{},
+		AgentReach:    allowAppsAgentReach{},
+		Clock:         func() time.Time { return time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC) },
 	})
 	if err != nil {
 		t.Fatalf("NewMCPSurface: %v", err)

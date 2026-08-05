@@ -207,9 +207,10 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
 **Keep that agent binding when you render an MCP App.** The runtime-authored
 `mcp.app_available` payload carries `AgentID` beside `ServerID` and
 `ResourceURI`; a nested `MCPAppRef` uses the JSON field `agent_id`. Treat this
-value as opaque host state and echo it as `agent_id` on both
-`mcp.servers.read_resource` and `mcp.apps.call_tool`. Never accept an agent id
-from inside the sandboxed App. Harbor resolves an omitted value to the runtime
+value as opaque host state and echo it as `agent_id` on
+`mcp.servers.resources`, `mcp.servers.read_resource`, and
+`mcp.apps.call_tool`. Never accept an agent id from inside the sandboxed App.
+Harbor resolves an omitted value to the runtime
 default for older clients, then applies the same signed `agent_reach` check
 before tenant-local resolution and credential/exposure use, so the echo is not
 trusted authority. `mcp.apps.tool_context` takes no agent id: its record is

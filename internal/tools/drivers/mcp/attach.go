@@ -422,13 +422,22 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 	if err != nil {
 		return nil, fmt.Errorf("mcp.New: %w", err)
 	}
-	if connectErr := provider.Connect(ctx); connectErr != nil {
+	// Private pair preparation is the one narrow path allowed to authorize a
+	// signed provider from InvokingAgent provenance before publication. Stamp
+	// that capability here, where the operation is actually preparation. Live
+	// Registry discovery arrives without it and must use only the separately
+	// reach-admitted EffectiveAgentConfig capability.
+	providerCtx := ctx
+	if provider.cfg.OwnOAuthProvider {
+		providerCtx = auth.WithSignedCapabilityPreparation(providerCtx)
+	}
+	if connectErr := provider.Connect(providerCtx); connectErr != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		cleanupErr := provider.Close(cleanupCtx)
 		cancel()
 		return nil, errors.Join(fmt.Errorf("provider.Connect: %w", connectErr), observations.authRequired(), cleanupErr)
 	}
-	descriptors, discoverErr := provider.Discover(ctx)
+	descriptors, discoverErr := provider.Discover(providerCtx)
 	if discoverErr != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		cleanupErr := provider.Close(cleanupCtx)

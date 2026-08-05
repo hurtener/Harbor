@@ -88,8 +88,8 @@ describe('makeMCPAppHostClient', () => {
   it('listResources routes to mcp.servers.resources', async () => {
     const { client, resources } = fakeProtocolClient();
     const host = makeMCPAppHostClient(client);
-    const rows = await host.listResources('srv');
-    expect(resources).toHaveBeenCalledWith('srv');
+    const rows = await host.listResources('srv', 'agent-weather');
+    expect(resources).toHaveBeenCalledWith('srv', 'agent-weather');
     expect(rows[0].uri).toBe('ui://srv/app.html');
   });
 

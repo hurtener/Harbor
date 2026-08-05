@@ -1893,6 +1893,7 @@ export interface MCPServerRefreshDiscoveryResponse {
 
 export interface MCPServerResourcesRequest {
   identity: IdentityScope;
+  agent_id?: string;
   name: string;
 }
 

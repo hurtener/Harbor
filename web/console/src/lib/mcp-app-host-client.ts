@@ -154,8 +154,11 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
       };
     },
 
-    async listResources(serverID): Promise<MCPAppResourceListing[]> {
-      const res = await client.mcp.servers.resources<MCPServerResourcesResponse>(serverID);
+    async listResources(serverID, agentID): Promise<MCPAppResourceListing[]> {
+      const res = await client.mcp.servers.resources<MCPServerResourcesResponse>(
+        serverID,
+        agentID,
+      );
       return res.resources.map((r) => ({
         uri: r.uri,
         name: r.name ?? r.title,

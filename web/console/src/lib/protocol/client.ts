@@ -448,8 +448,11 @@ export class MCPServersNamespace {
 		return this.#t.request<R>('/v1/control/mcp.servers.get', { name });
 	}
 	/** `mcp.servers.resources` — a server's advertised resources. */
-	resources<R = unknown>(name: string): Promise<R> {
-		return this.#t.request<R>('/v1/control/mcp.servers.resources', { name });
+	resources<R = unknown>(name: string, agentID?: string): Promise<R> {
+		return this.#t.request<R>('/v1/control/mcp.servers.resources', {
+			name,
+			...(agentID ? { agent_id: agentID } : {}),
+		});
 	}
 	/** `mcp.servers.prompts` — a server's advertised prompts. */
 	prompts<R = unknown>(name: string): Promise<R> {
