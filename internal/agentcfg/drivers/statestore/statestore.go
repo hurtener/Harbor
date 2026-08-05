@@ -477,11 +477,11 @@ func validateSignedOAuthMCPStateTransition(current, requested agentcfg.ConfigPay
 	requestedNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: requested.SignedOAuthMCPPair, SignedOAuthMCPPairs: requested.SignedOAuthMCPPairs})
 	currentPairs, err := currentNorm.EffectiveSignedOAuthMCPPairs()
 	if err != nil {
-		return fmt.Errorf("%w: current signed capability state is invalid: %v", agentcfg.ErrSignedCapabilityReplay, err)
+		return fmt.Errorf("%w: current signed capability state is invalid: %w", agentcfg.ErrSignedCapabilityReplay, err)
 	}
 	requestedPairs, err := requestedNorm.EffectiveSignedOAuthMCPPairs()
 	if err != nil {
-		return fmt.Errorf("%w: requested signed capability state is invalid: %v", agentcfg.ErrSignedCapabilityReplay, err)
+		return fmt.Errorf("%w: requested signed capability state is invalid: %w", agentcfg.ErrSignedCapabilityReplay, err)
 	}
 	if operation == "" {
 		if !reflect.DeepEqual(currentNorm, requestedNorm) {

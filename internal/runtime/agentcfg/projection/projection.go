@@ -286,7 +286,7 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 		}
 		pairs, pairErr := rev.Payload.EffectiveSignedOAuthMCPPairs()
 		if pairErr != nil {
-			return 0, 0, fmt.Errorf("%w: agent %q signed capability state: %v", ErrReconcileRead, agentID, pairErr)
+			return 0, 0, fmt.Errorf("%w: agent %q signed capability state: %w", ErrReconcileRead, agentID, pairErr)
 		}
 		for _, pair := range pairs {
 			if pair.Connection.Name != "" {

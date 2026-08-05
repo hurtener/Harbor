@@ -61,9 +61,10 @@ func TestAgentConfigHandler_RegisterOAuthMCPCapabilityRejectsForbiddenFieldsWith
 			beforeMutations := fixture.mutations.count.Load()
 			extra := fmt.Sprintf(`,%q:%s`, tc.field, tc.value)
 			connectionExtra := ""
-			if tc.container == "connection" {
+			switch tc.container {
+			case "connection":
 				connectionExtra, extra = extra, ""
-			} else if tc.container == "injection" {
+			case "injection":
 				connectionExtra, extra = `,"injection":{`+extra[1:]+`}`, ""
 			}
 			body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},` +
