@@ -230,6 +230,41 @@ type capabilityLandedThenErroredRegistry struct {
 	once sync.Once
 }
 
+type capabilityBlockAfterSetRegistry struct {
+	agentcfg.Registry
+	entered chan<- struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (r *capabilityBlockAfterSetRegistry) SetRevision(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope, payload agentcfg.ConfigPayload, opts agentcfg.SetOptions) (agentcfg.Revision, error) {
+	rev, err := r.Registry.SetRevision(ctx, id, agentID, scope, payload, opts)
+	if err != nil {
+		return rev, err
+	}
+	block := false
+	r.once.Do(func() { block = true })
+	if block {
+		select {
+		case r.entered <- struct{}{}:
+		default:
+		}
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return agentcfg.Revision{}, ctx.Err()
+		}
+	}
+	return rev, nil
+}
+
+func (r *capabilityBlockAfterSetRegistry) PhysicalActive(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
+	physical := r.Registry.(interface {
+		PhysicalActive(context.Context, identity.Quadruple, string, agentcfg.ConfigScope) (agentcfg.Revision, bool, error)
+	})
+	return physical.PhysicalActive(ctx, id, agentID, scope)
+}
+
 type capabilityOperationPhaseStore struct {
 	state.StateStore
 	mu      sync.Mutex
@@ -2165,6 +2200,163 @@ func TestRegisterOAuthMCPCapability_MultiplePairsCoexistRestartAndTargetedRemova
 		// Restart publication is process-local to restartPreparer; the original
 		// runtime remains independently live until its own reconciliation pass.
 		t.Fatalf("original runtime live pairs = %d, want 2 before reconcile", originalLive)
+	}
+}
+
+func TestRegisterOAuthMCPCapability_SecondPairRemainsHiddenAfterSetRevisionUntilPublication(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	seedService, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	first, err := seedService.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-hidden-seed", "aud-seed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	blockedRegistry := &capabilityBlockAfterSetRegistry{Registry: reg, entered: entered, release: release}
+	blockedService := signedCapabilityServiceForExisting(t, now, blockedRegistry, st, preparer, key)
+	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://hidden-second.example.test/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := signedCapabilityRequestNamed(t, key, now, scope(), testAgentID, "jti-hidden-second", "aud-second", "hidden-second",
+		prototypes.SignedOAuthMCPConnectionDescriptor{Name: "hidden-second", URL: canonical}, sink)
+	req.ExpectedContentHash = first.Revision.ContentHash
+	done := make(chan error, 1)
+	go func() {
+		_, registerErr := blockedService.RegisterOAuthMCPCapability(context.Background(), req)
+		done <- registerErr
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second-pair registration did not pause after SetRevision")
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	visible, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || visible.RevisionID != first.Revision.RevisionID {
+		t.Fatalf("Active while second-pair SetRevision is paused = %+v set=%t err=%v, want first", visible, set, err)
+	}
+	if _, err := reg.SetRevision(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"foreign"}}}, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityPending) {
+		t.Fatalf("generic writer while second pair pending = %v, want pending", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("second-pair registration after release: %v", err)
+	}
+	visible, set, err = reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set {
+		t.Fatalf("Active after publication = %+v set=%t err=%v", visible, set, err)
+	}
+	pairs, err := visible.Payload.EffectiveSignedOAuthMCPPairs()
+	if err != nil || pairs["hidden-second"] == nil {
+		t.Fatalf("published second pair = %+v err=%v", pairs, err)
+	}
+}
+
+func TestRegisterOAuthMCPCapability_ConcurrentDistinctProvidersLoserRetriesSameAuthority(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	left, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	first, err := left.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-cas-seed", "aud-seed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	right := signedCapabilityServiceForExisting(t, now, reg, st, preparer, key)
+	type outcome struct {
+		request  prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest
+		response prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse
+		err      error
+	}
+	requests := make([]prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest, 0, 2)
+	for i, provider := range []string{"alpha-provider", "beta-provider"} {
+		canonical, sink, canonicalErr := agentcfg.CanonicalOAuthMCPURL(fmt.Sprintf("https://%s.example.test/mcp", provider))
+		if canonicalErr != nil {
+			t.Fatal(canonicalErr)
+		}
+		req := signedCapabilityRequestNamed(t, key, now, scope(), testAgentID, fmt.Sprintf("jti-cas-%d", i), fmt.Sprintf("aud-cas-%d", i), provider,
+			prototypes.SignedOAuthMCPConnectionDescriptor{Name: provider, URL: canonical}, sink)
+		req.ExpectedContentHash = first.Revision.ContentHash
+		requests = append(requests, req)
+	}
+	start := make(chan struct{})
+	results := make(chan outcome, 2)
+	for i, req := range requests {
+		svc := left
+		if i == 1 {
+			svc = right
+		}
+		go func(service *agentcfgprotocol.Service, request prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest) {
+			<-start
+			response, registerErr := service.RegisterOAuthMCPCapability(context.Background(), request)
+			results <- outcome{request: request, response: response, err: registerErr}
+		}(svc, req)
+	}
+	close(start)
+	outcomes := []outcome{<-results, <-results}
+	var winner, loser outcome
+	for _, got := range outcomes {
+		if got.err == nil {
+			winner = got
+			continue
+		}
+		if !errors.Is(got.err, agentcfg.ErrRevisionConflict) {
+			t.Fatalf("concurrent registration %q = %v, want CAS conflict", got.request.ProviderName, got.err)
+		}
+		loser = got
+	}
+	if winner.response.Revision.RevisionID == "" || loser.request.ProviderName == "" {
+		t.Fatalf("outcomes = %+v, want one winner and one loser", outcomes)
+	}
+	loser.request.ExpectedContentHash = winner.response.Revision.ContentHash
+	retried, err := right.RegisterOAuthMCPCapability(context.Background(), loser.request)
+	if err != nil {
+		t.Fatalf("same-envelope/JTI retry for %q: %v", loser.request.ProviderName, err)
+	}
+	payload := retried.Revision.Payload
+	if payload.SignedOAuthMCPPair == nil || len(payload.SignedOAuthMCPPairs) != 2 ||
+		payload.SignedOAuthMCPPairs[winner.request.ProviderName].ProviderName == "" || payload.SignedOAuthMCPPairs[loser.request.ProviderName].ProviderName == "" {
+		t.Fatalf("rebased retry payload = %+v", payload)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.RevisionID != retried.Revision.RevisionID {
+		t.Fatalf("active after retry = %+v set=%t err=%v", active, set, err)
+	}
+	if _, err := reg.SetRevision(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"post-race"}}}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("stale loser fence poisoned later generic writer: %v", err)
+	}
+}
+
+func TestRegisterOAuthMCPCapability_DefinitiveConflictLeavesNoExpiryPoison(t *testing.T) {
+	oldNow := time.Now().UTC().Add(-3 * time.Hour)
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, oldNow)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, oldNow, "jti-expiry-seed", "aud-seed")); err != nil {
+		t.Fatal(err)
+	}
+	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://expiry-loser.example.test/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := signedCapabilityRequestNamed(t, key, oldNow, scope(), testAgentID, "jti-expiry-loser", "aud-expiry-loser", "expiry-loser",
+		prototypes.SignedOAuthMCPConnectionDescriptor{Name: "expiry-loser", URL: canonical}, sink)
+	request.ExpectedContentHash = strings.Repeat("0", 64)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), request); !errors.Is(err, agentcfg.ErrRevisionConflict) {
+		t.Fatalf("stale registration = %v, want revision conflict", err)
+	}
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("expiry reconciliation after definitive conflict: %v", err)
+	}
+	ops, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := ops.Load(context.Background(), agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: "jti-expiry-loser"})
+	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhaseExpiredIncomplete {
+		t.Fatalf("losing operation after expiry reconciliation = %+v err=%v", op, err)
 	}
 }
 

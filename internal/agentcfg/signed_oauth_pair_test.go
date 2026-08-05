@@ -60,3 +60,31 @@ func TestContentHash_LegacySignedOAuthMCPPairUnchangedByCollectionSupport(t *tes
 		t.Fatalf("legacy content hash = %q, want v1.26.9 %q", got, legacyV1269Hash)
 	}
 }
+
+func TestEffectiveSignedOAuthMCPPairs_RejectsNonCanonicalProviderValue(t *testing.T) {
+	pairs := SignedOAuthMCPPairs{"provider": {ProviderName: " provider"}}
+	if _, err := (ConfigPayload{SignedOAuthMCPPairs: &pairs}).EffectiveSignedOAuthMCPPairs(); err == nil {
+		t.Fatal("whitespace-bearing provider_name matched a canonical map key")
+	}
+}
+
+func TestContentHash_SignedOAuthMCPPairsIgnoresMapInsertionOrder(t *testing.T) {
+	left := make(SignedOAuthMCPPairs)
+	left["alpha"] = SignedOAuthMCPPair{ProviderName: "alpha", Broker: "broker-a"}
+	left["beta"] = SignedOAuthMCPPair{ProviderName: "beta", Broker: "broker-b"}
+	right := make(SignedOAuthMCPPairs)
+	right["beta"] = SignedOAuthMCPPair{ProviderName: "beta", Broker: "broker-b"}
+	right["alpha"] = SignedOAuthMCPPair{ProviderName: "alpha", Broker: "broker-a"}
+
+	leftHash, err := ContentHash(ConfigPayload{SignedOAuthMCPPairs: &left})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightHash, err := ContentHash(ConfigPayload{SignedOAuthMCPPairs: &right})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftHash != rightHash {
+		t.Fatalf("map insertion order changed content hash: left=%q right=%q", leftHash, rightHash)
+	}
+}

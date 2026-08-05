@@ -77,7 +77,7 @@ func (p ConfigPayload) EffectiveSignedOAuthMCPPairs() (map[string]*SignedOAuthMC
 	if p.SignedOAuthMCPPairs != nil {
 		for key, pair := range *p.SignedOAuthMCPPairs {
 			provider := strings.TrimSpace(pair.ProviderName)
-			if key == "" || key != provider {
+			if key == "" || key != provider || pair.ProviderName != provider {
 				return nil, fmt.Errorf("%w: signed capability map key %q does not match provider_name %q", ErrInvalidConfig, key, pair.ProviderName)
 			}
 			if _, duplicate := out[key]; duplicate {

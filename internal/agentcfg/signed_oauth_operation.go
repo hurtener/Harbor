@@ -248,7 +248,43 @@ func (s *SignedOAuthMCPActivationFenceStore) LoadForOperation(ctx context.Contex
 	if legacyErr != nil {
 		return SignedOAuthMCPActivationFence{}, errors.Join(err, legacyErr)
 	}
+	if legacy.OperationKind != operationKind {
+		return SignedOAuthMCPActivationFence{}, err
+	}
 	return legacy, nil
+}
+
+// ReleasePending removes exactly an unpublished fence generation after the
+// registry has definitively refused its candidate write. The immutable
+// operation claim remains, so the same authority envelope can retry against a
+// fresh active revision without inheriting a stale candidate/prior binding.
+func (s *SignedOAuthMCPActivationFenceStore) ReleasePending(ctx context.Context, current SignedOAuthMCPActivationFence) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if current.Phase != SignedOAuthMCPFencePending || current.EventID == "" || current.CandidateRevisionID != "" ||
+		strings.TrimSpace(current.TenantID) == "" || strings.TrimSpace(current.AgentID) == "" || strings.TrimSpace(current.OperationKind) == "" {
+		return fmt.Errorf("%w: activation fence is not an unpublished pending generation", ErrSignedCapabilityTransition)
+	}
+	stateKind := current.StateKind
+	if stateKind == "" {
+		stateKind = signedOAuthMCPActivationFenceKind
+	}
+	if stateKind != signedOAuthMCPActivationFenceKind && stateKind != signedOAuthMCPPairActivationFenceKind(current.OperationKind) {
+		return fmt.Errorf("%w: activation fence state kind does not bind its operation", ErrSignedCapabilityTransition)
+	}
+	changed, err := s.state.DeleteIf(ctx, state.SlotExpectation{
+		Identity:        signedOAuthMCPActivationFenceQuad(current.TenantID, current.AgentID),
+		Kind:            stateKind,
+		ExpectedEventID: current.EventID,
+	})
+	if err != nil {
+		return fmt.Errorf("release signed capability activation fence: %w", err)
+	}
+	if !changed {
+		return fmt.Errorf("%w: activation fence changed concurrently", ErrSignedCapabilityPending)
+	}
+	return nil
 }
 
 func (s *SignedOAuthMCPActivationFenceStore) loadKind(ctx context.Context, tenant, agentID, stateKind string) (SignedOAuthMCPActivationFence, error) {

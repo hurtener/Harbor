@@ -197,6 +197,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	}
 	var rev agentcfg.Revision
 	if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed {
+		var activationFence agentcfg.SignedOAuthMCPActivationFence
 		payload := carrySiblingsForward(active, hasActive)
 		existingPairs, pairsErr := payload.EffectiveSignedOAuthMCPPairs()
 		if pairsErr != nil {
@@ -232,7 +233,8 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			case fenceErr == nil && fence.Phase == agentcfg.SignedOAuthMCPFenceAborted &&
 				fence.OperationKind == operationKind && fence.Fingerprint == op.Fingerprint &&
 				fence.CandidateRevisionID == op.LastExpiredRevisionID:
-				if _, err := s.signedOAuthMCPFences.ReopenForRenewedAuthority(ctx, fence, op, candidateHash, priorRevisionID); err != nil {
+				activationFence, err = s.signedOAuthMCPFences.ReopenForRenewedAuthority(ctx, fence, op, candidateHash, priorRevisionID)
+				if err != nil {
 					return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 				}
 			case fenceErr == nil && fence.Phase == agentcfg.SignedOAuthMCPFenceCommitted:
@@ -247,13 +249,21 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 				if begun.Phase != agentcfg.SignedOAuthMCPFencePending {
 					return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: renewed activation fence did not become pending", agentcfg.ErrSignedCapabilityPending)
 				}
+				activationFence = begun
 			}
-		} else if _, err := beginFence(ctx, ownerID.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID); err != nil {
-			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+		} else {
+			activationFence, err = beginFence(ctx, ownerID.TenantID, req.AgentID, operationKind, op.Fingerprint, candidateHash, priorRevisionID)
+			if err != nil {
+				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+			}
 		}
 		fenceCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, operationKind)
 		rev, err = s.registry.SetRevision(fenceCtx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 		if err != nil {
+			if errors.Is(err, agentcfg.ErrRevisionConflict) {
+				releaseErr := s.signedOAuthMCPFences.ReleasePending(context.WithoutCancel(ctx), activationFence)
+				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, releaseErr)
+			}
 			// A StateStore acknowledgement can be lost after the pointer commits.
 			// Exact immutable pair equality identifies the candidate, but immutable
 			// history alone is not authority: compensation may have left an orphan.

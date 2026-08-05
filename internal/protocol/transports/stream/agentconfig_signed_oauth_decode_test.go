@@ -34,7 +34,7 @@ func TestAgentConfigHandler_RegisterOAuthMCPCapabilityRejectsForbiddenFieldsWith
 		{name: "command", field: "command", value: `["sh"]`, container: "connection"},
 		{name: "credential source", field: "credential_source", value: `"remote"`},
 		{name: "OAuth provider", field: "oauth_provider", value: `"other"`, container: "connection"},
-		{name: "injection", field: "injection", value: `{"target":"header"}`, container: "connection"},
+		{name: "injection nested unknown target", field: "target", value: `"header"`, container: "injection"},
 		{name: "discovery origins", field: "oauth_discovery_allowed_origins", value: `["https://evil.test"]`, container: "connection"},
 		{name: "meta annotations", field: "meta_annotations", value: `{"readOnlyHint":true}`, container: "connection"},
 		{name: "client secret", field: "client_secret", value: `"value"`},
@@ -63,6 +63,8 @@ func TestAgentConfigHandler_RegisterOAuthMCPCapabilityRejectsForbiddenFieldsWith
 			connectionExtra := ""
 			if tc.container == "connection" {
 				connectionExtra, extra = extra, ""
+			} else if tc.container == "injection" {
+				connectionExtra, extra = `,"injection":{`+extra[1:]+`}`, ""
 			}
 			body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},` +
 				`"agent_id":"agent-x","provider_name":"provider","broker":"broker",` +
