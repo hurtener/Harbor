@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.26.11] — 2026-08-05
+
 ### Fixed
 
 - MCP Apps resource listings, resource reads, and app-initiated tool calls now
