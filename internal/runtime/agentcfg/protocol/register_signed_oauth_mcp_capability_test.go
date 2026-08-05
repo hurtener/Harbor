@@ -876,6 +876,87 @@ func (p *capabilityPreparer) ConnectionMatches(owner toolauth.Owner, name, finge
 	return p.live[owner.Tenant+"/"+owner.Agent+"/"+name] == fingerprint
 }
 
+func TestRegisterOAuthMCPCapability_SignedReceiverInjectionPublishesAndReconcilesWithoutDevGate(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	connection := prototypes.SignedOAuthMCPConnectionDescriptor{
+		Name: "bamboo", URL: "https://bamboo.example.test:443/t/cleartech/mcp",
+		Injection: &prototypes.AgentConfigMCPCredentialInjectionDescriptor{
+			Provider: "provider", Form: config.MCPInjectionFormHeader, Header: "x-bamboohr-api-key",
+		},
+	}
+	req := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-bamboo", "bamboo", connection, "https://bamboo.example.test:443")
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), req); err != nil {
+		t.Fatalf("register signed receiver: %v", err)
+	}
+	preparer.mu.Lock()
+	got := preparer.lastReq
+	preparer.live = make(map[string]string) // simulate restart loss
+	preparer.mu.Unlock()
+	assertSignedReceiverAttachRequest(t, got)
+
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.Payload.SignedOAuthMCPPair == nil || active.Payload.SignedOAuthMCPPair.Connection.Injection == nil {
+		t.Fatalf("durable signed receiver pair: set=%t err=%v active=%+v", set, err, active)
+	}
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("reconcile signed receiver: %v", err)
+	}
+	preparer.mu.Lock()
+	got = preparer.lastReq
+	preparer.mu.Unlock()
+	assertSignedReceiverAttachRequest(t, got)
+}
+
+func assertSignedReceiverAttachRequest(t *testing.T, got agentcfgprotocol.AttachRequest) {
+	t.Helper()
+	if got.OAuthProvider != "" || !got.OwnOAuthProvider || got.Injection == nil ||
+		got.Injection.Provider != "provider" || got.Injection.Form != config.MCPInjectionFormHeader || got.Injection.Header != "x-bamboohr-api-key" {
+		t.Fatalf("signed receiver attach request = %+v", got)
+	}
+}
+
+func TestRegisterOAuthMCPCapability_SignedReceiverInjectionFailsClosed(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		injection *prototypes.AgentConfigMCPCredentialInjectionDescriptor
+		mutate    func(*prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest)
+		want      error
+	}{
+		{name: "provider mismatch", injection: &prototypes.AgentConfigMCPCredentialInjectionDescriptor{Provider: "other", Form: config.MCPInjectionFormHeader, Header: "x-bamboohr-api-key"}, want: agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor},
+		{name: "unredacted header", injection: &prototypes.AgentConfigMCPCredentialInjectionDescriptor{Provider: "provider", Form: config.MCPInjectionFormHeader, Header: "x-request-id"}, want: agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor},
+		{name: "signed mapping tampered", injection: &prototypes.AgentConfigMCPCredentialInjectionDescriptor{Provider: "provider", Form: config.MCPInjectionFormHeader, Header: "x-bamboohr-api-key"}, mutate: func(req *prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest) {
+			req.Connection.Injection.Header = "x-other-api-key"
+		}, want: agentcfg.ErrSignedCapabilityBinding},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, key, _, preparer := signedCapabilityService(t, now)
+			connection := prototypes.SignedOAuthMCPConnectionDescriptor{Name: "bamboo", URL: "https://bamboo.example.test:443/t/cleartech/mcp", Injection: tc.injection}
+			req := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-"+strings.ReplaceAll(tc.name, " ", "-"), "bamboo", connection, "https://bamboo.example.test:443")
+			if tc.mutate != nil {
+				tc.mutate(&req)
+			}
+			_, err := svc.RegisterOAuthMCPCapability(context.Background(), req)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("error = %v, want %v", err, tc.want)
+			}
+			preparer.mu.Lock()
+			activations := preparer.activations
+			preparer.mu.Unlock()
+			if activations != 0 {
+				t.Fatalf("rejected signed receiver activated %d connections", activations)
+			}
+		})
+	}
+}
+
 func signedCapabilityService(t *testing.T, now time.Time) (*agentcfgprotocol.Service, *rsa.PrivateKey, state.StateStore, *capabilityPreparer) {
 	svc, key, _, st, preparer := signedCapabilityServiceWithRegistry(t, now)
 	return svc, key, st, preparer
@@ -1996,6 +2077,7 @@ func signedCapabilityRequestWithConnection(t *testing.T, key *rsa.PrivateKey, no
 		Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{
 			Name: connection.Name, URL: connection.URL, ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist,
 			ConnectTimeoutMS: connection.ConnectTimeoutMS, RequestTimeoutMS: connection.RequestTimeoutMS,
+			Injection:            testDomainInjection(connection.Injection),
 			ArtifactByteEligible: connection.ArtifactByteEligible, ArtifactParams: cloneTestArtifactParams(connection.ArtifactParams),
 		},
 		RegisteredClaims: jwt.RegisteredClaims{Issuer: "issuer", ID: jti, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(30 * time.Minute))},
@@ -2009,6 +2091,16 @@ func signedCapabilityRequestWithConnection(t *testing.T, key *rsa.PrivateKey, no
 	return prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest{
 		Identity: scope, AgentID: agentID, ProviderName: "provider", Broker: "broker", Audience: audience, Scopes: []string{"read"},
 		Connection: connection, AuthorityEnvelope: raw,
+	}
+}
+
+func testDomainInjection(in *prototypes.AgentConfigMCPCredentialInjectionDescriptor) *agentcfg.MCPCredentialInjectionDescriptor {
+	if in == nil {
+		return nil
+	}
+	return &agentcfg.MCPCredentialInjectionDescriptor{
+		Provider: in.Provider, Form: in.Form, Header: in.Header,
+		BasicUsername: in.BasicUsername, MetaKey: in.MetaKey,
 	}
 }
 

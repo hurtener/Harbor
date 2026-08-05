@@ -416,8 +416,9 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 	}
 	attachCtx := tools.WithEffectiveAgentConfig(tools.WithInvokingAgent(ctx, agentID), agentID)
 	prepared, err := r.preparer.PrepareConnection(attachCtx, AttachRequest{Identity: q.Identity, AgentID: agentID, Name: pair.Connection.Name,
-		Transport: agentcfg.MCPTransportHTTP, URL: pair.Connection.URL, OAuthProvider: pair.ProviderName,
-		OAuthProviderOverride: provider.Binding(), OwnOAuthProvider: true,
+		Transport: agentcfg.MCPTransportHTTP, URL: pair.Connection.URL,
+		OAuthProvider:         signedCapabilityOAuthProvider(pair.ProviderName, pair.Connection.Injection),
+		OAuthProviderOverride: provider.Binding(), OwnOAuthProvider: true, Injection: pair.Connection.Injection.Clone(),
 		ToolAllowlist: pair.Connection.ToolAllowlist, ToolDenylist: pair.Connection.ToolDenylist,
 		ConnectTimeoutMS: pair.Connection.ConnectTimeoutMS, RequestTimeoutMS: pair.Connection.RequestTimeoutMS,
 		ArtifactByteEligible: pair.Connection.ArtifactByteEligible, ArtifactParams: cloneArtifactParams(pair.Connection.ArtifactParams),

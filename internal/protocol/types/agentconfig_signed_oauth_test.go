@@ -13,7 +13,7 @@ func TestRegisterOAuthMCPCapabilityWire_FieldSetsAreClosed(t *testing.T) {
 	})
 	assertExactJSONFields(t, reflect.TypeOf(SignedOAuthMCPConnectionDescriptor{}), []string{
 		"name", "url", "tool_allowlist", "tool_denylist", "connect_timeout_ms", "request_timeout_ms",
-		"artifact_byte_eligible", "artifact_params",
+		"injection", "artifact_byte_eligible", "artifact_params",
 	})
 }
 
@@ -21,7 +21,7 @@ func TestRegisterOAuthMCPCapabilityWire_HasNoCredentialOrSinkConfigurationField(
 	forbidden := map[string]struct{}{
 		"token_url": {}, "credential_url": {}, "auth_token_env": {}, "env": {}, "secret": {},
 		"allowed_downstream_hosts": {}, "downstream_hosts": {}, "hosts": {}, "headers": {},
-		"command": {}, "credential_source": {}, "oauth_provider": {}, "injection": {},
+		"command": {}, "credential_source": {}, "oauth_provider": {},
 		"oauth_discovery_allowed_origins": {}, "meta_annotations": {},
 	}
 	for _, rt := range []reflect.Type{

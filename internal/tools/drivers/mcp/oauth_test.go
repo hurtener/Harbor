@@ -83,6 +83,21 @@ func TestProvider_CloseRetriesPairOwnedOAuthUntilPositiveReceipt(t *testing.T) {
 	}
 }
 
+func TestProvider_CloseRetriesPairOwnedInjectionProviderUntilPositiveReceipt(t *testing.T) {
+	closeFault := errors.New("injected private injection provider close fault")
+	owned := &stubOAuthProvider{closeErrs: []error{closeFault, nil}}
+	provider := &Provider{cfg: Config{OwnedInjectionProvider: owned}}
+	if err := provider.Close(context.Background()); !errors.Is(err, closeFault) {
+		t.Fatalf("first Close = %v, want private injection provider fault", err)
+	}
+	if err := provider.Close(context.Background()); err != nil {
+		t.Fatalf("retry Close: %v", err)
+	}
+	if owned.closeCalls != 2 {
+		t.Fatalf("private injection provider Close calls = %d, want a genuine retry", owned.closeCalls)
+	}
+}
+
 func testIdentityCtx(t *testing.T, id identity.Identity) context.Context {
 	t.Helper()
 	ctx, err := identity.With(context.Background(), id)

@@ -197,7 +197,15 @@ func sameSignedOAuthMCPConnection(left, right SignedOAuthMCPConnectionDescriptor
 	return leftAllowErr == nil && rightAllowErr == nil && leftDenyErr == nil && rightDenyErr == nil && leftParamsErr == nil && rightParamsErr == nil &&
 		left.Name == right.Name && left.URL == right.URL && left.ConnectTimeoutMS == right.ConnectTimeoutMS &&
 		left.RequestTimeoutMS == right.RequestTimeoutMS && left.ArtifactByteEligible == right.ArtifactByteEligible &&
-		sameStrings(leftAllow, rightAllow) && sameStrings(leftDeny, rightDeny) && sameArtifactParams(leftParams, rightParams)
+		sameStrings(leftAllow, rightAllow) && sameStrings(leftDeny, rightDeny) && sameInjection(left.Injection, right.Injection) && sameArtifactParams(leftParams, rightParams)
+}
+
+func sameInjection(left, right *MCPCredentialInjectionDescriptor) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return left.Provider == right.Provider && left.Form == right.Form && left.Header == right.Header &&
+		left.BasicUsername == right.BasicUsername && left.MetaKey == right.MetaKey
 }
 
 func sameArtifactParams(left, right map[string][]string) bool {
@@ -257,6 +265,12 @@ func SignedOAuthMCPPairFingerprint(binding SignedOAuthMCPBinding) string {
 	parts = append(parts, allow...)
 	parts = append(parts, "tool_denylist", fmt.Sprintf("%d", len(deny)))
 	parts = append(parts, deny...)
+	// Preserve every pre-v1.26.9 fingerprint byte-for-byte. Receiver injection
+	// contributes only when present, while a signed mapping binds every field so
+	// a replay cannot redirect a per-user credential to another provider/form/key.
+	if injection := binding.Connection.Injection; injection != nil {
+		parts = append(parts, "injection", injection.Provider, injection.Form, injection.Header, injection.BasicUsername, injection.MetaKey)
+	}
 	// Preserve the pre-extension fingerprint byte-for-byte for every existing
 	// signed pair. The additive policy contributes bytes only when declared;
 	// an omitted false/nil extension must survive an upgrade and restart under

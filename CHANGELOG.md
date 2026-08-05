@@ -17,6 +17,20 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.26.9] — 2026-08-04
+
+### Added
+
+- Signed MCP capability registration now supports receiver-style, per-user API
+  key injection without enabling the development-only `allow_wire_injection`
+  gate. The signed connection binds the complete non-secret injection mapping;
+  its provider must equal the pair's private provider, its downstream host is
+  still derived from the canonical connection URL and checked against the
+  boot-declared broker ceiling, and header/meta targets must remain covered by
+  the shared credential redactor. The provider pulls the acting user's
+  credential per call, is never published into the shared provider set, and is
+  closed with the connection across removal, replay, and restart reconciliation.
+
 ## [1.26.8] — 2026-08-04
 
 ### Fixed
@@ -4366,7 +4380,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.8...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.9...HEAD
+[1.26.9]: https://github.com/hurtener/Harbor/compare/v1.26.8...v1.26.9
 [1.26.8]: https://github.com/hurtener/Harbor/compare/v1.26.7...v1.26.8
 [1.26.7]: https://github.com/hurtener/Harbor/compare/v1.26.6...v1.26.7
 [1.26.6]: https://github.com/hurtener/Harbor/compare/v1.26.5...v1.26.6
