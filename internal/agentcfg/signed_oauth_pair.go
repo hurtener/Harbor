@@ -11,6 +11,7 @@ func cloneSignedOAuthMCPPair(in *SignedOAuthMCPPair) *SignedOAuthMCPPair {
 	out.Scopes = sortDedup(in.Scopes)
 	out.Connection.ToolAllowlist = sortDedup(in.Connection.ToolAllowlist)
 	out.Connection.ToolDenylist = sortDedup(in.Connection.ToolDenylist)
+	out.Connection.Injection = in.Connection.Injection.Clone()
 	out.Connection.ArtifactParams = cloneSignedOAuthArtifactParams(in.Connection.ArtifactParams)
 	return &out
 }
