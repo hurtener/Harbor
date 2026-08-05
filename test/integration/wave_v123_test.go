@@ -82,6 +82,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/runtime/dispatch"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -105,6 +106,7 @@ const (
 
 	v123ServerA = "v123-srv-a"
 	v123ServerB = "v123-srv-b"
+	v123Agent   = "agent-v123"
 
 	// v123FetchDefault / v123FetchHard are the OPERATOR bounds this stack
 	// configures. They are deliberately tiny so the ceiling is reachable
@@ -266,7 +268,7 @@ func newV123Stack(t *testing.T) *v123Stack {
 			Transport:    "streamable-http",
 			URLOrCommand: "https://" + reg.name + ".example.com/rpc",
 			InitialState: mcpdrv.ServerStateOnline,
-			Owner:        toolauth.Owner{Tenant: reg.tenant, Agent: "agent-v123"},
+			Owner:        toolauth.Owner{Tenant: reg.tenant, Agent: v123Agent},
 		}); rerr != nil {
 			t.Fatalf("register %s: %v", reg.name, rerr)
 		}
@@ -276,10 +278,11 @@ func newV123Stack(t *testing.T) *v123Stack {
 		t.Fatalf("mcpconsole.NewRegistryAccessor: %v", err)
 	}
 	mcpSurface, err := protocol.NewMCPSurface(protocol.MCPDeps{
-		MCP:      accessor,
-		OAuth:    p211NoopOAuth{},
-		Redactor: red,
-		Bus:      bus,
+		MCP:           accessor,
+		OAuth:         p211NoopOAuth{},
+		Redactor:      red,
+		Bus:           bus,
+		AgentResolver: serve.NewAgentResolverAdapter(nil, v123Agent),
 	})
 	if err != nil {
 		t.Fatalf("protocol.NewMCPSurface: %v", err)

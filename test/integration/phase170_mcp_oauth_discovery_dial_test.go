@@ -48,6 +48,7 @@ import (
 	protoauth "github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 	mcp "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
@@ -82,10 +83,11 @@ func newProdDiscoverySurface(t *testing.T, reg *mcp.Registry, resolver *net.Reso
 		t.Fatalf("registry accessor: %v", err)
 	}
 	surface, err := protocol.NewMCPSurface(protocol.MCPDeps{
-		MCP:      acc,
-		OAuth:    mcpconsole.NewNoOAuthAccessor(),
-		Redactor: auditpatterns.New(),
-		Bus:      bus,
+		MCP:           acc,
+		OAuth:         mcpconsole.NewNoOAuthAccessor(),
+		Redactor:      auditpatterns.New(),
+		Bus:           bus,
+		AgentResolver: serve.NewAgentResolverAdapter(nil, "agent-mcp-oauth-discovery"),
 	})
 	if err != nil {
 		t.Fatalf("NewMCPSurface: %v", err)
