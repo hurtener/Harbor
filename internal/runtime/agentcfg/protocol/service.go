@@ -1002,17 +1002,18 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	// Signed pair state is server-owned. An omitted value is carried forward by
 	// the registry. A supplied read-only projection must equal the active pair;
 	// it is never trusted as an authoring input.
-	if req.Payload.SignedOAuthMCPPair != nil {
+	if req.Payload.SignedOAuthMCPPair != nil || req.Payload.SignedOAuthMCPPairs != nil {
 		active, set, activeErr := s.registry.Active(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent)
 		if activeErr != nil {
 			return prototypes.AgentConfigSetRevisionResponse{}, activeErr
 		}
-		var current *prototypes.AgentConfigSignedOAuthMCPPair
+		var current prototypes.AgentConfigPayload
 		if set {
-			current = revisionToWire(active).Payload.SignedOAuthMCPPair
+			current = revisionToWire(active).Payload
 		}
-		if current == nil || !reflect.DeepEqual(current, req.Payload.SignedOAuthMCPPair) {
-			return prototypes.AgentConfigSetRevisionResponse{}, fmt.Errorf("%w: signed_oauth_mcp_pair differs from active immutable state", ErrSignedCapabilityPairReadOnly)
+		if (req.Payload.SignedOAuthMCPPair != nil && !reflect.DeepEqual(current.SignedOAuthMCPPair, req.Payload.SignedOAuthMCPPair)) ||
+			(req.Payload.SignedOAuthMCPPairs != nil && !reflect.DeepEqual(current.SignedOAuthMCPPairs, req.Payload.SignedOAuthMCPPairs)) {
+			return prototypes.AgentConfigSetRevisionResponse{}, fmt.Errorf("%w: signed OAuth MCP pair state differs from active immutable state", ErrSignedCapabilityPairReadOnly)
 		}
 	}
 	// A full-payload set that pins per-agent LLM params is validated at set
@@ -1329,25 +1330,13 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 		}
 	}
 	if pair, ok := p.SignedOAuthMCPPairView(); ok {
-		out.SignedOAuthMCPPair = &prototypes.AgentConfigSignedOAuthMCPPair{
-			ProviderName:       pair.ProviderName,
-			Broker:             pair.Broker,
-			Audience:           pair.Audience,
-			Scopes:             append([]string(nil), pair.Scopes...),
-			CapabilityRevision: pair.CapabilityRevision,
-			URLDigest:          pair.URLDigest,
-			Sink:               pair.Sink,
-			Connection: prototypes.SignedOAuthMCPConnectionDescriptor{
-				Name: pair.Connection.Name, URL: pair.Connection.URL,
-				ToolAllowlist:    append([]string(nil), pair.Connection.ToolAllowlist...),
-				ToolDenylist:     append([]string(nil), pair.Connection.ToolDenylist...),
-				ConnectTimeoutMS: pair.Connection.ConnectTimeoutMS, RequestTimeoutMS: pair.Connection.RequestTimeoutMS,
-				Injection:            injectionDescriptorToWire(pair.Connection.Injection),
-				ArtifactByteEligible: pair.Connection.ArtifactByteEligible,
-				ArtifactParams:       cloneArtifactParams(pair.Connection.ArtifactParams),
-			},
-			AuthorityIssuer: pair.AuthorityIssuer, AuthorityKeyID: pair.AuthorityKeyID,
-			AuthorityJTIHash: pair.AuthorityJTIHash,
+		wire := signedOAuthMCPPairToWire(pair)
+		out.SignedOAuthMCPPair = &wire
+	}
+	if pairs := p.SignedOAuthMCPPairsView(); pairs != nil {
+		out.SignedOAuthMCPPairs = make(map[string]prototypes.AgentConfigSignedOAuthMCPPair, len(*pairs))
+		for provider, pair := range *pairs {
+			out.SignedOAuthMCPPairs[provider] = signedOAuthMCPPairToWire(&pair)
 		}
 	}
 	if p.LLMParams != nil {
@@ -1389,6 +1378,22 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 		}
 	}
 	return out
+}
+
+func signedOAuthMCPPairToWire(pair *agentcfg.SignedOAuthMCPPair) prototypes.AgentConfigSignedOAuthMCPPair {
+	return prototypes.AgentConfigSignedOAuthMCPPair{
+		ProviderName: pair.ProviderName, Broker: pair.Broker, Audience: pair.Audience,
+		Scopes: append([]string(nil), pair.Scopes...), CapabilityRevision: pair.CapabilityRevision,
+		URLDigest: pair.URLDigest, Sink: pair.Sink,
+		Connection: prototypes.SignedOAuthMCPConnectionDescriptor{
+			Name: pair.Connection.Name, URL: pair.Connection.URL,
+			ToolAllowlist: append([]string(nil), pair.Connection.ToolAllowlist...), ToolDenylist: append([]string(nil), pair.Connection.ToolDenylist...),
+			ConnectTimeoutMS: pair.Connection.ConnectTimeoutMS, RequestTimeoutMS: pair.Connection.RequestTimeoutMS,
+			Injection: injectionDescriptorToWire(pair.Connection.Injection), ArtifactByteEligible: pair.Connection.ArtifactByteEligible,
+			ArtifactParams: cloneArtifactParams(pair.Connection.ArtifactParams),
+		},
+		AuthorityIssuer: pair.AuthorityIssuer, AuthorityKeyID: pair.AuthorityKeyID, AuthorityJTIHash: pair.AuthorityJTIHash,
+	}
 }
 
 // loadingChangesToWire projects domain LoadingModeChange entries onto the

@@ -392,6 +392,7 @@ Declared in `internal/protocol/types`.
 | `connections` | `*types.AgentConfigConnections` — see [`AgentConfigConnections`](./types.md#agentconfigconnections) | optional (`omitempty`) |
 | `oauth_providers` | `*types.AgentConfigOAuthProviders` — see [`AgentConfigOAuthProviders`](./types.md#agentconfigoauthproviders) | optional (`omitempty`) |
 | `signed_oauth_mcp_pair` | `*types.AgentConfigSignedOAuthMCPPair` — see [`AgentConfigSignedOAuthMCPPair`](./types.md#agentconfigsignedoauthmcppair) | optional (`omitempty`) |
+| `signed_oauth_mcp_pairs` | `map[string]types.AgentConfigSignedOAuthMCPPair` — see [`AgentConfigSignedOAuthMCPPair`](./types.md#agentconfigsignedoauthmcppair) | optional (`omitempty`) |
 | `llm_params` | `*types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) | optional (`omitempty`) |
 | `hooks` | `*types.AgentConfigHooks` — see [`AgentConfigHooks`](./types.md#agentconfighooks) | optional (`omitempty`) |
 | `naming` | `*types.AgentConfigNaming` — see [`AgentConfigNaming`](./types.md#agentconfignaming) | optional (`omitempty`) |
@@ -475,6 +476,7 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
+| `provider_name` | `string` | optional (`omitempty`) |
 | `expected_content_hash` | `string` |  |
 
 ## AgentConfigRemoveOAuthMCPCapabilityResponse

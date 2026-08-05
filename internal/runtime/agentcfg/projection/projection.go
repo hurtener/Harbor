@@ -284,8 +284,14 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 			declared[d.Name] = d
 			keep[d.Name] = struct{}{}
 		}
-		if pair, set := rev.Payload.SignedOAuthMCPPairView(); set && pair.Connection.Name != "" {
-			keep[pair.Connection.Name] = struct{}{}
+		pairs, pairErr := rev.Payload.EffectiveSignedOAuthMCPPairs()
+		if pairErr != nil {
+			return 0, 0, fmt.Errorf("%w: agent %q signed capability state: %v", ErrReconcileRead, agentID, pairErr)
+		}
+		for _, pair := range pairs {
+			if pair.Connection.Name != "" {
+				keep[pair.Connection.Name] = struct{}{}
+			}
 		}
 	}
 	// The owner-scoped reconcile view: the (tenant, agent) owner whose

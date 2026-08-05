@@ -269,6 +269,9 @@ func TestSignedOAuthMCPPair_GenericWritesCarryForwardAndRollbackCannotMutate(t *
 	if _, err := reg.SetRevision(ctx, q, condAgent, agentcfg.ConfigScopeAgent, altered, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
 		t.Fatalf("generic pair alteration = %v, want replay refusal", err)
 	}
+	if _, err := reg.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), q, condAgent, agentcfg.ConfigScopeAgent, altered, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
+		t.Fatalf("operation-fenced pair mutation = %v, want replay refusal", err)
+	}
 	if _, err := reg.Rollback(ctx, q, condAgent, prior.RevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
 		t.Fatalf("generic rollback removed pair: %v", err)
 	}

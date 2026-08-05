@@ -112,8 +112,12 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 		if kindErr != nil {
 			return kindErr
 		}
-		if hasActive && signedCapabilityPairMatchesOperation(active.Payload.SignedOAuthMCPPair, q.TenantID, op.Binding, kind) {
-			if err := r.reconcilePair(ctx, ownerQ, agentID, active, active.Payload.SignedOAuthMCPPair); err != nil {
+		activePair, activePairSet, pairErr := active.Payload.SignedOAuthMCPPairByProvider(op.Binding.ProviderName)
+		if pairErr != nil {
+			return pairErr
+		}
+		if hasActive && signedCapabilityPairMatchesOperation(activePair, q.TenantID, op.Binding, kind) {
+			if err := r.reconcilePair(ctx, ownerQ, agentID, active, activePair); err != nil {
 				return err
 			}
 			continue
@@ -150,7 +154,7 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 			// A published historical receipt is never authority to reattach. If
 			// the current physical desired state has no pair, the paired removal
 			// revision landed before its receipt checkpoint; continue teardown.
-			if hasActive && active.Payload.SignedOAuthMCPPair == nil {
+			if hasActive && !activePairSet {
 				op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalAdmitted, active.RevisionID)
 				if err != nil {
 					return err
@@ -164,7 +168,7 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 				}
 			}
 		case agentcfg.SignedOAuthMCPPhaseRemovalAdmitted, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, agentcfg.SignedOAuthMCPPhaseCatalogUnpublished, agentcfg.SignedOAuthMCPPhaseTeardownReceipted:
-			if hasActive && active.Payload.SignedOAuthMCPPair != nil {
+			if hasActive && activePairSet {
 				return fmt.Errorf("%w: stale removal cannot detach the active pair", agentcfg.ErrSignedCapabilityReplay)
 			}
 			if op.Phase == agentcfg.SignedOAuthMCPPhaseRemovalAdmitted {
@@ -240,7 +244,7 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 			return err
 		}
 		revision, err = requirePhysicalActiveRevision(ctx, r.physical, q, agentID, revision.RevisionID, revision.ContentHash)
-		if err != nil || !signedCapabilityPairMatches(revision.Payload.SignedOAuthMCPPair, q.TenantID, op.Binding) {
+		if err != nil || !signedCapabilityPayloadMatches(revision.Payload, q.TenantID, op.Binding) {
 			return fmt.Errorf("%w: recovery candidate is not the physical active pair", agentcfg.ErrSignedCapabilityPending)
 		}
 		if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed {
@@ -329,11 +333,11 @@ func signedCapabilityOperationExpired(op agentcfg.SignedOAuthMCPOperation) bool 
 }
 
 func (r *SignedOAuthMCPReconciler) validPendingFence(ctx context.Context, tenant, agentID string, op agentcfg.SignedOAuthMCPOperation, revision agentcfg.Revision) (agentcfg.SignedOAuthMCPActivationFence, error) {
-	fence, err := r.fences.Load(ctx, tenant, agentID)
+	kind, err := r.operations.Kind(op.ReplayKey)
 	if err != nil {
 		return agentcfg.SignedOAuthMCPActivationFence{}, err
 	}
-	kind, err := r.operations.Kind(op.ReplayKey)
+	fence, err := r.fences.LoadForOperation(ctx, tenant, agentID, kind)
 	if err != nil {
 		return agentcfg.SignedOAuthMCPActivationFence{}, err
 	}
@@ -344,11 +348,11 @@ func (r *SignedOAuthMCPReconciler) validPendingFence(ctx context.Context, tenant
 }
 
 func (r *SignedOAuthMCPReconciler) commitFence(ctx context.Context, tenant, agentID string, op agentcfg.SignedOAuthMCPOperation, revision agentcfg.Revision) error {
-	fence, err := r.fences.Load(ctx, tenant, agentID)
+	kind, err := r.operations.Kind(op.ReplayKey)
 	if err != nil {
 		return err
 	}
-	kind, err := r.operations.Kind(op.ReplayKey)
+	fence, err := r.fences.LoadForOperation(ctx, tenant, agentID, kind)
 	if err != nil {
 		return err
 	}
@@ -362,8 +366,8 @@ func (r *SignedOAuthMCPReconciler) commitFence(ctx context.Context, tenant, agen
 		candidate, getErr := r.registry.Get(ctx, q, agentID, op.RevisionID, agentcfg.ConfigScopeAgent)
 		physicalRevision, physicalErr := requirePhysicalActiveRevision(ctx, r.physical, q, agentID, revision.RevisionID, revision.ContentHash)
 		if getErr == nil && physicalErr == nil && fence.CandidateRevisionID == op.RevisionID && candidate.ContentHash == fence.CandidateContentHash &&
-			signedCapabilityPairMatchesOperation(candidate.Payload.SignedOAuthMCPPair, tenant, op.Binding, kind) &&
-			signedCapabilityPairMatchesOperation(physicalRevision.Payload.SignedOAuthMCPPair, tenant, op.Binding, kind) {
+			signedCapabilityPayloadMatchesOperation(candidate.Payload, tenant, op.Binding, kind) &&
+			signedCapabilityPayloadMatchesOperation(physicalRevision.Payload, tenant, op.Binding, kind) {
 			return nil
 		}
 		return errors.Join(fmt.Errorf("%w: committed fence or active revision does not bind published pair", agentcfg.ErrSignedCapabilityPending), getErr, physicalErr)
@@ -372,7 +376,7 @@ func (r *SignedOAuthMCPReconciler) commitFence(ctx context.Context, tenant, agen
 		return fmt.Errorf("%w: aborted fence", agentcfg.ErrSignedCapabilityPending)
 	}
 	physicalRevision, err := requirePhysicalActiveRevision(ctx, r.physical, q, agentID, revision.RevisionID, revision.ContentHash)
-	if err != nil || !signedCapabilityPairMatchesOperation(physicalRevision.Payload.SignedOAuthMCPPair, tenant, op.Binding, kind) {
+	if err != nil || !signedCapabilityPayloadMatchesOperation(physicalRevision.Payload, tenant, op.Binding, kind) {
 		return fmt.Errorf("%w: published recovery candidate is not physically active", agentcfg.ErrSignedCapabilityPending)
 	}
 	_, err = r.fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceCommitted, revision.RevisionID)
@@ -466,7 +470,7 @@ func revalidateSignedAttachmentAuthority(ctx context.Context, registry agentcfg.
 	if err != nil {
 		return err
 	}
-	if !signedCapabilityPairMatchesOperation(physical.Payload.SignedOAuthMCPPair, q.TenantID, expected.Binding, kind) ||
+	if !signedCapabilityPayloadMatchesOperation(physical.Payload, q.TenantID, expected.Binding, kind) ||
 		!signedCapabilityPairMatchesOperation(pair, q.TenantID, expected.Binding, kind) {
 		return fmt.Errorf("%w: attachment candidate no longer binds the exact pair lifetime", agentcfg.ErrSignedCapabilityPending)
 	}
@@ -483,7 +487,7 @@ func revalidateSignedAttachmentAuthority(ctx context.Context, registry agentcfg.
 	} else if expected.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted {
 		return fmt.Errorf("%w: operation phase %q cannot publish an attachment", agentcfg.ErrSignedCapabilityPending, expected.Phase)
 	}
-	fence, err := fences.Load(ctx, q.TenantID, agentID)
+	fence, err := fences.LoadForOperation(ctx, q.TenantID, agentID, kind)
 	if err != nil {
 		return err
 	}
@@ -506,7 +510,7 @@ func revalidateSignedAttachmentAuthority(ctx context.Context, registry agentcfg.
 			return errors.Join(fmt.Errorf("%w: committed attachment candidate is unavailable", agentcfg.ErrSignedCapabilityPending), candidateErr)
 		}
 		candidateContentMismatch = candidate.ContentHash != fence.CandidateContentHash ||
-			!signedCapabilityPairMatchesOperation(candidate.Payload.SignedOAuthMCPPair, q.TenantID, expected.Binding, kind)
+			!signedCapabilityPayloadMatchesOperation(candidate.Payload, q.TenantID, expected.Binding, kind)
 	}
 	if fence.Phase != wantFencePhase || fence.OperationKind != kind || fence.Fingerprint != expected.Fingerprint || candidateContentMismatch || candidateRevisionMismatch {
 		return fmt.Errorf("%w: attachment fence no longer binds the exact pair lifetime", agentcfg.ErrSignedCapabilityPending)
@@ -533,7 +537,10 @@ func (r *SignedOAuthMCPReconciler) resumeAdmittedActiveRemoval(ctx context.Conte
 		}
 	}()
 	payload := carrySiblingsForward(revision, true)
-	payload.SignedOAuthMCPPair = nil
+	payload, removed, err := payload.RemoveSignedOAuthMCPPair(pair.ProviderName)
+	if err != nil || !removed {
+		return errors.Join(fmt.Errorf("%w: active removal pair is absent", agentcfg.ErrSignedCapabilityReplay), err)
+	}
 	candidateHash, err := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
 	if err != nil {
 		return err
@@ -546,8 +553,9 @@ func (r *SignedOAuthMCPReconciler) resumeAdmittedActiveRemoval(ctx context.Conte
 	removalRevision, err := r.registry.SetRevision(removalCtx, q, agentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{ExpectedContentHash: revision.ContentHash})
 	if err != nil {
 		current, set, readErr := r.registry.Active(context.WithoutCancel(ctx), q, agentID, agentcfg.ConfigScopeAgent)
-		if readErr != nil || !set || current.Payload.SignedOAuthMCPPair != nil || current.ContentHash != candidateHash {
-			return errors.Join(err, readErr)
+		_, currentPairSet, currentPairErr := current.Payload.SignedOAuthMCPPairByProvider(pair.ProviderName)
+		if readErr != nil || !set || currentPairErr != nil || currentPairSet || current.ContentHash != candidateHash {
+			return errors.Join(err, readErr, currentPairErr)
 		}
 		removalRevision = current
 	}
@@ -601,8 +609,8 @@ func (r *SignedOAuthMCPReconciler) expireIncomplete(ctx context.Context, q ident
 	}
 	candidateRevisionID := ""
 	if hasRevision {
-		pair := revision.Payload.SignedOAuthMCPPair
-		if pair == nil || pair.AuthorityOperationKind == "" {
+		pair, set, pairErr := revision.Payload.SignedOAuthMCPPairByProvider(op.Binding.ProviderName)
+		if pairErr != nil || !set || pair.AuthorityOperationKind == "" {
 			return fmt.Errorf("%w: expiring revision has no signed pair", agentcfg.ErrSignedCapabilityReplay)
 		}
 		loaded, err := r.operations.LoadForPair(ctx, q.TenantID, pair)
@@ -636,7 +644,7 @@ func (r *SignedOAuthMCPReconciler) resumeExpiryCompensation(ctx context.Context,
 		return err
 	}
 
-	fence, fenceErr := r.fences.Load(ctx, q.TenantID, agentID)
+	fence, fenceErr := r.fences.LoadForOperation(ctx, q.TenantID, agentID, kind)
 	if fenceErr != nil && !errors.Is(fenceErr, state.ErrNotFound) {
 		return fenceErr
 	}
@@ -650,7 +658,7 @@ func (r *SignedOAuthMCPReconciler) resumeExpiryCompensation(ctx context.Context,
 		if getErr != nil {
 			return getErr
 		}
-		if !signedCapabilityPairMatchesOperation(candidate.Payload.SignedOAuthMCPPair, q.TenantID, op.Binding, kind) {
+		if !signedCapabilityPayloadMatchesOperation(candidate.Payload, q.TenantID, op.Binding, kind) {
 			return fmt.Errorf("%w: expiry candidate does not bind the exact operation", agentcfg.ErrSignedCapabilityReplay)
 		}
 		if !hasOwnFence || fence.CandidateContentHash != candidate.ContentHash ||
@@ -673,7 +681,7 @@ func (r *SignedOAuthMCPReconciler) resumeExpiryCompensation(ctx context.Context,
 		return err
 	}
 	if !hasOwnFence && op.ExpiryCandidateRevisionID == "" {
-		if set && signedCapabilityPairMatchesOperation(physical.Payload.SignedOAuthMCPPair, q.TenantID, op.Binding, kind) {
+		if set && signedCapabilityPayloadMatchesOperation(physical.Payload, q.TenantID, op.Binding, kind) {
 			return fmt.Errorf("%w: matching expiry candidate has no activation fence", agentcfg.ErrSignedCapabilityPending)
 		}
 		_, err = r.operations.CompleteExpiry(ctx, op)
@@ -698,7 +706,7 @@ func (r *SignedOAuthMCPReconciler) resumeExpiryCompensation(ctx context.Context,
 		switch fence.Phase {
 		case agentcfg.SignedOAuthMCPFencePending:
 			if _, err := r.fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceAborted, op.ExpiryCandidateRevisionID); err != nil {
-				latest, loadErr := r.fences.Load(context.WithoutCancel(ctx), q.TenantID, agentID)
+				latest, loadErr := r.fences.LoadForOperation(context.WithoutCancel(ctx), q.TenantID, agentID, kind)
 				if loadErr != nil || latest.Phase != agentcfg.SignedOAuthMCPFenceAborted || latest.OperationKind != kind || latest.Fingerprint != op.Fingerprint || latest.CandidateRevisionID != op.ExpiryCandidateRevisionID {
 					return errors.Join(err, loadErr)
 				}
@@ -742,10 +750,10 @@ func (r *SignedOAuthMCPReconciler) resumePreparationRejection(ctx context.Contex
 	if err != nil {
 		return err
 	}
-	if !signedCapabilityPairMatchesOperation(candidate.Payload.SignedOAuthMCPPair, q.TenantID, op.Binding, kind) {
+	if !signedCapabilityPayloadMatchesOperation(candidate.Payload, q.TenantID, op.Binding, kind) {
 		return fmt.Errorf("%w: rejected preparation candidate does not bind the exact operation", agentcfg.ErrSignedCapabilityReplay)
 	}
-	fence, err := r.fences.Load(ctx, q.TenantID, agentID)
+	fence, err := r.fences.LoadForOperation(ctx, q.TenantID, agentID, kind)
 	if err != nil {
 		return err
 	}

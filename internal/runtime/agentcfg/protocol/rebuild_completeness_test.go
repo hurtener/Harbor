@@ -39,6 +39,15 @@ func rcQuad() identity.Quadruple {
 // HERE, not silently, before any setter is even invoked.
 func rcSeed(t *testing.T) agentcfg.ConfigPayload {
 	t.Helper()
+	pairs := agentcfg.SignedOAuthMCPPairs{
+		"signed-map-provider": {
+			ProviderName: "signed-map-provider", Broker: "seed-broker", Audience: "seed-map-audience", Scopes: []string{"seed.map.scope"},
+			CapabilityRevision: "seed-map-v1", URLDigest: "seed-map-digest", Sink: "https://map.example.invalid:443",
+			Connection:      agentcfg.SignedOAuthMCPConnectionDescriptor{Name: "signed-map-conn", URL: "https://map.example.invalid:443/seed"},
+			AuthorityIssuer: "seed-map-issuer", AuthorityKeyID: "seed-map-kid", AuthorityJTIHash: "seed-map-jti-hash",
+			AuthorityOperationKind: "rebuild-completeness-map-seed",
+		},
+	}
 	seed := agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: strPtr("seed-base"), User: strPtr("seed-user")},
 		ToolExposure: &agentcfg.ToolExposure{
@@ -60,6 +69,7 @@ func rcSeed(t *testing.T) agentcfg.ConfigPayload {
 			Connection:      agentcfg.SignedOAuthMCPConnectionDescriptor{Name: "signed-seed-conn", URL: "https://example.invalid:443/seed"},
 			AuthorityIssuer: "seed-issuer", AuthorityKeyID: "seed-kid", AuthorityJTIHash: "seed-jti-hash",
 		},
+		SignedOAuthMCPPairs: &pairs,
 		LLMParams: &agentcfg.LLMParams{
 			Model:           strPtr("seed-model"),
 			Temperature:     f64(0.42),
@@ -144,6 +154,15 @@ func rcAssertSiblingsSurvive(t *testing.T, verb, owned string, seed, got agentcf
 // so every subtest starts from the identical fully-populated baseline.
 func rcSeedActive(t *testing.T, ctx context.Context, reg agentcfg.Registry, seed agentcfg.ConfigPayload) {
 	t.Helper()
+	if seed.SignedOAuthMCPPairs != nil {
+		mapOnly := seed
+		mapOnly.SignedOAuthMCPPair = nil
+		pair := (*seed.SignedOAuthMCPPairs)["signed-map-provider"]
+		mapCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind)
+		if _, err := reg.SetRevision(mapCtx, rcQuad(), rcAgent, agentcfg.ConfigScopeAgent, mapOnly, agentcfg.SetOptions{}); err != nil {
+			t.Fatalf("seed multi-pair revision: %v", err)
+		}
+	}
 	if seed.SignedOAuthMCPPair != nil {
 		seed.SignedOAuthMCPPair.AuthorityOperationKind = "rebuild-completeness-seed"
 		ctx = agentcfg.WithSignedOAuthMCPFenceOperation(ctx, seed.SignedOAuthMCPPair.AuthorityOperationKind)

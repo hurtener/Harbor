@@ -125,6 +125,7 @@ func (s *Service) RemoveMCPConnection(ctx context.Context, req prototypes.AgentC
 		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		payload.OAuthProviders = active.Payload.OAuthProviders
 		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
+		payload.SignedOAuthMCPPairs = active.Payload.SignedOAuthMCPPairs
 		payload.ToolExposure = pruneExposureResidue(active.Payload.ToolExposure, name, remaining)
 	}
 	if len(remaining) > 0 {

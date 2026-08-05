@@ -508,6 +508,11 @@ type AgentConfigPayload struct {
 	// set_revision request carrying it is rejected; it is present only on
 	// revision reads so clients can faithfully display immutable pair state.
 	SignedOAuthMCPPair *AgentConfigSignedOAuthMCPPair `json:"signed_oauth_mcp_pair,omitempty"`
+	// SignedOAuthMCPPairs is read-only server-owned multi-capability history,
+	// keyed by provider_name. The singular field remains the authoritative
+	// first-pair slot for backward-compatible old and newly authored revisions;
+	// this map carries additional providers.
+	SignedOAuthMCPPairs map[string]AgentConfigSignedOAuthMCPPair `json:"signed_oauth_mcp_pairs,omitempty"`
 	// LLMParams, when non-nil, pins the agent's per-agent LLM-parameter
 	// section (model / temperature / max-tokens / reasoning-effort) for the
 	// revision.
@@ -1355,9 +1360,13 @@ type AgentConfigRegisterOAuthMCPCapabilityResponse struct {
 // named by ExpectedContentHash. The hash is mandatory so a delayed removal can
 // never select a replacement pair.
 type AgentConfigRemoveOAuthMCPCapabilityRequest struct {
-	Identity            IdentityScope `json:"identity"`
-	AgentID             string        `json:"agent_id"`
-	ExpectedContentHash string        `json:"expected_content_hash"`
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// ProviderName selects one pair when the named revision contains more than
+	// one. Omission remains backward-compatible only when that revision's
+	// effective legacy-plus-map state identifies exactly one pair.
+	ProviderName        string `json:"provider_name,omitempty"`
+	ExpectedContentHash string `json:"expected_content_hash"`
 }
 
 // AgentConfigRemoveOAuthMCPCapabilityResponse reports the revision that drops

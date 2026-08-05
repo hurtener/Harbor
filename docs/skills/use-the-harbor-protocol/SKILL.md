@@ -630,6 +630,15 @@ After retirement, all active/current config reads and durable writes, plus every
 
 D-401 signed OAuth MCP pairs are retired through their existing durable paired-removal receipt even when the original authority has expired, been revoked, or can no longer be verified after key rotation. The retirement status may expose a `signed_oauth_mcp_pair` cleanup class whose resource is hashes only; it never exposes the URL, JWT/JTI, credentials, or stored owner subject. A close failure leaves the retirement incomplete and retryable with the same retirement operation.
 
+An agent may carry more than one signed OAuth MCP capability. Revision payloads
+project the first pair in `signed_oauth_mcp_pair` and additional providers in
+the `signed_oauth_mcp_pairs` object keyed by `provider_name`; clients should
+read both as one set. To remove one pair from a multi-pair revision, send that
+provider name with the revision's `expected_content_hash`. Omitting
+`provider_name` works only when the named revision contains exactly one pair.
+Registration, restart recovery, removal, and retirement remain independent per
+pair, so removing one capability does not disconnect its siblings.
+
 Retirement does **not** deregister the Runtime fleet agent. `agents.deregister` remains a separate fleet lifecycle action with separate authorization and audit semantics.
 
 ### 8e. Contributing ONE prompt block without owning the whole prompt — `extra_system_blocks`

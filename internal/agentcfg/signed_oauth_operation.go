@@ -140,12 +140,18 @@ type SignedOAuthMCPActivationFence struct {
 	PriorRevisionID      string                             `json:"prior_revision_id,omitempty"`
 	Phase                SignedOAuthMCPActivationFencePhase `json:"phase"`
 	EventID              state.EventID                      `json:"-"`
+	StateKind            string                             `json:"-"`
 }
 
 // SignedOAuthMCPActivationFenceStore is the durable signed-capability security fence.
 type SignedOAuthMCPActivationFenceStore struct{ state state.StateStore }
 
 const signedOAuthMCPActivationFenceKind = "agentcfg.signed_oauth_mcp.activation_fence"
+
+func signedOAuthMCPPairActivationFenceKind(operationKind string) string {
+	sum := sha256.Sum256([]byte(operationKind))
+	return signedOAuthMCPActivationFenceKind + "." + hex.EncodeToString(sum[:])
+}
 
 // NewSignedOAuthMCPActivationFenceStore constructs the StateStore-backed
 // fence facade.
@@ -159,6 +165,17 @@ func NewSignedOAuthMCPActivationFenceStore(store state.StateStore) (*SignedOAuth
 // Begin creates or resumes exactly the owning pending fence. A different
 // operation or candidate content at the same agent slot fails closed.
 func (s *SignedOAuthMCPActivationFenceStore) Begin(ctx context.Context, tenant, agentID, operationKind, fingerprint, candidateHash, priorRevisionID string) (SignedOAuthMCPActivationFence, error) {
+	return s.begin(ctx, tenant, agentID, operationKind, fingerprint, candidateHash, priorRevisionID, signedOAuthMCPActivationFenceKind)
+}
+
+// BeginForOperation creates a pair-scoped fence. Unlike the legacy agent-wide
+// slot retained for backward compatibility, distinct operation lifetimes can
+// be pending concurrently and still CAS independently.
+func (s *SignedOAuthMCPActivationFenceStore) BeginForOperation(ctx context.Context, tenant, agentID, operationKind, fingerprint, candidateHash, priorRevisionID string) (SignedOAuthMCPActivationFence, error) {
+	return s.begin(ctx, tenant, agentID, operationKind, fingerprint, candidateHash, priorRevisionID, signedOAuthMCPPairActivationFenceKind(operationKind))
+}
+
+func (s *SignedOAuthMCPActivationFenceStore) begin(ctx context.Context, tenant, agentID, operationKind, fingerprint, candidateHash, priorRevisionID, stateKind string) (SignedOAuthMCPActivationFence, error) {
 	if err := ctx.Err(); err != nil {
 		return SignedOAuthMCPActivationFence{}, err
 	}
@@ -166,19 +183,19 @@ func (s *SignedOAuthMCPActivationFenceStore) Begin(ctx context.Context, tenant, 
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: incomplete activation fence", ErrSignedCapabilityAuthority)
 	}
 	quad := signedOAuthMCPActivationFenceQuad(tenant, agentID)
-	fence := SignedOAuthMCPActivationFence{TenantID: tenant, AgentID: agentID, OperationKind: operationKind, Fingerprint: fingerprint, CandidateContentHash: candidateHash, PriorRevisionID: priorRevisionID, Phase: SignedOAuthMCPFencePending, EventID: state.NewEventID()}
+	fence := SignedOAuthMCPActivationFence{TenantID: tenant, AgentID: agentID, OperationKind: operationKind, Fingerprint: fingerprint, CandidateContentHash: candidateHash, PriorRevisionID: priorRevisionID, Phase: SignedOAuthMCPFencePending, EventID: state.NewEventID(), StateKind: stateKind}
 	encoded, err := json.Marshal(fence)
 	if err != nil {
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("marshal signed capability activation fence: %w", err)
 	}
-	err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: signedOAuthMCPActivationFenceKind}}, state.StateRecord{ID: fence.EventID, Identity: quad, Kind: signedOAuthMCPActivationFenceKind, Bytes: encoded})
+	err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: stateKind}}, state.StateRecord{ID: fence.EventID, Identity: quad, Kind: stateKind, Bytes: encoded})
 	if err == nil {
 		return fence, nil
 	}
 	if !errors.Is(err, state.ErrConditionFailed) {
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("claim signed capability activation fence: %w", err)
 	}
-	existing, loadErr := s.Load(ctx, tenant, agentID)
+	existing, loadErr := s.loadKind(ctx, tenant, agentID, stateKind)
 	if loadErr != nil {
 		return SignedOAuthMCPActivationFence{}, loadErr
 	}
@@ -191,14 +208,14 @@ func (s *SignedOAuthMCPActivationFenceStore) Begin(ctx context.Context, tenant, 
 		if existing.Phase == SignedOAuthMCPFencePending {
 			return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: foreign operation owns activation fence", ErrSignedCapabilityPending)
 		}
-		err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: signedOAuthMCPActivationFenceKind, ExpectedEventID: existing.EventID}}, state.StateRecord{ID: fence.EventID, Identity: quad, Kind: signedOAuthMCPActivationFenceKind, Bytes: encoded})
+		err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: stateKind, ExpectedEventID: existing.EventID}}, state.StateRecord{ID: fence.EventID, Identity: quad, Kind: stateKind, Bytes: encoded})
 		if err == nil {
 			return fence, nil
 		}
 		if !errors.Is(err, state.ErrConditionFailed) {
 			return SignedOAuthMCPActivationFence{}, fmt.Errorf("replace signed capability activation fence: %w", err)
 		}
-		latest, latestErr := s.Load(ctx, tenant, agentID)
+		latest, latestErr := s.loadKind(ctx, tenant, agentID, stateKind)
 		if latestErr != nil {
 			return SignedOAuthMCPActivationFence{}, latestErr
 		}
@@ -214,10 +231,31 @@ func (s *SignedOAuthMCPActivationFenceStore) Begin(ctx context.Context, tenant, 
 // wrapped StateStore not-found error so callers cannot accidentally treat a
 // missing receipt as a committed activation.
 func (s *SignedOAuthMCPActivationFenceStore) Load(ctx context.Context, tenant, agentID string) (SignedOAuthMCPActivationFence, error) {
+	return s.loadKind(ctx, tenant, agentID, signedOAuthMCPActivationFenceKind)
+}
+
+// LoadForOperation reads the pair-scoped fence and falls back to the v1.26.9
+// singular slot only when it belongs to the requested operation.
+func (s *SignedOAuthMCPActivationFenceStore) LoadForOperation(ctx context.Context, tenant, agentID, operationKind string) (SignedOAuthMCPActivationFence, error) {
+	fence, err := s.loadKind(ctx, tenant, agentID, signedOAuthMCPPairActivationFenceKind(operationKind))
+	if err == nil {
+		return fence, nil
+	}
+	if !errors.Is(err, state.ErrNotFound) {
+		return SignedOAuthMCPActivationFence{}, err
+	}
+	legacy, legacyErr := s.Load(ctx, tenant, agentID)
+	if legacyErr != nil {
+		return SignedOAuthMCPActivationFence{}, errors.Join(err, legacyErr)
+	}
+	return legacy, nil
+}
+
+func (s *SignedOAuthMCPActivationFenceStore) loadKind(ctx context.Context, tenant, agentID, stateKind string) (SignedOAuthMCPActivationFence, error) {
 	if err := ctx.Err(); err != nil {
 		return SignedOAuthMCPActivationFence{}, err
 	}
-	record, err := s.state.Load(ctx, signedOAuthMCPActivationFenceQuad(tenant, agentID), signedOAuthMCPActivationFenceKind)
+	record, err := s.state.Load(ctx, signedOAuthMCPActivationFenceQuad(tenant, agentID), stateKind)
 	if err != nil {
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("load signed capability activation fence: %w", err)
 	}
@@ -229,6 +267,7 @@ func (s *SignedOAuthMCPActivationFenceStore) Load(ctx context.Context, tenant, a
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: corrupt signed capability activation fence", ErrSignedCapabilityPending)
 	}
 	fence.EventID = record.ID
+	fence.StateKind = stateKind
 	return fence, nil
 }
 
@@ -250,7 +289,12 @@ func (s *SignedOAuthMCPActivationFenceStore) Advance(ctx context.Context, curren
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("marshal signed capability activation fence: %w", err)
 	}
 	quad := signedOAuthMCPActivationFenceQuad(current.TenantID, current.AgentID)
-	err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: signedOAuthMCPActivationFenceKind, ExpectedEventID: current.EventID}}, state.StateRecord{ID: next.EventID, Identity: quad, Kind: signedOAuthMCPActivationFenceKind, Bytes: encoded})
+	stateKind := current.StateKind
+	if stateKind == "" {
+		stateKind = signedOAuthMCPActivationFenceKind
+	}
+	next.StateKind = stateKind
+	err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: stateKind, ExpectedEventID: current.EventID}}, state.StateRecord{ID: next.EventID, Identity: quad, Kind: stateKind, Bytes: encoded})
 	if errors.Is(err, state.ErrConditionFailed) {
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: activation fence changed concurrently", ErrSignedCapabilityPending)
 	}
@@ -290,10 +334,15 @@ func (s *SignedOAuthMCPActivationFenceStore) ReopenForRenewedAuthority(ctx conte
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("marshal renewed signed capability activation fence: %w", err)
 	}
 	quad := signedOAuthMCPActivationFenceQuad(current.TenantID, current.AgentID)
+	stateKind := current.StateKind
+	if stateKind == "" {
+		stateKind = signedOAuthMCPActivationFenceKind
+	}
+	next.StateKind = stateKind
 	err = s.state.SaveIf(ctx, []state.SlotExpectation{
-		{Identity: quad, Kind: signedOAuthMCPActivationFenceKind, ExpectedEventID: current.EventID},
+		{Identity: quad, Kind: stateKind, ExpectedEventID: current.EventID},
 		{Identity: operationQuad, Kind: operationKind, ExpectedEventID: renewed.EventID},
-	}, state.StateRecord{ID: next.EventID, Identity: quad, Kind: signedOAuthMCPActivationFenceKind, Bytes: encoded})
+	}, state.StateRecord{ID: next.EventID, Identity: quad, Kind: stateKind, Bytes: encoded})
 	if errors.Is(err, state.ErrConditionFailed) {
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: activation fence changed concurrently", ErrSignedCapabilityPending)
 	}
@@ -471,7 +520,7 @@ func (s *SignedOAuthMCPOperationStore) ScanTenantPage(ctx context.Context, tenan
 	}
 	out := make([]SignedOAuthMCPOperation, 0, len(page.Records))
 	for _, record := range page.Records {
-		if record.Kind == signedOAuthMCPActivationFenceKind {
+		if strings.HasPrefix(record.Kind, signedOAuthMCPActivationFenceKind) {
 			continue
 		}
 		var op SignedOAuthMCPOperation

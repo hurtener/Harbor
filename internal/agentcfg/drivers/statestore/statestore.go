@@ -358,7 +358,7 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 		return agentcfg.Revision{}, err
 	}
 	if scope == agentcfg.ConfigScopeAgent {
-		payload, err = preserveSignedOAuthMCPPair(ctx, active, hasActive, payload)
+		payload, err = preserveSignedOAuthMCPPairs(ctx, active, hasActive, payload)
 		if err != nil {
 			return agentcfg.Revision{}, err
 		}
@@ -449,36 +449,78 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	return rev, nil
 }
 
-func preserveSignedOAuthMCPPair(ctx context.Context, active agentcfg.Revision, hasActive bool, payload agentcfg.ConfigPayload) (agentcfg.ConfigPayload, error) {
+func preserveSignedOAuthMCPPairs(ctx context.Context, active agentcfg.Revision, hasActive bool, payload agentcfg.ConfigPayload) (agentcfg.ConfigPayload, error) {
 	operation := agentcfg.SignedOAuthMCPFenceOperation(ctx)
-	var current *agentcfg.SignedOAuthMCPPair
+	current := agentcfg.ConfigPayload{}
 	if hasActive {
-		current = active.Payload.SignedOAuthMCPPair
+		current.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
+		current.SignedOAuthMCPPairs = active.Payload.SignedOAuthMCPPairs
 	}
-	requested := payload.SignedOAuthMCPPair
-	switch {
-	case current == nil && requested == nil:
+	requestedOmitted := payload.SignedOAuthMCPPair == nil && payload.SignedOAuthMCPPairs == nil
+	if operation == "" && requestedOmitted {
+		payload.SignedOAuthMCPPair = current.SignedOAuthMCPPair
+		payload.SignedOAuthMCPPairs = current.SignedOAuthMCPPairs
 		return payload, nil
-	case current == nil && requested != nil:
-		if operation == "" || operation != requested.AuthorityOperationKind {
-			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: generic writer cannot add signed capability pair", agentcfg.ErrSignedCapabilityReplay)
-		}
-		return payload, nil
-	case current != nil && requested == nil:
-		if operation == current.AuthorityOperationKind {
-			return payload, nil
-		}
-		payload.SignedOAuthMCPPair = current
-		return payload, nil
-	default:
-		currentNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: current}).SignedOAuthMCPPair
-		requestedNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: requested}).SignedOAuthMCPPair
+	}
+	if err := validateSignedOAuthMCPStateTransition(current, payload, operation); err != nil {
+		return agentcfg.ConfigPayload{}, err
+	}
+	if operation == "" {
+		payload.SignedOAuthMCPPair = current.SignedOAuthMCPPair
+		payload.SignedOAuthMCPPairs = current.SignedOAuthMCPPairs
+	}
+	return payload, nil
+}
+
+func validateSignedOAuthMCPStateTransition(current, requested agentcfg.ConfigPayload, operation string) error {
+	currentNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: current.SignedOAuthMCPPair, SignedOAuthMCPPairs: current.SignedOAuthMCPPairs})
+	requestedNorm := agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: requested.SignedOAuthMCPPair, SignedOAuthMCPPairs: requested.SignedOAuthMCPPairs})
+	currentPairs, err := currentNorm.EffectiveSignedOAuthMCPPairs()
+	if err != nil {
+		return fmt.Errorf("%w: current signed capability state is invalid: %v", agentcfg.ErrSignedCapabilityReplay, err)
+	}
+	requestedPairs, err := requestedNorm.EffectiveSignedOAuthMCPPairs()
+	if err != nil {
+		return fmt.Errorf("%w: requested signed capability state is invalid: %v", agentcfg.ErrSignedCapabilityReplay, err)
+	}
+	if operation == "" {
 		if !reflect.DeepEqual(currentNorm, requestedNorm) {
-			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: generic writer cannot alter signed capability pair", agentcfg.ErrSignedCapabilityReplay)
+			return fmt.Errorf("%w: generic writer cannot alter signed capability pairs", agentcfg.ErrSignedCapabilityReplay)
 		}
-		payload.SignedOAuthMCPPair = current
-		return payload, nil
+		return nil
 	}
+	if reflect.DeepEqual(currentNorm, requestedNorm) {
+		return nil
+	}
+	changed := 0
+	seen := make(map[string]struct{}, len(currentPairs)+len(requestedPairs))
+	for provider, pair := range currentPairs {
+		seen[provider] = struct{}{}
+		requestedPair, ok := requestedPairs[provider]
+		if ok {
+			if !reflect.DeepEqual(pair, requestedPair) {
+				return fmt.Errorf("%w: fenced writer cannot mutate immutable signed capability %q", agentcfg.ErrSignedCapabilityReplay, provider)
+			}
+			continue
+		}
+		if pair.AuthorityOperationKind != operation {
+			return fmt.Errorf("%w: fenced writer would alter foreign signed capability %q", agentcfg.ErrSignedCapabilityReplay, provider)
+		}
+		changed++
+	}
+	for provider, pair := range requestedPairs {
+		if _, ok := seen[provider]; ok {
+			continue
+		}
+		if pair.AuthorityOperationKind != operation {
+			return fmt.Errorf("%w: fenced writer would create foreign signed capability %q", agentcfg.ErrSignedCapabilityReplay, provider)
+		}
+		changed++
+	}
+	if changed != 1 {
+		return fmt.Errorf("%w: fenced writer must change exactly one signed capability pair", agentcfg.ErrSignedCapabilityReplay)
+	}
+	return nil
 }
 
 func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
@@ -700,13 +742,7 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	}
 	if scope == agentcfg.ConfigScopeAgent {
 		operation := agentcfg.SignedOAuthMCPFenceOperation(ctx)
-		currentPair := active.Payload.SignedOAuthMCPPair
-		targetPair := target.Payload.SignedOAuthMCPPair
-		if currentPair != nil && operation == currentPair.AuthorityOperationKind {
-			// Paired removal/expiry compensation may repoint through the exact
-			// frozen operation. No other internal marker authorizes this path.
-		} else if !reflect.DeepEqual(agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: currentPair}).SignedOAuthMCPPair,
-			agentcfg.NormalizePayload(agentcfg.ConfigPayload{SignedOAuthMCPPair: targetPair}).SignedOAuthMCPPair) {
+		if err := validateSignedOAuthMCPStateTransition(active.Payload, target.Payload, operation); err != nil {
 			return agentcfg.Revision{}, fmt.Errorf("%w: rollback would alter immutable signed capability pair", agentcfg.ErrSignedCapabilityReplay)
 		}
 	}

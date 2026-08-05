@@ -2070,9 +2070,13 @@ func signedCapabilityRequestFor(t *testing.T, key *rsa.PrivateKey, now time.Time
 }
 
 func signedCapabilityRequestWithConnection(t *testing.T, key *rsa.PrivateKey, now time.Time, scope prototypes.IdentityScope, agentID, jti, audience string, connection prototypes.SignedOAuthMCPConnectionDescriptor, sink string) prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest {
+	return signedCapabilityRequestNamed(t, key, now, scope, agentID, jti, audience, "provider", connection, sink)
+}
+
+func signedCapabilityRequestNamed(t *testing.T, key *rsa.PrivateKey, now time.Time, scope prototypes.IdentityScope, agentID, jti, audience, providerName string, connection prototypes.SignedOAuthMCPConnectionDescriptor, sink string) prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest {
 	t.Helper()
 	claims := agentcfg.SignedOAuthMCPAuthorityClaims{
-		TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session, AgentID: agentID, Broker: "broker", ProviderName: "provider", CapabilityRevision: "v1",
+		TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session, AgentID: agentID, Broker: "broker", ProviderName: providerName, CapabilityRevision: "v1",
 		URLDigest: agentcfg.OAuthMCPURLDigest(connection.URL), SinkDigest: agentcfg.OAuthMCPURLDigest(sink), Audience: audience, Scopes: []string{"read"},
 		Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{
 			Name: connection.Name, URL: connection.URL, ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist,
@@ -2089,8 +2093,158 @@ func signedCapabilityRequestWithConnection(t *testing.T, key *rsa.PrivateKey, no
 		t.Fatal(err)
 	}
 	return prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest{
-		Identity: scope, AgentID: agentID, ProviderName: "provider", Broker: "broker", Audience: audience, Scopes: []string{"read"},
+		Identity: scope, AgentID: agentID, ProviderName: providerName, Broker: "broker", Audience: audience, Scopes: []string{"read"},
 		Connection: connection, AuthorityEnvelope: raw,
+	}
+}
+
+func TestRegisterOAuthMCPCapability_MultiplePairsCoexistRestartAndTargetedRemoval(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	first, err := svc.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-multi-first", "aud-first"))
+	if err != nil {
+		t.Fatalf("register first: %v", err)
+	}
+	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://bamboo.example.test/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondReq := signedCapabilityRequestNamed(t, key, now, scope(), testAgentID, "jti-multi-second", "aud-second", "bamboo-provider",
+		prototypes.SignedOAuthMCPConnectionDescriptor{Name: "bamboo", URL: canonical}, sink)
+	secondReq.ExpectedContentHash = first.Revision.ContentHash
+	second, err := svc.RegisterOAuthMCPCapability(context.Background(), secondReq)
+	if err != nil {
+		t.Fatalf("register second: %v", err)
+	}
+	if second.Revision.Payload.SignedOAuthMCPPair == nil || second.Revision.Payload.SignedOAuthMCPPair.ProviderName != "provider" ||
+		len(second.Revision.Payload.SignedOAuthMCPPairs) != 1 || second.Revision.Payload.SignedOAuthMCPPairs["bamboo-provider"].Connection.Name != "bamboo" {
+		t.Fatalf("multi-pair projection = %+v", second.Revision.Payload)
+	}
+
+	restartPreparer := &capabilityPreparer{}
+	restarted := signedCapabilityServiceForExisting(t, now, reg, st, restartPreparer, key)
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, restartPreparer, restartPreparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("restart reconcile: %v", err)
+	}
+	restartPreparer.mu.Lock()
+	restartActivations := restartPreparer.activations
+	restartPreparer.mu.Unlock()
+	if restartActivations != 2 {
+		t.Fatalf("restart activations = %d, want both pairs", restartActivations)
+	}
+	if _, err := restarted.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
+		Identity: scope(), AgentID: testAgentID, ExpectedContentHash: second.Revision.ContentHash,
+	}); !errors.Is(err, agentcfg.ErrRevisionConflict) {
+		t.Fatalf("ambiguous removal without provider = %v, want revision conflict", err)
+	}
+
+	removed, err := restarted.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
+		Identity: scope(), AgentID: testAgentID, ProviderName: "bamboo-provider", ExpectedContentHash: second.Revision.ContentHash,
+	})
+	if err != nil {
+		t.Fatalf("remove second: %v", err)
+	}
+	if removed.Revision.Payload.SignedOAuthMCPPair == nil || removed.Revision.Payload.SignedOAuthMCPPair.ProviderName != "provider" ||
+		len(removed.Revision.Payload.SignedOAuthMCPPairs) != 0 {
+		t.Fatalf("targeted removal changed sibling pair: %+v", removed.Revision.Payload)
+	}
+	if _, err := restarted.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
+		Identity: scope(), AgentID: testAgentID, ProviderName: "bamboo-provider", ExpectedContentHash: second.Revision.ContentHash,
+	}); err != nil {
+		t.Fatalf("targeted terminal replay: %v", err)
+	}
+	preparer.mu.Lock()
+	originalLive := len(preparer.live)
+	preparer.mu.Unlock()
+	if originalLive != 2 {
+		// Restart publication is process-local to restartPreparer; the original
+		// runtime remains independently live until its own reconciliation pass.
+		t.Fatalf("original runtime live pairs = %d, want 2 before reconcile", originalLive)
+	}
+}
+
+func TestRemoveOAuthMCPCapability_ConcurrentDifferentPairsCASWithoutLostUpdate(t *testing.T) {
+	now := time.Date(2026, 8, 4, 13, 0, 0, 0, time.UTC)
+	left, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	first, err := left.RegisterOAuthMCPCapability(context.Background(), signedCapabilityRequest(t, key, now, "jti-cas-first", "aud-first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://second.example.test/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondReq := signedCapabilityRequestNamed(t, key, now, scope(), testAgentID, "jti-cas-second", "aud-second", "second-provider",
+		prototypes.SignedOAuthMCPConnectionDescriptor{Name: "second-connection", URL: canonical}, sink)
+	secondReq.ExpectedContentHash = first.Revision.ContentHash
+	second, err := left.RegisterOAuthMCPCapability(context.Background(), secondReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right := signedCapabilityServiceForExisting(t, now, reg, st, preparer, key)
+	type outcome struct {
+		provider string
+		err      error
+	}
+	start := make(chan struct{})
+	results := make(chan outcome, 2)
+	for i, provider := range []string{"provider", "second-provider"} {
+		svc := left
+		if i == 1 {
+			svc = right
+		}
+		go func(service *agentcfgprotocol.Service, name string) {
+			<-start
+			_, removeErr := service.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
+				Identity: scope(), AgentID: testAgentID, ProviderName: name, ExpectedContentHash: second.Revision.ContentHash,
+			})
+			results <- outcome{provider: name, err: removeErr}
+		}(svc, provider)
+	}
+	close(start)
+	firstOutcome, secondOutcome := <-results, <-results
+	outcomes := []outcome{firstOutcome, secondOutcome}
+	winners := 0
+	loser := ""
+	for _, got := range outcomes {
+		if got.err == nil {
+			winners++
+			continue
+		}
+		if !errors.Is(got.err, agentcfg.ErrRevisionConflict) {
+			t.Fatalf("concurrent removal %q = %v, want CAS conflict", got.provider, got.err)
+		}
+		loser = got.provider
+	}
+	if winners != 1 || loser == "" {
+		t.Fatalf("concurrent outcomes = %+v, want one winner and one loser", outcomes)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set {
+		t.Fatalf("active after race = %+v set=%t err=%v", active, set, err)
+	}
+	pairs, err := active.Payload.EffectiveSignedOAuthMCPPairs()
+	if err != nil || len(pairs) != 1 || pairs[loser] == nil {
+		t.Fatalf("race lost sibling: pairs=%+v loser=%q err=%v", pairs, loser, err)
+	}
+	if _, err := right.RemoveOAuthMCPCapability(context.Background(), prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
+		Identity: scope(), AgentID: testAgentID, ProviderName: loser, ExpectedContentHash: active.ContentHash,
+	}); err != nil {
+		t.Fatalf("retry losing removal on fresh CAS: %v", err)
+	}
+	final, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set {
+		t.Fatalf("final active = %+v set=%t err=%v", final, set, err)
+	}
+	finalPairs, err := final.Payload.EffectiveSignedOAuthMCPPairs()
+	if err != nil || len(finalPairs) != 0 {
+		t.Fatalf("final pairs = %+v err=%v", finalPairs, err)
 	}
 }
 

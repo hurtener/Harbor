@@ -17,6 +17,17 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- An agent can now hold multiple independently signed OAuth MCP capabilities at
+  once. The existing `signed_oauth_mcp_pair` remains the authoritative first
+  pair without rewriting legacy revisions or content hashes; additional pairs
+  are stored and projected in the provider-keyed `signed_oauth_mcp_pairs`
+  object. Registration, replay, publication fences, restart reconciliation,
+  targeted removal, and retirement operate per immutable pair. Removal accepts
+  an optional `provider_name`; omitting it remains compatible only when the
+  named revision contains exactly one pair.
+
 ## [1.26.9] — 2026-08-04
 
 ### Added

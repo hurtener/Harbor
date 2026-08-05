@@ -925,6 +925,11 @@
           "optional": true
         },
         {
+          "key": "signed_oauth_mcp_pairs",
+          "type": "object",
+          "optional": true
+        },
+        {
           "key": "llm_params",
           "type": "object",
           "ref": "AgentConfigLLMParams",
@@ -1116,6 +1121,11 @@
         {
           "key": "agent_id",
           "type": "string"
+        },
+        {
+          "key": "provider_name",
+          "type": "string",
+          "optional": true
         },
         {
           "key": "expected_content_hash",

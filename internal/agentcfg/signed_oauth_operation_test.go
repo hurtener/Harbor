@@ -343,6 +343,44 @@ func TestSignedOAuthMCPActivationFenceStore_TerminalFenceYieldsToNextOperation(t
 	}
 }
 
+func TestSignedOAuthMCPActivationFenceStore_PairScopedOperationsCoexist(t *testing.T) {
+	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	fences, err := NewSignedOAuthMCPActivationFenceStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := fences.BeginForOperation(context.Background(), "tenant", "agent", "operation-left", "fingerprint-left", "candidate-left", "prior")
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := fences.BeginForOperation(context.Background(), "tenant", "agent", "operation-right", "fingerprint-right", "candidate-right", "prior")
+	if err != nil {
+		t.Fatalf("independent pair fence: %v", err)
+	}
+	if left.StateKind == right.StateKind || left.EventID == right.EventID {
+		t.Fatalf("pair fences share durable slot: left=%+v right=%+v", left, right)
+	}
+	if _, err := fences.Advance(context.Background(), left, SignedOAuthMCPFenceCommitted, "revision-left"); err != nil {
+		t.Fatal(err)
+	}
+	stillPending, err := fences.LoadForOperation(context.Background(), "tenant", "agent", "operation-right")
+	if err != nil || stillPending.Phase != SignedOAuthMCPFencePending || stillPending.EventID != right.EventID {
+		t.Fatalf("right fence changed with left: %+v err=%v", stillPending, err)
+	}
+	ops, err := NewSignedOAuthMCPOperationStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, _, err := ops.ScanTenantPage(context.Background(), "tenant", 10, "")
+	if err != nil || len(page) != 0 {
+		t.Fatalf("pair fences leaked into operation scan: %+v err=%v", page, err)
+	}
+}
+
 func TestSignedOAuthMCPRetirementResource_HashOnlyRejectsTamperAndForeignBinding(t *testing.T) {
 	binding := SignedOAuthMCPBinding{
 		TenantID: "tenant-a", UserID: "private-user", SessionID: "private-session", AgentID: "agent",
