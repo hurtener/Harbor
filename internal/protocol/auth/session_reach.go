@@ -96,14 +96,17 @@ func (*SessionReachGate) AuthorizeSessionReach(ctx context.Context, effectiveSes
 	return ErrSessionReachDenied
 }
 
-// ParseSessionReach parses the optional signed claim. Absence is
-// preserved as a nil reach (so the dynamic per-request session
-// selection remains unchanged); any present value must be a unique,
-// nonblank, bounded JSON string array. An explicitly empty array is
-// valid and grants no session.
+// ParseSessionReach parses a PRESENT signed session_reach claim value.
+// Absence is a map-key property decided by the caller before this is
+// reached: an absent key yields a nil reach and preserves the dynamic
+// per-request session selection unchanged. Any value routed here must
+// be a unique, nonblank, bounded JSON string array; a JSON null or any
+// non-array shape is malformed — a signed null is a PRESENT claim that
+// must fail closed, never be mistaken for absence. An explicitly empty
+// array is valid and grants no session.
 func ParseSessionReach(raw any) ([]string, error) {
 	if raw == nil {
-		return nil, nil
+		return nil, fmt.Errorf("%w: claim present but null - a strict string array is required", ErrSessionReachMalformed)
 	}
 	values, ok := raw.([]any)
 	if !ok {

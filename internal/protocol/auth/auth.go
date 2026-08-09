@@ -495,10 +495,22 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		v.audit(ctx, kidSeen, iss, sub, ErrAgentReachMalformed)
 		return Verified{}, reachErr
 	}
-	sessionReach, sessionReachErr := ParseSessionReach(claims[SessionReachClaim])
-	if sessionReachErr != nil {
-		v.audit(ctx, kidSeen, iss, sub, ErrSessionReachMalformed)
-		return Verified{}, sessionReachErr
+	// session_reach is OPTIONAL, but claim PRESENCE is load-bearing: a
+	// claim key present with a JSON null (or any non-array) is a signed
+	// malformed claim and rejects authentication — it must never be
+	// conflated with a truly absent claim (which preserves the dynamic
+	// per-request session selection). Distinguish by map-key presence,
+	// not by the decoded value's nil-ness: an absent key yields a nil
+	// reach, while a present null reaches ParseSessionReach and fails
+	// closed as malformed.
+	var sessionReach []string
+	var sessionReachErr error
+	if rawReach, present := claims[SessionReachClaim]; present {
+		sessionReach, sessionReachErr = ParseSessionReach(rawReach)
+		if sessionReachErr != nil {
+			v.audit(ctx, kidSeen, iss, sub, ErrSessionReachMalformed)
+			return Verified{}, sessionReachErr
+		}
 	}
 
 	return Verified{

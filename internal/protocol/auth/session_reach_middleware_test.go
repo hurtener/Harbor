@@ -377,6 +377,45 @@ func TestMiddleware_SessionReach_SSEProjectionCannotEscape(t *testing.T) {
 	}
 }
 
+// TestMiddleware_SessionReach_SignedNullClaim_RejectedBeforeHandler —
+// the end-to-end signed-null proof: a REAL signed token whose
+// session_reach claim is present but null flows through the real
+// validator and is rejected 401 auth_rejected with the
+// session_reach_malformed reason, and the middleware NEVER executes
+// the handler. A signed null is a PRESENT malformed claim — it must
+// not be conflated with a truly absent claim (which would silently
+// preserve dynamic selection for a claim the issuer deliberately
+// signed).
+func TestMiddleware_SessionReach_SignedNullClaim_RejectedBeforeHandler(t *testing.T) {
+	v, priv := newRSValidator(t, fixedNow)
+	claims := validClaims(fixedNow)
+	claims[auth.SessionReachClaim] = nil // signs `"session_reach": null`
+	raw := signRS256(t, priv, claims, "k1")
+
+	mw := auth.Middleware(v)
+	called := false
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v1/events", nil)
+	r.Header.Set("Authorization", "Bearer "+raw)
+	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})).ServeHTTP(w, r)
+
+	if called {
+		t.Fatal("handler ran for a signed-null session_reach claim — enforcement must precede handler execution")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want 401 (body=%q)", w.Code, w.Body.String())
+	}
+	perr := readErrorBody(t, w)
+	if perr.Code != protoerrors.CodeAuthRejected {
+		t.Errorf("error code: got %q, want %q", perr.Code, protoerrors.CodeAuthRejected)
+	}
+	if !strings.Contains(perr.Message, "session_reach_malformed") {
+		t.Errorf("wire message should carry the session_reach_malformed reason, got %q", perr.Message)
+	}
+}
+
 // TestMiddleware_SessionReach_MalformedClaim_RejectedAtAuthentication —
 // the malformed-claim path is an authentication failure surfaced by the
 // validator, and the middleware maps it to 401 auth_rejected (never

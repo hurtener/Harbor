@@ -16,7 +16,7 @@ func TestParseSessionReach_StrictBoundedShape(t *testing.T) {
 		want []string
 		bad  bool
 	}{
-		{name: "absent", raw: nil},
+		{name: "signed null", raw: nil, bad: true},
 		{name: "empty", raw: []any{}, want: []string{}},
 		{name: "valid", raw: []any{"sess-a", "sess-b"}, want: []string{"sess-a", "sess-b"}},
 		{name: "not array", raw: "sess-a", bad: true},

@@ -369,7 +369,7 @@ func runTokenMint(cmd *cobra.Command, _ []string) error {
 				Subcommand: "token mint",
 				Message:    fmt.Sprintf("--%s: %v", flagTokenSessionReach, err),
 				Code:       CodeTokenMissingField,
-				Hint:       "pass 1-128 unique, nonblank session IDs no longer than 128 bytes",
+				Hint:       "pass 0-128 unique, nonblank session IDs no longer than 128 bytes (empty grants no session)",
 			})
 		}
 	}
