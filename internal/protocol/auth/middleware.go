@@ -98,6 +98,11 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 		opt(&cfg)
 	}
 
+	// sessionReachGate is the one shared session-reach gate. It is
+	// stateless and immutable; capturing a single instance at
+	// construction keeps the enforcement point canonical.
+	sessionReachGate := NewSessionReachAuthorizer()
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, err := extractBearer(r.Header.Get("Authorization"))
@@ -178,6 +183,33 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 			}
 			ctx = WithScopes(ctx, verified.Scopes)
 			ctx = WithAgentReach(ctx, verified.AgentReach)
+
+			// session_reach: an OPTIONAL signed claim that
+			// narrows the effective session. Absence preserves the
+			// dynamic per-request selection exactly; a PRESENT claim is
+			// enforced once here, AFTER the effective session has been
+			// resolved from X-Harbor-Session, the SSE access-token query
+			// projection, or the token's default session claim. The
+			// resolved effective session must be a member of the signed
+			// reach set or the request fails closed (403 scope_mismatch)
+			// before any handler side effect — neither the REST session
+			// override nor the SSE `?session=` projection can escape the
+			// reach set. An explicitly empty set grants no session. The
+			// reach is seated on ctx only when present so absence stays
+			// distinguishable from an explicit empty set.
+			if verified.SessionReach != nil {
+				ctx = WithSessionReach(ctx, verified.SessionReach)
+			}
+			if err := sessionReachGate.AuthorizeSessionReach(ctx, effectiveID.SessionID); err != nil {
+				cfg.logger.WarnContext(ctx, "auth: middleware rejected request: effective session outside signed session_reach",
+					slog.String("code", string(protoerrors.CodeScopeMismatch)),
+					slog.Int("status", http.StatusForbidden),
+					slog.String("reason_sentinel", "session_reach_denied"))
+				writeProtocolError(w, http.StatusForbidden,
+					protoerrors.Newf(protoerrors.CodeScopeMismatch,
+						"session_reach: the selected session is not within this bearer's signed session reach"))
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -310,6 +342,8 @@ func reasonForWire(err error) string {
 		return "unknown_key"
 	case errors.Is(err, ErrIdentityClaimMissing):
 		return "identity_claim_missing"
+	case errors.Is(err, ErrSessionReachMalformed):
+		return "session_reach_malformed"
 	case errors.Is(err, ErrAudienceMismatch):
 		return "audience_mismatch"
 	case errors.Is(err, ErrIssuerMismatch):

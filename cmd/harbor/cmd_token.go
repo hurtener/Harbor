@@ -40,19 +40,20 @@ import (
 // Flag names for `harbor token`, declared as constants so the command
 // bodies, tests, and help text reference one spelling.
 const (
-	flagTokenOut        = "out"
-	flagTokenAlg        = "alg"
-	flagTokenForce      = "force"
-	flagTokenKey        = "key"
-	flagTokenTenant     = "tenant"
-	flagTokenUser       = "user"
-	flagTokenSession    = "session"
-	flagTokenIssuer     = "issuer"
-	flagTokenAudience   = "audience"
-	flagTokenKID        = "kid"
-	flagTokenScopes     = "scopes"
-	flagTokenAgentReach = "agent-reach"
-	flagTokenTTL        = "ttl"
+	flagTokenOut          = "out"
+	flagTokenAlg          = "alg"
+	flagTokenForce        = "force"
+	flagTokenKey          = "key"
+	flagTokenTenant       = "tenant"
+	flagTokenUser         = "user"
+	flagTokenSession      = "session"
+	flagTokenIssuer       = "issuer"
+	flagTokenAudience     = "audience"
+	flagTokenKID          = "kid"
+	flagTokenScopes       = "scopes"
+	flagTokenAgentReach   = "agent-reach"
+	flagTokenSessionReach = "session-reach"
+	flagTokenTTL          = "ttl"
 )
 
 // defaultTokenTTL is the `harbor token mint` expiry when --ttl is
@@ -162,6 +163,9 @@ default TTL is short (1h); raise it with --ttl only when you must.
 
 Agent-addressed data-plane calls additionally require a signed
 --agent-reach registration ID list; omission grants none of that authority.
+A signed --session-reach session ID list narrows the bearer to exactly
+those sessions per request; omission preserves dynamic per-request
+session selection.
 
 The signed token is written to stdout (capture it); nothing else is.
 
@@ -172,7 +176,11 @@ Examples:
   harbor token mint --key ./harbor-keys/private.pem \
     --tenant acme --user ops --session sess-2 \
     --issuer https://issuer.example.com --audience harbor \
-    --scopes admin,console:fleet --ttl 8h`,
+    --scopes admin,console:fleet --ttl 8h
+  harbor token mint --key ./harbor-keys/private.pem \
+    --tenant acme --user alice --session sess-1 \
+    --issuer https://issuer.example.com --audience harbor \
+    --session-reach sess-1,sess-2`,
 		Args: cobra.NoArgs,
 		RunE: runTokenMint,
 	}
@@ -185,6 +193,7 @@ Examples:
 	cmd.Flags().String(flagTokenKID, "", "key id header (defaults to the key's JWK thumbprint)")
 	cmd.Flags().StringSlice(flagTokenScopes, nil, "scopes to grant (default: none — least privilege)")
 	cmd.Flags().StringSlice(flagTokenAgentReach, nil, "agent registration IDs this bearer may address (default: none)")
+	cmd.Flags().StringSlice(flagTokenSessionReach, nil, "session IDs this bearer may select per request (default: absent — dynamic session selection preserved)")
 	cmd.Flags().Duration(flagTokenTTL, defaultTokenTTL, "token lifetime")
 	return cmd
 }
@@ -275,16 +284,17 @@ func runTokenKeygen(cmd *cobra.Command, _ []string) error {
 
 // runTokenMint is the cobra RunE for `harbor token mint`.
 func runTokenMint(cmd *cobra.Command, _ []string) error {
-	keyPath, _ := cmd.Flags().GetString(flagTokenKey)                //nolint:errcheck // flag statically registered; lookup cannot fail
-	tenant, _ := cmd.Flags().GetString(flagTokenTenant)              //nolint:errcheck // flag statically registered; lookup cannot fail
-	user, _ := cmd.Flags().GetString(flagTokenUser)                  //nolint:errcheck // flag statically registered; lookup cannot fail
-	session, _ := cmd.Flags().GetString(flagTokenSession)            //nolint:errcheck // flag statically registered; lookup cannot fail
-	issuer, _ := cmd.Flags().GetString(flagTokenIssuer)              //nolint:errcheck // flag statically registered; lookup cannot fail
-	audience, _ := cmd.Flags().GetString(flagTokenAudience)          //nolint:errcheck // flag statically registered; lookup cannot fail
-	kidOverride, _ := cmd.Flags().GetString(flagTokenKID)            //nolint:errcheck // flag statically registered; lookup cannot fail
-	scopes, _ := cmd.Flags().GetStringSlice(flagTokenScopes)         //nolint:errcheck // flag statically registered; lookup cannot fail
-	agentReach, _ := cmd.Flags().GetStringSlice(flagTokenAgentReach) //nolint:errcheck // flag statically registered; lookup cannot fail
-	ttl, _ := cmd.Flags().GetDuration(flagTokenTTL)                  //nolint:errcheck // flag statically registered; lookup cannot fail
+	keyPath, _ := cmd.Flags().GetString(flagTokenKey)                    //nolint:errcheck // flag statically registered; lookup cannot fail
+	tenant, _ := cmd.Flags().GetString(flagTokenTenant)                  //nolint:errcheck // flag statically registered; lookup cannot fail
+	user, _ := cmd.Flags().GetString(flagTokenUser)                      //nolint:errcheck // flag statically registered; lookup cannot fail
+	session, _ := cmd.Flags().GetString(flagTokenSession)                //nolint:errcheck // flag statically registered; lookup cannot fail
+	issuer, _ := cmd.Flags().GetString(flagTokenIssuer)                  //nolint:errcheck // flag statically registered; lookup cannot fail
+	audience, _ := cmd.Flags().GetString(flagTokenAudience)              //nolint:errcheck // flag statically registered; lookup cannot fail
+	kidOverride, _ := cmd.Flags().GetString(flagTokenKID)                //nolint:errcheck // flag statically registered; lookup cannot fail
+	scopes, _ := cmd.Flags().GetStringSlice(flagTokenScopes)             //nolint:errcheck // flag statically registered; lookup cannot fail
+	agentReach, _ := cmd.Flags().GetStringSlice(flagTokenAgentReach)     //nolint:errcheck // flag statically registered; lookup cannot fail
+	sessionReach, _ := cmd.Flags().GetStringSlice(flagTokenSessionReach) //nolint:errcheck // flag statically registered; lookup cannot fail
+	ttl, _ := cmd.Flags().GetDuration(flagTokenTTL)                      //nolint:errcheck // flag statically registered; lookup cannot fail
 
 	if missing := firstMissingMintField(keyPath, tenant, user, session, issuer, audience); missing != "" {
 		return emitCLIError(cmd, CLIError{
@@ -350,6 +360,16 @@ func runTokenMint(cmd *cobra.Command, _ []string) error {
 				Message:    fmt.Sprintf("--%s: %v", flagTokenAgentReach, err),
 				Code:       CodeTokenMissingField,
 				Hint:       "pass 1-128 unique, nonblank registration IDs no longer than 128 bytes",
+			})
+		}
+	}
+	if cmd.Flags().Changed(flagTokenSessionReach) {
+		if err := setSessionReachClaim(claims, sessionReach); err != nil {
+			return emitCLIError(cmd, CLIError{
+				Subcommand: "token mint",
+				Message:    fmt.Sprintf("--%s: %v", flagTokenSessionReach, err),
+				Code:       CodeTokenMissingField,
+				Hint:       "pass 0-128 unique, nonblank session IDs no longer than 128 bytes (empty grants no session)",
 			})
 		}
 	}

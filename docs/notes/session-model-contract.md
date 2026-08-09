@@ -69,6 +69,18 @@ Rules the runtime enforces (auth middleware, `internal/protocol/auth`):
   `X-Harbor-User` override on the authenticated path; a client can never
   widen its tenant or user.
 
+### Optional `session_reach` claim narrows the selection (D-409)
+
+The rules above describe the **absent-claim** behavior and are unchanged.
+A bearer minted with the signed `session_reach` claim is pinned to exactly
+those session IDs. After the effective session resolves (header, SSE
+`?session=` projection, or token default), the middleware checks it ONCE
+against the claim and fails closed **`403 scope_mismatch`** before any
+handler side effect when it is not a member. An explicitly empty set
+grants no session. Neither the REST session override nor the SSE query
+projection can escape the set. The claim is bearer authority only — never
+a storage filter and never a request-body member.
+
 ### New conversation = new session id = create-on-first-use
 
 To start a **new** conversation, the Console picks a fresh session id and
@@ -250,6 +262,7 @@ mirror.
 | -------------------------------------------------- | ---- | ------------------- |
 | No bearer / malformed                              | 401  | `identity_required` |
 | Token verified but no resolvable session           | 401  | `identity_required` |
+| Effective session outside the bearer's `session_reach` | 403 | `scope_mismatch`  |
 | Body identity disagrees with the request identity  | 401  | `identity_required` |
 | `start` on a closed session id                     | 400  | `invalid_request`   |
 | Cross-tenant `sessions.list` without `admin`       | 403  | `scope_mismatch`    |

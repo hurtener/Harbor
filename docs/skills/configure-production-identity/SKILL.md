@@ -82,6 +82,7 @@ important thing to get right, because most IdPs do **not** emit them by default.
 | `session` | **yes** (non-empty) | A **default** session id — a placeholder, not "the conversation" (see below). |
 | `scopes` | no | Elevated scopes — a closed set: `admin`, `console:fleet`, `agent_config:user`. Absent = authenticated but unprivileged. |
 | `agent_reach` | required for agent-addressed data-plane calls | Unique JSON array of 1–128 nonblank registration IDs (each <=128 bytes). It grants resource authority only; it is not part of the isolation triple. Absent or empty grants no agent reach; malformed rejects the token. |
+| `session_reach` | no — a session-bounding entitlement | Unique JSON array of 0–128 nonblank session IDs (each <=128 bytes). **Absent** = D-171 dynamic per-request session selection preserved (the default). **Present** = the effective session (from `X-Harbor-Session`, the SSE `?session=` projection, or the token's `session` default) MUST be a member or the request fails 403 `scope_mismatch` before any side effect; an explicitly empty array grants no session. Bearer authority only — never a storage filter or request-body member. Malformed rejects the token. |
 | `iss` | **yes** | Must equal `identity.issuer` **exactly**. |
 | `aud` | **yes** | Must equal (or, for an array, contain) `identity.audience`. |
 | `exp` | **yes** | A token with no `exp` is rejected as expired. Keep it short. |
@@ -141,7 +142,10 @@ differs.
    `<issuer>/protocol/openid-connect/certs`) becomes `identity.jwks_url`.
 4. **Add the Harbor custom claims** — inject `tenant`, `user`, `session`,
    `scopes` and, when the client must address an agent, `agent_reach` as
-   **top-level** claims on the access token. This is the
+   **top-level** claims on the access token. When the client must be
+   pinned to a bounded set of conversations, add `session_reach` the same
+   way — a client minted with it can select ONLY those sessions per
+   request (`X-Harbor-Session` outside the set is refused 403). This is the
    per-provider step the guide's snippets cover: an Auth0
    **Client-Credentials Action**, Okta **authorization-server Claims**, a
    Keycloak **client-scope Mapper**, or a Cognito **Pre-Token-Generation
@@ -182,6 +186,11 @@ harbor token mint --key ./identity/private.pem \
 Mint with no `--agent-reach` unless the bearer must use `control.start`, the
 agent-config session/user data plane, or `tools.describe` with an explicit
 `agent_id`; tenant-local configuration never grants this authority.
+Mint with no `--session-reach` unless the bearer must be pinned to a bounded
+set of conversations: `--session-reach` narrows the bearer to exactly those
+session IDs per request (`X-Harbor-Session` outside the set, or an SSE
+`?session=` outside it, is refused 403), while omission preserves D-171's
+dynamic per-request session selection.
 
 > **Honesty note — know what grade this is.** Self-issued tokens are signed by a
 > key **you** manage — protect the private key (it is the entire trust root),
