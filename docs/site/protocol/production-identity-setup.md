@@ -63,6 +63,7 @@ IdP to add them (the per-provider sections below show how).
 | `user` | **yes** | string, non-empty | The connection's user. |
 | `session` | **yes** | string, non-empty | A **default** session id. The live conversation is normally chosen per-request via the `X-Harbor-Session` header; the claim is the fallback used when that header is absent (see the note below). It must still be a non-empty string in the token. |
 | `scopes` | no | array of strings | Elevated scopes from the closed set of three — `admin`, `console:fleet`, `agent_config:user` (see [the scope vocabulary](#the-scope-vocabulary)). Absent or empty = an authenticated but unprivileged connection. |
+| `session_reach` | no | array of strings | Optional session-bounding entitlement: the bounded set of session IDs the bearer may select per request. Absent = D-171 dynamic per-request session selection preserved. Present = the effective session (header, SSE `?session=`, or the `session` default) must be a member or the request fails `403 scope_mismatch`; an explicitly empty array grants no session. Bearer authority only. |
 | `iss` | **yes** in production | string | Must equal `identity.issuer` **exactly**. |
 | `aud` | **yes** in production | string or array | Must equal (or contain) `identity.audience`. |
 | `exp` | **yes** | numeric date | A token with no `exp` is rejected as expired. Keep it short. |

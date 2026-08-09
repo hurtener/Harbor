@@ -160,6 +160,53 @@ func TestTokenMint_AgentReach_ValidatesAndSignsBoundedClaim(t *testing.T) {
 	}
 }
 
+func TestTokenMint_SessionReach_ValidatesAndSignsBoundedClaim(t *testing.T) {
+	dir := t.TempDir()
+	jwksPath, privPath := keygenInto(t, dir, algES256)
+	stdout, _, err := runRoot(t, []string{
+		"token", "mint", "--key", privPath,
+		"--tenant", "acme", "--user", "alice", "--session", "sess-1",
+		"--issuer", testIssuer, "--audience", testAudience,
+		"--session-reach", "sess-1,sess-2",
+	})
+	if err != nil {
+		t.Fatalf("token mint: %v", err)
+	}
+	verified, err := realValidator(t, jwksPath).Validate(context.Background(), strings.TrimSpace(stdout))
+	if err != nil {
+		t.Fatalf("validate minted token: %v", err)
+	}
+	if got, want := strings.Join(verified.SessionReach, ","), "sess-1,sess-2"; got != want {
+		t.Fatalf("minted session reach = %q, want %q", got, want)
+	}
+	// Omission leaves the claim absent (nil), preserving D-171 dynamic
+	// session selection.
+	stdout2, _, err := runRoot(t, []string{
+		"token", "mint", "--key", privPath,
+		"--tenant", "acme", "--user", "alice", "--session", "sess-1",
+		"--issuer", testIssuer, "--audience", testAudience,
+	})
+	if err != nil {
+		t.Fatalf("token mint (no session-reach): %v", err)
+	}
+	verified2, err := realValidator(t, jwksPath).Validate(context.Background(), strings.TrimSpace(stdout2))
+	if err != nil {
+		t.Fatalf("validate minted token (no session-reach): %v", err)
+	}
+	if verified2.SessionReach != nil {
+		t.Fatalf("omitted --session-reach must yield a nil reach, got %#v", verified2.SessionReach)
+	}
+	_, _, err = runRoot(t, []string{
+		"token", "mint", "--key", privPath,
+		"--tenant", "acme", "--user", "alice", "--session", "sess-1",
+		"--issuer", testIssuer, "--audience", testAudience,
+		"--session-reach", "sess-1,sess-1",
+	})
+	if err == nil {
+		t.Fatal("duplicate --session-reach minted a token, want failure")
+	}
+}
+
 func TestTokenRoundTrip_RealParserRejectsIssuerMismatch(t *testing.T) {
 	// iss/aud rejection happens in the validator's claim check, AFTER
 	// signature verification succeeds, so it is algorithm-agnostic — ES256

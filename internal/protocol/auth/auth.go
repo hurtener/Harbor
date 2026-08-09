@@ -188,6 +188,14 @@ type Verified struct {
 	// bearer may select on agent-addressed data-plane surfaces. A nil or empty
 	// set grants no such authority; it is not part of the isolation tuple.
 	AgentReach []string
+	// SessionReach is the signed closed set of session IDs this bearer may
+	// select per request. A nil set means the claim is ABSENT and the
+	// dynamic per-request session selection is preserved unchanged; a
+	// non-nil set (including an explicitly empty one) is enforced at the
+	// middleware after the effective session resolves, and grants only
+	// member sessions. It is bearer authority only — never a storage
+	// filter and never part of the isolation tuple.
+	SessionReach []string
 	// Subject is the JWT's `sub` claim, if present. Audited; never used
 	// as an isolation principal (the triple is the isolation key).
 	Subject string
@@ -487,13 +495,19 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		v.audit(ctx, kidSeen, iss, sub, ErrAgentReachMalformed)
 		return Verified{}, reachErr
 	}
+	sessionReach, sessionReachErr := ParseSessionReach(claims[SessionReachClaim])
+	if sessionReachErr != nil {
+		v.audit(ctx, kidSeen, iss, sub, ErrSessionReachMalformed)
+		return Verified{}, sessionReachErr
+	}
 
 	return Verified{
-		Identity:   id,
-		Scopes:     scopes,
-		AgentReach: reach,
-		Subject:    sub,
-		Issuer:     iss,
+		Identity:     id,
+		Scopes:       scopes,
+		AgentReach:   reach,
+		SessionReach: sessionReach,
+		Subject:      sub,
+		Issuer:       iss,
 	}, nil
 }
 

@@ -21,6 +21,11 @@
 //   - sub — the subject, audited; set to the user component.
 //   - scopes — optional; an empty scope set is authenticated but
 //     entitled to nothing elevated (least privilege).
+//   - agent_reach — optional; the bounded set of agent registration IDs
+//     the bearer may address.
+//   - session_reach — optional; the bounded set of session IDs the
+//     bearer may select per request. Absent preserves the dynamic
+//     per-request session selection.
 
 package main
 
@@ -72,5 +77,22 @@ func setAgentReachClaim(claims jwt.MapClaims, reach []string) error {
 		return err
 	}
 	claims[auth.AgentReachClaim] = validated
+	return nil
+}
+
+// setSessionReachClaim validates and attaches the additive signed
+// session-reach claim. A present empty array remains present and
+// intentionally grants no session; callers omit it only for an absent
+// claim (which preserves the dynamic per-request session selection).
+func setSessionReachClaim(claims jwt.MapClaims, reach []string) error {
+	raw := make([]any, len(reach))
+	for i, id := range reach {
+		raw[i] = id
+	}
+	validated, err := auth.ParseSessionReach(raw)
+	if err != nil {
+		return err
+	}
+	claims[auth.SessionReachClaim] = validated
 	return nil
 }

@@ -268,6 +268,23 @@ identity supplies no signed reach and therefore cannot use these methods.
 `agent_id` remains registration metadata under §6.16 and does not join the
 isolation tuple.
 
+**Session reach is optional signed authority that narrows D-171's
+per-request session selection (D-409).** A bearer MAY carry a bounded,
+unique `session_reach` claim naming the session IDs it may select per
+request. When the claim is ABSENT, D-171's dynamic per-request session
+selection is preserved exactly: the effective session is chosen per
+request beneath the verified `(tenant, user)`. When PRESENT, the shared
+authentication edge enforces it once, after the effective session has been
+resolved from `X-Harbor-Session`, the SSE access-token `?session=`
+projection, or the token's default `session` claim — the resolved session
+must be a member or the request fails closed before any handler side
+effect. Malformed, duplicate, blank, or over-limit entries reject the
+bearer; an explicitly empty claim grants no session. The claim is bearer
+authority only: it is never a storage filter, never a request-body member,
+and never part of the isolation tuple, and it neither weakens nor
+duplicates tenant/user verification. Carrier-identity / bearer-less mode
+retains its existing behavior and cannot manufacture signed reach.
+
 **Effective agent resolution is ordered and closed (D-397/D-399).**
 `EffectiveAgentID(requested)` is a pure selection step: it chooses the
 explicit requested id or the configured default for an omitted

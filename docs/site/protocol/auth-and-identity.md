@@ -30,6 +30,19 @@ Rules the Runtime enforces at the auth middleware, fail-closed:
   tenant or user — there is no header override for those on the
   authenticated path.
 
+**Optional `session_reach` claim (D-409) narrows that dynamic selection.**
+A bearer minted with the signed `session_reach` claim is pinned to exactly
+those session IDs. The middleware enforces the claim ONCE, after the
+effective session has been resolved — from `X-Harbor-Session`, from the SSE
+`access_token` path's `?session=` projection, or from the token's `session`
+default — and the resolved session MUST be a member or the request fails
+closed `403 scope_mismatch` before any handler side effect. Neither the
+REST session override nor the SSE query projection can escape the reach
+set, and an explicitly empty set grants no session. **Absent claim = the
+dynamic per-request selection above is unchanged.** The claim is bearer
+authority only — it never appears in a request body and is never a storage
+filter.
+
 **New conversation = new session id = create-on-first-use.** Pick a fresh id
 (a UUID is recommended; any non-empty string works) and issue a `start` with
 it — the Runtime materialises the session row on the first turn. There is no
@@ -57,6 +70,7 @@ ever consulted. The verified claims:
 | `user` | verified — the connection's user |
 | `session` | default only — used iff `X-Harbor-Session` is absent |
 | `scopes` | the connection's elevated scopes (may be empty) |
+| `session_reach` | optional — the bounded set of session IDs the bearer may select per request; absent = dynamic selection, present = member-only (see above) |
 | `iss` / `aud` / `exp` / `nbf` / `kid` | standard JWT validation against the Runtime's `identity:` config |
 
 The body of a request may also carry an `identity` object
@@ -228,7 +242,7 @@ Four distinct rejections, one error envelope each
 | 401 | `identity_required` | No identity resolved: missing bearer, missing session, or a body identity contradicting the token on a component no claim widens. | Attach the token / the `X-Harbor-Session` header; send `"identity": {}`. |
 | 401 | `auth_rejected` | A token was present but failed verification (bad alg / signature / expiry / `kid` / audience / issuer). | Obtain a fresh, correctly-issued token. |
 | 403 | `identity_scope_required` | Authenticated and identified, but the requested cross-tenant fan-in or admin verb needs `admin` / `console:fleet`. | Re-authenticate with a scope-bearing token. |
-| 403 | `scope_mismatch` | A steering control's body `scope` claim is below the control's RFC §6.3 minimum, cross-tenant steering without `admin`, or a body `tenant` naming another tenant on a surface that offers a cross-tenant read, without the claim it needs. `state.history` is the exception — it answers `404 not_found` instead (see above). | Use a sufficient steering scope, or re-authenticate with `admin` / `console:fleet`. |
+| 403 | `scope_mismatch` | A steering control's body `scope` claim is below the control's RFC §6.3 minimum, cross-tenant steering without `admin`, a body `tenant` naming another tenant on a surface that offers a cross-tenant read, without the claim it needs, or an effective session outside the bearer's signed `session_reach`. `state.history` is the exception — it answers `404 not_found` instead (see above). | Use a sufficient steering scope, re-authenticate with `admin` / `console:fleet`, or select a session within the bearer's `session_reach`. |
 
 A useful diagnostic habit: `401` means "the wire doesn't know who you are";
 `403` means "it knows exactly who you are, and that's the problem."

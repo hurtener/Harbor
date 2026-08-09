@@ -17,6 +17,19 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- Optional signed `session_reach` JWT claim (D-409): a bearer may be pinned
+  to a bounded set of session IDs it may select per request. Absent, D-171's
+  dynamic per-request session selection is preserved exactly; present, the
+  effective session — resolved from `X-Harbor-Session`, the SSE `?session=`
+  projection, or the token's `session` default — must be a member or the
+  request fails closed `403 scope_mismatch` before any handler side effect.
+  Malformed, duplicate, blank, or over-limit claims reject authentication;
+  an explicitly empty set grants no session. The claim is bearer authority
+  only — never a storage filter or request-body member — and carrier-identity
+  mode cannot manufacture it. `harbor token mint` gains `--session-reach`.
+
 ## [1.26.11] — 2026-08-05
 
 ### Fixed

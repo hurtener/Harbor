@@ -12540,3 +12540,36 @@ move in lockstep. The product release is v1.26.11.
 
 **Cross-references.** D-173, D-227, D-351, D-397, D-407. RFC §5.3, §5.5,
 §6.11 and §6.16.
+
+---
+
+## D-409 — Session reach is optional signed bearer authority that narrows D-171's per-request session selection after one effective-session resolution
+
+**Date:** 2026-08-09
+
+**Status:** Accepted.
+
+**Decision.** A bearer MAY carry `session_reach` as a strict bounded set of
+session IDs (unique, nonblank, each ≤128 bytes, at most 128 entries — the
+established `agent_reach` conventions, D-397). The claim is OPTIONAL and
+additive: when absent, D-171's per-request session selection is preserved
+exactly — the effective session may be chosen per request beneath the
+verified `(tenant, user)`. When present, the middleware enforces it ONCE,
+at the shared authentication edge, AFTER the effective session has been
+resolved from `X-Harbor-Session`, the SSE `access_token` path's `?session=`
+projection, or the token's default `session` claim: the resolved effective
+session must be a member or the request fails closed (403 `scope_mismatch`)
+before any handler side effect. An explicitly empty present set grants no
+session; malformed, duplicate, blank, or over-limit claims reject
+authentication (401 `auth_rejected`), mirroring `agent_reach`. The claim is
+bearer authority only — it is never a storage filter, never part of a
+request body, never an isolation component, and it does not weaken or
+duplicate tenant/user verification. Carrier-identity / bearer-less mode
+retains its existing behavior and cannot manufacture signed reach. Neither
+the REST session override nor the SSE query projection can escape the reach
+set. `harbor token mint` gains `--session-reach`; the dev token omits the
+claim so first-clone behavior is unchanged. This is an additive
+bounded-authority refinement of D-171; D-171's per-request model is not
+superseded.
+
+**Cross-references.** D-171, D-397, D-400. RFC §5.5.
