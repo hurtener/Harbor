@@ -29,12 +29,121 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-42 | Progressive `tool-input-partial` streaming into a rendered App | internal/llm + internal/protocol + web/console | Low | Large | Deferred — reserved as D-343 |
 | HA-51 | Bifrost reasoning byte fidelity | internal/llm + planner + tasks + Console | Release blocker | Contained | Shipped (v1.26) — phase 233c / D-402 |
 | HA-52 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Filed |
+| HA-53 | Operator-managed per-agent skill packs across authenticated users | internal/skills + runtime/agentcfg + runtime/serve | High | Medium | Filed |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-52
-is a separate MCP transport/reliability report. The entries are
+is a separate MCP transport/reliability report; HA-53 is a separate runtime
+skills projection report. The entries are
 **framework-framed** — each names a Harbor-side capability that is absent,
 inert, or narrower than its documentation claims.
+
+---
+
+## HA-53 — operator-managed agent skill packs are not visible across the agent's users
+
+**Priority:** High (functional gap). **Size:** medium.
+
+**What the consumer sees.** A runtime can configure the durable PostgreSQL
+skills store and register `skill_search`, `skill_get`, and `skill_list`, but an
+operator cannot seed one authoring playbook for every authenticated
+user of one agent. Importing or upserting the pack under the operator's
+identity succeeds; an ordinary authenticated user session on that same agent sees an
+empty catalog. Enabling the tools anyway would advertise a capability whose
+normal production calls return no useful skill, rather than giving the agent
+the intended playbook.
+
+**Verified in-tree.**
+
+- `internal/skills/skills.go:60-95` declares `project`, `tenant`, and
+  `global` scope markers, but the actual storage contract is identity-keyed:
+  `SkillStore.Upsert` is documented as `(tenant, user, session, scope, name)`
+  at `:303-304`. `ScopeUser` is the only durable cross-session rung; the
+  `SkillReader` contract says every other V1 rung remains pinned to the caller
+  session at `:262-265`.
+- The PostgreSQL driver makes that narrower behavior concrete. It persists
+  every non-user row with the caller's session and always includes the caller's
+  tenant and user in its key (`internal/skills/drivers/postgres/postgres.go:208-219`).
+  Its normal `Get` and `List` resolution union only that caller session with
+  same-user `ScopeUser` rows (`:371-381`, `:436-442`); the FTS, regex, exact,
+  and semantic `Search` paths carry the same tenant/user predicate
+  (`internal/skills/drivers/postgres/search.go:201-214`, `:285-288`,
+  `:380-391`, `:421-425`). A row labelled `tenant` or `global` is therefore
+  not visible to another user.
+- `agent_config.skills.upsert` records a selected name into the versioned
+  agent-config revision, but it writes the skill body through that same
+  identity-scoped store (`internal/runtime/agentcfg/protocol/skills.go:58-105`)
+  and the run-start resolver reads the resulting membership once per run
+  (`internal/runtime/serve/runloop.go:750-778`). Membership cannot make a
+  body that the caller's `SkillStore` cannot resolve appear. The separate
+  user-skills API deliberately forces `ScopeUser`
+  (`internal/runtime/agentcfg/protocol/userskills.go:87-145`), so it is also
+  not an operator-pack mechanism.
+
+**Correction to a tempting workaround.** Do not solve this by treating
+`ScopeTenant` or `ScopeGlobal` labels as implemented visibility, by copying a
+pack into every user triple, or by using a shared service identity. The first
+two either produce an empty tool result or make lifecycle/revocation and
+cross-user isolation nondeterministic; the last makes a user session read a
+different principal's catalog. A CLI import triple is a local bootstrap aid,
+not a production registration contract.
+
+**Requested shape.** Add a first-class, operator-managed **per-agent skill
+pack** source, durable and versioned with the agent-config revision. It should
+be addressable by `(tenant_id, agent_id, skill_name)` for configuration
+selection, but `agent_id` remains a runtime/config entity rather than an
+identity principal: the read still starts from the authenticated caller's
+verified `(tenant, user, session)` and its signed reach to the effective
+agent. The composed run snapshot should contain only (a) the selected operator
+pack for that effective agent and tenant plus (b) that caller's permitted
+personal/session skills. It must not turn an ordinary tenant/global catalog
+read into a broad cross-user search.
+
+The control plane should offer an elevated operator mutation path that stores
+the pack body and advances the selected agent's content-addressed revision
+atomically (or compensates on failure), with the existing diff/rollback and
+audit semantics. A pack item carries required-tool metadata, but that metadata
+is never a grant: the existing run-visible-tool capability filter and redactor
+must remain in front of the injected directory and all three `skill_*` tools.
+The runtime should expose the same immutable composed snapshot to directory
+injection, `skill_search`, `skill_get`, and `skill_list`; a change applies
+next run only.
+
+**Required acceptance.**
+
+1. With a real durable Postgres skills/agent-config backing store, an elevated
+   operator creates a pack and pins it to one agent. Two different users and
+   sessions in the same tenant, each with signed reach to that agent, both see
+   it through the directory and `skill_search`/`skill_get`/`skill_list` after
+   restart.
+2. A same-tenant user selecting a different agent, and a user in another
+   tenant, cannot discover or fetch that pack by any name/query. Each user's
+   personal skill remains invisible to the other user and cannot replace the
+   operator-pack body.
+3. A pack whose `RequiredTools` mention a missing, paused, disabled, or
+   scope-filtered MCP tool is filtered/redacted exactly as today; it never
+   expands the run's visible tool set. The test must exercise a dynamically
+   attached MCP source, not only in-process tools.
+4. A membership change, rollback, and revoke affect the next run only. An
+   already-started run retains its immutable snapshot; an unselected or
+   revoked pack answers a typed not-found/empty result without falling through
+   to another principal's row.
+5. Non-operator callers cannot create, update, or remove packs; malformed
+   scope/agent/identity input fails before persistence; all mutations emit the
+   existing skill and agent-config audit/revision evidence. Include a
+   concurrent mixed-tenant/user/agent test under `-race` with no context or
+   authority bleed.
+
+**Consumer follow-up once this lands.** A consumer's broad operator `SKILL.md`
+must be converted to a compact Harbor skill body for its private-owner route
+before registration: retain the context → bounded read → typed apply → present
+workflow, remove unavailable publish/share instructions, and declare the
+actual downstream tool names as required metadata. The consumer will then
+configure the skills Postgres DSN, enable `skill_search`, `skill_get`, and
+`skill_list`, register the pack through the new elevated agent-pack path, and
+add a real authenticated-session acceptance test. Until then it will keep the
+durable tool guidance in its agent prompt and will not claim runtime skills
+are available.
 
 ---
 
