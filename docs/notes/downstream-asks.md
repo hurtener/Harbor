@@ -28,19 +28,22 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-41 | App→host `tools/call` server-namespace confinement | web/console (MCP Apps host) | High (security) | Small | Shipped — phase 207 / D-351 (items 1–2); item 3 (`_meta.ui.visibility`) still Filed |
 | HA-42 | Progressive `tool-input-partial` streaming into a rendered App | internal/llm + internal/protocol + web/console | Low | Large | Deferred — reserved as D-343 |
 | HA-51 | Bifrost reasoning byte fidelity | internal/llm + planner + tasks + Console | Release blocker | Contained | Shipped (v1.26) — phase 233c / D-402 |
-| HA-52 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Filed |
-| HA-53 | Operator-managed per-agent skill packs across authenticated users | internal/skills + runtime/agentcfg + runtime/serve | High | Medium | Filed |
+| HA-54 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Filed |
+| HA-55 | Operator-managed per-agent skill packs across authenticated users | internal/skills + runtime/agentcfg + runtime/serve | High | Medium | Filed |
+| HA-56 | Per-server MCP App callback catalog outside planner projection | internal/tools/drivers/mcp + internal/tools + internal/mcpconsole + protocol | High | Medium | Filed |
 
 The original five were filed by a downstream team building an MCP-Apps server
-against Harbor. HA-51 is a separate release-blocking fidelity report; HA-52
-is a separate MCP transport/reliability report; HA-53 is a separate runtime
-skills projection report. The entries are
+against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
+is a separate MCP transport/reliability report; HA-55 is a separate runtime
+skills projection report; and HA-56 is a separate MCP App host/catalog
+report. HA-52 and HA-53 are already allocated in the shared register and are
+not available for Harbor-local filings. The entries are
 **framework-framed** — each names a Harbor-side capability that is absent,
 inert, or narrower than its documentation claims.
 
 ---
 
-## HA-53 — operator-managed agent skill packs are not visible across the agent's users
+## HA-55 — operator-managed agent skill packs are not visible across the agent's users
 
 **Priority:** High (functional gap). **Size:** medium.
 
@@ -144,6 +147,94 @@ configure the skills Postgres DSN, enable `skill_search`, `skill_get`, and
 add a real authenticated-session acceptance test. Until then it will keep the
 durable tool guidance in its agent prompt and will not claim runtime skills
 are available.
+
+---
+
+## HA-56 — app-only MCP callbacks need a per-server dispatch catalog distinct from planner projection
+
+**Priority:** High (host interoperability and least-privilege discovery).
+**Size:** medium (MCP discovery/catalog representation, App host dispatch
+surface, Protocol/transport parity, and integration fixtures).
+
+**What the consumer sees.** A provider may mark an MCP tool with
+`_meta.ui.visibility: ["app"]` because it is a callback for its rendered App,
+not an operation for the model to select. Harbor currently treats that marker
+as decorative: the tool is shown to the planner and, if a future list filter
+simply hides it, the existing App callback path loses the catalog entry it
+resolves. The host needs two deliberately different views of one discovered
+server: an app-owned callback catalog for that server and a model/planner
+projection that excludes app-only tools.
+
+**Verified in-tree.**
+
+- `internal/tools/drivers/mcp/content.go:155-186` parses MCP App resource and
+  display metadata, but not `_meta.ui.visibility`. `internal/tools/tools.go:122-188`
+  has no field that can retain an app-only visibility class once discovery
+  returns a normal `Tool`.
+- `internal/tools/protocol/catalog_projector.go:253-264` projects `tools/list`
+  from the ordinary catalog, and `internal/tools/planner_view.go:48-60` lists
+  and resolves against that catalog. Neither surface has an app-only filter.
+- `internal/mcpconsole/apps.go:253-304` resolves an App `tools/call` through
+  the same full catalog before applying the current-state gate. It therefore
+  cannot survive a planner projection that removes the entry unless it has a
+  server-owned callback lookup. The existing HA-41 confinement work is not a
+  substitute: it confines the App to its source server; it does not retain a
+  separate callback catalog or hide the callback from the model.
+
+**Requested shape.** At MCP discovery, preserve the provider-authored
+`_meta.ui.visibility: ["app"]` classification and construct an internal,
+per-MCP-server **App dispatch catalog** alongside the ordinary planner/model
+projection. An app-only entry must be absent from planner context, generic
+`tools/list`, planner search/resolve, and ordinary model tool invocation. It
+must remain callable only by the rendered App associated with the same
+host-derived server identity through a host/App dispatch surface; no string
+prefix or remembered global tool name may select another server's callback.
+
+The App dispatch path remains subject to the exact existing identity triple,
+effective-agent capability filtering, OAuth/approval wrappers, current-state
+checks, redaction, and audit rules. Visibility is not a grant. A caller in a
+different tenant/user/session, a different agent without reach, or a rendered
+App from another MCP server must receive a typed not-found/denied result before
+tool execution. A generic planner call to an app-only name must not become a
+backdoor merely because the name is known.
+
+Dynamic attach, reconnect, and catalog refresh must rebuild both views from
+one discovered server snapshot: a newly added callback becomes usable only
+through that server's App host, a removed callback stops resolving everywhere,
+and no stale callback may survive a replacement or detach. The contract must
+hold for both HTTP and stdio MCP transports. The phase may choose the internal
+API and any additive wire shape, but it must make the host-derived server
+identity available to the dispatch check rather than trusting an App-supplied
+catalog name.
+
+**Required acceptance.**
+
+1. A real MCP fixture publishes one ordinary tool and one
+   `_meta.ui.visibility: ["app"]` callback from the same server. The ordinary
+   tool is visible to the planner; the callback is absent from planner context,
+   generic `tools/list`, search, resolve, and ordinary call paths, while the
+   matching rendered App invokes it successfully through the same server's
+   callback catalog.
+2. A callback request from another server's rendered App, a direct generic
+   planner request using the remembered callback name, and a mismatched or
+   missing server identity all fail before invocation. The test records zero
+   callback executions and proves existing OAuth/approval/current-state gates
+   still run for the permitted same-server invocation.
+3. Dynamic attach, reconnect, refresh, replacement, and detach tests prove
+   the two views update atomically without stale entries, for HTTP and stdio
+   servers. Include a paused/disabled/scope-filtered source so an app-only
+   marker cannot bypass capability filtering.
+4. Authenticated mixed-tenant, mixed-user, and mixed-agent-reach tests prove
+   an App callback catalog cannot cross the verified identity boundary. Run the
+   concurrent path under `-race` without context or authority bleed.
+5. Compatibility fixtures for Bamboo, WorkBridge, and Prototype Workbench
+   exercise their app-only callback metadata and prove no callback is exposed
+   to the planner while each provider's own rendered App remains functional.
+
+**Non-goals.** This ask does not make `_meta.ui.visibility` an authorization
+shortcut, expose app-only tools to ordinary callers, or add provider-specific
+exceptions. It asks for one reusable Harbor catalog/dispatch primitive that
+preserves an MCP App callback without advertising it as a model tool.
 
 ---
 
@@ -270,7 +361,7 @@ The two things it needs, per D-343 and confirmed in-tree:
 
 ---
 
-## HA-52 — deterministic MCP tool failures exhaust the retry budget unchanged
+## HA-54 — deterministic MCP tool failures exhaust the retry budget unchanged
 
 **Priority:** High (functional correctness and avoidable downstream load).
 **Size:** contained (typed transport contract plus policy/transport tests; no
