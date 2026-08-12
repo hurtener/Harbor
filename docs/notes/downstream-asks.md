@@ -28,11 +28,13 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-41 | App→host `tools/call` server-namespace confinement | web/console (MCP Apps host) | High (security) | Small | Shipped — phase 207 / D-351 (items 1–2); item 3 (`_meta.ui.visibility`) still Filed |
 | HA-42 | Progressive `tool-input-partial` streaming into a rendered App | internal/llm + internal/protocol + web/console | Low | Large | Deferred — reserved as D-343 |
 | HA-51 | Bifrost reasoning byte fidelity | internal/llm + planner + tasks + Console | Release blocker | Contained | Shipped (v1.26) — phase 233c / D-402 |
+| HA-52 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Filed |
 
 The original five were filed by a downstream team building an MCP-Apps server
-against Harbor. HA-51 is a separate release-blocking fidelity report. The
-entries are **framework-framed** — each names a Harbor-side capability that is
-absent, inert, or narrower than its documentation claims.
+against Harbor. HA-51 is a separate release-blocking fidelity report; HA-52
+is a separate MCP transport/reliability report. The entries are
+**framework-framed** — each names a Harbor-side capability that is absent,
+inert, or narrower than its documentation claims.
 
 ---
 
@@ -156,6 +158,93 @@ The two things it needs, per D-343 and confirmed in-tree:
 
 1. **A new runtime `llm.toolcall.partial` streaming event** emitted at the LLM driver's fragment-assembly site. Today partial tool-call arguments are merged inside the driver by index and only the complete structured call leaves it; `internal/llm/events.go:290-299` shows `CompletionChunkPayload` carries `Delta` / `Kind` (content and reasoning deltas) and nothing else. This is a Go + Protocol-additive event with the usual `make protocol-ts-gen` / `make protocol-docs-gen` lockstep and a smoke assertion, followed by a thin Console relay onto the vendored bridge's partial-input send.
 2. **A settled redaction posture, decided before any wire work.** Tool arguments routinely contain secrets — CLAUDE.md §5 forbids logging raw tool arguments, §7 item 7 forbids untyped tool arguments in audit payloads, and §13 forbids raw heavy content reaching the LLM edge. Putting arguments on the wire **per token** must therefore go through audit redaction and heavy-content handling **by construction**, not as a follow-up. A partial-fragment stream is the worst case for a redactor: a secret can straddle two fragments, so a fragment-at-a-time redactor can miss what a whole-value redactor would catch. That property has to be designed for, not discovered.
+
+---
+
+## HA-52 — deterministic MCP tool failures exhaust the retry budget unchanged
+
+**Priority:** High (functional correctness and avoidable downstream load).
+**Size:** contained (typed transport contract plus policy/transport tests; no
+new tool protocol method).
+
+**What the consumer sees.** A tool can reject an invalid request correctly,
+yet Harbor repeats the identical request four times under the default tool
+policy. Prototype Workbench is the second consumer that exposed the gap: a
+missing selected-node identifier is a deterministic argument validation
+failure, and an unknown edit operation is a deterministic tool-domain
+failure. Neither can converge by resending the same arguments, but both are
+currently retried as if a network dependency had flaked.
+
+**Verified in-tree.**
+
+- `internal/tools/drivers/mcp/content.go:344-349` states the current lowering
+  rule directly: every MCP `CallToolResult` with `IsError == true` becomes
+  `ErrMCPToolError` and reaches the policy classifier as retryable transient by
+  default. The implementation has no typed branch: `:419-421` wraps only the
+  rendered text body.
+- `internal/tools/policy.go:83-107` makes the default retry set
+  `transient`, `timeout`, and `5xx` with three retries, i.e. four invocations
+  total. `ClassifyError` falls through to `transient` for an unrecognised
+  error at `:495-550`.
+- The existing MCP test deliberately proves the current behavior:
+  `internal/tools/drivers/mcp/mcp_test.go:327-350` retries two `IsError`
+  responses until the third succeeds. The mock fixtures call all `IsError`
+  results transient at `internal/tools/drivers/mcp/mockserver_test.go:76-107`.
+  There is no counterpart proving that a deterministic `IsError` gets one
+  call.
+- This is not a request to infer meaning from prose. The downstream result
+  already has a standard MCP `IsError` signal, but its boolean shape cannot
+  distinguish invalid arguments from a provider outage. Parsing rendered text
+  would be brittle, locale-dependent, and unsafe as a retry contract.
+
+**Requested shape.** Define a transport-safe, typed MCP error-classification
+contract that an MCP server may attach to an `IsError: true` result while
+remaining a normal MCP result for clients that do not understand the extra
+classification. The exact extension placement/negotiation belongs in the
+phase design, but it must preserve the standard `CallToolResult` semantics and
+be carried through every Harbor MCP transport without a text parser or a
+transport-specific side channel. A structured-content envelope with an
+advertised schema is one candidate; a phase must compare it with any relevant
+standard MCP extension before settling it.
+
+The contract must express, at minimum:
+
+1. `invalid_argument` / validation and deterministic tool-domain failures as
+   **permanent for the unchanged invocation**. They reach the model as the
+   original error result, but the retry shell performs exactly one attempt.
+   This includes a missing required selector and an unknown closed operation;
+   it does not silently coerce aliases.
+2. Genuine transport and provider/service failures as retryable according to
+   the configured policy. Existing timeout and 5xx behavior remains intact.
+3. An explicit compatibility fallback for servers that return only ordinary
+   `IsError` today, and for absent, malformed, or unrecognised classifications.
+   The fallback must be documented and tested; it must not guess from text or
+   turn a foreign extension into a permanent failure accidentally.
+4. The classified result's bounded message/content and structured content are
+   preserved for the planner/model and App paths. Classification metadata is
+   control information, not a route to log raw tool arguments or results.
+
+**Acceptance evidence for a future phase.**
+
+- Real MCP SDK fixtures over each supported Harbor MCP transport demonstrate
+  that typed `invalid_argument`, validation, and deterministic
+  `tool_domain` `IsError` results make exactly one call under the default
+  policy; their original result content remains observable.
+- A typed retryable provider/transport failure still uses the configured
+  attempt budget and can recover, while timeout and 5xx classifications retain
+  their present policy behavior.
+- Legacy unclassified `IsError`, missing classification, malformed
+  classification, and an unknown future class follow the explicitly documented
+  compatibility fallback. No test derives a class from error text.
+- Unit coverage proves lowering, policy classification, and error wrapping;
+  an end-to-end driver test proves the selected class reaches the retry shell
+  without changing standard MCP result handling. The existing transient
+  `IsError` retry case remains as the compatibility regression fixture.
+
+**Non-goals.** This filed ask does not implement a retry policy override for
+one server, redefine MCP's `isError` boolean, or add a Workbench-specific
+exception. It asks Harbor to provide a reusable typed reliability seam for a
+second consumer and every future MCP server.
 
 ---
 
