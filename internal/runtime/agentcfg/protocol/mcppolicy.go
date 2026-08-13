@@ -73,6 +73,7 @@ func (s *Service) SetToolExposure(ctx context.Context, req prototypes.AgentConfi
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
+		payload.AgentPacks = copyAgentPackItems(active.Payload.AgentPacks)
 		// The ordered additive prompt blocks are a sibling section like any
 		// other: this verb replaces only its own, so the blocks survive.
 		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks

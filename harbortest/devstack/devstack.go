@@ -1073,6 +1073,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			MCPToolContext:                 stack.MCPToolContext,
 			State:                          stack.State,
 			Skills:                         stack.Skills,
+			AgentPackLLM:                   stack.LLMClient,
 			AgentConfig:                    stack.AgentConfig,
 			AgentConfigID:                  stack.AgentConfigID,
 			AgentResolver:                  agentResolver,

@@ -380,6 +380,29 @@ Declared in `internal/protocol/types`.
 | `added` | `[]string` | optional (`omitempty`) |
 | `removed` | `[]string` | optional (`omitempty`) |
 
+## AgentConfigAgentPackItem
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `title` | `string` | optional (`omitempty`) |
+| `description` | `string` | optional (`omitempty`) |
+| `trigger` | `string` |  |
+| `task_type` | `string` | optional (`omitempty`) |
+| `tags` | `[]string` | optional (`omitempty`) |
+| `steps` | `[]string` |  |
+| `preconditions` | `[]string` | optional (`omitempty`) |
+| `failure_modes` | `[]string` | optional (`omitempty`) |
+| `required_tools` | `[]string` | optional (`omitempty`) |
+| `required_ns` | `[]string` | optional (`omitempty`) |
+| `required_tags` | `[]string` | optional (`omitempty`) |
+| `origin` | `string` | optional (`omitempty`) |
+| `scope` | `string` | optional (`omitempty`) |
+| `origin_ref` | `string` | optional (`omitempty`) |
+| `extra` | `map[string]string` | optional (`omitempty`) |
+
 ## AgentConfigPayload
 
 Declared in `internal/protocol/types`.
@@ -397,6 +420,7 @@ Declared in `internal/protocol/types`.
 | `hooks` | `*types.AgentConfigHooks` — see [`AgentConfigHooks`](./types.md#agentconfighooks) | optional (`omitempty`) |
 | `naming` | `*types.AgentConfigNaming` — see [`AgentConfigNaming`](./types.md#agentconfignaming) | optional (`omitempty`) |
 | `extra_system_blocks` | `*types.AgentConfigExtraSystemBlocks` — see [`AgentConfigExtraSystemBlocks`](./types.md#agentconfigextrasystemblocks) | optional (`omitempty`) |
+| `agent_packs` | `[]types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) | optional (`omitempty`) |
 
 ## AgentConfigPromptLayers
 

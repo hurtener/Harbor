@@ -468,6 +468,17 @@ func (s *Service) AgentPacksPropose(ctx context.Context, req prototypes.AgentCon
 	if s.agentPackProposals == nil {
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, ErrAgentPackProposalUnavailable
 	}
+	if req.DryRun {
+		return prototypes.AgentConfigAgentPacksProposeResponse{
+			Skill:               agentPackItemToWire(skills.PackItemFromSkill(skill)),
+			Hash:                skill.ContentHash,
+			Warnings:            append([]string(nil), draft.Warnings...),
+			Provenance:          packProposedProvenance(req.AgentID, skill.ContentHash),
+			ExpectedContentHash: req.ExpectedContentHash,
+			DryRun:              true,
+			ProtocolVersion:     prototypes.ProtocolVersion,
+		}, nil
+	}
 	proposalID := state.NewEventID()
 	recordBytes, err := marshalProposal(agentPackProposalRecord{
 		AgentID: req.AgentID, ExpectedContentHash: req.ExpectedContentHash,
@@ -533,6 +544,10 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	defer release()
 	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
 	if err := s.precheckExpectedRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, opts); err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
+	}
+	prior, hadPrior, err := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
+	if err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
 	if err := validateAgentPackScope(req.Scope); err != nil {
@@ -616,10 +631,27 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
 	deleted, deleteErr := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID})
-	if deleteErr != nil {
-		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("consume pack proposal: %w", deleteErr)
-	}
-	if !deleted {
+	if deleteErr != nil || !deleted {
+		// Publication and receipt consumption use different durable seams. If
+		// consumption loses the race or fails after publication, compensate the
+		// active pointer before reporting failure; never leave a live revision
+		// whose single-use receipt was not consumed.
+		var compensateErr error
+		if hadPrior {
+			_, compensateErr = s.registry.Rollback(ctx, q, req.AgentID, prior.RevisionID,
+				agentcfg.ConfigScopeAgent, agentcfg.SetOptions{ExpectedContentHash: rev.ContentHash})
+		} else {
+			_, compensateErr = s.registry.DeactivateIfActive(ctx, q, req.AgentID, rev.RevisionID, agentcfg.ConfigScopeAgent)
+		}
+		if deleteErr != nil {
+			if compensateErr != nil {
+				return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("consume pack proposal: %w; compensate publication: %v", deleteErr, compensateErr)
+			}
+			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("consume pack proposal: %w", deleteErr)
+		}
+		if compensateErr != nil {
+			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("consume pack proposal lost race; compensate publication: %w", compensateErr)
+		}
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
 	}
 	return prototypes.AgentConfigAgentPacksCommitResponse{

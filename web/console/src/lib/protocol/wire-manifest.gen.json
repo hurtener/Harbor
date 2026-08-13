@@ -885,6 +885,27 @@
         }
       ]
     },
+    "AgentConfigAgentPackItem": {
+      "home": "types",
+      "fields": [
+        { "key": "name", "type": "string" },
+        { "key": "title", "type": "string", "optional": true },
+        { "key": "description", "type": "string", "optional": true },
+        { "key": "trigger", "type": "string" },
+        { "key": "task_type", "type": "string", "optional": true },
+        { "key": "tags", "type": "array", "optional": true },
+        { "key": "steps", "type": "array" },
+        { "key": "preconditions", "type": "array", "optional": true },
+        { "key": "failure_modes", "type": "array", "optional": true },
+        { "key": "required_tools", "type": "array", "optional": true },
+        { "key": "required_ns", "type": "array", "optional": true },
+        { "key": "required_tags", "type": "array", "optional": true },
+        { "key": "origin", "type": "string", "optional": true },
+        { "key": "scope", "type": "string", "optional": true },
+        { "key": "origin_ref", "type": "string", "optional": true },
+        { "key": "extra", "type": "object", "optional": true }
+      ]
+    },
     "AgentConfigPayload": {
       "home": "types",
       "fields": [
@@ -951,6 +972,12 @@
           "key": "extra_system_blocks",
           "type": "object",
           "ref": "AgentConfigExtraSystemBlocks",
+          "optional": true
+        },
+        {
+          "key": "agent_packs",
+          "type": "array",
+          "ref": "AgentConfigAgentPackItem",
           "optional": true
         }
       ]
@@ -8305,6 +8332,11 @@
   },
   "methods": [
     "agent_config.add_mcp_connection",
+    "agent_config.agent_packs.commit",
+    "agent_config.agent_packs.list",
+    "agent_config.agent_packs.propose",
+    "agent_config.agent_packs.remove",
+    "agent_config.agent_packs.upsert",
     "agent_config.diff",
     "agent_config.get",
     "agent_config.list_revisions",

@@ -1112,6 +1112,18 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
 	payload := payloadToDomain(req.Payload)
+	// AgentPacks is server-managed by the dedicated pack verbs.  An omitted
+	// section on the generic whole-payload door therefore means "carry the
+	// current pack forward", never "clear the current pack".
+	if req.Payload.AgentPacks == nil {
+		active, set, activeErr := s.registry.Active(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent)
+		if activeErr != nil {
+			return prototypes.AgentConfigSetRevisionResponse{}, activeErr
+		}
+		if set {
+			payload.AgentPacks = copyAgentPackItems(active.Payload.AgentPacks)
+		}
+	}
 	// Persist the validator's NORMALISED descriptors rather than the raw wire
 	// values connectionsToDomain projects. The nil-vs-present distinction on the
 	// section itself is preserved — only the server list is replaced, so a

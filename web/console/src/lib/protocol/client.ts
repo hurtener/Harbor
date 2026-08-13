@@ -1280,20 +1280,20 @@ export class AgentConfigNamespace {
 			revision_id: revisionId,
 		});
 	}
-	agentPacksList(agentId: string): Promise<AgentConfigAgentPacksListResponse> {
-		return this.#t.request('/v1/agent_config/agent_packs/list', { agent_id: agentId });
+	agentPacksList(agentId: string, scope = 'agent'): Promise<AgentConfigAgentPacksListResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/list', { agent_id: agentId, scope });
 	}
-	agentPacksUpsert(agentId: string, skill: AgentConfigAgentPackItem, expectedContentHash?: string): Promise<AgentConfigAgentPacksUpsertResponse> {
-		return this.#t.request('/v1/agent_config/agent_packs/upsert', { agent_id: agentId, skill, expected_content_hash: expectedContentHash });
+	agentPacksUpsert(agentId: string, skill: AgentConfigAgentPackItem, expectedContentHash?: string, scope = 'agent'): Promise<AgentConfigAgentPacksUpsertResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/upsert', { agent_id: agentId, skill, scope, expected_content_hash: expectedContentHash });
 	}
-	agentPacksRemove(agentId: string, name: string, expectedContentHash?: string): Promise<AgentConfigAgentPacksRemoveResponse> {
-		return this.#t.request('/v1/agent_config/agent_packs/remove', { agent_id: agentId, name, expected_content_hash: expectedContentHash });
+	agentPacksRemove(agentId: string, name: string, expectedContentHash?: string, scope = 'agent'): Promise<AgentConfigAgentPacksRemoveResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/remove', { agent_id: agentId, name, scope, expected_content_hash: expectedContentHash });
 	}
-	agentPacksPropose(agentId: string, intent: string, expectedContentHash: string): Promise<AgentConfigAgentPacksProposeResponse> {
-		return this.#t.request('/v1/agent_config/agent_packs/propose', { agent_id: agentId, intent, expected_content_hash: expectedContentHash });
+	agentPacksPropose(agentId: string, intent: string, expectedContentHash: string, dryRun = false, scope = 'agent'): Promise<AgentConfigAgentPacksProposeResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/propose', { agent_id: agentId, intent, scope, expected_content_hash: expectedContentHash, dry_run: dryRun });
 	}
-	agentPacksCommit(agentId: string, proposalId: string, skill: AgentConfigAgentPackItem, reviewedHash: string, provenance: string, expectedContentHash: string): Promise<AgentConfigAgentPacksCommitResponse> {
-		return this.#t.request('/v1/agent_config/agent_packs/commit', { agent_id: agentId, proposal_id: proposalId, skill, reviewed_hash: reviewedHash, provenance, expected_content_hash: expectedContentHash });
+	agentPacksCommit(agentId: string, proposalId: string, skill: AgentConfigAgentPackItem, reviewedHash: string, provenance: string, expectedContentHash: string, scope = 'agent'): Promise<AgentConfigAgentPacksCommitResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/commit', { agent_id: agentId, proposal_id: proposalId, skill, scope, reviewed_hash: reviewedHash, provenance, expected_content_hash: expectedContentHash });
 	}
 	/** `agent_config.set_tool_exposure` — set MCP pause/resume + per-tool
 	 * policy (desired-state replace of the tool-exposure section); records a

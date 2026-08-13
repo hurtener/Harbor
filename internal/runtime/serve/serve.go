@@ -753,6 +753,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		MCPToolContext:                 mcpToolContext,
 		State:                          stack.State,
 		Skills:                         skillStore,
+		AgentPackLLM:                   stack.LLM,
 		AgentConfig:                    agentConfigRegistry,
 		AgentConfigID:                  devAgentConfigID,
 		AgentResolver:                  agentResolver,
