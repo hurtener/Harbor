@@ -112,6 +112,9 @@ type MCPToolValue struct {
 // Concurrent reuse: AppRef is a value type with no mutable state after
 // construction.
 type AppRef struct {
+	// Binding is an opaque, runtime-issued capability for callbacks from this
+	// rendered App. It is not derived from caller input.
+	Binding string
 	// ResourceURI is the `ui://`-scheme URI of the app's UI document.
 	// The host fetches the document via a resource read scoped to the
 	// request identity triple. Its canonical source is the tool

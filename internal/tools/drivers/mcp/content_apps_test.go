@@ -1,10 +1,31 @@
 package mcp
 
 import (
+	"context"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestProvider_AppBinding_IsOpaqueAndScoped(t *testing.T) {
+	p := &Provider{}
+	ctx := identity.With(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"})
+	token := p.mintAppBinding(ctx, "ui://app/main.html", "srv_callback")
+	if token == "" || token == "srv-a" {
+		t.Fatal("binding must be a non-empty opaque capability")
+	}
+	if !p.ValidateAppBinding(ctx, token, "srv_callback") {
+		t.Fatal("runtime-issued binding was rejected")
+	}
+	if p.ValidateAppBinding(ctx, token+"x", "srv_callback") {
+		t.Fatal("forged binding was accepted")
+	}
+	other := identity.With(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "other"})
+	if p.ValidateAppBinding(other, token, "srv_callback") {
+		t.Fatal("binding crossed identity scope")
+	}
+}
 
 // TestParseAppRef_RecognisesUIScheme covers the criterion that a tool
 // result carrying a `_meta.ui.resourceUri` slot with a `ui://`-scheme URI

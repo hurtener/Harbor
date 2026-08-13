@@ -4884,6 +4884,11 @@
           "optional": true
         },
         {
+          "key": "binding",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "tool",
           "type": "string"
         },
@@ -4958,6 +4963,11 @@
         {
           "key": "raw_html_trusted",
           "type": "boolean"
+        },
+        {
+          "key": "binding",
+          "type": "string",
+          "optional": true
         }
       ]
     },

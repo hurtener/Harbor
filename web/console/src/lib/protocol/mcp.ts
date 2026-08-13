@@ -297,6 +297,7 @@ export interface MCPAppRef {
    * `mcp.servers.set_raw_html_trust`.
    */
   raw_html_trusted: boolean;
+  binding?: string;
 }
 
 /**

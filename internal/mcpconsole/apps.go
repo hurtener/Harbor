@@ -283,6 +283,16 @@ func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI s
 // SAME: the identity / agent-reach / current-state exposure gate below and
 // the wrapped descriptor's approval / OAuth / identity path.
 func (a *AppsAccessor) CallTool(ctx context.Context, serverID, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	return a.callTool(ctx, serverID, "", tool, args)
+}
+
+// CallToolWithBinding dispatches an app callback using its opaque render
+// capability while preserving the ordinary invoker compatibility seam.
+func (a *AppsAccessor) CallToolWithBinding(ctx context.Context, serverID, binding, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	return a.callTool(ctx, serverID, binding, tool, args)
+}
+
+func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	desc, ok := a.cat.Resolve(tool)
 	if !ok {
 		// Not in the ordinary planner/model catalog. The only authority
@@ -295,6 +305,9 @@ func (a *AppsAccessor) CallTool(ctx context.Context, serverID, tool string, args
 				protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool)
 		}
 		appDesc, appOK := a.reg.ResolveAppTool(serverID, tool)
+		if appOK && !a.reg.ValidateAppBinding(ctx, serverID, binding, tool) {
+			appOK = false
+		}
 		if !appOK {
 			// The server is absent, or does not hold an app-only callback
 			// under this name. Same typed not-found — the App renders it as
@@ -511,6 +524,7 @@ func appRefFromValue(value any, serverID string) *protocol.MCPAppRefRow {
 	}
 	return &protocol.MCPAppRefRow{
 		ServerID:    serverID,
+		Binding:     v.AppRef.Binding,
 		ToolCallID:  v.AppRef.ToolCallID,
 		ResourceURI: v.AppRef.ResourceURI,
 		DisplayMode: v.AppRef.PreferredDisplayMode,

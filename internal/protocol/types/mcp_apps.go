@@ -64,6 +64,9 @@ type MCPAppRef struct {
 	// default-deny posture means the host sandboxes the iframe unless an
 	// operator explicitly opted in (mcp.servers.set_raw_html_trust).
 	RawHTMLTrusted bool `json:"raw_html_trusted"`
+	// Binding is an opaque host/render-issued callback capability. Apps cannot
+	// author it; the trusted host echoes it on callback requests.
+	Binding string `json:"binding,omitempty"`
 }
 
 // MCPResourceArtifactRef is the by-reference shape the MCP Apps surface
@@ -155,6 +158,7 @@ type MCPAppCallToolRequest struct {
 	// one keeps the legacy behavior (the field is optional for
 	// backward-compatible clients).
 	ServerID string `json:"server_id,omitempty"`
+	Binding  string `json:"binding,omitempty"`
 	// Tool is the catalog tool name to invoke (the Harbor-side
 	// `<source>_<tool>` name).
 	Tool string `json:"tool"`

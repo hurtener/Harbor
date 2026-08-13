@@ -170,6 +170,10 @@ type AppToolInvoker interface {
 	CallTool(ctx context.Context, serverID, tool string, args json.RawMessage) (MCPAppToolResultRow, error)
 }
 
+type appBindingInvoker interface {
+	CallToolWithBinding(context.Context, string, string, string, json.RawMessage) (MCPAppToolResultRow, error)
+}
+
 // AppsDeps bundles the runtime-side seams an AppsSurface reads through.
 type AppsDeps struct {
 	// Resource is the `ui://` resource reader (the MCP registry adapter).
@@ -370,7 +374,13 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	// source (an app-only callback resolves ONLY through that server's App
 	// dispatch catalog; a disagreeing serverID on an ordinary tool is
 	// refused before invocation).
-	res, err := s.invoker.CallTool(idCtx, r.ServerID, r.Tool, r.Arguments)
+	var res MCPAppToolResultRow
+	var err error
+	if bound, ok := s.invoker.(appBindingInvoker); ok {
+		res, err = bound.CallToolWithBinding(idCtx, r.ServerID, r.Binding, r.Tool, r.Arguments)
+	} else {
+		res, err = s.invoker.CallTool(idCtx, r.ServerID, r.Tool, r.Arguments)
+	}
 	if err != nil {
 		return nil, mapMCPError(string(method), err)
 	}
@@ -395,6 +405,7 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 			ResourceURI:    res.App.ResourceURI,
 			DisplayMode:    res.App.DisplayMode,
 			RawHTMLTrusted: res.App.RawHTMLTrusted,
+			Binding:        res.App.Binding,
 		}
 	}
 	return resp, nil

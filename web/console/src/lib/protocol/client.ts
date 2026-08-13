@@ -540,12 +540,13 @@ export class MCPAppsNamespace {
 	 * the Harbor catalog tool name (`<source>_<tool>`); `args` is the raw JSON
 	 * argument object the tool's schema validates on the wire.
 	 */
-	callTool<R = unknown>(serverID: string, tool: string, args?: unknown, agentID?: string): Promise<R> {
+	callTool<R = unknown>(serverID: string, tool: string, args?: unknown, agentID?: string, binding?: string): Promise<R> {
 		return this.#t.request<R>('/v1/control/mcp.apps.call_tool', {
 			server_id: serverID,
 			tool,
 			arguments: args,
 			...(agentID ? { agent_id: agentID } : {})
+			...(binding ? { binding } : {})
 		});
 	}
 	/**

@@ -63,6 +63,23 @@ type serverProvider interface {
 	Close(ctx context.Context) error
 }
 
+type appBindingProvider interface {
+	ValidateAppBinding(context.Context, string, string) bool
+}
+
+// ValidateAppBinding verifies a runtime-issued callback capability against the
+// named server. The token, rather than server_id, is the callback authority.
+func (r *Registry) ValidateAppBinding(ctx context.Context, serverID, token, tool string) bool {
+	r.mu.RLock()
+	entry := r.servers[serverID]
+	r.mu.RUnlock()
+	if entry == nil {
+		return false
+	}
+	p, ok := entry.provider.(appBindingProvider)
+	return ok && p.ValidateAppBinding(ctx, token, tool)
+}
+
 // compile-time assertion: the MCP *Provider satisfies serverProvider.
 var _ serverProvider = (*Provider)(nil)
 

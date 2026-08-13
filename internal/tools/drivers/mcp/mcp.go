@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -517,6 +518,46 @@ type Provider struct {
 	// selectedMode is the actual transport mode chosen by
 	// selectTransport — useful for tests and observability.
 	selectedMode MCPTransportMode
+	bindingsMu   sync.Mutex
+	bindings     map[string]appBinding
+}
+
+type appBinding struct {
+	identity    identity.Identity
+	resourceURI string
+	tool        string
+}
+
+func (p *Provider) mintAppBinding(ctx context.Context, resourceURI, tool string) string {
+	id, ok := identity.From(ctx)
+	if !ok {
+		return ""
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	token := base64.RawURLEncoding.EncodeToString(b)
+	p.bindingsMu.Lock()
+	if p.bindings == nil {
+		p.bindings = make(map[string]appBinding)
+	}
+	p.bindings[token] = appBinding{identity: id, resourceURI: resourceURI, tool: tool}
+	p.bindingsMu.Unlock()
+	return token
+}
+
+// ValidateAppBinding accepts only a capability minted by this provider for the
+// same identity, resource, and callback tool.
+func (p *Provider) ValidateAppBinding(ctx context.Context, token, tool string) bool {
+	id, ok := identity.From(ctx)
+	if !ok || token == "" {
+		return false
+	}
+	p.bindingsMu.Lock()
+	b, found := p.bindings[token]
+	p.bindingsMu.Unlock()
+	return found && b.identity == id && b.tool == tool
 }
 
 // New constructs a Provider. The Provider is NOT connected; the
@@ -1210,6 +1251,7 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	// its response, but a planner-initiated call never enters that path.
 	value.AppRef = reconcileAppRef(toolApp, value.AppRef, uiDisplayModeHint(res.Meta))
 	if value.AppRef != nil {
+		value.AppRef.Binding = p.mintAppBinding(ctx, value.AppRef.ResourceURI, name)
 		// Mint the stable per-invocation id (a content hash of run /
 		// server / tool / args — no mutable Provider field) and
 		// stamp it on the reference so BOTH the discovery event and the
@@ -1278,6 +1320,7 @@ func (p *Provider) publishAppAvailable(ctx context.Context, ref *AppRef, toolNam
 		Payload: AppAvailablePayload{
 			Identity:    q,
 			AgentID:     effectiveAgentID,
+			Binding:     ref.Binding,
 			ServerID:    p.source,
 			ToolCallID:  ref.ToolCallID,
 			ToolName:    toolName,
