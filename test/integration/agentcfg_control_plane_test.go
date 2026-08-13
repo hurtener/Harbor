@@ -60,7 +60,7 @@ type agentSkillReader struct {
 
 func (r agentSkillReader) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	filter.AgentID = r.agentID
-	return r.SkillStore.ListAgent(ctx, id, r.agentID, filter)
+	return r.SkillStore.List(ctx, id, filter)
 }
 
 func newACHarness(t *testing.T) *acHarness {
