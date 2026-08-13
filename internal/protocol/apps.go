@@ -98,6 +98,7 @@ type MCPResourceReader interface {
 // a non-app tool result.
 type MCPAppRefRow struct {
 	ServerID       string
+	Binding        string
 	ToolCallID     string
 	ResourceURI    string
 	DisplayMode    string
@@ -375,7 +376,6 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	// dispatch catalog; a disagreeing serverID on an ordinary tool is
 	// refused before invocation).
 	var res MCPAppToolResultRow
-	var err error
 	if bound, ok := s.invoker.(appBindingInvoker); ok {
 		res, err = bound.CallToolWithBinding(idCtx, r.ServerID, r.Binding, r.ResourceURI, r.Tool, r.Arguments)
 	} else {
