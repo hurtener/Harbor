@@ -104,6 +104,17 @@ func (e *Engine) hydrate(ctx context.Context) error {
 		if t.ParentTaskID != nil && *t.ParentTaskID != "" {
 			e.children[*t.ParentTaskID] = append(e.children[*t.ParentTaskID], t.ID)
 		}
+		// Seed the progress rate-window baseline from the persisted
+		// snapshot so a restarted engine does not treat the first
+		// post-restart message-only update as "outside the window".
+		// Best-effort by design: a snapshot that was durably recorded
+		// but coalesced (never published) right before the restart is
+		// treated as emitted, which can at most suppress one message-
+		// only publication — a real phase/fraction change always
+		// publishes.
+		if t.Progress != nil {
+			e.lastProgressEmit[t.ID] = t.Progress.ReportedAt
+		}
 	}
 
 	for _, g := range snap.Groups {

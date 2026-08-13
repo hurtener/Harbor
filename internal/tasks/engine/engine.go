@@ -62,12 +62,21 @@ import (
 // backend. Bus, redactor, and backend are all mandatory; a nil
 // argument fails loudly (CLAUDE.md §5).
 //
+// Options (variadic — existing callers pass none and get the
+// defaults):
+//
+//   - [WithProgressPolicy] replaces the default ReportProgress
+//     coalescing/rate policy (see [tasks.DefaultProgressPolicy]).
+//   - [WithClock] replaces the wall-clock source the progress path
+//     stamps ReportedAt with and evaluates the rate window against
+//     (tests inject a controllable clock; production uses time.Now).
+//
 // Hydration uses context.Background(): New runs at boot, before the
 // engine is handed to any caller, so there is no request context to
 // thread and no concurrent access to race. A backend whose Hydrate
 // returns an error fails New loudly rather than booting with partial
 // state.
-func New(bus events.EventBus, redactor audit.Redactor, backend Backend) (*Engine, error) {
+func New(bus events.EventBus, redactor audit.Redactor, backend Backend, opts ...Option) (*Engine, error) {
 	if bus == nil {
 		return nil, fmt.Errorf("tasks/engine: New requires a non-nil EventBus")
 	}
@@ -92,11 +101,47 @@ func New(bus events.EventBus, redactor audit.Redactor, backend Backend) (*Engine
 		patches:          map[patchKey]*tasks.Patch{},
 		acknowledged:     map[tasks.TaskID]struct{}{},
 		ulidEntropy:      ulid.Monotonic(rand.Reader, 0),
+		progressPolicy:   tasks.DefaultProgressPolicy(),
+		clock:            time.Now,
+		lastProgressEmit: map[tasks.TaskID]int64{},
+	}
+	for _, opt := range opts {
+		opt(e)
 	}
 	if err := e.hydrate(context.Background()); err != nil {
 		return nil, err
 	}
 	return e, nil
+}
+
+// Option configures an Engine at construction. Options are applied
+// before hydration, so a backend can observe their effects (e.g. a
+// progress snapshot hydrated into lastProgressEmit uses the injected
+// clock's epoch consistently with the reports that will follow).
+type Option func(*Engine)
+
+// WithProgressPolicy replaces the default ReportProgress
+// coalescing/rate policy. A zero-valued policy is treated as "use
+// [tasks.DefaultProgressPolicy]" — an operator explicitly disabling
+// the window sets MinInterval to zero, not the whole policy.
+func WithProgressPolicy(p tasks.ProgressPolicy) Option {
+	return func(e *Engine) {
+		e.progressPolicy = p
+	}
+}
+
+// WithClock replaces the wall-clock source the progress path uses for
+// ReportedAt stamping and rate-window evaluation. Tests inject a
+// controllable clock so the coalescing policy is deterministic
+// without time.Sleep (AGENTS.md §11); production uses time.Now. The
+// returned instant must be a UTC wall-clock time (its UnixNano is
+// what is stored).
+func WithClock(now func() time.Time) Option {
+	return func(e *Engine) {
+		if now != nil {
+			e.clock = now
+		}
+	}
 }
 
 // idempotencyKey scopes IdempotencyKey by the FULL identity triple.
@@ -170,6 +215,25 @@ type Engine struct {
 	retainWaiters    map[string][]*retainWaiter // key = SessionID
 	patches          map[patchKey]*tasks.Patch
 	acknowledged     map[tasks.TaskID]struct{}
+
+	// progressPolicy is the ReportProgress coalescing/rate policy
+	// (defaults to tasks.DefaultProgressPolicy; WithProgressPolicy
+	// overrides). clock is the wall-clock source the progress path
+	// stamps ReportedAt with (defaults to time.Now; WithClock
+	// overrides for tests).
+	progressPolicy tasks.ProgressPolicy
+	clock          func() time.Time
+	// lastProgressEmit records, per task, the unix-nanosecond instant
+	// of the task's last PUBLISHED task.progress event. It exists so
+	// the rate window is measured from the last emission, not the last
+	// (possibly coalesced) record — a rapidly-reported task whose
+	// records were all coalesced must not starve its own publication
+	// forever. All access is under `mu`. Rebuilt from each hydrated
+	// task's snapshot ReportedAt (best-effort: a coalesced-but-
+	// unemitted snapshot right before a restart is treated as emitted,
+	// which can only suppress the first post-restart message-only
+	// update — a real phase/fraction change always publishes).
+	lastProgressEmit map[tasks.TaskID]int64
 
 	closed      atomic.Bool
 	ulidEntropy *ulid.MonotonicEntropy
@@ -457,12 +521,23 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 		p := *t.ParentTaskID
 		cp.ParentTaskID = &p
 	}
+	if t.Progress != nil {
+		p := *t.Progress
+		if t.Progress.Fraction != nil {
+			f := *t.Progress.Fraction
+			p.Fraction = &f
+		}
+		cp.Progress = &p
+	}
 	if t.AgentReachAdmission != nil {
 		admission := tasks.AgentReachAdmission{
 			Envelope:      append([]byte(nil), t.AgentReachAdmission.Envelope...),
 			BindingDigest: append([]byte(nil), t.AgentReachAdmission.BindingDigest...),
 		}
 		cp.AgentReachAdmission = &admission
+	}
+	if t.LatestProgress != nil {
+		cp.LatestProgress = tasks.CloneProgress(t.LatestProgress)
 	}
 	return &cp, nil
 }
@@ -618,6 +693,14 @@ func copyTask(t *tasks.Task) *tasks.Task {
 	if t.ParentTaskID != nil {
 		p := *t.ParentTaskID
 		cp.ParentTaskID = &p
+	}
+	if t.Progress != nil {
+		p := *t.Progress
+		if t.Progress.Fraction != nil {
+			f := *t.Progress.Fraction
+			p.Fraction = &f
+		}
+		cp.Progress = &p
 	}
 	if t.AgentReachAdmission != nil {
 		admission := tasks.AgentReachAdmission{
