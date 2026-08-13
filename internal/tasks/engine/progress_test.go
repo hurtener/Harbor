@@ -302,7 +302,7 @@ func TestProgress_IdentityMismatch_Rejected(t *testing.T) {
 // nothing, and emits no event — so a progress event can never follow
 // the task's terminal event.
 func TestProgress_Terminal_RejectedAndOrdered(t *testing.T) {
-	eng, bus, _, ctx := newProgressEngine(t, tasks.DefaultProgressPolicy())
+	eng, _, _, ctx := newProgressEngine(t, tasks.DefaultProgressPolicy())
 	id := spawnProgressTask(t, eng, ctx, idQuad(), nil)
 
 	// A real report first — the progress event MUST precede the

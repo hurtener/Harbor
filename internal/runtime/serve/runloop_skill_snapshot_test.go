@@ -98,6 +98,14 @@ func (*runSnapshotReader) Search(context.Context, identity.Quadruple, string, in
 	return nil, errors.New("run snapshot must use its frozen candidate searcher")
 }
 
+func (*runSnapshotReader) GetScopeAgent(context.Context, identity.Quadruple, string, string, skills.Scope) (skills.Skill, error) {
+	return skills.Skill{}, skills.ErrSkillNotFound
+}
+
+func (*runSnapshotReader) SearchAgent(context.Context, identity.Quadruple, string, string, int) ([]skills.RankedSkill, error) {
+	return nil, errors.New("run snapshot must use its frozen candidate searcher")
+}
+
 func (*runSnapshotReader) SearchSnapshot(ctx context.Context, id identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
 	if err := skills.ValidateIdentity(id); err != nil {
 		return nil, err
@@ -109,6 +117,9 @@ func (*runSnapshotReader) Upsert(context.Context, identity.Quadruple, skills.Ski
 	return errors.New("not used")
 }
 func (*runSnapshotReader) Delete(context.Context, identity.Quadruple, string, skills.Scope) error {
+	return errors.New("not used")
+}
+func (*runSnapshotReader) DeleteAgent(context.Context, identity.Quadruple, string, string, skills.Scope) error {
 	return errors.New("not used")
 }
 func (*runSnapshotReader) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }
@@ -213,7 +224,7 @@ func TestRunLoopDriver_SkillSnapshot_UsesEffectiveAgentAndFreezesEveryConsumer(t
 		t.Fatal(err)
 	}
 
-	first, ok, err := driver.captureRunSkillSnapshot(t.Context(), selectedAgent, q)
+	first, ok, err := driver.captureRunSkillSnapshot(t.Context(), selectedAgent, q, nil)
 	if err != nil || !ok {
 		t.Fatalf("capture first snapshot: ok=%t err=%v", ok, err)
 	}
@@ -269,7 +280,7 @@ func TestRunLoopDriver_SkillSnapshot_UsesEffectiveAgentAndFreezesEveryConsumer(t
 
 	nextQ := q
 	nextQ.RunID = "run-2"
-	next, ok, err := driver.captureRunSkillSnapshot(t.Context(), selectedAgent, nextQ)
+	next, ok, err := driver.captureRunSkillSnapshot(t.Context(), selectedAgent, nextQ, nil)
 	if err != nil || !ok {
 		t.Fatalf("capture next snapshot: ok=%t err=%v", ok, err)
 	}
@@ -314,7 +325,7 @@ func TestRunLoopDriver_SkillSnapshot_ConcurrentTupleIsolation(t *testing.T) {
 			defer wg.Done()
 			q := concurrencySnapshotQ(i)
 			agentID := "agent-" + q.SessionID
-			snapshot, ok, err := driver.captureRunSkillSnapshot(t.Context(), agentID, q)
+			snapshot, ok, err := driver.captureRunSkillSnapshot(t.Context(), agentID, q, nil)
 			if err != nil || !ok {
 				errCh <- errors.New("capture failed")
 				return
