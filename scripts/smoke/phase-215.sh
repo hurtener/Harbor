@@ -59,11 +59,25 @@ fi
 #     assertion/removal/audit identity, but normal data-plane use MUST carry
 #     the exact effective agent restored from durable authenticated reach
 #     admission. Keep the two channels distinct. ---
-if grep -q 'admissionCtx, admittedAgentID, agentReachAdmitted := d.agentReachAdmissions.Restore(d.subCtx, task)' internal/runtime/serve/runloop.go 2>/dev/null \
-    && grep -q 'runCtx = tools.WithEffectiveAgentConfig(runCtx, effectiveAgentID)' internal/runtime/serve/runloop.go 2>/dev/null \
-    && grep -q 'agentID, ok = tools.EffectiveAgentConfigFrom(ctx)' internal/tools/auth/drivers/tokenexchange/tokenexchange.go 2>/dev/null; then
+# The three seams in their current authoritative shapes:
+#   (1) the reach receipt is restored with the IDENTITY-SCOPED task ctx
+#       (`Restore(taskCtx, task)` into pre-declared vars — the `:= d.subCtx`
+#       boot-ctx shape was superseded);
+#   (2) the restored receipt's agent becomes the run's effective agent
+#       (`effectiveAgentID = admittedAgentID`, gated on `agentReachAdmitted`),
+#       and the run ctx carries that reach-admitted selection via
+#       `tools.WithEffectiveAgentConfig` — never a caller-named widening;
+#   (3) at token exchange the DATA-PLANE branch (the `else` of the
+#       signed-capability-preparation guard) requires that reach-admitted
+#       effective agent via `tools.EffectiveAgentConfigFrom`, so a value
+#       derived from the caller cannot authorize signed credentials.
+if grep -q 'admissionCtx, admittedAgentID, agentReachAdmitted = d\.agentReachAdmissions\.Restore(taskCtx, task)' internal/runtime/serve/runloop.go 2>/dev/null \
+    && grep -q 'effectiveAgentID = admittedAgentID' internal/runtime/serve/runloop.go 2>/dev/null \
+    && grep -q 'runCtx = tools\.WithEffectiveAgentConfig(runCtx, effectiveAgentID)' internal/runtime/serve/runloop.go 2>/dev/null \
+    && grep -q 'if auth\.IsSignedCapabilityPreparation(ctx)' internal/tools/auth/drivers/tokenexchange/tokenexchange.go 2>/dev/null \
+    && grep -q 'agentID, ok = tools\.EffectiveAgentConfigFrom(ctx)' internal/tools/auth/drivers/tokenexchange/tokenexchange.go 2>/dev/null; then
     ok "phase 215 static: signed-capability use is bound to restored reach admission, not boot provenance"
-elif grep -q 'tools.WithEffectiveAgentConfig' internal/runtime/serve/runloop.go 2>/dev/null \
+elif grep -q 'tools\.WithEffectiveAgentConfig' internal/runtime/serve/runloop.go 2>/dev/null \
     || grep -q 'EffectiveAgentConfigFrom' internal/tools/auth/drivers/tokenexchange/tokenexchange.go 2>/dev/null; then
     fail "phase 215 static: signed-capability admission is incomplete — restore reach receipt, stamp effective agent, and require it at token exchange"
 else

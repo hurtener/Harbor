@@ -58,14 +58,21 @@ assert_grep_present 'return .\$\{serverID\}_\$\{name\}' "${BRIDGE}" \
 # wolf and gets deleted.
 assert_grep_absent 'startsWith\(.\$\{serverID\}' "${BRIDGE}" \
     'phase 207: no already-qualified escape hatch in the qualifier'
-# The wire request carries no app-supplied server scope — the namespace is
-# host-derived, never something the sandboxed App can aim. The precise guard is
-# the reflection test `TestMCPAppCallToolRequest_CarriesNoServerScope`
-# (internal/protocol/types); this pins its existence so the guard cannot be
-# deleted alongside the field it protects.
-assert_grep_present 'func TestMCPAppCallToolRequest_CarriesNoServerScope' \
+# The wire request carries no app-supplied server SCOPE — the only
+# server-namespace field is the HOST-derived `ServerID` the host pairs with
+# the App's render context, verified against the resolved tool's source at
+# dispatch, and NEVER a value the sandboxed App supplies about itself (HA-56
+# amendment of the D-351 confinement design). The precise guard is the
+# reflection/type test `TestMCPAppCallToolRequest_ServerIDIsHostDerived`
+# (internal/protocol/types), which pins the closed field set AND the
+# `server_id,omitempty` tag by reflection; this pins its existence so the
+# guard cannot be deleted alongside the field it protects.
+assert_grep_present 'func TestMCPAppCallToolRequest_ServerIDIsHostDerived' \
     internal/protocol/types/mcp_apps_test.go \
-    'phase 207: mcp.apps.call_tool takes no app-supplied server scope (guarded)'
+    'phase 207: mcp.apps.call_tool server scope is HOST-derived (reflection guard) — app input cannot supply a server namespace'
+assert_grep_present 'reflect\.TypeOf\(MCPAppCallToolRequest\{\}\)' \
+    internal/protocol/types/mcp_apps_test.go \
+    'phase 207: the wire request carries no app-suppliable server-scope field (closed field-set guard)'
 
 # ----------------------------------------------------------------------------
 # 2. A name that does not resolve inside the app's own server is a TYPED,

@@ -74,7 +74,7 @@ Expose governed virtual child profiles derived from a parent profile. D-419 is t
 
 ## Risks / open questions
 
-- Preview authority must derive from verified signed reach, not request-body claims; implementation must fail closed if reach is unavailable.
+- Preview authority is server-derived: it must derive from verified signed reach restored by the server's reach-admission authority, never from request-body claims or caller-named configuration; implementation must fail closed if reach is unavailable.
 - Any added wire field triggers D-223/D-209 and hand-maintained Console mirrors.
 
 ## Validation gate ledger
