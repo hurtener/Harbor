@@ -53,6 +53,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/artifactref"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // ErrArtifactRefNotFound is returned to a tool whose artifact-reference
@@ -656,6 +657,31 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		GroupID:           d.GroupID,
 		PropagateOnCancel: d.Spec.PropagateOnCancel,
 		NotifyOnComplete:  true,
+	}
+	if key := d.Spec.VirtualAgent; key != "" {
+		if virtualagent.RunBindingFrom(taskCtx) != nil {
+			return tasks.TaskHandle{}, "", virtualagent.ErrRecursion
+		}
+		frozen := virtualagent.FrozenMapFrom(taskCtx)
+		if frozen == nil {
+			return tasks.TaskHandle{}, "", virtualagent.ErrNoMap
+		}
+		if err := frozen.VerifyCurrent(taskCtx); err != nil {
+			return tasks.TaskHandle{}, "", err
+		}
+		profile, ok := frozen.Profile(virtualagent.Key(key))
+		if !ok {
+			return tasks.TaskHandle{}, "", fmt.Errorf("%w: %q", virtualagent.ErrUnknown, key)
+		}
+		if err := virtualagent.ValidateProfile(profile); err != nil {
+			return tasks.TaskHandle{}, "", fmt.Errorf("%w: %v", virtualagent.ErrInvalid, err)
+		}
+		binding, err := frozen.Bind(profile)
+		if err != nil {
+			return tasks.TaskHandle{}, "", err
+		}
+		req.AgentID = frozen.Owner
+		req.VirtualAgent = &binding
 	}
 	if parentID != "" {
 		req.ParentTaskID = &parentID

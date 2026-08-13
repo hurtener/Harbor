@@ -56,6 +56,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // New constructs an Engine over the given event bus, redactor, and
@@ -1434,7 +1435,7 @@ func cloneVirtualAgent(b *tasks.VirtualAgent) *tasks.VirtualAgent {
 	if b == nil {
 		return nil
 	}
-	c := *b
+	c := virtualagent.CloneBinding(*b)
 	return &c
 }
 

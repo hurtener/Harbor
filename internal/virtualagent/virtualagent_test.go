@@ -306,6 +306,32 @@ func TestFrozenMap_VerifyPin_RestartReproducesExactProfile(t *testing.T) {
 	}
 }
 
+func TestBinding_ProfileSnapshotIsSealedAndTamperEvident(t *testing.T) {
+	p := testProfile("reviewer")
+	frozen, err := NewFrozenMap(Map{Owner: "top-agent", Profiles: []Profile{p}}, "rev-1", strings.Repeat("a", 64), nil)
+	if err != nil {
+		t.Fatalf("NewFrozenMap: %v", err)
+	}
+	b, err := frozen.Bind(p)
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	b.Profile.Overlay.DisabledTools = append(b.Profile.Overlay.DisabledTools, "forged")
+	if _, err := frozen.VerifyPin(b); !errors.Is(err, ErrTampered) {
+		t.Fatalf("VerifyPin(tampered snapshot) = %v, want ErrTampered", err)
+	}
+
+	got, ok := frozen.Profile("reviewer")
+	if !ok {
+		t.Fatal("Profile(reviewer) missing")
+	}
+	got.Overlay.DisabledTools = append(got.Overlay.DisabledTools, "caller-mutation")
+	again, _ := frozen.Profile("reviewer")
+	if len(again.Overlay.DisabledTools) != len(p.Overlay.DisabledTools) {
+		t.Fatalf("frozen profile was mutated through returned slices: %v", again.Overlay.DisabledTools)
+	}
+}
+
 // TestOverlayNarrowingOperations pins the intersection / union / clamp
 // helpers: skills narrow by intersection, tool exclusions only ever
 // grow, and limits never widen past the parent's ceiling.

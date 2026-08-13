@@ -464,7 +464,10 @@ func (f *FrozenMap) Profile(k Key) (Profile, bool) {
 		return Profile{}, false
 	}
 	p, ok := f.profiles[k]
-	return p, ok
+	if !ok {
+		return Profile{}, false
+	}
+	return cloneProfile(p), true
 }
 
 // HashOf returns the frozen profile hash for key and whether it exists.
@@ -509,6 +512,9 @@ type Binding struct {
 	ConfigRevisionID string `json:"config_revision_id,omitempty"`
 	ConfigDigest     string `json:"config_digest,omitempty"`
 	ProfileHash      string `json:"profile_hash,omitempty"`
+	// Profile is the sealed canonical snapshot used to reconstruct the child
+	// without consulting mutable configuration after admission.
+	Profile Profile `json:"profile"`
 }
 
 // ValidateBinding checks the structural invariants of a persisted
@@ -537,6 +543,15 @@ func ValidateBinding(b Binding) error {
 	if _, err := hex.DecodeString(b.ProfileHash); err != nil {
 		return fmt.Errorf("virtualagent: binding profile hash is not hex: %v", err)
 	}
+	if b.Profile.Key != "" {
+		if err := ValidateProfile(NormalizeProfile(b.Profile)); err != nil {
+			return fmt.Errorf("virtualagent: binding profile snapshot: %w", err)
+		}
+		h, err := b.Profile.Hash()
+		if err != nil || h != b.ProfileHash {
+			return fmt.Errorf("virtualagent: binding profile snapshot does not match profile hash: %w", ErrTampered)
+		}
+	}
 	return nil
 }
 
@@ -559,6 +574,7 @@ func (f *FrozenMap) Bind(p Profile) (Binding, error) {
 		ConfigRevisionID: f.RevisionID,
 		ConfigDigest:     f.ConfigDigest,
 		ProfileHash:      h,
+		Profile:          cloneProfile(p),
 	}, nil
 }
 
@@ -578,6 +594,9 @@ func (f *FrozenMap) VerifyPin(b Binding) (Profile, error) {
 	if f == nil {
 		return Profile{}, ErrNoMap
 	}
+	if err := ValidateBinding(b); err != nil {
+		return Profile{}, fmt.Errorf("%w: %v", ErrTampered, err)
+	}
 	p, ok := f.Profile(b.Key)
 	if !ok {
 		return Profile{}, fmt.Errorf("%w: profile %q", ErrMissing, b.Key)
@@ -590,10 +609,32 @@ func (f *FrozenMap) VerifyPin(b Binding) (Profile, error) {
 	if h != b.ProfileHash {
 		return Profile{}, fmt.Errorf("%w: profile %q hash %s != bound %s", ErrTampered, b.Key, shortDigest(h), shortDigest(b.ProfileHash))
 	}
+	snapshotHash, _ := b.Profile.Hash()
+	if snapshotHash != b.ProfileHash || !profilesEqual(p, b.Profile) {
+		return Profile{}, fmt.Errorf("%w: profile snapshot disagrees with current profile", ErrTampered)
+	}
 	if p.Label != b.Label || p.Parent != b.Parent || p.Parent != f.Owner {
 		return Profile{}, fmt.Errorf("%w: profile %q metadata disagrees with the binding", ErrTampered, b.Key)
 	}
 	return p, nil
+}
+
+func cloneProfile(p Profile) Profile {
+	return NormalizeProfile(Profile{Key: p.Key, Label: p.Label, Parent: p.Parent, Overlay: p.Overlay})
+}
+
+// CloneBinding returns a defensive copy suitable for crossing a persistence
+// or task boundary. The snapshot's pointer and slice fields never alias the
+// caller's binding.
+func CloneBinding(b Binding) Binding {
+	b.Profile = cloneProfile(b.Profile)
+	return b
+}
+
+func profilesEqual(a, b Profile) bool {
+	aa, errA := canonicalJSON(NormalizeProfile(a))
+	bb, errB := canonicalJSON(NormalizeProfile(b))
+	return errA == nil && errB == nil && string(aa) == string(bb)
 }
 
 // IntersectStrings returns the sorted intersection of base and keep —
