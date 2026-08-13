@@ -17,16 +17,34 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.27] — 2026-08-13
+
 ### Added
 
-- Planned the v1.27 governance/docs track: typed MCP reliability
-  classification and failure-event accounting (D-410/D-413), operator-managed
-  per-agent skill packs and a read-only composition preview with CLI/Console
-  consumers (D-411/D-414/D-415), per-server MCP App callback dispatch
-  catalogs (D-412), and an explicit session-lifetime MCP App tool-context
-  retention contract (D-416). These contracts preserve identity isolation,
-  fail-loud behavior, Protocol-client boundaries, and real SDK/transcript
-  fixture requirements.
+- Typed MCP tool-result failure classification now preserves bounded provider
+  results through retry policy, planner observations, Apps callbacks, and
+  truthful lifecycle accounting without inferring authority from error text
+  (D-410).
+- Governed per-agent skill packs support policy-bound model proposals, exact
+  reviewed-hash publication, crash-safe CAS recovery, and next-run-only
+  activation while direct operator upserts remain LLM-free (D-411).
+- MCP Apps now use per-server app-only callback catalogs and opaque,
+  runtime-authored render bindings; app-only tools stay outside planner and
+  generic tool surfaces while callbacks re-enter the normal identity, reach,
+  OAuth, approval, audit, and redaction gates (D-412).
+- Max-step exhaustion can pause a live run at a bounded step tranche and resume
+  the same cumulative trajectory with a private, identity-bound token. A
+  process restart reports typed `restart_unavailable` rather than masquerading
+  as a new task (D-417/D-418).
+- Virtual child profiles are frozen into task receipts and can only narrow the
+  parent agent's model, instructions, limits, skills, tools, and MCP servers;
+  they do not mint a new isolation principal (D-419).
+- Child tasks can receive scoped artifact references and return schema-checked
+  output. Artifact IDs never grant authority, and model-facing contracts carry
+  references rather than bytes, URLs, credentials, or schemas (D-420).
+- Runtime-owned task progress is available to ReAct and the SDK through a
+  task-bound reporter, with durable snapshot/event convergence, ordered
+  terminal behavior, redaction, and additive Protocol projections (D-421).
 
 ## [1.26.12] — 2026-08-13
 
@@ -4436,7 +4454,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.26.12...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.27...HEAD
+[1.27]: https://github.com/hurtener/Harbor/compare/v1.26.12...v1.27
 [1.26.12]: https://github.com/hurtener/Harbor/compare/v1.26.11...v1.26.12
 [1.26.11]: https://github.com/hurtener/Harbor/compare/v1.26.10...v1.26.11
 [1.26.10]: https://github.com/hurtener/Harbor/compare/v1.26.9...v1.26.10
