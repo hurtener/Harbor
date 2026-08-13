@@ -27,6 +27,11 @@ Two versions move independently in Harbor (RFC §5.3):
   retention contract (D-416). These contracts preserve identity isolation,
   fail-loud behavior, Protocol-client boundaries, and real SDK/transcript
   fixture requirements.
+
+## [1.26.12] — 2026-08-13
+
+### Added
+
 - Optional signed `session_reach` JWT claim (D-409): a bearer may be pinned
   to a bounded set of session IDs it may select per request. Absent, D-171's
   dynamic per-request session selection is preserved exactly; present, the
