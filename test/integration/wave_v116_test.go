@@ -133,7 +133,7 @@ func testWaveV116BatchSpawnTools(t *testing.T) {
 	}
 	parentID := spawnParent(t, stack.Tasks, tripleCtx, id)
 
-	ctx, rc := batchIDCtx(t, id, string(parentID))
+	ctx, rc := batchIDCtx(t, stack.Catalog, id, string(parentID))
 	rawAny, _, err := stack.Executor.ExecuteDecision(ctx, rc, mixedBatch("acme"))
 	if err != nil {
 		t.Fatalf("ExecuteDecision(Batch): %v", err)
@@ -191,7 +191,7 @@ func testWaveV116MetaToolCancelHierarchy(t *testing.T) {
 	}
 
 	parentID := spawnParent(t, stack.Tasks, tripleCtx, id)
-	ctx, rc := batchIDCtx(t, id, string(parentID))
+	ctx, rc := batchIDCtx(t, stack.Catalog, id, string(parentID))
 
 	// Dispatch a Batch spawning an isolate child (C1) and a cascade child
 	// (C2), both under P. propagate_on_cancel is model-expressible for the
@@ -236,7 +236,7 @@ func testWaveV116MetaToolCancelHierarchy(t *testing.T) {
 	// (failure mode) A SIBLING run in the SAME session cannot cancel C1 — it
 	// is not that run's descendant. Fail loud with ErrTaskNotOwnDescendant.
 	siblingParent := spawnParent(t, stack.Tasks, tripleCtx, id)
-	sibCtx, sibRc := batchIDCtx(t, id, string(siblingParent))
+	sibCtx, sibRc := batchIDCtx(t, stack.Catalog, id, string(siblingParent))
 	_, _, sibErr := stack.Executor.ExecuteDecision(sibCtx, sibRc, planner.CancelTask{TaskID: c1, Reason: "sibling: not allowed"})
 	if !errors.Is(sibErr, dispatch.ErrTaskNotOwnDescendant) {
 		t.Fatalf("sibling _cancel_task err = %v, want ErrTaskNotOwnDescendant (scope violation)", sibErr)
@@ -773,7 +773,7 @@ func testWaveV116BatchConcurrencyStress(t *testing.T) {
 				UserID:    fmt.Sprintf("stress-user-%d", idx),
 				SessionID: fmt.Sprintf("stress-session-%d", idx),
 			}
-			ctx, rc := batchIDCtx(t, id, fmt.Sprintf("run-%d", idx))
+			ctx, rc := batchIDCtx(t, stack.Catalog, id, fmt.Sprintf("run-%d", idx))
 			rawAny, _, err := stack.Executor.ExecuteDecision(ctx, rc, mixedBatch(fmt.Sprintf("%d", idx)))
 			if err != nil {
 				errCh <- fmt.Errorf("session %d: %w", idx, err)

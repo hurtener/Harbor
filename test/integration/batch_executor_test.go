@@ -83,13 +83,16 @@ func buildBatchStack(t *testing.T, maxBatchSpawns int) (*assemble.Stack, *sync.M
 
 // batchIDCtx returns a quadruple-scoped ctx (tool half reads the
 // quadruple) and the matching RunContext for the given session + run.
-func batchIDCtx(t *testing.T, id identity.Identity, runID string) (context.Context, planner.RunContext) {
+func batchIDCtx(t *testing.T, cat tools.ToolCatalog, id identity.Identity, runID string) (context.Context, planner.RunContext) {
 	t.Helper()
 	ctx, err := identity.WithRun(context.Background(), id, runID)
 	if err != nil {
 		t.Fatalf("identity.WithRun: %v", err)
 	}
-	return ctx, planner.RunContext{Quadruple: identity.Quadruple{Identity: id, RunID: runID}}
+	return ctx, planner.RunContext{
+		Quadruple: identity.Quadruple{Identity: id, RunID: runID},
+		Catalog:   tools.NewPlannerView(cat, tools.CatalogFilter{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}),
+	}
 }
 
 // spawnParent creates a real parent run task under `id` and returns its
@@ -137,7 +140,7 @@ func TestBatchExecutor_MixedDispatch_IdentityPropagation(t *testing.T) {
 	}
 	parentID := spawnParent(t, stack.Tasks, tripleCtx, id)
 
-	ctx, rc := batchIDCtx(t, id, string(parentID))
+	ctx, rc := batchIDCtx(t, stack.Catalog, id, string(parentID))
 	rawAny, _, err := stack.Executor.ExecuteDecision(ctx, rc, mixedBatch("acme"))
 	if err != nil {
 		t.Fatalf("ExecuteDecision(Batch): %v", err)
@@ -194,7 +197,7 @@ func TestBatchExecutor_BreadthCap_ZeroSideEffects(t *testing.T) {
 		t.Fatalf("List(before): %v", err)
 	}
 
-	ctx, rc := batchIDCtx(t, id, string(parentID))
+	ctx, rc := batchIDCtx(t, stack.Catalog, id, string(parentID))
 	_, _, execErr := stack.Executor.ExecuteDecision(ctx, rc, mixedBatch("acme"))
 	if execErr == nil {
 		t.Fatal("over-cap Batch dispatched without error, want whole-batch rejection")
@@ -227,7 +230,7 @@ func TestBatchExecutor_FailFastDisagreement_ZeroSideEffects(t *testing.T) {
 		t.Fatalf("List(before): %v", err)
 	}
 
-	ctx, rc := batchIDCtx(t, id, string(parentID))
+	ctx, rc := batchIDCtx(t, stack.Catalog, id, string(parentID))
 	d := planner.Batch{
 		Spawns: []planner.SpawnTask{
 			{Spec: planner.SpawnSpec{Query: "a", FailFast: true}, CallID: "s0"},
@@ -267,8 +270,8 @@ func TestBatchExecutor_CancelHierarchy(t *testing.T) {
 	parentA := spawnParent(t, stack.Tasks, ctxA, idA)
 	parentB := spawnParent(t, stack.Tasks, ctxB, idB)
 
-	dispatchA, rcA := batchIDCtx(t, idA, string(parentA))
-	dispatchB, rcB := batchIDCtx(t, idB, string(parentB))
+	dispatchA, rcA := batchIDCtx(t, stack.Catalog, idA, string(parentA))
+	dispatchB, rcB := batchIDCtx(t, stack.Catalog, idB, string(parentB))
 
 	rawA, _, err := stack.Executor.ExecuteDecision(dispatchA, rcA, mixedBatch("A"))
 	if err != nil {
@@ -340,7 +343,7 @@ func TestBatchExecutor_ConcurrentSessions_NoLeakage(t *testing.T) {
 				UserID:    "user-" + strconv.Itoa(idx),
 				SessionID: "session-" + strconv.Itoa(idx),
 			}
-			ctx, rc := batchIDCtx(t, id, "run-"+strconv.Itoa(idx))
+			ctx, rc := batchIDCtx(t, stack.Catalog, id, "run-"+strconv.Itoa(idx))
 			rawAny, _, err := stack.Executor.ExecuteDecision(ctx, rc, mixedBatch(strconv.Itoa(idx)))
 			if err != nil {
 				errCh <- fmt.Errorf("session %d: %w", idx, err)

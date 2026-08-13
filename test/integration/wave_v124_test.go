@@ -741,7 +741,8 @@ func TestE2E_WaveV124_ByteEligibleConnectionStillSubstitutesAfterReattach(t *tes
 
 	// Through the PRODUCTION dispatch executor — the seat that makes the
 	// artifact resolver available, exactly as a planner CallTool decision does.
-	if _, _, err := r.exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q},
+	if _, _, err := r.exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q,
+		Catalog: tools.NewPlannerView(r.catalog, tools.CatalogFilter{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID})},
 		planner.CallTool{
 			CallID: "wv-eg-call",
 			Tool:   "wv-egress_ingest",
@@ -823,7 +824,8 @@ func TestE2E_WaveV124_ByteEligibleConnectionStillSubstitutesAfterReattach(t *tes
 		t.Fatalf("PutBytes(oversize): %v", err)
 	}
 	callsBefore := fix.callCount()
-	_, _, eerr := r.exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q},
+	_, _, eerr := r.exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q,
+		Catalog: tools.NewPlannerView(r.catalog, tools.CatalogFilter{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID})},
 		planner.CallTool{
 			CallID: "wv-eg-oversize",
 			Tool:   "wv-egress_ingest",
