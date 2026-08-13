@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 146 canonical event types a Harbor Runtime can publish, read from the live
+The 147 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -1544,6 +1544,21 @@ Payload `TaskPrioritisedPayload` — safe payload (delivered typed, verbatim).
 | `TaskID` | `tasks.TaskID` |  |
 | `PriorPriority` | `int` |  |
 | `NewPriority` | `int` |  |
+
+## `task.progress`
+
+Payload `TaskProgressPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `update_id` | `string` |  |
+| `TaskID` | `tasks.TaskID` |  |
+| `ParentTaskID` | `tasks.TaskID` |  |
+| `Fraction` | `*float64` |  |
+| `Phase` | `string` |  |
+| `Message` | `string` |  |
+| `Tags` | `[]string` |  |
+| `ReportedAt` | `int64` |  |
 
 ## `task.resumed`
 

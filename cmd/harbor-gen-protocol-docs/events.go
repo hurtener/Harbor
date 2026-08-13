@@ -218,6 +218,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	// --- Tasks lifecycle.
 	tasks.EventTypeTaskSpawned:                {Payloads: []reflect.Type{reflect.TypeOf(tasks.TaskSpawnedPayload{})}},
 	tasks.EventTypeTaskStarted:                {Payloads: []reflect.Type{reflect.TypeOf(tasks.TaskStartedPayload{})}},
+	tasks.EventTypeTaskProgress:               {Payloads: []reflect.Type{reflect.TypeOf(tasks.TaskProgressPayload{})}},
 	tasks.EventTypeTaskPaused:                 {Payloads: []reflect.Type{reflect.TypeOf(tasks.TaskPausedPayload{})}, Note: "Registry-driver scope: emitted by the task registry's MarkPaused transition, which no V1 production caller drives on the live pause path — a paused run stays `running` in the task projection and pause state travels on the `pause.*` events (see the [pause model](./pause-model.md))."},
 	tasks.EventTypeTaskResumed:                {Payloads: []reflect.Type{reflect.TypeOf(tasks.TaskResumedPayload{})}, Note: "Registry-driver scope: emitted by the task registry's MarkResumed transition, which no V1 production caller drives on the live pause path — subscribe to `pause.resumed` for live resume signals (see the [pause model](./pause-model.md))."},
 	tasks.EventTypeTaskCompleted:              {Payloads: []reflect.Type{reflect.TypeOf(tasks.TaskCompletedPayload{})}},
