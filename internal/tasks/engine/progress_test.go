@@ -160,7 +160,7 @@ func frac(v float64) *float64 { return &v }
 // background child task's first report is durably recorded (Get sees
 // it) and emitted with task + parent ids and the redacted snapshot.
 func TestProgress_FirstReport_RecordsEmitsAndCarriesParent(t *testing.T) {
-	eng, bus, _, ctx := newProgressEngine(t, tasks.DefaultProgressPolicy())
+	eng, bus, clock, ctx := newProgressEngine(t, tasks.DefaultProgressPolicy())
 	drain := progressSub(t, bus, idQuad())
 
 	parentID := spawnProgressTask(t, eng, ctx, idQuad(), nil)
@@ -195,7 +195,7 @@ func TestProgress_FirstReport_RecordsEmitsAndCarriesParent(t *testing.T) {
 	if got.Progress.Phase != "indexing" {
 		t.Errorf("persisted phase=%q, want indexing", got.Progress.Phase)
 	}
-	if got.Progress.ReportedAt != clockReportedAt {
+	if got.Progress.ReportedAt != clock.Now().UnixNano() {
 		t.Errorf("ReportedAt not stamped by the engine clock")
 	}
 	// Tags are normalized (trimmed + deduped) before persistence.

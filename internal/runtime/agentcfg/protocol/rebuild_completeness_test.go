@@ -9,6 +9,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	"github.com/hurtener/Harbor/internal/skills"
 )
 
 // rebuild_completeness_test.go is the D-283 mechanical guard: every
@@ -91,6 +92,7 @@ func rcSeed(t *testing.T) agentcfg.ConfigPayload {
 			{Name: "seed-beta", Body: "seed block beta"},
 		}},
 		VirtualAgents: &agentcfg.VirtualAgentsSection{Owner: rcAgent, MaxProfiles: 4},
+		AgentPacks:    []skills.AgentPackItem{{Name: "seed-pack", Trigger: "seed", Steps: []string{"seed"}}},
 	}
 	rcAssertSeedComplete(t, seed)
 	return seed
@@ -109,7 +111,7 @@ func rcAssertSeedComplete(t *testing.T, p agentcfg.ConfigPayload) {
 	for i := range tp.NumField() {
 		field := tp.Field(i)
 		fv := v.Field(i)
-		if fv.Kind() != reflect.Pointer {
+		if fv.Kind() != reflect.Pointer && fv.Kind() != reflect.Slice {
 			t.Fatalf("rebuild-completeness guard: ConfigPayload.%s is not an optional-pointer section — "+
 				"rcSeed and rcAssertSeedComplete (rebuild_completeness_test.go) assume every section is a "+
 				"pointer and need updating for the new shape", field.Name)

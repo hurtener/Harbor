@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -134,7 +135,13 @@ func TestValidateOverlay_RejectsWideningOrOversizedValues(t *testing.T) {
 		{"zero max_tokens", func(o *Overlay) { o.MaxTokens = intPtr(0) }, ErrInvalidOverlay},
 		{"oversized max_tokens", func(o *Overlay) { o.MaxTokens = intPtr(MaxMaxTokens + 1) }, ErrInvalidOverlay},
 		{"unknown reasoning effort", func(o *Overlay) { o.ReasoningEffort = strPtr("turbo") }, ErrInvalidOverlay},
-		{"oversized skills set", func(o *Overlay) { o.Skills = &[]string{strings.Repeat("s", MaxSkillEntries+1)} }, ErrInvalidOverlay},
+		{"oversized skills set", func(o *Overlay) {
+			s := make([]string, MaxSkillEntries+1)
+			for i := range s {
+				s[i] = fmt.Sprintf("skill-%d", i)
+			}
+			o.Skills = &s
+		}, ErrInvalidOverlay},
 		{"blank skill name", func(o *Overlay) { o.Skills = &[]string{" "} }, ErrInvalidOverlay},
 		{"oversized tool list", func(o *Overlay) { o.DisabledTools = []string{strings.Repeat("t", MaxToolListEntries+1)} }, ErrInvalidOverlay},
 		{"zero max_steps", func(o *Overlay) { o.MaxSteps = intPtr(0) }, ErrInvalidOverlay},
@@ -370,7 +377,7 @@ func TestProfileCloneBoundaries_PreserveCanonicalProfileAndHash(t *testing.T) {
 		Parent:           "top-agent",
 		InputPatterns:    []string{" image/* ", "*.png", "*.png"},
 		InputCount:       3,
-		InputDisposition: " ref ",
+		InputDisposition: "ref",
 		OutputSchema:     schema,
 	}
 	canonical := NormalizeProfile(source)

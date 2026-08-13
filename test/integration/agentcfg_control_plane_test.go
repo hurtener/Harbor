@@ -71,6 +71,7 @@ func newACHarness(t *testing.T) *acHarness {
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
+	activateFixtureAgent(t, reg, identity.Identity{TenantID: acTenant, UserID: acUser, SessionID: acSession}, acAgent)
 	dir, err := skills.NewDirectory(skillStore, skills.Deps{Bus: bus}, skills.DirectoryConfig{})
 	if err != nil {
 		t.Fatalf("directory: %v", err)

@@ -34,6 +34,13 @@ func (s *observedSkillStore) Delete(ctx context.Context, id identity.Quadruple, 
 	return s.SkillStore.Delete(ctx, id, name, scope)
 }
 
+func (s *observedSkillStore) DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) error {
+	s.mu.Lock()
+	s.deletes++
+	s.mu.Unlock()
+	return s.SkillStore.DeleteAgent(ctx, id, agentID, name, scope)
+}
+
 func (s *observedSkillStore) counts() (int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
