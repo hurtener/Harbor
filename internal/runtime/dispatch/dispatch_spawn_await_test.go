@@ -379,7 +379,10 @@ func TestExecutor_SpawnTask_InheritsExactAgentReachAdmission(t *testing.T) {
 
 	other := dispatchTestID
 	other.SessionID = "other-session"
-	otherRC := planner.RunContext{Quadruple: identity.Quadruple{Identity: other}}
+	otherRC := planner.RunContext{
+		Quadruple: identity.Quadruple{Identity: other},
+		Catalog:   tools.NewPlannerView(cat, tools.CatalogFilter{TenantID: other.TenantID, UserID: other.UserID, SessionID: other.SessionID}),
+	}
 	raw, _, err = exec.ExecuteDecision(ctx, otherRC, planner.SpawnTask{Spec: planner.SpawnSpec{Query: "cross identity"}})
 	if err != nil {
 		t.Fatalf("cross-identity behavior compatibility spawn: %v", err)
