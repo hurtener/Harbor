@@ -362,6 +362,67 @@ func TestBinding_ProfileSnapshotIsSealedAndTamperEvident(t *testing.T) {
 	}
 }
 
+func TestProfileCloneBoundaries_PreserveCanonicalProfileAndHash(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)
+	source := Profile{
+		Key:              "reviewer",
+		Label:            " reviewer ",
+		Parent:           "top-agent",
+		InputPatterns:    []string{" image/* ", "*.png", "*.png"},
+		InputCount:       3,
+		InputDisposition: " ref ",
+		OutputSchema:     schema,
+	}
+	canonical := NormalizeProfile(source)
+	wantHash, err := canonical.Hash()
+	if err != nil {
+		t.Fatalf("canonical.Hash: %v", err)
+	}
+
+	frozen, err := NewFrozenMap(Map{Owner: "top-agent", Profiles: []Profile{source}}, "rev-1", strings.Repeat("a", 64), nil)
+	if err != nil {
+		t.Fatalf("NewFrozenMap: %v", err)
+	}
+
+	got, ok := frozen.Profile(source.Key)
+	if !ok {
+		t.Fatal("FrozenMap.Profile(reviewer) missing")
+	}
+	if !profilesEqual(got, canonical) {
+		t.Fatalf("FrozenMap.Profile = %+v, want canonical %+v", got, canonical)
+	}
+	gotHash, ok := frozen.HashOf(source.Key)
+	if !ok || gotHash != wantHash {
+		t.Fatalf("FrozenMap.HashOf = %q/%v, want %q/true", gotHash, ok, wantHash)
+	}
+
+	// Bind must use the frozen canonical snapshot, not a caller-owned or
+	// non-canonical profile with the same key.
+	binding, err := frozen.Bind(source)
+	if err != nil {
+		t.Fatalf("FrozenMap.Bind: %v", err)
+	}
+	if !profilesEqual(binding.Profile, canonical) || binding.ProfileHash != wantHash {
+		t.Fatalf("Bind profile/hash = %+v/%q, want canonical/%q", binding.Profile, binding.ProfileHash, wantHash)
+	}
+
+	cloned := CloneBinding(binding)
+	if !profilesEqual(cloned.Profile, canonical) || cloned.ProfileHash != wantHash {
+		t.Fatalf("CloneBinding profile/hash = %+v/%q, want canonical/%q", cloned.Profile, cloned.ProfileHash, wantHash)
+	}
+	cloned.Profile.InputPatterns[0] = "forged"
+	cloned.Profile.OutputSchema[0] = 'X'
+	if !profilesEqual(binding.Profile, canonical) {
+		t.Fatal("CloneBinding profile mutation changed the source binding")
+	}
+	got.InputPatterns[0] = "forged"
+	got.OutputSchema[0] = 'X'
+	again, _ := frozen.Profile(source.Key)
+	if !profilesEqual(again, canonical) {
+		t.Fatal("FrozenMap.Profile mutation changed the frozen snapshot")
+	}
+}
+
 // TestOverlayNarrowingOperations pins the intersection / union / clamp
 // helpers: skills narrow by intersection, tool exclusions only ever
 // grow, and limits never widen past the parent's ceiling.

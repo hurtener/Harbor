@@ -636,19 +636,20 @@ func (f *FrozenMap) Bind(p Profile) (Binding, error) {
 	if f == nil {
 		return Binding{}, ErrNoMap
 	}
-	h, ok := f.HashOf(p.Key)
+	canonical, ok := f.Profile(p.Key)
 	if !ok {
 		return Binding{}, fmt.Errorf("%w: %q", ErrUnknown, p.Key)
 	}
+	h, _ := f.HashOf(p.Key)
 	return Binding{
 		AgentID:          f.Owner,
-		Key:              p.Key,
-		Label:            p.Label,
-		Parent:           p.Parent,
+		Key:              canonical.Key,
+		Label:            canonical.Label,
+		Parent:           canonical.Parent,
 		ConfigRevisionID: f.RevisionID,
 		ConfigDigest:     f.ConfigDigest,
 		ProfileHash:      h,
-		Profile:          cloneProfile(p),
+		Profile:          canonical,
 	}, nil
 }
 
@@ -694,7 +695,17 @@ func (f *FrozenMap) VerifyPin(b Binding) (Profile, error) {
 }
 
 func cloneProfile(p Profile) Profile {
-	return NormalizeProfile(Profile{Key: p.Key, Label: p.Label, Parent: p.Parent, Overlay: p.Overlay})
+	return NormalizeProfile(Profile{
+		Key:              p.Key,
+		Label:            p.Label,
+		Parent:           p.Parent,
+		Overlay:          p.Overlay,
+		InputPatterns:    p.InputPatterns,
+		InputCount:       p.InputCount,
+		InputDisposition: p.InputDisposition,
+		OutputSchema:     p.OutputSchema,
+		OutputSchemaHash: p.OutputSchemaHash,
+	})
 }
 
 // CloneBinding returns a defensive copy suitable for crossing a persistence
