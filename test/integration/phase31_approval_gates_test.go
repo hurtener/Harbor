@@ -84,7 +84,6 @@ func buildPhase31Env(t *testing.T, policy approval.ApprovalPolicy) *phase31Env {
 	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
 		SkipAuth:       true,
 		SkipTransports: true,
-		SkipCatalog:    true,
 		// Steering stays ON — the env exposes a steering.Registry
 		// even though phase31 doesn't drive it through the inbox
 		// today (the field is kept for the §17.6 future-proofing

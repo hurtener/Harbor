@@ -1007,7 +1007,8 @@ func TestE2E_WaveV124_OnePayloadInTheBandInlinesForTheModelAndOffloadsForTheCons
 	}
 
 	// The LLM edge INLINES it: the model gets the content.
-	obs := htRunTool(t, htExecutor(t, rig, store, htConsoleBand), id, "wv-band-llm")
+	cat := htCatalog(t, htConsoleBand)
+	obs := htRunTool(t, htExecutor(t, rig, cat, store), cat, id, "wv-band-llm")
 	if obs["truncated"] == true {
 		t.Fatalf("a %d-byte result was promoted to a stub at the LLM edge — the prompt budget "+
 			"is still following the Console's bound", htConsoleBand)

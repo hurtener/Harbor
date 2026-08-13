@@ -401,9 +401,10 @@ func TestE2E_ArtifactReadPath_UnresolvableRefReachesTheNextPlannerTurn(t *testin
 			// and not "this stack cannot resolve anything".
 			realID := readPathPut(t, store, owner, []byte("real content"), "text/plain")
 
-			exec := dispatch.NewToolExecutor(readPathRefCatalog(t), store, nil)
+			cat := readPathRefCatalog(t)
+			exec := dispatch.NewToolExecutor(cat, store, nil)
 
-			step := runOneReadPathStep(t, exec, readPathRefCatalog(t), owner, readPathRefCall("id_the_model_invented"))
+			step := runOneReadPathStep(t, exec, cat, owner, readPathRefCall("id_the_model_invented"))
 			want := string(planner.ObservationClassArtifactRefNotFound)
 			if got := stepErrorClass(t, "Step.Observation", step.Observation); got != want {
 				t.Errorf("Step.Observation class = %q, want %q (obs = %#v)", got, want, step.Observation)
@@ -420,7 +421,7 @@ func TestE2E_ArtifactReadPath_UnresolvableRefReachesTheNextPlannerTurn(t *testin
 			// Failure mode 3: a tool's own error is the UNCLASSIFIED
 			// control, so the class is proven to distinguish rather than
 			// to decorate.
-			control := runOneReadPathStep(t, exec, readPathRefCatalog(t), owner,
+			control := runOneReadPathStep(t, exec, cat, owner,
 				planner.CallTool{CallID: "c", Tool: "explodes", Args: json.RawMessage(`{}`)})
 			if got := stepErrorClass(t, "control Step.Observation", control.Observation); got != "" {
 				t.Errorf("a tool's own error acquired the class %q", got)
@@ -429,7 +430,7 @@ func TestE2E_ArtifactReadPath_UnresolvableRefReachesTheNextPlannerTurn(t *testin
 			// A resolvable reference on the same stack still works, so
 			// the assertions above are about a boundary rather than a
 			// broken wiring.
-			ok := runOneReadPathStep(t, exec, readPathRefCatalog(t), owner, readPathRefCall(realID))
+			ok := runOneReadPathStep(t, exec, cat, owner, readPathRefCall(realID))
 			if m, isMap := ok.Observation.(map[string]any); isMap && m["error"] != nil {
 				t.Fatalf("a resolvable reference failed: %v", m["error"])
 			}
@@ -437,7 +438,7 @@ func TestE2E_ArtifactReadPath_UnresolvableRefReachesTheNextPlannerTurn(t *testin
 			// Identity propagation: the SAME id under another tenant is
 			// classified the same way, and no bytes cross.
 			foreign := readPathQuad("rp-tenant-b", "rp-user-a", "rp-session-a", "rp-run-foreign")
-			cross := runOneReadPathStep(t, exec, readPathRefCatalog(t), foreign, readPathRefCall(realID))
+			cross := runOneReadPathStep(t, exec, cat, foreign, readPathRefCall(realID))
 			if got := stepErrorClass(t, "cross-tenant Step.Observation", cross.Observation); got != want {
 				t.Errorf("cross-tenant class = %q, want %q", got, want)
 			}
@@ -457,14 +458,15 @@ func TestE2E_ArtifactReadPath_ParallelBranchCarriesTheClass(t *testing.T) {
 	store := artifactsinmemStore(t)
 	owner := readPathQuad("rp-tenant-a", "rp-user-a", "rp-session-a", "rp-run-par")
 	realID := readPathPut(t, store, owner, []byte("real content"), "text/plain")
-	exec := dispatch.NewToolExecutor(readPathRefCatalog(t), store, nil)
+	cat := readPathRefCatalog(t)
+	exec := dispatch.NewToolExecutor(cat, store, nil)
 
 	good := readPathRefCall(realID)
 	good.CallID = "good"
 	bad := readPathRefCall("id_the_model_invented")
 	bad.CallID = "bad"
 
-	step := runOneReadPathStep(t, exec, readPathRefCatalog(t), owner,
+	step := runOneReadPathStep(t, exec, cat, owner,
 		planner.CallParallel{Branches: []planner.CallTool{good, bad}})
 
 	for label, obs := range map[string]any{"Observation": step.Observation, "LLMObservation": step.LLMObservation} {
@@ -489,10 +491,11 @@ func TestE2E_ArtifactReadPath_ParallelBranchCarriesTheClass(t *testing.T) {
 // failure mode 2: a stack with no artifact store. The class exists so a
 // planner does not spend its step budget retrying a misconfiguration.
 func TestE2E_ArtifactReadPath_NoArtifactStoreWiredIsTheOperatorClass(t *testing.T) {
-	exec := dispatch.NewToolExecutor(readPathRefCatalog(t), nil, nil)
+	cat := readPathRefCatalog(t)
+	exec := dispatch.NewToolExecutor(cat, nil, nil)
 	q := readPathQuad("rp-tenant-a", "rp-user-a", "rp-session-a", "rp-run-nostore")
 
-	step := runOneReadPathStep(t, exec, readPathRefCatalog(t), q, readPathRefCall("anything"))
+	step := runOneReadPathStep(t, exec, cat, q, readPathRefCall("anything"))
 	want := string(planner.ObservationClassArtifactResolverUnavailable)
 	if got := stepErrorClass(t, "Step.Observation", step.Observation); got != want {
 		t.Errorf("Step.Observation class = %q, want %q (obs = %#v)", got, want, step.Observation)
@@ -510,8 +513,8 @@ func TestE2E_ArtifactReadPath_NoArtifactStoreWiredIsTheOperatorClass(t *testing.
 // (a run's refusal must not be attributed to a sibling's success).
 func TestE2E_ArtifactReadPath_ConcurrentStress(t *testing.T) {
 	store := artifactsinmemStore(t)
-	cat := readPathCatalog(t, store, 0, 0)
-	exec := dispatch.NewToolExecutor(readPathRefCatalog(t), store, nil)
+	cat := readPathRefCatalog(t)
+	exec := dispatch.NewToolExecutor(cat, store, nil)
 
 	a := readPathQuad("rp-tenant-a", "rp-user-a", "rp-session-a", "rp-run-stress-a")
 	b := readPathQuad("rp-tenant-b", "rp-user-b", "rp-session-b", "rp-run-stress-b")
@@ -551,7 +554,7 @@ func TestE2E_ArtifactReadPath_ConcurrentStress(t *testing.T) {
 				problems <- "a binary artifact produced no error"
 			}
 			// An unresolvable reference through the executor.
-			step := runOneReadPathStep(t, exec, readPathRefCatalog(t), run, readPathRefCall("id_the_model_invented"))
+			step := runOneReadPathStep(t, exec, cat, run, readPathRefCall("id_the_model_invented"))
 			m, isMap := step.Observation.(map[string]any)
 			if !isMap {
 				problems <- fmt.Sprintf("observation = %#v, want the error map", step.Observation)

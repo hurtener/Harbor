@@ -118,8 +118,9 @@ func newPhase53Deps(t *testing.T, rlOpts ...steering.RunLoopOption) *phase53Deps
 		_ = bus.Close(context.Background())
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
+	cat := tools.NewCatalog()
 	return &phase53Deps{
-		catalog:  tools.NewCatalog(),
+		catalog:  cat,
 		registry: reg,
 		coord:    coord,
 		bus:      bus,

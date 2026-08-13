@@ -232,9 +232,8 @@ func htSeedPause(t *testing.T, coord pauseresume.Coordinator, id identity.Identi
 // htExecutor builds a dispatch executor over the rig's REAL artifact
 // store, threaded exactly as `assemble.go` threads it (the operator
 // field — the arm that FOLLOWS the raise).
-func htExecutor(t *testing.T, rig htRig, store artifacts.ArtifactStore, size int) steering.ToolExecutor {
+func htExecutor(t *testing.T, rig htRig, cat tools.ToolCatalog, store artifacts.ArtifactStore) steering.ToolExecutor {
 	t.Helper()
-	cat := htCatalog(t, size)
 	return dispatch.NewToolExecutor(cat, store, nil,
 		dispatch.WithHeavyThreshold(rig.cfg.Artifacts.HeavyOutputThresholdBytes),
 		dispatch.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
@@ -293,7 +292,8 @@ func TestE2E_HeavyThreshold_DefaultConfiguration_RaiseAndPinsTogether(t *testing
 		t.Fatalf("artifacts.Open: %v", err)
 	}
 	defer func() { _ = inlineStore.Close(context.Background()) }()
-	obs := htRunTool(t, htExecutor(t, rig, inlineStore, htConsoleBand), htCatalog(t, htConsoleBand), id, "run-inline")
+	cat := htCatalog(t, htConsoleBand)
+	obs := htRunTool(t, htExecutor(t, rig, cat, inlineStore), cat, id, "run-inline")
 	if obs["truncated"] == true {
 		t.Fatalf("a %d-byte tool result was promoted on the default configuration", htConsoleBand)
 	}
@@ -312,7 +312,8 @@ func TestE2E_HeavyThreshold_DefaultConfiguration_RaiseAndPinsTogether(t *testing
 		t.Fatalf("artifacts.Open: %v", err)
 	}
 	defer func() { _ = promoteStore.Close(context.Background()) }()
-	obs = htRunTool(t, htExecutor(t, rig, promoteStore, 256*1024), htCatalog(t, 256*1024), id, "run-promote")
+	cat = htCatalog(t, 256*1024)
+	obs = htRunTool(t, htExecutor(t, rig, cat, promoteStore), cat, id, "run-promote")
 	if obs["truncated"] != true {
 		t.Fatalf("a 256 KiB tool result was NOT promoted: %#v", obs)
 	}
@@ -353,7 +354,8 @@ func TestE2E_HeavyThreshold_DecouplingArm_OperatorRaiseDoesNotWidenTheConsole(t 
 		t.Fatalf("artifacts.Open: %v", err)
 	}
 	defer func() { _ = store.Close(context.Background()) }()
-	obs := htRunTool(t, htExecutor(t, rig, store, 200*1024), htCatalog(t, 200*1024), id, "run-operator")
+	cat := htCatalog(t, 200*1024)
+	obs := htRunTool(t, htExecutor(t, rig, cat, store), cat, id, "run-operator")
 	if obs["truncated"] == true {
 		t.Fatalf("a 200 KiB result was promoted under an operator threshold of %d", operator)
 	}
@@ -459,7 +461,8 @@ func TestE2E_HeavyThreshold_ArtifactStoreFailure_DegradesLoudlyNeverInlines(t *t
 	}
 	defer func() { _ = real.Close(context.Background()) }()
 
-	obs := htRunTool(t, htExecutor(t, rig, htFailingStore{real}, 256*1024), htCatalog(t, 256*1024), id, "run-failure")
+	cat := htCatalog(t, 256*1024)
+	obs := htRunTool(t, htExecutor(t, rig, cat, htFailingStore{real}), cat, id, "run-failure")
 	if obs["truncated"] != true {
 		t.Fatalf("the store failure did not degrade to a truncation summary: %#v", obs)
 	}
@@ -498,8 +501,10 @@ func TestE2E_HeavyThreshold_ConcurrentTenants_NoCrossTalkNoLeak(t *testing.T) {
 	defer func() { _ = store.Close(context.Background()) }()
 
 	// Two shared executors — one per size band — exercised concurrently.
-	inlineExec := htExecutor(t, rig, store, htConsoleBand)
-	promoteExec := htExecutor(t, rig, store, 256*1024)
+	inlineCat := htCatalog(t, htConsoleBand)
+	promoteCat := htCatalog(t, 256*1024)
+	inlineExec := htExecutor(t, rig, inlineCat, store)
+	promoteExec := htExecutor(t, rig, promoteCat, store)
 
 	const n = 16
 	var wg sync.WaitGroup
@@ -525,7 +530,11 @@ func TestE2E_HeavyThreshold_ConcurrentTenants_NoCrossTalkNoLeak(t *testing.T) {
 			if i%2 == 1 {
 				exec, wantPromoted = promoteExec, true
 			}
-			_, llmObs, eErr := exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q},
+			cat := inlineCat
+			if wantPromoted {
+				cat = promoteCat
+			}
+			_, llmObs, eErr := exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q, Catalog: tools.NewPlannerView(cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 				planner.CallTool{Tool: "bulk", Args: json.RawMessage(`{}`)})
 			if eErr != nil {
 				errCh <- eErr
