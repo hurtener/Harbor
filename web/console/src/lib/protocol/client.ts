@@ -545,7 +545,7 @@ export class MCPAppsNamespace {
 			server_id: serverID,
 			tool,
 			arguments: args,
-			...(agentID ? { agent_id: agentID } : {})
+			...(agentID ? { agent_id: agentID } : {}),
           ...(binding ? { binding } : {}),
           ...(resourceURI ? { resource_uri: resourceURI } : {})
 		});
