@@ -808,6 +808,8 @@ func (r *registry) Diff(ctx context.Context, id identity.Quadruple, agentID, fro
 		// Order is render order for the additive prompt blocks, so a pure
 		// re-ordering is a real change and the diff reports it.
 		ExtraSystemBlocks: agentcfg.DiffExtraSystemBlocks(from.Payload, to.Payload),
+		// The versioned virtual-agent profile map diff.
+		VirtualAgents: agentcfg.DiffVirtualAgents(from.Payload, to.Payload),
 	}, nil
 }
 

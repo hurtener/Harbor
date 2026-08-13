@@ -83,6 +83,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/state"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // LifecycleKind is the StateStore Kind constant for task-lifecycle
@@ -146,6 +147,21 @@ const (
 	// keep running.
 	PropagateIsolate = "isolate"
 )
+
+// VirtualAgent is the immutable per-task metadata that pins a
+// virtual-agent profile (internal/virtualagent.Binding): the owning
+// TOP-LEVEL agent, the profile key / label / parent, the parent config
+// revision id + digest the profile was frozen against, and the profile
+// content hash. It is carried on a planner-spawned task so the child's
+// run start reproduces the EXACT profile — or fails loud.
+//
+// `AgentID` stays the top-level agent on `Task.AgentID`; a virtual-agent
+// task is NEVER a different registered agent, never appears in
+// `agents.list`, and is never a `control.start` target. The binding is
+// constructed by the dispatch executor from the parent's frozen profile
+// map; the registry does not re-resolve it (the executor validates
+// unknown / invalid / stale BEFORE the task is persisted).
+type VirtualAgent = virtualagent.Binding
 
 // Task is the persisted lifecycle record for one task. The Identity
 // quadruple is captured immutably on Spawn; the runtime engine drives
@@ -308,6 +324,18 @@ type Task struct {
 	// wire resource cost, not the post-redaction representation. Zero means no
 	// caller memory and is omitted from historical rows.
 	CallerMemoryWireBytes int `json:",omitempty"`
+	// VirtualAgent is the immutable virtual-agent profile binding carried
+	// by a planner-spawned child when the parent selected a profile. Nil
+	// (the value on every non-profile task) is the pre-field behaviour —
+	// omission is byte-compatible. Constructed by the dispatch executor
+	// from the parent's frozen profile map; persisted verbatim via the
+	// whole-record marshal (no migration). It pins agent / key / label /
+	// parent / config-revision / digest / profile-hash so the child's run
+	// start reproduces the exact profile or fails loud. `Task.AgentID`
+	// stays the owning TOP-LEVEL agent; the binding never re-keys the
+	// task to a different registered agent and never joins the isolation
+	// tuple.
+	VirtualAgent *VirtualAgent `json:",omitempty"`
 }
 
 // SpawnRequest is the input shape for `Spawn`. Identity is mandatory.
@@ -391,6 +419,17 @@ type SpawnRequest struct {
 	// `caller_memory` still has a data-leakage path no prompt wrapper and
 	// no pattern redactor closes.
 	CallerMemory json.RawMessage
+	// VirtualAgent is the optional virtual-agent profile binding for a
+	// planner-spawned child. Nil (the default on every non-profile
+	// request) preserves the pre-field behaviour byte-for-byte. When
+	// non-nil the registry does NOT re-resolve the profile: the dispatch
+	// executor constructed the binding from the parent's FROZEN profile
+	// map and validated unknown / invalid / stale BEFORE calling Spawn —
+	// the registry persists it verbatim. Folded into the task's content
+	// identity so a reused idempotency key with a DIFFERENT binding is a
+	// loud conflict rather than a silent adoption of the original
+	// profile.
+	VirtualAgent *VirtualAgent
 }
 
 // SpawnToolRequest is the input shape for `SpawnTool`. The shape
@@ -1011,6 +1050,11 @@ func ValidateRequest(req SpawnRequest) error {
 	}
 	if err := validatePropagate(req.PropagateOnCancel); err != nil {
 		return err
+	}
+	if req.VirtualAgent != nil {
+		if err := virtualagent.ValidateBinding(*req.VirtualAgent); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+		}
 	}
 	return nil
 }

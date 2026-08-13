@@ -1789,3 +1789,33 @@ per-attachment Protocol
 `inline`, everything else → `ref` — byte-for-byte the pre-84b
 behaviour). Default: empty (runtime default applies). Validation:
 keys/values must satisfy the grammar above. Restart-required.
+
+## Virtual agents
+
+### virtual_agents.owner
+
+The configured top-level agent that owns the optional virtual-agent
+profiles (`virtual_agents:` block). Required when the block is present;
+must equal the runtime's configured default agent id (checked at the
+run-loop boundary). Virtual agents are NOT registered agents — they
+never appear in `agents.list`, are never `control.start` targets, and
+never join the isolation tuple. `Task.AgentID` stays the top-level
+agent; a profile is a per-run CONFIGURATION projection only.
+
+### virtual_agents.profiles
+
+The ordered declaration list of virtual-agent profiles owned by
+`virtual_agents.owner`. Each profile carries a `key` (the selector the
+planner's `_spawn_task` `virtual_agent` argument uses), an optional
+`label`, an optional `parent` (defaults to the owner; must equal it), and
+a bounded narrow-only overlay: `llm` (model / temperature / max_tokens /
+reasoning_effort), `skills` (intersection), `tools` (disabled_tools /
+paused_servers — exclusions only), `limits` (max_steps / token_budget),
+and `instructions` (trusted additive specialist guidance, ≤ 16 KiB). The
+overlay can never widen resources or guardrails, attach capabilities,
+own providers / hooks / memory, recurse into another profile, or target
+A2A — those dimensions have no fields, and strict YAML decoding rejects
+an unknown key at boot. The effective child run is the parent's frozen
+config plus the selected profile's overlay, pinned by profile hash +
+config revision/digest so a restart reproduces the exact profile.
+Omission (no block) is byte-compatible. Restart-required.

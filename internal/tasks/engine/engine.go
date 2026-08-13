@@ -398,6 +398,9 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		// the caller-supplied memory block (edge-validated; nil = none).
 		CallerMemory:          callerMemory,
 		CallerMemoryWireBytes: len(req.CallerMemory),
+		// the virtual-agent profile binding (executor-constructed from the
+		// parent's frozen profile map; nil = not a virtual-profile task).
+		VirtualAgent: cloneVirtualAgent(req.VirtualAgent),
 	}
 	// Validate the requested group BEFORE persisting anything. A
 	// missing / cross-session / sealed group must fail the spawn
@@ -1375,6 +1378,14 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if existing.AgentID != req.AgentID {
 		return false
 	}
+	// The virtual-agent profile binding is part of the task's content
+	// identity: a reused idempotency key selecting a DIFFERENT profile
+	// must surface as a loud conflict, never silently run the original
+	// profile. Two nil bindings compare equal (the non-profile retry
+	// path stays byte-identical).
+	if !virtualAgentEqual(existing.VirtualAgent, req.VirtualAgent) {
+		return false
+	}
 	if !tasks.AgentReachAdmissionsEqual(existing.AgentReachAdmission, admission) {
 		return false
 	}
@@ -1414,6 +1425,28 @@ func stringSliceEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// cloneVirtualAgent returns a defensive copy of a task's virtual-agent
+// binding (nil for nil) so the stored task never aliases the caller's
+// request value.
+func cloneVirtualAgent(b *tasks.VirtualAgent) *tasks.VirtualAgent {
+	if b == nil {
+		return nil
+	}
+	c := *b
+	return &c
+}
+
+// virtualAgentEqual reports whether two virtual-agent bindings agree on
+// every field — the content-identity comparison for the idempotency
+// conflict check. Two nil bindings are equal; a nil vs non-nil pair is
+// not (a reused key must not silently drop or adopt a profile).
+func virtualAgentEqual(a, b *tasks.VirtualAgent) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // spawnRequestContentHash returns a SHA-256 of the pre-redaction

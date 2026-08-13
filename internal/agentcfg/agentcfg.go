@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // Sentinel errors. Callers compare via errors.Is.
@@ -82,6 +83,14 @@ var (
 	// ErrRetirementConflict marks a replay whose operation identity or exact
 	// active-content precondition does not match the durable tombstone.
 	ErrRetirementConflict = errors.New("agentcfg: retirement conflict")
+	// ErrInvalidVirtualAgent — the supplied ConfigPayload carried a
+	// virtual-agents section that failed canonical validation
+	// (ValidateVirtualAgents): a duplicate or malformed profile key, an
+	// overbound, unsafe label/description/instruction text, a model-profile
+	// reference outside the configured set, a skill reference outside the
+	// agent's own membership, or an out-of-range child limit. Fails closed
+	// (CLAUDE.md §13) — nothing is persisted, diffed or hashed.
+	ErrInvalidVirtualAgent = errors.New("agentcfg: invalid virtual-agents section")
 )
 
 // ExpectNoActiveRevision is the reserved [SetOptions.ExpectedContentHash]
@@ -767,6 +776,102 @@ type NamingSection struct {
 	Model string `json:"model,omitempty"`
 }
 
+// VirtualAgentLimits bounds one virtual child's execution: the child-step
+// ceiling, the wall-clock ceiling and the output-token ceiling. Every field
+// is an OPTIONAL bound — zero means "unset, inherit the runtime default at
+// run start" — and a set field must be positive and within its documented
+// cap (enforced by ValidateVirtualAgents before normalization). Limits are
+// per-profile desired state and ride the immutable revision (diff / rollback).
+type VirtualAgentLimits struct {
+	// MaxSteps is the child's step ceiling. Zero inherits the runtime
+	// default; a set value must be in [1, VirtualAgentMaxSteps].
+	MaxSteps int `json:"max_steps,omitempty"`
+	// MaxTimeMS is the child's wall-clock ceiling in milliseconds. Zero
+	// inherits the runtime default; a set value must be in [1,
+	// VirtualAgentMaxTimeMS].
+	MaxTimeMS int `json:"max_time_ms,omitempty"`
+	// MaxTokens is the child's output-token ceiling. Zero inherits the
+	// runtime default; a set value must be in [1, VirtualAgentMaxTokens].
+	MaxTokens int `json:"max_tokens,omitempty"`
+}
+
+// VirtualAgentProfile is ONE bounded virtual-child profile pinned by the
+// virtual-agents section. Its surface is deliberately closed to exactly the
+// reference categories below — a model profile, LLM params, skill names,
+// narrowed tool names and child step/time/token limits — plus the
+// identity-ish label / description / additive instructions. It carries NO
+// field that can express connections, OAuth/LLM providers, credentials,
+// signed capabilities, hooks, memory, session auto-naming, A2A targets or
+// runtime targets, and NO field that can nest another profile or reference
+// one: recursion and nested virtual agents are structurally
+// unrepresentable (the wire decode is additionally required to reject
+// unknown fields so a smuggled JSON field cannot bypass the typed door).
+//
+// The profile is a NARROWING, never a widening: a child starts from the
+// agent's own configured surface and may only restrict it. The skills
+// membership check is enforced at set time (ValidateVirtualAgents); the
+// effective tool-catalog no-widen check is the run-start projection's, where
+// the live tool surface is known.
+type VirtualAgentProfile struct {
+	// Key is the profile's bounded, stable, NORMALIZED address within the
+	// section: a restricted identifier charset (virtualAgentKeyRE), unique
+	// within the section, and the sort key of the canonical form — a
+	// re-ordering or a re-add of the same key does not perturb the content
+	// hash. Required.
+	Key string `json:"key"`
+	// Label is the short human-readable display name. Optional; bounded to
+	// VirtualAgentMaxLabelRunes; must not carry unsafe control characters.
+	Label string `json:"label,omitempty"`
+	// Description is the longer operator-facing description. Optional;
+	// bounded to VirtualAgentMaxDescriptionRunes; safe prose.
+	Description string `json:"description,omitempty"`
+	// Instructions are ADDITIVE instruction lines composed into the child's
+	// system prompt. Order is SEMANTIC (the declared order is the
+	// composition order) and preserved through canonicalisation — a
+	// re-ordering is a real prompt change and must perturb the hash, the
+	// deliberate asymmetry with the sorted set siblings (Skills / Tools).
+	// Each instruction is bounded to VirtualAgentMaxInstructionRunes and
+	// must not carry unsafe control characters; a profile without
+	// instructions adds nothing.
+	Instructions []string `json:"instructions,omitempty"`
+	// ModelProfile references a configured llm.model_profiles entry by NAME
+	// (NON-SECRET). The reference is validated at set time against the
+	// configured set — a child can never name a model the runtime is not
+	// configured to serve. Empty inherits the agent's effective model.
+	ModelProfile string `json:"model_profile,omitempty"`
+	// LLMParams pins the child's sampling defaults — the SAME closed set of
+	// dimensions the envelope's LLMParams section carries. A set Model is a
+	// model-profile reference validated exactly like ModelProfile; the
+	// sampling dimensions are bounds-checked (temperature ∈ [0,2],
+	// max_tokens > 0, reasoning_effort in the canonical taxonomy).
+	LLMParams *LLMParams `json:"llm_params,omitempty"`
+	// Skills narrows the child to a SUBSET of the agent's own skill
+	// membership (the payload's skills section): every name must be a
+	// member, so a child can never widen the agent's skills. Optional.
+	Skills []string `json:"skills,omitempty"`
+	// Tools narrows the child's tool surface to the named tools. Optional;
+	// names are bounded; the effective no-widen check against the live tool
+	// catalog is the run-start projection's (the canonical envelope carries
+	// no positive tool list).
+	Tools []string `json:"tools,omitempty"`
+	// Limits bounds the child's execution (step / wall-clock / output-token
+	// ceilings). Optional.
+	Limits *VirtualAgentLimits `json:"limits,omitempty"`
+}
+
+// VirtualAgents is the virtual-agent section of the config envelope: the
+// bounded set of child profiles keyed by Key. Declared as its own section so
+// a set REPLACES only this section, preserving every sibling (the
+// section-merge invariant). Canonicalised sorted-by-key with a key-unique
+// invariant so a re-ordering does not perturb the content hash.
+type VirtualAgents struct {
+	// Profiles is the set of virtual-agent profiles. Canonicalised
+	// sorted-by-key with a key-unique invariant (validation refuses
+	// duplicates outright; normalisation is last-wins defensively for the
+	// direct SetRevision door).
+	Profiles []VirtualAgentProfile `json:"profiles,omitempty"`
+}
+
 // ConfigPayload is the forward-compatible config envelope. Every section
 // is an optional pointer so later consumers extend the envelope without a
 // schema break; only Skills is wired in the first wave.
@@ -791,10 +896,42 @@ type ConfigPayload struct {
 	LLMParams           *LLMParams           `json:"llm_params,omitempty"`
 	Hooks               *HooksSection        `json:"hooks,omitempty"`
 	Naming              *NamingSection       `json:"naming,omitempty"`
+	// VirtualAgents, when non-nil, pins the agent's bounded set of
+	// virtual-child profiles (see VirtualAgentProfile). Absent (nil)
+	// contributes nothing — an agent without the section behaves exactly as
+	// before, and the omission preserves the prior content hash
+	// byte-for-byte (the additive-envelope compatibility rule).
+	VirtualAgents *VirtualAgents `json:"virtual_agents,omitempty"`
 	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
 	// named additive prompt blocks. Absent (nil) contributes nothing and
 	// leaves the system prompt byte-identical.
 	ExtraSystemBlocks *ExtraSystemBlocks `json:"extra_system_blocks,omitempty"`
+	// VirtualAgents, when non-nil, pins the versioned virtual-agent
+	// profile map owned by the configured top-level agent. It shares the
+	// ONE canonical representation with the boot `virtual_agents:` YAML
+	// block (internal/virtualagent); at run start the active revision's
+	// section REPLACES the YAML map (agent-config over yaml precedence).
+	// Section PRESENCE is authoritative: a present section with no
+	// profiles is the explicit "no profiles" state that overrides a YAML
+	// map. Written through the direct SetRevision door (the Protocol wire
+	// envelope carries no virtual-agent fields in the bounded change that
+	// introduced the section); deep validation happens at the run-start
+	// freeze, matching every other section's validation boundary.
+	VirtualAgents *VirtualAgentsSection `json:"virtual_agents,omitempty"`
+}
+
+// VirtualAgentsSection is the versioned virtual-agent profile section of
+// the config envelope: the canonical profile map (internal/virtualagent)
+// owned by the configured top-level agent. Section PRESENCE is
+// authoritative — a present section (even with no profiles) REPLACES the
+// boot YAML map at run start, so a revision can also express "clear the
+// YAML profiles". Absent (nil) falls through to the YAML map.
+type VirtualAgentsSection struct {
+	// Owner is the top-level agent owning these profiles. Must equal the
+	// runtime's configured default agent id at freeze time.
+	Owner string `json:"owner,omitempty"`
+	// Profiles is the canonical profile list (key-sorted, key-unique).
+	Profiles []virtualagent.Profile `json:"profiles,omitempty"`
 }
 
 // Revision is an immutable, content-addressed agent-config record with a
@@ -911,6 +1048,10 @@ type Diff struct {
 	// prompt blocks (added / removed / body-changed by name, plus the
 	// order-only reorder flag).
 	ExtraSystemBlocks ExtraSystemBlocksDiff
+	// VirtualAgents is the structured delta of the versioned
+	// virtual-agent profile map (added / removed / changed by key, plus
+	// the owner-change flag).
+	VirtualAgents VirtualAgentsDiff
 }
 
 // Registry is the durable, identity-scoped, versioned desired-state
@@ -1083,7 +1224,30 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 			Model:          strings.TrimSpace(p.Naming.Model),
 		}
 	}
+	if p.VirtualAgents != nil {
+		// A non-nil virtual-agents section is ALWAYS preserved (profiles
+		// canonicalized via the shared internal/virtualagent normalizer, so
+		// the revision door and the YAML door produce byte-identical
+		// canonical forms) — section PRESENCE is the operator's signal: a
+		// present section (even with no profiles) REPLACES the YAML map at
+		// run start, so dropping it as "inert" would silently re-apply YAML
+		// profiles an admin revision meant to clear.
+		out.VirtualAgents = normalizeVirtualAgentsSection(p.VirtualAgents)
+	}
 	return out
+}
+
+// normalizeVirtualAgentsSection canonicalizes a virtual-agents section:
+// profiles are key-sorted / de-duplicated through the shared
+// internal/virtualagent normalizer (the SAME canonical form the boot
+// YAML map decodes to), the owner is trimmed, and section presence is
+// preserved even when the canonical profile list is empty.
+func normalizeVirtualAgentsSection(s *VirtualAgentsSection) *VirtualAgentsSection {
+	if s == nil {
+		return nil
+	}
+	m := virtualagent.NormalizeMap(virtualagent.Map{Owner: s.Owner, Profiles: s.Profiles})
+	return &VirtualAgentsSection{Owner: m.Owner, Profiles: m.Profiles}
 }
 
 // normalizeConnections returns a name-unique, sorted-by-name copy of the
@@ -1479,6 +1643,47 @@ func (p ConfigPayload) ExtraSystemBlockList() []NamedBlock {
 	return p.ExtraSystemBlocks.Blocks
 }
 
+// VirtualAgentsSectionView returns the payload's versioned
+// virtual-agent profile section and whether a PRESENT section pins one
+// (presence is authoritative — a present-empty section is the explicit
+// "no profiles" state). A convenience for the run-start projection and
+// the diff.
+func (p ConfigPayload) VirtualAgentsSectionView() (*VirtualAgentsSection, bool) {
+	if p.VirtualAgents == nil {
+		return nil, false
+	}
+	return p.VirtualAgents, true
+}
+
+// profileKeys returns the keyed canonical profile map for a section
+// (empty for an absent section), keyed by profile key string.
+func profileKeys(s *VirtualAgentsSection, set bool) map[string]virtualagent.Profile {
+	if !set || s == nil {
+		return map[string]virtualagent.Profile{}
+	}
+	out := make(map[string]virtualagent.Profile, len(s.Profiles))
+	for _, p := range s.Profiles {
+		out[string(p.Key)] = p
+	}
+	return out
+}
+
+// profileHashEqual reports whether two canonical profiles have identical
+// content by comparing their canonical hashes. Hash errors are
+// impossible for JSON-native values; a failure reports inequality (a
+// changed profile) rather than panicking.
+func profileHashEqual(a, b virtualagent.Profile) bool {
+	ha, err := a.Hash()
+	if err != nil {
+		return false
+	}
+	hb, err := b.Hash()
+	if err != nil {
+		return false
+	}
+	return ha == hb
+}
+
 // ExtraSystemBlocksDiff is the structured delta of the additive prompt
 // blocks across two revisions. Added / Removed / Changed are sorted so the
 // diff is deterministic; Reordered is the ORDER-only signal that has no
@@ -1554,6 +1759,70 @@ func DiffExtraSystemBlocks(from, to ConfigPayload) ExtraSystemBlocksDiff {
 			}
 		}
 	}
+	return d
+}
+
+// VirtualAgentsDiff is the structured delta of the versioned
+// virtual-agent profile map across two revisions. Added / Removed /
+// Changed are sorted so the diff is deterministic. A profile "changed"
+// when its canonical content hash differs (any overlay / label /
+// parent / key edit). An absent section compares as an empty map; a
+// present-empty section is a real state (the explicit "no profiles"
+// override) and diffs against a populated map as removals.
+type VirtualAgentsDiff struct {
+	// Added are the profile keys present only in the to-revision.
+	Added []string
+	// Removed are the profile keys present only in the from-revision.
+	Removed []string
+	// Changed are the keys present in both whose canonical profile hash
+	// differs.
+	Changed []string
+	// OwnerChanged reports that the two revisions name a different
+	// owning top-level agent.
+	OwnerChanged bool
+}
+
+// HasChanges reports whether the virtual-agent map differs between the
+// two revisions.
+func (d VirtualAgentsDiff) HasChanges() bool {
+	return len(d.Added) > 0 || len(d.Removed) > 0 || len(d.Changed) > 0 || d.OwnerChanged
+}
+
+// DiffVirtualAgents computes the structured delta of two
+// virtual-agents sections. Exported so the diff is one canonical
+// implementation shared by the driver and tests. Absent sections compare
+// as the empty map.
+func DiffVirtualAgents(from, to ConfigPayload) VirtualAgentsDiff {
+	var d VirtualAgentsDiff
+	fromSec, fromSet := from.VirtualAgentsSectionView()
+	toSec, toSet := to.VirtualAgentsSectionView()
+	if fromSet != toSet {
+		d.OwnerChanged = true
+	} else if fromSet && fromSec.Owner != toSec.Owner {
+		d.OwnerChanged = true
+	}
+
+	fromByKey := profileKeys(fromSec, fromSet)
+	toByKey := profileKeys(toSec, toSet)
+	for _, k := range toByKey {
+		fp, fok := fromByKey[k]
+		if !fok {
+			d.Added = append(d.Added, k)
+			continue
+		}
+		if profileHashEqual(fp, toByKey[k]) {
+			continue
+		}
+		d.Changed = append(d.Changed, k)
+	}
+	for _, k := range fromByKey {
+		if _, ok := toByKey[k]; !ok {
+			d.Removed = append(d.Removed, k)
+		}
+	}
+	sort.Strings(d.Added)
+	sort.Strings(d.Removed)
+	sort.Strings(d.Changed)
 	return d
 }
 

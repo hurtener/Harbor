@@ -278,6 +278,20 @@ type SpawnSpec struct {
 	// it spawns — paired with the observation/cancel meta-tools so
 	// detached work is never unobservable or unstoppable.
 	PropagateOnCancel string
+	// VirtualAgent is the OPTIONAL selector naming a virtual-agent
+	// profile the spawned child runs under. Empty (the default) is the
+	// pre-field behaviour: the child runs under the parent's effective
+	// agent configuration byte-for-byte. A non-empty value selects a
+	// profile owned by the configured top-level agent from the parent's
+	// FROZEN profile map; the child's effective configuration is the
+	// frozen parent config plus the profile's bounded non-recursive
+	// narrow-only overlay. The selector is the ONLY virtual-agent
+	// addition to the spawn surface: the child's Task.AgentID stays the
+	// top-level agent, profiles are never registered agents, and an
+	// unknown / invalid / stale selector fails at the dispatch edge
+	// BEFORE the task is persisted. A run that is itself a
+	// virtual-profile run cannot select another profile (non-recursive).
+	VirtualAgent string
 }
 
 // AwaitTask blocks the planner until the named task reaches a
