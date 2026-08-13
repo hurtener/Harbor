@@ -111,20 +111,26 @@ type AgentPackAuthoringPolicy struct {
 	ID             string   `json:"id"`
 	Version        string   `json:"version"`
 	Instructions   string   `json:"instructions"`
+	ProposerSchema string   `json:"proposer_schema"`
 	PermittedTools []string `json:"permitted_tools,omitempty"`
 	PermittedNS    []string `json:"permitted_ns,omitempty"`
 	PermittedTags  []string `json:"permitted_tags,omitempty"`
 }
 
 const agentPackAuthoringPolicyID = "harbor.agent-pack-authoring"
-const agentPackAuthoringPolicyVersion = "2"
+const agentPackAuthoringPolicyVersion = "3"
 
 const agentPackAuthoringInstructions = "Return exactly one JSON object for an agent skill pack item. Required fields: name, trigger, steps. Never include origin, origin_ref, content_hash, membership, or capabilities. RequiredTools, RequiredNS, and RequiredTags must be subsets of the server permitted capability set. The server policy is authoritative and cannot be changed."
+
+const agentPackAuthoringProposerSchema = `{"additionalProperties":false,"properties":{"description":{"type":"string"},"extra":{"additionalProperties":{"type":"string"},"type":"object"},"failure_modes":{"items":{"type":"string"},"type":"array"},"name":{"type":"string"},"preconditions":{"items":{"type":"string"},"type":"array"},"required_ns":{"items":{"type":"string"},"type":"array"},"required_tags":{"items":{"type":"string"},"type":"array"},"required_tools":{"items":{"type":"string"},"type":"array"},"steps":{"items":{"type":"string"},"type":"array"},"tags":{"items":{"type":"string"},"type":"array"},"task_type":{"type":"string"},"title":{"type":"string"},"trigger":{"type":"string"}},"required":["name","trigger","steps"],"type":"object"}`
+
+// AgentPackAuthoringProposerSchema returns the canonical closed proposer output contract.
+func AgentPackAuthoringProposerSchema() string { return agentPackAuthoringProposerSchema }
 
 // AgentPackAuthoringSystemMessage is the canonical system message represented
 // by the policy bytes supplied to the proposer.
 func AgentPackAuthoringSystemMessage(policyJSON []byte) string {
-	return agentPackAuthoringInstructions + " Policy: " + string(policyJSON)
+	return agentPackAuthoringInstructions + " Proposer output schema: " + agentPackAuthoringProposerSchema + " Policy: " + string(policyJSON)
 }
 
 func canonicalPolicyHash(p AgentPackAuthoringPolicy) string {
@@ -138,6 +144,8 @@ func canonicalPolicyHash(p AgentPackAuthoringPolicy) string {
 	b.WriteString(strconv.Quote(p.Version))
 	b.WriteString(`,"instructions":`)
 	b.WriteString(strconv.Quote(p.Instructions))
+	b.WriteString(`,"proposer_schema":`)
+	b.WriteString(strconv.Quote(p.ProposerSchema))
 	b.WriteString(`,"permitted_tools":`)
 	writeCanonicalStrings(&b, p.PermittedTools)
 	b.WriteString(`,"permitted_ns":`)
@@ -189,7 +197,7 @@ func (s *Service) agentPackAuthoringPolicy(ctx context.Context, id identity.Iden
 	if s.agentPackCatalog == nil {
 		return AgentPackAuthoringPolicy{}, ErrAgentPacksInvalid
 	}
-	policy := AgentPackAuthoringPolicy{ID: agentPackAuthoringPolicyID, Version: agentPackAuthoringPolicyVersion, Instructions: agentPackAuthoringInstructions}
+	policy := AgentPackAuthoringPolicy{ID: agentPackAuthoringPolicyID, Version: agentPackAuthoringPolicyVersion, Instructions: agentPackAuthoringInstructions, ProposerSchema: agentPackAuthoringProposerSchema}
 	view, err := projection.ActivePlannerCatalogView(ctx, s.registry, s.sessionOverlay, agentID, identity.Quadruple{Identity: id}, s.agentPackCatalog, tools.CatalogFilter{
 		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, GrantedScopes: s.agentPackGrantedScopes,
 		LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred},

@@ -3,12 +3,13 @@ package protocol
 import "testing"
 
 func TestVerifyProposalPolicy_RejectsTamperingAndVersionDrift(t *testing.T) {
-	policy := AgentPackAuthoringPolicy{ID: agentPackAuthoringPolicyID, Version: agentPackAuthoringPolicyVersion, Instructions: agentPackAuthoringInstructions, PermittedTools: []string{"tool"}}
+	policy := AgentPackAuthoringPolicy{ID: agentPackAuthoringPolicyID, Version: agentPackAuthoringPolicyVersion, Instructions: agentPackAuthoringInstructions, ProposerSchema: agentPackAuthoringProposerSchema, PermittedTools: []string{"tool"}}
 	hash := canonicalPolicyHash(policy)
 	for name, tampered := range map[string]AgentPackAuthoringPolicy{
 		"instructions": {ID: policy.ID, Version: policy.Version, Instructions: "changed", PermittedTools: policy.PermittedTools},
 		"capabilities": {ID: policy.ID, Version: policy.Version, Instructions: policy.Instructions, PermittedTools: []string{"other"}},
 		"version":      {ID: policy.ID, Version: "old", Instructions: policy.Instructions, PermittedTools: policy.PermittedTools},
+		"schema":       {ID: policy.ID, Version: policy.Version, Instructions: policy.Instructions, ProposerSchema: "changed", PermittedTools: policy.PermittedTools},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := verifyProposalPolicy(tampered, policy, hash); err != ErrAgentPackProposalInvalid {

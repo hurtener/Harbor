@@ -33,6 +33,9 @@ func New(client llm.LLMClient) (*Proposer, error) {
 // Draft requests one structured pack item. The service validates the returned
 // item again and stamps all provenance after this method returns.
 func (p *Proposer) Draft(ctx context.Context, q identity.Quadruple, agentID, model, intent string, policy protocol.AgentPackAuthoringPolicy) (protocol.AgentPackDraft, error) {
+	if policy.ProposerSchema != protocol.AgentPackAuthoringProposerSchema() {
+		return protocol.AgentPackDraft{}, fmt.Errorf("packproposer: unsupported proposer schema")
+	}
 	ctx, err := identity.With(ctx, q.Identity)
 	if err != nil {
 		return protocol.AgentPackDraft{}, fmt.Errorf("packproposer: identity: %w", err)

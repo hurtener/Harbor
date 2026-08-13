@@ -35,7 +35,7 @@ func TestProposer_DraftRejectsAuthorityAndUnknownFields(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = p.Draft(context.Background(), identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, "agent", "model", "intent", protocol.AgentPackAuthoringPolicy{})
+			_, err = p.Draft(context.Background(), identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, "agent", "model", "intent", protocol.AgentPackAuthoringPolicy{ProposerSchema: protocol.AgentPackAuthoringProposerSchema()})
 			if err == nil {
 				t.Fatal("accepted forbidden field")
 			}
@@ -57,7 +57,7 @@ func TestProposer_DraftRejectsTrailingJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.Draft(context.Background(), identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, "agent", "model", "intent", protocol.AgentPackAuthoringPolicy{})
+	_, err = p.Draft(context.Background(), identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, "agent", "model", "intent", protocol.AgentPackAuthoringPolicy{ProposerSchema: protocol.AgentPackAuthoringProposerSchema()})
 	if err == nil || !strings.Contains(err.Error(), "trailing JSON") {
 		t.Fatalf("error = %v, want trailing JSON rejection", err)
 	}

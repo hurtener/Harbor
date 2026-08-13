@@ -85,17 +85,19 @@ func TestAgentPacksCommit_ResumesPreparedTargetWithoutSecondRevision(t *testing.
 	if err != nil {
 		t.Fatalf("load committing receipt: %v", err)
 	}
-	var receiptFields map[string]string
+	var receiptFields map[string]any
 	if err := json.Unmarshal(receipt.Bytes, &receiptFields); err != nil {
 		t.Fatalf("decode committing receipt: %v", err)
 	}
+	stringField := func(name string) string { value, _ := receiptFields[name].(string); return value }
 	if err := catalog.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "newly-visible-tool"}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) { return tools.ToolResult{}, nil }}); err != nil {
 		t.Fatalf("register changed capability tool: %v", err)
 	}
-	if receipt.ID == "" || receiptFields["phase"] != "committing" || receiptFields["target_revision_id"] == "" || receiptFields["target_content_hash"] == "" {
+	targetRevisionID, targetContentHash := stringField("target_revision_id"), stringField("target_content_hash")
+	if receipt.ID == "" || stringField("phase") != "committing" || targetRevisionID == "" || targetContentHash == "" {
 		t.Fatalf("receipt did not durably capture exact target: %v", receiptFields)
 	}
-	if _, err := reg.Rollback(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, testAgentID, receiptFields["target_revision_id"], agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); err != nil {
+	if _, err := reg.Rollback(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, testAgentID, targetRevisionID, agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("publish prepared target: %v", err)
 	}
 	tampered := append([]byte(nil), receipt.Bytes...)
@@ -108,7 +110,8 @@ func TestAgentPacksCommit_ResumesPreparedTargetWithoutSecondRevision(t *testing.
 	if err != nil {
 		t.Fatalf("encode tampered receipt: %v", err)
 	}
-	if err := proposals.SaveIf(ctx, []state.SlotExpectation{{Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, Kind: "agentcfg.agent_pack.proposal." + proposal.ProposalID, ExpectedEventID: receipt.ID}}, state.StateRecord{ID: receipt.ID, Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, Kind: "agentcfg.agent_pack.proposal." + proposal.ProposalID, Bytes: tampered}); err != nil {
+	tamperedID := state.EventID("tampered-receipt")
+	if err := proposals.SaveIf(ctx, []state.SlotExpectation{{Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, Kind: "agentcfg.agent_pack.proposal." + proposal.ProposalID, ExpectedEventID: receipt.ID}}, state.StateRecord{ID: tamperedID, Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, Kind: "agentcfg.agent_pack.proposal." + proposal.ProposalID, Bytes: tampered}); err != nil {
 		t.Fatalf("tamper receipt: %v", err)
 	}
 
@@ -119,21 +122,22 @@ func TestAgentPacksCommit_ResumesPreparedTargetWithoutSecondRevision(t *testing.
 	if _, err := second.AgentPacksCommit(ctx, commit); !errors.Is(err, agentcfgprotocol.ErrAgentPackProposalInvalid) {
 		t.Fatalf("tampered receipt commit error = %v, want invalid proposal", err)
 	}
-	if err := proposals.SaveIf(ctx, []state.SlotExpectation{{Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, Kind: "agentcfg.agent_pack.proposal." + proposal.ProposalID, ExpectedEventID: receipt.ID}}, state.StateRecord{ID: receipt.ID, Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, Kind: "agentcfg.agent_pack.proposal." + proposal.ProposalID, Bytes: receipt.Bytes}); err != nil {
+	restoredID := state.EventID("restored-receipt")
+	if err := proposals.SaveIf(ctx, []state.SlotExpectation{{Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, Kind: "agentcfg.agent_pack.proposal." + proposal.ProposalID, ExpectedEventID: tamperedID}}, state.StateRecord{ID: restoredID, Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, Kind: "agentcfg.agent_pack.proposal." + proposal.ProposalID, Bytes: receipt.Bytes}); err != nil {
 		t.Fatalf("restore receipt: %v", err)
 	}
 	resumed, err := second.AgentPacksCommit(ctx, commit)
 	if err != nil {
 		t.Fatalf("retry commit: %v", err)
 	}
-	if resumed.Revision.RevisionID != receiptFields["target_revision_id"] {
-		t.Fatalf("retry revision = %q, want prepared target %q", resumed.Revision.RevisionID, receiptFields["target_revision_id"])
+	if resumed.Revision.RevisionID != targetRevisionID {
+		t.Fatalf("retry revision = %q, want prepared target %q", resumed.Revision.RevisionID, targetRevisionID)
 	}
 	active, activeSet, err := reg.Active(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, testAgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		t.Fatalf("load resumed active revision: %v", err)
 	}
-	if !activeSet || active.RevisionID != receiptFields["target_revision_id"] || active.ContentHash != receiptFields["target_content_hash"] {
+	if !activeSet || active.RevisionID != targetRevisionID || active.ContentHash != targetContentHash {
 		t.Fatalf("active revision = %+v (set=%t), want exact committing target", active, activeSet)
 	}
 	revisions, err := reg.ListRevisions(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, testAgentID, agentcfg.ConfigScopeAgent, 0)
