@@ -85,12 +85,15 @@ type ToolCompletedPayload struct {
 // operator-controlled (or wraps a sentinel).
 type ToolFailedPayload struct {
 	events.SafeSealed
-	Identity     identity.Quadruple
-	ToolName     string
-	Transport    TransportKind
-	Attempts     int
-	ErrorClass   ErrorClass
-	ErrorMessage string
+	Identity         identity.Quadruple
+	ToolName         string
+	Transport        TransportKind
+	Attempts         int
+	ErrorClass       ErrorClass
+	AttemptOrdinal   int
+	ConfiguredBudget int
+	ErrorSource      string
+	ErrorMessage     string
 	// ScopeShortfall carries the structured downstream insufficient-scope
 	// step-up when the terminal failure was an *ErrInsufficientScope. Nil for
 	// every other failure. Additive: it enriches the SAME tool.failed event
@@ -116,10 +119,13 @@ type ToolInvalidArgsPayload struct {
 // EventTypeToolPolicyExhausted. SafePayload.
 type ToolPolicyExhaustedPayload struct {
 	events.SafeSealed
-	Identity  identity.Quadruple
-	ToolName  string
-	Transport TransportKind
-	Attempts  int
-	LastClass ErrorClass
-	LastError string
+	Identity         identity.Quadruple
+	ToolName         string
+	Transport        TransportKind
+	Attempts         int
+	LastClass        ErrorClass
+	AttemptOrdinal   int
+	ConfiguredBudget int
+	ErrorSource      string
+	LastError        string
 }

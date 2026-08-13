@@ -33,6 +33,19 @@ const (
 // classifier maps Go errors to a class on each failed attempt.
 type ErrorClass string
 
+// PolicyError preserves terminal policy accounting while retaining the
+// underlying error chain for callers and lifecycle projection.
+type PolicyError struct {
+	Err      error
+	Attempts int
+	Budget   int
+	Class    ErrorClass
+	Source   string
+}
+
+func (e *PolicyError) Error() string { return e.Err.Error() }
+func (e *PolicyError) Unwrap() error { return e.Err }
+
 const (
 	// ErrClassTransient covers retryable infrastructure issues —
 	// network blips, "connection reset", "EOF", etc. The shell's
@@ -370,6 +383,7 @@ func runWithPolicy(
 
 	var lastErr error
 	var lastClass ErrorClass
+	var lastResult ToolResult
 
 	for attempt := range totalAttempts {
 		// Honor ctx cancellation between attempts.
@@ -399,6 +413,7 @@ func runWithPolicy(
 		}
 
 		result, invokeErr := safeInvoke(attemptCtx, invoke, args)
+		lastResult = result
 		if cancel != nil {
 			cancel()
 		}
@@ -415,7 +430,7 @@ func runWithPolicy(
 					// (a permanent class). Return the result-shape
 					// error wrapped against the original sentinel
 					// so callers can compare with errors.Is.
-					return ToolResult{}, wrap(ErrToolInvalidArgs, "output: %v", vErr)
+					return result, wrap(ErrToolInvalidArgs, "output: %v", vErr)
 				}
 			}
 			return result, nil
@@ -426,22 +441,39 @@ func runWithPolicy(
 
 		// Permanent + ctx-cancellation classes terminate the loop.
 		if lastClass == ErrClassPermanent {
-			return ToolResult{}, invokeErr
+			return result, terminalPolicyError(invokeErr, attempt+1, totalAttempts, lastClass)
 		}
 		// If the parent ctx died (not just the per-attempt one),
 		// terminate.
 		if parentErr := ctx.Err(); parentErr != nil {
-			return ToolResult{}, parentErr
+			return result, terminalPolicyError(parentErr, attempt+1, totalAttempts, ClassifyError(parentErr, false))
 		}
 		// If the class isn't in RetryOn, terminate.
 		if !resolved.retryAllowed(lastClass) {
-			return ToolResult{}, invokeErr
+			return result, terminalPolicyError(invokeErr, attempt+1, totalAttempts, lastClass)
 		}
 	}
 
 	// Terminal failure: wrap with ErrToolPolicyExhausted.
-	return ToolResult{}, fmt.Errorf("%w: %d attempts, last class=%s: %w",
-		ErrToolPolicyExhausted, totalAttempts, lastClass, lastErr)
+	return lastResult, &PolicyError{
+		Err:      fmt.Errorf("%w: %d attempts, last class=%s: %w", ErrToolPolicyExhausted, totalAttempts, lastClass, lastErr),
+		Attempts: totalAttempts,
+		Budget:   totalAttempts,
+		Class:    lastClass,
+		Source:   errorSource(lastErr),
+	}
+}
+
+func terminalPolicyError(err error, attempts, budget int, class ErrorClass) error {
+	return &PolicyError{Err: err, Attempts: attempts, Budget: budget, Class: class, Source: errorSource(err)}
+}
+
+func errorSource(err error) string {
+	var mcpErr *MCPToolResultError
+	if errors.As(err, &mcpErr) {
+		return "mcp"
+	}
+	return "classifier"
 }
 
 // safeInvoke calls invoke under a panic recovery so a misbehaving
