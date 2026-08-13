@@ -210,8 +210,8 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
 	var existingHash sql.NullString
 	err = tx.QueryRowContext(ctx, `
         SELECT origin, content_hash FROM skills
-        WHERE tenant = ? AND user = ? AND session = ? AND scope = ? AND name = ?`,
-		id.TenantID, id.UserID, storeSession, string(skill.Scope), skill.Name,
+		WHERE tenant = ? AND user = ? AND session = ? AND scope = ? AND agent_id = ? AND name = ?`,
+		id.TenantID, id.UserID, storeSession, string(skill.Scope), skill.AgentID, skill.Name,
 	).Scan(&existingOrigin, &existingHash)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -291,13 +291,13 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
 
 	if _, err := tx.ExecContext(ctx, `
         INSERT INTO skills
-            (tenant, user, session, scope, name, title, description, trigger,
+            (tenant, user, session, scope, agent_id, name, title, description, trigger,
              task_type, tags_json, tags_text, steps_json, preconditions_json,
              failure_modes_json, required_tools_json, required_ns_json,
              required_tags_json, origin, origin_ref, scope_tenant, scope_project,
              content_hash, created_at, updated_at, last_used, use_count, extra_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(tenant, user, session, scope, name) DO UPDATE SET
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(tenant, user, session, scope, agent_id, name) DO UPDATE SET
             title              = excluded.title,
             description        = excluded.description,
             trigger            = excluded.trigger,
@@ -317,7 +317,7 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
             content_hash       = excluded.content_hash,
             updated_at         = excluded.updated_at,
             extra_json         = excluded.extra_json`,
-		id.TenantID, id.UserID, storeSession, string(skill.Scope), skill.Name,
+		id.TenantID, id.UserID, storeSession, string(skill.Scope), skill.AgentID, skill.Name,
 		skill.Title, skill.Description, skill.Trigger, skill.TaskType,
 		tagsJSON, tagsText, stepsJSON, preJSON, failJSON,
 		rtJSON, rnsJSON, rtgJSON,
@@ -369,7 +369,7 @@ func (d *driver) Get(ctx context.Context, id identity.Quadruple, name string) (s
 	// deterministic; the user verb reads its rung back via a scope-filtered
 	// List, never this ambiguous path.
 	row := d.db.QueryRowContext(ctx, selectSkillsSQL+`
-        WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND name = ?
+		WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND agent_id = '' AND name = ?
         ORDER BY (session = ?) DESC
         LIMIT 1`,
 		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), name, id.SessionID)
@@ -393,7 +393,7 @@ func (d *driver) GetScope(ctx context.Context, id identity.Quadruple, name strin
 		return skills.Skill{}, skills.EmitIdentityRejected(ctx, d.bus, id, "GetScope")
 	}
 	row := d.db.QueryRowContext(ctx, selectSkillsSQL+`
-        WHERE tenant = ? AND user = ? AND session = ? AND scope = ? AND name = ?
+		WHERE tenant = ? AND user = ? AND session = ? AND scope = ? AND agent_id = '' AND name = ?
         LIMIT 1`,
 		id.TenantID, id.UserID, skills.StorageSessionID(id, scope), string(scope), name)
 	got, err := scanSkill(row)
@@ -432,8 +432,8 @@ func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.
 	// narrows this to the user rung alone (the AND scope = ? below); the
 	// default (no scope filter) unions the session rung with the durable
 	// user rung, which is exactly what the run-start directory view needs.
-	sb.WriteString(` WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?)`)
-	args = append(args, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser))
+	sb.WriteString(` WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND agent_id = ?`)
+	args = append(args, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), filter.AgentID)
 	if filter.Scope != "" {
 		sb.WriteString(` AND scope = ?`)
 		args = append(args, string(filter.Scope))
@@ -542,10 +542,10 @@ func (d *driver) Delete(ctx context.Context, id identity.Quadruple, name string,
 		args  []any
 	)
 	if scope == skills.ScopeUser {
-		query = `DELETE FROM skills WHERE tenant = ? AND user = ? AND scope = ? AND name = ?`
-		args = []any{id.TenantID, id.UserID, string(skills.ScopeUser), name}
+		query = `DELETE FROM skills WHERE tenant = ? AND user = ? AND scope = ? AND agent_id = ? AND name = ?`
+		args = []any{id.TenantID, id.UserID, string(skills.ScopeUser), "", name}
 	} else {
-		query = `DELETE FROM skills WHERE tenant = ? AND user = ? AND session = ? AND scope != ? AND name = ?`
+		query = `DELETE FROM skills WHERE tenant = ? AND user = ? AND session = ? AND scope != ? AND agent_id = '' AND name = ?`
 		args = []any{id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), name}
 	}
 	res, err := d.db.ExecContext(ctx, query, args...)
@@ -752,7 +752,7 @@ func unmarshalExtra(s string) map[string]any {
 // skillCols is the comma-separated column list `scanSkill` consumes.
 // Kept as a bare list (no `SELECT` / no `FROM skills`) so callers can
 // compose it with extra columns (e.g. `, rowid`) and pick their FROM.
-const skillCols = `name, title, description, trigger, task_type,
+const skillCols = `agent_id, name, title, description, trigger, task_type,
        tags_json, steps_json, preconditions_json, failure_modes_json,
        required_tools_json, required_ns_json, required_tags_json,
        origin, origin_ref, scope, scope_tenant, scope_project,
@@ -783,7 +783,7 @@ func scanSkill(r scannable) (skills.Skill, error) {
 		extraJSON string
 	)
 	if err := r.Scan(
-		&s.Name, &s.Title, &s.Description, &s.Trigger, &s.TaskType,
+		&s.AgentID, &s.Name, &s.Title, &s.Description, &s.Trigger, &s.TaskType,
 		&tagsJSON, &stepsJSON, &preJSON, &failJSON,
 		&rtJSON, &rnsJSON, &rtgJSON,
 		&origin, &s.OriginRef, &scope, &s.ScopeTenantID, &s.ScopeProjectID,

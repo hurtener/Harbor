@@ -107,7 +107,10 @@ const (
 //   - `Origin` ∈ {OriginPack, OriginGenerated}
 //   - `Scope` ∈ {ScopeSession, ScopeUser, ScopeProject, ScopeTenant, ScopeGlobal}
 type Skill struct {
-	Name           string
+	Name string
+	// AgentID is selection metadata for an agent-owned skill. It is not an
+	// isolation principal; tenant/user/session remain the security boundary.
+	AgentID        string
 	Title          string
 	Description    string
 	Trigger        string
@@ -163,7 +166,9 @@ func (s Skill) Validate() error {
 // matched as "any". Drivers cap `Limit` at 1000; `Limit == 0` falls
 // back to the driver default (100).
 type ListFilter struct {
-	Scope    Scope
+	Scope Scope
+	// AgentID selects an agent-owned namespace without widening identity.
+	AgentID  string
 	TaskType string
 	Tags     []string // any-of match against the skill's `Tags`
 	Limit    int
@@ -301,7 +306,8 @@ type SkillStore interface {
 	SnapshotCandidateSearcher
 
 	// Upsert inserts or updates `skill` under the identity-scoped
-	// `(tenant, user, session, scope, name)` key. Conflict policy
+	// `(tenant, user, session, scope, agent_id, name)` key. AgentID is
+	// selection metadata, not an isolation principal. Conflict policy
 	// (RFC §6.7):
 	//
 	//   - existing.Origin == "pack" && skill.Origin != "pack" →
