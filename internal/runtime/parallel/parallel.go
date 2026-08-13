@@ -114,6 +114,7 @@ type executeOptions struct {
 	// branch's Result.Err instead of aborting the whole call. Default
 	// false = the atomic posture.
 	nonAtomicSetup bool
+	resolver       Resolver
 }
 
 // WithNonAtomicSetup selects non-atomic setup validation.
@@ -137,6 +138,13 @@ type executeOptions struct {
 // surface and keep the atomic posture.
 func WithNonAtomicSetup() ExecuteOption {
 	return func(o *executeOptions) { o.nonAtomicSetup = true }
+}
+
+// WithResolver applies a per-call descriptor view. It is used by the runtime
+// dispatch edge to enforce the run's sealed planner catalog without mutating a
+// shared Executor.
+func WithResolver(resolver Resolver) ExecuteOption {
+	return func(o *executeOptions) { o.resolver = resolver }
 }
 
 // Result is the per-branch outcome the executor produces. Each entry
@@ -205,6 +213,10 @@ func (e *Executor) Execute(ctx context.Context, call planner.CallParallel, opts 
 	for _, opt := range opts {
 		opt(&eo)
 	}
+	resolver := e.resolver
+	if eo.resolver != nil {
+		resolver = eo.resolver
+	}
 
 	// Identity (§6 rule 9). The executor reads ctx for the run's
 	// identity quadruple; missing identity rejects fail-closed
@@ -255,7 +267,7 @@ func (e *Executor) Execute(ctx context.Context, call planner.CallParallel, opts 
 		setupErrs = make([]error, len(branches))
 	}
 	for i, b := range branches {
-		desc, ok := e.resolver.Resolve(b.Tool)
+		desc, ok := resolver.Resolve(b.Tool)
 		if !ok {
 			err := fmt.Errorf(
 				"%w: parallel branch[%d] tool %q not registered",

@@ -13,6 +13,21 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 )
 
+type trustedCompletionHookContextKey struct{}
+
+// WithTrustedCompletionHook marks the runtime-owned completion-hook path.
+// This narrowly scoped bypass is not available to planner decisions.
+func WithTrustedCompletionHook(ctx context.Context) context.Context {
+	return context.WithValue(ctx, trustedCompletionHookContextKey{}, true)
+}
+
+// IsTrustedCompletionHook reports whether ctx was marked by the completion
+// hook dispatcher.
+func IsTrustedCompletionHook(ctx context.Context) bool {
+	trusted, _ := ctx.Value(trustedCompletionHookContextKey{}).(bool)
+	return trusted
+}
+
 // DefaultCompletionHookTimeout bounds the detached run-completion hook
 // dispatch when the configured timeout is non-positive. The dispatch runs
 // under a context detached from the (possibly already-cancelled) run ctx
@@ -446,6 +461,7 @@ func (rl *RunLoop) fireCompletionHook(runCtx context.Context, spec RunSpec, q id
 
 	dispatchStart := rl.clock.Now()
 	rc := planner.RunContext{Quadruple: q, Goal: initialGoal, Trajectory: spec.Base.Trajectory}
+	hookCtx = WithTrustedCompletionHook(hookCtx)
 	if _, _, execErr := spec.ToolExecutor.ExecuteDecision(hookCtx, rc, planner.CallTool{Tool: hook.Tool, Args: args}); execErr != nil {
 		rl.completionHookFailed(runCtx, q, hook.Tool, outcome, classifyHookErr(execErr))
 		return

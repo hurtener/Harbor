@@ -455,7 +455,10 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 	if d.Tool == "" {
 		return nil, nil, errors.New("CallTool.Tool is empty")
 	}
-	desc, ok := e.cat.Resolve(d.Tool)
+	desc, ok, err := e.resolveForRun(ctx, rc, d.Tool)
+	if err != nil {
+		return nil, nil, err
+	}
 	if !ok {
 		return nil, nil, fmt.Errorf("%w: %q", tools.ErrToolNotFound, d.Tool)
 	}
@@ -480,6 +483,37 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 	return raw, llmObs, nil
 }
 
+func (e *toolExecutor) resolveForRun(ctx context.Context, rc planner.RunContext, name string) (tools.ToolDescriptor, bool, error) {
+	if !steering.IsTrustedCompletionHook(ctx) && rc.Catalog == nil {
+		return tools.ToolDescriptor{}, false, fmt.Errorf("dispatch: sealed planner catalog is required")
+	}
+	if rc.Catalog != nil {
+		if _, ok := rc.Catalog.Resolve(name); !ok {
+			return tools.ToolDescriptor{}, false, nil
+		}
+	}
+	desc, ok := e.cat.Resolve(name)
+	return desc, ok, nil
+}
+
+type runResolver struct {
+	base  parallel.Resolver
+	view  planner.ToolCatalogView
+	trust bool
+}
+
+func (r runResolver) Resolve(name string) (tools.ToolDescriptor, bool) {
+	if !r.trust {
+		if r.view == nil {
+			return tools.ToolDescriptor{}, false
+		}
+		if _, ok := r.view.Resolve(name); !ok {
+			return tools.ToolDescriptor{}, false
+		}
+	}
+	return r.base.Resolve(name)
+}
+
 // callParallel dispatches a CallParallel decision (/
 // AC-1..AC-4). The branches fan out concurrently through the shared
 // parallel.Executor in NON-ATOMIC mode (AC-2): a branch whose tool fails
@@ -502,7 +536,8 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 // §13); the runloop wraps them as the step's error observation and the
 // planner re-plans.
 func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, d planner.CallParallel) (any, any, error) {
-	results, err := e.parallel.Execute(ctx, d, parallel.WithNonAtomicSetup())
+	resolver := runResolver{base: e.cat, view: rc.Catalog, trust: steering.IsTrustedCompletionHook(ctx)}
+	results, err := e.parallel.Execute(ctx, d, parallel.WithNonAtomicSetup(), parallel.WithResolver(resolver))
 	if err != nil {
 		return nil, nil, fmt.Errorf("parallel dispatch: %w", err)
 	}

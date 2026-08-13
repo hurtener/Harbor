@@ -770,7 +770,7 @@ func (d *RunLoopDriver) projectAgentConfigSkills(ctx context.Context, agentID st
 // to the exact run quadruple. A driver with no skill snapshot dependencies is
 // the valid no-skills subsystem shape; partial wiring is rejected by
 // NewRunLoopDriver.
-func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAgentID string, q identity.Quadruple) (skills.RunSkillReaderSnapshot, bool, error) {
+func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAgentID string, q identity.Quadruple, profile *virtualagent.Profile) (skills.RunSkillReaderSnapshot, bool, error) {
 	if d.skillStore == nil {
 		return skills.RunSkillReaderSnapshot{}, false, nil
 	}
@@ -788,6 +788,12 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 	})
 	if err != nil {
 		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("build resolver: %w", err)
+	}
+	if profile != nil && profile.Overlay.Skills != nil {
+		resolver, err = skills.NewAllowlistReader(resolver, *profile.Overlay.Skills)
+		if err != nil {
+			return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("bind virtual skill allowlist: %w", err)
+		}
 	}
 	snapshot, err := skills.NewRunSkillReaderSnapshot(q, effectiveAgentID, resolver)
 	if err != nil {
@@ -1206,7 +1212,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// this snapshot rather than its boot-time fallback. A resolver/membership
 	// failure is terminal: running with a wider or divergent skill view would be
 	// an authority bypass.
-	skillSnapshot, hasSkillSnapshot, snapshotErr := d.captureRunSkillSnapshot(taskCtx, effectiveAgentID, q)
+	skillSnapshot, hasSkillSnapshot, snapshotErr := d.captureRunSkillSnapshot(taskCtx, effectiveAgentID, q, virtualProfile)
 	if snapshotErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: skill snapshot failed; failing run",
 			slog.String("task_id", string(taskID)),
