@@ -212,6 +212,7 @@ func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadrup
 		payload.OAuthProviders = active.Payload.OAuthProviders
 		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
 		payload.SignedOAuthMCPPairs = active.Payload.SignedOAuthMCPPairs
+		payload.VirtualAgents = active.Payload.VirtualAgents
 	}
 	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload, opts)
 }

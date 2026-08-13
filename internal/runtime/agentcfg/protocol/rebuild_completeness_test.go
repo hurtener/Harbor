@@ -90,6 +90,7 @@ func rcSeed(t *testing.T) agentcfg.ConfigPayload {
 			{Name: "seed-alpha", Body: "seed block alpha"},
 			{Name: "seed-beta", Body: "seed block beta"},
 		}},
+		VirtualAgents: &agentcfg.VirtualAgentsSection{Owner: rcAgent, MaxProfiles: 4},
 	}
 	rcAssertSeedComplete(t, seed)
 	return seed
@@ -117,7 +118,7 @@ func rcAssertSeedComplete(t *testing.T, p agentcfg.ConfigPayload) {
 		if fv.IsNil() {
 			t.Fatalf("rebuild-completeness guard: ConfigPayload.%s is nil in the seed — a new section was "+
 				"added to agentcfg.ConfigPayload without extending rcSeed (rebuild_completeness_test.go). "+
-				"Populate it in rcSeed AND add its carry-forward to all seven section-scoped setters "+
+				"Populate it in rcSeed AND add its carry-forward to all section-scoped setters "+
 				"(mcppolicy.go, addconnection.go, removeconnection.go, setdiscoveryorigins.go, skills.go, promptlayers.go, llmparams.go, extrasystemblocks.go) — see D-283.",
 				field.Name)
 		}

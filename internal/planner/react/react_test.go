@@ -541,7 +541,7 @@ func TestNext_MaxStepsBreaker_CountsSuccessfulToolsNotControls(t *testing.T) {
 	}}
 	p := react.New(client, react.WithMaxSteps(2))
 	q := fixedQuadruple(t, "r-maxsteps-controls")
-	rc := rcWith(q, "g", nil)
+	rc := withDeclaredTools(rcWith(q, "g", nil), "followup")
 	rc.Trajectory = &planner.Trajectory{Steps: []planner.Step{
 		{Action: planner.SpawnTask{}},
 		{Action: planner.CallTool{Tool: "failed"}, Error: "tool execution failed"},

@@ -79,6 +79,7 @@ func (s *Service) SetLLMParams(ctx context.Context, req prototypes.AgentConfigSe
 		payload.OAuthProviders = active.Payload.OAuthProviders
 		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
 		payload.SignedOAuthMCPPairs = active.Payload.SignedOAuthMCPPairs
+		payload.VirtualAgents = active.Payload.VirtualAgents
 	}
 
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,

@@ -332,14 +332,14 @@ func TestProjectResponse_TaskMgmt_SingleStillTranslates(t *testing.T) {
 }
 
 // TestReservedDecl_TaskMgmt_DeclaredWithSchemas — AC-3: the reserved
-// declaration set now carries seven entries; the task-management
+// declaration set now carries eight entries; the task-management
 // controls are present with their schemas, and the _spawn_task schema
 // carries propagate_on_cancel.
 func TestReservedDecl_TaskMgmt_DeclaredWithSchemas(t *testing.T) {
 	t.Parallel()
 	decls := reservedPlannerControlDeclarations()
-	if len(decls) != 7 {
-		t.Fatalf("reserved declarations = %d, want 7", len(decls))
+	if len(decls) != 8 {
+		t.Fatalf("reserved declarations = %d, want 8", len(decls))
 	}
 	byName := map[string]llm.ToolDeclaration{}
 	for _, d := range decls {
@@ -348,6 +348,7 @@ func TestReservedDecl_TaskMgmt_DeclaredWithSchemas(t *testing.T) {
 	for _, name := range []string{
 		SpawnTaskToolName, AwaitTaskToolName, TaskStatusToolName, CancelTaskToolName,
 		SteerTaskToolName, PauseTaskToolName, ResumeTaskToolName,
+		TaskProgressToolName,
 	} {
 		if _, ok := byName[name]; !ok {
 			t.Fatalf("reserved declaration %q missing", name)

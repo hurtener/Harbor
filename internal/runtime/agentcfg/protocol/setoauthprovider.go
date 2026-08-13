@@ -418,6 +418,7 @@ func carrySiblingsForward(active agentcfg.Revision, hasActive bool) agentcfg.Con
 		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
 		payload.SignedOAuthMCPPairs = active.Payload.SignedOAuthMCPPairs
+		payload.VirtualAgents = active.Payload.VirtualAgents
 	}
 	return payload
 }

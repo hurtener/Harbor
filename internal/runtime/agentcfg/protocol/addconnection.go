@@ -898,6 +898,7 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 		providers = active.Payload.OAuthProviderDescriptors()
 		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
 		payload.SignedOAuthMCPPairs = active.Payload.SignedOAuthMCPPairs
+		payload.VirtualAgents = active.Payload.VirtualAgents
 	}
 	servers = append(servers, desc)
 	payload.Connections = &agentcfg.ConnectionsSection{Servers: servers}

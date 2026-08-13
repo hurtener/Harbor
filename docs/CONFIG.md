@@ -1819,3 +1819,9 @@ an unknown key at boot. The effective child run is the parent's frozen
 config plus the selected profile's overlay, pinned by profile hash +
 config revision/digest so a restart reproduces the exact profile.
 Omission (no block) is byte-compatible. Restart-required.
+
+### virtual_agents.max_profiles
+
+The maximum number of virtual-agent profiles the owning agent may expose. The
+value is carried with the `virtual_agents:` section and enforced at the
+run-loop boundary. Restart-required.
