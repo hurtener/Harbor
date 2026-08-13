@@ -44,6 +44,26 @@ type countingRegistry struct {
 	spawnCalls   int
 }
 
+type countingProgressRegistry struct {
+	*countingRegistry
+	progressLookups atomic.Int64
+	progressReports atomic.Int64
+}
+
+func (c *countingProgressRegistry) ProgressReporter(context.Context, tasks.TaskID) (tasks.ProgressReporter, error) {
+	c.progressLookups.Add(1)
+	return progressReporterFunc(func(context.Context, tasks.ReportProgressRequest) (tasks.ProgressReportResult, error) {
+		c.progressReports.Add(1)
+		return tasks.ProgressReportResult{Recorded: true}, nil
+	}), nil
+}
+
+type progressReporterFunc func(context.Context, tasks.ReportProgressRequest) (tasks.ProgressReportResult, error)
+
+func (f progressReporterFunc) ReportProgress(ctx context.Context, req tasks.ReportProgressRequest) (tasks.ProgressReportResult, error) {
+	return f(ctx, req)
+}
+
 func (c *countingRegistry) ResolveOrCreateGroup(ctx context.Context, req tasks.GroupRequest) (*tasks.TaskGroup, error) {
 	c.mu.Lock()
 	c.resolveCalls++
@@ -342,6 +362,38 @@ func TestExecutor_Batch_ToolCapExceeded_StructuralReject(t *testing.T) {
 	}
 	if resolve, spawn := reg.counts(); resolve != 0 || spawn != 0 {
 		t.Errorf("registry calls resolve=%d spawn=%d, want 0/0", resolve, spawn)
+	}
+}
+
+// TestExecutor_Batch_Invalid_DoesNotPersistProgress — structural rejection
+// must happen before the durable progress reporter is even bound. The
+// progress observation still uses the native CallID/Index shape on valid
+// batches; this regression only guards the invalid-batch side effect.
+func TestExecutor_Batch_Invalid_DoesNotPersistProgress(t *testing.T) {
+	cat := tools.NewCatalog()
+	registerEcho(t, cat, "counted")
+	base := &countingRegistry{TaskRegistry: mkSpawnAwaitTestTaskRegistry(t, mkSpawnAwaitTestBus(t))}
+	reg := &countingProgressRegistry{countingRegistry: base}
+	exec := NewToolExecutor(cat, newTestArtifactStore(t), reg, WithMaxBatchSpawns(1))
+
+	q := dispatchTestQuad("r-batch")
+	d := planner.Batch{
+		Tools: []planner.CallTool{{Tool: "counted", Args: json.RawMessage(`{}`), CallID: "t0"}},
+		Spawns: []planner.SpawnTask{
+			{Spec: planner.SpawnSpec{Query: "a"}, CallID: "s0"},
+			{Spec: planner.SpawnSpec{Query: "b"}, CallID: "s1"},
+		},
+		Progress: []planner.TaskProgress{{CallID: "p0", Phase: "halfway"}},
+	}
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	if err == nil || !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Fatalf("invalid batch error = %v, want wrapped planner.ErrInvalidDecision", err)
+	}
+	if got := reg.progressLookups.Load(); got != 0 {
+		t.Fatalf("progress reporter lookups = %d, want 0 for invalid batch", got)
+	}
+	if got := reg.progressReports.Load(); got != 0 {
+		t.Fatalf("durable progress reports = %d, want 0 for invalid batch", got)
 	}
 }
 

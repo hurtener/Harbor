@@ -718,28 +718,6 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 			"%w: Batch requires at least 2 combined branches, got %d tools + %d spawns",
 			planner.ErrInvalidDecision, len(d.Tools), len(d.Spawns)+len(d.Progress))
 	}
-	var progressObs []planner.BatchProgressObservation
-	if len(d.Progress) > 0 {
-		rr, ok := e.tasks.(tasks.ProgressReporterRegistry)
-		if !ok {
-			return nil, nil, fmt.Errorf("%w: task progress reporter unavailable", planner.ErrInvalidDecision)
-		}
-		reporter, err := rr.ProgressReporter(ctx, tasks.TaskID(rc.Quadruple.RunID))
-		if err != nil {
-			return nil, nil, fmt.Errorf("dispatch task progress: %w", err)
-		}
-		for i, p := range d.Progress {
-			o := planner.BatchProgressObservation{CallID: p.CallID, Index: i}
-			res, err := reporter.ReportProgress(ctx, tasks.ReportProgressRequest{Fraction: p.Fraction, Phase: p.Phase, Message: p.Message, Tags: p.Tags})
-			if err != nil {
-				o.Error = err.Error()
-			} else {
-				o.Recorded, o.Emitted = res.Recorded, res.Emitted
-			}
-			progressObs = append(progressObs, o)
-		}
-	}
-
 	// Tool-count breadth vs the shared parallel cap. A structural pre-check
 	// here keeps an over-cap tool set a decision-level reject rather than a
 	// mid-dispatch parallel abort surfaced from Execute — the whole-batch
@@ -805,9 +783,20 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 			return nil, nil, fmt.Errorf("batch: attach identity: %w", idErr)
 		}
 	}
+	var progressReporter tasks.ProgressReporter
+	if len(d.Progress) > 0 {
+		rr, ok := e.tasks.(tasks.ProgressReporterRegistry)
+		if !ok {
+			return nil, nil, fmt.Errorf("%w: task progress reporter unavailable", planner.ErrInvalidDecision)
+		}
+		var err error
+		progressReporter, err = rr.ProgressReporter(ctx, tasks.TaskID(rc.Quadruple.RunID))
+		if err != nil {
+			return nil, nil, fmt.Errorf("dispatch task progress: %w", err)
+		}
+	}
 
 	var raw, llm planner.BatchObservation
-	raw.Progress, llm.Progress = progressObs, progressObs
 
 	// === Tools half — dispatched BEFORE any spawn-side registry side
 	// effect. A tool-half whole-call error (a malformed Join, a pause
@@ -825,6 +814,25 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 			return nil, nil, fmt.Errorf("batch tool dispatch: %w", err)
 		}
 		raw.Tools, llm.Tools = e.branchObservations(ctx, rc, d.Tools, results)
+	}
+
+	// Persist progress only after every structural validation has passed and
+	// the tool half's setup/dispatch has succeeded. An invalid batch must not
+	// leave durable progress behind, while observations retain the native
+	// call-ID/index pairing for replay.
+	if len(d.Progress) > 0 {
+		progressObs := make([]planner.BatchProgressObservation, 0, len(d.Progress))
+		for i, p := range d.Progress {
+			o := planner.BatchProgressObservation{CallID: p.CallID, Index: i}
+			res, err := progressReporter.ReportProgress(ctx, tasks.ReportProgressRequest{Fraction: p.Fraction, Phase: p.Phase, Message: p.Message, Tags: p.Tags})
+			if err != nil {
+				o.Error = err.Error()
+			} else {
+				o.Recorded, o.Emitted = res.Recorded, res.Emitted
+			}
+			progressObs = append(progressObs, o)
+		}
+		raw.Progress, llm.Progress = progressObs, progressObs
 	}
 
 	// === Auto-group creation: ONE ResolveOrCreateGroup for the ungrouped
