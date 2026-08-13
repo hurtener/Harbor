@@ -650,6 +650,11 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		return nil, fmt.Errorf("llm.credential_source is \"remote\" but no LLM driver is wired to source the brokered key — set llm.driver or use llm.credential_source: local")
 	}
 
+	virtualProfiles, virtualProfilesErr := cfg.VirtualAgents.ToMap()
+	if virtualProfilesErr != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("virtual profiles: %w", virtualProfilesErr)
+	}
 	runLoopDriver, err := NewRunLoopDriver(RunLoopDriverOptions{
 		Logger:                   opts.Logger,
 		Bus:                      bus,
@@ -678,6 +683,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		SessionOverrides:         runsStore,
 		AgentConfig:              agentConfigRegistry,
 		AgentConfigID:            devAgentConfigID,
+		VirtualProfiles:          virtualProfiles,
 		EnsureBootAgentLifecycle: bootLifecycleEnsurer,
 		RunSnapshots:             runSnapshots,
 		AgentReachAdmissions:     agentReachAdmissions,

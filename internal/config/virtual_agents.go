@@ -17,7 +17,7 @@ func (v VirtualAgentsConfig) ToMap() (virtualagent.Map, error) {
 	if v.IsZero() {
 		return virtualagent.Map{}, nil
 	}
-	m := virtualagent.Map{Owner: strings.TrimSpace(v.Owner)}
+	m := virtualagent.Map{Owner: strings.TrimSpace(v.Owner), MaxProfiles: v.MaxProfiles}
 	for _, p := range v.Profiles {
 		prof, err := p.ToProfile(m.Owner)
 		if err != nil {
@@ -52,8 +52,8 @@ func (p VirtualAgentProfileConfig) ToProfile(owner string) (virtualagent.Profile
 			prof.Overlay.ReasoningEffort = &r
 		}
 	}
-	if len(p.Skills) > 0 {
-		s := append([]string(nil), p.Skills...)
+	if p.Skills != nil {
+		s := append([]string(nil), (*p.Skills)...)
 		prof.Overlay.Skills = &s
 	}
 	if p.Tools != nil {

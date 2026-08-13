@@ -286,6 +286,17 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if req.VirtualAgent != nil {
+		parentID := *req.ParentTaskID
+		parent, ok := e.tasks[parentID]
+		if !ok || !identitiesEqual(parent.Identity.Identity, req.Identity.Identity) {
+			return tasks.TaskHandle{}, fmt.Errorf("%w: virtual profile parent task %q is unavailable", tasks.ErrInvalidRequest, parentID)
+		}
+		parentAgent := parent.AgentID
+		if parentAgent != "" && parentAgent != req.AgentID {
+			return tasks.TaskHandle{}, fmt.Errorf("%w: virtual profile parent agent %q != child agent %q", tasks.ErrInvalidRequest, parentAgent, req.AgentID)
+		}
+	}
 
 	// Idempotency check: same (tenant, user, session, IdempotencyKey)
 	// seen? Empty IdempotencyKey disables dedup (every Spawn yields a
@@ -573,6 +584,10 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 	if t.LatestProgress != nil {
 		cp.LatestProgress = tasks.CloneProgress(t.LatestProgress)
 	}
+	if t.VirtualAgent != nil {
+		binding := cloneVirtualAgent(t.VirtualAgent)
+		cp.VirtualAgent = binding
+	}
 	return &cp, nil
 }
 
@@ -742,6 +757,9 @@ func copyTask(t *tasks.Task) *tasks.Task {
 			BindingDigest: append([]byte(nil), t.AgentReachAdmission.BindingDigest...),
 		}
 		cp.AgentReachAdmission = &admission
+	}
+	if t.VirtualAgent != nil {
+		cp.VirtualAgent = cloneVirtualAgent(t.VirtualAgent)
 	}
 	return &cp
 }

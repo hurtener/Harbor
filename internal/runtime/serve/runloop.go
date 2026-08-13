@@ -103,6 +103,7 @@ import (
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // RunLoopDriverOptions bundles the dependencies the driver
@@ -228,6 +229,10 @@ type RunLoopDriverOptions struct {
 	// the NEXT run (next-turn-only), never mid-flight.
 	AgentConfig   agentcfg.Registry
 	AgentConfigID string
+	// VirtualProfiles is the boot fallback for the canonical virtual profile
+	// map. A present active revision section replaces it, including an empty
+	// section (the explicit tombstone).
+	VirtualProfiles virtualagent.Map
 	// EnsureBootAgentLifecycle materialises only the configured default agent
 	// after trusted direct task construction selected it for this run.
 	EnsureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
@@ -379,6 +384,7 @@ type RunLoopDriver struct {
 	// run start to project the agent's active skills-set (nil = none).
 	agentConfig              agentcfg.Registry
 	agentConfigID            string
+	virtualProfiles          virtualagent.Map
 	ensureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
 	runSnapshots             *runsnapshot.Gate
 	agentReachAdmissions     *tasks.AgentReachAdmissionAuthority
@@ -500,6 +506,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		sessionOverrides:         opts.SessionOverrides,
 		agentConfig:              opts.AgentConfig,
 		agentConfigID:            opts.AgentConfigID,
+		virtualProfiles:          opts.VirtualProfiles,
 		ensureBootAgentLifecycle: opts.EnsureBootAgentLifecycle,
 		runSnapshots:             opts.RunSnapshots,
 		agentReachAdmissions:     opts.AgentReachAdmissions,
@@ -1098,9 +1105,82 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// credential authority. A valid child receipt also supplies the parent's
 	// exact admitted effective agent when the child intentionally omits the raw
 	// caller-selection field.
-	admissionCtx, admittedAgentID, agentReachAdmitted := d.agentReachAdmissions.Restore(d.subCtx, task)
+	admissionCtx := taskCtx
+	var admittedAgentID string
+	var agentReachAdmitted bool
+	if d.agentReachAdmissions != nil {
+		admissionCtx, admittedAgentID, agentReachAdmitted = d.agentReachAdmissions.Restore(taskCtx, task)
+	}
 	if agentReachAdmitted {
 		effectiveAgentID = admittedAgentID
+	}
+	// A virtual child is admitted only through the verified reach receipt and
+	// only against the currently active, identity-scoped revision. Resolve the
+	// section once, freeze it, and validate every receipt pin before the run can
+	// reach a planner or a tool. A present empty section is a tombstone, not a
+	// fallback to boot YAML.
+	var frozenProfiles *virtualagent.FrozenMap
+	if task.VirtualAgent != nil {
+		if !agentReachAdmitted || admittedAgentID != task.VirtualAgent.AgentID {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_unavailable", Message: "virtual profile requires verified agent reach"}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		if d.agentConfig == nil {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_unavailable", Message: "agent config registry unavailable"}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		rev, ok, rErr := d.agentConfig.Active(taskCtx, identity.Quadruple{Identity: q.Identity}, effectiveAgentID, agentcfg.ConfigScopeAgent)
+		if rErr != nil || !ok {
+			msg := "active agent config revision unavailable"
+			if rErr != nil {
+				msg += ": " + rErr.Error()
+			}
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_unavailable", Message: msg}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		section, present := rev.Payload.VirtualAgentsSectionView()
+		profileMap := d.virtualProfiles
+		if present {
+			if section == nil || len(section.Profiles) == 0 {
+				if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_tombstone", Message: "active virtual profile section is empty"}); fErr != nil {
+					d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
+				}
+				return
+			}
+			profileMap = virtualagent.Map{Owner: section.Owner, MaxProfiles: section.MaxProfiles, Profiles: section.Profiles}
+		}
+		frozenProfiles, rErr = virtualagent.NewFrozenMap(profileMap, rev.RevisionID, rev.ContentHash, nil)
+		if rErr != nil {
+			rErr = fmt.Errorf("freeze virtual profiles: %w", rErr)
+		} else {
+			_, rErr = frozenProfiles.VerifyPin(*task.VirtualAgent)
+		}
+		if rErr != nil {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_stale", Message: rErr.Error()}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+	} else if d.agentConfig != nil && effectiveAgentID != "" {
+		if rev, ok, rErr := d.agentConfig.Active(taskCtx, identity.Quadruple{Identity: q.Identity}, effectiveAgentID, agentcfg.ConfigScopeAgent); rErr == nil && ok {
+			section, present := rev.Payload.VirtualAgentsSectionView()
+			profileMap := d.virtualProfiles
+			if present && section != nil {
+				profileMap = virtualagent.Map{Owner: section.Owner, MaxProfiles: section.MaxProfiles, Profiles: section.Profiles}
+			}
+			if len(profileMap.Profiles) > 0 {
+				frozenProfiles, rErr = virtualagent.NewFrozenMap(profileMap, rev.RevisionID, rev.ContentHash, nil)
+				if rErr != nil {
+					d.logger.Warn("RunLoopDriver: virtual profile freeze unavailable", slog.String("err", rErr.Error()))
+				}
+			}
+		}
 	}
 	if d.runSnapshots != nil {
 		lease, admissionErr := d.runSnapshots.Acquire(taskCtx, q.TenantID, effectiveAgentID)
@@ -1530,6 +1610,24 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		return
 	}
+	if task.VirtualAgent != nil {
+		profile, ok := frozenProfiles.Profile(task.VirtualAgent.Key)
+		if !ok {
+			d.logger.ErrorContext(taskCtx, "RunLoopDriver: virtual profile disappeared after pin verification")
+			if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_stale", Message: "verified virtual profile is unavailable"}); mErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed after virtual profile failure failed", slog.String("err", mErr.Error()))
+			}
+			return
+		}
+		llmOverrides = applyVirtualOverlay(llmOverrides, profile)
+	}
+	maxSteps := d.maxStepsRunLoop
+	tokenBudget := d.tokenBudget
+	if task.VirtualAgent != nil {
+		profile, _ := frozenProfiles.Profile(task.VirtualAgent.Key)
+		maxSteps = virtualagent.OverlayClampMaxSteps(maxSteps, profile.Overlay.MaxSteps)
+		tokenBudget = virtualagent.OverlayClampTokenBudget(tokenBudget, profile.Overlay.TokenBudget)
+	}
 
 	// Resolve the effective run-completion hook once at run start (agent-config
 	// over yaml over none) via the shared projection. A read error fails the run
@@ -1592,7 +1690,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			SessionArtifacts: sessionArtifacts, // read-only cross-turn manifest
 			// the per-run token budget the runloop's
 			// compression gate reads. Zero = compression off.
-			Budget: planner.Budget{TokenBudget: d.tokenBudget},
+			Budget: planner.Budget{TokenBudget: tokenBudget},
 			// the per-task output schema compiled at run start; setting it
 			// engages the React driver's existing per-turn steering
 			// (ResponseFormat + tool-call-aware Validator + retry) with
@@ -1602,7 +1700,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		TaskID:           taskID,
 		ToolExecutor:     d.executor,   // dispatch CallTool decisions
 		OnToolDispatched: dispatchHook, // item 7 — advance Task.ToolCount on dispatch
-		MaxSteps:         d.maxStepsRunLoop,
+		MaxSteps:         maxSteps,
 		TrancheSteps:     d.trancheSteps, // 0 = tranche pausing disabled (legacy terminal ceiling)
 		Compression:      d.compression,  // trajectory compression runner
 		CompletionHook:   completionHook, // run-completion transcript egress (nil = no hook)
@@ -1634,6 +1732,13 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// selects CONFIGURATION only — the two agent-id carriers on a run have
 	// different provenance and MUST NOT be unified by a tidying refactor.
 	runCtx := tools.WithInvokingAgent(admissionCtx, d.agentConfigID)
+	if frozenProfiles != nil {
+		runCtx = virtualagent.WithFrozenMap(runCtx, frozenProfiles)
+	}
+	if task.VirtualAgent != nil {
+		binding := virtualagent.CloneBinding(*task.VirtualAgent)
+		runCtx = virtualagent.WithRunBinding(runCtx, &binding)
+	}
 	// Keep the reach-admitted configuration selection separate from the
 	// boot-derived southbound actor provenance above. Pair-owned credentials use
 	// this internal capability to prove the exact selected agent without making
@@ -1794,6 +1899,60 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		slog.String("task_id", string(taskID)),
 		slog.String("run_id", q.RunID),
 		slog.String("reason", string(fin.Reason)))
+}
+
+// applyVirtualOverlay applies only the sealed, narrow-only dimensions of a
+// verified profile. It deliberately has no path for capabilities, providers,
+// memory, hooks, or another profile.
+func applyVirtualOverlay(base *planner.LLMOverrides, profile virtualagent.Profile) *planner.LLMOverrides {
+	out := base
+	if out == nil {
+		out = &planner.LLMOverrides{}
+	} else {
+		copy := *out
+		out = &copy
+	}
+	o := profile.Overlay
+	if o.Model != nil {
+		out.Model = cloneString(o.Model)
+	}
+	if o.Temperature != nil {
+		v := *o.Temperature
+		out.Temperature = &v
+	}
+	if o.MaxTokens != nil {
+		out.MaxTokens = cloneInt(o.MaxTokens)
+	}
+	if o.ReasoningEffort != nil {
+		out.ReasoningEffort = cloneString(o.ReasoningEffort)
+	}
+	if o.Instructions != "" {
+		v := o.Instructions
+		out.ExtraInstructions = &v
+	}
+	if o.IsZero() {
+		return base
+	}
+	if o.Instructions != "" {
+		out.ExtraSystemBlocks = append(append([]planner.NamedBlock(nil), out.ExtraSystemBlocks...), planner.NamedBlock{Name: virtualagent.BlockName(profile.Key), Body: o.Instructions})
+	}
+	return out
+}
+
+func cloneString(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
+}
+
+func cloneInt(v *int) *int {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
 }
 
 // resolveSessionArtifacts builds the session-artifact manifest the

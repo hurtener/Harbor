@@ -124,6 +124,8 @@ const (
 	MaxMaxSteps = 100_000
 	// MaxMaxTokenBudget bounds the overlay token-budget value.
 	MaxMaxTokenBudget = 10_000_000
+	// DefaultMaxProfiles bounds the operator-owned virtual profile map.
+	DefaultMaxProfiles = 32
 )
 
 // keyRe is the restricted identifier charset for a profile key:
@@ -342,8 +344,9 @@ func (p Profile) Hash() (string, error) {
 // agent. The map's owner must equal the runtime's configured top-level
 // agent id; every profile's Parent must equal the owner.
 type Map struct {
-	Owner    string    `json:"owner,omitempty"`
-	Profiles []Profile `json:"profiles,omitempty"`
+	Owner       string    `json:"owner,omitempty"`
+	MaxProfiles int       `json:"max_profiles,omitempty"`
+	Profiles    []Profile `json:"profiles,omitempty"`
 }
 
 // NormalizeMap returns the canonical map form: profiles sorted by key
@@ -363,14 +366,14 @@ func NormalizeMap(m Map) Map {
 		byKey[np.Key] = np
 	}
 	if len(keys) == 0 {
-		return Map{Owner: strings.TrimSpace(m.Owner)}
+		return Map{Owner: strings.TrimSpace(m.Owner), MaxProfiles: m.MaxProfiles}
 	}
 	sort.Strings(keys)
 	out := make([]Profile, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, byKey[Key(k)])
 	}
-	return Map{Owner: strings.TrimSpace(m.Owner), Profiles: out}
+	return Map{Owner: strings.TrimSpace(m.Owner), MaxProfiles: m.MaxProfiles, Profiles: out}
 }
 
 // ValidateMap checks the owner + every member's parent-owner binding.
@@ -378,6 +381,13 @@ func ValidateMap(m Map) error {
 	owner := strings.TrimSpace(m.Owner)
 	if owner == "" {
 		return fmt.Errorf("%w: owner agent must be set", ErrInvalidMap)
+	}
+	cap := m.MaxProfiles
+	if cap <= 0 {
+		cap = DefaultMaxProfiles
+	}
+	if len(m.Profiles) > cap {
+		return fmt.Errorf("%w: %d profiles exceeds cap %d", ErrInvalidMap, len(m.Profiles), cap)
 	}
 	seen := make(map[Key]struct{}, len(m.Profiles))
 	for _, p := range m.Profiles {
@@ -533,6 +543,15 @@ func ValidateBinding(b Binding) error {
 	}
 	if strings.TrimSpace(b.Parent) == "" {
 		return fmt.Errorf("virtualagent: binding parent must be set")
+	}
+	if strings.TrimSpace(b.ConfigRevisionID) == "" {
+		return fmt.Errorf("virtualagent: binding config revision must be set")
+	}
+	if len(b.ConfigDigest) != 64 {
+		return fmt.Errorf("virtualagent: binding config digest must be a 64-hex SHA-256")
+	}
+	if _, err := hex.DecodeString(b.ConfigDigest); err != nil {
+		return fmt.Errorf("virtualagent: binding config digest is not hex: %v", err)
 	}
 	if b.Parent != b.AgentID {
 		return fmt.Errorf("virtualagent: binding parent %q != agent %q", b.Parent, b.AgentID)

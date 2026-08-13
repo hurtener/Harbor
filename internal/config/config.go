@@ -2450,6 +2450,9 @@ type VirtualAgentsConfig struct {
 	// when the block is present; must equal the runtime's configured
 	// default agent id.
 	Owner string `yaml:"owner,omitempty"`
+	// MaxProfiles is the operator cap for this map. Zero uses the canonical
+	// virtualagent default.
+	MaxProfiles int `yaml:"max_profiles,omitempty"`
 	// Profiles is the ordered profile declaration list. A duplicate key
 	// is rejected at boot; order is not semantic (the canonical map is
 	// key-sorted).
@@ -2482,7 +2485,7 @@ type VirtualAgentProfileConfig struct {
 	// Skills narrows the child's skills to the intersection with the
 	// parent's effective set. Omitted (nil) = no narrowing; an explicit
 	// empty list narrows to no skills.
-	Skills []string `yaml:"skills,omitempty"`
+	Skills *[]string `yaml:"skills,omitempty"`
 	// Tools narrows the child's tool exposure by UNIONING extra
 	// exclusions onto the parent's effective exclusion set — it can
 	// only hide tools, never re-expose one.

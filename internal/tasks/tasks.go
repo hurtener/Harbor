@@ -1055,6 +1055,13 @@ func ValidateRequest(req SpawnRequest) error {
 		if err := virtualagent.ValidateBinding(*req.VirtualAgent); err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 		}
+		if req.AgentID == "" || req.AgentID != req.VirtualAgent.AgentID ||
+			req.VirtualAgent.Parent != req.AgentID {
+			return fmt.Errorf("%w: virtual profile must bind to the request's top-level agent", ErrInvalidRequest)
+		}
+		if req.ParentTaskID == nil || *req.ParentTaskID == "" {
+			return fmt.Errorf("%w: virtual profile child requires a parent task", ErrInvalidRequest)
+		}
 	}
 	return nil
 }

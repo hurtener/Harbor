@@ -776,102 +776,6 @@ type NamingSection struct {
 	Model string `json:"model,omitempty"`
 }
 
-// VirtualAgentLimits bounds one virtual child's execution: the child-step
-// ceiling, the wall-clock ceiling and the output-token ceiling. Every field
-// is an OPTIONAL bound — zero means "unset, inherit the runtime default at
-// run start" — and a set field must be positive and within its documented
-// cap (enforced by ValidateVirtualAgents before normalization). Limits are
-// per-profile desired state and ride the immutable revision (diff / rollback).
-type VirtualAgentLimits struct {
-	// MaxSteps is the child's step ceiling. Zero inherits the runtime
-	// default; a set value must be in [1, VirtualAgentMaxSteps].
-	MaxSteps int `json:"max_steps,omitempty"`
-	// MaxTimeMS is the child's wall-clock ceiling in milliseconds. Zero
-	// inherits the runtime default; a set value must be in [1,
-	// VirtualAgentMaxTimeMS].
-	MaxTimeMS int `json:"max_time_ms,omitempty"`
-	// MaxTokens is the child's output-token ceiling. Zero inherits the
-	// runtime default; a set value must be in [1, VirtualAgentMaxTokens].
-	MaxTokens int `json:"max_tokens,omitempty"`
-}
-
-// VirtualAgentProfile is ONE bounded virtual-child profile pinned by the
-// virtual-agents section. Its surface is deliberately closed to exactly the
-// reference categories below — a model profile, LLM params, skill names,
-// narrowed tool names and child step/time/token limits — plus the
-// identity-ish label / description / additive instructions. It carries NO
-// field that can express connections, OAuth/LLM providers, credentials,
-// signed capabilities, hooks, memory, session auto-naming, A2A targets or
-// runtime targets, and NO field that can nest another profile or reference
-// one: recursion and nested virtual agents are structurally
-// unrepresentable (the wire decode is additionally required to reject
-// unknown fields so a smuggled JSON field cannot bypass the typed door).
-//
-// The profile is a NARROWING, never a widening: a child starts from the
-// agent's own configured surface and may only restrict it. The skills
-// membership check is enforced at set time (ValidateVirtualAgents); the
-// effective tool-catalog no-widen check is the run-start projection's, where
-// the live tool surface is known.
-type VirtualAgentProfile struct {
-	// Key is the profile's bounded, stable, NORMALIZED address within the
-	// section: a restricted identifier charset (virtualAgentKeyRE), unique
-	// within the section, and the sort key of the canonical form — a
-	// re-ordering or a re-add of the same key does not perturb the content
-	// hash. Required.
-	Key string `json:"key"`
-	// Label is the short human-readable display name. Optional; bounded to
-	// VirtualAgentMaxLabelRunes; must not carry unsafe control characters.
-	Label string `json:"label,omitempty"`
-	// Description is the longer operator-facing description. Optional;
-	// bounded to VirtualAgentMaxDescriptionRunes; safe prose.
-	Description string `json:"description,omitempty"`
-	// Instructions are ADDITIVE instruction lines composed into the child's
-	// system prompt. Order is SEMANTIC (the declared order is the
-	// composition order) and preserved through canonicalisation — a
-	// re-ordering is a real prompt change and must perturb the hash, the
-	// deliberate asymmetry with the sorted set siblings (Skills / Tools).
-	// Each instruction is bounded to VirtualAgentMaxInstructionRunes and
-	// must not carry unsafe control characters; a profile without
-	// instructions adds nothing.
-	Instructions []string `json:"instructions,omitempty"`
-	// ModelProfile references a configured llm.model_profiles entry by NAME
-	// (NON-SECRET). The reference is validated at set time against the
-	// configured set — a child can never name a model the runtime is not
-	// configured to serve. Empty inherits the agent's effective model.
-	ModelProfile string `json:"model_profile,omitempty"`
-	// LLMParams pins the child's sampling defaults — the SAME closed set of
-	// dimensions the envelope's LLMParams section carries. A set Model is a
-	// model-profile reference validated exactly like ModelProfile; the
-	// sampling dimensions are bounds-checked (temperature ∈ [0,2],
-	// max_tokens > 0, reasoning_effort in the canonical taxonomy).
-	LLMParams *LLMParams `json:"llm_params,omitempty"`
-	// Skills narrows the child to a SUBSET of the agent's own skill
-	// membership (the payload's skills section): every name must be a
-	// member, so a child can never widen the agent's skills. Optional.
-	Skills []string `json:"skills,omitempty"`
-	// Tools narrows the child's tool surface to the named tools. Optional;
-	// names are bounded; the effective no-widen check against the live tool
-	// catalog is the run-start projection's (the canonical envelope carries
-	// no positive tool list).
-	Tools []string `json:"tools,omitempty"`
-	// Limits bounds the child's execution (step / wall-clock / output-token
-	// ceilings). Optional.
-	Limits *VirtualAgentLimits `json:"limits,omitempty"`
-}
-
-// VirtualAgents is the virtual-agent section of the config envelope: the
-// bounded set of child profiles keyed by Key. Declared as its own section so
-// a set REPLACES only this section, preserving every sibling (the
-// section-merge invariant). Canonicalised sorted-by-key with a key-unique
-// invariant so a re-ordering does not perturb the content hash.
-type VirtualAgents struct {
-	// Profiles is the set of virtual-agent profiles. Canonicalised
-	// sorted-by-key with a key-unique invariant (validation refuses
-	// duplicates outright; normalisation is last-wins defensively for the
-	// direct SetRevision door).
-	Profiles []VirtualAgentProfile `json:"profiles,omitempty"`
-}
-
 // ConfigPayload is the forward-compatible config envelope. Every section
 // is an optional pointer so later consumers extend the envelope without a
 // schema break; only Skills is wired in the first wave.
@@ -896,12 +800,6 @@ type ConfigPayload struct {
 	LLMParams           *LLMParams           `json:"llm_params,omitempty"`
 	Hooks               *HooksSection        `json:"hooks,omitempty"`
 	Naming              *NamingSection       `json:"naming,omitempty"`
-	// VirtualAgents, when non-nil, pins the agent's bounded set of
-	// virtual-child profiles (see VirtualAgentProfile). Absent (nil)
-	// contributes nothing — an agent without the section behaves exactly as
-	// before, and the omission preserves the prior content hash
-	// byte-for-byte (the additive-envelope compatibility rule).
-	VirtualAgents *VirtualAgents `json:"virtual_agents,omitempty"`
 	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
 	// named additive prompt blocks. Absent (nil) contributes nothing and
 	// leaves the system prompt byte-identical.
@@ -930,6 +828,8 @@ type VirtualAgentsSection struct {
 	// Owner is the top-level agent owning these profiles. Must equal the
 	// runtime's configured default agent id at freeze time.
 	Owner string `json:"owner,omitempty"`
+	// MaxProfiles is the operator cap carried by the canonical section.
+	MaxProfiles int `json:"max_profiles,omitempty"`
 	// Profiles is the canonical profile list (key-sorted, key-unique).
 	Profiles []virtualagent.Profile `json:"profiles,omitempty"`
 }
@@ -1246,8 +1146,8 @@ func normalizeVirtualAgentsSection(s *VirtualAgentsSection) *VirtualAgentsSectio
 	if s == nil {
 		return nil
 	}
-	m := virtualagent.NormalizeMap(virtualagent.Map{Owner: s.Owner, Profiles: s.Profiles})
-	return &VirtualAgentsSection{Owner: m.Owner, Profiles: m.Profiles}
+	m := virtualagent.NormalizeMap(virtualagent.Map{Owner: s.Owner, MaxProfiles: s.MaxProfiles, Profiles: s.Profiles})
+	return &VirtualAgentsSection{Owner: m.Owner, MaxProfiles: m.MaxProfiles, Profiles: m.Profiles}
 }
 
 // normalizeConnections returns a name-unique, sorted-by-name copy of the

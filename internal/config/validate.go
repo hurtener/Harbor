@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // allowedJWTAlgorithms is the asymmetric-only allowlist enforced by
@@ -3252,6 +3254,13 @@ func (c *Config) validateVirtualAgents() error {
 	}
 	if strings.TrimSpace(c.VirtualAgents.Owner) == "" {
 		return fieldError("virtual_agents.owner", "must name the configured top-level agent that owns these profiles")
+	}
+	cap := c.VirtualAgents.MaxProfiles
+	if cap <= 0 {
+		cap = virtualagent.DefaultMaxProfiles
+	}
+	if len(c.VirtualAgents.Profiles) > cap {
+		return fieldError("virtual_agents.profiles", fmt.Sprintf("profile count %d exceeds max_profiles %d", len(c.VirtualAgents.Profiles), cap))
 	}
 	if len(c.VirtualAgents.Profiles) == 0 {
 		return fieldError("virtual_agents.profiles", "a virtual_agents block with no profiles is a misconfiguration (omit the block instead)")
