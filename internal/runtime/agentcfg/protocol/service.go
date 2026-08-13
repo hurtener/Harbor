@@ -58,6 +58,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // Sentinel errors the Service returns. The wire handler maps each onto a
@@ -210,6 +211,7 @@ type Service struct {
 	// only on the interface.
 	agentPackProposer  AgentPackProposer
 	agentPackProposals state.StateStore
+	agentPackCatalog   tools.ToolCatalog
 	bus                events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
 	logger             *slog.Logger
 	now                Clock
@@ -563,6 +565,12 @@ func WithAgentPackProposer(p AgentPackProposer) Option {
 			s.agentPackProposer = p
 		}
 	}
+}
+
+// WithAgentPackCatalog supplies the server-owned visible capability snapshot
+// used by governed authoring. A missing catalog is fail-closed.
+func WithAgentPackCatalog(c tools.ToolCatalog) Option {
+	return func(s *Service) { s.agentPackCatalog = c }
 }
 
 // WithAgentPackProposalState wires the durable, identity-scoped single-use

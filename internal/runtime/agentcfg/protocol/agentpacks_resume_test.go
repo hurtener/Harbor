@@ -17,7 +17,7 @@ type agentPackTestProposer struct {
 	item skills.AgentPackItem
 }
 
-func (p agentPackTestProposer) Draft(context.Context, identity.Quadruple, string, string, string) (agentcfgprotocol.AgentPackDraft, error) {
+func (p agentPackTestProposer) Draft(context.Context, identity.Quadruple, string, string, string, agentcfgprotocol.AgentPackAuthoringPolicy) (agentcfgprotocol.AgentPackDraft, error) {
 	return agentcfgprotocol.AgentPackDraft{Item: p.item}, nil
 }
 

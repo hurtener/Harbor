@@ -1700,6 +1700,8 @@ type AgentConfigAgentPacksProposeRequest struct {
 // operator reviews), capability warnings, and the deterministic provenance
 // stamp the commit must echo.
 type AgentConfigAgentPacksProposeResponse struct {
+	PolicyID   string `json:"policy_id"`
+	PolicyHash string `json:"policy_hash"`
 	// Skill is the canonical drafted body (the reviewed artifact).
 	Skill AgentConfigAgentPackItem `json:"skill"`
 	// Hash is the canonical content hash of the drafted body

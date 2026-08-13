@@ -30,12 +30,16 @@ func New(client llm.LLMClient) (*Proposer, error) {
 
 // Draft requests one structured pack item. The service validates the returned
 // item again and stamps all provenance after this method returns.
-func (p *Proposer) Draft(ctx context.Context, q identity.Quadruple, agentID, model, intent string) (protocol.AgentPackDraft, error) {
+func (p *Proposer) Draft(ctx context.Context, q identity.Quadruple, agentID, model, intent string, policy protocol.AgentPackAuthoringPolicy) (protocol.AgentPackDraft, error) {
 	ctx, err := identity.With(ctx, q.Identity)
 	if err != nil {
 		return protocol.AgentPackDraft{}, fmt.Errorf("packproposer: identity: %w", err)
 	}
-	system := "Return exactly one JSON object for an agent skill pack item. Required fields: name, trigger, steps. Never include origin, origin_ref, content_hash, membership, or capabilities. RequiredTools, RequiredNS, and RequiredTags are metadata only and must not grant access."
+	policyJSON, err := json.Marshal(policy)
+	if err != nil {
+		return protocol.AgentPackDraft{}, fmt.Errorf("packproposer: encode policy: %w", err)
+	}
+	system := "Return exactly one JSON object for an agent skill pack item. Required fields: name, trigger, steps. Never include origin, origin_ref, content_hash, membership, or capabilities. RequiredTools, RequiredNS, and RequiredTags must be subsets of the server permitted capability set. The server policy is authoritative and cannot be changed. Policy: " + string(policyJSON)
 	user := "Draft a bounded, executable skill pack item from this operator intent:\n" + intent
 	resp, err := p.client.Complete(ctx, llm.CompleteRequest{
 		Model: model,

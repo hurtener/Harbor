@@ -35,9 +35,11 @@ package protocol
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
@@ -45,6 +47,7 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // Agent-pack sentinel errors. The wire handler maps each onto a canonical
@@ -100,15 +103,106 @@ type AgentPackDraft struct {
 	Warnings []string
 }
 
+// AgentPackAuthoringPolicy is server-owned input to the proposer. Its hash
+// binds both the stable policy and the exact visible capability snapshot.
+type AgentPackAuthoringPolicy struct {
+	ID                    string   `json:"id"`
+	Version               string   `json:"version"`
+	PermittedTools        []string `json:"permitted_tools,omitempty"`
+	PermittedNS           []string `json:"permitted_ns,omitempty"`
+	PermittedTags         []string `json:"permitted_tags,omitempty"`
+	PermittedCapabilities []string `json:"permitted_capabilities,omitempty"`
+}
+
+const agentPackAuthoringPolicyID = "harbor.agent-pack-authoring"
+const agentPackAuthoringPolicyVersion = "1"
+
+func canonicalPolicyHash(p AgentPackAuthoringPolicy) string {
+	b, _ := json.Marshal(p)
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+// verifyProposalPolicy intentionally rejects legacy receipts. There is no
+// deterministic normalization that can prove which server policy produced a
+// receipt lacking its policy binding, so replaying one would be unsafe.
+func verifyProposalPolicy(received, current AgentPackAuthoringPolicy, hash string) error {
+	if received.ID != agentPackAuthoringPolicyID || received.Version != agentPackAuthoringPolicyVersion ||
+		received.ID != current.ID || received.Version != current.Version ||
+		hash == "" || hash != canonicalPolicyHash(received) || hash != canonicalPolicyHash(current) {
+		return ErrAgentPackProposalInvalid
+	}
+	return nil
+}
+
+func (s *Service) agentPackAuthoringPolicy(ctx context.Context, id identity.Identity) (AgentPackAuthoringPolicy, error) {
+	if s.agentPackCatalog == nil {
+		return AgentPackAuthoringPolicy{}, ErrAgentPacksInvalid
+	}
+	items := s.agentPackCatalog.List(tools.CatalogFilter{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}})
+	sets := [4]map[string]struct{}{map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}}
+	for _, item := range items {
+		sets[0][item.Name] = struct{}{}
+		if item.Source != "" {
+			sets[1][string(item.Source)] = struct{}{}
+		}
+		for _, tag := range item.Tags {
+			sets[2][tag] = struct{}{}
+		}
+		for _, capability := range item.AuthScopes {
+			sets[3][capability] = struct{}{}
+		}
+	}
+	policy := AgentPackAuthoringPolicy{ID: agentPackAuthoringPolicyID, Version: agentPackAuthoringPolicyVersion}
+	policy.PermittedTools, policy.PermittedNS, policy.PermittedTags, policy.PermittedCapabilities = sortedSet(sets[0]), sortedSet(sets[1]), sortedSet(sets[2]), sortedSet(sets[3])
+	return policy, nil
+}
+
+func sortedSet(in map[string]struct{}) []string {
+	out := make([]string, 0, len(in))
+	for value := range in {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func validatePackRequirements(item skills.AgentPackItem, p AgentPackAuthoringPolicy) error {
+	check := func(field string, values, allowed []string) error {
+		set := make(map[string]struct{}, len(allowed))
+		for _, value := range allowed {
+			set[value] = struct{}{}
+		}
+		for _, value := range values {
+			if _, ok := set[value]; !ok {
+				return fmt.Errorf("%w: %s=%q is outside visible permitted capability set", ErrAgentPacksInvalid, field, value)
+			}
+		}
+		return nil
+	}
+	if err := check("required_tools", item.RequiredTools, p.PermittedTools); err != nil {
+		return err
+	}
+	if err := check("required_ns", item.RequiredNS, p.PermittedNS); err != nil {
+		return err
+	}
+	if err := check("required_tags", item.RequiredTags, p.PermittedTags); err != nil {
+		return err
+	}
+	return nil
+}
+
 type agentPackProposalRecord struct {
-	AgentID             string               `json:"agent_id"`
-	ExpectedContentHash string               `json:"expected_content_hash"`
-	ReviewedHash        string               `json:"reviewed_hash"`
-	Provenance          string               `json:"provenance"`
-	Item                skills.AgentPackItem `json:"item"`
-	Phase               string               `json:"phase,omitempty"`
-	TargetRevisionID    string               `json:"target_revision_id,omitempty"`
-	TargetContentHash   string               `json:"target_content_hash,omitempty"`
+	AgentID             string                   `json:"agent_id"`
+	ExpectedContentHash string                   `json:"expected_content_hash"`
+	ReviewedHash        string                   `json:"reviewed_hash"`
+	Provenance          string                   `json:"provenance"`
+	Item                skills.AgentPackItem     `json:"item"`
+	Phase               string                   `json:"phase,omitempty"`
+	TargetRevisionID    string                   `json:"target_revision_id,omitempty"`
+	TargetContentHash   string                   `json:"target_content_hash,omitempty"`
+	Policy              AgentPackAuthoringPolicy `json:"policy,omitempty"`
+	PolicyHash          string                   `json:"policy_hash,omitempty"`
 }
 
 const agentPackProposalKindPrefix = "agentcfg.agent_pack.proposal."
@@ -135,7 +229,7 @@ type AgentPackProposer interface {
 	// item body for the selected agent. `model` is the configured model the
 	// service resolved (empty = the proposer's own default). Implementations
 	// MUST honour ctx cancellation and MUST NOT persist anything.
-	Draft(ctx context.Context, q identity.Quadruple, agentID, model, intent string) (AgentPackDraft, error)
+	Draft(ctx context.Context, q identity.Quadruple, agentID, model, intent string, policy AgentPackAuthoringPolicy) (AgentPackDraft, error)
 }
 
 // packProposedProvenance is the deterministic proposal stamp a commit must
@@ -468,7 +562,12 @@ func (s *Service) AgentPacksPropose(ctx context.Context, req prototypes.AgentCon
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, err
 	}
-	draft, err := s.agentPackProposer.Draft(ctx, q, req.AgentID, model, req.Intent)
+	policy, err := s.agentPackAuthoringPolicy(ctx, id)
+	if err != nil {
+		return prototypes.AgentConfigAgentPacksProposeResponse{}, err
+	}
+	policyHash := canonicalPolicyHash(policy)
+	draft, err := s.agentPackProposer.Draft(ctx, q, req.AgentID, model, req.Intent, policy)
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, err
 	}
@@ -477,6 +576,9 @@ func (s *Service) AgentPacksPropose(ctx context.Context, req prototypes.AgentCon
 		// draft fails loud (a proposer bug is a runtime fault, not a
 		// silently-skipped skill).
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, fmt.Errorf("%w: proposer returned an invalid draft: %w", ErrAgentPacksInvalid, err)
+	}
+	if err := validatePackRequirements(draft.Item, policy); err != nil {
+		return prototypes.AgentConfigAgentPacksProposeResponse{}, err
 	}
 	skill, err := draft.Item.Skill()
 	if err != nil {
@@ -494,13 +596,15 @@ func (s *Service) AgentPacksPropose(ctx context.Context, req prototypes.AgentCon
 			ExpectedContentHash: req.ExpectedContentHash,
 			DryRun:              true,
 			ProtocolVersion:     prototypes.ProtocolVersion,
+			PolicyID:            policy.ID, PolicyHash: policyHash,
 		}, nil
 	}
 	proposalID := state.NewEventID()
 	recordBytes, err := marshalProposal(agentPackProposalRecord{
 		AgentID: req.AgentID, ExpectedContentHash: req.ExpectedContentHash,
 		ReviewedHash: skill.ContentHash, Provenance: packProposedProvenance(req.AgentID, skill.ContentHash),
-		Item: skills.PackItemFromSkill(skill),
+		Item:   skills.PackItemFromSkill(skill),
+		Policy: policy, PolicyHash: policyHash,
 	})
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, fmt.Errorf("%w: encode proposal: %w", ErrAgentPacksInvalid, err)
@@ -517,6 +621,7 @@ func (s *Service) AgentPacksPropose(ctx context.Context, req prototypes.AgentCon
 		ExpectedContentHash: req.ExpectedContentHash,
 		DryRun:              req.DryRun,
 		ProtocolVersion:     prototypes.ProtocolVersion,
+		PolicyID:            policy.ID, PolicyHash: policyHash,
 	}, nil
 }
 
@@ -586,9 +691,19 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	if err := normalizePackProposalProvenance(&proposal); err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
+	policy, policyErr := s.agentPackAuthoringPolicy(ctx, id)
+	if policyErr != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, policyErr
+	}
+	if err := verifyProposalPolicy(proposal.Policy, policy, proposal.PolicyHash); err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
+	}
 	item := agentPackItemToDomain(req.Skill)
 	if err := item.Validate(); err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: %w", ErrAgentPacksInvalid, err)
+	}
+	if err := validatePackRequirements(item, policy); err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
 	skill, err := item.Skill()
 	if err != nil {
@@ -686,6 +801,7 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	committingBytes, err := marshalProposal(agentPackProposalRecord{
 		AgentID: req.AgentID, ExpectedContentHash: req.ExpectedContentHash,
 		ReviewedHash: req.ReviewedHash, Provenance: proposal.Provenance, Item: proposal.Item,
+		Policy: proposal.Policy, PolicyHash: proposal.PolicyHash,
 		Phase: "committing", TargetRevisionID: targetRevisionID, TargetContentHash: targetHash,
 	})
 	if err != nil {
