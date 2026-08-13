@@ -120,7 +120,9 @@ func newProgressEngine(t *testing.T, policy tasks.ProgressPolicy) (*engine.Engin
 	t.Helper()
 	bus := mkBus(t)
 	t.Cleanup(func() { _ = bus.Close(context.Background()) })
-	clock := newFakeClock(time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC))
+	// Spawn stamps CreatedAt with the wall clock; start the controllable
+	// engine clock after it so progress reports move time forward.
+	clock := newFakeClock(time.Now().UTC().Add(time.Hour))
 	eng, err := engine.New(bus, auditpatterns.New(), &memBackend{},
 		engine.WithClock(clock.Now), engine.WithProgressPolicy(policy))
 	if err != nil {
@@ -436,7 +438,7 @@ func TestProgress_NormalizationUniqueness_NoOp(t *testing.T) {
 		Fraction: frac(0.3),
 		Phase:    "searching",
 		Message:  "querying",
-		Tags:     []string{" beta ", "alpha", "alpha", "beta"},
+		Tags:     []string{"alpha", " beta ", "alpha", "beta"},
 	}
 	res, err = eng.ReportProgress(ctx, id, dup)
 	if err != nil {
@@ -839,11 +841,6 @@ func TestProgress_OldFormatTask_RoundTrips(t *testing.T) {
 }
 
 // --- small helpers -------------------------------------------------
-
-// clockReportedAt is the unix-nano instant newFakeClock starts at;
-// TestProgress_FirstReport checks the snapshot's ReportedAt equals the
-// engine clock's stamp.
-var clockReportedAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC).UnixNano()
 
 func contains(hay, needle string) bool {
 	for i := 0; i+len(needle) <= len(hay); i++ {

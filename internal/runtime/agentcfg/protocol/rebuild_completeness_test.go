@@ -112,7 +112,7 @@ func rcAssertSeedComplete(t *testing.T, p agentcfg.ConfigPayload) {
 		field := tp.Field(i)
 		fv := v.Field(i)
 		if fv.Kind() != reflect.Pointer && fv.Kind() != reflect.Slice {
-			t.Fatalf("rebuild-completeness guard: ConfigPayload.%s is not an optional-pointer section — "+
+			t.Fatalf("rebuild-completeness guard: ConfigPayload.%s is not an optional pointer-or-slice section — "+
 				"rcSeed and rcAssertSeedComplete (rebuild_completeness_test.go) assume every section is a "+
 				"pointer and need updating for the new shape", field.Name)
 			continue

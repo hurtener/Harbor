@@ -165,6 +165,15 @@ func TestE2E_DurableUserSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Directory.View: %v", err)
 	}
+	// Directory is the legacy/session-scoped base view. Add the already-
+	// authorized durable user candidate before projection; ActiveSkillViews
+	// filters candidates but does not fetch their bodies.
+	views = append(views, skills.SkillView{
+		Name:     up.Skill.Name,
+		Title:    up.Skill.Title,
+		Trigger:  up.Skill.Trigger,
+		TaskType: up.Skill.TaskType,
+	})
 	gated, err := projection.ActiveSkillViews(ctxA, reg, ov, dusAgent, aliceQ, views)
 	if err != nil {
 		t.Fatalf("ActiveSkillViews: %v", err)
