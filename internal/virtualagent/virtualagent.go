@@ -297,15 +297,40 @@ type Profile struct {
 	Label   string  `json:"label,omitempty"`
 	Parent  string  `json:"parent,omitempty"`
 	Overlay Overlay `json:"overlay,omitempty"`
+	// InputPatterns bounds which inherited artifact references a child may
+	// receive. Matching is against the canonical filename and MIME type;
+	// the model supplies IDs, never content or a URL.
+	InputPatterns []string `json:"input_patterns,omitempty"`
+	// InputCount is the maximum number of inherited input references.
+	InputCount int `json:"input_count,omitempty"`
+	// InputDisposition is the configuration-owned disposition applied to
+	// every accepted input reference. Empty preserves the normal policy.
+	InputDisposition string `json:"input_disposition,omitempty"`
+	// OutputSchema is the configuration-owned terminal contract. Its hash is
+	// pinned in the profile binding and is never accepted from the model.
+	OutputSchema     json.RawMessage `json:"output_schema,omitempty"`
+	OutputSchemaHash string          `json:"output_schema_hash,omitempty"`
 }
 
 // NormalizeProfile returns the canonical profile form.
 func NormalizeProfile(p Profile) Profile {
+	outputSchema := append(json.RawMessage(nil), p.OutputSchema...)
+	outputHash := strings.TrimSpace(p.OutputSchemaHash)
+	if len(outputSchema) == 0 {
+		outputHash = ""
+	} else if sum := sha256.Sum256(outputSchema); outputHash == "" {
+		outputHash = hex.EncodeToString(sum[:])
+	}
 	return Profile{
-		Key:     Key(strings.TrimSpace(string(p.Key))),
-		Label:   strings.TrimSpace(p.Label),
-		Parent:  strings.TrimSpace(p.Parent),
-		Overlay: NormalizeOverlay(p.Overlay),
+		Key:              Key(strings.TrimSpace(string(p.Key))),
+		Label:            strings.TrimSpace(p.Label),
+		Parent:           strings.TrimSpace(p.Parent),
+		Overlay:          NormalizeOverlay(p.Overlay),
+		InputPatterns:    sortDedup(p.InputPatterns),
+		InputCount:       p.InputCount,
+		InputDisposition: strings.TrimSpace(p.InputDisposition),
+		OutputSchema:     outputSchema,
+		OutputSchemaHash: outputHash,
 	}
 }
 
@@ -323,6 +348,36 @@ func ValidateProfile(p Profile) error {
 	}
 	if err := ValidateOverlay(p.Overlay); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidProfile, err)
+	}
+	if len(p.InputPatterns) > 32 {
+		return fmt.Errorf("%w: input_patterns exceeds 32 entries", ErrInvalidProfile)
+	}
+	for _, pattern := range p.InputPatterns {
+		if strings.TrimSpace(pattern) == "" || len(pattern) > 256 {
+			return fmt.Errorf("%w: input pattern must be 1..256 bytes", ErrInvalidProfile)
+		}
+	}
+	if p.InputCount < 0 || p.InputCount > 32 {
+		return fmt.Errorf("%w: input_count must be in [0,32]", ErrInvalidProfile)
+	}
+	switch p.InputDisposition {
+	case "", "ref", "inline", "provider_native":
+	default:
+		return fmt.Errorf("%w: unsupported input_disposition %q", ErrInvalidProfile, p.InputDisposition)
+	}
+	if len(p.OutputSchema) > 64*1024 {
+		return fmt.Errorf("%w: output_schema exceeds 65536 bytes", ErrInvalidProfile)
+	}
+	if len(p.OutputSchema) > 0 {
+		if !json.Valid(p.OutputSchema) {
+			return fmt.Errorf("%w: output_schema is not valid JSON", ErrInvalidProfile)
+		}
+		sum := sha256.Sum256(p.OutputSchema)
+		if p.OutputSchemaHash != hex.EncodeToString(sum[:]) {
+			return fmt.Errorf("%w: output_schema_hash does not match output_schema", ErrInvalidProfile)
+		}
+	} else if p.OutputSchemaHash != "" {
+		return fmt.Errorf("%w: output_schema_hash without output_schema", ErrInvalidProfile)
 	}
 	return nil
 }

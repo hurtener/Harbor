@@ -1260,8 +1260,21 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// edge, so a failure here means corruption or version skew, never a
 	// silent skip). Nil for the common schemaless task.
 	var compiledSchema *planner.OutputSchemaValidator
-	if len(task.OutputSchema) > 0 {
-		cs, cErr := planner.CompileOutputSchema(task.OutputSchema)
+	outputSchema := task.OutputSchema
+	if virtualProfile != nil && len(virtualProfile.OutputSchema) > 0 {
+		if len(outputSchema) > 0 && string(outputSchema) != string(virtualProfile.OutputSchema) {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    planner.TaskErrorCodeOutputInvalid,
+				Message: "profile-owned output schema conflicts with task schema",
+			}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist profile schema conflict", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		outputSchema = append(json.RawMessage(nil), virtualProfile.OutputSchema...)
+	}
+	if len(outputSchema) > 0 {
+		cs, cErr := planner.CompileOutputSchema(outputSchema)
 		if cErr != nil {
 			d.logger.ErrorContext(taskCtx, "RunLoopDriver: output-schema compile failed; failing run",
 				slog.String("task_id", string(taskID)),

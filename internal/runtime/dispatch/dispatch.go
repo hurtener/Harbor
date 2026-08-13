@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path"
 	"sort"
 	"time"
 
@@ -696,6 +697,24 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		PropagateOnCancel: d.Spec.PropagateOnCancel,
 		NotifyOnComplete:  true,
 	}
+	if len(d.Spec.InputArtifactIDs) > 0 {
+		if e.artifacts == nil {
+			return tasks.TaskHandle{}, "", ErrArtifactStoreUnavailable
+		}
+		scoped := artifacts.NewScoped(e.artifacts, artifacts.ArtifactScope{
+			TenantID: rc.TenantID, UserID: rc.UserID, SessionID: rc.SessionID,
+		})
+		for _, id := range d.Spec.InputArtifactIDs {
+			ref, found, getErr := scoped.GetRef(taskCtx, id)
+			if getErr != nil || !found || ref == nil {
+				// Do not distinguish a missing id from a foreign id. The
+				// scoped read key intentionally makes both not-found.
+				return tasks.TaskHandle{}, "", fmt.Errorf("%w: %q", ErrArtifactRefNotFound, id)
+			}
+		}
+		req.InputArtifactIDs = append([]string(nil), d.Spec.InputArtifactIDs...)
+		req.InputArtifactDispositions = cloneStringMap(d.Spec.InputArtifactDispositions)
+	}
 	if key := d.Spec.VirtualAgent; key != "" {
 		if virtualagent.RunBindingFrom(taskCtx) != nil {
 			return tasks.TaskHandle{}, "", virtualagent.ErrRecursion
@@ -720,6 +739,28 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		}
 		req.AgentID = frozen.Owner
 		req.VirtualAgent = &binding
+		if len(req.InputArtifactIDs) > profile.InputCount && profile.InputCount > 0 {
+			return tasks.TaskHandle{}, "", fmt.Errorf("%w: profile input_count=%d", ErrArtifactRefNotFound, profile.InputCount)
+		}
+		if len(profile.InputPatterns) > 0 {
+			for _, id := range req.InputArtifactIDs {
+				ref, found, getErr := artifacts.NewScoped(e.artifacts, artifacts.ArtifactScope{
+					TenantID: rc.TenantID, UserID: rc.UserID, SessionID: rc.SessionID,
+				}).GetRef(taskCtx, id)
+				if getErr != nil || !found || ref == nil || !profileInputMatches(profile.InputPatterns, ref.Filename, ref.MimeType) {
+					return tasks.TaskHandle{}, "", fmt.Errorf("%w: %q", ErrArtifactRefNotFound, id)
+				}
+			}
+		}
+		if profile.InputDisposition != "" {
+			req.InputArtifactDispositions = make(map[string]string, len(req.InputArtifactIDs))
+			for _, id := range req.InputArtifactIDs {
+				req.InputArtifactDispositions[id] = profile.InputDisposition
+			}
+		}
+		if len(profile.OutputSchema) > 0 {
+			req.OutputSchema = append(json.RawMessage(nil), profile.OutputSchema...)
+		}
 	}
 	if parentID != "" {
 		req.ParentTaskID = &parentID
@@ -729,6 +770,29 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		return tasks.TaskHandle{}, "", fmt.Errorf("SpawnTask: registry spawn: %w", err)
 	}
 	return handle, kind, nil
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func profileInputMatches(patterns []string, filename, mime string) bool {
+	for _, pattern := range patterns {
+		if ok, _ := path.Match(pattern, filename); ok {
+			return true
+		}
+		if ok, _ := path.Match(pattern, mime); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // batch dispatches a heterogeneous Batch decision — a native

@@ -292,6 +292,12 @@ type SpawnSpec struct {
 	// BEFORE the task is persisted. A run that is itself a
 	// virtual-profile run cannot select another profile (non-recursive).
 	VirtualAgent string
+	// InputArtifactIDs are references inherited by the child. The runtime
+	// resolves each through the parent's identity-scoped artifact facade
+	// before persistence; bytes and URLs are not accepted.
+	InputArtifactIDs []string
+	// InputArtifactDispositions carries reference-only disposition hints.
+	InputArtifactDispositions map[string]string
 }
 
 // AwaitTask blocks the planner until the named task reaches a

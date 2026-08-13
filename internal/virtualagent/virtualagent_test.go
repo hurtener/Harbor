@@ -2,11 +2,41 @@ package virtualagent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 )
+
+func TestProfile_OutputContract_NormalizesAndPinsSchemaHash(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)
+	sum := sha256.Sum256(schema)
+	p := NormalizeProfile(Profile{
+		Key: "review", Parent: "agent-a", InputPatterns: []string{"image/*", "*.png", "*.png"},
+		InputCount: 2, InputDisposition: "ref", OutputSchema: schema,
+	})
+	if got := p.OutputSchemaHash; got != hex.EncodeToString(sum[:]) {
+		t.Fatalf("schema hash = %q, want %x", got, sum)
+	}
+	if err := ValidateProfile(p); err != nil {
+		t.Fatalf("ValidateProfile: %v", err)
+	}
+	if len(p.InputPatterns) != 2 {
+		t.Fatalf("normalized input patterns = %v, want de-duplicated patterns", p.InputPatterns)
+	}
+}
+
+func TestProfile_OutputContract_RejectsForgedSchemaHash(t *testing.T) {
+	p := NormalizeProfile(Profile{
+		Key: "review", Parent: "agent-a", OutputSchema: json.RawMessage(`{"type":"object"}`),
+		OutputSchemaHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
+	if err := ValidateProfile(p); !errors.Is(err, ErrInvalidProfile) {
+		t.Fatalf("ValidateProfile error = %v, want ErrInvalidProfile", err)
+	}
+}
 
 // jsonMarshalOverlay renders an Overlay to JSON (the canonical form the
 // structural-shape test inspects).

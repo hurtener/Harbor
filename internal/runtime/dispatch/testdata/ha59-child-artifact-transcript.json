@@ -1,0 +1,8 @@
+{
+  "decision": "spawn_task",
+  "input_artifact_ids": ["artifact_child_input"],
+  "profile": "review",
+  "result": "accepted_reference_only",
+  "output_schema_authority": "profile",
+  "resolved_bytes_in_observation": false
+}
