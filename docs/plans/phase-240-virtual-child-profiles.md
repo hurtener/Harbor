@@ -70,7 +70,7 @@ Expose governed virtual child profiles derived from a parent profile. D-419 is t
 
 ## Dependencies
 
-- Depends on Phase 237; gates Phase 241; independent of Phases 236, 238, 239, and 242.
+- Depends on Phases 237 and 239; gates Phase 241; independent of Phases 236, 238, 241, and 242.
 
 ## Risks / open questions
 
