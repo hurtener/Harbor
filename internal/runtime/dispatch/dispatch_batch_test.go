@@ -27,11 +27,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // countingRegistry embeds a REAL TaskRegistry and counts the two calls
@@ -561,6 +563,74 @@ func TestExecutor_Batch_SpawnsOnly_NoTools(t *testing.T) {
 	}
 	if len(raw.Spawns) != 2 {
 		t.Errorf("Spawns observation = %d entries, want 2", len(raw.Spawns))
+	}
+}
+
+func TestExecutor_Batch_OrdinaryArtifactsPreserveOrderAndPairing(t *testing.T) {
+	store := newTestArtifactStore(t)
+	refs := make([]artifacts.ArtifactRef, 2)
+	for i, mime := range []string{"image/png", "image/jpeg"} {
+		ref, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}, []byte{byte(i)}, artifacts.PutOpts{MimeType: mime})
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs[i] = ref
+	}
+	bus := mkSpawnAwaitTestBus(t)
+	reg := &countingRegistry{TaskRegistry: mkSpawnAwaitTestTaskRegistry(t, bus)}
+	exec := NewToolExecutor(tools.NewCatalog(), store, reg, WithMaxBatchSpawns(5))
+	q := dispatchTestQuad("r-artifact-batch")
+	rc := planner.RunContext{Quadruple: q, DispositionPolicy: planner.DispositionPolicy{ByMIME: map[string]planner.AttachmentDisposition{"image/*": planner.DispositionRef}}}
+	d := planner.Batch{Spawns: []planner.SpawnTask{
+		{CallID: "first", Spec: planner.SpawnSpec{Query: "first", InputArtifactIDs: []string{refs[0].ID}, InputArtifactDispositions: map[string]string{refs[0].ID: "inline"}}},
+		{CallID: "second", Spec: planner.SpawnSpec{Query: "second", InputArtifactIDs: []string{refs[1].ID}}},
+	}}
+	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), rc, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := rawAny.(planner.BatchObservation)
+	if len(raw.Spawns) != 2 || raw.Spawns[0].CallID != "first" || raw.Spawns[1].CallID != "second" {
+		t.Fatalf("spawn order = %+v", raw.Spawns)
+	}
+	for i, want := range []struct{ id, disposition string }{{refs[0].ID, "inline"}, {refs[1].ID, "ref"}} {
+		task, err := reg.Get(dispatchTestCtx(t, q), tasks.TaskID(raw.Spawns[i].TaskID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(task.InputArtifactIDs) != 1 || task.InputArtifactIDs[0] != want.id || task.InputArtifactDispositions[want.id] != want.disposition {
+			t.Fatalf("sibling %d leaked pairing: %+v", i, task)
+		}
+	}
+}
+
+func TestExecutor_SpawnTask_VirtualProfileOwnsArtifactDisposition(t *testing.T) {
+	bus := mkSpawnAwaitTestBus(t)
+	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	store := newTestArtifactStore(t)
+	ref, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}, []byte("png"), artifacts.PutOpts{MimeType: "image/png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := virtualagent.Profile{Key: "reviewer", Label: "Reviewer", Parent: "top-agent", InputCount: 1, InputDisposition: "ref", OutputSchema: json.RawMessage(`{"type":"object"}`)}
+	profile = virtualagent.NormalizeProfile(profile)
+	frozen, err := virtualagent.NewFrozenMap(virtualagent.Map{Owner: "top-agent", Profiles: []virtualagent.Profile{profile}}, "rev-1", strings.Repeat("a", 64), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := virtualagent.WithFrozenMap(dispatchTestCtx(t, dispatchTestQuad("r-virtual")), frozen)
+	q := dispatchTestQuad("r-virtual")
+	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
+	raw, _, err := exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q, DispositionPolicy: planner.DispositionPolicy{Default: planner.DispositionInline}}, planner.SpawnTask{Spec: planner.SpawnSpec{Query: "virtual", VirtualAgent: "reviewer", InputArtifactIDs: []string{ref.ID}, InputArtifactDispositions: map[string]string{ref.ID: "inline"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := reg.Get(dispatchTestCtx(t, q), tasks.TaskID(raw.(map[string]any)["task_id"].(string)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.InputArtifactDispositions[ref.ID] != "ref" || task.VirtualAgent == nil || task.VirtualAgent.Profile.InputCount != 1 || string(task.VirtualAgent.Profile.OutputSchema) != `{"type":"object"}` {
+		t.Fatalf("virtual profile authority drifted: %+v", task)
 	}
 }
 

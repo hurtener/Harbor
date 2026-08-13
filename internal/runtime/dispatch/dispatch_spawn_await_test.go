@@ -137,6 +137,126 @@ func TestExecutor_SpawnTask_OrdinaryArtifactResolutionAndDisposition(t *testing.
 	}
 }
 
+func TestExecutor_SpawnTask_OrdinaryDispositionPrecedence(t *testing.T) {
+	bus := mkSpawnAwaitTestBus(t)
+	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	store := newTestArtifactStore(t)
+	ref, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}, []byte("png"), artifacts.PutOpts{MimeType: "image/png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
+	for _, tc := range []struct {
+		name, hint, want string
+		policy           planner.DispositionPolicy
+	}{
+		{"trusted hint", "ref", "ref", planner.DispositionPolicy{ByMIME: map[string]planner.AttachmentDisposition{"image/*": planner.DispositionInline}}},
+		{"agent policy", "", "ref", planner.DispositionPolicy{ByMIME: map[string]planner.AttachmentDisposition{"image/*": planner.DispositionRef}}},
+		{"runtime default", "", "inline", planner.DispositionPolicy{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := rcFor("")
+			rc.DispositionPolicy = tc.policy
+			hints := map[string]string(nil)
+			if tc.hint != "" {
+				hints = map[string]string{ref.ID: tc.hint}
+			}
+			raw, _, err := exec.ExecuteDecision(context.Background(), rc, planner.SpawnTask{Spec: planner.SpawnSpec{Query: tc.name, InputArtifactIDs: []string{ref.ID}, InputArtifactDispositions: hints}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			task, err := reg.Get(spawnAwaitIDCtx(t), tasks.TaskID(raw.(map[string]any)["task_id"].(string)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := task.InputArtifactDispositions[ref.ID]; got != tc.want {
+				t.Fatalf("disposition = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExecutor_SpawnTask_ArtifactScopeErrorsDoNotPersist(t *testing.T) {
+	bus := mkSpawnAwaitTestBus(t)
+	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	store := newTestArtifactStore(t)
+	foreign := dispatchTestID
+	foreign.SessionID = "foreign"
+	foreignRef, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{TenantID: foreign.TenantID, UserID: foreign.UserID, SessionID: foreign.SessionID}, []byte("png"), artifacts.PutOpts{MimeType: "image/png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
+	for _, id := range []string{"missing", foreignRef.ID} {
+		_, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{Query: id, InputArtifactIDs: []string{id}}})
+		if !errors.Is(err, ErrArtifactRefNotFound) {
+			t.Fatalf("id %q error = %v, want ErrArtifactRefNotFound", id, err)
+		}
+		if _, getErr := reg.Get(spawnAwaitIDCtx(t), tasks.TaskID(id)); !errors.Is(getErr, tasks.ErrNotFound) {
+			t.Fatalf("id %q persisted a child: %v", id, getErr)
+		}
+	}
+}
+
+func TestExecutor_SpawnTask_ArtifactValidationRejectsBeforePersistence(t *testing.T) {
+	bus := mkSpawnAwaitTestBus(t)
+	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	store := newTestArtifactStore(t)
+	ref, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}, []byte("png"), artifacts.PutOpts{MimeType: "image/png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
+	for _, tc := range []struct {
+		name  string
+		ids   []string
+		hints map[string]string
+	}{
+		{"duplicate", []string{ref.ID, ref.ID}, nil},
+		{"invalid", []string{ref.ID}, map[string]string{ref.ID: "bogus"}},
+		{"unforwarded", []string{ref.ID}, map[string]string{"other": "ref"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{Query: tc.name, InputArtifactIDs: tc.ids, InputArtifactDispositions: tc.hints}})
+			if err == nil {
+				t.Fatal("expected rejection")
+			}
+			if _, getErr := reg.Get(spawnAwaitIDCtx(t), tasks.TaskID(tc.name)); !errors.Is(getErr, tasks.ErrNotFound) {
+				t.Fatalf("rejected spawn persisted: %v", getErr)
+			}
+		})
+	}
+}
+
+func TestExecutor_SpawnTask_PersistsArtifactReferencesOnly(t *testing.T) {
+	bus := mkSpawnAwaitTestBus(t)
+	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	store := newTestArtifactStore(t)
+	ref, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}, []byte("secret-bytes"), artifacts.PutOpts{MimeType: "image/png", Filename: "secret.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{Query: "ref-only", InputArtifactIDs: []string{ref.ID}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := reg.Get(spawnAwaitIDCtx(t), tasks.TaskID(raw.(map[string]any)["task_id"].(string)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "secret-bytes") || strings.Contains(string(encoded), "secret.png") || strings.Contains(string(encoded), "data:image") {
+		t.Fatalf("task materialized artifact content: %s", encoded)
+	}
+	if len(task.InputArtifactIDs) != 1 || task.InputArtifactIDs[0] != ref.ID || task.InputArtifactDispositions[ref.ID] != "inline" {
+		t.Fatalf("task reference payload = %+v", task)
+	}
+}
+
 func TestExecutor_SpawnTask_ArtifactHintValidationPrecedesPersistence(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)

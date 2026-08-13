@@ -440,3 +440,16 @@ func TestResolveDisposition_ConcurrentReuse(t *testing.T) {
 		}
 	}
 }
+
+func TestDispositionPolicy_CloneIsMutationIndependent(t *testing.T) {
+	source := planner.DispositionPolicy{ByMIME: map[string]planner.AttachmentDisposition{"image/*": planner.DispositionRef}, Default: planner.DispositionInline}
+	snapshot := source.Clone()
+	source.ByMIME["image/*"] = planner.DispositionProviderNative
+	source.ByMIME["application/pdf"] = planner.DispositionTool("pdf.extract")
+	if got, layer := planner.ResolveDisposition("", snapshot, "image/png"); got != planner.DispositionRef || layer != planner.DispositionLayerAgentPolicy {
+		t.Fatalf("snapshot changed after source mutation: (%q, %q)", got, layer)
+	}
+	if _, ok := snapshot.ByMIME["application/pdf"]; ok {
+		t.Fatal("snapshot inherited a post-construction source map entry")
+	}
+}
