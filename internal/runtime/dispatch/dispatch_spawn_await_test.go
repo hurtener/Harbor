@@ -97,6 +97,15 @@ func spawnAwaitIDCtx(t *testing.T) context.Context {
 	return ctx
 }
 
+func countSpawnAwaitTasks(t *testing.T, reg tasks.TaskRegistry) int {
+	t.Helper()
+	tasks, err := reg.List(spawnAwaitIDCtx(t), dispatchTestID, tasks.TaskFilter{})
+	if err != nil {
+		t.Fatalf("reg.List: %v", err)
+	}
+	return len(tasks)
+}
+
 // rcFor builds a RunContext whose identity is the shared test triple and
 // whose RunID (= the current task id at the dev layer) is `runID`.
 func rcFor(runID tasks.TaskID) planner.RunContext {
@@ -188,12 +197,13 @@ func TestExecutor_SpawnTask_ArtifactScopeErrorsDoNotPersist(t *testing.T) {
 	}
 	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
 	for _, id := range []string{"missing", foreignRef.ID} {
+		before := countSpawnAwaitTasks(t, reg)
 		_, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{Query: id, InputArtifactIDs: []string{id}}})
 		if !errors.Is(err, ErrArtifactRefNotFound) {
 			t.Fatalf("id %q error = %v, want ErrArtifactRefNotFound", id, err)
 		}
-		if _, getErr := reg.Get(spawnAwaitIDCtx(t), tasks.TaskID(id)); !errors.Is(getErr, tasks.ErrNotFound) {
-			t.Fatalf("id %q persisted a child: %v", id, getErr)
+		if after := countSpawnAwaitTasks(t, reg); after != before {
+			t.Fatalf("id %q persisted a child: task count changed from %d to %d", id, before, after)
 		}
 	}
 }
@@ -217,12 +227,13 @@ func TestExecutor_SpawnTask_ArtifactValidationRejectsBeforePersistence(t *testin
 		{"unforwarded", []string{ref.ID}, map[string]string{"other": "ref"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			before := countSpawnAwaitTasks(t, reg)
 			_, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{Query: tc.name, InputArtifactIDs: tc.ids, InputArtifactDispositions: tc.hints}})
 			if err == nil {
 				t.Fatal("expected rejection")
 			}
-			if _, getErr := reg.Get(spawnAwaitIDCtx(t), tasks.TaskID(tc.name)); !errors.Is(getErr, tasks.ErrNotFound) {
-				t.Fatalf("rejected spawn persisted: %v", getErr)
+			if after := countSpawnAwaitTasks(t, reg); after != before {
+				t.Fatalf("rejected spawn persisted: task count changed from %d to %d", before, after)
 			}
 		})
 	}
@@ -249,8 +260,14 @@ func TestExecutor_SpawnTask_PersistsArtifactReferencesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "secret-bytes") || strings.Contains(string(encoded), "secret.png") || strings.Contains(string(encoded), "data:image") {
+	if strings.Contains(string(encoded), "secret-bytes") || strings.Contains(string(encoded), "secret.png") || strings.Contains(string(encoded), "data:image") || strings.Contains(string(encoded), "http://") || strings.Contains(string(encoded), "https://") {
 		t.Fatalf("task materialized artifact content: %s", encoded)
+	}
+	if len(task.OutputSchema) != 0 {
+		t.Fatalf("task output schema = %+v, want empty", task.OutputSchema)
+	}
+	if task.VirtualAgent != nil {
+		t.Fatalf("task virtual agent = %+v, want nil", task.VirtualAgent)
 	}
 	if len(task.InputArtifactIDs) != 1 || task.InputArtifactIDs[0] != ref.ID || task.InputArtifactDispositions[ref.ID] != "inline" {
 		t.Fatalf("task reference payload = %+v", task)
