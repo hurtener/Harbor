@@ -37,9 +37,9 @@ func (d *driver) searchSemantic(ctx context.Context, id identity.Quadruple, agen
 
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
         WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND (agent_id = ? OR agent_id = '')
-        ORDER BY updated_at DESC, name ASC
+        ORDER BY (agent_id = ?) DESC, updated_at DESC, name ASC
         LIMIT ?`,
-		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, semanticCandidateCap)
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, agentID, semanticCandidateCap)
 	if err != nil {
 		return nil, fmt.Errorf("skills/localdb: semantic candidates: %w", err)
 	}
@@ -92,6 +92,7 @@ func (d *driver) searchSemantic(ctx context.Context, id identity.Quadruple, agen
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	out = preferAgentRows(out, agentID)
 	if len(out) > limit {
 		out = out[:limit]
 	}

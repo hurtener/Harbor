@@ -320,6 +320,7 @@ func (d *driver) searchRegex(ctx context.Context, id identity.Quadruple, agentID
 		}
 		return out[i].Skill.Name < out[j].Skill.Name
 	})
+	out = preferAgentRows(out, agentID)
 	if len(out) > limit {
 		out = out[:limit]
 	}
@@ -383,17 +384,18 @@ func (d *driver) searchExact(ctx context.Context, id identity.Quadruple, agentID
 		return nil, nil
 	}
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-		 WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND (agent_id = ? OR agent_id = '')
+		 WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?)
           AND (
               lower(name) = ?
               OR lower(title) = ?
               OR lower(trigger) = ?
               OR lower(tags_text) LIKE ?
           )
+          AND (agent_id = ? OR agent_id = '')
         ORDER BY (agent_id = ?) DESC, updated_at DESC, name ASC
         LIMIT ?`,
-		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, agentID,
-		q, q, q, "%"+q+"%", limit)
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser),
+		q, q, q, "%"+q+"%", agentID, agentID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("skills/localdb: exact query: %w", err)
 	}
