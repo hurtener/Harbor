@@ -80,12 +80,8 @@ func mkSpawnAwaitTestTaskRegistry(t *testing.T, bus events.EventBus) tasks.TaskR
 
 // newSpawnAwaitExecutor builds an executor over the supplied registry and
 // catalog with a real inmem artifact store.
-func newSpawnAwaitExecutor(t *testing.T, reg tasks.TaskRegistry, heavyThreshold, maxDepth int, cats ...tools.ToolCatalog) steering.ToolExecutor {
+func newSpawnAwaitExecutor(t *testing.T, reg tasks.TaskRegistry, heavyThreshold, maxDepth int, cat tools.ToolCatalog) steering.ToolExecutor {
 	t.Helper()
-	cat := tools.NewCatalog()
-	if len(cats) != 0 {
-		cat = cats[0]
-	}
 	return NewToolExecutor(cat, newTestArtifactStore(t), reg,
 		WithHeavyThreshold(heavyThreshold),
 		WithMaxSpawnDepth(maxDepth))
@@ -112,11 +108,7 @@ func countSpawnAwaitTasks(t *testing.T, reg tasks.TaskRegistry) int {
 
 // rcFor builds a RunContext whose identity is the shared test triple and
 // whose RunID (= the current task id at the dev layer) is `runID`.
-func rcFor(runID tasks.TaskID, cats ...tools.ToolCatalog) planner.RunContext {
-	cat := tools.NewCatalog()
-	if len(cats) != 0 {
-		cat = cats[0]
-	}
+func rcFor(runID tasks.TaskID, cat tools.ToolCatalog) planner.RunContext {
 	return planner.RunContext{
 		Quadruple: identity.Quadruple{Identity: dispatchTestID, RunID: string(runID)},
 		Catalog:   tools.NewPlannerView(cat, tools.CatalogFilter{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}),
@@ -409,14 +401,15 @@ func TestExecutor_SpawnTask_InheritsExactAgentReachAdmission(t *testing.T) {
 // wired the dispatch fails loud with ErrDecisionShapeUnsupported (never
 // a panic / silent no-op).
 func TestExecutor_SpawnTask_NilRegistry_Unsupported(t *testing.T) {
-	exec := newSpawnAwaitExecutor(t, nil, 32*1024, 4)
-	_, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, nil, 32*1024, 4, cat)
+	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("", cat), planner.SpawnTask{
 		Spec: planner.SpawnSpec{Query: "x"},
 	})
 	if !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
 		t.Fatalf("err = %v, want ErrDecisionShapeUnsupported", err)
 	}
-	_, _, err = exec.ExecuteDecision(context.Background(), rcFor(""), planner.AwaitTask{TaskID: "t"})
+	_, _, err = exec.ExecuteDecision(context.Background(), rcFor("", cat), planner.AwaitTask{TaskID: "t"})
 	if !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
 		t.Fatalf("AwaitTask err = %v, want ErrDecisionShapeUnsupported", err)
 	}
@@ -553,10 +546,11 @@ func TestExecutor_AwaitTask_HeavyResult_Projected(t *testing.T) {
 func TestExecutor_SpawnTask_DepthCap(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 1)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 1, cat)
 
 	// Root spawn (RunID empty → ParentTaskID nil, depth 0). Allowed.
-	raw1, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{
+	raw1, _, err := exec.ExecuteDecision(context.Background(), rcFor("", cat), planner.SpawnTask{
 		Spec: planner.SpawnSpec{Query: "root"},
 	})
 	if err != nil {
@@ -565,7 +559,7 @@ func TestExecutor_SpawnTask_DepthCap(t *testing.T) {
 	t1 := tasks.TaskID(raw1.(map[string]any)["task_id"].(string))
 
 	// Spawn whose parent is the root (child depth 1 ≤ cap 1). Allowed.
-	raw2, _, err := exec.ExecuteDecision(context.Background(), rcFor(t1), planner.SpawnTask{
+	raw2, _, err := exec.ExecuteDecision(context.Background(), rcFor(t1, cat), planner.SpawnTask{
 		Spec: planner.SpawnSpec{Query: "depth-1 child"},
 	})
 	if err != nil {
@@ -574,7 +568,7 @@ func TestExecutor_SpawnTask_DepthCap(t *testing.T) {
 	t2 := tasks.TaskID(raw2.(map[string]any)["task_id"].(string))
 
 	// Spawn whose parent (t2) is at depth 1 → child depth 2 > cap 1. Rejected.
-	_, _, err = exec.ExecuteDecision(context.Background(), rcFor(t2), planner.SpawnTask{
+	_, _, err = exec.ExecuteDecision(context.Background(), rcFor(t2, cat), planner.SpawnTask{
 		Spec: planner.SpawnSpec{Query: "depth-2 child"},
 	})
 	if err == nil {
@@ -591,7 +585,8 @@ func TestExecutor_SpawnTask_DepthCap(t *testing.T) {
 func TestExecutor_SpawnThenAwait_FailedChild(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
 	// Spawn + drive to Failed directly (no planner needed for this shape).
 	ctx := spawnAwaitIDCtx(t)
@@ -610,7 +605,7 @@ func TestExecutor_SpawnThenAwait_FailedChild(t *testing.T) {
 		t.Fatalf("MarkFailed: %v", err)
 	}
 
-	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.AwaitTask{TaskID: h.ID})
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("", cat), planner.AwaitTask{TaskID: h.ID})
 	if err != nil {
 		t.Fatalf("ExecuteDecision(AwaitTask): %v", err)
 	}
@@ -637,7 +632,8 @@ func TestExecutor_SpawnAwait_ConcurrentReuse(t *testing.T) {
 
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
 	baseline := runtime.NumGoroutine()
 
@@ -652,7 +648,10 @@ func TestExecutor_SpawnAwait_ConcurrentReuse(t *testing.T) {
 				UserID:    "user-" + strconv.Itoa(i),
 				SessionID: "session-" + strconv.Itoa(i),
 			}
-			rc := planner.RunContext{Quadruple: identity.Quadruple{Identity: id}}
+			rc := planner.RunContext{
+				Quadruple: identity.Quadruple{Identity: id},
+				Catalog:   tools.NewPlannerView(cat, tools.CatalogFilter{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}),
+			}
 			idCtx, wErr := identity.With(context.Background(), id)
 			if wErr != nil {
 				errCh <- wErr
