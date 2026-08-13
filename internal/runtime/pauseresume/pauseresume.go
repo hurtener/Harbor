@@ -281,6 +281,22 @@ type Coordinator interface {
 	List(ctx context.Context, req ListRequest) (ListResponse, error)
 }
 
+// TrancheCanceller is the live-run extension for atomically consuming a
+// step-tranche pause during cancellation.
+type TrancheCanceller interface {
+	CancelTranche(context.Context, Token) error
+}
+
+// CancelTranche consumes a live step-tranche token, failing closed when the
+// Coordinator does not support live-run cancellation.
+func CancelTranche(ctx context.Context, c Coordinator, token Token) error {
+	ext, ok := c.(TrancheCanceller)
+	if !ok {
+		return ErrRestartUnavailable
+	}
+	return ext.CancelTranche(ctx, token)
+}
+
 // StatusForIdentity reads a private token selector without exposing whether a
 // foreign identity or run selector exists. Implementations that do not provide
 // the scoped extension are treated as not found.

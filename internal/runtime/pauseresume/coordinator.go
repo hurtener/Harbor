@@ -524,6 +524,61 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 	return nil
 }
 
+// CancelTranche atomically consumes a live step-tranche pause. Cancellation
+// and Resume share the coordinator mutex, so exactly one terminal decision
+// wins and the token is never continuable afterward.
+func (c *coordinator) CancelTranche(ctx context.Context, token Token) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("pauseresume: tranche cancellation cancelled: %w", err)
+	}
+	id, err := identityFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	entry, ok := c.pauses[token]
+	if !ok {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
+	}
+	if !sameScope(entry.identity, id) || (entry.runID != "" && entry.runID != runIDFromContext(ctx)) {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
+	}
+	if entry.state == StatusResumed {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrAlreadyResumed, token)
+	}
+	if entry.resuming {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrResumeInProgress, token)
+	}
+	if entry.reason != ReasonConstraintsConflict {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrNotTranchePause, token)
+	}
+	if _, ok := TrancheExceededFromMap(entry.payload); !ok {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrNotTranchePause, token)
+	}
+	entry.state, entry.available, entry.resumedAt, entry.decision = StatusResumed, false, c.now(), DecisionCancelled
+	terminal := *entry
+	c.mu.Unlock()
+	if c.store != nil {
+		rec, rerr := terminal.toCheckpoint()
+		if rerr != nil {
+			c.markDeletePending(token)
+			return rerr
+		}
+		if derr := deleteCheckpoint(ctx, c.store, rec); derr != nil {
+			c.markDeletePending(token)
+			return derr
+		}
+	}
+	c.emit(ctx, EventTypePauseResumed, &terminal, PauseResumedPayload{Token: string(token), Reason: string(terminal.reason), Decision: DecisionCancelled})
+	return nil
+}
+
 // Status returns a read-only snapshot of a pause record. See the
 // Coordinator interface godoc for the full contract.
 func (c *coordinator) Status(ctx context.Context, token Token) (Status, error) {

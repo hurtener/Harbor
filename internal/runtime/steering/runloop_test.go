@@ -78,6 +78,7 @@ type stubCoordinator struct {
 	issueToken         pauseresume.Token
 	requestErr         error
 	resumeErr          error
+	cancelTrancheCalls int
 	resumedTokens      []pauseresume.Token
 	lastRequest        pauseresume.PauseRequest // captured verbatim — trajectory-threading assertions (Phase 111c)
 	// statusAfterResume, when non-nil, is returned by Status once a
@@ -118,6 +119,13 @@ func (c *stubCoordinator) Resume(_ context.Context, token pauseresume.Token, dec
 	c.lastResumeDecision = decision
 	c.resumedTokens = append(c.resumedTokens, token)
 	return c.resumeErr
+}
+
+func (c *stubCoordinator) CancelTranche(_ context.Context, _ pauseresume.Token) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cancelTrancheCalls++
+	return nil
 }
 
 func (c *stubCoordinator) Status(_ context.Context, _ pauseresume.Token) (pauseresume.Status, error) {

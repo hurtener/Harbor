@@ -38,6 +38,8 @@ var (
 	// effects.
 	ErrAlreadyResumed = errors.New("pauseresume: pause already resumed")
 
+	ErrNotTranchePause = errors.New("pauseresume: pause is not a step-tranche pause")
+
 	// ErrScopeMismatch — Resume was called with an identity triple
 	// whose (tenant, user, session) does not match the triple the
 	// pause was Requested under. Authentication on resume is checked

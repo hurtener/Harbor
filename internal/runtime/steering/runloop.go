@@ -798,6 +798,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// Finish{Cancelled}.
 		if outstandingToken != "" {
 			if sc.signals.Cancelled {
+				if outstandingTranche {
+					if err := pauseresume.CancelTranche(runCtx, rl.coord, outstandingToken); err != nil {
+						return planner.Finish{}, fmt.Errorf("steering: consuming tranche pause on cancellation: %w", err)
+					}
+				}
 				return planner.Finish{
 					Reason: planner.FinishCancelled,
 					Metadata: map[string]any{

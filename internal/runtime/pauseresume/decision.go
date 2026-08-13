@@ -51,6 +51,8 @@ const (
 	// (the REJECT posture applied to deadlines), never a silent
 	// unpark-and-continue.
 	DecisionTimeout Decision = "timeout"
+	// DecisionCancelled consumes a live step-tranche pause when its run is cancelled.
+	DecisionCancelled Decision = "cancelled"
 )
 
 // IsValidDecision reports whether d is one of the four canonical
@@ -59,7 +61,7 @@ const (
 // closes.
 func IsValidDecision(d Decision) bool {
 	switch d {
-	case DecisionApprove, DecisionReject, DecisionResume, DecisionTimeout:
+	case DecisionApprove, DecisionReject, DecisionResume, DecisionTimeout, DecisionCancelled:
 		return true
 	default:
 		return false

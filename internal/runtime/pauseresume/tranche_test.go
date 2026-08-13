@@ -3,6 +3,7 @@ package pauseresume_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/planner/trajectory"
@@ -179,5 +180,46 @@ func TestTranchePause_Restart_NoStore_TypedUnavailable(t *testing.T) {
 	}
 	if p2.Token == p.Token {
 		t.Fatal("second tranche pause reuses the first token — new-task masquerade")
+	}
+}
+
+// TestTranchePause_CancelResume_RaceHasOneWinner pins the atomic token
+// arbitration: cancellation and resume cannot both consume a live tranche.
+func TestTranchePause_CancelResume_RaceHasOneWinner(t *testing.T) {
+	t.Parallel()
+	ctx := runCtx(t, testID, "run-tranche-race")
+	c := pauseresume.New()
+	p, err := c.Request(ctx, pauseresume.PauseRequest{Identity: testID, Reason: pauseresume.ReasonConstraintsConflict, Payload: pauseresume.NewTrancheExceededPayload(2, 2).Map()})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); results <- pauseresume.CancelTranche(ctx, c, p.Token) }()
+	go func() { defer wg.Done(); results <- c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil) }()
+	wg.Wait()
+	close(results)
+	var successes, losers int
+	for err := range results {
+		if err == nil {
+			successes++
+			continue
+		}
+		if errors.Is(err, pauseresume.ErrAlreadyResumed) {
+			losers++
+			continue
+		}
+		t.Fatalf("race loser error = %v, want ErrAlreadyResumed", err)
+	}
+	if successes != 1 || losers != 1 {
+		t.Fatalf("successes=%d losers=%d, want one each", successes, losers)
+	}
+	st, err := c.Status(ctx, p.Token)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.Continuable() {
+		t.Fatal("terminal race winner left a reusable tranche token")
 	}
 }
