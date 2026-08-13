@@ -130,7 +130,10 @@ func (c *stubCoordinator) CancelTranche(_ context.Context, token pauseresume.Tok
 	if c.cancelledTokens == nil {
 		c.cancelledTokens = make(map[pauseresume.Token]bool)
 	}
-	c.cancelledTokens[token] = true
+	var cleanupErr *pauseresume.TrancheCancellationError
+	if errors.As(c.cancelTrancheErr, &cleanupErr) {
+		c.cancelledTokens[token] = true
+	}
 	return c.cancelTrancheErr
 }
 

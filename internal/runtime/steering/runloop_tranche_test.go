@@ -189,6 +189,40 @@ func TestRun_Tranche_CancelCleanupFailureStillReturnsTerminalCancellation(t *tes
 	}
 }
 
+func TestRun_Tranche_CancelPreConsumptionErrorReturnsLoudly(t *testing.T) {
+	rl, reg, coord := newTestRunLoop(t)
+	wantErr := errors.New("tranche token not consumed")
+	coord.cancelTrancheErr = wantErr
+	p := &scriptedPlanner{script: []scriptStep{{dec: planner.CallTool{Tool: "noop"}}}}
+	done := make(chan runOutcome, 1)
+	go func() {
+		fin, err := rl.Run(context.Background(), trancheSpecFor(runA, p, 1, 8))
+		done <- runOutcome{fin: fin, err: err}
+	}()
+	waitForPause(t, coord, 1)
+	in, err := reg.Lookup(runA)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if err := in.Enqueue(ControlEvent{Type: ControlCancel, Identity: runA, CallerScope: ScopeOwnerUser, CallerTenant: runA.TenantID}); err != nil {
+		t.Fatalf("Enqueue(CANCEL): %v", err)
+	}
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, wantErr) {
+			t.Fatalf("Run error = %v, want %v", got.err, wantErr)
+		}
+		if got.fin.Reason != "" {
+			t.Fatalf("Finish.Reason = %q, want empty on pre-consumption error", got.fin.Reason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run did not return after pre-consumption cancellation error")
+	}
+	if calls, cancelled := coord.trancheSnapshot(pauseresume.Token("stub-token")); calls != 1 || cancelled {
+		t.Fatalf("tranche cancellation = calls %d, cancelled %v; want one call without terminal cancellation", calls, cancelled)
+	}
+}
+
 func TestRun_Tranche_CancelWithResumeApproveRejectBatch_TerminalizesInEitherOrder(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

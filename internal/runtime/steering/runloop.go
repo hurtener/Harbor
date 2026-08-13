@@ -836,6 +836,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			if sc.signals.Cancelled {
 				if outstandingTranche {
 					if cancelErr := pauseresume.CancelTranche(runCtx, rl.coord, outstandingToken); cancelErr != nil {
+						var cleanupErr *pauseresume.TrancheCancellationError
+						if !errors.As(cancelErr, &cleanupErr) {
+							return planner.Finish{}, cancelErr
+						}
 						rl.logger.WarnContext(runCtx, "steering: tranche cancellation cleanup failed after terminal cancellation",
 							slog.String("tenant_id", q.TenantID),
 							slog.String("user_id", q.UserID),
