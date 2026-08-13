@@ -1052,7 +1052,12 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 			// form — it must match the declared function name, or the
 			// provider 400s on the follow-up turn.
 			Name: sanitizeToolName(call.Tool),
-			Args: json.RawMessage(safeArgs(call.Args)),
+			// When this step's structured classified failure
+			// observation is the replayed body, the raw model-authored
+			// args are redacted to a bounded `{}` so no raw tool
+			// arguments or secrets reach the next prompt (see
+			// [replayCallArgs]).
+			Args: replayCallArgs(step, call.Args),
 		}},
 	}
 	observation := renderNativeObservation(step)
@@ -1330,17 +1335,30 @@ func resumeTaskReplayArgs(d planner.ResumeTask) json.RawMessage {
 // rendered once and reused for every branch so the N-answers invariant
 // still holds.
 func renderNativeParallelStep(step planner.Step, call planner.CallParallel, replayMode planner.ReasoningReplayMode, stepIdx int) (llm.ChatMessage, []llm.ChatMessage) {
+	// Decompose the aggregate observation FIRST (indexed by branch
+	// Index): when the step carries one, per-branch bodies answer the
+	// tool_calls and the branch args replay unchanged; when it does not
+	// (a whole-call executor abort the runloop wrapped as a flat error
+	// map), every branch answers with the shared fallback body and — for
+	// a structured classified failure — the raw branch args are redacted
+	// to a bounded `{}` so no raw tool arguments or secrets reach the
+	// next prompt.
+	byIndex, hasAgg := parallelBranchBodiesByIndex(step)
 	toolCalls := make([]llm.ToolCallStructured, len(call.Branches))
 	for bi, b := range call.Branches {
 		cid := b.CallID
 		if cid == "" {
 			cid = fmt.Sprintf("react.callid.%d.%d", stepIdx, bi)
 		}
+		args := json.RawMessage(safeArgs(b.Args))
+		if !hasAgg {
+			args = replayCallArgs(step, b.Args)
+		}
 		toolCalls[bi] = llm.ToolCallStructured{
 			ID: cid,
 			// Sanitized so the replayed name matches the declaration.
 			Name: sanitizeToolName(b.Tool),
-			Args: json.RawMessage(safeArgs(b.Args)),
+			Args: args,
 		}
 	}
 
@@ -1364,8 +1382,8 @@ func renderNativeParallelStep(step planner.Step, call planner.CallParallel, repl
 		ToolCalls: toolCalls,
 	}
 
-	// Decompose the aggregate observation, indexed by branch Index.
-	byIndex, hasAgg := parallelBranchBodiesByIndex(step)
+	// When no per-branch aggregate is present, every branch answers with
+	// the shared fallback body so the N-answers wire invariant holds.
 	var fallbackBody string
 	if !hasAgg {
 		fallbackBody = renderParallelFallbackBody(step)
@@ -1461,10 +1479,17 @@ func renderNativeBatchStep(step planner.Step, call planner.Batch, replayMode pla
 		if cid == "" {
 			cid = fmt.Sprintf("react.callid.%d.t%d", stepIdx, ti)
 		}
+		args := json.RawMessage(safeArgs(b.Args))
+		if !hasObs {
+			// Whole-call abort shape: every call answers with the shared
+			// step-level body; a classified failure redacts the raw
+			// branch args to a bounded `{}` (see [replayCallArgs]).
+			args = replayCallArgs(step, b.Args)
+		}
 		toolCalls = append(toolCalls, llm.ToolCallStructured{
 			ID:   cid,
 			Name: sanitizeToolName(b.Tool),
-			Args: json.RawMessage(safeArgs(b.Args)),
+			Args: args,
 		})
 		body := fallbackBody
 		if hasObs {
@@ -1651,7 +1676,7 @@ func renderParallelBranchBody(b planner.ParallelBranchObservation) string {
 // a malformed trajectory). Surfaces failures / errors first, then any
 // heavy-content wrapper, then the generic projection. A structured
 // CLASSIFIED LLMObservation wins over a GENERIC Step.Error exactly as
-// the single-call renderers do (HA-54 amendment).
+// the single-call renderers do.
 func renderParallelFallbackBody(step planner.Step) string {
 	if step.Failure != nil {
 		return fmt.Sprintf("Tool failure: %s — %s",
@@ -1699,7 +1724,7 @@ func renderNativeObservation(step planner.Step) string {
 	// the terminal policy projection, or a bounded result alongside the
 	// error) wins over a GENERIC Step.Error: the classified payload is
 	// the honest failure surface and the generic "tool execution
-	// failed" stamp must never mask it (HA-54 amendment).
+	// failed" stamp must never mask it.
 	if body, ok := renderClassifiedObservation(step); ok {
 		return body
 	}
@@ -1763,6 +1788,44 @@ func renderClassifiedObservation(step planner.Step) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// classifiedObservationReplayed reports whether the step's next-prompt
+// observation body comes from its structured CLASSIFIED failure payload
+// — the error-observation map the run loop stamps on a failed dispatch
+// (see [renderClassifiedObservation]). The payload must be present AND
+// not shadowed by a higher-precedence Failure stamp; that is exactly the
+// case where the classified observation is the body the ReAct renderers
+// (native single, parallel fallback, batch fallback) replay.
+func classifiedObservationReplayed(step planner.Step) bool {
+	if step.Failure != nil {
+		return false
+	}
+	_, ok := renderClassifiedObservation(step)
+	return ok
+}
+
+// replayCallArgs returns the JSON args to replay on an assistant
+// tool-call entry whose role-tool answer is the STEP-LEVEL observation
+// (the native single-call shape, and the parallel / batch whole-call
+// abort shapes that answer every call with the shared step body).
+//
+// When that observation is the structured CLASSIFIED failure payload,
+// the original raw arguments are REDACTED to a deterministic bounded
+// `{}` object: the raw args were authored by the model for a call that
+// failed terminally and may carry secrets, and no raw tool arguments or
+// secrets may enter the next planner prompt — the bounded classified
+// observation is the only failure surface replayed. `{}` keeps the
+// assistant tool_call / role-tool pairing wire-valid (the provider
+// requires a JSON object for `arguments`).
+//
+// Successful steps and legacy unstructured failures replay the original
+// args unchanged via [safeArgs].
+func replayCallArgs(step planner.Step, raw []byte) json.RawMessage {
+	if classifiedObservationReplayed(step) {
+		return json.RawMessage("{}")
+	}
+	return json.RawMessage(safeArgs(raw))
 }
 
 // renderHeavyContentObservation detects the two known heavy-content
@@ -2054,7 +2117,7 @@ func renderActionForLLM(action any) string {
 // to see failures to course-correct) — EXCEPT that a structured
 // CLASSIFIED LLMObservation wins over a GENERIC Step.Error, so the
 // runtime's classified failure payload (class / bounded message /
-// retry outcome / bounded result) is never masked (HA-54 amendment).
+// retry outcome / bounded result) is never masked.
 func renderObservationForLLM(step planner.Step) string {
 	if step.Failure != nil {
 		return fmt.Sprintf("Observation (failure): %s — %s",

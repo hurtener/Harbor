@@ -1155,7 +1155,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					// (class / attempts / budget) — so the next prompt
 					// renders the classification as FIELDS instead of
 					// burying them in an opaque message. This is the
-					// HA-54 amendment's preservation leg: an MCP
+					// preservation leg for classified MCP failures: a
 					// failure's typed class + bounded actionable message
 					// + retry outcome + bounded result must survive
 					// dispatch → runloop → trajectory → next ReAct
@@ -1228,8 +1228,8 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					// path (native, legacy, parallel fallback, batch
 					// fallback) prefers Step.Error over
 					// Step.LLMObservation. The classified observation is
-					// the honest failure surface (HA-54 amendment); the
-					// generic string stays the legacy safe fallback.
+					// the honest failure surface; the generic string
+					// stays the legacy safe fallback.
 					stepRecord.Error = "tool execution failed"
 				}
 				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, stepRecord)
@@ -1542,8 +1542,7 @@ func (rl *RunLoop) appendInvalidDecisionStep(spec RunSpec, nerr error) {
 // The same fact set the canonical terminal tool event
 // (tool.failed / tool.policy_exhausted) carries — the planner
 // observation and the event describe the SAME final class / message /
-// attempt outcome (HA-54 amendment; no new event type, no retry-policy
-// change).
+// attempt outcome, with no new event type and no retry-policy change.
 func buildExecutorErrorPayload(execErr error, result any) map[string]any {
 	payload := map[string]any{"error": execErr.Error()}
 	if result != nil {

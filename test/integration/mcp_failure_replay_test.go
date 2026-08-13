@@ -246,6 +246,14 @@ func TestE2E_MCPIsErrorClassificationReplaysIntoNextPrompt(t *testing.T) {
 		if strings.Contains(secondPrompt, "tool execution failed") {
 			t.Errorf("second prompt shows only the generic 'tool execution failed' — the classified observation was masked:\n%s", secondPrompt)
 		}
+		// The COMPLETE serialized second request is checked — flattened
+		// message content AND the replayed assistant tool_calls: the raw
+		// secret-bearing argument must never appear ANYWHERE in the next
+		// planner prompt (the classified failure's replayed tool_call
+		// carries a bounded {} instead of the model's original args).
+		if strings.Contains(secondPrompt, secretSentinel) {
+			t.Errorf("second prompt leaks the raw argument secret sentinel:\n%s", secondPrompt)
+		}
 		for i, body := range roleToolBodies(reqs[1]) {
 			if strings.Contains(body, secretSentinel) {
 				t.Errorf("second prompt tool message %d leaks the raw argument secret sentinel:\n%s", i, body)
@@ -405,18 +413,15 @@ func TestE2E_MCPIsErrorClassificationReplaysIntoNextPrompt(t *testing.T) {
 			t.Fatalf("scripted LLM saw %d requests, want >= 2", len(reqs))
 		}
 		secondPrompt := flattenMessages(reqs[1].Messages)
-		for _, forbidden := range []string{msgTailSentinel, rawTailSentinel} {
+		// The COMPLETE serialized second request is checked — flattened
+		// message content AND the replayed assistant tool_calls: neither
+		// the bounded-message tail nor the raw argument sentinel may
+		// appear ANYWHERE in the next planner prompt (the classified
+		// failure's replayed tool_call carries a bounded {} instead of
+		// the model's original args).
+		for _, forbidden := range []string{msgTailSentinel, rawTailSentinel, "BULK_ARG_SENTINEL_66"} {
 			if strings.Contains(secondPrompt, forbidden) {
 				t.Errorf("second prompt leaks %q:\n%s", forbidden, secondPrompt)
-			}
-		}
-		// The raw argument appears ONLY in the assistant tool_calls
-		// replay (the model's own emitted args — the wire contract
-		// requires echoing them), never in the observation (tool-role)
-		// bodies.
-		for i, body := range roleToolBodies(reqs[1]) {
-			if strings.Contains(body, "BULK_ARG_SENTINEL_66") {
-				t.Errorf("second prompt tool message %d leaks the raw argument bytes:\n%s", i, body)
 			}
 		}
 		if !strings.Contains(secondPrompt, "artifact_ref") {
