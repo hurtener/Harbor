@@ -1003,6 +1003,17 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 		Transport:   tools.TransportMCP,
 		Policy:      policy,
 		Loading:     tools.LoadingAlways,
+		// AppOnly preserves the provider-authored
+		// `_meta.ui.visibility: ["app"]` classification (a callback for the
+		// tool's rendered App, not an operation for the model to select).
+		// It is stamped at discovery so the attach path can partition ONE
+		// discovered snapshot into the ordinary planner/model projection
+		// (which excludes the callback by construction) and the per-server
+		// App dispatch catalog (through which the App of the SAME server
+		// still invokes it, under the unchanged identity / reach / OAuth /
+		// approval / current-state gates). Classification-only — never an
+		// authorization shortcut.
+		AppOnly: appVisibilityOnly(t.Meta),
 	}
 
 	mcpName := t.Name

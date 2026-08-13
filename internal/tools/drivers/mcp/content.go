@@ -210,6 +210,78 @@ func uiDisplayModeHint(meta mcpsdk.Meta) string {
 	return ""
 }
 
+// modelFacingVisibilityValues are the `_meta.ui.visibility` entries that
+// make a tool a candidate for model/planner-facing surfaces. A tool whose
+// visibility array contains `app` and NONE of these is app-only: a
+// callback for its rendered App, not an operation for the model to select.
+// Unknown values are deliberately treated as non-model-facing — when in
+// doubt, the callback stays OUT of planner context (the conservative
+// direction: hiding a model-facing tool from the planner is a visibility
+// miss; exposing an app-only callback to the model is a least-privilege
+// leak).
+var modelFacingVisibilityValues = map[string]struct{}{
+	"tool":    {},
+	"model":   {},
+	"planner": {},
+	"agent":   {},
+	"all":     {},
+}
+
+// appVisibilityOnly reports whether an MCP tool's `_meta.ui.visibility`
+// array declares it APP-ONLY — a callback for the tool's rendered App, not
+// an operation for the model to select. The canonical
+// `io.modelcontextprotocol/ui` (ext-apps) dialect carries the visibility
+// list on the tool DEFINITION's `_meta.ui` slot, alongside `resourceUri`.
+//
+// The rule is conjunctive: the array must contain `app` AND contain no
+// model-facing entry. `["app"]` is app-only; `["app", "tool"]` (or
+// `["app", "all"]`) is visible to both; `["tool"]` and an absent or empty
+// `visibility` are ordinary model-facing tools (the pre-existing default).
+// A malformed slot (wrong types) is treated as absent — a present-but-
+// broken `_meta` must not poison an otherwise-valid tool.
+//
+// This classification is DISCOVERY metadata, never an authorization
+// shortcut: an app-only tool is still invoked only under the identity /
+// reach / OAuth / approval / current-state gates, exactly like an ordinary
+// tool. It only decides WHICH catalog view the tool is published into.
+func appVisibilityOnly(meta mcpsdk.Meta) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	uiMap, ok := meta["ui"].(map[string]any)
+	if !ok {
+		return false
+	}
+	raw, ok := uiMap["visibility"]
+	if !ok {
+		return false
+	}
+	var entries []string
+	switch v := raw.(type) {
+	case []any:
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				entries = append(entries, s)
+			}
+		}
+	case []string:
+		entries = v
+	default:
+		return false
+	}
+	hasApp := false
+	for _, e := range entries {
+		if e == "app" {
+			hasApp = true
+			continue
+		}
+		if _, modelFacing := modelFacingVisibilityValues[e]; modelFacing {
+			return false
+		}
+	}
+	return hasApp
+}
+
 // reconcileAppRef combines the tool-DEFINITION app binding (the
 // spec-conformant source of the `ui://` resource URI — the canonical
 // `io.modelcontextprotocol/ui` dialect binds the UI resource to the tool,

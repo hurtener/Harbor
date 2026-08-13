@@ -61,9 +61,11 @@ type stubInvoker struct {
 	err      error
 	gotTool  string
 	gotAgent string
+	gotSrv   string
 }
 
-func (s *stubInvoker) CallTool(ctx context.Context, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+func (s *stubInvoker) CallTool(ctx context.Context, serverID, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	s.gotSrv = serverID
 	s.gotTool = tool
 	s.gotAgent, _ = tools.EffectiveAgentConfigFrom(ctx)
 	if s.err != nil {
@@ -188,7 +190,8 @@ func TestAppsSurface_CallTool_AppRefProjection(t *testing.T) {
 	}}
 	s := newAppsSurface(t, &stubResourceReader{}, inv)
 	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
-		Identity: validScope(), AgentID: "named-agent", Tool: "srv-a_weather", Arguments: json.RawMessage(`{}`),
+		Identity: validScope(), AgentID: "named-agent", ServerID: "srv-a",
+		Tool: "srv-a_weather", Arguments: json.RawMessage(`{}`),
 	})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -209,8 +212,29 @@ func TestAppsSurface_CallTool_AppRefProjection(t *testing.T) {
 	if inv.gotTool != "srv-a_weather" {
 		t.Errorf("invoker got tool %q", inv.gotTool)
 	}
+	if inv.gotSrv != "srv-a" {
+		t.Errorf("invoker got server %q, want srv-a (the host-derived identity must reach the dispatch check)", inv.gotSrv)
+	}
 	if inv.gotAgent != "named-agent" {
 		t.Errorf("invoker effective agent = %q, want named-agent", inv.gotAgent)
+	}
+}
+
+// TestAppsSurface_CallTool_ServerIDReachesInvoker pins the transport-
+// agnostic pass-through of the host-derived server identity: whatever the
+// wire carries in server_id reaches the invoker unchanged, so the dispatch
+// check can verify it against the resolved tool's source rather than
+// trusting an App-supplied catalog name.
+func TestAppsSurface_CallTool_ServerIDReachesInvoker(t *testing.T) {
+	inv := &stubInvoker{res: protocol.MCPAppToolResultRow{Tool: "srv-b_cb", Inline: json.RawMessage(`{"ok":true}`)}}
+	s := newAppsSurface(t, &stubResourceReader{}, inv)
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: validScope(), ServerID: "srv-b", Tool: "srv-b_cb",
+	}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if inv.gotSrv != "srv-b" {
+		t.Errorf("invoker got server %q, want srv-b", inv.gotSrv)
 	}
 }
 

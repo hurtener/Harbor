@@ -94,12 +94,12 @@ func TestAppCallGate_PausedServer_Rejected(t *testing.T) {
 	}
 	acc := newGatedAccessor(t, cat, reg)
 
-	_, err := acc.CallTool(ctx, "srv-a_echo", json.RawMessage(`{"x":1}`))
+	_, err := acc.CallTool(ctx, "", "srv-a_echo", json.RawMessage(`{"x":1}`))
 	if !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
 		t.Fatalf("paused-server call err = %v, want ErrAppToolExposureDenied", err)
 	}
 	// A tool on a non-paused server is unaffected.
-	if _, err := acc.CallTool(ctx, "srv-b_ping", json.RawMessage(`{}`)); err != nil {
+	if _, err := acc.CallTool(ctx, "", "srv-b_ping", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("non-paused call rejected: %v", err)
 	}
 }
@@ -117,10 +117,10 @@ func TestAppCallGate_DisabledTool_Rejected(t *testing.T) {
 	}
 	acc := newGatedAccessor(t, cat, reg)
 
-	if _, err := acc.CallTool(ctx, "srv-a_echo", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
+	if _, err := acc.CallTool(ctx, "", "srv-a_echo", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
 		t.Fatalf("disabled-tool call err = %v, want ErrAppToolExposureDenied", err)
 	}
-	if _, err := acc.CallTool(ctx, "srv-a_other", json.RawMessage(`{}`)); err != nil {
+	if _, err := acc.CallTool(ctx, "", "srv-a_other", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("sibling tool rejected: %v", err)
 	}
 }
@@ -166,14 +166,14 @@ func TestAppCallGate_SessionOverlayDisable_Rejected(t *testing.T) {
 		t.Fatalf("NewAppsAccessor: %v", err)
 	}
 
-	if _, err := acc.CallTool(ctx, "srv-b_ping", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
+	if _, err := acc.CallTool(ctx, "", "srv-b_ping", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
 		t.Fatalf("session-disabled SERVER call err = %v, want ErrAppToolExposureDenied", err)
 	}
-	if _, err := acc.CallTool(ctx, "srv-a_echo", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
+	if _, err := acc.CallTool(ctx, "", "srv-a_echo", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
 		t.Fatalf("session-disabled TOOL call err = %v, want ErrAppToolExposureDenied", err)
 	}
 	// A tool neither admin- nor session-disabled still invokes.
-	if _, err := acc.CallTool(ctx, "srv-a_other", json.RawMessage(`{}`)); err != nil {
+	if _, err := acc.CallTool(ctx, "", "srv-a_other", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("undisabled sibling rejected: %v", err)
 	}
 }
@@ -191,7 +191,7 @@ func TestAppCallGate_NotPaused_Allowed(t *testing.T) {
 		t.Fatalf("set: %v", err)
 	}
 	acc := newGatedAccessor(t, cat, reg)
-	if _, err := acc.CallTool(ctx, "srv-a_echo", json.RawMessage(`{}`)); err != nil {
+	if _, err := acc.CallTool(ctx, "", "srv-a_echo", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("call rejected with no tool-exposure section: %v", err)
 	}
 }
@@ -213,10 +213,10 @@ func TestAppCallGate_EffectiveAgentOverridesBootSlot(t *testing.T) {
 	acc := newGatedAccessor(t, cat, reg) // compiled with gateAgentID as boot slot
 
 	namedCtx := tools.WithEffectiveAgentConfig(ctx, namedAgentID)
-	if _, err := acc.CallTool(namedCtx, "srv-a_echo", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
+	if _, err := acc.CallTool(namedCtx, "", "srv-a_echo", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
 		t.Fatalf("named-agent paused call err = %v, want ErrAppToolExposureDenied", err)
 	}
-	if _, err := acc.CallTool(ctx, "srv-a_echo", json.RawMessage(`{}`)); err != nil {
+	if _, err := acc.CallTool(ctx, "", "srv-a_echo", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("legacy boot-slot call unexpectedly inherited named-agent pause: %v", err)
 	}
 }
@@ -238,7 +238,7 @@ func TestAppCallGate_Inert_WhenUnwired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppsAccessor: %v", err)
 	}
-	if _, err := acc.CallTool(ctx, "srv-a_echo", json.RawMessage(`{}`)); err != nil {
+	if _, err := acc.CallTool(ctx, "", "srv-a_echo", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("inert gate rejected a call: %v", err)
 	}
 }
@@ -268,7 +268,7 @@ func TestAppCallGate_Asymmetry_SnapshotVsCurrent(t *testing.T) {
 	acc := newGatedAccessor(t, cat, reg)
 
 	// The app→host CallTool is gated against CURRENT state → rejected.
-	if _, err := acc.CallTool(ctx, "srv-a_echo", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
+	if _, err := acc.CallTool(ctx, "", "srv-a_echo", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
 		t.Fatalf("app call after pause err = %v, want ErrAppToolExposureDenied", err)
 	}
 
@@ -285,7 +285,7 @@ func TestAppCallGate_IdentityRequired(t *testing.T) {
 	cat := gateCatalog(t)
 	reg := gateRegistry(t)
 	acc := newGatedAccessor(t, cat, reg)
-	if _, err := acc.CallTool(context.Background(), "srv-a_echo", json.RawMessage(`{}`)); err == nil {
+	if _, err := acc.CallTool(context.Background(), "", "srv-a_echo", json.RawMessage(`{}`)); err == nil {
 		t.Fatal("CallTool with no identity should fail closed")
 	}
 }

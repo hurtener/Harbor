@@ -154,14 +154,20 @@ type MCPAppToolResultRow struct {
 // `mcp.apps.call_tool`. The Runtime's tool catalog (wrapped with the
 // artifact store + bus for the heavy-content branch) satisfies it.
 // The implementation MUST resolve the tool from the SAME catalog a
-// planner uses and invoke the SAME wrapped descriptor, so the approval
-// gate + tool-side OAuth fire — there is no parallel path.
+// planner uses (and, for an app-only callback, from the named server's
+// App dispatch catalog) and invoke the SAME wrapped descriptor, so the
+// approval gate + tool-side OAuth fire — there is no parallel path.
 //
-// CallTool is identity-mandatory: the implementation reads the triple
-// from ctx (the gate wrapper's `identity.From`) and fails closed on a
-// missing one.
+// serverID is the HOST-DERIVED identity of the MCP server whose rendered
+// App issued the call — authoritative runtime context, never parsed from
+// the tool name. It is the key the dispatch check verifies against: an
+// app-only callback is resolvable ONLY through its own server's App
+// dispatch catalog, and an ordinary tool called with a disagreeing
+// serverID is refused before invocation. CallTool is identity-mandatory:
+// the implementation reads the triple from ctx (the gate wrapper's
+// `identity.From`) and fails closed on a missing one.
 type AppToolInvoker interface {
-	CallTool(ctx context.Context, tool string, args json.RawMessage) (MCPAppToolResultRow, error)
+	CallTool(ctx context.Context, serverID, tool string, args json.RawMessage) (MCPAppToolResultRow, error)
 }
 
 // AppsDeps bundles the runtime-side seams an AppsSurface reads through.
@@ -359,8 +365,12 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	idCtx = tools.WithEffectiveAgentConfig(idCtx, effectiveID)
 	// The invoker re-enters the EXISTING approval / OAuth / identity
 	// tool-invocation path — a gated tool parks on the unified pause
-	// primitive here, never bypassed.
-	res, err := s.invoker.CallTool(idCtx, r.Tool, r.Arguments)
+	// primitive here, never bypassed. The host-derived server identity
+	// rides the call: the invoker verifies it against the resolved tool's
+	// source (an app-only callback resolves ONLY through that server's App
+	// dispatch catalog; a disagreeing serverID on an ordinary tool is
+	// refused before invocation).
+	res, err := s.invoker.CallTool(idCtx, r.ServerID, r.Tool, r.Arguments)
 	if err != nil {
 		return nil, mapMCPError(string(method), err)
 	}

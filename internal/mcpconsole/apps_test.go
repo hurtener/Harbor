@@ -320,7 +320,7 @@ func TestAppsAccessor_CallTool_ResolvesAndInvokes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppsAccessor: %v", err)
 	}
-	res, err := acc.CallTool(idCtx(t), "srv-a_echo", json.RawMessage(`{"x":1}`))
+	res, err := acc.CallTool(idCtx(t), "", "srv-a_echo", json.RawMessage(`{"x":1}`))
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestAppsAccessor_CallTool_ResolvesAndInvokes(t *testing.T) {
 	}
 
 	// Unknown tool fails with ErrToolNotFound.
-	if _, err := acc.CallTool(idCtx(t), "nope", nil); err == nil {
+	if _, err := acc.CallTool(idCtx(t), "", "nope", nil); err == nil {
 		t.Fatal("CallTool unknown tool: want error")
 	}
 }
@@ -379,7 +379,7 @@ func TestAppsAccessor_ConcurrentReuse(t *testing.T) {
 					errs <- err
 				}
 			} else {
-				if _, err := acc.CallTool(ctx, "srv-a_echo", json.RawMessage(`{"i":1}`)); err != nil {
+				if _, err := acc.CallTool(ctx, "", "srv-a_echo", json.RawMessage(`{"i":1}`)); err != nil {
 					errs <- err
 				}
 			}

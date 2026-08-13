@@ -143,6 +143,18 @@ type MCPAppCallToolRequest struct {
 	// runtime-authored app reference; the Runtime re-authorizes it before use.
 	// Omission resolves to the configured default for older clients.
 	AgentID string `json:"agent_id,omitempty"`
+	// ServerID is the HOST-DERIVED identity of the MCP server whose rendered
+	// App issued this call — the value the host pairs with the App's render
+	// context, NEVER a value the App supplies about itself. The Runtime
+	// verifies it against the resolved tool's source before invocation: an
+	// app-only callback (`_meta.ui.visibility: ["app"]`) resolves ONLY
+	// through its own server's App dispatch catalog, so an app-only call
+	// without this field (or naming another server) is refused before
+	// execution. An ordinary tool called with a server_id that disagrees
+	// with its source is likewise refused; an ordinary tool called without
+	// one keeps the legacy behavior (the field is optional for
+	// backward-compatible clients).
+	ServerID string `json:"server_id,omitempty"`
 	// Tool is the catalog tool name to invoke (the Harbor-side
 	// `<source>_<tool>` name).
 	Tool string `json:"tool"`
