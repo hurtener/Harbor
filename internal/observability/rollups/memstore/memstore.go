@@ -4,10 +4,18 @@
 // directly (no registration): the production driver aggregator home is a
 // wiring concern for the phase that wires the projector into the runtime.
 //
+// Indexing: the Store maintains a bucket index (populated fixed-UTC minute
+// bucket starts → row keys, kept sorted for range scans) and a per-dimension
+// index (dimension → value → row keys). A Query resolves its candidate rows
+// from these indexes — the bounded window plus the filter axes — and never
+// snapshots or full-scans the row table, matching the indexed access SQLite /
+// Postgres drivers will use (WHERE bucket_start BETWEEN … AND … AND tenant =
+// …). The scan is therefore proportional to the query, not to the store size.
+//
 // Concurrency: a *Store is a compiled artifact — immutable after
 // construction — and safe for concurrent use by N goroutines against a
 // single shared instance. Writes (ApplyBatch, FenceSession, Rebuild) are
-// serialised under a write lock; queries snapshot the row map under a read
+// serialised under a write lock; queries resolve candidates under a read
 // lock and compute the response outside it, so concurrent readers do not
 // block each other and never observe a torn write.
 package memstore
@@ -17,6 +25,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -24,22 +33,35 @@ import (
 )
 
 // Store is the in-memory rollups.Store. rows is keyed by the full rollups.Key
-// (bucket start on the fixed UTC hour grid + authoritative dimension values);
-// fenced holds the erased session triples; checkpoint is the last applied
-// local durable sequence. all guarded by mu.
+// (bucket start on the fixed UTC minute grid + authoritative dimension
+// values); byBucket and byDim are the query indexes over it; fenced holds the
+// PERMANENTLY erased session triples (keyed by the comparable SessionTriple —
+// never a NUL-joined string); checkpoint is the last applied local durable
+// sequence. All guarded by mu; scannedKeys is atomic (test instrumentation).
 type Store struct {
-	mu         sync.RWMutex
-	rows       map[rollups.Key]rollups.MeasureSet
-	fenced     map[string]struct{}
-	checkpoint uint64
-	oldest     time.Time
-	newest     time.Time
-	closed     bool
+	mu           sync.RWMutex
+	rows         map[rollups.Key]rollups.MeasureSet
+	byBucket     map[int64]map[rollups.Key]struct{}                        // minute bucket start nano → keys
+	bucketStarts []int64                                                   // sorted populated bucket-start nanos (index range scans)
+	byDim        map[rollups.Dimension]map[string]map[rollups.Key]struct{} // dimension → value → keys
+	fenced       map[rollups.SessionTriple]struct{}
+	checkpoint   uint64
+	oldest       time.Time
+	newest       time.Time
+	closed       bool
+
+	// scannedKeys counts the candidate rows a Query resolved through the
+	// indexes (test instrumentation for the index-proportionality pin).
+	scannedKeys atomic.Int64
 }
 
 // New returns a fresh, empty Store.
 func New() *Store {
-	return &Store{rows: map[rollups.Key]rollups.MeasureSet{}}
+	return &Store{
+		rows:     map[rollups.Key]rollups.MeasureSet{},
+		byBucket: map[int64]map[rollups.Key]struct{}{},
+		byDim:    map[rollups.Dimension]map[string]map[rollups.Key]struct{}{},
+	}
 }
 
 // ApplyBatch implements rollups.Store. The batch's deltas and the
@@ -73,6 +95,7 @@ func (s *Store) ApplyBatch(ctx context.Context, batch rollups.Batch) error {
 		r := s.rows[d.Key]
 		r.Add(d.Add)
 		s.rows[d.Key] = r
+		s.indexAddLocked(d.Key)
 		s.floorRetentionLocked(d.Key.BucketStart)
 	}
 	s.checkpoint = batch.Checkpoint
@@ -81,10 +104,12 @@ func (s *Store) ApplyBatch(ctx context.Context, batch rollups.Batch) error {
 
 // Query implements rollups.Store. The query is re-validated (the wrapped
 // ErrQueryInvalid / ErrQueryBudget / ErrBadCursor sentinels flow through),
-// the row map is snapshotted under the read lock, and the grouping, sort,
-// and pagination run outside it so readers never block writers. The
-// response is deterministic for a stable store: same query + same cursor ⇒
-// same rows, and pages never skip or repeat a row (see rollups.Query).
+// the candidate rows are resolved through the bucket + dimension indexes
+// under the read lock (proportional to the bounded window and filter — never
+// a full-table scan), and the grouping, sort, and pagination run outside it
+// so readers never block writers. The response is deterministic for a stable
+// store: same query + same cursor ⇒ same rows, and pages never skip or
+// repeat a row (see rollups.Query).
 func (s *Store) Query(ctx context.Context, q rollups.Query) (rollups.Result, error) {
 	if err := q.Validate(); err != nil {
 		return rollups.Result{}, err
@@ -98,38 +123,81 @@ func (s *Store) Query(ctx context.Context, q rollups.Query) (rollups.Result, err
 		s.mu.RUnlock()
 		return rollups.Result{}, rollups.ErrClosed
 	}
-	// Snapshot the surviving rows (fenced triples are invisible even if a
-	// row slipped in before its fence — defence in depth on top of the
-	// fence-time delete). A stored row (BucketHour granularity) is included
-	// when its own bucket start falls in the half-open [From, To) window;
-	// it is then coarsened to the query's Bucket for grouping/labelling.
-	snapshot := make(map[rollups.Key]rollups.MeasureSet, len(s.rows))
-	for k, v := range s.rows {
-		if s.isFencedLocked(k) {
-			continue
+	// Candidate resolution via the indexes. Fenced rows cannot be
+	// candidates by construction: FenceSession deletes them from rows AND
+	// the indexes under one lock hold, and ApplyBatch refuses fenced
+	// deltas, so no fenced row ever lives in the index.
+	candidates := s.candidatesLocked(q)
+	rows := make(map[rollups.Key]rollups.MeasureSet, len(candidates))
+	for k := range candidates {
+		if v, ok := s.rows[k]; ok {
+			rows[k] = v
 		}
-		if k.BucketStart.Before(q.From) || !k.BucketStart.Before(q.To) {
-			continue
-		}
-		if !q.Filter.Matches(k) {
-			continue
-		}
-		snapshot[k] = v
 	}
+	scanned := int64(len(candidates))
 	s.mu.RUnlock()
+	s.scannedKeys.Add(scanned)
 
 	if err := ctx.Err(); err != nil {
 		return rollups.Result{}, err
 	}
-	if len(snapshot) == 0 {
+	if len(rows) == 0 {
 		return rollups.Result{}, nil
 	}
-	return s.aggregateSnapshot(ctx, q, snapshot)
+	return s.aggregate(ctx, q, rows)
 }
 
-// aggregateSnapshot groups, sorts, and pages the filtered snapshot. Runs
+// candidatesLocked resolves the query's candidate rows from the bucket index
+// (populated minute buckets whose start falls in the half-open [From, To)
+// window) intersected with every non-empty filter axis via the dimension
+// index. Caller holds at least a read lock.
+func (s *Store) candidatesLocked(q rollups.Query) map[rollups.Key]struct{} {
+	fromNano := q.From.UnixNano()
+	toNano := q.To.UnixNano()
+
+	start := sort.Search(len(s.bucketStarts), func(i int) bool { return s.bucketStarts[i] >= fromNano })
+	cand := make(map[rollups.Key]struct{})
+	for i := start; i < len(s.bucketStarts); i++ {
+		b := s.bucketStarts[i]
+		if b >= toNano {
+			break
+		}
+		for k := range s.byBucket[b] {
+			cand[k] = struct{}{}
+		}
+	}
+
+	s.intersectFilterLocked(cand, rollups.DimensionTenant, q.Filter.TenantIDs)
+	s.intersectFilterLocked(cand, rollups.DimensionUser, q.Filter.UserIDs)
+	s.intersectFilterLocked(cand, rollups.DimensionSession, q.Filter.SessionIDs)
+	s.intersectFilterLocked(cand, rollups.DimensionModel, q.Filter.Models)
+	return cand
+}
+
+// intersectFilterLocked narrows cand to the rows matching one filter axis
+// (set semantics: the union of the axis' listed values). An empty values
+// slice matches everything and is a no-op. Caller holds at least a read lock.
+func (s *Store) intersectFilterLocked(cand map[rollups.Key]struct{}, d rollups.Dimension, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	allowed := make(map[rollups.Key]struct{})
+	idx := s.byDim[d]
+	for _, v := range values {
+		for k := range idx[v] {
+			allowed[k] = struct{}{}
+		}
+	}
+	for k := range cand {
+		if _, ok := allowed[k]; !ok {
+			delete(cand, k)
+		}
+	}
+}
+
+// aggregate groups, sorts, and pages the filtered candidate rows. Runs
 // outside the store lock.
-func (s *Store) aggregateSnapshot(ctx context.Context, q rollups.Query, snapshot map[rollups.Key]rollups.MeasureSet) (rollups.Result, error) {
+func (s *Store) aggregate(ctx context.Context, q rollups.Query, rows map[rollups.Key]rollups.MeasureSet) (rollups.Result, error) {
 	// groupKey is the comparable grouping key: the coarsened bucket start
 	// plus one fixed slot per AllDimensions member. Slots beyond the
 	// query's GroupBy set are unused (the empty string), so distinct
@@ -145,7 +213,7 @@ func (s *Store) aggregateSnapshot(ctx context.Context, q rollups.Query, snapshot
 	}
 
 	groups := make(map[groupKey]*group)
-	for k, v := range snapshot {
+	for k, v := range rows {
 		if err := ctx.Err(); err != nil {
 			return rollups.Result{}, err
 		}
@@ -169,23 +237,23 @@ func (s *Store) aggregateSnapshot(ctx context.Context, q rollups.Query, snapshot
 		return rollups.Result{}, nil
 	}
 
-	rows := make([]rollups.Row, 0, len(groups))
+	out := make([]rollups.Row, 0, len(groups))
 	for _, g := range groups {
 		if err := ctx.Err(); err != nil {
 			return rollups.Result{}, err
 		}
-		measures := make(map[rollups.Measure]float64, len(q.Measures))
+		measures := make(map[rollups.Measure]rollups.MeasureValue, len(q.Measures))
 		for _, m := range q.Measures {
 			measures[m] = g.sum.Get(m)
 		}
-		rows = append(rows, rollups.Row{
+		out = append(out, rollups.Row{
 			BucketStart: g.bucketStart,
 			Dimensions:  g.values,
 			Measures:    measures,
 		})
 	}
 
-	sort.Slice(rows, func(i, j int) bool { return rowLess(rows[i], rows[j], q) })
+	sort.Slice(out, func(i, j int) bool { return rowLess(out[i], out[j], q) })
 
 	// Keyset pagination: skip everything up to and including the cursor
 	// position, then emit at most Limit rows; a Limit+1-th row means
@@ -201,32 +269,32 @@ func (s *Store) aggregateSnapshot(ctx context.Context, q rollups.Query, snapshot
 		}
 		cursor = decoded
 	}
-	out := make([]rollups.Row, 0, q.Limit+1)
-	for _, r := range rows {
-		if len(out) > q.Limit {
+	page := make([]rollups.Row, 0, q.Limit+1)
+	for _, r := range out {
+		if len(page) > q.Limit {
 			break
 		}
 		if q.Cursor != "" && !rowAfter(r, q, cursor) {
 			continue
 		}
-		out = append(out, r)
+		page = append(page, r)
 	}
-	if len(out) <= q.Limit {
-		return rollups.Result{Rows: out}, nil
+	if len(page) <= q.Limit {
+		return rollups.Result{Rows: page}, nil
 	}
-	last := out[q.Limit-1]
+	last := page[q.Limit-1]
 	next := rollups.PageCursor{
 		BucketNano: last.BucketStart.UnixNano(),
 		Group:      last.Dimensions,
 	}
 	if q.Sort == rollups.SortKeyMeasureAsc || q.Sort == rollups.SortKeyMeasureDesc {
-		next.MeasureVal = last.Measures[q.SortMeasure]
+		next.MeasureVal = last.Measures[q.SortMeasure].N
 	}
 	cursorStr, err := rollups.EncodeCursor(next)
 	if err != nil {
 		return rollups.Result{}, err
 	}
-	return rollups.Result{Rows: out[:q.Limit], NextCursor: cursorStr}, nil
+	return rollups.Result{Rows: page[:q.Limit], NextCursor: cursorStr}, nil
 }
 
 // cursorShapeMatches reports whether the cursor's group values carry
@@ -256,7 +324,8 @@ func dimensionSlot(d rollups.Dimension) int {
 }
 
 // rowLess is the query's total order: primary key, then bucket start, then
-// the grouped dimension values (canonical order). Deterministic.
+// the grouped dimension values (canonical order). Deterministic. Measure
+// comparisons use the exact integer MeasureValue.N — never float.
 func rowLess(a, b rollups.Row, q rollups.Query) bool {
 	switch q.Sort {
 	case rollups.SortKeyBucketDesc:
@@ -265,8 +334,8 @@ func rowLess(a, b rollups.Row, q rollups.Query) bool {
 		}
 		return a.Dimensions.Less(b.Dimensions)
 	case rollups.SortKeyMeasureAsc:
-		av := a.Measures[q.SortMeasure]
-		bv := b.Measures[q.SortMeasure]
+		av := a.Measures[q.SortMeasure].N
+		bv := b.Measures[q.SortMeasure].N
 		if av != bv {
 			return av < bv
 		}
@@ -275,8 +344,8 @@ func rowLess(a, b rollups.Row, q rollups.Query) bool {
 		}
 		return a.Dimensions.Less(b.Dimensions)
 	case rollups.SortKeyMeasureDesc:
-		av := a.Measures[q.SortMeasure]
-		bv := b.Measures[q.SortMeasure]
+		av := a.Measures[q.SortMeasure].N
+		bv := b.Measures[q.SortMeasure].N
 		if av != bv {
 			return av > bv
 		}
@@ -302,10 +371,10 @@ func rowAfter(r rollups.Row, q rollups.Query, c rollups.PageCursor) bool {
 	case rollups.SortKeyBucketDesc:
 		return bNano < c.BucketNano || (bNano == c.BucketNano && groupAfter)
 	case rollups.SortKeyMeasureAsc:
-		v := r.Measures[q.SortMeasure]
+		v := r.Measures[q.SortMeasure].N
 		return v > c.MeasureVal || (v == c.MeasureVal && (bNano > c.BucketNano || (bNano == c.BucketNano && groupAfter)))
 	case rollups.SortKeyMeasureDesc:
-		v := r.Measures[q.SortMeasure]
+		v := r.Measures[q.SortMeasure].N
 		return v < c.MeasureVal || (v == c.MeasureVal && (bNano > c.BucketNano || (bNano == c.BucketNano && groupAfter)))
 	default: // SortKeyBucketAsc
 		return bNano > c.BucketNano || (bNano == c.BucketNano && groupAfter)
@@ -313,8 +382,9 @@ func rowAfter(r rollups.Row, q rollups.Query, c rollups.PageCursor) bool {
 }
 
 // FenceSession implements rollups.Store: it erases every row for the
-// session triple and fences the triple so no future ApplyBatch can create
-// rows for it (the erasure is never resurrected by a late event).
+// session triple and fences the triple PERMANENTLY so no future ApplyBatch
+// can create rows for it (the erasure is never resurrected by a late event
+// or by Rebuild). There is no unfence operation.
 func (s *Store) FenceSession(ctx context.Context, id identity.Identity) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -324,30 +394,18 @@ func (s *Store) FenceSession(ctx context.Context, id identity.Identity) error {
 	if s.closed {
 		return rollups.ErrClosed
 	}
+	t := rollups.TripleOf(id)
 	for k := range s.rows {
-		if k.TenantID == id.TenantID && k.UserID == id.UserID && k.SessionID == id.SessionID {
+		if t.Matches(k) {
 			delete(s.rows, k)
+			s.indexRemoveLocked(k)
 		}
 	}
 	if s.fenced == nil {
-		s.fenced = map[string]struct{}{}
+		s.fenced = map[rollups.SessionTriple]struct{}{}
 	}
-	s.fenced[tripleKey(id)] = struct{}{}
+	s.fenced[t] = struct{}{}
 	s.recomputeRetentionLocked()
-	return nil
-}
-
-// UnfenceSession implements rollups.Store. Idempotent.
-func (s *Store) UnfenceSession(ctx context.Context, id identity.Identity) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return rollups.ErrClosed
-	}
-	delete(s.fenced, tripleKey(id))
 	return nil
 }
 
@@ -361,7 +419,7 @@ func (s *Store) IsFenced(ctx context.Context, id identity.Identity) (bool, error
 	if s.closed {
 		return false, rollups.ErrClosed
 	}
-	_, ok := s.fenced[tripleKey(id)]
+	_, ok := s.fenced[rollups.TripleOf(id)]
 	return ok, nil
 }
 
@@ -391,8 +449,10 @@ func (s *Store) Retention(ctx context.Context) (time.Time, time.Time, error) {
 	return s.oldest, s.newest, nil
 }
 
-// Rebuild implements rollups.Store: clears rows, fences, checkpoint, and
-// retention so the projector reprocesses the full log.
+// Rebuild implements rollups.Store: clears rows and the checkpoint so the
+// projector reprocesses the full log. Erasure fences are PERMANENT and are
+// deliberately NOT cleared — rebuilding projection rows or the checkpoint
+// cannot authorize the resurrection of an erased session.
 func (s *Store) Rebuild(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -403,10 +463,14 @@ func (s *Store) Rebuild(ctx context.Context) error {
 		return rollups.ErrClosed
 	}
 	s.rows = map[rollups.Key]rollups.MeasureSet{}
-	s.fenced = nil
+	s.byBucket = map[int64]map[rollups.Key]struct{}{}
+	s.bucketStarts = nil
+	s.byDim = map[rollups.Dimension]map[string]map[rollups.Key]struct{}{}
 	s.checkpoint = 0
 	s.oldest = time.Time{}
 	s.newest = time.Time{}
+	// s.fenced is intentionally left untouched: erasure fences are
+	// permanent.
 	return nil
 }
 
@@ -419,6 +483,9 @@ func (s *Store) Close(ctx context.Context) error {
 	defer s.mu.Unlock()
 	s.closed = true
 	s.rows = nil
+	s.byBucket = nil
+	s.bucketStarts = nil
+	s.byDim = nil
 	s.fenced = nil
 	return nil
 }
@@ -429,12 +496,81 @@ func (s *Store) isFencedLocked(k rollups.Key) bool {
 	if s.fenced == nil {
 		return false
 	}
-	_, ok := s.fenced[tripleKey(identity.Identity{
-		TenantID:  k.TenantID,
-		UserID:    k.UserID,
-		SessionID: k.SessionID,
-	})]
+	_, ok := s.fenced[rollups.SessionTriple{TenantID: k.TenantID, UserID: k.UserID, SessionID: k.SessionID}]
 	return ok
+}
+
+// indexAddLocked inserts the key into the bucket and dimension indexes.
+// Caller holds mu.
+func (s *Store) indexAddLocked(k rollups.Key) {
+	b := k.BucketStart.UnixNano()
+	set := s.byBucket[b]
+	if set == nil {
+		set = make(map[rollups.Key]struct{})
+		s.byBucket[b] = set
+		s.insertBucketLocked(b)
+	}
+	set[k] = struct{}{}
+
+	for _, d := range rollups.AllDimensions {
+		v := k.DimensionValue(d)
+		vs := s.byDim[d]
+		if vs == nil {
+			vs = make(map[string]map[rollups.Key]struct{})
+			s.byDim[d] = vs
+		}
+		kset := vs[v]
+		if kset == nil {
+			kset = make(map[rollups.Key]struct{})
+			vs[v] = kset
+		}
+		kset[k] = struct{}{}
+	}
+}
+
+// indexRemoveLocked removes the key from the bucket and dimension indexes.
+// Caller holds mu.
+func (s *Store) indexRemoveLocked(k rollups.Key) {
+	b := k.BucketStart.UnixNano()
+	if set := s.byBucket[b]; set != nil {
+		delete(set, k)
+		if len(set) == 0 {
+			delete(s.byBucket, b)
+			s.removeBucketLocked(b)
+		}
+	}
+	for _, d := range rollups.AllDimensions {
+		v := k.DimensionValue(d)
+		if vs := s.byDim[d]; vs != nil {
+			if kset := vs[v]; kset != nil {
+				delete(kset, k)
+				if len(kset) == 0 {
+					delete(vs, v)
+				}
+			}
+		}
+	}
+}
+
+// insertBucketLocked inserts a bucket-start nano into the sorted
+// bucketStarts slice (no-op when already present). Caller holds mu.
+func (s *Store) insertBucketLocked(b int64) {
+	i := sort.Search(len(s.bucketStarts), func(i int) bool { return s.bucketStarts[i] >= b })
+	if i < len(s.bucketStarts) && s.bucketStarts[i] == b {
+		return
+	}
+	s.bucketStarts = append(s.bucketStarts, 0)
+	copy(s.bucketStarts[i+1:], s.bucketStarts[i:])
+	s.bucketStarts[i] = b
+}
+
+// removeBucketLocked removes a bucket-start nano from the sorted
+// bucketStarts slice (no-op when absent). Caller holds mu.
+func (s *Store) removeBucketLocked(b int64) {
+	i := sort.Search(len(s.bucketStarts), func(i int) bool { return s.bucketStarts[i] >= b })
+	if i < len(s.bucketStarts) && s.bucketStarts[i] == b {
+		s.bucketStarts = append(s.bucketStarts[:i], s.bucketStarts[i+1:]...)
+	}
 }
 
 // floorRetentionLocked widens the retained horizon to include the bucket.
@@ -456,11 +592,4 @@ func (s *Store) recomputeRetentionLocked() {
 	for k := range s.rows {
 		s.floorRetentionLocked(k.BucketStart)
 	}
-}
-
-// tripleKey renders a session triple as the fenced-set key. The NUL
-// separator can never appear in a tenant/user/session id, so distinct
-// triples never collide.
-func tripleKey(id identity.Identity) string {
-	return id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID
 }

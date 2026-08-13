@@ -25,6 +25,10 @@ var (
 	// ErrBadCursor — the page cursor is malformed or was produced by a
 	// different query shape. The caller must restart from the first page.
 	ErrBadCursor = errors.New("rollups: invalid or incompatible page cursor")
+	// ErrInvalidCost — a canonical cost value cannot be converted to the
+	// exact integer micro-unit representation (not finite, negative, or
+	// out of int64 micro range). Extract fails loudly with this sentinel.
+	ErrInvalidCost = errors.New("rollups: invalid cost value")
 )
 
 // Batch is one atomic write unit: the row deltas derived from a contiguous
@@ -48,25 +52,31 @@ type Batch struct {
 // shipped in-memory reference (memstore), plus SQLite and Postgres
 // implementations sharing the interface and the conformancetest suite.
 //
-// Intended SQL shape for the row table (single table, one row per Key):
+// Intended SQL shape for the row table (single table, one row per Key, all
+// measures as exact BIGINT — never DOUBLE PRECISION):
 //
 //	rollup_rows(
-//	    bucket_start   TIMESTAMPTZ NOT NULL,   -- UTC, StoreGranularity grid
-//	    tenant_id      TEXT NOT NULL,
-//	    user_id        TEXT NOT NULL,
-//	    session_id     TEXT NOT NULL,
-//	    model          TEXT NOT NULL DEFAULT '',
-//	    agent_id       TEXT NOT NULL DEFAULT '',
-//	    llm_cost_usd          DOUBLE PRECISION NOT NULL DEFAULT 0,
+//	    bucket_start          TIMESTAMPTZ NOT NULL,  -- UTC, on the MINUTE grid
+//	    tenant_id             TEXT NOT NULL,
+//	    user_id               TEXT NOT NULL,
+//	    session_id            TEXT NOT NULL,
+//	    model                 TEXT NOT NULL DEFAULT '',
+//	    llm_completions       BIGINT NOT NULL DEFAULT 0,
 //	    llm_tokens_prompt     BIGINT NOT NULL DEFAULT 0,
 //	    llm_tokens_completion BIGINT NOT NULL DEFAULT 0,
+//	    llm_tokens_reasoning  BIGINT NOT NULL DEFAULT 0,
+//	    llm_tokens_cache_read BIGINT NOT NULL DEFAULT 0,
+//	    llm_tokens_cache_write BIGINT NOT NULL DEFAULT 0,
 //	    llm_tokens_total      BIGINT NOT NULL DEFAULT 0,
-//	    llm_completions       BIGINT NOT NULL DEFAULT 0,
-//	    llm_latency_ms        BIGINT NOT NULL DEFAULT 0,
+//	    llm_cost_micros       BIGINT NOT NULL DEFAULT 0,  -- exact micro-units of USD
+//	    llm_latency_count     BIGINT NOT NULL DEFAULT 0,
+//	    llm_latency_sum_ms    BIGINT NOT NULL DEFAULT 0,
+//	    llm_latency_min_ms    BIGINT NOT NULL DEFAULT 0,
+//	    llm_latency_max_ms    BIGINT NOT NULL DEFAULT 0,
 //	    tasks_completed       BIGINT NOT NULL DEFAULT 0,
 //	    tasks_failed          BIGINT NOT NULL DEFAULT 0,
 //	    tasks_cancelled       BIGINT NOT NULL DEFAULT 0,
-//	    PRIMARY KEY (bucket_start, tenant_id, user_id, session_id, model, agent_id)
+//	    PRIMARY KEY (bucket_start, tenant_id, user_id, session_id, model)
 //	)
 //	CREATE INDEX idx_rollup_bucket_tenant ON rollup_rows (bucket_start, tenant_id);
 //	CREATE INDEX idx_rollup_bucket_tenant_user ON rollup_rows (bucket_start, tenant_id, user_id);
@@ -83,13 +93,18 @@ type Batch struct {
 //     transaction). A batch whose Checkpoint does not advance the stored
 //     checkpoint is a no-op — this is the replay-idempotency invariant.
 //   - Query is a pure read; it must not mutate stored state and must be
-//     safe for concurrent use.
-//   - FenceSession erases the triple's rows AND fences it; a later
-//     ApplyBatch that touches the triple fails with ErrSessionFenced
-//     (the erasure is never resurrected by a late event). Rows for a
-//     fenced triple are never returned by Query.
+//     safe for concurrent use. An indexed implementation must resolve the
+//     query against its bucket/dimension indexes (the bounded window +
+//     filter), never a full-table scan.
+//   - FenceSession erases the triple's rows AND fences it PERMANENTLY; a
+//     later ApplyBatch that touches the triple fails with
+//     ErrSessionFenced (the erasure is never resurrected by a late event).
+//     Rows for a fenced triple are never returned by Query. There is NO
+//     unfence operation: the fence outlives Rebuild — reprojection must
+//     never resurrect an erased session.
 //   - Checkpoint / Retention / Rebuild are the projector's restart and
-//     rebuild surfaces.
+//     rebuild surfaces. Rebuild resets rows and the checkpoint ONLY; the
+//     erasure fences are never cleared.
 //
 // A Store MUST be safe for concurrent use by N goroutines against a single
 // shared instance (the concurrent-reuse contract; the conformance suite
@@ -110,19 +125,18 @@ type Store interface {
 	// Validate (the store re-validates and returns the wrapped
 	// ErrQueryInvalid / ErrQueryBudget sentinels). The response page is
 	// deterministic for a stable store: same query + same cursor ⇒ same
-	// rows, and pages never skip or repeat a row.
+	// rows, and pages never skip or repeat a row. Result measure values
+	// are exact integers (MeasureValue) — counters are never normalised to
+	// float64, so values above 2^53 stay exact.
 	Query(ctx context.Context, q Query) (Result, error)
 
 	// FenceSession erases every row for the session triple and fences the
-	// triple so no future ApplyBatch can create rows for it. Idempotent.
-	// This is the rollups side of the session-erasure cascade; the
-	// runtime calls it when a session is erased, and the projector drops
-	// late events for fenced triples at ingestion time.
+	// triple PERMANENTLY so no future ApplyBatch can create rows for it,
+	// and no Rebuild can clear it. Idempotent. This is the rollups side of
+	// the session-erasure cascade; the runtime calls it when a session is
+	// erased, and the projector drops late events for fenced triples at
+	// ingestion time.
 	FenceSession(ctx context.Context, id identity.Identity) error
-
-	// UnfenceSession lifts a fence (a reused session id opened afresh).
-	// Idempotent.
-	UnfenceSession(ctx context.Context, id identity.Identity) error
 
 	// IsFenced reports whether the session triple is fenced (erased).
 	IsFenced(ctx context.Context, id identity.Identity) (bool, error)
@@ -132,12 +146,16 @@ type Store interface {
 
 	// Retention returns the oldest and newest bucket start currently
 	// retained, or (zero, zero) when no rows exist. The two instants are
-	// the row-level (StoreGranularity) boundaries; a query coarsens them.
+	// the row-level (StoreGranularity — minute) boundaries; a query
+	// coarsens them.
 	Retention(ctx context.Context) (oldest, newest time.Time, err error)
 
-	// Rebuild clears every row, every fence, and the checkpoint (reset to
-	// 0) so the projector reprocesses the full log from the beginning.
-	// The projector's restart catch-up and rebuild paths both rest on it.
+	// Rebuild clears every row and the checkpoint (reset to 0) so the
+	// projector reprocesses the full log from the beginning. Erasure
+	// fences are PERMANENT and are never cleared by Rebuild: rebuilding
+	// projection rows or the checkpoint cannot authorize the resurrection
+	// of an erased session. The projector's restart catch-up and rebuild
+	// paths both rest on it.
 	Rebuild(ctx context.Context) error
 
 	// Close releases the store's resources. Idempotent; later calls

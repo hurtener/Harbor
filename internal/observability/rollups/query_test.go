@@ -1,6 +1,7 @@
 package rollups
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -9,7 +10,7 @@ import (
 func TestCursor_RoundTrip(t *testing.T) {
 	c := PageCursor{
 		BucketNano: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC).UnixNano(),
-		MeasureVal: 42.5,
+		MeasureVal: 42_500_000, // exact int64 micro-units — never float
 		Group:      DimensionValues{DimensionTenant: "tenant-a", DimensionModel: "model-x"},
 	}
 	enc, err := EncodeCursor(c)
@@ -39,6 +40,25 @@ func TestCursor_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestCursor_MeasureValExact pins the >2^53 guarantee on the pagination
+// cursor: the sort value is an exact int64, so a measure sort over huge
+// counters never loses the low bits through a float64 cursor.
+func TestCursor_MeasureValExact(t *testing.T) {
+	big := int64(1<<53) + 1
+	c := PageCursor{BucketNano: 1, MeasureVal: big}
+	enc, err := EncodeCursor(c)
+	if err != nil {
+		t.Fatalf("EncodeCursor: %v", err)
+	}
+	dec, err := DecodeCursor(enc)
+	if err != nil {
+		t.Fatalf("DecodeCursor: %v", err)
+	}
+	if dec.MeasureVal != big {
+		t.Fatalf("cursor measure val = %d; want %d (exact — float64 would lose the low bit)", dec.MeasureVal, big)
+	}
+}
+
 func TestCursor_Malformed(t *testing.T) {
 	for _, bad := range []string{"", "not-base64!!", "aGVsbG8"} {
 		if _, err := DecodeCursor(bad); !errors.Is(err, ErrBadCursor) {
@@ -52,8 +72,8 @@ func TestQueryValidate(t *testing.T) {
 	valid := Query{
 		From:     from,
 		To:       from.Add(time.Hour),
-		Bucket:   BucketHour,
-		Measures: []Measure{MeasureLLMCostUSD},
+		Bucket:   BucketMinute,
+		Measures: []Measure{MeasureLLMCostMicros},
 		Sort:     SortKeyBucketAsc,
 		Limit:    100,
 	}
@@ -74,7 +94,7 @@ func TestQueryValidate(t *testing.T) {
 	if err := q.Validate(); !errors.Is(err, ErrQueryInvalid) {
 		t.Fatalf("measure sort without SortMeasure: err=%v; want ErrQueryInvalid", err)
 	}
-	q.SortMeasure = MeasureLLMCostUSD
+	q.SortMeasure = MeasureLLMCostMicros
 	if err := q.Validate(); err != nil {
 		t.Fatalf("measure sort with SortMeasure must pass: %v", err)
 	}
@@ -82,16 +102,38 @@ func TestQueryValidate(t *testing.T) {
 	// The window budget fails loudly for a window spanning too many
 	// buckets at the requested size.
 	q = valid
-	q.From = from.Add(-time.Duration(MaxBuckets) * time.Hour)
+	q.From = from.Add(-time.Duration(MaxBuckets) * time.Minute)
 	if err := q.Validate(); !errors.Is(err, ErrQueryBudget) {
 		t.Fatalf("over-budget window: err=%v; want ErrQueryBudget", err)
 	}
 
 	// A valid wide window passes at a coarser bucket.
 	q = valid
-	q.From = from.Add(-time.Duration(MaxBuckets) * time.Hour)
-	q.Bucket = BucketDay
+	q.From = from.Add(-time.Duration(MaxBuckets) * time.Minute)
+	q.Bucket = BucketHour
 	if err := q.Validate(); err != nil {
 		t.Fatalf("coarsened window must pass: %v", err)
+	}
+}
+
+// TestMeasureValue_WireReady pins the typed integer/decimal representation:
+// the value is JSON-safe (encoding/json keeps int64 N and Scale exact) and
+// never float-normalised.
+func TestMeasureValue_WireReady(t *testing.T) {
+	big := int64(1<<53) + 1
+	v := MeasureValue{N: big, Scale: CostScaleMicros}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back MeasureValue
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.N != big {
+		t.Fatalf("wire round-trip N = %d; want %d (exact)", back.N, big)
+	}
+	if back.Scale != CostScaleMicros {
+		t.Fatalf("wire round-trip Scale = %d; want %d", back.Scale, CostScaleMicros)
 	}
 }

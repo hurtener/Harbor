@@ -4,14 +4,16 @@ import (
 	"fmt"
 )
 
-// Dimension is a closed rollup dimension. All values are AUTHORITATIVE: the
-// tenant / user / session axes come from the event's identity triple (the
-// isolation principal — never from payload fields a producer could choose),
-// and model comes from the source event's model field. Agent is populated
-// ONLY when the source event carries an authoritative agent id; none of the
-// V1 canonical payloads do, so the agent axis is empty by construction until
-// a payload that carries one lands. agent_id is NOT an isolation principal —
-// it is a closed rollup axis like model, never a scoping key (CLAUDE.md §6).
+// Dimension is a closed rollup dimension. The set is EXACTLY
+// tenant / user / session / model — no other axis exists in this release.
+// All values are AUTHORITATIVE: the tenant / user / session axes come from
+// the event's identity triple (the isolation principal — never from payload
+// fields a producer could choose), and model comes from the source event's
+// model field. Agent is NOT a rollup dimension: none of the V1 canonical
+// payloads carry an authoritative agent id, and an empty agent axis would
+// fabricate a dimension with no source. A group_by of "agent" is rejected
+// loudly. agent_id is NOT an isolation principal — it is not a scoping key
+// at all in this domain (CLAUDE.md §6).
 type Dimension string
 
 const (
@@ -24,10 +26,6 @@ const (
 	// DimensionModel is the source payload's model (LLM completions only;
 	// empty for events with no authoritative model).
 	DimensionModel Dimension = "model"
-	// DimensionAgent is the source payload's authoritative agent id when
-	// one exists. No V1 canonical payload carries one — the axis is closed
-	// and empty by construction (see the package doc).
-	DimensionAgent Dimension = "agent"
 )
 
 // AllDimensions is the closed dimension set in canonical order.
@@ -36,13 +34,12 @@ var AllDimensions = [...]Dimension{
 	DimensionUser,
 	DimensionSession,
 	DimensionModel,
-	DimensionAgent,
 }
 
 // Validate reports whether d is a closed dimension.
 func (d Dimension) Validate() error {
 	switch d {
-	case DimensionTenant, DimensionUser, DimensionSession, DimensionModel, DimensionAgent:
+	case DimensionTenant, DimensionUser, DimensionSession, DimensionModel:
 		return nil
 	default:
 		return fmt.Errorf("%w: dimension %q (allowed: %v)", ErrQueryInvalid, d, allDimensions())

@@ -11,8 +11,9 @@ import (
 // ErrQueryBudget (never a silently truncated response).
 const (
 	// MaxBuckets bounds the number of buckets one query may span. A
-	// window at BucketHour covering more than ~5.7 months (or BucketDay
-	// covering ~11 years) must be narrowed or coarsened.
+	// window at BucketMinute covering more than ~2.8 days, BucketHour
+	// covering more than ~5.7 months, or BucketDay covering ~11 years
+	// must be narrowed or coarsened.
 	MaxBuckets = 4096
 	// MaxRowsPerQuery bounds one query page (the deterministic pagination
 	// budget). Larger result sets are read page by page via NextCursor.
@@ -33,8 +34,6 @@ type Filter struct {
 	// slice matches BOTH un-attributed (model "") and attributed rows;
 	// to see only model-attributed rows, name the models explicitly.
 	Models []string
-	// AgentIDs restricts to rows with these agent values.
-	AgentIDs []string
 }
 
 // Matches reports whether the row key satisfies the filter. A fenced
@@ -50,9 +49,6 @@ func (f Filter) Matches(k Key) bool {
 		return false
 	}
 	if len(f.Models) > 0 && !containsString(f.Models, k.Model) {
-		return false
-	}
-	if len(f.AgentIDs) > 0 && !containsString(f.AgentIDs, k.AgentID) {
 		return false
 	}
 	return true
@@ -102,7 +98,8 @@ type Query struct {
 	From time.Time
 	To   time.Time
 	// Bucket is the (closed) query bucket size. Rows are stored at
-	// StoreGranularity and coarsened to Bucket at read time.
+	// StoreGranularity (the minute grid) and coarsened to Bucket at read
+	// time.
 	Bucket BucketSize
 	// GroupBy is the closed dimension subset the rows are grouped by (may
 	// be empty — then one row per bucket aggregates the whole window).
@@ -190,6 +187,22 @@ func allSortKeys() []string {
 	return out
 }
 
+// MeasureValue is the exact, wire-ready value of one measure for one row.
+// Every measure accumulates in integer form only (see measure.go): counts,
+// tokens, latency ms, and cost micro-units. N is the exact accumulated
+// integer — counters above 2^53 stay exact because nothing is ever
+// normalised to float64. Scale is the measure's fixed decimal denominator
+// (1 for integer measures; CostScaleMicros for cost), so a consumer formats
+// decimal USD exactly as N / Scale at the edge. A MeasureValue is
+// JSON-safe and comparable on N for a fixed measure.
+type MeasureValue struct {
+	// N is the exact accumulated integer.
+	N int64
+	// Scale is the decimal denominator of the measure's unit; constant
+	// per measure.
+	Scale uint32
+}
+
 // Row is one grouped result row.
 type Row struct {
 	// BucketStart is the bucket the row aggregates (coarsened to the
@@ -199,8 +212,8 @@ type Row struct {
 	// GroupBy was empty — the row aggregates the whole window).
 	Dimensions DimensionValues
 	// Measures carries the query's requested measures and their exact
-	// sums.
-	Measures map[Measure]float64
+	// integer sums / folds.
+	Measures map[Measure]MeasureValue
 }
 
 // Result is one query page.
@@ -221,8 +234,10 @@ type PageCursor struct {
 	// BucketNano is the row's bucket start in unix nanoseconds (exact
 	// int64 — never float-converted).
 	BucketNano int64
-	// MeasureVal is the row's SortMeasure sum (used by measure sorts).
-	MeasureVal float64
+	// MeasureVal is the row's SortMeasure sum in its exact integer form
+	// (the MeasureValue.N — same scale as SortMeasure, so comparison is
+	// exact; never float-converted).
+	MeasureVal int64
 	// Group is the row's grouped dimension values.
 	Group DimensionValues
 }

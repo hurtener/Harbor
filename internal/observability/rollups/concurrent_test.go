@@ -85,7 +85,7 @@ func TestProjector_ConcurrentReuse(t *testing.T) {
 				To:       h.Add(2 * time.Hour),
 				Bucket:   rollups.BucketHour,
 				Filter:   rollups.Filter{TenantIDs: []string{fmt.Sprintf("tenant-%02d", idx%4)}},
-				Measures: []rollups.Measure{rollups.MeasureLLMCostUSD, rollups.MeasureTasksCompleted},
+				Measures: []rollups.Measure{rollups.MeasureLLMCostMicros, rollups.MeasureTasksCompleted},
 				Sort:     rollups.SortKeyBucketAsc,
 				Limit:    100,
 			}
@@ -110,11 +110,11 @@ func TestProjector_ConcurrentReuse(t *testing.T) {
 				return
 			}
 			if len(res.Rows) == 1 {
-				cost := res.Rows[0].Measures[rollups.MeasureLLMCostUSD]
-				tasksDone := res.Rows[0].Measures[rollups.MeasureTasksCompleted]
-				if cost < 0 || cost > 75 || tasksDone < 0 || tasksDone > 75 {
+				cost := res.Rows[0].Measures[rollups.MeasureLLMCostMicros].N
+				tasksDone := res.Rows[0].Measures[rollups.MeasureTasksCompleted].N
+				if cost < 0 || cost > 75_000_000 || tasksDone < 0 || tasksDone > 75 {
 					failures.Add(1)
-					t.Errorf("reader %d: cost=%v tasks=%v want both in [0,75]", idx, cost, tasksDone)
+					t.Errorf("reader %d: cost=%d tasks=%d want cost in [0,75_000_000] tasks in [0,75]", idx, cost, tasksDone)
 				}
 			}
 		}(i)
@@ -169,7 +169,7 @@ func TestProjector_ConcurrentReuse(t *testing.T) {
 			To:       h.Add(2 * time.Hour),
 			Bucket:   rollups.BucketHour,
 			Filter:   rollups.Filter{TenantIDs: []string{fmt.Sprintf("tenant-%02d", i)}},
-			Measures: []rollups.Measure{rollups.MeasureLLMCostUSD, rollups.MeasureTasksCompleted},
+			Measures: []rollups.Measure{rollups.MeasureLLMCostMicros, rollups.MeasureTasksCompleted},
 			Sort:     rollups.SortKeyBucketAsc,
 			Limit:    100,
 		})
@@ -179,11 +179,11 @@ func TestProjector_ConcurrentReuse(t *testing.T) {
 		if len(res.Rows) != 1 {
 			t.Fatalf("post-drain rows tenant-%d = %d; want 1", i, len(res.Rows))
 		}
-		if got := res.Rows[0].Measures[rollups.MeasureLLMCostUSD]; got != 75 {
-			t.Fatalf("post-drain cost tenant-%d = %v; want 75", i, got)
+		if got := res.Rows[0].Measures[rollups.MeasureLLMCostMicros].N; got != 75_000_000 {
+			t.Fatalf("post-drain cost tenant-%d = %d micros; want 75_000_000", i, got)
 		}
-		if got := res.Rows[0].Measures[rollups.MeasureTasksCompleted]; got != 75 {
-			t.Fatalf("post-drain tasks tenant-%d = %v; want 75", i, got)
+		if got := res.Rows[0].Measures[rollups.MeasureTasksCompleted].N; got != 75 {
+			t.Fatalf("post-drain tasks tenant-%d = %d; want 75", i, got)
 		}
 	}
 

@@ -17,7 +17,9 @@ import (
 
 // testSource is a faithful stand-in for the durable-log source: a fixed,
 // ascending, gap-free run of successfully-persisted canonical events with a
-// failure-injection knob. Next returns events strictly newer than after.
+// failure-injection knob. Next returns at most limit events strictly newer
+// than after — a short non-empty batch does NOT mean the source is
+// exhausted, only an empty read does (the corrected Source contract).
 type testSource struct {
 	mu     sync.Mutex
 	events []events.Event
@@ -62,7 +64,7 @@ func costRecord(seq uint64, at time.Time, quad identity.Quadruple, model string,
 			Identity: quad,
 			Model:    model,
 			Cost:     llm.Cost{TotalCost: cost, Currency: "USD"},
-			Usage:    llm.Usage{PromptTokens: 10, CompletionTokens: 10, TotalTokens: 20},
+			Usage:    llm.Usage{PromptTokens: 10, CompletionTokens: 10, TotalTokens: 20, LatencyMS: 100},
 		},
 	}
 }
@@ -83,9 +85,30 @@ func newStore(t *testing.T) *memstore.Store {
 	return memstore.New()
 }
 
+// costMicros queries the store for the exact cost in micro-units.
+func costMicros(ctx context.Context, t *testing.T, s rollups.Store, from, to time.Time, bucket rollups.BucketSize) int64 {
+	t.Helper()
+	res, err := s.Query(ctx, rollups.Query{
+		From:     from,
+		To:       to,
+		Bucket:   bucket,
+		Measures: []rollups.Measure{rollups.MeasureLLMCostMicros, rollups.MeasureTasksCompleted},
+		Sort:     rollups.SortKeyBucketAsc,
+		Limit:    100,
+	})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	var total int64
+	for _, r := range res.Rows {
+		total += r.Measures[rollups.MeasureLLMCostMicros].N
+	}
+	return total
+}
+
 func TestProjector_RestartCatchUpAndReplayIdempotency(t *testing.T) {
 	ctx := context.Background()
-	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.BucketHour)
+	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.StoreGranularity)
 	quad := eventID("tenant-a", "user-1", "session-1")
 
 	evs := []events.Event{
@@ -102,7 +125,8 @@ func TestProjector_RestartCatchUpAndReplayIdempotency(t *testing.T) {
 		t.Fatalf("NewProjector: %v", err)
 	}
 
-	// First run: catch up in two batches (batch size 2).
+	// First run: catch up in batches of 2 (events 1..2, then 3, then the
+	// empty read that proves current).
 	if err := p.CatchUp(ctx); err != nil {
 		t.Fatalf("CatchUp: %v", err)
 	}
@@ -116,8 +140,10 @@ func TestProjector_RestartCatchUpAndReplayIdempotency(t *testing.T) {
 	if q.State != rollups.StateCurrent {
 		t.Fatalf("state = %q; want current", q.State)
 	}
-	if !q.RetentionStart.Equal(h) || !q.RetentionEnd.Equal(h) {
-		t.Fatalf("retention = %v..%v; want %v..%v", q.RetentionStart, q.RetentionEnd, h, h)
+	// Retention is the row-level MINUTE grid: events land in buckets
+	// 12:01, 12:02, 12:03.
+	if !q.RetentionStart.Equal(h.Add(1*time.Minute)) || !q.RetentionEnd.Equal(h.Add(3*time.Minute)) {
+		t.Fatalf("retention = %v..%v; want %v..%v", q.RetentionStart, q.RetentionEnd, h.Add(1*time.Minute), h.Add(3*time.Minute))
 	}
 
 	// "Restart": a fresh projector over the SAME store + source must
@@ -138,38 +164,36 @@ func TestProjector_RestartCatchUpAndReplayIdempotency(t *testing.T) {
 		t.Fatalf("restart Advance: %v", err)
 	}
 	if !caughtUp {
-		t.Fatal("restart Advance must report caught up (source has nothing newer than 3)")
+		t.Fatal("restart Advance must report caught up (an EMPTY read over a source with nothing newer than 3)")
 	}
 
 	// Replay idempotency: the restart must not have changed the sums.
+	if got := costMicros(ctx, t, store, h, h.Add(time.Hour), rollups.BucketHour); got != 3_000_000 {
+		t.Fatalf("cost after restart = %d micros; want 3_000_000 (no double-count)", got)
+	}
 	res, err := store.Query(ctx, rollups.Query{
 		From:     h,
 		To:       h.Add(time.Hour),
 		Bucket:   rollups.BucketHour,
-		Measures: []rollups.Measure{rollups.MeasureLLMCostUSD, rollups.MeasureTasksCompleted},
+		Measures: []rollups.Measure{rollups.MeasureTasksCompleted},
 		Sort:     rollups.SortKeyBucketAsc,
 		Limit:    100,
 	})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
-	if len(res.Rows) != 1 {
-		t.Fatalf("rows = %d; want 1", len(res.Rows))
-	}
-	if got := res.Rows[0].Measures[rollups.MeasureLLMCostUSD]; got != 3.0 {
-		t.Fatalf("cost after restart = %v; want 3.0 (no double-count)", got)
-	}
-	if got := res.Rows[0].Measures[rollups.MeasureTasksCompleted]; got != 1 {
-		t.Fatalf("tasks_completed after restart = %v; want 1", got)
+	if len(res.Rows) != 1 || res.Rows[0].Measures[rollups.MeasureTasksCompleted].N != 1 {
+		t.Fatalf("tasks_completed after restart = %+v; want 1", res.Rows)
 	}
 }
 
 func TestProjector_QualityStates(t *testing.T) {
 	ctx := context.Background()
-	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.BucketHour)
+	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.StoreGranularity)
 	quad := eventID("tenant-a", "user-1", "session-1")
 
-	// Fresh projector over a source with events: CatchingUp until drained.
+	// Fresh projector over a source with events: CatchingUp until the
+	// empty read that drains it.
 	src := &testSource{events: []events.Event{costRecord(1, h, quad, "m", 1)}}
 	store := newStore(t)
 	defer func() { _ = store.Close(ctx) }()
@@ -189,25 +213,43 @@ func TestProjector_QualityStates(t *testing.T) {
 		t.Fatalf("fresh watermark = %d at %v; want 0 at zero", q.Watermark, q.WatermarkAt)
 	}
 
+	// First Advance applies the single event but must NOT report caught
+	// up: a short non-empty batch does not prove the source is exhausted.
 	caughtUp, err := p.Advance(ctx)
 	if err != nil {
 		t.Fatalf("Advance: %v", err)
 	}
-	if !caughtUp {
-		t.Fatal("single-event source must catch up in one batch")
+	if caughtUp {
+		t.Fatal("a short NON-EMPTY batch must not prove current — only a subsequent empty read may")
 	}
 	q, err = p.Quality(ctx)
 	if err != nil {
 		t.Fatalf("Quality: %v", err)
 	}
-	if q.State != rollups.StateCurrent {
-		t.Fatalf("state after drain = %q; want current", q.State)
+	if q.State != rollups.StateCatchingUp {
+		t.Fatalf("state after non-empty batch = %q; want catching_up", q.State)
 	}
 	if q.Watermark != 1 {
 		t.Fatalf("watermark = %d; want 1", q.Watermark)
 	}
 	if q.WatermarkAt.IsZero() {
 		t.Fatal("WatermarkAt must be set after an advance")
+	}
+
+	// The subsequent EMPTY read marks current.
+	caughtUp, err = p.Advance(ctx)
+	if err != nil {
+		t.Fatalf("Advance (empty): %v", err)
+	}
+	if !caughtUp {
+		t.Fatal("an empty read must report caught up")
+	}
+	q, err = p.Quality(ctx)
+	if err != nil {
+		t.Fatalf("Quality: %v", err)
+	}
+	if q.State != rollups.StateCurrent {
+		t.Fatalf("state after empty read = %q; want current", q.State)
 	}
 
 	// Failure: the source breaks; state becomes Unavailable with the error.
@@ -229,14 +271,15 @@ func TestProjector_QualityStates(t *testing.T) {
 		t.Fatalf("watermark after failure = %d; want 1 (checkpoint untouched)", q.Watermark)
 	}
 
-	// Recovery: the source heals; the next Advance moves forward.
+	// Recovery: the source heals; the next Advance (empty read) moves to
+	// current.
 	src.err = nil
 	caughtUp, err = p.Advance(ctx)
 	if err != nil {
 		t.Fatalf("Advance after recovery: %v", err)
 	}
 	if !caughtUp {
-		t.Fatal("source has nothing newer than 1; must catch up")
+		t.Fatal("source has nothing newer than 1; the empty read must catch up")
 	}
 	q, err = p.Quality(ctx)
 	if err != nil {
@@ -247,9 +290,81 @@ func TestProjector_QualityStates(t *testing.T) {
 	}
 }
 
+// TestProjector_ShortBatchDoesNotProveCurrent pins the corrected Source
+// contract: Source.Next promises at most limit, so a short non-empty batch
+// (here the final event of a 3-event log with batch size 2) must leave the
+// projector catching_up; only the SUBSEQUENT empty read marks current.
+func TestProjector_ShortBatchDoesNotProveCurrent(t *testing.T) {
+	ctx := context.Background()
+	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.StoreGranularity)
+	quad := eventID("tenant-a", "user-1", "session-1")
+
+	src := &testSource{events: []events.Event{
+		costRecord(1, h, quad, "m", 1),
+		costRecord(2, h.Add(time.Minute), quad, "m", 2),
+		costRecord(3, h.Add(2*time.Minute), quad, "m", 4),
+	}}
+	store := newStore(t)
+	defer func() { _ = store.Close(ctx) }()
+
+	p, err := rollups.NewProjector(src, store, rollups.WithProjectorBatchSize(2))
+	if err != nil {
+		t.Fatalf("NewProjector: %v", err)
+	}
+
+	// Batch 1: two events — a FULL batch. Not current.
+	caughtUp, err := p.Advance(ctx)
+	if err != nil {
+		t.Fatalf("Advance 1: %v", err)
+	}
+	if caughtUp {
+		t.Fatal("full batch must not report caught up")
+	}
+	// Batch 2: one event — a SHORT NON-EMPTY batch. Still not current: the
+	// source promised at most limit, not "the rest", so exhaustion is
+	// unproven.
+	caughtUp, err = p.Advance(ctx)
+	if err != nil {
+		t.Fatalf("Advance 2: %v", err)
+	}
+	if caughtUp {
+		t.Fatal("short non-empty batch must NOT prove current — more events may exist beyond the returned prefix")
+	}
+	q, err := p.Quality(ctx)
+	if err != nil {
+		t.Fatalf("Quality: %v", err)
+	}
+	if q.State != rollups.StateCatchingUp {
+		t.Fatalf("state after short non-empty batch = %q; want catching_up", q.State)
+	}
+	if q.Watermark != 3 {
+		t.Fatalf("watermark after short batch = %d; want 3 (the events were applied)", q.Watermark)
+	}
+
+	// Batch 3: the EMPTY read proves current.
+	caughtUp, err = p.Advance(ctx)
+	if err != nil {
+		t.Fatalf("Advance 3: %v", err)
+	}
+	if !caughtUp {
+		t.Fatal("empty read must report caught up")
+	}
+	q, err = p.Quality(ctx)
+	if err != nil {
+		t.Fatalf("Quality: %v", err)
+	}
+	if q.State != rollups.StateCurrent {
+		t.Fatalf("state after empty read = %q; want current", q.State)
+	}
+
+	if got := costMicros(ctx, t, store, h, h.Add(time.Hour), rollups.BucketHour); got != 7_000_000 {
+		t.Fatalf("cost = %d micros; want 7_000_000", got)
+	}
+}
+
 func TestProjector_GapFailsLoud(t *testing.T) {
 	ctx := context.Background()
-	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.BucketHour)
+	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.StoreGranularity)
 	quad := eventID("tenant-a", "user-1", "session-1")
 
 	// A gapped source violates the durable-log contract — the projector
@@ -288,7 +403,7 @@ func TestProjector_GapFailsLoud(t *testing.T) {
 
 func TestProjector_FencedSessionDrop(t *testing.T) {
 	ctx := context.Background()
-	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.BucketHour)
+	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.StoreGranularity)
 	quadA := eventID("tenant-a", "user-1", "session-a")
 	quadB := eventID("tenant-a", "user-1", "session-b")
 
@@ -321,34 +436,20 @@ func TestProjector_FencedSessionDrop(t *testing.T) {
 		t.Fatalf("watermark = %d; want 3 (the fenced event is dropped, not fatal)", q.Watermark)
 	}
 
-	res, err := store.Query(ctx, rollups.Query{
-		From:     h,
-		To:       h.Add(time.Hour),
-		Bucket:   rollups.BucketHour,
-		Filter:   rollups.Filter{TenantIDs: []string{"tenant-a"}},
-		Measures: []rollups.Measure{rollups.MeasureLLMCostUSD},
-		Sort:     rollups.SortKeyBucketAsc,
-		Limit:    100,
-	})
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	if len(res.Rows) != 1 {
-		t.Fatalf("rows = %d; want 1", len(res.Rows))
-	}
-	if got := res.Rows[0].Measures[rollups.MeasureLLMCostUSD]; got != 4 {
-		t.Fatalf("cost = %v; want 4 (events 1+3; fenced event 2 dropped)", got)
+	if got := costMicros(ctx, t, store, h, h.Add(time.Hour), rollups.BucketHour); got != 4_000_000 {
+		t.Fatalf("cost = %d micros; want 4_000_000 (events 1+3; fenced event 2 dropped)", got)
 	}
 }
 
 func TestProjector_Rebuild(t *testing.T) {
 	ctx := context.Background()
-	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.BucketHour)
-	quad := eventID("tenant-a", "user-1", "session-1")
+	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.StoreGranularity)
+	quadA := eventID("tenant-a", "user-1", "session-a")
+	quadB := eventID("tenant-a", "user-1", "session-b")
 
 	src := &testSource{events: []events.Event{
-		costRecord(1, h, quad, "m", 1),
-		costRecord(2, h.Add(time.Minute), quad, "m", 2),
+		costRecord(1, h, quadA, "m", 1),
+		costRecord(2, h.Add(time.Minute), quadB, "m", 2),
 	}}
 	store := newStore(t)
 	defer func() { _ = store.Close(ctx) }()
@@ -360,15 +461,16 @@ func TestProjector_Rebuild(t *testing.T) {
 	if err := p.CatchUp(ctx); err != nil {
 		t.Fatalf("CatchUp: %v", err)
 	}
-	if err := store.FenceSession(ctx, quad.Identity); err != nil {
+	if err := store.FenceSession(ctx, quadA.Identity); err != nil {
 		t.Fatalf("FenceSession: %v", err)
 	}
-	if f, err := store.IsFenced(ctx, quad.Identity); err != nil || !f {
+	if f, err := store.IsFenced(ctx, quadA.Identity); err != nil || !f {
 		t.Fatalf("IsFenced = %v, %v; want true", f, err)
 	}
 
-	// Rebuild clears rows, fences, checkpoint; reprocessing from the log
-	// head reconstructs the projection.
+	// Rebuild resets rows + checkpoint and returns to catching_up — but
+	// the erasure fence is PERMANENT and must survive: reprojection cannot
+	// resurrect the erased session.
 	if err := p.Rebuild(ctx); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
@@ -379,31 +481,33 @@ func TestProjector_Rebuild(t *testing.T) {
 	if q.Watermark != 0 || q.State != rollups.StateCatchingUp {
 		t.Fatalf("post-rebuild quality = %+v; want watermark 0, catching_up", q)
 	}
-	if f, err := store.IsFenced(ctx, quad.Identity); err != nil || f {
-		t.Fatalf("IsFenced after rebuild = %v, %v; want false", f, err)
+	if f, err := store.IsFenced(ctx, quadA.Identity); err != nil || !f {
+		t.Fatalf("IsFenced after rebuild = %v, %v; want TRUE (erasure fences are permanent)", f, err)
 	}
+
+	// Catch-up after rebuild: session-a's event is dropped at ingestion
+	// (still fenced); session-b's row is reconstructed.
 	if err := p.CatchUp(ctx); err != nil {
 		t.Fatalf("CatchUp after rebuild: %v", err)
 	}
-	res, err := store.Query(ctx, rollups.Query{
-		From:     h,
-		To:       h.Add(time.Hour),
-		Bucket:   rollups.BucketHour,
-		Measures: []rollups.Measure{rollups.MeasureLLMCostUSD},
-		Sort:     rollups.SortKeyBucketAsc,
-		Limit:    100,
-	})
+	q, err = p.Quality(ctx)
 	if err != nil {
-		t.Fatalf("Query: %v", err)
+		t.Fatalf("Quality: %v", err)
 	}
-	if len(res.Rows) != 1 || res.Rows[0].Measures[rollups.MeasureLLMCostUSD] != 3 {
-		t.Fatalf("post-rebuild cost = %+v; want 3", res.Rows)
+	if q.Watermark != 2 {
+		t.Fatalf("watermark after rebuild catch-up = %d; want 2", q.Watermark)
+	}
+	if got := costMicros(ctx, t, store, h, h.Add(time.Hour), rollups.BucketHour); got != 2_000_000 {
+		t.Fatalf("post-rebuild cost = %d micros; want 2_000_000 (only session-b; session-a never resurrected)", got)
+	}
+	if f, err := store.IsFenced(ctx, quadA.Identity); err != nil || !f {
+		t.Fatalf("IsFenced after rebuild catch-up = %v, %v; want true", f, err)
 	}
 }
 
 func TestProjector_CatchUpMultipleBatches(t *testing.T) {
 	ctx := context.Background()
-	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.BucketHour)
+	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.StoreGranularity)
 	quad := eventID("tenant-a", "user-1", "session-1")
 
 	var evs []events.Event
@@ -428,19 +532,8 @@ func TestProjector_CatchUpMultipleBatches(t *testing.T) {
 	if q.Watermark != 25 || q.State != rollups.StateCurrent {
 		t.Fatalf("quality = %+v; want watermark 25, current", q)
 	}
-	res, err := store.Query(ctx, rollups.Query{
-		From:     h,
-		To:       h.Add(time.Hour),
-		Bucket:   rollups.BucketHour,
-		Measures: []rollups.Measure{rollups.MeasureLLMCostUSD},
-		Sort:     rollups.SortKeyBucketAsc,
-		Limit:    100,
-	})
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	if len(res.Rows) != 1 || res.Rows[0].Measures[rollups.MeasureLLMCostUSD] != 25 {
-		t.Fatalf("cost after multi-batch catch-up = %+v; want 25", res.Rows)
+	if got := costMicros(ctx, t, store, h, h.Add(time.Hour), rollups.BucketHour); got != 25_000_000 {
+		t.Fatalf("cost after multi-batch catch-up = %d micros; want 25_000_000", got)
 	}
 }
 

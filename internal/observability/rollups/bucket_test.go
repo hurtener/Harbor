@@ -12,6 +12,10 @@ func TestBucketStart_FixedUTCGrid(t *testing.T) {
 		size BucketSize
 		want time.Time
 	}{
+		{"minute-mid", time.Date(2026, 8, 13, 12, 34, 56, 789, time.UTC), BucketMinute, time.Date(2026, 8, 13, 12, 34, 0, 0, time.UTC)},
+		{"minute-boundary", time.Date(2026, 8, 13, 12, 34, 0, 0, time.UTC), BucketMinute, time.Date(2026, 8, 13, 12, 34, 0, 0, time.UTC)},
+		{"minute-last-ns", time.Date(2026, 8, 13, 12, 34, 59, 999_999_999, time.UTC), BucketMinute, time.Date(2026, 8, 13, 12, 34, 0, 0, time.UTC)},
+		{"minute-epoch", time.Unix(0, 0).UTC(), BucketMinute, time.Unix(0, 0).UTC()},
 		{"hour-mid", time.Date(2026, 8, 13, 12, 34, 56, 789, time.UTC), BucketHour, time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)},
 		{"hour-boundary", time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), BucketHour, time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)},
 		{"hour-last-ns", time.Date(2026, 8, 13, 12, 59, 59, 999_999_999, time.UTC), BucketHour, time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)},
@@ -74,7 +78,8 @@ func TestBucketSpan(t *testing.T) {
 		// window [from, to) — the maximum number of distinct query
 		// buckets a result can carry. A window that starts mid-bucket
 		// spans parts of two buckets.
-		{"one hour", from, from.Add(time.Hour), BucketHour, 1},
+		{"one minute", from, from.Add(time.Minute), BucketMinute, 1},
+		{"60 minutes", from, from.Add(time.Hour), BucketMinute, 60},
 		{"exact boundary excludes next", from, from.Add(3 * time.Hour), BucketHour, 3},
 		{"partial last hour", from, from.Add(2*time.Hour + 30*time.Minute), BucketHour, 3},
 		{"mid-hour start", from.Add(15 * time.Minute), from.Add(time.Hour + 15*time.Minute), BucketHour, 2},
@@ -84,6 +89,7 @@ func TestBucketSpan(t *testing.T) {
 		{"48h from mid-day", from, from.Add(48 * time.Hour), BucketDay, 3},
 		{"partial day", from, from.Add(36 * time.Hour), BucketDay, 2},
 		{"week at hour", from, from.Add(7 * 24 * time.Hour), BucketHour, 168},
+		{"1440 minutes at day", from, from.Add(24 * time.Hour), BucketMinute, 1440},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

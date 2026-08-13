@@ -100,7 +100,7 @@ func TestStore_ConcurrentReuse(t *testing.T) {
 				To:       h.Add(24 * time.Hour),
 				Bucket:   rollups.BucketHour,
 				Filter:   rollups.Filter{TenantIDs: []string{fmt.Sprintf("tenant-%02d", idx%4)}},
-				Measures: []rollups.Measure{rollups.MeasureLLMCostUSD, rollups.MeasureLLMCompletions},
+				Measures: []rollups.Measure{rollups.MeasureLLMCostMicros, rollups.MeasureLLMCompletions},
 				Sort:     rollups.SortKeyBucketAsc,
 				Limit:    100,
 			}
@@ -122,9 +122,9 @@ func TestStore_ConcurrentReuse(t *testing.T) {
 				t.Errorf("query %d: rows=%d want 1", idx, got)
 			}
 			for _, r := range res.Rows {
-				if r.Measures[rollups.MeasureLLMCompletions] != 5 {
+				if r.Measures[rollups.MeasureLLMCompletions].N != 5 {
 					failures.Add(1)
-					t.Errorf("query %d: row completions=%v want 5", idx, r.Measures[rollups.MeasureLLMCompletions])
+					t.Errorf("query %d: row completions=%d want 5", idx, r.Measures[rollups.MeasureLLMCompletions].N)
 				}
 			}
 		}(i)

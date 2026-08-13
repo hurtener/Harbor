@@ -9,11 +9,13 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 )
 
-// StoreGranularity is the bucket size rows are persisted at — the finest
-// closed size (BucketHour). A query at a coarser size (BucketDay) groups
-// stored rows into its own buckets at read time, so one storage granularity
-// serves every closed query size.
-const StoreGranularity = BucketHour
+// StoreGranularity is the bucket size rows are persisted at — the fixed UTC
+// MINUTE grid (BucketMinute), the finest closed size. Every Delta key is on
+// the minute grid. A query at a coarser size (BucketHour, BucketDay) groups
+// stored minute rows into its own buckets at read time, so one storage
+// granularity serves every closed query size. BucketHour is NOT the storage
+// granularity.
+const StoreGranularity = BucketMinute
 
 // Extract derives the rollup deltas of one canonical event. It is a PURE
 // function of the event — deterministic, order-independent, and safe to call
@@ -24,19 +26,27 @@ const StoreGranularity = BucketHour
 // Supported event types and their measures (the ONLY source-backed measures;
 // everything else is absent by design):
 //
-//   - `llm.cost.recorded` — MeasureLLMCostUSD (Cost.TotalCost),
-//     MeasureLLMTokensPrompt / Completion / Total (Usage), the
-//     MeasureLLMCompletions count (the record IS a successful completion),
-//     and MeasureLLMLatencyMS (Usage.LatencyMS). The model dimension is
-//     the payload's authoritative model.
+//   - `llm.cost.recorded` — the successful-completion count
+//     (MeasureLLMCompletions); prompt / completion / reasoning / cache-read /
+//     cache-write / total tokens (Usage); the precise cost in integer
+//     micro-units of USD (Cost.TotalCost converted EXACTLY ONCE via
+//     microsFromUSD — never accumulated or exposed as float64); and latency
+//     count / sum / min / max (Usage.LatencyMS). The model dimension is the
+//     payload's authoritative model. A cost that is not finite, is negative,
+//     or overflows the micro-unit int64 range FAILS LOUDLY with
+//     ErrInvalidCost — a corrupted log is never silently undercounted.
 //   - `task.completed` / `task.failed` / `task.cancelled` — the matching
 //     outcome count. Task events carry no model — their rows are the
 //     un-attributed (model "") aggregate for the triple.
 //
+// Attempts, failed LLM calls, and user-message counts have NO canonical
+// payload backing and are ABSENT from the measure set — never estimated,
+// never minted.
+//
 // Every other event type returns (nil, nil): it contributes no supported
 // measure to any row. That is the designed "absent" behaviour — an
 // event-type axis that has no canonical payload backing is simply not in
-// the rollup, never estimated.
+// the rollup.
 //
 // Payload decoding: live events carry the typed SafePayload
 // (llm.CostRecordedPayload etc.); events rehydrated from the durable log
@@ -56,6 +66,11 @@ func Extract(ev events.Event) ([]Delta, error) {
 		if err != nil {
 			return nil, fmt.Errorf("rollups: extract seq=%d type=%q: %w", ev.Sequence, ev.Type, err)
 		}
+		costMicros, err := microsFromUSD(p.Cost.TotalCost)
+		if err != nil {
+			return nil, fmt.Errorf("rollups: extract seq=%d type=%q: %w", ev.Sequence, ev.Type, err)
+		}
+		latency := p.Usage.LatencyMS
 		return []Delta{{
 			Key: Key{
 				BucketStart: BucketStart(ev.OccurredAt, StoreGranularity),
@@ -63,15 +78,21 @@ func Extract(ev events.Event) ([]Delta, error) {
 				UserID:      ev.Identity.UserID,
 				SessionID:   ev.Identity.SessionID,
 				Model:       p.Model,
-				AgentID:     authoritativeAgent(ev),
 			},
 			Add: MeasureSet{
-				LLMCostUSD:          p.Cost.TotalCost,
+				LLMCompletions:      1,
 				LLMTokensPrompt:     int64(p.Usage.PromptTokens),
 				LLMTokensCompletion: int64(p.Usage.CompletionTokens),
+				LLMTokensReasoning:  int64(p.Usage.ReasoningTokens),
+				LLMTokensCacheRead:  int64(p.Usage.CacheReadTokens),
+				LLMTokensCacheWrite: int64(p.Usage.CacheWriteTokens),
 				LLMTokensTotal:      int64(p.Usage.TotalTokens),
-				LLMCompletions:      1,
-				LLMLatencyMS:        p.Usage.LatencyMS,
+				LLMCostMicros:       costMicros,
+				LLMLatencyCount:     1,
+				LLMLatencySumMS:     latency,
+				LLMLatencyMinMS:     latency,
+				LLMLatencyMaxMS:     latency,
+				hasLatency:          true,
 			},
 		}}, nil
 
@@ -97,7 +118,6 @@ func taskOutcomeDelta(ev events.Event, bump func(*MeasureSet)) []Delta {
 			TenantID:    ev.Identity.TenantID,
 			UserID:      ev.Identity.UserID,
 			SessionID:   ev.Identity.SessionID,
-			AgentID:     authoritativeAgent(ev),
 		},
 		Add: bumpSet(bump),
 	}}
@@ -107,17 +127,6 @@ func bumpSet(bump func(*MeasureSet)) MeasureSet {
 	var s MeasureSet
 	bump(&s)
 	return s
-}
-
-// authoritativeAgent returns the event's authoritative agent id, or "" when
-// the event carries none. No V1 canonical payload carries an agent id, so
-// this is empty for every event that reaches Extract today; the axis is
-// closed and the extraction point exists so a payload that later carries an
-// authoritative agent id populates the dimension without a shape change
-// (see dimension.go).
-func authoritativeAgent(ev events.Event) string {
-	_ = ev // reserved: read the authoritative agent id from the payload when one exists
-	return ""
 }
 
 // decodeTypedPayload recovers a typed payload from either the typed value

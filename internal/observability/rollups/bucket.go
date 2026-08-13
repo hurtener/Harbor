@@ -6,14 +6,18 @@ import (
 )
 
 // BucketSize is the closed set of fixed UTC bucket sizes. Every bucket grid
-// is anchored to UTC: hour buckets start at HH:00:00Z, day buckets at
-// 00:00:00Z — never at a local-time or DST-adjusted boundary. A bucket
-// boundary is a pure function of (instant, BucketSize), so two runs at two
-// different instants that fall in the same bucket compute IDENTICAL
-// boundaries, including across a runtime restart.
+// is anchored to UTC: minute buckets start at MM:00Z, hour buckets at
+// HH:00:00Z, day buckets at 00:00:00Z — never at a local-time or DST-adjusted
+// boundary. A bucket boundary is a pure function of (instant, BucketSize), so
+// two runs at two different instants that fall in the same bucket compute
+// IDENTICAL boundaries, including across a runtime restart.
 type BucketSize string
 
 const (
+	// BucketMinute is the UTC minute grid: buckets [MM:00Z, MM+1:00Z).
+	// This is the STORAGE granularity — every stored row is keyed on the
+	// minute grid (see StoreGranularity in extract.go).
+	BucketMinute BucketSize = "minute"
 	// BucketHour is the UTC hour grid: buckets [HH:00:00Z, HH+1:00:00Z).
 	BucketHour BucketSize = "hour"
 	// BucketDay is the UTC day grid: buckets [00:00:00Z, next 00:00:00Z).
@@ -21,15 +25,19 @@ const (
 )
 
 // AllBucketSizes is the closed set in canonical (finest-first) order. The
-// projector stores rows at BucketHour — the finest closed size — and queries
-// coarsen (a day query groups hour rows by their day bucket), so every query
-// size is available from one storage granularity.
-var AllBucketSizes = [...]BucketSize{BucketHour, BucketDay}
+// projector stores rows at BucketMinute — the finest closed size — and
+// queries coarsen (an hour query groups minute rows by their hour bucket, a
+// day query by their day bucket), so every query size is available from one
+// storage granularity. BucketHour is NOT the storage granularity; it is only
+// one of the coarser query sizes.
+var AllBucketSizes = [...]BucketSize{BucketMinute, BucketHour, BucketDay}
 
 // Duration returns the bucket's span. Unknown sizes panic; Validate is the
 // fail-loud entry point for untrusted input.
 func (b BucketSize) Duration() time.Duration {
 	switch b {
+	case BucketMinute:
+		return time.Minute
 	case BucketHour:
 		return time.Hour
 	case BucketDay:
@@ -42,7 +50,7 @@ func (b BucketSize) Duration() time.Duration {
 // Validate reports whether b is a closed bucket size.
 func (b BucketSize) Validate() error {
 	switch b {
-	case BucketHour, BucketDay:
+	case BucketMinute, BucketHour, BucketDay:
 		return nil
 	default:
 		return fmt.Errorf("%w: Bucket=%q (allowed: %v)", ErrQueryInvalid, b, allBucketSizes())
@@ -52,11 +60,13 @@ func (b BucketSize) Validate() error {
 // BucketStart returns the start instant of the fixed UTC bucket containing t.
 // The computation is a pure function of (t, size): t is normalised to UTC and
 // the boundary is derived by calendar truncation, never by arithmetic on an
-// arbitrary anchor. Hour buckets start at HH:00:00Z; day buckets at
-// 00:00:00Z.
+// arbitrary anchor. Minute buckets start at MM:00Z; hour buckets at
+// HH:00:00Z; day buckets at 00:00:00Z.
 func BucketStart(t time.Time, size BucketSize) time.Time {
 	u := t.UTC()
 	switch size {
+	case BucketMinute:
+		return time.Date(u.Year(), u.Month(), u.Day(), u.Hour(), u.Minute(), 0, 0, time.UTC)
 	case BucketHour:
 		return time.Date(u.Year(), u.Month(), u.Day(), u.Hour(), 0, 0, 0, time.UTC)
 	case BucketDay:
