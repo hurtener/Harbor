@@ -221,6 +221,24 @@ export interface SessionsListResponse {
   truncated: boolean;
 }
 
+/**
+ * The `sessions.inspect` request body (sans `identity` — folded by the
+ * shared transport). Mirrors `SessionsInspectRequest` in
+ * `internal/protocol/types/sessions.go` exactly (D-424).
+ */
+export interface SessionsInspectRequest {
+  /** The session to inspect. */
+  session_id: string;
+  /**
+   * The row projection (D-424). Omitted → `full` (the original behavior,
+   * byte-for-byte — the runtime resolves an empty value to full);
+   * `lifecycle` returns the lifecycle catalog fields with NO counter /
+   * history / task / pause enrichment — the row's counters stay zero and
+   * its `counter_status` reads `not_requested`.
+   */
+  projection?: SessionProjection;
+}
+
 /** One Recent-Interventions card entry on the Sessions detail view. */
 export interface InterventionSummary {
   type: string;

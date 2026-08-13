@@ -9,6 +9,11 @@
 // switcher sends (`chatCatalogListRequest`) explicitly requests
 // `projection: 'lifecycle'` with NO counter-dependent filter or sort (the
 // runtime rejects those `invalid_request` on a lifecycle request).
+//
+// The inspect side (D-424) is covered too: the typed `SessionsInspectRequest`
+// shape carries the additive optional `projection` selector; an omitted
+// projection sends the pre-D-424 body (`session_id` only) while
+// `projection: 'lifecycle'` emits `projection: 'lifecycle'` on the wire.
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -69,6 +74,70 @@ describe('SessionsProtocol.list — projection forwarding (D-424)', () => {
     // edge — the Console must keep sending the pre-D-424 body so older
     // runtimes (strict decoders) and the default path both stay valid.
     expect(sentBody(fetchImpl).projection).toBeUndefined();
+  });
+});
+
+describe('SessionsProtocol.inspect — additive projection selector (D-424)', () => {
+  const INSPECT_RESPONSE = {
+    row: {
+      session_id: 's1',
+      status: 'running',
+      user_id: 'u1',
+      tenant_id: 't1',
+      started_at: '2026-08-01T10:00:00.000Z',
+      last_activity_at: '2026-08-01T10:30:00.000Z',
+      duration: 0,
+      tasks_count: 0,
+      events_count: 0,
+      total_cost_cents: 0,
+      total_tokens: 0,
+      has_pending_intervention: false,
+      has_failed_task: false,
+      identity: { tenant: 't1', user: 'u1', session: 's1' }
+    },
+    recent_interventions: [],
+    recent_artifacts: []
+  };
+
+  it('an omitted projection keeps the pre-D-424 body — session_id only, no projection key', async () => {
+    const fetchImpl = vi.fn(async () => okResponse(INSPECT_RESPONSE));
+    const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+    const sessions = new SessionsProtocol(client);
+    await sessions.inspect({ session_id: 's1' });
+    const url = (fetchImpl.mock.calls[0] as unknown as [string])[0];
+    expect(url).toBe('http://127.0.0.1:18080/v1/sessions/inspect');
+    // The runtime resolves an omitted projection to `full` at the method
+    // edge — the Console must keep sending the pre-D-424 body so older
+    // runtimes (strict decoders) and the default path both stay valid.
+    expect(sentBody(fetchImpl)).toEqual({ identity: { tenant: 't1', user: 'u1', session: 's1' }, session_id: 's1' });
+  });
+
+  it('a lifecycle projection emits projection:lifecycle on the wire', async () => {
+    const fetchImpl = vi.fn(async () => okResponse(INSPECT_RESPONSE));
+    const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+    const sessions = new SessionsProtocol(client);
+    await sessions.inspect({ session_id: 's1', projection: 'lifecycle' });
+    const body = sentBody(fetchImpl);
+    expect(body.session_id).toBe('s1');
+    expect(body.projection).toBe('lifecycle');
+  });
+
+  it('an explicit full projection emits projection:full on the wire', async () => {
+    const fetchImpl = vi.fn(async () => okResponse(INSPECT_RESPONSE));
+    const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+    const sessions = new SessionsProtocol(client);
+    await sessions.inspect({ session_id: 's1', projection: 'full' });
+    expect(sentBody(fetchImpl).projection).toBe('full');
+  });
+
+  it('the typed response shape flows back untouched', async () => {
+    const fetchImpl = vi.fn(async () => okResponse(INSPECT_RESPONSE));
+    const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+    const sessions = new SessionsProtocol(client);
+    const resp = await sessions.inspect({ session_id: 's1', projection: 'lifecycle' });
+    expect(resp.row.session_id).toBe('s1');
+    expect(resp.recent_interventions).toEqual([]);
+    expect(resp.recent_artifacts).toEqual([]);
   });
 });
 

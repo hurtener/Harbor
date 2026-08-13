@@ -35,8 +35,10 @@
   // row carries an explicit `counter_status` marker; a row whose counters
   // are absent (`unavailable` — no Enricher wired on this runtime, or
   // `not_requested` — a lifecycle row that must never appear here) renders
-  // its cost as a dash rather than a believable "$0.00": a zero counter
-  // never reads as a measured zero (D-424).
+  // its cost AND its events count as a dash rather than a believable
+  // "$0.00" / "0": the Events cell consults the marker BEFORE any wire or
+  // 30-day `events.aggregate` fallback count, so a zero counter never
+  // reads as a measured zero (D-424).
   //
   // Svelte 5 runes (D-092); design tokens only; HarborClient +
   // connection.ts only (CONVENTIONS.md §6).
@@ -416,9 +418,19 @@
     // enrichment map only when the wire reports zero (an older runtime or a
     // not-yet-active session). A partial row is an HONEST LOWER BOUND — the
     // "≥" prefix says so rather than presenting a believable exact number
-    // (D-311). The four-state marker drives the partial decision (D-424);
-    // an absent marker falls back to the legacy `counters_partial` flag.
+    // (D-311). The four-state marker drives BOTH decisions (D-424); an
+    // absent marker falls back to the legacy `counters_partial` flag.
+    //
+    // The marker is consulted BEFORE any wire or aggregate-fallback count:
+    // an absent row (`unavailable` — no Enricher wired on this runtime, or
+    // `not_requested` — a lifecycle row that must never appear on this
+    // full-projection page) renders a dash even when its `events_count`
+    // reads nonzero or the 30-day `events.aggregate` enrichment reports a
+    // real count — its zeros mean "not computed", never "measured as zero",
+    // and the fallback must not replace the honest dash with a believable
+    // exact count.
     const availability = counterAvailability(row);
+    if (countersAreAbsent(availability)) return '—';
     const wire = row.events_count;
     if (wire > 0) {
       return countersArePartial(availability) ? `≥${wire}` : String(wire);
@@ -450,7 +462,7 @@
     const availability = counterAvailability(row);
     if (countersAreAbsent(availability)) {
       return availability === 'unavailable'
-        ? 'Counters unavailable on this runtime — no cost recorded'
+        ? 'Counters unavailable on this runtime — cost unavailable/not computed'
         : 'Counters not requested for this row';
     }
     return countersArePartial(availability)

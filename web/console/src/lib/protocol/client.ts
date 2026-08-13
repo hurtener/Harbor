@@ -56,6 +56,7 @@ import type {
 	GovernanceSetPostureRequest,
 	GovernanceSetPostureResponse,
 } from './governance.js';
+import type { SessionsInspectRequest } from '../sessions/types.js';
 import type {
 	AgentConfigPayload,
 	AgentConfigToolExposure,
@@ -973,9 +974,19 @@ export class SessionsNamespace {
 	list<R = unknown>(req: Record<string, unknown> = {}): Promise<R> {
 		return this.#t.request<R>('/v1/sessions/list', req);
 	}
-	/** `sessions.inspect` — a single session's full snapshot. */
-	inspect<R = unknown>(sessionID: string): Promise<R> {
-		return this.#t.request<R>('/v1/sessions/inspect', { session_id: sessionID });
+	/**
+	 * `sessions.inspect` — a single session's snapshot. `req` is the typed
+	 * request shape (D-424): `projection` is additive and OPTIONAL — an
+	 * omitted `projection` sends the pre-D-424 wire body (`session_id`
+	 * only; the runtime resolves empty to `full`), so older-runtime bodies
+	 * stay byte-unchanged; `projection: 'lifecycle'` selects the
+	 * counter-free catalog fields.
+	 */
+	inspect<R = unknown>(req: SessionsInspectRequest): Promise<R> {
+		return this.#t.request<R>('/v1/sessions/inspect', {
+			session_id: req.session_id,
+			...(req.projection !== undefined ? { projection: req.projection } : {})
+		});
 	}
 	/**
 	 * `sessions.set_title` — sets (non-empty `title`) or clears (empty

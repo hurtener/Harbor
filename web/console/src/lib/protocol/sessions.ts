@@ -12,6 +12,7 @@
 
 import type { ProtocolClient } from './client.js';
 import type {
+  SessionsInspectRequest,
   SessionsInspectResponse,
   SessionsListRequest,
   SessionsListResponse,
@@ -39,9 +40,15 @@ export class SessionsProtocol {
     );
   }
 
-  /** `sessions.inspect` — a single session's full snapshot. */
-  inspect(sessionID: string): Promise<SessionsInspectResponse> {
-    return this.#client.sessions.inspect<SessionsInspectResponse>(sessionID);
+  /**
+   * `sessions.inspect` — a single session's snapshot. `req` is the typed
+   * request shape (D-424): `projection` is additive and OPTIONAL — omitted
+   * sends the pre-D-424 wire body (`session_id` only; the runtime resolves
+   * empty to `full`), `projection: 'lifecycle'` selects the counter-free
+   * catalog fields.
+   */
+  inspect(req: SessionsInspectRequest): Promise<SessionsInspectResponse> {
+    return this.#client.sessions.inspect<SessionsInspectResponse>(req);
   }
 
   /**
