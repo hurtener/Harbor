@@ -187,17 +187,18 @@ fi
 if awk '
     $0 == "export interface AgentConfigRemoveOAuthMCPCapabilityRequest {" { inside = 1; next }
     inside && /^}/ { exit }
-    inside && /expected_content_hash\?: string;/ { found = 1 }
+    inside && /expected_content_hash: string;/ { found = 1 }
     END { exit !found }
 ' "${TS_WIRE}"; then
-    ok 'phase 221: Console keeps the signed OAuth MCP pair removal CAS token optional for additive decoding'
+    ok 'phase 221: Console mirrors the mandatory signed OAuth MCP pair removal CAS token'
 else
-    fail 'phase 221: Console must keep the signed OAuth MCP pair removal CAS token optional for additive decoding'
+    fail 'phase 221: Console must require the signed OAuth MCP pair removal CAS token'
 fi
 
-# The wire field is optional for compatibility, but the service must fail
-# closed when the caller supplies no usable hash. This source guard pins the
-# semantic requirement to the real removal implementation and its sentinel.
+# The Go wire field remains optional for additive decoding, while the Console
+# interface requires it. The service must still fail closed when no usable hash
+# arrives; this source guard pins that semantic requirement to the real removal
+# implementation and its sentinel.
 if awk '
     /^func \(s \*Service\) RemoveOAuthMCPCapability\(/ { inside = 1 }
     inside && /^func / && !/RemoveOAuthMCPCapability\(/ { exit }
