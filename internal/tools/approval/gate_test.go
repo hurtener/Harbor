@@ -606,10 +606,10 @@ func TestResolveApproval_CrossIdentity_NotFound(t *testing.T) {
 	token := pauseresume.Token(payload.PauseToken)
 
 	// Tenant B admin tries to resolve — the private token is intentionally
-	// indistinguishable from an unknown token at this boundary.
+	// indistinguishable from an unknown token at the coordinator boundary.
 	err = g.ResolveApproval(mkControlScopeCtx(t, idB), token, DecisionApprove, "")
-	if !errors.Is(err, ErrApprovalNotFound) {
-		t.Fatalf("cross-identity Resolve: got %v want ErrApprovalNotFound", err)
+	if !errors.Is(err, pauseresume.ErrPauseNotFound) {
+		t.Fatalf("cross-identity Resolve: got %v want pauseresume.ErrPauseNotFound", err)
 	}
 
 	// Clean up by resolving from the correct identity.

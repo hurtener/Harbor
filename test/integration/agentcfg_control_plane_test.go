@@ -180,10 +180,10 @@ func TestE2E_AgentConfig_ControlPlane(t *testing.T) {
 		t.Fatalf("projection after upserts=%v want {alpha,beta}", got)
 	}
 
-	// --- Diff across the two revisions shows the set-diff. ---
+	// --- Diff across the two upsert revisions shows the set-diff; the initial lifecycle revision is also listed. ---
 	list := decode[prototypes.AgentConfigListRevisionsResponse](t, h.call(t, "/v1/agent_config/list_revisions", prototypes.AgentConfigListRevisionsRequest{AgentID: acAgent}, adminScopes()))
-	if len(list.Revisions) != 2 {
-		t.Fatalf("list=%d want 2", len(list.Revisions))
+	if len(list.Revisions) != 3 {
+		t.Fatalf("list=%d want 3", len(list.Revisions))
 	}
 	diff := decode[prototypes.AgentConfigDiffResponse](t, h.call(t, "/v1/agent_config/diff", prototypes.AgentConfigDiffRequest{
 		AgentID: acAgent, FromRevision: rev1, ToRevision: list.Revisions[0].RevisionID,
