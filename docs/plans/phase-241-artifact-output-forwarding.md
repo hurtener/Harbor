@@ -20,9 +20,9 @@ Forward task artifacts and bounded outputs across governed virtual-child and sam
 
 ## Brief findings incorporated
 
-- brief 06 §3: CLI and Console are Protocol clients of the same canonical surface.
-- brief 11 §CC-2: UI gates are convenience; Protocol authorization remains authoritative.
-- brief 12 §35–49: Console components use the typed injected client and shared conventions.
+- brief 06 §4: bounded payloads and server-side identity filtering are mandatory.
+- brief 11 §CC-2: authorization remains authoritative at the Protocol boundary.
+- brief 12 §35–49: any Console consumer remains a typed Protocol client.
 
 ## Findings I'm departing from (if any)
 
@@ -30,44 +30,43 @@ Forward task artifacts and bounded outputs across governed virtual-child and sam
 
 ## Goals
 
-- Add `harbor` composition inspection and a Console skill/agent view using only D-414.
-- Provide a two-revision diff without duplicating composition logic.
+- Add virtual-child execution artifacts and bounded output forwarding by reference.
+- Preserve authorization and provenance without duplicating raw content.
 
 ## Non-goals
 
-- No raw-content duplication, cross-session forwarding, private Console store, or second forwarding mechanism.
+- No raw-content forwarding, cross-session exposure, private Console store, composition-preview CLI/Console consumer, or second forwarding mechanism.
 
 ## Acceptance criteria
 
-- [ ] CLI output matches actual next-run composition against the real durable store.
-- [ ] Console renders pack/personal names, verdicts, not-found, denied, and unavailable exactly as returned.
-- [ ] Unauthorized CLI/Console calls fail identically to the Protocol method.
-- [ ] Two-revision diff shows membership and verdict changes without revealing forbidden bodies.
+- [ ] A virtual-child execution artifact is created with preserved provenance.
+- [ ] Authorized same-run consumers receive bounded output and artifact references only.
+- [ ] Unauthorized, erased, cross-session, and cross-tenant references fail closed before bytes are exposed.
+- [ ] Raw content is absent from task projections and unrelated model/session context.
 - [ ] Real-driver integration proves identity, a failure mode, and N≥10 concurrent stress.
 
 ## Files added or changed
 
-- `cmd/harbor/cmd_inspect_skill_composition.go` and CLI tests
-- `web/console/src/routes/(console)/skills/+page.svelte` and typed protocol client module/tests
-- `test/integration/skill_composition_consumers_test.go`
-- `docs/skills/use-the-harbor-protocol/SKILL.md`, `docs/glossary.md`, `CHANGELOG.md`
-- `scripts/smoke/phase-241.sh`
+- `internal/artifacts/*`, `internal/tasks/*`, and runtime virtual-child execution paths
+- `internal/protocol/*` only where the authorized reference surface is wire-visible
+- `test/integration/*` for forwarding, provenance, and identity isolation
+- `docs/glossary.md`, `RFC-001-Harbor.md`, `CHANGELOG.md`
 
 ## Public API surface
 
-- CLI verb and Console route are clients only; D-414 remains the sole runtime surface.
-- Forwarding uses an artifact reference with preserved provenance and bounded output.
+- Forwarding uses an authorized artifact reference with preserved provenance and bounded output.
+- No CLI or Console composition-preview consumer feature is introduced.
 
 ## Test plan
 
-- **Unit:** CLI formatting/diff and Console state matrix including all typed states.
-- **Integration:** CLI + Console client against real Protocol and durable drivers; identity and denial failure.
-- **Conformance:** method response and diff fixtures across supported Protocol transports.
-- **Concurrency / leak:** N≥10 consumer stress, plus shared typed client cancellation and no cross-talk.
+- **Unit:** artifact-reference authorization, provenance, bounded output, and raw-content exclusion.
+- **Integration:** virtual-child execution against real artifact/task drivers; identity and denial failure.
+- **Conformance:** reference and bounded-output response fixtures across supported Protocol transports.
+- **Concurrency / leak:** N≥10 forwarding stress with cancellation and no cross-talk.
 
 ## Smoke script additions
 
-- Static assertions for CLI verb, route, typed-client usage, D-414-only consumption, diff states, and Console conventions; live Protocol assertion is added at implementation time.
+- Static assertions for D-420, reference-only forwarding, provenance, raw-content exclusion, identity fences, and Protocol lockstep.
 
 ## Coverage target
 
@@ -84,8 +83,8 @@ Forward task artifacts and bounded outputs across governed virtual-child and sam
 
 ## Validation gate ledger
 
-- **Local skip:** frontend checks may skip only when dependencies are unavailable; Protocol/client and CLI integration remain required. Postgres may skip only without its explicit DSN.
-- **Web CI:** `npm ci`, check, lint, build, typed Protocol lockstep, and Console route coverage are mandatory; no committed build artifacts.
+- **Local skip:** local validation intentionally skipped for this documentation reconciliation.
+- **Web CI:** Protocol lockstep, generated references, race integration, and artifact authorization gates remain authoritative; no committed build artifacts.
 
 ## Glossary additions
 

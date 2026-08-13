@@ -31,10 +31,10 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-54 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Planned — phase 236 / D-410 |
 | HA-55 | Operator-managed per-agent skill packs across authenticated users | internal/skills + runtime/agentcfg + runtime/serve | High | Medium | Planned — phase 237 / D-411 |
 | HA-56 | Per-server MCP App callback catalog outside planner projection | internal/tools/drivers/mcp + internal/tools + internal/mcpconsole + protocol | High | Medium | Planned — phase 238 / D-412 |
-| HA-57 | Typed reliability classification observability on the tool-failure events | internal/tools + internal/events + internal/protocol | High | Contained | Planned — phase 239 / D-413 |
-| HA-58 | Operator-verifiable per-agent skill composition preview | internal/skills + runtime/agentcfg + protocol | High | Medium | Planned — phase 240 / D-414 |
-| HA-59 | Composition-preview operator consumer: CLI verb + Console skill view | cmd/harbor + web/console | Medium | Medium | Planned — phase 241 / D-415 |
-| HA-60 | MCP App tool-context retention policy settled (eviction or stated session lifetime) | internal/mcpconsole + internal/state + internal/protocol | Medium | Contained | Planned — phase 242 / D-416 |
+| HA-57 | Finite same-run step-tranche receipts/resume of the original live run | runtime + tasks + protocol | High | Contained | Shipped — phase 239 / D-418 |
+| HA-58 | Governed read-only virtual child profiles derived from a parent | runtime + agentcfg + protocol | High | Medium | Shipped — phase 240 / D-419 |
+| HA-59 | Virtual-child execution artifacts and bounded output forwarding by reference | artifacts + tasks + runtime + protocol | Medium | Medium | Shipped — phase 241 / D-420 |
+| HA-60 | Durable identity-scoped task-progress projection | tasks + state + protocol | Medium | Contained | Shipped — phase 242 / D-421 |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -47,7 +47,7 @@ phase 238 / D-412 respectively (master-plan index rows and detail blocks
 carry the mapping). **HA-57 through HA-60 are Harbor-internal filings**,
 raised by the wave's own reliability/verification review rather than by an
 outside consumer, and are planned in the same wave (phase 239 / D-413,
-phase 240 / D-414, phase 241 / D-415, phase 242 / D-416). The entries are
+phase 240 / D-419, phase 241 / D-420, phase 242 / D-421). The entries are
 **framework-framed** — each names a Harbor-side capability that is absent,
 inert, or narrower than its documentation claims.
 
@@ -458,161 +458,116 @@ second consumer and every future MCP server.
 
 ---
 
-## HA-57 — the typed reliability classification is not observable on the failure events
+## HA-57 — same-run step-tranche receipts resume the original live run
 
-**Priority:** High (operational honesty). **Size:** contained. **State:**
-Planned — phase 239 / D-413 (Harbor-internal filing).
+**Priority:** High (run integrity). **Size:** contained. **State:**
+Shipped — phase 239 / D-418 (Harbor-internal filing).
 
-**What the consumer sees.** An operator reading `tool.failed` /
-`tool.policy_exhausted` cannot tell "deterministic failure correctly attempted
-once" from "provider outage retried four times" — the exact difference HA-54
-exists to make. The classification D-410 defines lives entirely inside the
-retry shell; none of it reaches the canonical failure events.
+**What the consumer sees.** A paused or interrupted run can continue from a
+finite committed step-tranche receipt while the original run loop remains
+live. The continuation preserves the identity quadruple and does not replay
+completed work or create a replacement run. D-417 makes the fresh-process,
+restart-unavailable boundary explicit.
 
-**Requested shape.** Additive, non-secret control metadata on the existing
-tool-failure events: the resolved class (permanent / retryable with reason),
-the attempt ordinal, and the configured budget — server-derived from the
-D-410 classifier, never caller-supplied, never raw arguments or results
-(§7 rule 7 / §13 hold; the audit-redactor boundary is unchanged). Legacy or
-absent classifications render a representable `unclassified`, never a
-fabricated class (D-311). Prefer extending the existing payloads over new
-event types unless a genuine gap is proven.
+**Requested shape.** Persist a bounded receipt for each same-run step tranche
+and resume only the original live run at the last committed boundary. Verify
+`(tenant,user,session,run)` and fail loudly for stale or unauthorized receipts.
+If the original run is unavailable after process restart, return the typed
+restart-unavailable result rather than relaunching from mutable configuration.
+This ask does not add tool-failure events or a classifier surface.
 
 **Required acceptance.**
 
-1. A permanent-classified failure under the default policy emits exactly one
-   invocation and its failure event carries `permanent` with attempt `1` of
-   the configured budget.
-2. A retryable classified failure emits each attempt and the terminal event
-   carries the final attempt and class; timeout/5xx behavior unchanged.
-3. Legacy unclassified results emit `unclassified` — no guessed class, no
-   fabricated budget figure.
-4. No event carries raw arguments or results; redaction-gate tests pin the
-   boundary; identity/run/task keys unchanged; no new identity axes.
-5. Concurrent mixed classification streams under `-race` (N≥100) with no
-   cross-run bleed; integration test with real drivers, identity
-   propagation, and at least one failure mode.
+1. Resume continues from the last committed tranche without replaying steps.
+2. Repeated resume is idempotent; stale receipts fail loudly.
+3. Resume verifies the identity quadruple and never accepts caller-selected
+   replacement identity.
+4. A fresh process returns typed restart-unavailable rather than relaunching a
+   frozen run.
+5. Concurrent same-run receipts under `-race` show no cross-run bleed and
+   include a failure mode.
 
 ---
 
-## HA-58 — the composed per-agent skill snapshot is not verifiable without starting a run
+## HA-58 — governed virtual child profiles need one authoritative resolver
 
-**Priority:** High (operator trust). **Size:** medium. **State:** Planned —
-phase 240 / D-414 (Harbor-internal filing).
+**Priority:** High (authority integrity). **Size:** medium. **State:** Shipped —
+phase 240 / D-419 (Harbor-internal filing).
 
-**What the consumer sees.** HA-55's composed run snapshot is consumed only
-inside a run (directory injection and the three `skill_*` tools). An operator
-cannot verify what a given `(tenant, user, agent)` will compose — which
-operator pack, which personal skills survive, which `RequiredTools` get
-filtered — without starting a run and reading its output. The composition
-itself happens at run-start; there is no read surface for it.
+**What the consumer sees.** A governed virtual child profile is a read-only
+view derived from a parent profile. It is not an isolation principal and cannot
+mutate the parent, advance an independent revision, or widen capabilities.
 
-**Requested shape.** An operator-facing, read-only composition-preview
-surface: identity-addressed `(tenant, user, agent)` → the exact immutable
-snapshot the next run would compose, as names and bounded verdicts (per-item
-visibility, filtered required-tool outcomes) — bodies only for the addressed
-caller's own row, never cross-principal content. Authority is server-derived
-(D-299): an operator with verified signed reach to the effective agent may
-preview any user's composition for that agent within the tenant; an ordinary
-caller may preview only their own. The preview is a pure projection over
-durable state — never mutates, never advances a revision, never writes a run —
-reusing the one per-run composite resolver HA-55 builds. Run-time failures
-(unresolvable pack, retirement tombstone) surface the same typed result;
-unwired state renders representable `unavailable`, never a fabricated
-composition (D-311).
+**Requested shape.** Resolve the child from the parent through one resolver at
+run-start and inspection. Admission uses verified `(tenant,user,session)`
+authority and agent reach; `agent_id` and virtual-profile keys are not
+identity axes. Bounded overrides are server-governed and read-only.
 
 **Required acceptance.**
 
-1. An operator preview of user A's composition for agent X matches the
-   composition an actual next run uses, against the real durable store.
-2. An ordinary caller previews only their own composition; a same-tenant
-   different user and a cross-tenant caller get a typed denial/empty result
-   without discovering names.
-3. A revoked or unselected pack renders the typed not-found state, never
-   another principal's row.
-4. The preview is provably read-only: revision hash, revision list, skill
-   rows, and audit unchanged after N previews.
-5. Concurrent mixed-tenant/user/agent previews under `-race` (N≥100) with no
-   context or authority bleed, plus at least one failure mode.
+1. Run-start and inspection use the same resolver and real durable parent.
+2. Ordinary callers cannot cross the verified identity triple; denied calls
+   disclose no names.
+3. Bounded overrides cannot widen capability, mutate the parent, or advance an
+   independent revision.
+4. The virtual child is never used as an isolation principal.
+5. Concurrent mixed-tenant/user/session resolutions under `-race` show no
+   authority bleed and include a failure mode.
 
 ---
 
-## HA-59 — the composition preview needs an operator consumer in the same wave
+## HA-59 — virtual-child execution needs bounded artifact forwarding
 
-**Priority:** Medium (§13 primitive-with-consumer closure). **Size:** medium.
-**State:** Planned — phase 241 / D-415, depends on 240 (Harbor-internal
+**Priority:** Medium (execution integrity). **Size:** medium.
+**State:** Shipped — phase 241 / D-420, depends on 240 (Harbor-internal
 filing).
 
-**What the consumer sees.** HA-58's preview surface would be a primitive with
-no consumer: an operator can only reach it through the raw Protocol method.
-Per §13, the wave that introduces a primitive must also ship a consumer that
-exercises it end-to-end with a test.
+**What the consumer sees.** Virtual-child execution can forward an authorized
+artifact reference and bounded output to a same-run consumer while preserving
+provenance, without exposing raw content or crossing session boundaries.
 
-**Requested shape.** An operator-facing pair consuming ONLY the preview
-surface: a `harbor` CLI verb that inspects the effective agent's composition
-and a Console skill/agent view rendering the preview — so an operator
-verifies pack membership and filtered-tool verdicts before a run and can diff
-the preview across two revisions. No new backend logic, no second composition
-path. Both go through the exact signed-reach admission the method enforces
-and render its typed not-found/denied/unavailable states as returned — never
-a blank state (D-311).
+**Requested shape.** Create a virtual-child execution artifact and forward
+declared outputs through authorized artifact references with preserved
+provenance. Unauthorized, erased, cross-session, and cross-tenant references
+fail closed before bytes are exposed. There is no CLI or Console
+composition-preview consumer feature in this ask.
 
 **Required acceptance.**
 
-1. The CLI verb returns the same composition an actual next run composes,
-   against the real durable store.
-2. The Console view renders pack names, personal-skill names, and verdicts
-   plus the typed not-found/denied/unavailable states exactly as returned.
-3. Unauthorized CLI and Console attempts fail exactly as the method fails.
-4. A two-revision diff shows added/removed pack membership and changed
-   verdicts.
-5. An end-to-end integration test with real drivers covers identity
+1. Authorized same-run consumers receive only declared references and bounded
+   output with provenance.
+2. Forbidden references fail closed before bytes are exposed.
+3. Raw content is not duplicated into task rows, model context, or unrelated
+   sessions.
+4. An end-to-end integration test with real drivers covers identity
    propagation, at least one failure mode, and an N≥10 concurrent stress run.
 
 ---
 
-## HA-60 — MCP App tool-context records have no explicit retention policy
+## HA-60 — task progress needs a durable bounded projection
 
 **Priority:** Medium (two halves disagree). **Size:** contained. **State:**
-Planned — phase 242 / D-416 (Harbor-internal filing; independent of the
-composition wave).
+Shipped — phase 242 / D-421 (Harbor-internal filing).
 
-**What the consumer sees.** This is the HA-39 sub-question that D-347 and
-D-348 deliberately left open, now filed as its own ask. The read path is
-built for an eviction the write path never performs:
-`internal/mcpconsole/toolcontext.go:195-208` documents "an unknown or
-cross-identity `(serverID, toolCallID)` returns a wrapped not-found whose
-marker the Protocol surface maps to `CodeNotFound`", and the Console adapter
-treats `not_found` as "no captured context, no delivery" — but there is no
-TTL, no eviction, and no sweeper anywhere in the package: records are written
-as ordinary session-scoped `StateRecord`s and are never expired. The two
-halves disagree.
+**What the consumer sees.** Task progress is available as a durable, bounded
+projection rather than a raw stream or second source of truth. It is scoped to
+the verified identity triple and fenced by session lifecycle and erasure.
 
-**Requested shape.** Settle the policy deliberately and enforce it. Default
-lean: the **session-lifetime contract** — records live for the session's
-lifetime and die with the existing session-erasure fences, so `not_found`
-covers cross-identity and unknown-id only (the smallest honest contract,
-since the records are already session-scoped StateRecords). Alternative: a
-real bounded, identity-scoped retention/eviction policy (per-session TTL +
-idle sweep) adopted only if the phase measures unbounded growth in
-long-lived sessions; either way the chosen policy is enforced by test and
-the unchosen branch's guard rails documented. If eviction: bounded,
-identity-scoped, race-safe under `-race`, evicted ids return the typed
-`CodeNotFound` (load-bearing), never a silent blank. The D-173 sandbox/CSP
-posture and the D-348 honest placeholder are untouched under either choice.
-
+**Requested shape.** Add additive optional `progress_snapshot`, `virtual_key`,
+and `virtual_label` fields to `TaskRow`, derived from the task source of
+truth. Keep the snapshot bounded, enforce identity-scoped reads, and remove
+the projection at session erasure. This does not add an MCP App tool-context
+retention policy or D-416 surface.
 **Required acceptance.**
 
-1. Current behavior pinned by tests before the policy lands: records survive
-   session reopen; `not_found` for unknown and cross-identity ids.
-2. The chosen policy is implemented and enforced; the rejected option's
-   consequences documented.
-3. If eviction: bounded, identity-scoped, race-safe with a concurrent
-   reader/writer stress run.
-4. The Console renders the D-348 honest placeholder on `not_found` unchanged.
-5. Integration with the real durable StateStore: identity propagation, at
-   least one failure mode, cross-session isolation of records.
-
+1. `TaskRow` exposes the three additive optional fields without a protocol
+   version bump.
+2. Progress remains bounded and derived rather than becoming a second task
+   state source.
+3. Unknown and cross-identity reads return typed not-found without leakage.
+4. Session lifecycle and erasure fences remove stale projections.
+5. Real durable StateStore integration proves identity propagation, a failure
+   mode, and cross-session isolation.
 ---
 
 ## Posture signals from the downstream team

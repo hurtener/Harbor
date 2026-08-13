@@ -2,13 +2,14 @@
 
 ## Summary
 
-Resume a paused or interrupted run at the next same-run step tranche while the original run loop remains available. Persist the tranche boundary and continuation state so in-process resume does not replay completed steps or lose identity. D-418 is the phase authority; D-417 remains the bounded restart-unavailable subdecision.
+Persist finite same-run step-tranche receipts and resume the original live run at its last committed boundary. Resume preserves the identity quadruple, does not replay completed work, and never creates a replacement run. D-418 is the phase authority; D-417 remains the bounded restart-unavailable boundary when the original run is not live.
 
 ## RFC anchor
 
-- RFC §6.4
-- RFC §6.13
-- RFC §6.15
+- RFC §3.3
+- RFC §6.8
+- RFC §6.11
+- RFC §7
 - RFC §5.2
 
 ## Briefs informing this phase
@@ -29,14 +30,14 @@ Resume a paused or interrupted run at the next same-run step tranche while the o
 
 ## Goals
 
-- Add a durable, typed tranche checkpoint and same-run resume continuation.
-- Preserve identity, run/task keys, completed-step results by reference, and cancellation semantics.
-- Same-run resume is idempotent at each step tranche.
+- Add finite, durable, typed step-tranche receipts and same-run resume.
+- Preserve `(tenant,user,session,run)`, run/task keys, and cancellation semantics.
+- Resume the original live run idempotently from each committed boundary.
 
 ### Bounded restart contract
 
 The current architecture cannot safely relaunch a frozen run in this phase.
-The durable receipt contains the trajectory and selector, but no trusted
+ The durable receipt contains the trajectory and selector, but no trusted
 completion boundary or frozen planner/executor/run-context factory. `RunLoop.Run`
 receives those dependencies through its live `RunSpec`; rebuilding them from
 mutable current profile or catalog state could alter the frozen run. A fresh
@@ -46,7 +47,7 @@ current configuration.
 
 ## Non-goals
 
-- No second pause/resume mechanism, replay of completed steps, raw output duplication, or caller-selected run identity.
+- No second pause/resume mechanism, replay of completed steps, raw output duplication, caller-selected run identity, tool-failure events, or tool-failure classifier surface.
 
 ## Acceptance criteria
 
@@ -58,10 +59,9 @@ current configuration.
 
 ## Files added or changed
 
-- `internal/tools/policy.go`, dispatch/event emitters, `internal/events/*`
-- `internal/protocol/types/{events,tools}.go` and lockstep sources if needed
-- `test/integration/tool_failure_events_test.go`
-- `docs/skills/use-the-harbor-protocol/SKILL.md`, `docs/glossary.md`, `RFC-001-Harbor.md`, `CHANGELOG.md`
+- `internal/runtime/*`, `internal/tasks/*`, and Protocol task-control sources
+- `test/integration/*` for live-run receipt/resume and identity boundaries
+- `docs/glossary.md`, `RFC-001-Harbor.md`, `CHANGELOG.md`
 - `scripts/smoke/phase-239.sh`
 
 ## Public API surface
@@ -70,22 +70,21 @@ current configuration.
 
 ## Test plan
 
-- **Unit:** event payload encoding, absent/unclassified, attempt/budget propagation, redaction.
-- **Integration:** real MCP driver → policy → event bus → Protocol stream, including deterministic failure.
-- **Conformance:** registered drivers emit equivalent metadata for equivalent classifications.
-- **Concurrency / leak:** N=128 mixed classifications on one shared shell, identity isolation and joined subscriptions.
+- **Unit:** receipt encoding, tranche boundaries, idempotence, stale receipt, and restart-unavailable behavior.
+- **Integration:** original live run continuation with identity authorization and a fresh-process failure boundary.
+- **Concurrency / leak:** N=128 same-run receipts with identity isolation and joined run lifecycles.
 
 ## Smoke script additions
 
-- Static assertions for same-run wording, tranche checkpoints, idempotence, typed resume errors, and Protocol lockstep.
+- Static assertions for finite receipts, original-live-run wording, identity quadruple, idempotence, typed restart errors, and Protocol lockstep.
 
 ## Coverage target
 
-- `internal/tools`: 90%; `internal/events`: 85%; Protocol event adapters: 90%; integration: 80%.
+- `internal/runtime`: 90%; `internal/tasks`: 90%; Protocol task-control adapters: 90%; integration: 80%.
 
 ## Dependencies
 
-- Depends only on Phase 236; independent of Phases 237, 238, 240, 241, and 242.
+- Depends on Phases 176, 193, and 233; independent of Phases 236, 237, 238, 240, 241, and 242.
 
 ## Risks / open questions
 
@@ -94,8 +93,8 @@ current configuration.
 
 ## Validation gate ledger
 
-- **Local skip:** none for unit, event, redaction, or in-process integration coverage; only an explicitly live external provider probe may skip.
-- **Web CI:** Protocol lockstep, generated-reference regeneration, race integration, and event redaction gates are required.
+- **Local skip:** local validation intentionally skipped for this documentation reconciliation.
+- **Web CI:** Protocol lockstep, generated-reference regeneration, race integration, and live-run receipt/resume gates remain authoritative.
 
 ## Glossary additions
 

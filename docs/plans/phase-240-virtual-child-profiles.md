@@ -27,32 +27,31 @@ Expose governed virtual child profiles derived from a parent profile. D-419 is t
 
 ## Goals
 
-- Add D-414's pure preview projection, server-derived authority, typed states, and lockstep contract.
-- Guarantee preview and next-run composition use one resolver.
+- Add D-419's governed, read-only virtual child profile derived from a parent.
+- Enforce bounded overrides, verified triple authority, and one resolver for run-start and inspection.
 
 ## Non-goals
 
-- No independent child mutation, revision advance, run creation, cross-principal bodies, or second profile resolver.
+- No capability widening, parent mutation, independent revision, isolation-principal status, cross-principal bodies, or second profile resolver.
 
 ## Acceptance criteria
 
-- [ ] Operator preview matches actual next-run composition against the real durable store.
-- [ ] Ordinary callers see only their own; same-tenant other-user and cross-tenant calls disclose no names.
-- [ ] Revoked/unselected packs return typed not-found; unwired/legacy state returns `unavailable`.
-- [ ] N previews leave revision hash/list, skill rows, and audit byte-identical.
-- [ ] N=128 mixed previews under `-race` show no authority/context bleed and include a failure mode.
+- [ ] Run-start and inspection resolve the same governed child view from the real durable store.
+- [ ] Ordinary callers are limited to their verified identity triple; same-tenant other-user and cross-tenant calls disclose no names.
+- [ ] Bounded overrides cannot widen capability, mutate the parent, or advance an independent revision.
+- [ ] A virtual child profile is never used as an isolation principal.
+- [ ] N=128 mixed resolutions under `-race` show no authority/context bleed and include a failure mode.
 
 ## Files added or changed
 
-- `internal/runtime/agentcfg/{projection,protocol}/*`
-- `internal/protocol/{methods,types,singlesource}/*`
-- `test/integration/skill_composition_preview_test.go`
-- `docs/skills/use-the-harbor-protocol/SKILL.md`, `docs/glossary.md`, `RFC-001-Harbor.md`, `CHANGELOG.md`
-- `scripts/smoke/phase-240.sh`
+- `internal/runtime/agentcfg/{projection,protocol}/*` and resolver call sites
+- `internal/protocol/{methods,types,singlesource}/*` if the inspection surface is wire-visible
+- `test/integration/*` for resolver authority and isolation
+- `docs/glossary.md`, `RFC-001-Harbor.md`, `CHANGELOG.md`
 
 ## Public API surface
 
-- One additive read method/projection returning names, bounded verdicts, and typed availability states; bodies are principal-scoped.
+- One governed virtual-child projection with bounded overrides and typed authority states; the virtual profile is not an isolation principal.
 
 ## Test plan
 
@@ -63,7 +62,7 @@ Expose governed virtual child profiles derived from a parent profile. D-419 is t
 
 ## Smoke script additions
 
-- Static assertions for D-414, one resolver, authority matrix, no mutation, typed states, and lockstep/skill ledger.
+- Static assertions for D-419, one resolver, verified triple authority, bounded overrides, no mutation, and lockstep ledger.
 
 ## Coverage target
 
@@ -80,8 +79,8 @@ Expose governed virtual child profiles derived from a parent profile. D-419 is t
 
 ## Validation gate ledger
 
-- **Local skip:** durable Postgres preview integration may skip only without `HARBOR_PG_DSN`; in-memory/SQLite authority and idempotence tests are required.
-- **Web CI:** typed Protocol client, manifest lockstep, Console skill update, and generated reference checks are required if the preview is wire-visible.
+- **Local skip:** local validation intentionally skipped for this documentation reconciliation.
+- **Web CI:** typed Protocol client, manifest lockstep, and generated reference checks remain required if the inspection surface is wire-visible.
 
 ## Glossary additions
 

@@ -18,8 +18,8 @@ Expose durable task progress as a typed, identity-safe Protocol projection. D-42
 
 ## Brief findings incorporated
 
-- brief 14 §6: App delivery remains sandboxed and bridge-proxied.
 - brief 03 §8: StateStore is the persistence seam and identity is propagated through every provider call.
+- brief 06 §4: bounded projections and server-side identity filtering are mandatory.
 - brief 14 §3: `not_found` must be an honest, typed state rather than silent degradation.
 
 ## Findings I'm departing from (if any)
@@ -28,61 +28,59 @@ Expose durable task progress as a typed, identity-safe Protocol projection. D-42
 
 ## Goals
 
-- Enforce D-416's chosen session-lifetime policy, or adopt measured bounded eviction only if growth evidence requires it.
-- Align godoc, StateStore lifecycle fences, Protocol mapping, and Console placeholder behavior.
+- Add D-421's durable bounded task-progress projection and additive optional `TaskRow` fields.
+- Align task source projection, StateStore lifecycle/erasure fences, and Protocol mapping.
 
 ## Non-goals
 
-- No raw output streaming, unrelated artifact retention, new identity axis, or second progress source.
+- No raw output streaming, unrelated artifact retention, new identity axis, second progress source, or MCP App tool-context retention policy.
 
 ## Acceptance criteria
 
-- [ ] Baseline tests prove records survive session reopen and unknown/cross-identity ids return typed not-found.
-- [ ] Chosen policy is explicit and enforced; rejected policy's guard rails and rationale are documented.
-- [ ] If eviction is selected, TTL/sweep is bounded, identity-scoped, race-safe, and reader/writer stress-tested.
-- [ ] Console's D-348 honest placeholder is unchanged for not-found.
-- [ ] Real durable StateStore integration proves identity propagation, failure mode, and cross-session isolation; erasure removes records.
+- [ ] `TaskRow` carries additive optional `progress_snapshot`, `virtual_key`, and `virtual_label` fields.
+- [ ] Progress is derived from the task source of truth and remains bounded and durable.
+- [ ] Identity triple scoping and session-lifecycle/erasure fences prevent cross-session exposure and stale records.
+- [ ] Unknown/cross-identity ids return typed not-found without silent degradation.
+- [ ] Real durable StateStore integration proves identity propagation, failure mode, and cross-session isolation; erasure removes projections.
 
 ## Files added or changed
 
-- `internal/mcpconsole/toolcontext.{go,test.go}`
-- `internal/state` lifecycle adapters and conformance tests only if required
-- `internal/protocol/mcp.go` only if a bounded retention signal is necessary
-- `test/integration/mcp_app_tool_context_retention_test.go`
+- `internal/tasks/*`, `internal/state` lifecycle adapters, and Protocol task-row sources
+- `test/integration/*` for durable projection, erasure, and identity isolation
 - `docs/glossary.md`, `RFC-001-Harbor.md`, `CHANGELOG.md`, `scripts/smoke/phase-242.sh`
 
 ## Public API surface
 
-- Default: no wire change; typed `CodeNotFound` retains its existing meaning for unknown/cross-identity records. An eviction signal is additive only if selected.
+- `TaskRow` gains additive optional `progress_snapshot`, `virtual_key`, and `virtual_label` fields; `ProtocolVersion` remains unchanged. This is not an MCP App tool-context retention surface.
 
 ## Test plan
 
-- **Unit:** policy, reopen, unknown/cross-identity miss, erasure, placeholder contract.
-- **Integration:** real durable StateStore and App accessor with identity and forced read failure.
+- **Unit:** bounded snapshot mapping, optional fields, unknown/cross-identity miss, and erasure fences.
+- **Integration:** real durable StateStore and task projection with identity and forced read failure.
 - **Conformance:** in-memory, SQLite, and Postgres lifecycle/erasure behavior where drivers are enabled.
-- **Concurrency / leak:** if eviction is selected, N≥100 readers/writers under `-race`; otherwise N≥100 shared accessor reads and close/reopen lifecycle checks.
+- **Concurrency / leak:** N≥100 shared projection reads/writes under `-race`, with no cross-talk or stale lifecycle records.
 
 ## Smoke script additions
 
-- Static assertions for D-416, session-lifetime default, erasure fence, typed not-found, unchanged placeholder, and optional eviction ledger. No script execution in this planning change.
+- Static assertions for D-421, additive optional TaskRow fields, identity/lifecycle fences, bounded projection, and typed not-found. No script execution in this planning change.
 
 ## Coverage target
 
-- `internal/mcpconsole`: 90%; StateStore touched adapters: 90%; integration: 85%.
+- `internal/tasks`: 90%; StateStore touched adapters: 90%; integration: 85%.
 
 ## Dependencies
 
-- Depends on Phases 204, 207, and 233a; independent of Phases 236–241; compatible with Phase 238's callback catalog.
+- Depends on Phases 239 and 241; independent of Phases 236–238.
 
 ## Risks / open questions
 
-- Long-lived sessions may grow without bound; measure before changing the default, and do not claim eviction without a real sweeper.
-- Postgres integration may be local-skip without `HARBOR_PG_DSN`; CI must run the durable matrix.
+- Progress snapshots must remain bounded and derived; do not let them become a second task source of truth.
+- Postgres integration remains a web-CI gate where the local environment lacks the required service.
 
 ## Validation gate ledger
 
-- **Local skip:** Postgres durable lifecycle checks may skip only without `HARBOR_PG_DSN`; in-memory/SQLite erasure and isolation checks are local-required.
-- **Web CI:** all three StateStore conformance paths, race integration, Protocol error lockstep if changed, and Console placeholder regression are required.
+- **Local skip:** local validation intentionally skipped for this documentation reconciliation.
+- **Web CI:** all three StateStore conformance paths, race integration, and Protocol wire lockstep are authoritative.
 
 ## Glossary additions
 
