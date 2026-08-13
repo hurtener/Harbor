@@ -165,6 +165,8 @@ else
         fail 'phase 184: TestE2E_WaveV115TUI did not match any test'
     elif [ "${focused_status}" -eq 0 ]; then
         ok 'phase 184: TestE2E_WaveV115TUI passes under -race'
+    elif printf '%s\n' "${focused_output}" | grep -Eqi '(^|[[:space:]])(FAIL|--- FAIL:|panic:|fatal error:|WARNING: DATA RACE|Found [0-9]+ data race|build failed|undefined:|cannot (use|find)|syntax error)([[:space:]]|$)|^#[[:space:]]'; then
+        fail 'phase 184: TestE2E_WaveV115TUI fails under -race'
     elif printf '%s\n' "${focused_output}" \
         | grep -Eiq '^(go:|verifying)[[:space:]].*Get "https://(sum\.golang\.org|proxy\.golang\.org)/[^"[:space:]]+".*(HTTP/2 INTERNAL_ERROR|connection (reset|refused|timed out)|i/o timeout|TLS handshake timeout|network is unreachable|no such host|temporary failure in name resolution|502 Bad Gateway|503 Service Unavailable|500 Internal Server Error|EOF)'; then
         skip 'phase 184: TestE2E_WaveV115TUI skipped (module proxy/checksum acquisition network failure)'
