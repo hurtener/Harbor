@@ -89,6 +89,15 @@ var phase111bID = identity.Identity{
 	SessionID: "session-phase111b",
 }
 
+func mustPhase111bFlowStore(t *testing.T, store state.StateStore, sealer toolauth.Sealer) toolauth.FlowStore {
+	t.Helper()
+	flows, err := toolauth.NewFlowStore(store, sealer)
+	if err != nil {
+		t.Fatalf("NewFlowStore: %v", err)
+	}
+	return flows
+}
+
 const (
 	phase111bTool     = "phase111b_gated_fetch"
 	phase111bProvider = "github"
@@ -177,7 +186,7 @@ func buildPhase111bEnv(t *testing.T) *phase111bEnv {
 		Scopes:       []string{"repo"},
 	}
 	prov, err := toolauth.NewProvider([]toolauth.OAuthConfig{oauthCfg}, toolauth.ProviderDeps{
-		Store: tokenStore, Bus: bus, Redactor: red, Coordinator: coord,
+		Store: tokenStore, Flows: mustPhase111bFlowStore(t, stateStore, sealer), Bus: bus, Redactor: red, Coordinator: coord,
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
 	if err != nil {
@@ -652,7 +661,7 @@ func TestE2E_Phase111b_ExpiredFlow_Gone_PauseStillParked(t *testing.T) {
 		ServerURL:    authSrv.BaseURL(),
 		RedirectURI:  cbSrv.URL + toolauth.CallbackPath,
 	}}, toolauth.ProviderDeps{
-		Store: tokenStore, Bus: bus, Redactor: red, Coordinator: coord,
+		Store: tokenStore, Flows: mustPhase111bFlowStore(t, stateStore, sealer), Bus: bus, Redactor: red, Coordinator: coord,
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 		Clock:      clock,
 		FlowTTL:    time.Minute,
