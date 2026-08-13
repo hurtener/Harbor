@@ -162,7 +162,10 @@ func TestPackageHash_DeterministicAndSensitive(t *testing.T) {
 			p.Supports[0].Path = "examples/other.json"
 		}},
 		{"support mime", func(p *skillpkg.Package) {
-			p.Supports[0].Mime = "application/x-ndjson"
+			// JSON content is also valid UTF-8 text, so the MIME
+			// swap survives the content-truth check while changing
+			// the manifest identity.
+			p.Supports[0].Mime = "text/plain; charset=utf-8"
 		}},
 		{"support size", func(p *skillpkg.Package) {
 			p.Supports[0].Data = append(p.Supports[0].Data, ' ')

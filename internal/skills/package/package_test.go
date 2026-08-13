@@ -1,9 +1,12 @@
 package skillpkg_test
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"hash/crc32"
 	"strings"
 	"testing"
 
@@ -43,6 +46,36 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// pngBytes returns a structurally valid minimal PNG (signature +
+// 13-byte IHDR + IEND) — the content check requires the signature AND
+// the IHDR chunk, so fixtures must be real PNG containers, not magic
+// fragments.
+func pngBytes() []byte {
+	var b bytes.Buffer
+	b.Write([]byte("\x89PNG\r\n\x1a\n"))
+	writeChunk := func(typ string, data []byte) {
+		var l [4]byte
+		binary.BigEndian.PutUint32(l[:], uint32(len(data)))
+		b.Write(l[:])
+		b.WriteString(typ)
+		b.Write(data)
+		crc := crc32.NewIEEE()
+		crc.Write([]byte(typ))
+		crc.Write(data)
+		var c [4]byte
+		binary.BigEndian.PutUint32(c[:], crc.Sum32())
+		b.Write(c[:])
+	}
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], 1) // width
+	binary.BigEndian.PutUint32(ihdr[4:8], 1) // height
+	ihdr[8] = 8                              // bit depth
+	ihdr[9] = 6                              // color type: RGBA
+	writeChunk("IHDR", ihdr)
+	writeChunk("IEND", nil)
+	return b.Bytes()
+}
+
 // testPackage returns a valid complete package with two support files.
 func testPackage() skillpkg.Package {
 	return skillpkg.Package{
@@ -51,7 +84,7 @@ func testPackage() skillpkg.Package {
 		Skill:   testSkill(),
 		Supports: []skillpkg.SupportFile{
 			supportFile("examples/demo.json", "application/json", `{"demo": true}`),
-			supportFile("assets/logo.png", "image/png", "\x89PNG\r\n\x1a\nfakepng"),
+			supportFile("assets/logo.png", "image/png", string(pngBytes())),
 		},
 	}
 }

@@ -12,6 +12,14 @@
 // `skillpkg://<PackageHash>/<encoded-canonical-support-path>` URI —
 // one URI per support file, delivered by PackageIngest.SupportURI.
 //
+// Support references in the logical body are validated through the
+// canonical ordinary-Markdown scanner (skillpkg.ScanSupportRefs):
+// inline and reference-style links AND images must resolve to manifest
+// entries; remote / absolute / fragment-only / ambiguous resource
+// references are rejected (the package is self-contained), while
+// ordinary remote navigation links and `#fragment` document anchors
+// stay verbatim.
+//
 // ImportPackageMarkdown is the pure single-document sibling: it
 // ingests ONE bounded UTF-8 SKILL.md document as a RESOURCE-FREE
 // complete skill package (no support manifest) through the same
@@ -19,17 +27,25 @@
 // in the body is rejected, because no support manifest exists to
 // satisfy it.
 //
-// Both paths are PURE: they perform no storage writes and no artifact
-// uploads. The existing file-import surface (Import / Export /
+// The pure export surface closes the round trip: MaterializePackageBody
+// rewrites validated relative support refs to exact skillpkg URIs;
+// ExportPackage dematerializes only the exact package's URIs back to
+// relative paths (refusing foreign / malformed / dangling URIs) and
+// produces the logical single-document form plus the ordered manifest;
+// ReimportPackage rebuilds the canonical package from that form and
+// verifies the hash.
+//
+// Both ingest paths are PURE: they perform no storage writes and no
+// artifact uploads. The existing file-import surface (Import / Export /
 // ImportAndStore) is untouched; these paths are additive.
 
 package importer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"strings"
 	"unicode/utf8"
 
@@ -44,6 +60,16 @@ import (
 // body points at a file the package does not carry is broken; it
 // fails loudly rather than materializing dangling references.
 var ErrPackageSupportRefMissing = errors.New("importer: package support reference missing from archive")
+
+// ErrPackageSupportRefRemote — the SKILL.md body references a remote
+// (scheme-carrying) or absolute resource (an image, or a link to an
+// absolute path). A complete skill package is self-contained: its
+// images and resources must be carried by the package, so a remote or
+// absolute resource reference is rejected rather than silently kept
+// as a dangling claim. Ordinary remote navigation links and
+// `#fragment` document anchors are NOT resource references and stay
+// verbatim.
+var ErrPackageSupportRefRemote = errors.New("importer: package support reference is remote or absolute")
 
 // ErrPackageMarkdownNotUTF8 — the single-document ingest received
 // bytes that are not valid UTF-8. A SKILL.md document must be UTF-8.
@@ -299,66 +325,231 @@ func parseSkillToPackage(ctx context.Context, skillMD []byte, pathHint string, s
 	return skill, pkg, nil
 }
 
-// validatePackageSupportRefs enforces that every relative inline
-// image/attachment reference in the parsed skill body names an entry
-// of the validated support manifest. Absolute paths and scheme URIs
-// (http/https/data/artifact) stay verbatim, matching the file path's
-// skip behavior; a relative reference with no manifest entry fails
-// loudly.
+// validatePackageSupportRefs enforces the package support-reference
+// contract over the assembled logical body (description + sections)
+// using the canonical ordinary-Markdown scanner
+// (skillpkg.ScanSupportRefs — inline and reference-style links AND
+// images, not a bespoke image-only syntax):
+//
+//   - an image reference must name a manifest entry — remote (scheme),
+//     absolute, fragment-only, and ambiguous destinations are rejected
+//     (the package is self-contained);
+//   - a link reference to a relative path must name a manifest entry;
+//     remote navigation links and `#fragment` document anchors are NOT
+//     resource references and stay verbatim;
+//   - an absolute or ambiguous link destination is rejected;
+//   - every relative support path is canonicalized ONCE (the canonical
+//     form is the manifest key) and must exist in the manifest.
 func validatePackageSupportRefs(skill skills.Skill, manifest map[string]struct{}) error {
-	check := func(text, where string) error {
-		if !strings.Contains(text, "![") {
-			return nil
-		}
-		for _, m := range imageRefRegexp.FindAllStringSubmatchIndex(text, -1) {
-			ref := text[m[4]:m[5]]
-			if hasSchemeOrAbs(ref) {
-				continue
+	body := assembleBody(skill)
+	for _, r := range skillpkg.ScanSupportRefs(body) {
+		kind, pathPart, _ := skillpkg.SplitDest(r.Dest)
+		switch r.Kind {
+		case skillpkg.SupportRefImage:
+			switch kind {
+			case skillpkg.DestScheme, skillpkg.DestAbsolute:
+				return fmt.Errorf("%w: image reference %q (packages are self-contained)", ErrPackageSupportRefRemote, r.Dest)
+			case skillpkg.DestFragment:
+				return fmt.Errorf("%w: fragment-only image reference %q names no resource", ErrPackageSupportRefMissing, r.Dest)
+			case skillpkg.DestAmbiguous:
+				return fmt.Errorf("%w: ambiguous image reference %q", ErrPackageSupportRefMissing, r.Dest)
+			case skillpkg.DestRelative:
+				if err := requireManifestRef(pathPart, r.Dest, manifest); err != nil {
+					return err
+				}
 			}
-			canonical, err := canonicalBodyRef(ref)
-			if err != nil {
-				return fmt.Errorf("%w: %q in %s: %v", ErrPackageSupportRefMissing, ref, where, err)
+		case skillpkg.SupportRefLink:
+			switch kind {
+			case skillpkg.DestScheme, skillpkg.DestFragment:
+				continue // remote navigation link / document anchor — retained
+			case skillpkg.DestAbsolute:
+				return fmt.Errorf("%w: absolute link reference %q", ErrPackageSupportRefRemote, r.Dest)
+			case skillpkg.DestAmbiguous:
+				return fmt.Errorf("%w: ambiguous link reference %q", ErrPackageSupportRefMissing, r.Dest)
+			case skillpkg.DestRelative:
+				if err := requireManifestRef(pathPart, r.Dest, manifest); err != nil {
+					return err
+				}
 			}
-			if _, ok := manifest[canonical]; !ok {
-				return fmt.Errorf("%w: %q referenced in %s", ErrPackageSupportRefMissing, ref, where)
-			}
-		}
-		return nil
-	}
-	for i, step := range skill.Steps {
-		if err := check(step, fmt.Sprintf("steps[%d]", i)); err != nil {
-			return err
 		}
 	}
-	for _, pre := range skill.Preconditions {
-		if err := check(pre, "preconditions"); err != nil {
-			return err
-		}
-	}
-	for _, fm := range skill.FailureModes {
-		if err := check(fm, "failure modes"); err != nil {
-			return err
-		}
-	}
-	return check(skill.Description, "description")
+	return nil
 }
 
-// canonicalBodyRef normalizes a body-side relative reference into the
-// canonical manifest path form: forward-slash, `./` stripped,
-// `..` / absolute / backslash rejected.
-func canonicalBodyRef(ref string) (string, error) {
-	if ref == "" {
-		return "", errors.New("empty reference")
+// requireManifestRef canonicalizes one relative destination path and
+// requires it to name a manifest entry.
+func requireManifestRef(pathPart, raw string, manifest map[string]struct{}) error {
+	canonical, err := skillpkg.CanonicalizeSupportDest(pathPart)
+	if err != nil {
+		return fmt.Errorf("%w: %q: %v", ErrPackageSupportRefMissing, raw, err)
 	}
-	if strings.HasPrefix(ref, "/") || strings.ContainsRune(ref, '\\') {
-		return "", fmt.Errorf("not a root-relative forward-slash path")
+	if _, ok := manifest[canonical]; !ok {
+		return fmt.Errorf("%w: %q (canonical %q)", ErrPackageSupportRefMissing, raw, canonical)
 	}
-	cleaned := path.Clean(strings.TrimPrefix(ref, "./"))
-	switch {
-	case cleaned == ".":
-		return "", errors.New("reference resolves to the package root")
-	case cleaned == ".." || strings.HasPrefix(cleaned, "../"):
-		return "", errors.New("reference escapes the package root")
+	return nil
+}
+
+// PackageExport is the logical single-document + manifest form of a
+// complete skill package: the inverse of the package ingest, produced
+// by ExportPackage and consumed by ReimportPackage.
+type PackageExport struct {
+	// Document is the full logical SKILL.md document (frontmatter +
+	// body) with support references in their relative path form.
+	Document []byte
+	// Manifest is the ordered normalized support manifest (canonical
+	// path, MIME, exact size, digest) — no materialized bytes.
+	Manifest []skillpkg.SupportFile
+	// Hash is the versioned package hash the document + manifest
+	// belong to.
+	Hash string
+}
+
+// MaterializePackageBody rewrites the logical body of an ingested
+// package (description + sections) to its materialized form: every
+// validated relative support reference becomes the exact
+// `skillpkg://<PackageHash>/<encoded-canonical-support-path>` URI
+// (skillpkg.MaterializeSupportRefs). Pure: no store, authority,
+// lifecycle, or filesystem side effects.
+func (i *importerImpl) MaterializePackageBody(ctx context.Context, ingest PackageIngest) (string, error) {
+	if i.closed.Load() {
+		return "", ErrImporterClosed
 	}
-	return cleaned, nil
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return skillpkg.MaterializeSupportRefs(assembleBody(ingest.Skill), ingest.Package)
+}
+
+// ExportPackage reverses the package ingest for a materialized body:
+// it dematerializes the package's support URIs back to their relative
+// canonical paths — refusing foreign, malformed, and dangling URIs
+// (skillpkg.DematerializeSupportRefs) — and assembles the logical
+// single-document form plus the ordered normalized manifest. The
+// package hash is verified against the ingest before any rewrite.
+// Pure: no store, authority, lifecycle, or filesystem side effects.
+func (i *importerImpl) ExportPackage(ctx context.Context, ingest PackageIngest, materializedBody string) (PackageExport, error) {
+	if i.closed.Load() {
+		return PackageExport{}, ErrImporterClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return PackageExport{}, err
+	}
+	if err := skillpkg.VerifyPackageHash(ingest.Package, ingest.Hash); err != nil {
+		return PackageExport{}, err
+	}
+	logicalBody, err := skillpkg.DematerializeSupportRefs(materializedBody, ingest.Package)
+	if err != nil {
+		return PackageExport{}, err
+	}
+	return PackageExport{
+		Document: assembleDocument(ingest, logicalBody),
+		Manifest: manifestOnly(ingest.Package),
+		Hash:     ingest.Hash,
+	}, nil
+}
+
+// ReimportPackage rebuilds the canonical package from an exported
+// logical document + manifest (the inverse of ExportPackage), parsing
+// the document through the SAME canonical parse as the archive ingest
+// and validating its support references against the manifest. The
+// recomputed versioned package hash must equal the export's hash.
+func (i *importerImpl) ReimportPackage(ctx context.Context, ex PackageExport) (PackageIngest, error) {
+	if i.closed.Load() {
+		return PackageIngest{}, ErrImporterClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return PackageIngest{}, err
+	}
+	entries := make([]skillpkg.ArchiveEntry, 0, len(ex.Manifest))
+	manifest := make(map[string]struct{}, len(ex.Manifest))
+	for _, f := range ex.Manifest {
+		entries = append(entries, skillpkg.ArchiveEntry{
+			Path:   f.Path,
+			Mime:   f.Mime,
+			Size:   f.Size,
+			Digest: f.Digest,
+		})
+		manifest[f.Path] = struct{}{}
+	}
+	skill, pkg, err := parseSkillToPackage(ctx, ex.Document, "", entries, manifest)
+	if err != nil {
+		return PackageIngest{}, err
+	}
+	hash, err := skillpkg.PackageHash(pkg)
+	if err != nil {
+		return PackageIngest{}, fmt.Errorf("importer: package hash: %w", err)
+	}
+	if hash != ex.Hash {
+		return PackageIngest{}, fmt.Errorf("importer: reimported package hash %q does not match export hash %q", hash, ex.Hash)
+	}
+	return PackageIngest{Skill: skill, Package: pkg, Hash: hash}, nil
+}
+
+// assembleBody emits the canonical logical body form of a parsed
+// skill: the description followed by each non-empty canonical section
+// in canonical order. It mirrors the file exporter's body emission so
+// the package export round-trips byte-exactly.
+func assembleBody(skill skills.Skill) string {
+	var b strings.Builder
+	if skill.Description != "" {
+		b.WriteString(skill.Description)
+		b.WriteByte('\n')
+	}
+	sections := []struct {
+		section canonicalSection
+		items   []string
+	}{
+		{sectionSteps, skill.Steps},
+		{sectionPreconditions, skill.Preconditions},
+		{sectionFailureModes, skill.FailureModes},
+	}
+	for _, sec := range sections {
+		if len(sec.items) == 0 {
+			continue
+		}
+		b.WriteByte('\n')
+		b.WriteString(canonicalHeading(sec.section))
+		b.WriteByte('\n')
+		b.WriteByte('\n')
+		for _, item := range sec.items {
+			b.WriteString("- ")
+			b.WriteString(item)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// assembleDocument rebuilds the full SKILL.md document: the raw
+// frontmatter stashed by the ingest (synthesized for a caller-built
+// skill) plus the canonical body.
+func assembleDocument(ingest PackageIngest, body string) []byte {
+	rawFM, ok := skillFrontmatterRaw(ingest.Skill)
+	if !ok {
+		rawFM = synthesiseFrontmatter(ingest.Skill)
+	}
+	var b bytes.Buffer
+	b.WriteString(frontmatterFence)
+	b.WriteByte('\n')
+	b.Write(rawFM)
+	b.WriteString(frontmatterFence)
+	b.WriteByte('\n')
+	b.WriteString(body)
+	return b.Bytes()
+}
+
+// manifestOnly strips the materialized Data from a package's support
+// manifest, leaving the ordered normalized manifest (path, MIME, size,
+// digest).
+func manifestOnly(pkg skillpkg.Package) []skillpkg.SupportFile {
+	out := make([]skillpkg.SupportFile, 0, len(pkg.Supports))
+	for _, f := range pkg.Supports {
+		out = append(out, skillpkg.SupportFile{
+			Path:   f.Path,
+			Mime:   f.Mime,
+			Size:   f.Size,
+			Digest: f.Digest,
+		})
+	}
+	return out
 }

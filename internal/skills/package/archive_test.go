@@ -45,7 +45,7 @@ func TestValidateArchive_Valid(t *testing.T) {
 	z := buildZip(t, []zipEntry{
 		{name: "SKILL.md", data: "---\ntrigger: demo\n---\n## Steps\n- do it\n"},
 		{name: "examples/demo.json", data: `{"demo": true}`},
-		{name: "assets/logo.png", data: "\x89PNG\r\n\x1a\nfakepng"},
+		{name: "assets/logo.png", data: string(pngBytes())},
 	})
 	entries, err := skillpkg.ValidateArchive(z, skillpkg.ArchiveLimits{})
 	if err != nil {
@@ -113,6 +113,12 @@ func TestValidateArchive_Rejects(t *testing.T) {
 		{"unsupported mime exe", []zipEntry{{name: "tool.exe", data: "MZfake"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
 		{"unsupported mime extensionless", []zipEntry{{name: "LICENSE", data: "text"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
 		{"unsupported mime archive ext", []zipEntry{{name: "bundle.tar", data: "x"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
+		{"unsupported mime yaml", []zipEntry{{name: "config.yaml", data: "a: 1"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
+		{"mime content mismatch png", []zipEntry{{name: "assets/logo.png", data: `{"demo": true}`}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
+		{"mime content mismatch json", []zipEntry{{name: "examples/demo.json", data: "\xff\xfe\x00binary"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
+		{"mime content mismatch md", []zipEntry{{name: "docs/guide.md", data: "\x00\x01\x02"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
+		{"mime content mismatch xml", []zipEntry{{name: "data.xml", data: "<open>never closed"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
+		{"mime content mismatch empty txt", []zipEntry{{name: "empty.txt", data: ""}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
 		{"too many entries", []zipEntry{
 			{name: "a.txt", data: "1"}, {name: "b.txt", data: "2"}, {name: "c.txt", data: "3"},
 		}, skillpkg.ArchiveLimits{MaxEntries: 2}, skillpkg.ErrArchiveTooManyEntries},

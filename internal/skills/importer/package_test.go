@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"sort"
 	"strings"
 	"testing"
@@ -13,6 +15,35 @@ import (
 	"github.com/hurtener/Harbor/internal/skills/importer"
 	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 )
+
+// pngBytes returns a structurally valid minimal PNG (signature +
+// 13-byte IHDR + IEND). The content-truth MIME gate requires the real
+// signature AND the IHDR chunk, so fixtures must be real containers.
+func pngBytes() []byte {
+	var b bytes.Buffer
+	b.Write([]byte("\x89PNG\r\n\x1a\n"))
+	writeChunk := func(typ string, data []byte) {
+		var l [4]byte
+		binary.BigEndian.PutUint32(l[:], uint32(len(data)))
+		b.Write(l[:])
+		b.WriteString(typ)
+		b.Write(data)
+		crc := crc32.NewIEEE()
+		crc.Write([]byte(typ))
+		crc.Write(data)
+		var c [4]byte
+		binary.BigEndian.PutUint32(c[:], crc.Sum32())
+		b.Write(c[:])
+	}
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], 1) // width
+	binary.BigEndian.PutUint32(ihdr[4:8], 1) // height
+	ihdr[8] = 8                              // bit depth
+	ihdr[9] = 6                              // color type: RGBA
+	writeChunk("IHDR", ihdr)
+	writeChunk("IEND", nil)
+	return b.Bytes()
+}
 
 // packageZip builds a complete-skill-package archive in memory.
 func packageZip(t *testing.T, entries map[string]string) []byte {
@@ -46,7 +77,7 @@ func TestImportPackage_Valid(t *testing.T) {
 	imp, _ := newImporter(t)
 	z := packageZip(t, map[string]string{
 		"SKILL.md":           packageSkillMD,
-		"assets/logo.png":    "PNGDATA!",
+		"assets/logo.png":    string(pngBytes()),
 		"examples/demo.json": `{"demo": true}`,
 		"docs/usage.txt":     "usage notes",
 	})
@@ -128,7 +159,7 @@ func TestImportPackage_DeterministicHash(t *testing.T) {
 	imp, _ := newImporter(t)
 	entries := map[string]string{
 		"SKILL.md":           packageSkillMD,
-		"assets/logo.png":    "PNGDATA!",
+		"assets/logo.png":    string(pngBytes()),
 		"examples/demo.json": `{"demo": true}`,
 	}
 	z1 := packageZip(t, entries)
@@ -177,9 +208,34 @@ func TestImportPackage_Rejects(t *testing.T) {
 		{"missing support ref", packageZip(t, map[string]string{
 			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![missing](assets/nope.png)\n\n## Steps\n- s\n",
 		}), importer.ErrPackageSupportRefMissing},
+		{"missing link ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\nSee [the guide](docs/guide.md).\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefMissing},
 		{"traversal support ref", packageZip(t, map[string]string{
 			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![bad](../escape.png)\n\n## Steps\n- s\n",
 		}), importer.ErrPackageSupportRefMissing},
+		{"remote image ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![x](https://example.com/x.png)\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefRemote},
+		{"absolute image ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![x](/etc/x.png)\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefRemote},
+		{"absolute link ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\nSee [x](/etc/passwd).\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefRemote},
+		{"fragment-only image ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![x](#fig)\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefMissing},
+		{"query link ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\nSee [x](docs/guide.md?v=1).\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefMissing},
+		{"percent-encoded ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![x](assets%2Flogo.png)\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefMissing},
+		{"mime content mismatch", packageZip(t, map[string]string{
+			"SKILL.md":        "---\nname: x\ntrigger: t\n---\n![x](assets/logo.png)\n\n## Steps\n- s\n",
+			"assets/logo.png": `{"not": "a png"}`,
+		}), skillpkg.ErrArchiveMimeContentMismatch},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -296,12 +352,24 @@ func TestImportPackageMarkdown_Rejects(t *testing.T) {
 			}
 		})
 	}
-	// A scheme/absolute reference is not a support-file reference and
-	// stays verbatim (matching the ZIP path's skip behavior).
+	// A remote IMAGE reference is a resource the resource-free
+	// package does not carry — the self-contained-package contract
+	// rejects it loudly.
 	imp2, _ := newImporter(t)
-	withExternal := []byte("---\nname: ext\ntrigger: t\n---\n![remote](https://example.com/x.png)\n\n## Steps\n- s\n")
-	if _, err := imp2.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: withExternal}); err != nil {
-		t.Fatalf("external reference rejected: %v", err)
+	withRemoteImage := []byte("---\nname: ext\ntrigger: t\n---\n![remote](https://example.com/x.png)\n\n## Steps\n- s\n")
+	if _, err := imp2.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: withRemoteImage}); !errors.Is(err, importer.ErrPackageSupportRefRemote) {
+		t.Fatalf("remote image: err=%v, want ErrPackageSupportRefRemote", err)
+	}
+	// Ordinary remote navigation links and `#fragment` document
+	// anchors are NOT resource references — they stay verbatim.
+	withRemoteLink := []byte("---\nname: ext-link\ntrigger: t\n---\nSee [the docs](https://example.com) and [top](#overview).\n\n## Steps\n- s\n")
+	if _, err := imp2.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: withRemoteLink}); err != nil {
+		t.Fatalf("remote link / anchor rejected: %v", err)
+	}
+	// An absolute resource reference is rejected for links too.
+	withAbsolute := []byte("---\nname: abs\ntrigger: t\n---\nSee [x](/etc/passwd).\n\n## Steps\n- s\n")
+	if _, err := imp2.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: withAbsolute}); !errors.Is(err, importer.ErrPackageSupportRefRemote) {
+		t.Fatalf("absolute link: err=%v, want ErrPackageSupportRefRemote", err)
 	}
 	// Explicitly blank (no name) with no hint also fails validation.
 	if _, err := imp2.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{

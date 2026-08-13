@@ -121,6 +121,11 @@ func (f SupportFile) Validate() error {
 		if hex.EncodeToString(sum[:]) != f.Digest {
 			return fmt.Errorf("%w: %q digest does not match its bytes", ErrSupportDigestMismatch, f.Path)
 		}
+		// MIME is content truth: when the entry carries materialized
+		// bytes, the declared MIME must actually be satisfied by them.
+		if err := ValidateMimeContent(f.Mime, f.Data); err != nil {
+			return fmt.Errorf("%w: %q: %w", ErrMimeContentMismatch, f.Path, err)
+		}
 	}
 	if f.Size > MaxPackageSupportBytes {
 		return errSupportf("Size %d exceeds %d bytes", f.Size, MaxPackageSupportBytes)

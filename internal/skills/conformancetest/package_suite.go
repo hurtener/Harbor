@@ -13,8 +13,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"hash/crc32"
 	"io/fs"
 	"strings"
 	"testing"
@@ -143,7 +145,7 @@ func RunPackageSemanticsSuite(t *testing.T) {
 // never drift from its bytes.
 func packageFixture() skills.Package {
 	demo := []byte(`{"demo": true}`)
-	logo := []byte("PNGDATA!")
+	logo := pngBytes()
 	return skills.Package{
 		Name:    "suite-skill",
 		Version: "1.0.0",
@@ -166,6 +168,35 @@ func packageFixture() skills.Package {
 			{Path: "assets/logo.png", Mime: "image/png", Size: int64(len(logo)), Digest: hexDigest(logo), Data: logo},
 		},
 	}
+}
+
+// pngBytes returns a structurally valid minimal PNG (signature +
+// 13-byte IHDR + IEND). The content-truth MIME gate requires the real
+// signature AND the IHDR chunk, so the fixture is a real container.
+func pngBytes() []byte {
+	var b bytes.Buffer
+	b.Write([]byte("\x89PNG\r\n\x1a\n"))
+	writeChunk := func(typ string, data []byte) {
+		var l [4]byte
+		binary.BigEndian.PutUint32(l[:], uint32(len(data)))
+		b.Write(l[:])
+		b.WriteString(typ)
+		b.Write(data)
+		crc := crc32.NewIEEE()
+		crc.Write([]byte(typ))
+		crc.Write(data)
+		var c [4]byte
+		binary.BigEndian.PutUint32(c[:], crc.Sum32())
+		b.Write(c[:])
+	}
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], 1) // width
+	binary.BigEndian.PutUint32(ihdr[4:8], 1) // height
+	ihdr[8] = 8                              // bit depth
+	ihdr[9] = 6                              // color type: RGBA
+	writeChunk("IHDR", ihdr)
+	writeChunk("IEND", nil)
+	return b.Bytes()
 }
 
 // skillAsStored projects the fixture's logical content onto the

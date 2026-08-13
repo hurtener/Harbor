@@ -26,7 +26,10 @@ import (
 //     content-free);
 //   - nested archives (zip / gzip / tar / bzip2 / xz / zstd / 7z /
 //     rar magic inside an entry's decompressed bytes);
-//   - unsupported MIME (extensions outside the canonical allowlist);
+//   - unsupported MIME (extensions outside the canonical allowlist)
+//     and MIME content mismatches (an extension proposes a supported
+//     MIME whose bounded content check the entry's bytes do not
+//     satisfy);
 //   - decompression and count / size / ratio violations (entry count,
 //     per-entry and total decompressed bytes, compression
 //     amplification — the zip-bomb class);
@@ -60,6 +63,11 @@ var (
 	// ErrArchiveMimeUnsupported — an entry's MIME is outside the
 	// canonical support allowlist.
 	ErrArchiveMimeUnsupported = errors.New("skillpkg: archive entry MIME unsupported")
+	// ErrArchiveMimeContentMismatch — an entry's extension proposes a
+	// supported MIME, but the entry's bytes do not satisfy that
+	// MIME's content check (extension / content mismatch, or
+	// unsupported / ambiguous data). Wraps ErrMimeContentMismatch.
+	ErrArchiveMimeContentMismatch = errors.New("skillpkg: archive entry content does not match its MIME")
 	// ErrArchiveTooManyEntries — the archive exceeds the entry-count
 	// bound.
 	ErrArchiveTooManyEntries = errors.New("skillpkg: archive has too many entries")
@@ -260,6 +268,11 @@ func ValidateArchive(b []byte, limits ArchiveLimits) ([]ArchiveEntry, error) {
 		mime, ok := supportMIME(path)
 		if !ok {
 			return nil, fmt.Errorf("%w: %q has no supported MIME", ErrArchiveMimeUnsupported, path)
+		}
+		// MIME is content truth, not an extension lookup: the bytes
+		// must satisfy the proposed MIME's bounded content check.
+		if err := ValidateMimeContent(mime, data); err != nil {
+			return nil, fmt.Errorf("%w: %q: %v", ErrArchiveMimeContentMismatch, path, err)
 		}
 
 		sum := sha256.Sum256(data)
