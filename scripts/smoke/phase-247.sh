@@ -14,8 +14,10 @@
 # projection surfaces catching_up/unavailable — never zero — and the session
 # enricher falls back honestly; a widened fleet query emits the established
 # audit evidence and an ordinary caller cannot enumerate another identity;
-# the dimension set is exactly the fixed UTC bucket plus authoritative
-# tenant/user/session/model — no agent_id).
+# the storage dimension set is exactly the fixed UTC minute bucket plus
+# authoritative tenant/user/session/model — no agent_id, query may coarsen;
+# attempts/failed calls/retry-downgrade/task-spawned/user-message counts are
+# unsupported/unavailable and never trigger new canonical events).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"
@@ -30,4 +32,6 @@ assert_grep_present "D-296" docs/plans/phase-247-observability-rollups.md "D-296
 assert_grep_present "indexed" docs/plans/phase-247-observability-rollups.md "indexed triad is planned"
 assert_grep_present "observability.query" docs/plans/phase-247-observability-rollups.md "the one administrative query is observability.query"
 assert_grep_present "not a rollup" docs/plans/phase-247-observability-rollups.md "agent_id is not a rollup dimension (settled)"
+assert_grep_present "MINUTE" docs/plans/phase-247-observability-rollups.md "fixed UTC minute storage bucket is the base grain (settled)"
+assert_grep_present "unsupported" docs/plans/phase-247-observability-rollups.md "attempts/failed calls/retry-downgrade/task-spawned/user-message counts are unsupported/unavailable (settled)"
 smoke_summary

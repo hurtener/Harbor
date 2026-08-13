@@ -969,44 +969,72 @@ A runtime serving its resolved boot/default agent may declare a resource-free
 operator skill baseline directly in boot configuration, so the boot agent's
 skill composition is complete before any durable pack or personal-skill
 membership exists. The baseline loads through a **config-file-relative,
-strict, eager, immutable loader** that runs before readiness: paths resolve
-relative to the config file, every entry must import through the ONE existing
-importer/validator or the boot fails loud, and the loaded set is frozen for
-the process lifetime. The loader itself has **no persistence, no admin verbs,
-no config revisions, and no lifecycle materialization**: it writes no skill
-store row, exposes no Protocol mutation surface, advances no agent-config
-revision, and creates no lifecycle record — the baseline is boot-declared
-read-only state. It binds **exactly to the resolved boot/default agent for
-the boot tenant**: the resolved `(tenant, boot_agent_id)` pair, never a
-placeholder or wildcard, and never an invented boot identity — if the
-deployment's default agent cannot be resolved, the runtime fails loud at boot
-rather than synthesizing one. The baseline composes as the **combined
-operator tier applied last**: the run snapshot merges the caller's permitted
-personal/session skills first, then the durable operator pack tier (D-411),
-then the boot baseline — so operator-authored content deterministically wins
-over caller content under strict shared merge/collision/cap rules: a name
-collision with a caller-owned skill is resolved by the operator-tier-last
-rule, a collision with the durable pack tier is a typed boot-time conflict
-(never last-write-wins), and the composed set respects the existing shared
-cap. Boot-declared baseline entries are **boot-owned**: mutation and removal
-guards refuse every Protocol write to a boot-declared name (edit the config
-file and restart). The baseline contributes a **deterministic set hash** over
-its normalized entries to the run snapshot and to the composition preview, so
+strict, eager, immutable loader** that runs before readiness: the include
+root is the config file's own directory (never the process CWD), every entry
+must import through the ONE existing importer/validator or the boot fails
+loud, and the loaded set is eagerly copied and frozen for the process
+lifetime (restart-only, never hot-reloaded). Each declared include is one
+relative directory holding one case-sensitive top-level regular UTF-8
+`SKILL.md`; the baseline is resource-free (no support-file references).
+Traversal, recursive discovery, symlink/hardlink/special entries, duplicate
+paths, and canonical-name collisions are rejected, under declaration, item,
+per-file, and aggregate bounds. The loader itself has **no persistence, no
+admin verbs, no config revisions, and no lifecycle materialization**: it
+writes no skill store row, exposes no Protocol mutation surface, advances no
+agent-config revision, and creates no lifecycle record — the baseline is
+boot-declared read-only state, node-local and reconstructed at every boot,
+while the durable Postgres `${SKILLS_DSN}` `boot_agent_packs` schema
+persists agent revisions and personal state; no convergence between the two
+is claimed. Required-tool metadata is validated only after the static
+catalog and policy wrapping apply and against the granted-scope ceiling,
+with no invented identity. It binds **exactly to the resolved boot/default
+agent for the boot tenant**: the resolved `(tenant, boot_agent_id)` pair,
+never a placeholder or wildcard, and never an invented boot identity — if
+the deployment's default agent cannot be resolved, the runtime fails loud at
+boot rather than synthesizing one. The loader merges the baseline with the
+agent's active durable operator-pack revision into ONE combined operator
+tier FIRST under strict merge rules: the same canonical name with the same
+semantic hash dedupes as `source=both`; the same name with a differing hash
+fails loud; and the combined tier holds exactly 256 unique items. Every
+declared tenant-agent active revision is pre-read before readiness, and the
+run-start conflict defense is retained. The combined operator tier is then
+applied LAST over the caller's base, user, and session skills — so
+operator-authored content deterministically wins over caller content; a
+name collision with a caller-owned skill is resolved by the
+operator-tier-last rule, and a boot/active-revision collision is a typed
+conflict (never last-write-wins). Boot-declared baseline entries are
+**boot-owned**: `upsert` and every proposal commit (replay/prepared/
+publish) and rollback/activation reject a boot-owned canonical name — even
+at equal hash — with a typed conflict; removal may delete an actual legacy
+durable revision shadow while leaving the boot baseline, and a boot-only
+remove is a typed read-only refusal, never false success;
+`agent_packs.list` remains durable-revision authoring only. Config removal
+removes the boot baseline only on the next deployment; a legacy durable
+revision remains, and in-flight snapshots retain their captured bytes and
+hash. The baseline contributes a **deterministic set hash** over its
+normalized entries to the run snapshot and to the composition preview, so
 an operator can verify exactly what the boot agent composes. Production and
-devstack use the **single loader path** — the devstack's synthetic boot agent
-resolves the same loader, never a second implementation. The phase states an
-explicit **RunOnce/embed support decision** rather than leaving the embedded
-one-shot path ambiguous. D-414's preview is **absent/incomplete on this
-base** — it resolves durable pack membership and personal skills, but nothing
-declares or previews the config-file baseline — so this phase delivers ONE
-shared **effective-composition resolver + preview** that includes the boot
-baseline, reusing the D-411/D-414 composition path rather than inventing a
-parallel one. `EnsureBootAgentLifecycle` is **separate and unchanged**: it
-still materializes the first empty agent-level revision when the lifecycle
-slot is absent, and this phase never claims startup performs no revision
-writes whatsoever — only that the baseline loader itself performs none.
+devstack use the **single loader path** — the devstack's synthetic boot
+agent resolves the same loader, never a second implementation. Headless
+`RunOnce` is explicitly **unsupported** and fails loud when
+`boot_agent_packs` is configured. D-414's preview is **absent/incomplete on
+this base** — it resolves durable pack membership and personal skills, but
+nothing declares or previews the config-file baseline — so this phase
+delivers ONE shared **strict effective-composition resolver + preview**
+used by boot preflight, run, and preview alike, reusing the D-411/D-414
+composition path rather than inventing a parallel one, plus the exact
+read-only Protocol path (clients, manifest, generated docs), minimal
+Console and CLI consumers (D-415), config docs and example, operator skill,
+and smoke. The preview shows `boot|revision|both` and the
+`boot_pack_set_hash` under authority/reach gating, with no lifecycle
+materialization. `EnsureBootAgentLifecycle` is **separate and unchanged**:
+it still materializes the first empty agent-level revision when the
+lifecycle slot is absent, and it MAY write a revision; the baseline loader
+and composer themselves perform zero persistence, zero admin pack verbs,
+zero lifecycle writes, and zero config revisions — this phase never claims
+startup performs no revision writes whatsoever.
 
-**Consumer-scoped personal-skill package import and draft authoring
+**Verified-caller personal-skill package import and draft authoring
 (settled).** A Protocol caller may install a complete reviewed `SKILL.md`
 package as a durable personal user skill through a two-phase,
 identity-mandatory import family — `agent_config.user.skills.import_validate`
@@ -1208,8 +1236,11 @@ representable). The lifecycle path MUST NOT invoke event-history, task,
 pause, artifact, App, or counter enrichment of any kind; its work is bounded
 by the page size before and after restart, independent of total event/turn
 cardinality, and a page of N rows never runs N counter scans. Counter fields
-use explicit availability: they are explicitly marked unavailable in the
-lifecycle shape (never merely absent, and never zero-as-not-computed), and a
+use the closed availability state `current | partial | not_requested |
+unavailable`: the lifecycle shape marks them `not_requested` (never merely
+absent, and never zero-as-not-computed); `unavailable` means enrichment or
+projection unavailable; `partial` remains a lower bound; full projection
+counters are exact at `current`; an omitted selector defaults to `"full"`. A
 counter-dependent filter or sort
 (`cost_above_cents`, `has_failed_task`, `has_intervention`, `cost_desc`)
 paired with the lifecycle projection fails as a typed invalid request rather
@@ -1225,9 +1256,10 @@ reconciliation read) — the two named public methods — lets a Protocol
 consumer render the current chat from one durable projection instead of
 joining task/result/event/App authority itself (D-425). Bounded Activity
 rides inline covering at least Harbor's configured per-turn tool-call budget;
-a separate named activity method is NOT part of this phase — it is stated only
-as a conditional fallback, added only if the Protocol response ceiling forces
-the exact attachment contract. The
+a separate named activity method is NOT a v1.28 method or acceptance — if the
+Protocol response ceiling ever forces the exact attachment contract, a future
+named fallback is recorded as a deferred follow-up, not added to this phase.
+The
 projection is derived from Harbor's task, result, event, and App-context
 authority; it is incrementally materialized with idempotent sequence
 checkpoints, survives restart on durable drivers, and is erased/fenced with
@@ -1627,23 +1659,22 @@ best-effort; replay of the same source event is idempotent, restart
 catch-up and a crash between source persistence and projection application
 converge, and concurrent replica application is at-least-once idempotent on
 the local sequence with the absent exactly-once property stated, not claimed.
-The base grain is exactly the fixed UTC bucket plus the authoritative
-dimensions `(tenant_id, user_id, session_id, model)`; `agent_id` is not a
-rollup dimension (not even conditionally) and no other entity dimension is
-added. Measures are source-backed (precise
-cost without per-event cent rounding; prompt/completion/reasoning/total/
-cache-read/cache-write tokens; successful LLM completions; failed LLM
-requests/attempts; retry and downgrade counts; task spawned/completed/failed/
-cancelled counts; a merge-safe bounded latency distribution; first/last
-observed timestamps); unsupported measures are omitted or marked unavailable,
-never synthesized, and "prompts sent" is defined by at least three distinct
-counters (LLM request attempts, successful LLM completions, user messages
-submitted), each backed by an existing canonical event where one exists.
-Every query response carries an observed watermark and an
+The storage base grain is exactly the fixed UTC MINUTE bucket plus the
+authoritative dimensions `(tenant_id, user_id, session_id, model)`; `agent_id`
+is not a rollup dimension (not even conditionally), no other entity dimension
+is added, and a query MAY coarsen the bucket. Measures are EXISTING
+source-backed payloads only: the `llm.cost.recorded` successful-completion
+count; exact cost as an integer or decimal; prompt/completion/reasoning/
+cache-read/cache-write/total tokens; latency count/sum/min/max; and task
+completed/failed/cancelled counts. Attempts, failed LLM calls, retry/
+downgrade, task-spawned, and user-message counts are unsupported and reported
+unavailable — never mandated, never inferred, and never backed by new
+canonical events. Unsupported measures are omitted or marked unavailable,
+never synthesized. Every query response carries an observed watermark and an
 explicit completeness state — `current`, `catching_up`, `unavailable` (plus
 `rebuilding` and retention-quality signals) — and never returns zero as a
 substitute for unavailable. The session enricher (§6.9 counters, D-309)
-becomes projection-backed with the honest partial-scan fallback
+becomes projection-backed with the honest raw partial-scan fallback
 (`CountersPartial`). Session erasure removes or tombstones every aggregate
 attributable to that session and reconciles parent user/tenant totals; a
 rebuild never resurrects erased aggregates, and a rebuild over a pruned log

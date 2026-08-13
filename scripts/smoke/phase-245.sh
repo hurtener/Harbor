@@ -9,8 +9,9 @@
 # there is no live-server leg and no "surface works" assertion. When the
 # phase ships, the implementor extends this script with the live assertions
 # from the plan's "Smoke script additions" section (lifecycle list returns
-# lifecycle fields with explicit counter availability — counters explicitly
-# marked unavailable, never zero-as-not-computed; a counter filter/sort paired
+# lifecycle fields with counter fields marked not_requested under the closed
+# availability state current|partial|not_requested|unavailable — never
+# zero-as-not-computed; a counter filter/sort paired
 # with the lifecycle selector fails with the canonical typed error; the
 # default projection still returns counters; cross-identity lifecycle reads
 # are non-oracular not-found).
@@ -24,5 +25,7 @@ assert_grep_present "Pending" docs/plans/README.md "phase 245 is Planned/Pending
 assert_grep_present 'projection: "lifecycle"' docs/plans/phase-245-session-lifecycle-projection.md "lifecycle selector is planned"
 assert_grep_present "ZERO enrichment" docs/plans/phase-245-session-lifecycle-projection.md "zero-enrichment lifecycle path is planned"
 assert_grep_present "typed invalid request" docs/plans/phase-245-session-lifecycle-projection.md "counter-filter/sort rejection is planned"
+assert_grep_present "not_requested" docs/plans/phase-245-session-lifecycle-projection.md "lifecycle counters are not_requested (closed availability state)"
+assert_grep_present "current \\| partial \\| not_requested \\| unavailable" docs/plans/phase-245-session-lifecycle-projection.md "closed CounterStatus is current|partial|not_requested|unavailable"
 assert_grep_present "never means" docs/plans/phase-245-session-lifecycle-projection.md "explicit counter availability is planned"
 smoke_summary

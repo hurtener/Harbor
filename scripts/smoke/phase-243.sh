@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PREFLIGHT_REQUIRES: static-only
-# Phase 243 smoke — Consumer-scoped two-phase skill-package import (HA-61).
+# Phase 243 smoke — Verified-caller two-phase skill-package import (HA-61).
 #
 # PENDING STATIC SKELETON. Phase 243 is Planned (master-plan row 243 carries
 # Status `Pending`), so this smoke records the plan + decision and pins the

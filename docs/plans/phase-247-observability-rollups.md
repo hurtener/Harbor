@@ -71,8 +71,9 @@ identity-labelled OTel metrics remain rejected.
   canonical events or payload fields added merely to fill analytics.
 - Store aggregate rows, never duplicate raw event payloads; rebuild fully from
   the durable event log.
-- Expose fixed UTC buckets with authoritative dimensions and source-backed
-  measures, and explicit freshness/completeness (`current` / `catching_up` /
+- Expose fixed UTC MINUTE storage buckets (a query may coarsen) with
+  authoritative dimensions and existing source-backed measures only, and
+  explicit freshness/completeness (`current` / `catching_up` /
   `unavailable` plus an observed watermark and retention quality) on every
   query response.
 - Back the session enricher's counters from the projection when current, with
@@ -121,17 +122,18 @@ identity-labelled OTel metrics remain rejected.
       not observe).
 - [ ] Queries group correctly by tenant, user, session, and model across
       multiple users, concurrent sessions, and models, with no identity bleed.
-      The dimension set is exactly the fixed UTC bucket plus the authoritative
+      The storage dimension set is exactly the fixed UTC MINUTE bucket plus
+      the authoritative
       `(tenant_id, user_id, session_id, model)` — `agent_id` is not a rollup
-      dimension, not even conditionally, and no other entity dimension is
-      added.
-- [ ] Successful LLM completions, failed LLM attempts, task completions, and
-      task failures are distinct source-backed measures backed by existing
-      canonical events; unsupported measures are omitted or marked
-      unavailable, never synthesized. "Prompts sent" is
-      defined explicitly by at least three distinct counters: LLM request
-      attempts, successful LLM completions, and user messages submitted to a
-      session (each backed by an existing canonical event where it exists).
+      dimension, not even conditionally, no other entity dimension is added,
+      and a query may coarsen the bucket.
+- [ ] Successful LLM completions (`llm.cost.recorded`) and task
+      completed/failed/cancelled counts are distinct source-backed measures
+      backed by existing canonical events; attempts, failed LLM calls,
+      retry/downgrade, task-spawned, and user-message counts are unsupported
+      and reported unavailable — never mandated, inferred, or backed by new
+      canonical events. Unsupported measures are omitted or marked
+      unavailable, never synthesized.
 - [ ] The projection consumes only successfully persisted canonical events
       from the existing local durable sequence; there is no outbox and no new
       canonical event ID. The fail-loud LLM publication contract is unchanged
@@ -148,15 +150,16 @@ identity-labelled OTel metrics remain rejected.
       the session enricher's projection-backed counters fall back to the
       existing honest partial scan (`CountersPartial`) when the projection is
       unavailable or stale.
-- [ ] Fixed UTC buckets are the base grain; the base dimension set is exactly
+- [ ] Fixed UTC MINUTE storage buckets are the base grain (a query may
+      coarsen); the base dimension set is exactly
       `(tenant_id, user_id, session_id, model, time_bucket)` with existing
       source-backed
-      measures (precise cost without per-event cent rounding; prompt/
-      completion/reasoning/total/cache-read/cache-write tokens; successful LLM
-      completions; failed LLM requests/attempts; retry and downgrade counts;
-      task spawned/completed/failed/cancelled counts; latency
-      count/sum/min/max or another merge-safe bounded distribution; first and
-      last observed timestamps).
+      measures only: the `llm.cost.recorded` successful-completion count,
+      exact integer/decimal cost, prompt/completion/reasoning/cache-read/
+      cache-write/total tokens, latency count/sum/min/max, and task
+      completed/failed/cancelled counts. Attempts, failed LLM calls, retry/
+      downgrade, task-spawned, and user-message counts are unsupported and
+      reported unavailable, never synthesized.
 - [ ] A verified fleet caller can run widened grouped queries and produces
       exactly the required audit evidence (`audit.admin_scope_used` on the
       widened fan-in); an ordinary caller cannot enumerate another user,
@@ -236,8 +239,11 @@ identity-labelled OTel metrics remain rejected.
 
 ## Test plan
 
-- **Unit:** bucket/dimension/measure shape; UTC bucketing; sub-cent and
-  cache-token fidelity; source-backed measure mapping (no synthesis); closed
+- **Unit:** bucket/dimension/measure shape; fixed UTC minute bucketing and
+  coarsening; sub-cent and
+  cache-token fidelity; source-backed measure mapping (no synthesis);
+  unsupported measures (attempts, failed LLM calls, retry/downgrade,
+  task-spawned, user-message counts) reported unavailable; closed
   `group_by` rejection; watermark and completeness transitions
   (current/catching_up/unavailable/rebuilding); retention-quality marking;
   idempotent replay on the local durable sequence; erasure fence and parent
@@ -287,10 +293,14 @@ identity-labelled OTel metrics remain rejected.
 ## Risks / open questions
 
 - Every measure must map to an existing canonical event payload; a measure
-  with no existing carrier is unsupported and omitted or marked unavailable,
-  never synthesized, and no new canonical event is added merely to fill
-  analytics. The exact mapping is a planning-time decision against the shipped
-  event types.
+  with no existing carrier is unsupported and reported unavailable — never
+  synthesized and never the occasion for a new canonical event. The exact
+  mapping is a planning-time decision against the shipped event types:
+  supported measures are the `llm.cost.recorded` successful-completion
+  count, exact integer/decimal cost, prompt/completion/reasoning/cache-read/
+  cache-write/total tokens, latency count/sum/min/max, and task
+  completed/failed/cancelled counts; attempts, failed LLM calls, retry/
+  downgrade, task-spawned, and user-message counts are unsupported.
 - The durable applied-through watermark is per-runtime (the existing local
   durable sequence); operators running multiple replicas share one storage
   backend, so replica application must be at-least-once idempotent on that

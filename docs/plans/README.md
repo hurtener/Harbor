@@ -386,12 +386,12 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |240 | Governed virtual child profiles (HA-58) | runtime + agentcfg + protocol | §5.5, §6.16, §7 | 237, 239 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |241 | Virtual-child artifact/output forwarding (HA-59) | artifacts + tasks + runtime + protocol | §6.8, §6.10, §6.11, §7 | 17, 146, 239, 240 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |242 | Durable task-progress projection (HA-60) | tasks + state + protocol | §6.8, §6.10, §6.11, §7 | 239, 241 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
-|243 | Consumer-scoped two-phase skill-package import (HA-61, D-422): validate/commit workflow installing a complete `SKILL.md` package as a durable personal user skill from a caller-owned artifact; one importer/validator, versioned `PackageHash`, durable proposal CAS, mandatory `skillpkg://` resolver, forced `ScopeUser`/effective-agent commit, cross-process one-winner compensation | skills + agentcfg protocol + state + protocol | §6.7, §6.10, §6.11, §5.2, §5.5, §9 | 40, 202, 205, 209, 221, 226, 232, 233, 233a, 237 | 85–90% (target) | Pending |
+|243 | Verified-caller two-phase skill-package import (HA-61, D-422): validate/commit workflow installing a complete `SKILL.md` package as a durable personal user skill from a caller-owned artifact; one importer/validator, versioned `PackageHash`, durable proposal CAS, mandatory `skillpkg://` resolver, forced `ScopeUser`/effective-agent commit, cross-process one-winner compensation | skills + agentcfg protocol + state + protocol | §6.7, §6.10, §6.11, §5.2, §5.5, §9 | 40, 202, 205, 209, 221, 226, 232, 233, 233a, 237 | 85–90% (target) | Pending |
 |244 | Draft-only personal-skill proposer tool (HA-62, D-423): `skill_create_draft` ordinary disabled-by-default tool producing a caller-scoped `SKILL.md` draft artifact via the governed authoring path's safety-wrapped LLM adapter; shared semantic DTO/validator/serializer/`PackageHash` with 243; zero mutation authority; install only through 243 validate/commit | skills + tools + agentcfg + artifacts | §6.4, §6.5, §6.7, §6.10, §6.13, §6.15, §5.2, §5.5 | 26, 40, 41, 202, 205, 209, 232, 237, 243 | 90–95% (target) | Pending |
-|245 | Lifecycle-only session catalog and inspection projection (HA-63, D-424): additive `projection: "lifecycle"` selector on the existing `sessions.list`/`sessions.inspect`; full remains the default; ZERO enrichment on the lifecycle path (bounded by page size, before/after restart); explicit counter availability — counter fields explicitly marked unavailable, never merely absent and never zero-as-not-computed; counter filters/sorts paired with lifecycle fail as a typed invalid request | sessions/protocol + protocol + console | §6.9, §6.13, §5.2, §5.5, §7, §9 | 130, 163, 174, 177, 205, 232 | 85–90% (target) | Pending |
-|246 | Durable tail-paged conversation turns (HA-64, D-425): `sessions.turns.list`/`.get` as the two named public methods; dedicated runtime-owned projection with idempotent sequence checkpoints, indexed keyset tail paging (work ∝ page size), root-foreground-turn rows, renderable answer/reasoning/Activity/usage/App content with per-component availability, Activity inline at least the configured budget (a named activity method is only a conditional fallback), restart/erasure fences, two-read chat open with 245; Protocol-only consumer; no generic projection framework/warehouse/impersonation authority/operator analytics/live-cursor redesign/overflow analytics | turns projection + sessions/protocol + protocol + console | §6.2, §6.8, §6.9, §6.10, §6.13, §6.16, §5.2, §5.5, §7, §9 | 130, 162, 204, 205, 232, 242, 245 | 85–90% (target) | Pending |
-|247 | Durable observability rollups (HA-65, D-426): indexed triad projection of best-effort aggregates over successfully persisted canonical events (never billing-exact); existing local durable sequence, no outbox/new canonical event ID/active-active exactly-once, fail-loud LLM publication unchanged and projection failures best-effort; fixed UTC buckets with exactly the authoritative tenant/user/session/model dimensions (no agent_id even conditionally), existing source-backed measures only, unsupported absent/unavailable; current/catching_up/unavailable + watermark/retention quality; projection-backed session counters with honest fallback; erasure fence; ONE bounded Protocol query `observability.query` and minimal Console consumer; narrow D-296 amendment (general TSDB + identity-labelled OTel metrics still rejected) | observability rollup + events + sessions enricher + protocol + console | §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9 | 36a, 57, 120, 130, 163, 171, 174, 205 | 85–90% (target) | Pending |
-|248 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent (HA-66, D-427): config-file-relative strict eager immutable loader before readiness; no loader persistence/admin verbs/config revisions/lifecycle materialization; exact tenant+boot-agent binding with no invented boot identity; combined operator tier applied last under strict shared merge/collision/cap; boot-owned mutation/remove guards; deterministic set hash in run snapshot/preview; single prod/devstack path; explicit RunOnce/embed decision; ONE shared effective-composition resolver + preview (completes D-414 on the boot base); `EnsureBootAgentLifecycle` separate and unchanged | skills + config + runtime/serve + devstack | §6.7, §6.16, §5.2, §5.5, §7, §9 | 2, 40, 232, 237, 240 | 85–90% (target) | Pending |
+|245 | Lifecycle-only session catalog and inspection projection (HA-63, D-424): additive `projection: "lifecycle"` selector on the existing `sessions.list`/`sessions.inspect`; full remains the default; ZERO enrichment on the lifecycle path (bounded by page size, before/after restart); closed counter availability `current|partial|not_requested|unavailable` — lifecycle counters marked `not_requested`, never merely absent and never zero-as-not-computed; `unavailable` means enrichment/projection unavailable; `partial` remains lower-bound; full exact at `current`; omitted selector defaults full; counter filters/sorts paired with lifecycle fail as a typed invalid request | sessions/protocol + protocol + console | §6.9, §6.13, §5.2, §5.5, §7, §9 | 130, 163, 174, 177, 205, 232 | 85–90% (target) | Pending |
+|246 | Durable tail-paged conversation turns (HA-64, D-425): `sessions.turns.list`/`.get` as the two named public methods; dedicated runtime-owned projection with idempotent sequence checkpoints, indexed keyset tail paging (work ∝ page size), root-foreground-turn rows, renderable answer/reasoning/Activity/usage/App content with per-component availability, Activity inline at least the configured budget (a named activity method is not a v1.28 method or acceptance; any future named fallback is a deferred follow-up), restart/erasure fences, two-read chat open with 245; Protocol-only consumer; no generic projection framework/warehouse/impersonation authority/operator analytics/live-cursor redesign/overflow analytics | turns projection + sessions/protocol + protocol + console | §6.2, §6.8, §6.9, §6.10, §6.13, §6.16, §5.2, §5.5, §7, §9 | 130, 162, 204, 205, 232, 242, 245 | 85–90% (target) | Pending |
+|247 | Durable observability rollups (HA-65, D-426): indexed triad projection of best-effort aggregates over successfully persisted canonical events (never billing-exact); existing local durable sequence, no outbox/new canonical event ID/active-active exactly-once, fail-loud LLM publication unchanged and projection failures best-effort; fixed UTC minute storage buckets (query may coarsen) with exactly the authoritative tenant/user/session/model dimensions (no agent_id even conditionally), existing source-backed measures only (`llm.cost.recorded` successful completions, exact cost, prompt/completion/reasoning/cache-read/cache-write/total tokens, latency count/sum/min/max, task completed/failed/cancelled), attempts/failed calls/retry-downgrade/task-spawned/user-message counts unsupported/unavailable; current/catching_up/unavailable + watermark/retention quality; projection-backed session counters with honest fallback; erasure fence; ONE bounded Protocol query `observability.query` and minimal Console consumer; narrow D-296 amendment (general TSDB + identity-labelled OTel metrics still rejected) | observability rollup + events + sessions enricher + protocol + console | §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9 | 36a, 57, 120, 130, 163, 171, 174, 205 | 85–90% (target) | Pending |
+|248 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent (HA-66, D-427): config-file-relative strict eager immutable loader before readiness (config-file-relative root, never CWD; one relative include directory with one case-sensitive top-level regular UTF-8 `SKILL.md`, resource-free; traversal/recursive discovery/symlink/hardlink/special/duplicates/canonical-name collisions rejected under declaration/item/file/aggregate bounds; eager copy before readiness, restart-only); no loader persistence/admin verbs/config revisions/lifecycle materialization; exact tenant+boot-agent binding with no invented boot identity; boot baseline merged with the agent's active durable revision into ONE combined operator tier FIRST (same canonical name + same semantic hash dedupes `source=both`; differing hash fails; exactly 256 unique combined items), every declared tenant-agent active revision pre-read before readiness with run-start conflict defense retained, then applied LAST over base/user/session; boot-owned mutation/remove guards (upsert/proposal commits replay-prepared-publish/rollback-activation reject even equal hash; removal may delete an actual legacy durable revision shadow; boot-only remove is typed read-only refusal; `agent_packs.list` durable-revision authoring only; config removal next-deployment-only, legacy durable revision remains, in-flight snapshots retain bytes/hash); deterministic set hash in run snapshot/preview (`boot|revision|both` + `boot_pack_set_hash`); headless `RunOnce` explicitly unsupported and fail-loud; single prod/devstack path; ONE shared strict effective-composition resolver + preview (completes D-414 on the boot base) with read-only Protocol path, clients/manifest/docs, minimal Console+CLI consumers (D-415), config docs/example, operator skill, smoke; exact postgres + `${SKILLS_DSN}` + `boot_agent_packs` schema; `EnsureBootAgentLifecycle` separate and unchanged (may write a revision) | skills + config + runtime/serve + devstack | §6.7, §6.16, §5.2, §5.5, §7, §9 | 2, 40, 232, 237, 240 | 85–90% (target) | Pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -628,7 +628,7 @@ real two-client race under `-race`.
 - **Ordering:** 242 depends on 239 and 241; independent of 236–238.
 - **Decision:** D-421. **Status:** Shipped (v1.27). D-416 remains settled history.
 
-### Phase 243 — Consumer-scoped two-phase skill-package import (HA-61)
+### Phase 243 — Verified-caller two-phase skill-package import (HA-61)
 
 - **Subsystem:** skills (package representation + importer), agent-config
   Protocol service, StateStore proposal/cleanup records, Protocol/Console
@@ -676,9 +676,13 @@ real two-client race under `-race`.
   selector on the existing `sessions.list`/`sessions.inspect` returns
   lifecycle metadata only, with ZERO enrichment: no history-replayer reads, no
   counter scans, work bounded by page size before and after restart. The full
-  projection stays the default; counter fields use explicit availability —
-  explicitly marked unavailable, never merely absent and never
-  zero-as-not-computed; counter filters/sorts paired with
+  projection stays the default; counter fields use the closed availability
+  state `current | partial | not_requested | unavailable` — the lifecycle
+  shape marks them `not_requested` (never merely absent, never
+  zero-as-not-computed); `unavailable` means enrichment/projection
+  unavailable; `partial` remains a lower bound; full counters are exact at
+  `current`; an omitted selector defaults to full. Counter filters/sorts
+  paired with
   the lifecycle selector fail as a typed invalid request.
 - **Ordering:** depends on the session-enrichment seam (174), windowed-read
   honesty (163), erasure (130), the projection-completeness gate (177),
@@ -702,8 +706,9 @@ real two-client race under `-race`.
   with renderable answer/reasoning/Activity/usage/App content and explicit
   per-component availability. Bounded Activity rides inline covering at least
   Harbor's configured per-turn tool-call budget; a separate named activity
-  method is only a conditional fallback if the Protocol response ceiling
-  forces the exact attachment contract. Chat open is two reads (one 245
+  method is not a v1.28 method or acceptance — if the Protocol response
+  ceiling forces the exact attachment contract, a future named fallback is
+  recorded as a deferred follow-up. Chat open is two reads (one 245
   lifecycle read + one turn page). No generic projection framework,
   warehouse, impersonation authority, operator analytics, live-cursor
   redesign, or overflow analytics ships.
@@ -724,9 +729,14 @@ real two-client race under `-race`.
   durable applied-through watermark; no outbox, no new canonical event ID, no
   active-active exactly-once, and the fail-loud LLM publication contract is
   unchanged with projection application failures best-effort. Fixed UTC
-  buckets with exactly the authoritative tenant/user/session/model dimensions
+  minute storage buckets (a query may coarsen) with exactly the
+  authoritative tenant/user/session/model dimensions
   (no `agent_id` even conditionally), existing source-backed measures only
-  with unsupported absent/unavailable, and
+  (`llm.cost.recorded` successful completions, exact integer/decimal cost,
+  prompt/completion/reasoning/cache-read/cache-write/total tokens, latency
+  count/sum/min/max, task completed/failed/cancelled) with attempts, failed
+  calls, retry/downgrade, task-spawned, and user-message counts
+  unsupported/unavailable, and
   current/catching_up/unavailable plus watermark/retention quality on every
   query. The session enricher becomes projection-backed with the honest
   partial fallback; session erasure fences and reconciles parent totals; the
@@ -748,19 +758,50 @@ real two-client race under `-race`.
 - **RFC:** §6.7, §6.16, §5.2, §5.5, §7, §9. **Deps:** 2, 40, 232, 237, and
   240.
 - **What it delivers:** D-427 — a config-file-relative strict eager immutable
-  loader that runs before readiness, imports every baseline entry through the
-  ONE existing importer/validator (fail-loud otherwise), and freezes the set
-  for the process lifetime. No loader persistence, admin verbs, config
-  revisions, or lifecycle materialization. Exact `(tenant, boot_agent_id)`
-  binding with no invented boot identity; the combined operator tier
-  (personal/session → durable pack tier → boot baseline) applied last under
-  strict shared merge/collision/cap rules; boot-owned mutation/remove guards;
-  a deterministic set hash in the run snapshot and composition preview; the
-  single prod/devstack loader path; an explicit RunOnce/embed support
-  decision. Because D-414's preview is absent/incomplete on the boot base,
-  the phase delivers ONE shared effective-composition resolver + preview that
-  includes the baseline, reusing the D-411/D-414 composition path rather than
-  a parallel one. `EnsureBootAgentLifecycle` is separate and unchanged.
+  loader that runs before readiness (include root is the config file's own
+  directory, never the CWD; one relative include directory with one
+  case-sensitive top-level regular UTF-8 `SKILL.md`, resource-free; traversal,
+  recursive discovery, symlink/hardlink/special entries, duplicates, and
+  canonical-name collisions rejected under declaration/item/file/aggregate
+  bounds), imports every baseline entry through the
+  ONE existing importer/validator (fail-loud otherwise), and eagerly copies
+  and freezes the set
+  for the process lifetime (restart-only). No loader persistence, admin
+  verbs, config revisions, or lifecycle materialization; the durable Postgres
+  `${SKILLS_DSN}` `boot_agent_packs` schema persists agent revisions and
+  personal state while the boot config stays node-local and reconstructed,
+  with no convergence claim. Exact `(tenant, boot_agent_id)`
+  binding with no invented boot identity. The baseline merges with the
+  agent's active durable operator-pack revision into ONE combined operator
+  tier FIRST — same canonical name + same semantic hash dedupes as
+  `source=both`; differing hash fails; exactly 256 unique combined items;
+  every declared tenant-agent active revision pre-read before readiness and
+  the run-start conflict defense retained — applied LAST over
+  base/user/session skills. Boot-owned mutation/remove guards (upsert and
+  every proposal commit and rollback/activation reject a boot-owned name
+  even at equal hash; removal may delete an actual legacy durable revision
+  shadow; boot-only remove is a typed read-only refusal; `agent_packs.list`
+  remains durable-revision authoring only; config removal removes boot only
+  on the next deployment and a legacy durable revision remains; in-flight
+  snapshots retain captured bytes and hash);
+  a deterministic set hash in the run snapshot and composition preview
+  (`boot|revision|both` source marker + `boot_pack_set_hash`); headless
+  `RunOnce` explicitly unsupported and fail-loud when `boot_agent_packs` is
+  configured; the
+  single prod/devstack loader path. Because D-414's preview is
+  absent/incomplete on the boot base,
+  the phase delivers ONE shared strict effective-composition resolver +
+  preview that
+  includes the baseline, used by boot preflight, run, and preview alike and
+  reusing the D-411/D-414 composition path rather than
+  a parallel one, plus the read-only Protocol path (clients, manifest,
+  generated docs), minimal Console and CLI consumers (D-415), config
+  docs/example, operator skill, and smoke; the preview shows
+  `boot|revision|both` and `boot_pack_set_hash` under authority/reach gating
+  with no lifecycle materialization. `EnsureBootAgentLifecycle` is separate
+  and unchanged and may write a revision; the baseline loader and composer
+  perform zero persistence, zero admin pack verbs, zero lifecycle writes,
+  and zero config revisions.
 - **Ordering:** depends on the config loader (2), the skills importer (40),
   signed agent reach (232), operator skill packs (237), and the composition
   preview (240); gates no later phase in this wave.

@@ -52,7 +52,7 @@ history.
   joins per visible turn) is forensic reconstruction, not a consumer read
   model. D-425 does not deprecate `events.list` / `state.history` / `tasks.get`
   — they remain the raw drill-down surfaces — but it establishes a dedicated
-  runtime-owned projection so a consumer never reconstructs product state from
+  runtime-owned projection so a caller never reconstructs runtime state from
   forensic events. This is the same read-shape correction D-309 made for
   session counters, applied to conversation content.
 
@@ -61,9 +61,9 @@ history.
 - Ship `sessions.turns.list` and `sessions.turns.get` as the two named public
   methods with the full contract below.
 - Bounded Activity rides inline covering at least Harbor's configured per-turn
-  tool-call budget; a separate named activity method is NOT part of this
-  phase — stated only as a conditional fallback if the Protocol response
-  ceiling forces the exact attachment contract.
+  tool-call budget; a separate named activity method is NOT a v1.28 method or
+  acceptance — if the Protocol response ceiling forces the exact attachment
+  contract, a future named fallback is recorded as a deferred follow-up.
 - Build one dedicated, runtime-owned conversation-turn projection derived from
   Harbor's task, result, event, and App-context authority, incrementally
   materialized with idempotent sequence checkpoints, restart-survivable on
@@ -95,7 +95,7 @@ history.
 - No raising the 10,000-event bound, no reducing the client's initial turn
   count, no batching `tasks.get` while retaining event joins, no returning the
   whole trajectory, no reconstructing answers from completion chunks, and no
-  downstream summary cache.
+  summary cache.
 
 ## Acceptance criteria
 
@@ -161,14 +161,13 @@ history.
       availability/exactness. The Activity collection is required — counters
       alone cannot hydrate the existing Activity panel or explain parallel
       fan-out. The inline bound covers at least Harbor's configured per-turn
-      tool-call budget. A separate named activity method is NOT required: it
-      is stated only as a conditional fallback — if the Protocol response
-      ceiling forces the exact attachment contract, the response returns the
-      retained prefix plus an explicit lower-bound state and a named,
-      opaque-cursor activity read (provisionally `sessions.turns.activity.list`)
-      with the same identity, snapshot, ordering, and no-arguments/no-results
-      contract. Normal transcript render
-      does not fetch that subresource; opening Activity may. There is no
+      tool-call budget. A separate named activity method is NOT a v1.28
+      method or acceptance: if the Protocol response ceiling ever forces the
+      exact attachment contract, this phase records a future named fallback
+      as a deferred follow-up (with the same identity, snapshot, ordering,
+      and no-arguments/no-results contract) rather than shipping it. Normal
+      transcript render
+      does not fetch any subresource; opening Activity may. There is no
       anonymous subresource and no silent truncation.
 - [ ] Active intervention metadata needed to reopen a paused own-user turn is
       present, with a consumer-safe reason; the opaque action token/receipt is
@@ -231,8 +230,8 @@ history.
       projection is not built and admin/fleet observation implies no transcript
       access.
 - [ ] Wire manifest, generated clients, capability/version discovery, protocol
-      docs, operator skill, and Harbor's own consumer chat surface land with
-      the methods. The consumer's fallback may use raw reads only as an
+      docs, operator skill, and Harbor's own chat surface (the Console) land
+      with the methods. The fallback path may use raw reads only as an
       explicit degraded/forensic action, never a silent normal-open path.
       Full D-223 lockstep + D-209 regen fire in the same PR.
 
@@ -264,11 +263,10 @@ history.
   remaining_older_count?, count_exact, live_resume_cursor,
   page_completeness, partial_reason?}` out.
 - `sessions.turns.get` — `{session_id, task_id}` in; the same turn shape out.
-- Conditional fallback only (not a required method): if the Protocol response
-  ceiling forces the exact attachment contract, a named, opaque-cursor
-  activity read — `{session_id, task_id, activity_cursor?, limit}` in; an
-  ordered, bounded Activity page out (identity, snapshot, ordering,
-  no-arguments/no-results).
+- No third public method: if the Protocol response ceiling forces the exact
+  attachment contract, a future named fallback is recorded as a deferred
+  follow-up (not a v1.28 method or acceptance) with the same identity,
+  snapshot, ordering, and no-arguments/no-results contract.
 - `ConversationTurn` — the consumer shape above (query, answer union, ordered
   reasoning, ordered Activity, compact totals, usage, intervention metadata,
   ordered App refs, per-component availability, projection version,
@@ -281,8 +279,8 @@ history.
   (inline/ref/empty/evicted/unavailable — failed read never fabricates empty);
   cursor keyset/snapshot anchoring and tie-breaker; tail-page boundary
   (append-while-paging: no skip/duplicate); inline Activity bound covering at
-  least the configured budget plus the conditional activity fallback when the
-  response ceiling forces it, and cardinality-cap/overflow-bucket totals;
+  least the configured budget plus cardinality-cap/overflow-bucket totals
+  (the deferred follow-up is recorded, not shipped);
   terminal-reason mapping; reasoning/
   Activity ordering and shared sequence; App-ref replacement identity;
   intervention-tier gating; sealed-vs-mutable versioning; projection
@@ -300,8 +298,7 @@ history.
   projection conformance suite (indexed paging, checkpoint idempotency,
   erasure fence); Protocol integration across driver combinations owns
   authority and cross-principal assertions.
-- **Concurrency / leak:** N>=100 mixed-identity list/get calls (plus the
-  conditional activity fallback when it ships) on one
+- **Concurrency / leak:** N>=100 mixed-identity list/get calls on one
   shared projection and handler set under `-race`, with cancellation barriers
   and a final goroutine baseline.
 - **Fuzz:** cursor decoding, turn decoding, and page-boundary inputs with
@@ -314,8 +311,9 @@ history.
   turn page) and assert the newest 20 turns render without a per-turn
   `tasks.get` / `events.list`; assert paging older history has no skip/duplicate
   while a new turn starts; assert inline Activity returns ordered entries
-  with no arguments/results (and, if the conditional activity fallback ships,
-  assert it too); assert cross-identity turns are typed not-found.
+  with no arguments/results (a separate named activity method is not a v1.28
+  method or acceptance; the deferred follow-up is recorded, not shipped);
+  assert cross-identity turns are typed not-found.
 
 ## Coverage target
 
@@ -342,9 +340,10 @@ history.
   App-context) to have converged; the seal rule and the rebuilding state must
   be explicit so a partially-applied turn is never presented as complete.
 - The inline Activity bound rides the configured per-turn tool-call budget;
-  the conditional overflow path (prefix + lower-bound state + named activity
-  read, only if the response ceiling forces the exact attachment contract)
-  must be tested with a real over-budget turn.
+  if the Protocol response ceiling ever forces the exact attachment contract,
+  the fallback is recorded as a deferred follow-up — not a v1.28 method or
+  acceptance — and the inline bound is still tested with a real over-budget
+  turn.
 
 ## Glossary additions
 

@@ -1956,9 +1956,12 @@ agent. D-423.
 only (id, status, title/source, authoritative timestamps, derivable duration,
 honestly representable agent id) with ZERO enrichment — no history-replayer,
 task, pause, artifact, App, or counter reads, work bounded by the page size.
-Counter fields use explicit availability — they are explicitly marked
-unavailable, never merely absent and never zero-as-not-computed — and counter
-filters/sorts paired with it fail typed. Full remains the default. D-424.
+Counter fields use the closed availability state `current | partial |
+not_requested | unavailable`: the lifecycle shape marks them `not_requested`
+(never merely absent, never zero-as-not-computed); `unavailable` means
+enrichment/projection unavailable; `partial` remains a lower bound; full
+counters are exact at `current`; an omitted selector defaults to full.
+Counter filters/sorts paired with the lifecycle selector fail typed. D-424.
 
 **Conversation turn projection** — the dedicated, runtime-owned durable read
 model behind the two named public methods `sessions.turns.list` and
@@ -1968,7 +1971,9 @@ on durable drivers, erased/fenced with its session, and paged by an indexed
 snapshot/keyset cursor with work proportional to page size. One row is one
 root foreground user turn. Bounded Activity rides inline covering at least
 the configured per-turn tool-call budget; a separate named activity method is
-a conditional fallback only. D-425.
+NOT a v1.28 method or acceptance — if the Protocol response ceiling ever
+forces the exact attachment contract, a future named fallback is recorded as
+a deferred follow-up. D-425.
 
 **Turn-page cursor** — the opaque exclusive older-page cursor on
 `sessions.turns.list`, snapshot/keyset anchored with an immutable task/turn
@@ -1982,22 +1987,29 @@ transition (subscribe-before-page with dedup by sequence, plus one
 `sessions.turns.get` terminal reconciliation), tied to the same turn version
 and `last_applied_event_sequence` as in-flight content snapshots. D-425.
 
-**Activity subpage** — the conditional fallback named read for ordered tool
-activity that cannot ride inline: only if the Protocol response ceiling
-forces the exact attachment contract is a named, opaque-cursor bounded read
-(provisionally `sessions.turns.activity.list`) added, with the same identity,
-snapshot, and ordering contract as the parent turn, no arguments/results, and
-fetched only when Activity opens (normal transcript render does not fetch
-it). No anonymous subresource and no silent truncation. D-425.
+**Activity subpage** — the deferred-follow-up named read for ordered tool
+activity that cannot ride inline: inline Activity is bounded to at least
+Harbor's configured per-turn tool-call budget, and if the Protocol response
+ceiling ever forces the exact attachment contract, a future named,
+opaque-cursor read with the same identity, snapshot, and ordering contract
+as the parent turn (no arguments/results) is recorded as a deferred
+follow-up, not a v1.28 method or acceptance. No anonymous subresource and no
+silent truncation. D-425.
 
 **Observability rollup projection** — a durable, rebuildable, indexed
 materialization of aggregate measures over successfully persisted canonical
 Harbor events (the indexed in-memory/SQLite/Postgres triad), consumed
 incrementally from the existing local durable event sequence with a durable
 applied-through watermark. Best-effort, never a billing-exact ledger; the
-event log stays the source of truth. The base grain is exactly the fixed UTC
-bucket plus the authoritative `(tenant_id, user_id, session_id, model)`
-dimensions — `agent_id` is never a rollup dimension. The narrow, recorded
+event log stays the source of truth. The storage base grain is exactly the
+fixed UTC minute bucket plus the authoritative `(tenant_id, user_id,
+session_id, model)` dimensions — `agent_id` is never a rollup dimension, and
+a query may coarsen the bucket. Measures are existing source-backed payloads
+only (`llm.cost.recorded` successful-completion count, exact integer/decimal
+cost, prompt/completion/reasoning/cache-read/cache-write/total tokens,
+latency count/sum/min/max, task completed/failed/cancelled counts); attempts,
+failed LLM calls, retry/downgrade, task-spawned, and user-message counts are
+unsupported/unavailable. The narrow, recorded
 amendment to D-296's TSDB rejection; a general-purpose Harbor TSDB and
 identity-labelled OTel metrics remain rejected. D-426.
 
@@ -2015,21 +2027,32 @@ historical incompleteness rather than plausible totals. D-426.
 **Boot-declared operator skill baseline** — the resource-free, operator-owned
 skill set declared in boot configuration for the resolved boot/default agent.
 It loads through a config-file-relative strict eager immutable loader before
-readiness, writes nothing durable, exposes no admin verbs, and composes as
-the combined operator tier applied last. D-427.
+readiness, writes nothing durable, exposes no admin verbs, and merges with
+the agent's active durable operator-pack revision into ONE combined operator
+tier (same canonical name + same semantic hash dedupes as `source=both`;
+differing hash fails; exactly 256 unique combined items) applied last over
+base/user/session skills. D-427.
 
 **Boot baseline loader** — the single production/devstack loader that reads a
-boot-declared operator skill baseline relative to the config file, validates
-every entry through the one importer, and freezes the set before readiness.
-No persistence, no config revisions, no lifecycle materialization; boot-owned
+boot-declared operator skill baseline relative to the config file (the
+config file's own directory, never the CWD; one relative include directory
+with one case-sensitive top-level regular UTF-8 `SKILL.md`, resource-free),
+validates every entry through the one importer, rejects traversal, recursive
+discovery, symlink/hardlink/special entries, duplicates, and canonical-name
+collisions under declaration/item/file/aggregate bounds, and eagerly copies
+and freezes the set before readiness (restart-only). No persistence, no
+admin verbs, no config revisions, no lifecycle materialization; boot-owned
 mutation/remove guards apply. D-427.
 
 **Boot baseline set hash** — the deterministic hash over the normalized
 boot-declared baseline entries carried in the run snapshot and the
-composition preview, so an operator can verify exactly what the resolved
-boot/default agent composes. D-427.
+composition preview (as `boot_pack_set_hash`, alongside the
+`boot|revision|both` source marker), so an operator can verify exactly what
+the resolved boot/default agent composes. D-427.
 
-**Effective-composition resolver** — the ONE shared resolver + preview that
-composes personal/session skills, the durable operator pack tier, and the
-boot-declared baseline into the run snapshot and the operator-verifiable
-composition preview for the resolved boot/default agent. D-427.
+**Effective-composition resolver** — the ONE shared strict resolver +
+preview that composes base/user/session skills and the combined operator tier
+(the agent's active durable pack revision merged with the boot-declared
+baseline) into the run snapshot and the operator-verifiable composition
+preview for the resolved boot/default agent; boot preflight, run, and preview
+all use it. D-427.

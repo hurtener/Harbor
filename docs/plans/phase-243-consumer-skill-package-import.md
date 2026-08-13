@@ -1,4 +1,4 @@
-# Phase 243 — Consumer-scoped two-phase skill-package import (HA-61)
+# Phase 243 — Verified-caller two-phase skill-package import (HA-61)
 
 ## Summary
 
@@ -37,7 +37,7 @@ storage and select the skill for the effective agent.
   backend implements the same mandatory contract; the persistence triad and
   its conformance suite are the floor for package and proposal records.
 - brief 07 §8: validation, deadlines, cancellation, audit, and result shaping
-  belong to one runtime dispatch path rather than a consumer-specific bypass.
+  belong to one runtime dispatch path rather than a caller-specific bypass.
 
 ## Findings I'm departing from (if any)
 

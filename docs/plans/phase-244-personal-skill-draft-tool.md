@@ -30,7 +30,7 @@ durable skill, configuration, membership, or publication authority.
 ## Brief findings incorporated
 
 - brief 03 §4: tool catalog entries carry schemas, deadlines, approval and
-  OAuth policy, and identity-scoped invocation rather than private authority.
+  OAuth policy, and identity-scoped invocation rather than ad-hoc authority.
 - brief 04 §4.7: generated `SKILL.md` must pass the same deterministic parser,
   normalizer, supporting-file rules, validator, and serializer as import.
 - brief 04 §4.8: LLM-assisted proposal and persistence concerns are separable;

@@ -60,9 +60,12 @@ silently switching to the expensive projection.
   duration where derivable without enrichment, and the effective/default agent
   id only where Harbor can represent it honestly.
 - Counter fields (events, tasks, cost, tokens, pending-intervention,
-  failed-task flags) use explicit availability: they are explicitly marked
-  unavailable in the lifecycle shape, never merely absent and never
-  zero-as-not-computed.
+  failed-task flags) use the closed availability state `current | partial |
+  not_requested | unavailable`: the lifecycle shape marks them
+  `not_requested` (never merely absent and never zero-as-not-computed);
+  `unavailable` means enrichment/projection unavailable; `partial` remains a
+  lower bound; full projection counters are exact at `current`; an omitted
+  selector defaults to `"full"`.
 - Reject, as a typed invalid request, a counter-dependent filter or sort
   (`cost_above_cents`, `has_failed_task`, `has_intervention`, `cost_desc`)
   paired with the lifecycle selector. Lifecycle filters/sorts (status, title,
@@ -74,7 +77,7 @@ silently switching to the expensive projection.
 
 - No change to the full projection's counter exactness, `CountersPartial`
   honesty contract, or the enricher seam.
-- No retention change, no coordinator cache, no new lifecycle fields, no
+- No retention change, no shared cache, no new lifecycle fields, no
   second session data source, no counter recomputation path.
 - No new authority: the selector changes cost and shape, never authority.
   Each method preserves its own widening claims and audit behavior exactly;
@@ -101,8 +104,12 @@ silently switching to the expensive projection.
       timestamps where authoritative; duration where derivable without
       enrichment; and the effective/default agent id only where honestly
       representable (otherwise explicitly marked unavailable). Counter
-      fields use explicit availability — explicitly marked unavailable, never
-      merely absent, and a zero value never means "not computed".
+      fields use the closed availability state `current | partial |
+      not_requested | unavailable`: the lifecycle shape marks them
+      `not_requested` — explicitly marked, never merely absent, and a zero
+      value never means "not computed"; `unavailable` means
+      enrichment/projection unavailable; `partial` remains a lower bound;
+      full projection counters are exact at `current`.
 - [ ] Cursor, lifecycle filter, and lifecycle sort behavior is stable and
       unchanged in semantics; a counter-dependent filter or sort
       (`cost_above_cents`, `has_failed_task`, `has_intervention`, `cost_desc`)
@@ -114,10 +121,11 @@ silently switching to the expensive projection.
       returns the same non-oracular not-found/denied posture as the existing
       session surface).
 - [ ] The lifecycle projection registers with the projection-completeness gate
-      (Phase 177) so its explicitly-unavailable counter fields are allow-listed
+      (Phase 177) so its `not_requested` counter fields are allow-listed
       with reasons and no counter filter/sort can silently operate over them.
 - [ ] Protocol manifest, generated clients, protocol docs, the operator skill,
-      and Harbor's own consumer chat catalog use the new projection; the first
+      and Harbor's own chat catalog (the Console) use the new projection; the
+      first
       consumer is the two-read chat-open path specified by Phase 246 plus a
       minimal Console catalog read, per D-062.
 - [ ] Full-project behavior is byte-compatible for existing callers: a request
@@ -152,17 +160,22 @@ silently switching to the expensive projection.
   `projection` field: `"full"` (default) or `"lifecycle"`.
 - Lifecycle row shape: `session_id`, `status`, `title`, `title_source`,
   `started_at`, `updated_at`, `completed_at`, `last_activity_at`, `duration`,
-  `agent_id` (only when honestly representable), plus an explicit
-  `counters: "unavailable"` marker when the caller asked for lifecycle —
-  explicit counter availability, never zero-as-not-computed.
+  `agent_id` (only when honestly representable), plus counter fields marked
+  `not_requested` under the closed availability state `current | partial |
+  not_requested | unavailable` when the caller asked for lifecycle —
+  explicit counter availability, never zero-as-not-computed; `unavailable`
+  means enrichment/projection unavailable; `partial` remains a lower bound;
+  full counters are exact at `current`; an omitted selector defaults to
+  `"full"`.
 - A counter-dependent filter/sort with `projection: "lifecycle"` returns the
   canonical `invalid_request` typed error; no new error code beyond the
   existing registry unless the closed set lacks a fit.
 
 ## Test plan
 
-- **Unit:** selector parsing and default; lifecycle row shape (explicit
-  counter availability vs zero counters); counter-filter/sort rejection
+- **Unit:** selector parsing and default; lifecycle row shape (closed
+  availability state `current | partial | not_requested | unavailable` vs
+  zero counters); counter-filter/sort rejection
   matrix for every counter-dependent
   filter and `cost_desc`; lifecycle filter/sort semantics unchanged; cursor
   stability; enricher-not-invoked spy on the lifecycle path; full-projection
@@ -185,7 +198,8 @@ silently switching to the expensive projection.
 
 - Before implementation, a pending static skeleton records this plan.
 - When implemented, list a durable session with the lifecycle selector and
-  assert the response carries lifecycle fields and no counter fields; assert a
+  assert the response carries lifecycle fields with counter fields marked
+  `not_requested` under the closed availability state; assert a
   `cost_desc` sort or `cost_above_cents` filter with the lifecycle selector
   fails with the canonical typed error; assert the default projection still
   returns counters; assert cross-identity lifecycle reads are not-found.
@@ -204,11 +218,15 @@ silently switching to the expensive projection.
 
 ## Risks / open questions
 
-- The lifecycle shape uses explicit counter availability: an explicit
-  `counters: "unavailable"` marker (or per-field explicit unavailable values),
-  never field omission — the "zero never means not computed" rule is enforced
+- The lifecycle shape uses the closed counter availability state
+  `current | partial | not_requested | unavailable`: counter fields are
+  explicitly marked `not_requested` on the lifecycle path (or per-field
+  explicit not-requested values), never field omission — the "zero never
+  means not computed" rule is enforced
   by the explicit marker, and the wire shape is settled before implementation
-  (additive either way).
+  (additive either way); `unavailable` means enrichment/projection
+  unavailable; `partial` remains a lower bound; full counters are exact at
+  `current`.
 - The effective/default agent id is not a single-valued session binding today;
   the lifecycle row must represent honest absence rather than fabricating a
   binding (the D-309 agent-field class rule applies).
