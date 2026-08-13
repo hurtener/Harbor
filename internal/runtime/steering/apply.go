@@ -45,6 +45,9 @@ type stepControl struct {
 	// prioritize carries a PRIORITIZE's new priority + a "was set" flag.
 	prioritizeSet bool
 	prioritizeVal int
+	// cancellationBatch arbitrates a drained batch atomically: no resume in
+	// the same batch may consume or re-open the pause after CANCEL wins.
+	cancellationBatch bool
 }
 
 // applier holds the runtime dependencies the per-control-type side-effect
@@ -144,7 +147,13 @@ func (a *applier) applyEvent(ctx context.Context, sc *stepControl, ev ControlEve
 		// resumed, scope mismatch) is surfaced loud at apply time.
 		sc.resumeRequested = true
 		sc.resumeKind = ev.Type
-		return a.advancePause(ctx, ev, outstandingToken)
+		if sc.cancellationBatch {
+			return nil
+		}
+		if err := a.advancePause(ctx, ev, outstandingToken); err != nil {
+			return err
+		}
+		return nil
 
 	case ControlPrioritize:
 		// PRIORITIZE updates the run's task priority via the TaskRegistry.

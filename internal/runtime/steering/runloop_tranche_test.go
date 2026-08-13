@@ -142,6 +142,101 @@ func TestRun_TrancheExhaustion_ParksWithoutTerminalFailure(t *testing.T) {
 	}
 }
 
+func TestRun_Tranche_RequiresCancellationCapabilityBeforePlanning(t *testing.T) {
+	base := pauseresume.New()
+	coord := struct{ pauseresume.Coordinator }{Coordinator: base}
+	reg := NewRegistry()
+	rl, err := NewRunLoop(reg, coord)
+	if err != nil {
+		t.Fatalf("NewRunLoop: %v", err)
+	}
+	_, err = rl.Run(context.Background(), trancheSpecFor(runA, &scriptedPlanner{}, 1, 4))
+	if !errors.Is(err, pauseresume.ErrTrancheCancellerRequired) {
+		t.Fatalf("Run without tranche capability: err=%v, want ErrTrancheCancellerRequired", err)
+	}
+}
+
+func TestRun_Tranche_CancelCleanupFailureStillReturnsTerminalCancellation(t *testing.T) {
+	rl, reg, coord := newTestRunLoop(t)
+	coord.cancelTrancheErr = &pauseresume.TrancheCancellationError{Err: errors.New("checkpoint delete failed")}
+	p := &scriptedPlanner{script: []scriptStep{{dec: planner.CallTool{Tool: "noop"}}}}
+	done := make(chan runOutcome, 1)
+	go func() {
+		fin, err := rl.Run(context.Background(), trancheSpecFor(runA, p, 1, 8))
+		done <- runOutcome{fin: fin, err: err}
+	}()
+	waitForPause(t, coord, 1)
+	in, err := reg.Lookup(runA)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if err := in.Enqueue(ControlEvent{Type: ControlCancel, Identity: runA, CallerScope: ScopeOwnerUser, CallerTenant: runA.TenantID}); err != nil {
+		t.Fatalf("Enqueue(CANCEL): %v", err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("Run error = %v, want nil after cleanup failure", got.err)
+		}
+		if got.fin.Reason != planner.FinishCancelled {
+			t.Fatalf("Finish.Reason = %q, want %q", got.fin.Reason, planner.FinishCancelled)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run did not finish after CANCEL")
+	}
+	if calls, cancelled := coord.trancheSnapshot(pauseresume.Token("stub-token")); calls != 1 || !cancelled {
+		t.Fatalf("tranche cancellation = calls %d, cancelled %v; want one terminal cancellation", calls, cancelled)
+	}
+}
+
+func TestRun_Tranche_CancelResumeBatch_TerminalizesInEitherOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first ControlType
+		last  ControlType
+	}{
+		{name: "cancel-before-resume", first: ControlCancel, last: ControlResume},
+		{name: "resume-before-cancel", first: ControlResume, last: ControlCancel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rl, reg, coord := newTestRunLoop(t)
+			p := &scriptedPlanner{script: []scriptStep{{dec: planner.CallTool{Tool: "noop"}}}}
+			out := make(chan runOutcome, 1)
+			go func() {
+				fin, err := rl.Run(context.Background(), trancheSpecFor(runA, p, 1, 8))
+				out <- runOutcome{fin: fin, err: err}
+			}()
+			waitForPause(t, coord, 1)
+			in, err := reg.Lookup(runA)
+			if err != nil {
+				t.Fatalf("Lookup: %v", err)
+			}
+			for _, typ := range []ControlType{tc.first, tc.last} {
+				if err := in.Enqueue(ControlEvent{Type: typ, Identity: runA, CallerScope: ScopeOwnerUser, CallerTenant: runA.TenantID}); err != nil {
+					t.Fatalf("Enqueue(%s): %v", typ, err)
+				}
+			}
+			select {
+			case got := <-out:
+				if got.err != nil {
+					t.Errorf("Run error = %v, want nil for terminal cancellation", got.err)
+				}
+				if got.fin.Reason != planner.FinishCancelled {
+					t.Errorf("Finish.Reason = %q, want %q", got.fin.Reason, planner.FinishCancelled)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("run did not terminalize after CANCEL/RESUME batch")
+			}
+			if calls, _ := coord.snapshot(); calls != 1 {
+				t.Errorf("Coordinator.Request calls = %d, want 1", calls)
+			}
+			if calls, cancelled := coord.trancheSnapshot(pauseresume.Token("stub-token")); calls != 1 || !cancelled {
+				t.Errorf("tranche cancellation = calls %d, cancelled %v; want one terminal cancellation", calls, cancelled)
+			}
+		})
+	}
+}
+
 // TestRun_TrancheResume_GrantsFreshTranche_PreservesOneRun asserts
 // repeat pause→resume cycles keep ONE run and ONE CUMULATIVE trajectory:
 // each authorised resume grants a fresh tranche (the counter resets to

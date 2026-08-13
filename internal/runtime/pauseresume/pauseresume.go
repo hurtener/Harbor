@@ -287,6 +287,16 @@ type TrancheCanceller interface {
 	CancelTranche(context.Context, Token) error
 }
 
+// TrancheCancellationError reports cleanup failure after cancellation won the
+// token. The run is terminally cancelled; callers must retain the error for
+// cleanup/retry observability rather than treating it as a resumable failure.
+type TrancheCancellationError struct{ Err error }
+
+func (e *TrancheCancellationError) Error() string {
+	return "pauseresume: tranche cancellation cleanup: " + e.Err.Error()
+}
+func (e *TrancheCancellationError) Unwrap() error { return e.Err }
+
 // CancelTranche consumes a live step-tranche token, failing closed when the
 // Coordinator does not support live-run cancellation.
 func CancelTranche(ctx context.Context, c Coordinator, token Token) error {

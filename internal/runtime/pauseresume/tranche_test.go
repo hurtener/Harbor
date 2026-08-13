@@ -223,3 +223,18 @@ func TestTranchePause_CancelResume_RaceHasOneWinner(t *testing.T) {
 		t.Fatal("terminal race winner left a reusable tranche token")
 	}
 }
+
+func TestCoordinator_Resume_RejectsCancellationDecision(t *testing.T) {
+	t.Parallel()
+	ctx := runCtx(t, testID, "run-cancelled-decision")
+	c := pauseresume.New()
+	p, err := c.Request(ctx, pauseresume.PauseRequest{
+		Identity: testID, Reason: pauseresume.ReasonAwaitInput,
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if err := c.Resume(ctx, p.Token, pauseresume.DecisionCancelled, nil); !errors.Is(err, pauseresume.ErrInvalidDecision) {
+		t.Fatalf("Resume(cancelled): err=%v, want ErrInvalidDecision", err)
+	}
+}

@@ -564,18 +564,20 @@ func (c *coordinator) CancelTranche(ctx context.Context, token Token) error {
 	entry.state, entry.available, entry.resumedAt, entry.decision = StatusResumed, false, c.now(), DecisionCancelled
 	terminal := *entry
 	c.mu.Unlock()
+	// Project cancellation before cleanup. Cleanup remains a loud, observable
+	// retry obligation, but must not delay the terminal cancellation event.
+	c.emit(ctx, EventTypePauseResumed, &terminal, PauseResumedPayload{Token: string(token), Reason: string(terminal.reason), Decision: DecisionCancelled})
 	if c.store != nil {
 		rec, rerr := terminal.toCheckpoint()
 		if rerr != nil {
 			c.markDeletePending(token)
-			return rerr
+			return &TrancheCancellationError{Err: rerr}
 		}
 		if derr := deleteCheckpoint(ctx, c.store, rec); derr != nil {
 			c.markDeletePending(token)
-			return derr
+			return &TrancheCancellationError{Err: derr}
 		}
 	}
-	c.emit(ctx, EventTypePauseResumed, &terminal, PauseResumedPayload{Token: string(token), Reason: string(terminal.reason), Decision: DecisionCancelled})
 	return nil
 }
 

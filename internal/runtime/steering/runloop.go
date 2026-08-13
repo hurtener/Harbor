@@ -519,6 +519,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	if err := validateQuadruple(q); err != nil {
 		return planner.Finish{}, err
 	}
+	if spec.TrancheSteps > 0 {
+		if _, ok := rl.coord.(pauseresume.TrancheCanceller); !ok {
+			return planner.Finish{}, fmt.Errorf("%w: step-tranche pauses require a live cancellation capability", pauseresume.ErrTrancheCancellerRequired)
+		}
+	}
 
 	inbox, err := rl.registry.Open(q)
 	if err != nil {
@@ -685,6 +690,12 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// --- APPLY: each drained control event's side effect. ---
 		sc := &stepControl{}
 		for _, ev := range drained {
+			if ev.Type == ControlCancel {
+				sc.cancellationBatch = true
+				break
+			}
+		}
+		for _, ev := range drained {
 			rl.emitLifecycle(runCtx, q, ev.Type, EventTypeControlReceived, "")
 			applyErr := rl.applier.applyEvent(runCtx, sc, ev, outstandingToken)
 			rl.history.record(q.SessionID, AppliedControl{
@@ -710,6 +721,19 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				}
 			}
 			if applyErr != nil {
+				var cancelledCleanup *pauseresume.TrancheCancellationError
+				if errors.As(applyErr, &cancelledCleanup) {
+					rl.logger.WarnContext(runCtx, "steering: tranche cancellation cleanup pending after terminal cancellation",
+						slog.String("tenant_id", q.TenantID),
+						slog.String("user_id", q.UserID),
+						slog.String("session_id", q.SessionID),
+						slog.String("run_id", q.RunID),
+						slog.String("pause_token", string(outstandingToken)),
+						slog.Any("error", applyErr))
+					return planner.Finish{Reason: planner.FinishCancelled, Metadata: map[string]any{
+						"run_id": q.RunID, "steering_reason": "cancel_while_paused",
+					}}, nil
+				}
 				// Race carve-out: a legitimate
 				// RESUME / APPROVE / REJECT control can lose the race
 				// against the max-park sweeper — the sweeper's
@@ -746,6 +770,18 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			}
 		}
 
+		// Cancellation wins the whole drained batch, including when RESUME
+		// appeared first and already consumed the token. Never re-enter the
+		// planner after a batch containing CANCEL.
+		if sc.cancellationBatch && sc.signals.Cancelled {
+			return planner.Finish{
+				Reason: planner.FinishCancelled,
+				Metadata: map[string]any{
+					"run_id":          q.RunID,
+					"steering_reason": "cancel_in_control_batch",
+				},
+			}, nil
+		}
 		// A REJECT that advanced a pause terminates the run: a rejected
 		// HITL gate is a constraint conflict the planner cannot resolve.
 		// The Coordinator.Resume already happened in applyEvent.
@@ -765,7 +801,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// the authorised resume grants a FRESH configured tranche: the
 		// tranche counter resets and the cumulative trajectory is
 		// untouched ("resets only tranche counter").
-		if sc.resumeRequested && (sc.resumeKind == ControlResume || sc.resumeKind == ControlApprove) {
+		if sc.resumeRequested && (sc.resumeKind == ControlResume || sc.resumeKind == ControlApprove) && !sc.cancellationBatch {
 			if outstandingTranche {
 				trancheUsed = 0
 				if spec.Base.Trajectory != nil {
@@ -799,8 +835,21 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		if outstandingToken != "" {
 			if sc.signals.Cancelled {
 				if outstandingTranche {
-					if err := pauseresume.CancelTranche(runCtx, rl.coord, outstandingToken); err != nil {
-						return planner.Finish{}, fmt.Errorf("steering: consuming tranche pause on cancellation: %w", err)
+					if cancelErr := pauseresume.CancelTranche(runCtx, rl.coord, outstandingToken); cancelErr != nil {
+						var cleanupErr *pauseresume.TrancheCancellationError
+						if errors.As(cancelErr, &cleanupErr) {
+							rl.logger.WarnContext(runCtx, "steering: tranche cancellation cleanup pending after terminal cancellation",
+								slog.String("tenant_id", q.TenantID),
+								slog.String("user_id", q.UserID),
+								slog.String("session_id", q.SessionID),
+								slog.String("run_id", q.RunID),
+								slog.String("pause_token", string(outstandingToken)),
+								slog.Any("error", cancelErr))
+							return planner.Finish{Reason: planner.FinishCancelled, Metadata: map[string]any{
+								"run_id": q.RunID, "steering_reason": "cancel_while_paused",
+							}}, nil
+						}
+						return planner.Finish{}, fmt.Errorf("steering: consuming tranche pause on cancellation: %w", cancelErr)
 					}
 				}
 				return planner.Finish{
@@ -1222,6 +1271,9 @@ func (rl *RunLoop) requestPause(ctx context.Context, q identity.Quadruple, d pla
 // verbatim — no silent degradation, no half-persisted checkpoint, no
 // park issued for a run whose trajectory cannot be checkpointed.
 func (rl *RunLoop) requestTranchePause(ctx context.Context, q identity.Quadruple, trancheSteps, stepsObserved int, tr *planner.Trajectory) (pauseresume.Token, error) {
+	if _, ok := rl.coord.(pauseresume.TrancheCanceller); !ok {
+		return "", fmt.Errorf("%w: step-tranche pauses require a live cancellation capability", pauseresume.ErrTrancheCancellerRequired)
+	}
 	req := pauseresume.PauseRequest{
 		Identity: q.Identity,
 		Reason:   pauseresume.ReasonConstraintsConflict,

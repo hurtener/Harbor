@@ -36,7 +36,8 @@ var (
 	// record is already in StatusResumed. Resume is idempotent: the
 	// second call is rejected loud rather than re-applying side
 	// effects.
-	ErrAlreadyResumed = errors.New("pauseresume: pause already resumed")
+	ErrAlreadyResumed           = errors.New("pauseresume: pause already resumed")
+	ErrTrancheCancellerRequired = errors.New("pauseresume: coordinator cannot cancel live tranche pauses")
 
 	ErrNotTranchePause = errors.New("pauseresume: pause is not a step-tranche pause")
 

@@ -79,6 +79,8 @@ type stubCoordinator struct {
 	requestErr         error
 	resumeErr          error
 	cancelTrancheCalls int
+	cancelTrancheErr   error
+	cancelledTokens    map[pauseresume.Token]bool
 	resumedTokens      []pauseresume.Token
 	lastRequest        pauseresume.PauseRequest // captured verbatim — trajectory-threading assertions (Phase 111c)
 	// statusAfterResume, when non-nil, is returned by Status once a
@@ -121,11 +123,21 @@ func (c *stubCoordinator) Resume(_ context.Context, token pauseresume.Token, dec
 	return c.resumeErr
 }
 
-func (c *stubCoordinator) CancelTranche(_ context.Context, _ pauseresume.Token) error {
+func (c *stubCoordinator) CancelTranche(_ context.Context, token pauseresume.Token) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cancelTrancheCalls++
-	return nil
+	if c.cancelledTokens == nil {
+		c.cancelledTokens = make(map[pauseresume.Token]bool)
+	}
+	c.cancelledTokens[token] = true
+	return c.cancelTrancheErr
+}
+
+func (c *stubCoordinator) trancheSnapshot(token pauseresume.Token) (calls int, cancelled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cancelTrancheCalls, c.cancelledTokens[token]
 }
 
 func (c *stubCoordinator) Status(_ context.Context, _ pauseresume.Token) (pauseresume.Status, error) {
