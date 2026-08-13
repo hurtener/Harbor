@@ -308,8 +308,9 @@ func CancelTranche(ctx context.Context, c Coordinator, token Token) error {
 }
 
 // StatusForIdentity reads a private token selector without exposing whether a
-// foreign identity or run selector exists. Implementations that do not provide
-// the scoped extension are treated as not found.
+// foreign identity exists. The runID argument is descriptive metadata and does
+// not restrict access within the owning identity scope. Implementations that
+// do not provide the scoped extension are treated as not found.
 func StatusForIdentity(ctx context.Context, c Coordinator, token Token, id identity.Identity, runID string) (Status, error) {
 	scoped, ok := c.(interface {
 		StatusForIdentity(context.Context, Token, identity.Identity, string) (Status, error)

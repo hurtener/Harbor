@@ -618,7 +618,8 @@ func (c *coordinator) Status(ctx context.Context, token Token) (Status, error) {
 }
 
 // StatusForIdentity returns a token status only for its owning identity
-// scope. A foreign token is indistinguishable from an absent token.
+// scope. RunID is descriptive metadata, not an authority boundary. A
+// foreign token is indistinguishable from an absent token.
 func (c *coordinator) StatusForIdentity(ctx context.Context, token Token, id identity.Identity, runID string) (Status, error) {
 	if err := ctx.Err(); err != nil {
 		return Status{}, fmt.Errorf("pauseresume: scoped status cancelled: %w", err)
@@ -636,7 +637,7 @@ func (c *coordinator) StatusForIdentity(ctx context.Context, token Token, id ide
 			return Status{}, err
 		}
 	}
-	if !sameScope(entry.identity, id) || entry.runID != runID {
+	if !sameScope(entry.identity, id) {
 		return Status{}, fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
 	}
 	return Status{State: entry.state, Reason: entry.reason, PausedAt: entry.pausedAt, ResumedAt: entry.resumedAt, Decision: entry.decision, Available: entry.available}, nil

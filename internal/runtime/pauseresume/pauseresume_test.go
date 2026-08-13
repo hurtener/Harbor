@@ -246,6 +246,34 @@ func TestResume_DifferentRunSameTripleAccepted(t *testing.T) {
 	}
 }
 
+func TestStatusForIdentity_DifferentRunSameTripleAcceptedForeignTripleHidden(t *testing.T) {
+	t.Parallel()
+	c := pauseresume.New()
+	pauseCtx := runCtx(t, testID, "run-1")
+
+	p, err := c.Request(pauseCtx, pauseresume.PauseRequest{
+		Identity: testID,
+		Reason:   pauseresume.ReasonAwaitInput,
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+
+	status, err := pauseresume.StatusForIdentity(runCtx(t, testID, "run-2"), c, p.Token, testID, "run-2")
+	if err != nil {
+		t.Fatalf("StatusForIdentity (different run, same triple): %v", err)
+	}
+	if status.State != pauseresume.StatusPaused {
+		t.Fatalf("StatusForIdentity.State = %q, want %q", status.State, pauseresume.StatusPaused)
+	}
+
+	foreignID := identity.Identity{TenantID: "t2", UserID: "u1", SessionID: "s1"}
+	_, err = pauseresume.StatusForIdentity(runCtx(t, foreignID, "run-1"), c, p.Token, foreignID, "run-1")
+	if !errors.Is(err, pauseresume.ErrPauseNotFound) {
+		t.Fatalf("StatusForIdentity (foreign triple): err=%v, want ErrPauseNotFound", err)
+	}
+}
+
 func TestRestartSurvival_WithoutStore_PauseDoesNotSurvive(t *testing.T) {
 	t.Parallel()
 	// No checkpoint store — pauses are process-local only.
