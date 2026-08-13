@@ -514,7 +514,7 @@ func methodTable() map[methods.Method]methodEntry {
 		},
 		methods.MethodAgentConfigAgentPacksPropose: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigAgentPacksPropose),
-			Mutates: false,
+			Mutates: true,
 			Request: "AgentConfigAgentPacksProposeRequest", Response: "AgentConfigAgentPacksProposeResponse",
 			Auth: adminNote,
 		},
