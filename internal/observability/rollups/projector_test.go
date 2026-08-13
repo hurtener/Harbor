@@ -537,6 +537,202 @@ func TestProjector_CatchUpMultipleBatches(t *testing.T) {
 	}
 }
 
+// gatedSource is a testSource whose Nth Next call blocks until the test
+// releases it — the deterministic "delayed Advance" knob for the projector
+// serialization regression. blocked is closed once the blocking call is
+// inside Next, so the test can observe that the step is in-flight.
+type gatedSource struct {
+	mu      sync.Mutex
+	events  []events.Event
+	blockOn int // 1-based Next call index that blocks until gate is released
+	calls   int
+	gate    chan struct{}
+	blocked chan struct{}
+}
+
+func (s *gatedSource) Next(ctx context.Context, after uint64, limit int) ([]events.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.calls++
+	block := s.calls == s.blockOn
+	s.mu.Unlock()
+	if block {
+		close(s.blocked)
+		select {
+		case <-s.gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]events.Event, 0, limit)
+	for _, ev := range s.events {
+		if ev.Sequence <= after {
+			continue
+		}
+		out = append(out, ev)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+// TestProjector_AdvanceRebuildSerialization pins the full-step advance
+// serialization: the advance mutex is held for the ENTIRE Advance step, and
+// Rebuild coordinates through the SAME mutex, so a delayed advance can never
+// land AFTER a rebuild (which would jump the fresh checkpoint over the
+// pre-rebuild events) and no advance can overwrite p.watermark backwards.
+//
+// Deterministic interleaving: drain 1..7, then start a SECOND Advance that
+// blocks inside Source.Next holding the advance mutex; start Rebuild while
+// it is blocked (on the fixed code Rebuild waits for the advance; on the
+// unfixed code it runs immediately — the corruption window). Release the
+// gate, join both, then drain to the head. The final watermark/checkpoint
+// must be the newest sequence (10) with every event applied exactly once.
+func TestProjector_AdvanceRebuildSerialization(t *testing.T) {
+	ctx := context.Background()
+	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.StoreGranularity)
+	quad := eventID("tenant-a", "user-1", "session-1")
+
+	// A fixed 10-event log; event i costs i USD (i * 1e6 micros).
+	var evs []events.Event
+	for i := 1; i <= 10; i++ {
+		evs = append(evs, costRecord(uint64(i), h.Add(time.Duration(i)*time.Minute), quad, "model-a", float64(i)))
+	}
+	src := &gatedSource{
+		events:  evs,
+		blockOn: 2, // the SECOND Advance (the delayed one) blocks
+		gate:    make(chan struct{}),
+		blocked: make(chan struct{}),
+	}
+	store := newStore(t)
+	defer func() { _ = store.Close(ctx) }()
+
+	p, err := rollups.NewProjector(src, store, rollups.WithProjectorBatchSize(7))
+	if err != nil {
+		t.Fatalf("NewProjector: %v", err)
+	}
+
+	// Drain 1..7 (one full batch of 7).
+	caughtUp, err := p.Advance(ctx)
+	if err != nil {
+		t.Fatalf("Advance 1: %v", err)
+	}
+	if caughtUp {
+		t.Fatal("full batch must not report caught up")
+	}
+	if ck, err := store.Checkpoint(ctx); err != nil || ck != 7 {
+		t.Fatalf("checkpoint after drain 1..7 = %d, %v; want 7", ck, err)
+	}
+
+	// The DELAYED Advance: reads after=7, blocks inside Next (holding the
+	// advance mutex on the fixed code) waiting for events 8..10.
+	advDone := make(chan error, 1)
+	go func() {
+		_, err := p.Advance(ctx)
+		advDone <- err
+	}()
+	<-src.blocked // the delayed Advance is now mid-step
+
+	// Quality stays READABLE while the state-mutating step is in-flight
+	// (the concurrent-read guarantee).
+	q, err := p.Quality(ctx)
+	if err != nil {
+		t.Fatalf("Quality during in-flight advance: %v", err)
+	}
+	if q.Watermark != 7 {
+		t.Fatalf("quality watermark during in-flight advance = %d; want 7", q.Watermark)
+	}
+
+	// The staggered Rebuild: launched while the advance is blocked. On the
+	// fixed code it waits on the advance mutex until the advance finishes;
+	// on the unfixed code it runs immediately and wipes the store under
+	// the in-flight advance (the corruption window).
+	rbDone := make(chan error, 1)
+	go func() {
+		rbDone <- p.Rebuild(ctx)
+	}()
+
+	// Release the delayed advance. Fixed code order: the advance completes
+	// (applies 8..10 on top of 1..7), THEN the rebuild resets rows +
+	// checkpoint to 0. Unfixed code order: rebuild already ran, then the
+	// advance applies {checkpoint 10} over the emptied store — events
+	// 1..7 are lost forever (the checkpoint claims they were applied).
+	close(src.gate)
+	if err := <-advDone; err != nil {
+		t.Fatalf("delayed Advance: %v", err)
+	}
+	if err := <-rbDone; err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	// After the rebuild completed LAST, the store is empty and the
+	// projector must re-drain the WHOLE log: the watermark/checkpoint move
+	// monotonically to the newest sequence (10) and stay coherent.
+	q, err = p.Quality(ctx)
+	if err != nil {
+		t.Fatalf("Quality after rebuild: %v", err)
+	}
+	if q.Watermark != 0 || q.State != rollups.StateCatchingUp {
+		t.Fatalf("post-rebuild quality = %+v; want watermark 0, catching_up", q)
+	}
+
+	var prev uint64
+	iterations := 0
+	for {
+		caughtUp, err := p.Advance(ctx)
+		if err != nil {
+			t.Fatalf("drain Advance: %v", err)
+		}
+		q, err := p.Quality(ctx)
+		if err != nil {
+			t.Fatalf("Quality during drain: %v", err)
+		}
+		ck, err := store.Checkpoint(ctx)
+		if err != nil {
+			t.Fatalf("Checkpoint during drain: %v", err)
+		}
+		if q.Watermark != ck {
+			t.Fatalf("coherence broken: projector watermark %d != store checkpoint %d", q.Watermark, ck)
+		}
+		if ck < prev {
+			t.Fatalf("monotonicity violated: checkpoint regressed %d -> %d", prev, ck)
+		}
+		prev = ck
+		iterations++
+		if caughtUp {
+			break
+		}
+		if iterations > 20 {
+			t.Fatal("drain did not converge")
+		}
+	}
+
+	// Final coherence: watermark == checkpoint == newest sequence (10),
+	// state current, every event applied exactly once (sum 1..10 = 55 USD),
+	// and the retained horizon matches the event buckets.
+	q, err = p.Quality(ctx)
+	if err != nil {
+		t.Fatalf("Quality final: %v", err)
+	}
+	if q.Watermark != 10 || q.State != rollups.StateCurrent {
+		t.Fatalf("final quality = %+v; want watermark 10, current", q)
+	}
+	if ck, err := store.Checkpoint(ctx); err != nil || ck != 10 {
+		t.Fatalf("final checkpoint = %d, %v; want 10", ck, err)
+	}
+	if got := costMicros(ctx, t, store, h, h.Add(time.Hour), rollups.BucketHour); got != 55_000_000 {
+		t.Fatalf("final cost = %d micros; want 55_000_000 (events 1..10 applied exactly once)", got)
+	}
+	if !q.RetentionStart.Equal(h.Add(1*time.Minute)) || !q.RetentionEnd.Equal(h.Add(10*time.Minute)) {
+		t.Fatalf("final retention = %v..%v; want %v..%v", q.RetentionStart, q.RetentionEnd, h.Add(1*time.Minute), h.Add(10*time.Minute))
+	}
+}
+
 func TestProjector_NilDependencies(t *testing.T) {
 	store := newStore(t)
 	defer func() { _ = store.Close(context.Background()) }()

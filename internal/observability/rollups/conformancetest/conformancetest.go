@@ -64,6 +64,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("QueryValidation", func(t *testing.T) { queryValidation(t, factory) })
 	t.Run("AgentAndUnsupportedRejected", func(t *testing.T) { agentAndUnsupportedRejected(t, factory) })
 	t.Run("DeterministicPagination", func(t *testing.T) { deterministicPagination(t, factory) })
+	t.Run("CursorShapeBinding", func(t *testing.T) { cursorShapeBinding(t, factory) })
 	t.Run("GroupBy", func(t *testing.T) { groupBy(t, factory) })
 	t.Run("ErasureFencePermanent", func(t *testing.T) { erasureFencePermanent(t, factory) })
 	t.Run("RetentionAndRebuild", func(t *testing.T) { retentionAndRebuild(t, factory) })
@@ -203,7 +204,12 @@ func checkpointAndIdempotentReplay(t *testing.T, factory Factory) {
 	// Idempotent replay: re-applying the SAME batch (same checkpoint) is a
 	// no-op — sums must not double.
 	apply(ctx, t, s, evs...)
-	res := mustQuery(ctx, t, s, anchor.Add(-24*time.Hour), anchor, rollups.BucketHour)
+	// The window is hour-aligned: events sit in the hour bucket 09:00 on
+	// Aug 13, so the query bounds are the hour floors around them.
+	res := mustQuery(ctx, t, s,
+		rollups.BucketStart(anchor.Add(-24*time.Hour), rollups.BucketHour),
+		rollups.BucketStart(anchor, rollups.BucketHour).Add(time.Hour),
+		rollups.BucketHour)
 	if got := totalCost(res); got != 2_000_000 {
 		t.Fatalf("cost after idempotent replay = %d micros; want 2_000_000 (1.25+0.75)", got)
 	}
@@ -245,9 +251,12 @@ func precisionExactIntegers(t *testing.T, factory Factory) {
 	}
 	apply(ctx, t, s, evs...)
 
+	// The window must be hour-aligned (h is on the minute grid; the hour
+	// floor is the aligned edge).
+	from := rollups.BucketStart(h, rollups.BucketHour)
 	q := rollups.Query{
-		From:     h,
-		To:       h.Add(time.Hour),
+		From:     from,
+		To:       from.Add(time.Hour),
 		Bucket:   rollups.BucketHour,
 		Measures: []rollups.Measure{rollups.MeasureLLMCostMicros, rollups.MeasureLLMCompletions, rollups.MeasureLLMTokensPrompt, rollups.MeasureLLMLatencySumMS},
 		Sort:     rollups.SortKeyBucketAsc,
@@ -293,7 +302,8 @@ func costExactnessMicros(t *testing.T, factory Factory) {
 		costEvent(3, h.Add(2*time.Minute), quadT1U1S1, "m", 0.1+0.2, 10, 10, 10),
 	}
 	apply(ctx, t, s, evs...)
-	res := mustQuery(ctx, t, s, h, h.Add(time.Hour), rollups.BucketHour)
+	from := rollups.BucketStart(h, rollups.BucketHour)
+	res := mustQuery(ctx, t, s, from, from.Add(time.Hour), rollups.BucketHour)
 	if got := totalCost(res); got != 600_000 {
 		t.Fatalf("0.1+0.2+(0.1+0.2) = %d micros; want 600_000 (0.60 USD exactly)", got)
 	}
@@ -342,9 +352,10 @@ func usageFieldsComplete(t *testing.T, factory Factory) {
 		})
 	apply(ctx, t, s, ev)
 
+	from := rollups.BucketStart(h, rollups.BucketHour)
 	q := rollups.Query{
-		From:   h,
-		To:     h.Add(time.Hour),
+		From:   from,
+		To:     from.Add(time.Hour),
 		Bucket: rollups.BucketHour,
 		Measures: []rollups.Measure{
 			rollups.MeasureLLMCompletions,
@@ -410,9 +421,10 @@ func latencyMinMaxMerge(t *testing.T, factory Factory) {
 	}
 	apply(ctx, t, s, evs...)
 
+	from := rollups.BucketStart(h, rollups.BucketHour)
 	q := rollups.Query{
-		From:   h,
-		To:     h.Add(time.Hour),
+		From:   from,
+		To:     from.Add(time.Hour),
 		Bucket: rollups.BucketHour,
 		Measures: []rollups.Measure{
 			rollups.MeasureLLMLatencyCount,
@@ -471,9 +483,10 @@ func largeCounterExactness(t *testing.T, factory Factory) {
 		t.Fatalf("ApplyBatch: %v", err)
 	}
 
+	from := rollups.BucketStart(h, rollups.BucketHour)
 	q := rollups.Query{
-		From:     h,
-		To:       h.Add(time.Hour),
+		From:     from,
+		To:       from.Add(time.Hour),
 		Bucket:   rollups.BucketHour,
 		Measures: []rollups.Measure{rollups.MeasureLLMTokensTotal},
 		Sort:     rollups.SortKeyBucketAsc,
@@ -623,7 +636,7 @@ func dimensionIsolation(t *testing.T, factory Factory) {
 	}
 	apply(ctx, t, s, evs...)
 
-	from, to := h, h.Add(time.Hour)
+	from, to := rollups.BucketStart(h, rollups.BucketHour), rollups.BucketStart(h, rollups.BucketHour).Add(time.Hour)
 
 	// Whole window: all four.
 	res := mustQuery(ctx, t, s, from, to, rollups.BucketHour)
@@ -693,9 +706,12 @@ func queryValidation(t *testing.T, factory Factory) {
 	h := rollups.BucketStart(anchor, rollups.StoreGranularity)
 	apply(ctx, t, s, costEvent(1, h, quadT1U1S1, "model-a", 1, 10, 10, 10))
 
+	// The base window is hour- AND minute-aligned (the hour floor), so the
+	// budget mutations below stay on their grid.
+	from := rollups.BucketStart(h, rollups.BucketHour)
 	base := rollups.Query{
-		From:     h,
-		To:       h.Add(time.Hour),
+		From:     from,
+		To:       from.Add(time.Hour),
 		Bucket:   rollups.BucketHour,
 		Measures: []rollups.Measure{rollups.MeasureLLMCostMicros},
 		Sort:     rollups.SortKeyBucketAsc,
@@ -724,11 +740,15 @@ func queryValidation(t *testing.T, factory Factory) {
 		{"zero limit", func(q *rollups.Query) { q.Limit = 0 }, rollups.ErrQueryInvalid},
 		{"negative limit", func(q *rollups.Query) { q.Limit = -5 }, rollups.ErrQueryInvalid},
 		{"limit over budget", func(q *rollups.Query) { q.Limit = rollups.MaxRowsPerQuery + 1 }, rollups.ErrQueryBudget},
-		{"hour bucket budget", func(q *rollups.Query) { q.From = h.Add(-time.Duration(rollups.MaxBuckets+1) * time.Hour) }, rollups.ErrQueryBudget},
+		{"hour bucket budget", func(q *rollups.Query) { q.From = from.Add(-time.Duration(rollups.MaxBuckets+1) * time.Hour) }, rollups.ErrQueryBudget},
 		{"minute bucket budget", func(q *rollups.Query) {
 			q.Bucket = rollups.BucketMinute
-			q.From = h.Add(-time.Duration(rollups.MaxBuckets+1) * time.Minute)
+			q.From = from.Add(-time.Duration(rollups.MaxBuckets+1) * time.Minute)
 		}, rollups.ErrQueryBudget},
+		{"unaligned second from", func(q *rollups.Query) { q.From = from.Add(time.Second) }, rollups.ErrQueryInvalid},
+		{"unaligned nano from", func(q *rollups.Query) { q.From = from.Add(time.Nanosecond) }, rollups.ErrQueryInvalid},
+		{"unaligned second to", func(q *rollups.Query) { q.To = from.Add(time.Hour).Add(-time.Second) }, rollups.ErrQueryInvalid},
+		{"unaligned nano to", func(q *rollups.Query) { q.To = from.Add(time.Hour).Add(-time.Nanosecond) }, rollups.ErrQueryInvalid},
 		{"malformed cursor", func(q *rollups.Query) { q.Cursor = "not-a-cursor" }, rollups.ErrBadCursor},
 	}
 	for _, tc := range cases {
@@ -755,8 +775,8 @@ func agentAndUnsupportedRejected(t *testing.T, factory Factory) {
 	apply(ctx, t, s, costEvent(1, h, quadT1U1S1, "model-a", 1, 10, 10, 10))
 
 	base := rollups.Query{
-		From:     h,
-		To:       h.Add(time.Hour),
+		From:     rollups.BucketStart(h, rollups.BucketHour),
+		To:       rollups.BucketStart(h, rollups.BucketHour).Add(time.Hour),
 		Bucket:   rollups.BucketHour,
 		Measures: []rollups.Measure{rollups.MeasureLLMCostMicros},
 		Sort:     rollups.SortKeyBucketAsc,
@@ -789,8 +809,10 @@ func deterministicPagination(t *testing.T, factory Factory) {
 	s, cleanup := factory()
 	defer cleanup()
 
-	// 3 sessions × 3 hours, one cost event per (session, hour).
-	h0 := rollups.BucketStart(anchor, rollups.StoreGranularity)
+	// 3 sessions × 3 hours, one cost event per (session, hour). h0 is the
+	// HOUR floor so the events land exactly on hour boundaries and the
+	// query window [h0, h0+3h) is hour-aligned.
+	h0 := rollups.BucketStart(anchor, rollups.BucketHour)
 	var evs []events.Event
 	seq := uint64(1)
 	for hour := 0; hour < 3; hour++ {
@@ -921,6 +943,115 @@ func deterministicPagination(t *testing.T, factory Factory) {
 	}
 }
 
+// cursorShapeBinding pins the complete canonical-shape binding of a page
+// cursor: a cursor produced by one query is rejected with ErrBadCursor when
+// reused under a query that differs in ANY shape field — window, bucket,
+// every filter axis, measures, group-by, sort, or sort-measure — and is
+// accepted when the shape is identical (including a different page Limit,
+// which is deliberately not part of the shape).
+func cursorShapeBinding(t *testing.T, factory Factory) {
+	ctx := context.Background()
+	s, cleanup := factory()
+	defer cleanup()
+
+	// 3 sessions × 3 hour buckets, one cost event per (session, bucket):
+	// 9 rows so Limit 2 forces real pages and a non-empty NextCursor.
+	h0 := rollups.BucketStart(anchor, rollups.BucketHour)
+	var evs []events.Event
+	seq := uint64(1)
+	for hour := 0; hour < 3; hour++ {
+		for _, quad := range []identity.Quadruple{quadT1U1S1, quadT1U1S2, quadT1U2S3} {
+			evs = append(evs, costEvent(seq, h0.Add(time.Duration(hour)*time.Hour), quad, "model-a", float64(seq), 10, 10, 10))
+			seq++
+		}
+	}
+	apply(ctx, t, s, evs...)
+
+	base := rollups.Query{
+		From:     h0,
+		To:       h0.Add(3 * time.Hour),
+		Bucket:   rollups.BucketHour,
+		GroupBy:  []rollups.Dimension{rollups.DimensionSession},
+		Measures: []rollups.Measure{rollups.MeasureLLMCostMicros},
+		Sort:     rollups.SortKeyBucketAsc,
+		Limit:    2,
+	}
+	first, err := s.Query(ctx, base)
+	if err != nil {
+		t.Fatalf("base page 1: %v", err)
+	}
+	if first.NextCursor == "" {
+		t.Fatal("base query with 9 rows and Limit 2 must produce a next cursor")
+	}
+
+	// Reusing the base cursor under a query that differs in ONE shape
+	// field must fail typed — the cursor is bound to the shape that
+	// produced it and is never silently re-purposed. Every mutation is
+	// itself a VALID query, so the failure is the shape binding, not
+	// validation.
+	cases := []struct {
+		name string
+		mut  func(*rollups.Query)
+	}{
+		{"window", func(q *rollups.Query) { q.From = q.From.Add(time.Hour); q.To = q.To.Add(time.Hour) }},
+		{"bucket", func(q *rollups.Query) { q.Bucket = rollups.BucketMinute }},
+		{"filter tenant", func(q *rollups.Query) { q.Filter = rollups.Filter{TenantIDs: []string{"tenant-a"}} }},
+		{"filter user", func(q *rollups.Query) { q.Filter = rollups.Filter{UserIDs: []string{"user-1"}} }},
+		{"filter session", func(q *rollups.Query) { q.Filter = rollups.Filter{SessionIDs: []string{"session-1"}} }},
+		{"filter model", func(q *rollups.Query) { q.Filter = rollups.Filter{Models: []string{"model-b"}} }},
+		{"measures", func(q *rollups.Query) { q.Measures = append(q.Measures, rollups.MeasureLLMCompletions) }},
+		{"group by", func(q *rollups.Query) { q.GroupBy = []rollups.Dimension{rollups.DimensionTenant} }},
+		{"sort", func(q *rollups.Query) { q.Sort = rollups.SortKeyBucketDesc }},
+		{"sort measure", func(q *rollups.Query) {
+			q.Sort = rollups.SortKeyMeasureAsc
+			q.SortMeasure = rollups.MeasureLLMCompletions
+		}},
+	}
+	for _, tc := range cases {
+		t.Run("mismatch "+tc.name, func(t *testing.T) {
+			q := base
+			q.Cursor = first.NextCursor
+			tc.mut(&q)
+			if _, err := s.Query(ctx, q); !errors.Is(err, rollups.ErrBadCursor) {
+				t.Fatalf("cursor reused across %s: err=%v; want ErrBadCursor", tc.name, err)
+			}
+		})
+	}
+
+	// The declared continuation contract: the SAME shape with a different
+	// page Limit may continue — Limit is deliberately not part of the
+	// shape.
+	continued := base
+	continued.Cursor = first.NextCursor
+	continued.Limit = 5
+	res, err := s.Query(ctx, continued)
+	if err != nil {
+		t.Fatalf("same-shape different-limit continuation: %v", err)
+	}
+	if len(res.Rows) == 0 {
+		t.Fatal("same-shape continuation returned no rows")
+	}
+
+	// The effective-sort normalisation: a cursor produced under the empty
+	// default continues under an explicitly-set SortKeyBucketAsc, and a
+	// cursor produced under the explicit sort continues under the default.
+	explicit := base
+	explicit.Sort = rollups.SortKeyBucketAsc
+	p2, err := s.Query(ctx, explicit)
+	if err != nil {
+		t.Fatalf("explicit-sort page: %v", err)
+	}
+	if p2.NextCursor == "" {
+		t.Fatal("explicit-sort query must produce a next cursor")
+	}
+	viaDefault := explicit
+	viaDefault.Sort = "" // the effective default
+	viaDefault.Cursor = p2.NextCursor
+	if _, err := s.Query(ctx, viaDefault); err != nil {
+		t.Fatalf("cursor from explicit sort must continue under the empty-sort default: %v", err)
+	}
+}
+
 func groupBy(t *testing.T, factory Factory) {
 	ctx := context.Background()
 	s, cleanup := factory()
@@ -934,7 +1065,7 @@ func groupBy(t *testing.T, factory Factory) {
 	}
 	apply(ctx, t, s, evs...)
 
-	from, to := h, h.Add(time.Hour)
+	from, to := rollups.BucketStart(h, rollups.BucketHour), rollups.BucketStart(h, rollups.BucketHour).Add(time.Hour)
 
 	// No GroupBy: one row per bucket over the whole window.
 	q := rollups.Query{
@@ -1011,7 +1142,7 @@ func erasureFencePermanent(t *testing.T, factory Factory) {
 	if f, err := s.IsFenced(ctx, triple); err != nil || !f {
 		t.Fatalf("IsFenced after fence = %v, %v; want true", f, err)
 	}
-	res := mustQuery(ctx, t, s, h, h.Add(time.Hour), rollups.BucketHour)
+	res := mustQuery(ctx, t, s, rollups.BucketStart(h, rollups.BucketHour), rollups.BucketStart(h, rollups.BucketHour).Add(time.Hour), rollups.BucketHour)
 	if got := totalCost(res); got != 2_000_000 {
 		t.Fatalf("cost after fence = %d micros; want 2_000_000 (session-2 only)", got)
 	}
@@ -1031,7 +1162,7 @@ func erasureFencePermanent(t *testing.T, factory Factory) {
 	if ck, err := s.Checkpoint(ctx); err != nil || ck != 2 {
 		t.Fatalf("checkpoint after refused batch = %d, %v; want 2", ck, err)
 	}
-	res = mustQuery(ctx, t, s, h, h.Add(time.Hour), rollups.BucketHour)
+	res = mustQuery(ctx, t, s, rollups.BucketStart(h, rollups.BucketHour), rollups.BucketStart(h, rollups.BucketHour).Add(time.Hour), rollups.BucketHour)
 	if got := totalCost(res); got != 2_000_000 {
 		t.Fatalf("cost after refused late event = %d micros; want 2_000_000 (no resurrection)", got)
 	}
@@ -1069,7 +1200,7 @@ func erasureFencePermanent(t *testing.T, factory Factory) {
 	if err := s.ApplyBatch(ctx, rollups.Batch{Checkpoint: 2, Deltas: survivorDeltas}); err != nil {
 		t.Fatalf("replay ApplyBatch: %v", err)
 	}
-	res = mustQuery(ctx, t, s, h, h.Add(time.Hour), rollups.BucketHour)
+	res = mustQuery(ctx, t, s, rollups.BucketStart(h, rollups.BucketHour), rollups.BucketStart(h, rollups.BucketHour).Add(time.Hour), rollups.BucketHour)
 	if got := totalCost(res); got != 2_000_000 {
 		t.Fatalf("cost after rebuild+replay = %d micros; want 2_000_000 (session-1 never resurrected)", got)
 	}
@@ -1127,7 +1258,11 @@ func retentionAndRebuild(t *testing.T, factory Factory) {
 	if ck, err := s.Checkpoint(ctx); err != nil || ck != 0 {
 		t.Fatalf("checkpoint after rebuild = %d, %v; want 0", ck, err)
 	}
-	res := mustQuery(ctx, t, s, h1.Add(-time.Hour), h2.Add(time.Hour), rollups.BucketHour)
+	// An hour-aligned window over the (now empty) store: no rows.
+	res := mustQuery(ctx, t, s,
+		rollups.BucketStart(h1, rollups.BucketHour),
+		rollups.BucketStart(h2, rollups.BucketHour).Add(time.Hour),
+		rollups.BucketHour)
 	if len(res.Rows) != 0 {
 		t.Fatalf("rows after rebuild = %d; want 0", len(res.Rows))
 	}
@@ -1152,9 +1287,10 @@ func concurrentQueries(t *testing.T, factory Factory) {
 	}
 	apply(ctx, t, s, evs...)
 
+	from := rollups.BucketStart(h, rollups.BucketHour)
 	q := rollups.Query{
-		From:     h,
-		To:       h.Add(time.Hour),
+		From:     from,
+		To:       from.Add(time.Hour),
 		Bucket:   rollups.BucketHour,
 		Measures: []rollups.Measure{rollups.MeasureLLMCostMicros},
 		Sort:     rollups.SortKeyBucketAsc,

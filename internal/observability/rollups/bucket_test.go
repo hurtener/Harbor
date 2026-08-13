@@ -1,6 +1,7 @@
 package rollups
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -66,6 +67,7 @@ func TestBucketStart_NonUTCInputs(t *testing.T) {
 
 func TestBucketSpan(t *testing.T) {
 	from := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	midnight := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
 
 	cases := []struct {
 		name string
@@ -74,22 +76,20 @@ func TestBucketSpan(t *testing.T) {
 		size BucketSize
 		want int64
 	}{
-		// bucketSpan counts the buckets that INTERSECT the half-open
-		// window [from, to) — the maximum number of distinct query
-		// buckets a result can carry. A window that starts mid-bucket
-		// spans parts of two buckets.
+		// bucketSpan counts exactly the aligned half-open buckets in
+		// [from, to): both edges sit on the size's fixed-UTC grid, so the
+		// count is (to-from)/duration — never an intersecting partial
+		// bucket. A window ending exactly on a boundary excludes the
+		// bucket that starts there.
 		{"one minute", from, from.Add(time.Minute), BucketMinute, 1},
 		{"60 minutes", from, from.Add(time.Hour), BucketMinute, 60},
-		{"exact boundary excludes next", from, from.Add(3 * time.Hour), BucketHour, 3},
-		{"partial last hour", from, from.Add(2*time.Hour + 30*time.Minute), BucketHour, 3},
-		{"mid-hour start", from.Add(15 * time.Minute), from.Add(time.Hour + 15*time.Minute), BucketHour, 2},
-		{"24h from midnight", time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC), time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC), BucketDay, 1},
-		{"24h from mid-day", from, from.Add(24 * time.Hour), BucketDay, 2},
-		{"two days from midnight", time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC), time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC), BucketDay, 2},
-		{"48h from mid-day", from, from.Add(48 * time.Hour), BucketDay, 3},
-		{"partial day", from, from.Add(36 * time.Hour), BucketDay, 2},
+		{"1440 minutes at day", midnight, midnight.Add(24 * time.Hour), BucketMinute, 1440},
+		{"exact hour boundary excludes next", from, from.Add(3 * time.Hour), BucketHour, 3},
+		{"24 aligned hours", from, from.Add(24 * time.Hour), BucketHour, 24},
 		{"week at hour", from, from.Add(7 * 24 * time.Hour), BucketHour, 168},
-		{"1440 minutes at day", from, from.Add(24 * time.Hour), BucketMinute, 1440},
+		{"one day from midnight", midnight, midnight.Add(24 * time.Hour), BucketDay, 1},
+		{"two days from midnight", midnight, midnight.Add(48 * time.Hour), BucketDay, 2},
+		{"day boundary excludes next", midnight, midnight.Add(24 * time.Hour), BucketDay, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,6 +99,36 @@ func TestBucketSpan(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Fatalf("bucketSpan = %d; want %d", got, tc.want)
+			}
+		})
+	}
+
+	// Misaligned edges fail loudly — a window never silently counts a
+	// partial bucket: 1ns and 1s misalignment on From and To, for every
+	// closed size, are all ErrQueryInvalid.
+	mis := []struct {
+		name string
+		from time.Time
+		to   time.Time
+		size BucketSize
+	}{
+		{"minute 1ns from", from.Add(time.Nanosecond), from.Add(time.Minute), BucketMinute},
+		{"minute 1s from", from.Add(time.Second), from.Add(time.Minute), BucketMinute},
+		{"minute 1ns to", from, from.Add(time.Minute).Add(-time.Nanosecond), BucketMinute},
+		{"minute 1s to", from, from.Add(time.Minute).Add(-time.Second), BucketMinute},
+		{"hour 1ns from", from.Add(time.Nanosecond), from.Add(time.Hour), BucketHour},
+		{"hour 1s from", from.Add(time.Second), from.Add(time.Hour), BucketHour},
+		{"hour 1ns to", from, from.Add(time.Hour).Add(-time.Nanosecond), BucketHour},
+		{"hour 1s to", from, from.Add(time.Hour).Add(-time.Second), BucketHour},
+		{"day 1ns from", midnight.Add(time.Nanosecond), midnight.Add(24 * time.Hour), BucketDay},
+		{"day 1s from", midnight.Add(time.Second), midnight.Add(24 * time.Hour), BucketDay},
+		{"day 1ns to", midnight, midnight.Add(24 * time.Hour).Add(-time.Nanosecond), BucketDay},
+		{"day 1s to", midnight, midnight.Add(24 * time.Hour).Add(-time.Second), BucketDay},
+	}
+	for _, tc := range mis {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := bucketSpan(tc.from, tc.to, tc.size); !errors.Is(err, ErrQueryInvalid) {
+				t.Fatalf("bucketSpan(%s) err = %v; want ErrQueryInvalid", tc.name, err)
 			}
 		})
 	}

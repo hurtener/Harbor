@@ -257,7 +257,10 @@ func (s *Store) aggregate(ctx context.Context, q rollups.Query, rows map[rollups
 
 	// Keyset pagination: skip everything up to and including the cursor
 	// position, then emit at most Limit rows; a Limit+1-th row means
-	// there is a next page.
+	// there is a next page. The cursor's shape binding (version +
+	// fingerprint) was verified by q.Validate() before the candidate scan;
+	// the group-shape re-check here guards a hand-crafted cursor with a
+	// correct fingerprint but an unrelated Group map.
 	var cursor rollups.PageCursor
 	if q.Cursor != "" {
 		decoded, err := rollups.DecodeCursor(q.Cursor)
@@ -284,8 +287,12 @@ func (s *Store) aggregate(ctx context.Context, q rollups.Query, rows map[rollups
 	}
 	last := page[q.Limit-1]
 	next := rollups.PageCursor{
-		BucketNano: last.BucketStart.UnixNano(),
-		Group:      last.Dimensions,
+		// Bind the cursor to the producing query's canonical shape so a
+		// reuse under a differently-shaped query fails loudly.
+		ShapeVersion: rollups.CursorShapeVersion,
+		Fingerprint:  rollups.QueryShapeFingerprint(q),
+		BucketNano:   last.BucketStart.UnixNano(),
+		Group:        last.Dimensions,
 	}
 	if q.Sort == rollups.SortKeyMeasureAsc || q.Sort == rollups.SortKeyMeasureDesc {
 		next.MeasureVal = last.Measures[q.SortMeasure].N
@@ -300,7 +307,9 @@ func (s *Store) aggregate(ctx context.Context, q rollups.Query, rows map[rollups
 // cursorShapeMatches reports whether the cursor's group values carry
 // exactly the query's GroupBy dimensions — a cursor produced by a query
 // with a different GroupBy (or hand-crafted) must be rejected loudly
-// rather than silently mis-paginating.
+// rather than silently mis-paginating. The full shape binding (version +
+// fingerprint) is enforced by Query.Validate; this is the structural
+// defence against a fabricated position.
 func cursorShapeMatches(group rollups.DimensionValues, groupBy []rollups.Dimension) bool {
 	if len(group) != len(groupBy) {
 		return false

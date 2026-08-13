@@ -137,10 +137,14 @@ const maxCatchUpIterations = 1_000_000
 // local durable sequence (the bus Sequence) after every batch.
 //
 // The projector is a compiled artifact: source + store + options are set at
-// construction and never mutated. Per-call state (the watermark, the catch-up
-// state) is guarded by an internal mutex and is safe to read (Quality) and
-// advance (Advance / CatchUp) concurrently — concurrent advances are
-// serialised and idempotent through the Store's checkpoint guard.
+// construction and never mutated. Per-call state (the watermark, the
+// catch-up state) is guarded by an internal mutex and is safe to read
+// (Quality) at any time. The state-MUTATING path is serialised by an
+// advance mutex held for the FULL Advance/CatchUp step (watermark read,
+// source read, fence checks, ApplyBatch, and the in-memory watermark/state
+// update) and by Rebuild, so a delayed Advance can never apply a
+// newer/no-op batch and then overwrite p.watermark/state backwards, and a
+// Rebuild can never interleave with an in-flight Advance.
 //
 // Best-effort posture: the projector is a DOWNSTREAM consumer of an
 // already-successful publication. The durable log persisted the event and
@@ -156,6 +160,12 @@ type Projector struct {
 	clock  Clock
 
 	batchSize int
+
+	// advanceMu serialises the entire state-mutating step. Advance /
+	// CatchUp hold it for the full step and Rebuild takes the same mutex,
+	// so no two advances overlap and no rebuild interleaves with an
+	// in-flight advance. Quality does NOT take it — reads stay concurrent.
+	advanceMu sync.Mutex
 
 	mu          sync.RWMutex
 	watermark   uint64
@@ -212,10 +222,21 @@ func NewProjector(source Source, store Store, opts ...ProjectorOption) (*Project
 // pre-check and the apply) leaves the checkpoint untouched; the next call
 // drops the now-fenced event and progresses.
 //
-// Advance is safe for concurrent use: concurrent calls are idempotent
-// through the Store's checkpoint guard (a call whose batch does not advance
-// the stored checkpoint applies nothing).
+// Advance is safe for concurrent use: the advance mutex is held for the
+// FULL step (watermark read, source read, apply, in-memory watermark/state
+// update), so concurrent advances are serialised end to end — a delayed
+// advance can never read a stale watermark, apply a newer/no-op batch, and
+// then overwrite p.watermark backwards. Rebuild takes the same mutex, so a
+// rebuild waits for any in-flight advance (and vice versa).
 func (p *Projector) Advance(ctx context.Context) (bool, error) {
+	// The full state-mutating step runs under the advance mutex: the
+	// watermark read below, the source read, the fence checks, the
+	// ApplyBatch, and the in-memory watermark/state update are ONE
+	// serialised unit, so two delayed advances cannot interleave and a
+	// Rebuild cannot land mid-step.
+	p.advanceMu.Lock()
+	defer p.advanceMu.Unlock()
+
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -297,6 +318,10 @@ func (p *Projector) Advance(ctx context.Context) (bool, error) {
 // operator paths that want "drain the backlog now". Bounded by
 // maxCatchUpIterations so a pathological source fails loudly rather than
 // looping forever.
+//
+// Each Advance step is fully serialised by the advance mutex, so a CatchUp
+// loop shares the serialization guarantees of a single Advance: no two
+// advances overlap, and a Rebuild waits for the in-flight step.
 func (p *Projector) CatchUp(ctx context.Context) error {
 	for i := 0; i < maxCatchUpIterations; i++ {
 		caughtUp, err := p.Advance(ctx)
@@ -349,7 +374,17 @@ func (p *Projector) Quality(ctx context.Context) (Quality, error) {
 // an erased session stays erased through reprojection: rebuilding rows or
 // the checkpoint cannot authorize resurrection. The State returns to
 // StateCatchingUp.
+//
+// Rebuild takes the SAME advance mutex as Advance, so it coordinates with
+// in-flight advances: a rebuild waits for any delayed advance to finish
+// (the advance's batch lands BEFORE the reset — never after it, which
+// would jump the fresh checkpoint over the pre-rebuild events), and an
+// advance waits for a rebuild to finish. After Rebuild returns, the
+// watermark/checkpoint are 0 and the next Advance re-drains the whole log.
 func (p *Projector) Rebuild(ctx context.Context) error {
+	p.advanceMu.Lock()
+	defer p.advanceMu.Unlock()
+
 	if err := p.store.Rebuild(ctx); err != nil {
 		return fmt.Errorf("rollups: projector rebuild: %w", err)
 	}

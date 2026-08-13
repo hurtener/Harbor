@@ -76,25 +76,36 @@ func BucketStart(t time.Time, size BucketSize) time.Time {
 	}
 }
 
-// bucketSpan returns the number of buckets whose start instant falls in the
-// half-open window [from, to): every bucket that intersects the window. from
-// must be before to. The count is ceil((to - floor(from))/d), exact in
-// integer nanoseconds, so a window ending exactly on a bucket boundary
-// excludes the bucket that starts there.
+// bucketSpan returns the number of fixed UTC buckets the half-open window
+// [from, to) covers. from and to MUST both be aligned to the size grid —
+// each must equal its own BucketStart (Query.Validate enforces this; the
+// re-check here makes a misaligned window fail loudly with ErrQueryInvalid
+// rather than silently counting a partial bucket). For aligned edges the
+// count is exact integer division: (to-from)/duration, so a window ending
+// exactly on a bucket boundary excludes the bucket that starts there, and
+// no window ever spans a partial bucket.
 func bucketSpan(from, to time.Time, size BucketSize) (int64, error) {
 	if !to.After(from) {
 		return 0, fmt.Errorf("%w: window [%s, %s) is empty or reversed", ErrQueryInvalid, from.Format(time.RFC3339Nano), to.Format(time.RFC3339Nano))
 	}
-	first := BucketStart(from, size)
-	d := int64(size.Duration())
-	if first.After(from) {
-		return 0, fmt.Errorf("%w: internal bucket floor moved forward", ErrQueryInvalid)
+	if err := size.Validate(); err != nil {
+		return 0, err
 	}
-	span := to.Sub(first)
-	n := span.Nanoseconds()
-	// ceil(n / d) with exact integer arithmetic.
-	count := (n + d - 1) / d
-	return count, nil
+	if !from.Equal(BucketStart(from, size)) {
+		return 0, fmt.Errorf("%w: window From %s is not aligned to the %s grid (it must fall exactly on a fixed-UTC bucket boundary)",
+			ErrQueryInvalid, from.Format(time.RFC3339Nano), size)
+	}
+	if !to.Equal(BucketStart(to, size)) {
+		return 0, fmt.Errorf("%w: window To %s is not aligned to the %s grid (it must fall exactly on a fixed-UTC bucket boundary)",
+			ErrQueryInvalid, to.Format(time.RFC3339Nano), size)
+	}
+	n := to.Sub(from).Nanoseconds()
+	d := int64(size.Duration())
+	if n%d != 0 {
+		return 0, fmt.Errorf("%w: internal: window [%s, %s) is not a whole number of %s buckets",
+			ErrQueryInvalid, from.Format(time.RFC3339Nano), to.Format(time.RFC3339Nano), size)
+	}
+	return n / d, nil
 }
 
 // allBucketSizes renders the closed set for error messages.

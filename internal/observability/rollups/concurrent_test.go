@@ -124,8 +124,10 @@ func TestProjector_ConcurrentReuse(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			// Advancers are idempotent: concurrent Advances serialise on
-			// the store's checkpoint guard; every drain lands exactly once.
+			// Concurrent Advances are serialised END TO END by the
+			// projector's advance mutex (one full step at a time), so
+			// each step reads the latest watermark and every drain lands
+			// exactly once.
 			if _, err := p.Advance(ctx); err != nil {
 				failures.Add(1)
 				t.Errorf("advancer %d: %v", idx, err)
