@@ -286,6 +286,14 @@ func resolveHTTPManifestPaths(cfg *Config, configDir string) error {
 // `filepath.Clean`ed and accepted unconditionally — the documented
 // `/etc/harbor/skills` operator deployment shape, the same trust posture
 // as `tools.http_manifests` absolute entries.
+//
+// Only values that are already clean (non-empty, no surrounding
+// whitespace) are resolved. An empty or whitespace-surrounded value is
+// left UNTOUCHED so validateBootAgentPacks rejects it with the clean
+// "must not be empty or have surrounding whitespace" message — this pass
+// never silently trims, because the stored value must equal the value
+// validation bounds (a trimmed-and-resolved copy would let an arbitrary
+// run of spaces pad a directory past the rune ceiling).
 func resolveBootAgentPackDirectories(cfg *Config, configDir string) error {
 	if configDir == "" || len(cfg.Skills.BootAgentPacks) == 0 {
 		return nil
@@ -296,22 +304,17 @@ func resolveBootAgentPackDirectories(cfg *Config, configDir string) error {
 	}
 	for i := range cfg.Skills.BootAgentPacks {
 		p := &cfg.Skills.BootAgentPacks[i]
-		trimmed := strings.TrimSpace(p.Directory)
-		if trimmed == "" {
-			// Leave untouched so validateBootAgentPacks reports the clean
-			// "must not be empty" message rather than a confusing
-			// path-escape one (mirrors the manifest resolver's empty
-			// entry handling).
+		if p.Directory == "" || p.Directory != strings.TrimSpace(p.Directory) {
 			continue
 		}
-		if filepath.IsAbs(trimmed) {
-			p.Directory = filepath.Clean(trimmed)
+		if filepath.IsAbs(p.Directory) {
+			p.Directory = filepath.Clean(p.Directory)
 			continue
 		}
-		joined := filepath.Clean(filepath.Join(canonicalDir, trimmed))
+		joined := filepath.Clean(filepath.Join(canonicalDir, p.Directory))
 		if !pathHasPrefixWithinRoot(joined, canonicalDir) {
 			return fieldError(fmt.Sprintf("skills.boot_agent_packs[%d].directory", i),
-				fmt.Sprintf("%q escapes the config directory %q", trimmed, canonicalDir))
+				fmt.Sprintf("%q escapes the config directory %q", p.Directory, canonicalDir))
 		}
 		p.Directory = joined
 	}
@@ -340,10 +343,19 @@ func pathHasPrefixWithinRoot(p, root string) bool {
 // Load-time relative-path resolution (the config file's directory is
 // not retained on *Config, so there is nothing to resolve against —
 // only the structural re-validation runs). Overrides that set manifest
-// paths or pack directories must use ABSOLUTE paths; a relative entry
-// passes through unresolved and resolves against the process CWD at
-// boot via the consuming driver's own Clean+Abs, exactly like a
-// hand-built *Config's would.
+// paths or pack directories must use ABSOLUTE paths.
+//
+// A RELATIVE `tools.http_manifests` entry passes through unresolved
+// and resolves against the process CWD at boot via the HTTP driver's
+// own Clean+Abs, exactly like a hand-built *Config's would (the
+// documented HTTP-manifest posture).
+//
+// A RELATIVE `skills.boot_agent_packs[].directory` injected here is
+// DIFFERENT: HA-66 forbids any CWD fallback for boot pack directories.
+// With no retained config-file provenance the relative value remains
+// UNRESOLVED, and the later boot loader must FAIL LOUD on it — the
+// override must use an absolute directory (the same rule a hand-built
+// *Config obeys).
 func WithOverrides(c *Config, overrides map[string]string) (*Config, error) {
 	if c == nil {
 		return nil, fmt.Errorf("%w: WithOverrides called with nil *Config", ErrConfigInvalid)

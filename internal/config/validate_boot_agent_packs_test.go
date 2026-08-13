@@ -347,6 +347,60 @@ func TestValidate_BootAgentPacks_Bounds(t *testing.T) {
 	}
 }
 
+// TestValidate_BootAgentPacks_DirectoryWhitespace pins the directory
+// whitespace contract on the PURE validation path — the value a
+// hand-built *Config stores is exactly what LoadFromBytes / WithOverrides
+// hand validation: surrounding whitespace is rejected OUTRIGHT and the
+// rune bound applies to the STORED/raw value, never a trimmed copy, so an
+// arbitrary run of spaces cannot pad a directory past the ceiling (the
+// old TrimSpace-before-length-check let a padded value validate and pass
+// through unresolved to boot).
+func TestValidate_BootAgentPacks_DirectoryWhitespace(t *testing.T) {
+	t.Parallel()
+
+	spacePad := strings.Repeat(" ", config.MaxBootAgentPackDirectoryRunes+1) + "/etc/harbor/skills"
+
+	cases := []struct {
+		name      string
+		directory string
+		wantErr   bool
+	}{
+		{name: "clean relative directory", directory: "skills", wantErr: false},
+		{name: "clean absolute directory", directory: "/etc/harbor/skills", wantErr: false},
+		{name: "whitespace only", directory: "   ", wantErr: true},
+		{name: "tab only", directory: "\t", wantErr: true},
+		{name: "leading whitespace", directory: " /etc/harbor/skills", wantErr: true},
+		{name: "trailing whitespace", directory: "/etc/harbor/skills ", wantErr: true},
+		{name: "leading and trailing whitespace", directory: "  /etc/harbor/skills  ", wantErr: true},
+		{name: "tab inside the value", directory: "\t/etc/harbor/skills", wantErr: true},
+		{name: "space-padded value cannot bypass the rune bound", directory: spacePad, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := bootAgentPackConfig(t, config.BootAgentPackConfig{
+				TenantID: "acme", AgentID: "boot-agent",
+				Directory: tc.directory, Include: []string{"pack-a"},
+			})
+			err := cfg.Validate()
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("Validate rejected a clean directory %q: %v", tc.directory, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate accepted whitespace-surrounded directory %q", tc.directory)
+			}
+			if !strings.Contains(err.Error(), "skills.boot_agent_packs[0].directory") {
+				t.Errorf("err = %v, want it to name skills.boot_agent_packs[0].directory", err)
+			}
+			if !strings.Contains(err.Error(), "whitespace") {
+				t.Errorf("err = %v, want the surrounding-whitespace reason", err)
+			}
+		})
+	}
+}
+
 // TestValidate_BootAgentPacks_Duplicates pins the duplicate rejections:
 // the exact (tenant_id, agent_id) pair may be declared once, and each
 // declaration's include list is unique both raw and after case-normalised
@@ -508,6 +562,21 @@ func TestLoad_BootAgentPacks_DirectoryResolution(t *testing.T) {
 			directory: "/etc/harbor/skills//",
 			wantAbs:   filepath.Clean("/etc/harbor/skills//"),
 		},
+		{
+			name:      "whitespace-surrounded absolute directory rejected",
+			directory: " /etc/harbor/skills",
+			wantErr:   true,
+		},
+		{
+			name:      "whitespace-only directory rejected",
+			directory: "   ",
+			wantErr:   true,
+		},
+		{
+			name:      "space-padded directory cannot bypass the rune bound",
+			directory: strings.Repeat(" ", config.MaxBootAgentPackDirectoryRunes+1) + "/etc/harbor/skills",
+			wantErr:   true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -588,6 +657,51 @@ func TestLoadFromBytes_BootAgentPacks_NoCWDResolve(t *testing.T) {
 	}
 	if got := cfgAt.Skills.BootAgentPacks[0].Directory; got != "skills" {
 		t.Errorf("LoadFromBytesAt(empty path) resolved relative directory to %q, want the unresolved %q", got, "skills")
+	}
+}
+
+// TestLoadFromBytes_BootAgentPacks_DirectoryWhitespaceRejected pins the
+// byte-source regression: LoadFromBytes preserves the RAW directory value
+// (the resolve pass is a no-op without a config file), so a
+// whitespace-surrounded directory must be rejected at validation rather
+// than silently trimmed and accepted — arbitrarily many spaces cannot
+// pad a directory past the rune bound on the value that is actually
+// stored.
+func TestLoadFromBytes_BootAgentPacks_DirectoryWhitespaceRejected(t *testing.T) {
+	t.Parallel()
+
+	spacePad := strings.Repeat(" ", config.MaxBootAgentPackDirectoryRunes+1) + "/etc/harbor/skills"
+	cases := []struct {
+		name      string
+		directory string
+	}{
+		{name: "whitespace only", directory: "   "},
+		{name: "leading whitespace", directory: " /etc/harbor/skills"},
+		{name: "trailing whitespace", directory: "/etc/harbor/skills "},
+		{name: "space-padded value cannot bypass the rune bound", directory: spacePad},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			block := fmt.Sprintf(`skills:
+  driver: localdb
+  dsn: ":memory:"
+  boot_agent_packs:
+    - tenant_id: acme
+      agent_id: harbor-dev-agent
+      directory: %q
+      include: [workbench-foundation]
+`, tc.directory)
+			_, err := config.LoadFromBytes(context.Background(), bootAgentPackFixtureYAML(t, block))
+			if err == nil {
+				t.Fatalf("LoadFromBytes accepted whitespace-surrounded directory %q", tc.directory)
+			}
+			if !errors.Is(err, config.ErrConfigInvalid) {
+				t.Errorf("err = %v, want wrapping ErrConfigInvalid", err)
+			}
+			if !strings.Contains(err.Error(), "skills.boot_agent_packs[0].directory") {
+				t.Errorf("err = %v, want it to name skills.boot_agent_packs[0].directory", err)
+			}
+		})
 	}
 }
 

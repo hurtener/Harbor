@@ -779,7 +779,9 @@ type SkillsConfig struct {
 //     pattern), NEVER the process CWD. A config loaded without a file
 //     source (LoadFromBytes / a hand-built *Config) keeps the relative
 //     value unresolved so the later boot loader can fail loud rather
-//     than silently falling back to CWD.
+//     than silently falling back to CWD. Surrounding whitespace is
+//     rejected outright, and the rune bound applies to the stored/raw
+//     value — never a trimmed copy.
 //   - `include` — the exact list of package-directory names under
 //     `directory` to compose. Each entry is EXACTLY ONE relative
 //     package-directory name: non-empty, single-segment, no `.` / `..`,

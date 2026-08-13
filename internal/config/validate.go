@@ -1236,14 +1236,16 @@ func (c *Config) validateBootAgentPacks() error {
 		}
 		// directory: absolute (the authoritative deployment shape) or
 		// relative (resolved by the loader against the config file's
-		// directory, never CWD). Only the blank and over-long shapes are
-		// refused here — shape-only, no I/O.
-		dir := strings.TrimSpace(p.Directory)
-		if dir == "" {
+		// directory, never CWD). Surrounding whitespace is rejected
+		// OUTRIGHT and the rune bound runs on the STORED/raw value —
+		// never on a trimmed copy — so an arbitrary run of spaces
+		// cannot pad a value past the ceiling (LoadFromBytes and a
+		// hand-built *Config preserve the raw value). Shape-only, no I/O.
+		if p.Directory == "" || p.Directory != strings.TrimSpace(p.Directory) {
 			return fieldError(prefix+".directory",
-				"must not be empty (an absolute path, or a relative path the loader resolves against the config file's directory)")
+				"must not be empty or have surrounding whitespace (an absolute path, or a relative path the loader resolves against the config file's directory)")
 		}
-		if r := len([]rune(dir)); r > MaxBootAgentPackDirectoryRunes {
+		if r := len([]rune(p.Directory)); r > MaxBootAgentPackDirectoryRunes {
 			return fieldError(prefix+".directory",
 				fmt.Sprintf("must be at most %d runes, got %d", MaxBootAgentPackDirectoryRunes, r))
 		}
