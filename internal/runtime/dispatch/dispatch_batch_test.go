@@ -545,7 +545,8 @@ func TestExecutor_Batch_ToolCountAccounting(t *testing.T) {
 // Tools) dispatches its spawns with an empty Tools observation (the
 // parallel executor is never invoked with an empty branch set).
 func TestExecutor_Batch_SpawnsOnly_NoTools(t *testing.T) {
-	exec, _ := newBatchTestExecutor(t, tools.NewCatalog(), 5)
+	cat := tools.NewCatalog()
+	exec, _ := newBatchTestExecutor(t, cat, 5)
 	q := dispatchTestQuad("r-batch")
 	d := planner.Batch{
 		Spawns: []planner.SpawnTask{
