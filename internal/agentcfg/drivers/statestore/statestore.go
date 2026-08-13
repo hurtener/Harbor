@@ -393,7 +393,10 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	}
 
 	now := r.clock().UTC()
-	revID := string(state.NewEventID())
+	revID := opts.TargetRevisionID
+	if revID == "" {
+		revID = string(state.NewEventID())
+	}
 	rec := revisionRecord{
 		Schema:           recordSchema,
 		RevisionID:       revID,

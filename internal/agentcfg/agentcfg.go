@@ -137,6 +137,12 @@ const ExpectNoActiveRevision = "-"
 // unconditional write — byte-for-byte the behaviour that shipped before
 // this option existed, on every door.
 type SetOptions struct {
+	// TargetRevisionID, when non-empty, makes the new revision identity
+	// deterministic. It is used by durable resumable publications: the
+	// committing receipt records this id before the registry write, so a
+	// retry can prove that the exact same revision landed rather than create
+	// a second mutation.
+	TargetRevisionID string
 	// ExpectedContentHash, when non-empty, requires the agent's ACTIVE
 	// revision to carry exactly this content hash at write time. A
 	// mismatch — or no active revision at all — fails with
