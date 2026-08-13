@@ -594,7 +594,7 @@ func TestE2E_MCPEgress_UnresolvableIDIsRecoverableNotStepTerminating(t *testing.
 	ctx := egCtx(t, q)
 	before := st.received.frames.Load()
 
-	rc := planner.RunContext{Quadruple: q, Trajectory: &trajectory.Trajectory{}}
+	rc := egRC(st, q)
 	_, _, err := st.exec.ExecuteDecision(ctx, rc, egCall("art_doesnotexist"))
 	if err == nil {
 		t.Fatalf("an invented artifact id succeeded")

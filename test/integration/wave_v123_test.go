@@ -735,7 +735,7 @@ func TestE2E_WaveV123_SubstitutionInvariantHoldsWhileTheProtocolServesTheBytes(t
 	if err != nil {
 		t.Fatalf("identity.WithRun: %v", err)
 	}
-	rc := planner.RunContext{Quadruple: consumer, Trajectory: &trajectory.Trajectory{}}
+	rc := planner.RunContext{Quadruple: consumer, Trajectory: &trajectory.Trajectory{}, Catalog: tools.NewPlannerView(st.catalog, tools.CatalogFilter{TenantID: consumer.TenantID, UserID: consumer.UserID, SessionID: consumer.SessionID})}
 	raw, llmObs, err := st.exec.ExecuteDecision(ctx, rc, call)
 	if err != nil {
 		t.Fatalf("ExecuteDecision: %v", err)

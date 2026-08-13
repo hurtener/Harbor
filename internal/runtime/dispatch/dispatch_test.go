@@ -589,7 +589,7 @@ func TestExecutor_DefaultThreshold_InlinedBand_NoArtifactWritten(t *testing.T) {
 
 			q := dispatchTestQuad("r-band-" + strconv.Itoa(size))
 			_, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q),
-				planner.RunContext{Quadruple: q},
+				dispatchRunContext(cat, q),
 				planner.CallTool{Tool: "banded", Args: json.RawMessage(`{}`)})
 			if err != nil {
 				t.Fatalf("ExecuteDecision: %v", err)
@@ -639,7 +639,7 @@ func TestExecutor_DefaultThreshold_AboveBand_StillPromoted(t *testing.T) {
 
 			q := dispatchTestQuad("r-above-" + strconv.Itoa(size))
 			_, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q),
-				planner.RunContext{Quadruple: q},
+				dispatchRunContext(cat, q),
 				planner.CallTool{Tool: "above", Args: json.RawMessage(`{}`)})
 			if err != nil {
 				t.Fatalf("ExecuteDecision: %v", err)

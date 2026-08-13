@@ -734,7 +734,8 @@ func TestExecutor_Batch_ConcurrentReuse(t *testing.T) {
 				SessionID: "session-" + strconv.Itoa(idx),
 			}
 			runID := "r-" + strconv.Itoa(idx)
-			rc := planner.RunContext{Quadruple: identity.Quadruple{Identity: id, RunID: runID}}
+			q := identity.Quadruple{Identity: id, RunID: runID}
+			rc := dispatchRunContext(cat, q)
 			ctx, wErr := identity.WithRun(context.Background(), id, runID)
 			if wErr != nil {
 				errCh <- wErr
