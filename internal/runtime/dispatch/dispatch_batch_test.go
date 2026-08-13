@@ -635,7 +635,11 @@ func TestExecutor_SpawnTask_VirtualProfileOwnsArtifactDisposition(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, err := reg.Get(dispatchTestCtx(t, q), tasks.TaskID(raw.(map[string]any)["task_id"].(string)))
+	ownerCtx, err := identity.With(t.Context(), q.Identity)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	task, err := reg.Get(ownerCtx, tasks.TaskID(raw.(map[string]any)["task_id"].(string)))
 	if err != nil {
 		t.Fatal(err)
 	}

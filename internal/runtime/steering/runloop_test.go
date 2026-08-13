@@ -403,13 +403,13 @@ func TestRun_ContextCancelledAtBoundary(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Drain-between-steps: the planner sees the drained Control on the NEXT step.
+// Drain-between-steps: terminal CANCEL consumes the continuation without
+// another planner turn.
 // ---------------------------------------------------------------------------
 
-func TestRun_DrainProjectsControlOntoNextStep(t *testing.T) {
+func TestRun_DrainTerminalCancelStopsBeforeNextStep(t *testing.T) {
 	rl, reg, _ := newTestRunLoop(t)
-	// Step 0: planner emits CallTool (so the loop continues to step 1).
-	// Step 1: planner emits Finish.
+	// The stale continuation script remains in place to prove it is not used.
 	p := &scriptedPlanner{
 		script: []scriptStep{
 			{dec: planner.CallTool{Tool: "noop"}},
@@ -438,13 +438,11 @@ func TestRun_DrainProjectsControlOntoNextStep(t *testing.T) {
 	if fin.Reason != planner.FinishCancelled {
 		t.Errorf("Finish.Reason = %q, want %q", fin.Reason, planner.FinishCancelled)
 	}
-	// Step 0's RunContext.Control must be empty — the CANCEL was
-	// enqueued AFTER step 0's Next. Step 1's Control must show Cancelled.
-	if p.controlAt(0).Cancelled {
-		t.Error("step 0 saw Cancelled=true — a control enqueued after step 0 leaked into step 0 (drain-between-steps violated)")
+	if p.stepCount() != 1 {
+		t.Fatalf("planner steps = %d, want 1 (terminal CANCEL must not grant another planner turn)", p.stepCount())
 	}
-	if !p.controlAt(1).Cancelled {
-		t.Error("step 1 did not see Cancelled=true — the drained CANCEL was not projected onto the next step")
+	if p.controlAt(0).Cancelled {
+		t.Error("step 0 saw Cancelled=true — a control enqueued after step 0 leaked into the current step")
 	}
 }
 

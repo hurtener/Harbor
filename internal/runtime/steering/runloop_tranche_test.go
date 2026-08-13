@@ -388,7 +388,7 @@ func TestRun_TranchePlannerPause_DoesNotResetTranche(t *testing.T) {
 	if steps := p.stepCount(); steps != 3 {
 		t.Fatalf("planner steps at the tranche park = %d, want 3 (2 before the planner pause + 1 after — the planner pause did NOT reset the tranche)", steps)
 	}
-	lastTrancheRequest(t, coord, 3, 3, 3)
+	lastTrancheRequest(t, coord, 3, 3, 2)
 
 	if err := in.Enqueue(ControlEvent{
 		Type:         ControlResume,

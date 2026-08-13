@@ -388,8 +388,8 @@ func stepErrorClass(t *testing.T, label string, obs any) string {
 
 // TestE2E_ArtifactReadPath_UnresolvableRefReachesTheNextPlannerTurn is
 // leg (c): a resolution failure is not a dead run. The runtime converts
-// it into the step's observation, CLASSIFIED, and the planner is asked
-// for its next decision holding it.
+// it into a failed trajectory step while keeping its CLASSIFIED observation
+// available to the planner's next decision and persisted history.
 func TestE2E_ArtifactReadPath_UnresolvableRefReachesTheNextPlannerTurn(t *testing.T) {
 	for name, open := range readPathDrivers() {
 		t.Run(name, func(t *testing.T) {
@@ -412,10 +412,11 @@ func TestE2E_ArtifactReadPath_UnresolvableRefReachesTheNextPlannerTurn(t *testin
 			if got := stepErrorClass(t, "Step.LLMObservation", step.LLMObservation); got != want {
 				t.Errorf("Step.LLMObservation class = %q, want %q", got, want)
 			}
-			// The run reached its terminal Finish — the classified
-			// observation is a turn, not an abort.
-			if step.Error != "" || step.Failure != nil {
-				t.Errorf("the step was marked failed (%q / %#v); the run loop must keep going", step.Error, step.Failure)
+			// The failed dispatch is recorded as a failed trajectory step;
+			// its classified observation remains available rather than being
+			// discarded or converted into a successful step.
+			if step.Error == "" {
+				t.Errorf("the unresolvable dispatch was not recorded as failed (%q / %#v)", step.Error, step.Failure)
 			}
 
 			// Failure mode 3: a tool's own error is the UNCLASSIFIED
