@@ -287,13 +287,17 @@ func resolveHTTPManifestPaths(cfg *Config, configDir string) error {
 // `/etc/harbor/skills` operator deployment shape, the same trust posture
 // as `tools.http_manifests` absolute entries.
 //
-// Only values that are already clean (non-empty, no surrounding
-// whitespace) are resolved. An empty or whitespace-surrounded value is
-// left UNTOUCHED so validateBootAgentPacks rejects it with the clean
-// "must not be empty or have surrounding whitespace" message — this pass
-// never silently trims, because the stored value must equal the value
-// validation bounds (a trimmed-and-resolved copy would let an arbitrary
-// run of spaces pad a directory past the rune ceiling).
+// The RAW directory shape is enforced HERE, BEFORE any Clean/Join
+// normalization, via the same shared helper the validator uses
+// (validateBootAgentPackDirectoryShape): an empty or whitespace-
+// surrounded value is rejected outright, and the rune ceiling applies
+// to the raw value — never to a trimmed or Clean-ed copy. filepath.Clean
+// collapses an over-bound `a/../` path below the ceiling and Join
+// resolves a relative value against the config directory, so bounding
+// only the normalized value would let a raw value validation must
+// refuse slip through shortened; a trimmed-and-resolved copy would
+// likewise let an arbitrary run of spaces pad a directory past the
+// rune ceiling.
 func resolveBootAgentPackDirectories(cfg *Config, configDir string) error {
 	if configDir == "" || len(cfg.Skills.BootAgentPacks) == 0 {
 		return nil
@@ -304,8 +308,14 @@ func resolveBootAgentPackDirectories(cfg *Config, configDir string) error {
 	}
 	for i := range cfg.Skills.BootAgentPacks {
 		p := &cfg.Skills.BootAgentPacks[i]
-		if p.Directory == "" || p.Directory != strings.TrimSpace(p.Directory) {
-			continue
+		// The raw-value shape check runs FIRST — before filepath.Clean /
+		// filepath.Join can shorten the value. A raw over-bound
+		// absolute or relative `a/../` path Clean-s to a short value
+		// that a bound on the normalized form would accept, so the
+		// bound must be enforced on the raw stored value with the same
+		// predicate validation uses (no drift possible between passes).
+		if err := validateBootAgentPackDirectoryShape(p.Directory); err != nil {
+			return fieldError(fmt.Sprintf("skills.boot_agent_packs[%d].directory", i), err.Error())
 		}
 		if filepath.IsAbs(p.Directory) {
 			p.Directory = filepath.Clean(p.Directory)

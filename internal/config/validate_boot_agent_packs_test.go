@@ -621,6 +621,109 @@ func TestLoad_BootAgentPacks_DirectoryResolution(t *testing.T) {
 	}
 }
 
+// TestLoad_BootAgentPacks_RawBoundBeforeNormalization pins the HA-66
+// re-review fix on the file-backed paths (Load and LoadFromBytesAt):
+// the RAW directory value must satisfy the surrounding-whitespace rule
+// and the rune ceiling BEFORE the resolver normalizes it. filepath.Clean
+// / filepath.Join collapse an over-bound `a/../` path below the ceiling
+// — an 8k-rune absolute value Clean-s to "/etc/harbor/skills" and an
+// 8k-rune relative value Clean-s to a short relative path — so a raw
+// value validation must refuse could otherwise slip through the
+// resolver shortened. The resolver enforces the raw shape with the SAME
+// shared helper validation uses (validateBootAgentPackDirectoryShape),
+// so the bound cannot drift between the passes.
+func TestLoad_BootAgentPacks_RawBoundBeforeNormalization(t *testing.T) {
+	t.Parallel()
+
+	// Raw values whose `a/..` pairs Clean entirely away: each pair
+	// cancels, leaving a normalized value far below the ceiling. The
+	// raw lengths exceed MaxBootAgentPackDirectoryRunes, so only a
+	// bound on the RAW value can reject them.
+	absCollapse := "/" + strings.Repeat("a/../", 1+config.MaxBootAgentPackDirectoryRunes/4) + "etc/harbor/skills"
+	relCollapse := strings.Repeat("a/../", 1+config.MaxBootAgentPackDirectoryRunes/4) + "etc/harbor/skills"
+
+	if got := len([]rune(absCollapse)); got <= config.MaxBootAgentPackDirectoryRunes {
+		t.Fatalf("test invariant: raw absolute value is %d runes, want > %d", got, config.MaxBootAgentPackDirectoryRunes)
+	}
+	if got := len([]rune(relCollapse)); got <= config.MaxBootAgentPackDirectoryRunes {
+		t.Fatalf("test invariant: raw relative value is %d runes, want > %d", got, config.MaxBootAgentPackDirectoryRunes)
+	}
+	// Prove the collapse premise: normalization DOES shorten both values
+	// below the ceiling, so a bound applied after Clean/Join would
+	// accept them.
+	if clean := filepath.Clean(absCollapse); len([]rune(clean)) > config.MaxBootAgentPackDirectoryRunes {
+		t.Fatalf("test invariant: Clean(%q) = %q is still over-bound — the collapse premise is broken", absCollapse, clean)
+	}
+	if clean := filepath.Clean(relCollapse); len([]rune(clean)) > config.MaxBootAgentPackDirectoryRunes {
+		t.Fatalf("test invariant: Clean(%q) = %q is still over-bound — the collapse premise is broken", relCollapse, clean)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		directory string
+	}{
+		{name: "absolute raw over-bound collapses under clean", directory: absCollapse},
+		{name: "relative raw over-bound collapses under clean and join", directory: relCollapse},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			cfgPath := filepath.Join(tmpDir, "harbor.yaml")
+			block := fmt.Sprintf(`skills:
+  driver: localdb
+  dsn: ":memory:"
+  boot_agent_packs:
+    - tenant_id: acme
+      agent_id: harbor-dev-agent
+      directory: %q
+      include: [workbench-foundation]
+`, tc.directory)
+			data := bootAgentPackFixtureYAML(t, block)
+			if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			// File-backed Load — the resolver runs with the config
+			// directory provenance and must reject the RAW value before
+			// any Clean/Join shortening.
+			if _, err := config.Load(context.Background(), cfgPath); !wantBootAgentPackDirectoryErr(t, tc.directory, err) {
+				t.Fatalf("Load: unexpected result for raw directory %q", tc.directory)
+			}
+
+			// LoadFromBytesAt with a real path runs the SAME resolver —
+			// the raw-bound check must fire identically.
+			if _, err := config.LoadFromBytesAt(context.Background(), data, cfgPath); !wantBootAgentPackDirectoryErr(t, tc.directory, err) {
+				t.Fatalf("LoadFromBytesAt: unexpected result for raw directory %q", tc.directory)
+			}
+		})
+	}
+}
+
+// wantBootAgentPackDirectoryErr reports whether err is the expected
+// rejection for a malformed boot_agent_packs directory: wrapped in
+// ErrConfigInvalid, naming the `skills.boot_agent_packs[0].directory`
+// field, and carrying the rune-bound reason (proof the raw-value shape
+// check fired rather than a normalization or escape error).
+func wantBootAgentPackDirectoryErr(t *testing.T, directory string, err error) bool {
+	t.Helper()
+	if err == nil {
+		t.Errorf("load accepted over-bound raw directory %q (normalized value would be short)", directory)
+		return false
+	}
+	if !errors.Is(err, config.ErrConfigInvalid) {
+		t.Errorf("err = %v, want wrapping ErrConfigInvalid", err)
+		return false
+	}
+	if !strings.Contains(err.Error(), "skills.boot_agent_packs[0].directory") {
+		t.Errorf("err = %v, want it to name skills.boot_agent_packs[0].directory", err)
+		return false
+	}
+	if !strings.Contains(err.Error(), "at most 4096 runes") {
+		t.Errorf("err = %v, want the rune-bound reason (raw shape check, not a normalization/escape path)", err)
+		return false
+	}
+	return true
+}
+
 // TestLoadFromBytes_BootAgentPacks_NoCWDResolve pins the no-CWD
 // fallback: a config loaded WITHOUT a file source (LoadFromBytes, or
 // LoadFromBytesAt with an empty path) keeps a relative directory

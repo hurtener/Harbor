@@ -1194,6 +1194,29 @@ func validSessionPersonalCutoverToken(value string, maximum int) bool {
 	return true
 }
 
+// validateBootAgentPackDirectoryShape is the shared, normalization-free
+// directory shape check for `skills.boot_agent_packs[].directory`. BOTH
+// the validator (validateBootAgentPacks) and the loader's resolve pass
+// (resolveBootAgentPackDirectories) run this SAME predicate so the
+// raw-value contract cannot drift between the two.
+//
+// It rejects an empty or whitespace-surrounded value outright and
+// enforces the rune ceiling on the RAW/stored value — never on a
+// trimmed or filepath.Clean-ed copy. The loader MUST run it BEFORE any
+// Clean/Join normalization: filepath.Clean collapses an over-bound
+// `a/../` path below the ceiling, and filepath.Join resolves a relative
+// value against the config directory, either of which would otherwise
+// let a raw value validation must refuse slip through shortened.
+func validateBootAgentPackDirectoryShape(directory string) error {
+	if directory == "" || directory != strings.TrimSpace(directory) {
+		return fmt.Errorf("must not be empty or have surrounding whitespace (an absolute path, or a relative path the loader resolves against the config file's directory)")
+	}
+	if r := len([]rune(directory)); r > MaxBootAgentPackDirectoryRunes {
+		return fmt.Errorf("must be at most %d runes, got %d", MaxBootAgentPackDirectoryRunes, r)
+	}
+	return nil
+}
+
 // validateBootAgentPacks validates the closed shape of the
 // `skills.boot_agent_packs` declarations (see BootAgentPackConfig): the
 // deterministic bounds, the required per-declaration fields, the unique
@@ -1236,18 +1259,16 @@ func (c *Config) validateBootAgentPacks() error {
 		}
 		// directory: absolute (the authoritative deployment shape) or
 		// relative (resolved by the loader against the config file's
-		// directory, never CWD). Surrounding whitespace is rejected
-		// OUTRIGHT and the rune bound runs on the STORED/raw value —
-		// never on a trimmed copy — so an arbitrary run of spaces
-		// cannot pad a value past the ceiling (LoadFromBytes and a
-		// hand-built *Config preserve the raw value). Shape-only, no I/O.
-		if p.Directory == "" || p.Directory != strings.TrimSpace(p.Directory) {
-			return fieldError(prefix+".directory",
-				"must not be empty or have surrounding whitespace (an absolute path, or a relative path the loader resolves against the config file's directory)")
-		}
-		if r := len([]rune(p.Directory)); r > MaxBootAgentPackDirectoryRunes {
-			return fieldError(prefix+".directory",
-				fmt.Sprintf("must be at most %d runes, got %d", MaxBootAgentPackDirectoryRunes, r))
+		// directory, never CWD). The RAW value's shape — no surrounding
+		// whitespace, within the rune ceiling — is enforced by the shared
+		// validateBootAgentPackDirectoryShape helper, the SAME predicate
+		// the loader's resolve pass applies BEFORE any Clean/Join
+		// normalization. Bounding the stored/raw value (never a trimmed
+		// or normalized copy) means an arbitrary run of spaces or an
+		// over-bound `a/../` path cannot be shortened past the ceiling.
+		// Shape-only, no I/O.
+		if err := validateBootAgentPackDirectoryShape(p.Directory); err != nil {
+			return fieldError(prefix+".directory", err.Error())
 		}
 		if len(p.Include) == 0 {
 			return fieldError(prefix+".include",
