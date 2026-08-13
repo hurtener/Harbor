@@ -403,6 +403,121 @@ Declared in `internal/protocol/types`.
 | `origin_ref` | `string` | optional (`omitempty`) |
 | `extra` | `map[string]string` | optional (`omitempty`) |
 
+## AgentConfigAgentPacksCommitRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `scope` | `string` | optional (`omitempty`) |
+| `skill` | `types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) |  |
+| `reviewed_hash` | `string` |  |
+| `provenance` | `string` |  |
+| `proposal_id` | `string` |  |
+| `expected_content_hash` | `string` |  |
+
+## AgentConfigAgentPacksCommitResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
+| `hash` | `string` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigAgentPacksListRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+
+## AgentConfigAgentPacksListResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `items` | `[]types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) | optional (`omitempty`) |
+| `protocol_version` | `string` |  |
+
+## AgentConfigAgentPacksProposeRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `scope` | `string` | optional (`omitempty`) |
+| `intent` | `string` |  |
+| `expected_content_hash` | `string` |  |
+| `dry_run` | `bool` | optional (`omitempty`) |
+
+## AgentConfigAgentPacksProposeResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `skill` | `types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) |  |
+| `hash` | `string` |  |
+| `warnings` | `[]string` | optional (`omitempty`) |
+| `provenance` | `string` |  |
+| `proposal_id` | `string` |  |
+| `expected_content_hash` | `string` |  |
+| `dry_run` | `bool` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigAgentPacksRemoveRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `name` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
+
+## AgentConfigAgentPacksRemoveResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigAgentPacksUpsertRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `scope` | `string` | optional (`omitempty`) |
+| `skill` | `types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
+
+## AgentConfigAgentPacksUpsertResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
+| `hash` | `string` |  |
+| `protocol_version` | `string` |  |
+
 ## AgentConfigPayload
 
 Declared in `internal/protocol/types`.

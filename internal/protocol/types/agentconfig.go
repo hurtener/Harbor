@@ -784,7 +784,7 @@ type AgentConfigSetRevisionRequest struct {
 	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
-	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
+	ExpectedContentHash string `json:"expected_content_hash"`
 }
 
 // AgentConfigSetRevisionResponse is the `agent_config.set_revision`
@@ -1370,7 +1370,7 @@ type AgentConfigRemoveOAuthMCPCapabilityRequest struct {
 	// one. Omission remains backward-compatible only when that revision's
 	// effective legacy-plus-map state identifies exactly one pair.
 	ProviderName        string `json:"provider_name,omitempty"`
-	ExpectedContentHash string `json:"expected_content_hash"`
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigRemoveOAuthMCPCapabilityResponse reports the revision that drops
@@ -1685,13 +1685,13 @@ type AgentConfigAgentPacksProposeRequest struct {
 	Scope string `json:"scope,omitempty"`
 	// Intent is the bounded natural-language brief the proposer drafts from.
 	Intent string `json:"intent"`
-	// ExpectedContentHash is the OPTIONAL expected-revision token binding the
+	// ExpectedContentHash is the MANDATORY expected-revision token binding the
 	// proposal to the versioned policy the operator reviewed.
-	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
+	ExpectedContentHash string `json:"expected_content_hash"`
 	// DryRun drafts + validates + returns the canonical draft/hash/warnings
 	// WITHOUT persisting anything (no revision is written). The default false
-	// also persists nothing — propose NEVER writes; dry_run only signals the
-	// caller's intent for observability and is echoed back.
+	// persists the durable proposal receipt; dry_run only signals the caller's
+	// intent for observability and is echoed back.
 	DryRun bool `json:"dry_run,omitempty"`
 }
 
@@ -1745,7 +1745,7 @@ type AgentConfigAgentPacksCommitRequest struct {
 	Provenance string `json:"provenance"`
 	// ProposalID is the opaque durable proposal receipt returned by propose.
 	ProposalID string `json:"proposal_id"`
-	// ExpectedContentHash is the OPTIONAL expected-revision token — the CAS
+	// ExpectedContentHash is the MANDATORY expected-revision token — the CAS
 	// that refuses a moved policy base with `revision_conflict`.
 	ExpectedContentHash string `json:"expected_content_hash"`
 }

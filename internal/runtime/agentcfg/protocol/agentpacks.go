@@ -15,7 +15,8 @@ package protocol
 //   - propose — GOVERNED drafting: a bounded intent is turned into a
 //     canonical draft body by the configured model under the versioned
 //     revision policy; returns the draft + content hash + warnings + a
-//     deterministic provenance stamp. NEVER writes.
+//     deterministic provenance stamp. Only dry_run is non-persistent;
+//     ordinary propose persists its durable receipt for commit.
 //   - commit — GOVERNED two-phase landing: CAS-binds the EXACT reviewed hash
 //     (a changed body / scope / origin / provenance is refused), then
 //     atomically persists body + membership in one revision.
@@ -426,7 +427,7 @@ func (s *Service) AgentPacksRemove(ctx context.Context, req prototypes.AgentConf
 // model (from the active revision's llm_params, validated against the
 // configured ModelProfiles) under the versioned revision policy named by
 // ExpectedContentHash — a stale expected revision is refused before any
-// drafting. Propose NEVER writes (dry_run only echoes intent). It returns
+// drafting. Propose persists a durable receipt unless dry_run is requested. It returns
 // the canonical draft body, its content hash (the hash the operator
 // reviews), capability warnings, and the deterministic provenance stamp the
 // commit must echo.
@@ -611,7 +612,8 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: got=%q want=%q",
 			ErrAgentPackProvenanceMismatch, req.Provenance, proposal.Provenance)
 	}
-	if proposal.Phase == "committing" {
+	committing := proposal.Phase == "committing"
+	if committing {
 		if proposal.TargetRevisionID == "" || proposal.TargetContentHash == "" {
 			return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
 		}
@@ -669,6 +671,9 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("hash pack publication: %w", err)
 	}
 	targetRevisionID := string(state.NewEventID())
+	if proposal.Phase == "committing" {
+		targetRevisionID = proposal.TargetRevisionID
+	}
 	committingBytes, err := marshalProposal(agentPackProposalRecord{
 		AgentID: req.AgentID, ExpectedContentHash: req.ExpectedContentHash,
 		ReviewedHash: req.ReviewedHash, Provenance: proposal.Provenance, Item: proposal.Item,
@@ -677,13 +682,21 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("encode committing pack proposal: %w", err)
 	}
-	if err := s.agentPackProposals.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID}}, state.StateRecord{ID: proposalRecord.ID, Identity: q, Kind: proposalKind(req.ProposalID), Bytes: committingBytes}); err != nil {
-		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("mark pack proposal committing: %w", err)
+	if proposal.Phase != "committing" {
+		if err := s.agentPackProposals.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID}}, state.StateRecord{ID: proposalRecord.ID, Identity: q, Kind: proposalKind(req.ProposalID), Bytes: committingBytes}); err != nil {
+			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("mark pack proposal committing: %w", err)
+		}
 	}
 	opts.TargetRevisionID = targetRevisionID
+	opts.PublicationFence = &agentcfg.PublicationFence{Identity: q, Kind: proposalKind(req.ProposalID), EventID: string(proposalRecord.ID)}
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, opts)
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
+	}
+	if committing {
+		if rev.RevisionID != targetRevisionID || rev.ContentHash != targetContentHash {
+			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: resumed publication target changed", ErrAgentPackProposalInvalid)
+		}
 	}
 	deleted, deleteErr := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID})
 	if deleteErr != nil || !deleted {

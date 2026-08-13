@@ -17,11 +17,16 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:54e8afceec07c96a172eb191355e46bf1191bfb106c9a26e954a32a0c750cbd8";
+export const WIRE_SURFACE_DIGEST = "sha256:ef0ebc94ea68517437a1011045e82a7fe7305354684fdb6a5d409fa59f84d2e7";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
   | "agent_config.add_mcp_connection"
+  | "agent_config.agent_packs.commit"
+  | "agent_config.agent_packs.list"
+  | "agent_config.agent_packs.propose"
+  | "agent_config.agent_packs.remove"
+  | "agent_config.agent_packs.upsert"
   | "agent_config.diff"
   | "agent_config.get"
   | "agent_config.list_revisions"
@@ -160,6 +165,7 @@ export type HarborErrorCode =
   | "payload_invalid"
   | "presign_unsupported"
   | "request_too_large"
+  | "restart_unavailable"
   | "revision_conflict"
   | "runtime_error"
   | "scope_mismatch"
@@ -298,6 +304,7 @@ export type HarborEventType =
   | "task.patch_rejected"
   | "task.paused"
   | "task.prioritised"
+  | "task.progress"
   | "task.resumed"
   | "task.spawned"
   | "task.started"
@@ -367,6 +374,100 @@ export interface AgentConfigAddMCPConnectionResponse {
   state: string;
   reason?: string;
   pause_token?: string;
+  protocol_version: string;
+}
+
+export interface AgentConfigAgentPackItem {
+  name: string;
+  title?: string;
+  description?: string;
+  trigger: string;
+  task_type?: string;
+  tags?: string[];
+  steps: string[];
+  preconditions?: string[];
+  failure_modes?: string[];
+  required_tools?: string[];
+  required_ns?: string[];
+  required_tags?: string[];
+  origin?: string;
+  scope?: string;
+  origin_ref?: string;
+  extra?: Record<string, string>;
+}
+
+export interface AgentConfigAgentPacksCommitRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  scope?: string;
+  skill: AgentConfigAgentPackItem;
+  reviewed_hash: string;
+  provenance: string;
+  proposal_id: string;
+  expected_content_hash: string;
+}
+
+export interface AgentConfigAgentPacksCommitResponse {
+  revision: AgentConfigRevisionView;
+  skill: AgentConfigSkillSummary;
+  hash: string;
+  protocol_version: string;
+}
+
+export interface AgentConfigAgentPacksListRequest {
+  identity: IdentityScope;
+  agent_id: string;
+}
+
+export interface AgentConfigAgentPacksListResponse {
+  items?: AgentConfigAgentPackItem[];
+  protocol_version: string;
+}
+
+export interface AgentConfigAgentPacksProposeRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  scope?: string;
+  intent: string;
+  expected_content_hash: string;
+  dry_run?: boolean;
+}
+
+export interface AgentConfigAgentPacksProposeResponse {
+  skill: AgentConfigAgentPackItem;
+  hash: string;
+  warnings?: string[];
+  provenance: string;
+  proposal_id: string;
+  expected_content_hash: string;
+  dry_run: boolean;
+  protocol_version: string;
+}
+
+export interface AgentConfigAgentPacksRemoveRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  name: string;
+  expected_content_hash?: string;
+}
+
+export interface AgentConfigAgentPacksRemoveResponse {
+  revision: AgentConfigRevisionView;
+  protocol_version: string;
+}
+
+export interface AgentConfigAgentPacksUpsertRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  scope?: string;
+  skill: AgentConfigAgentPackItem;
+  expected_content_hash?: string;
+}
+
+export interface AgentConfigAgentPacksUpsertResponse {
+  revision: AgentConfigRevisionView;
+  skill: AgentConfigSkillSummary;
+  hash: string;
   protocol_version: string;
 }
 
@@ -578,6 +679,7 @@ export interface AgentConfigPayload {
   hooks?: AgentConfigHooks;
   naming?: AgentConfigNaming;
   extra_system_blocks?: AgentConfigExtraSystemBlocks;
+  agent_packs?: AgentConfigAgentPackItem[];
 }
 
 export interface AgentConfigPromptLayers {
@@ -630,7 +732,7 @@ export interface AgentConfigRemoveOAuthMCPCapabilityRequest {
   identity: IdentityScope;
   agent_id: string;
   provider_name?: string;
-  expected_content_hash: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigRemoveOAuthMCPCapabilityResponse {
@@ -855,7 +957,7 @@ export interface AgentConfigSetRevisionRequest {
   identity: IdentityScope;
   agent_id: string;
   payload: AgentConfigPayload;
-  expected_content_hash?: string;
+  expected_content_hash: string;
 }
 
 export interface AgentConfigSetRevisionResponse {
@@ -1687,6 +1789,7 @@ export interface LLMPostureResponse {
 export interface MCPAppCallToolRequest {
   identity: IdentityScope;
   agent_id?: string;
+  server_id?: string;
   tool: string;
   arguments?: unknown;
 }
@@ -2602,6 +2705,9 @@ export interface TaskRow {
   is_background: boolean;
   has_pending_approval: boolean;
   agent_id?: string;
+  progress_snapshot?: Record<string, unknown>;
+  virtual_key?: string;
+  virtual_label?: string;
 }
 
 export interface TaskTrajectoryRef {

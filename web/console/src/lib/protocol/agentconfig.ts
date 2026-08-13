@@ -314,10 +314,10 @@ export interface AgentConfigAgentPackItem {
 }
 
 export interface AgentConfigAgentPacksListRequest { identity: IdentityScope; agent_id: string; }
-export interface AgentConfigAgentPacksUpsertRequest { identity: IdentityScope; agent_id: string; skill: AgentConfigAgentPackItem; expected_content_hash?: string; }
+export interface AgentConfigAgentPacksUpsertRequest { identity: IdentityScope; agent_id: string; scope?: string; skill: AgentConfigAgentPackItem; expected_content_hash?: string; }
 export interface AgentConfigAgentPacksRemoveRequest { identity: IdentityScope; agent_id: string; name: string; expected_content_hash?: string; }
-export interface AgentConfigAgentPacksProposeRequest { identity: IdentityScope; agent_id: string; intent: string; expected_content_hash?: string; dry_run?: boolean; }
-export interface AgentConfigAgentPacksCommitRequest { identity: IdentityScope; agent_id: string; skill: AgentConfigAgentPackItem; reviewed_hash: string; provenance: string; proposal_id: string; expected_content_hash: string; }
+export interface AgentConfigAgentPacksProposeRequest { identity: IdentityScope; agent_id: string; scope?: string; intent: string; expected_content_hash: string; dry_run?: boolean; }
+export interface AgentConfigAgentPacksCommitRequest { identity: IdentityScope; agent_id: string; scope?: string; skill: AgentConfigAgentPackItem; reviewed_hash: string; provenance: string; proposal_id: string; expected_content_hash: string; }
 export interface AgentConfigAgentPacksListResponse { items?: AgentConfigAgentPackItem[]; protocol_version: string; }
 export interface AgentConfigAgentPacksUpsertResponse { revision: AgentConfigRevisionView; skill: AgentConfigSkillSummary; hash: string; protocol_version: string; }
 export interface AgentConfigAgentPacksRemoveResponse { revision: AgentConfigRevisionView; protocol_version: string; }

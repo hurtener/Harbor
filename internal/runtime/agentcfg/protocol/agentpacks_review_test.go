@@ -57,3 +57,22 @@ func TestAgentPackProposalRecord_NormalizesLegacyEmptyProvenanceForReplay(t *tes
 		t.Fatalf("replayed provenance: got %q want %q", replayed.Provenance, want)
 	}
 }
+
+func TestAgentPackProposalRecord_RoundTripsCommittingTarget(t *testing.T) {
+	record := agentPackProposalRecord{
+		AgentID: "agent-a", ExpectedContentHash: "base-hash", ReviewedHash: "review-hash",
+		Item:  skills.AgentPackItem{Name: "playbook", Trigger: "trigger", Steps: []string{"step"}},
+		Phase: "committing", TargetRevisionID: "revision-target", TargetContentHash: "content-target",
+	}
+	encoded, err := marshalProposal(record)
+	if err != nil {
+		t.Fatalf("marshal committing proposal: %v", err)
+	}
+	decoded, err := unmarshalProposal(encoded)
+	if err != nil {
+		t.Fatalf("unmarshal committing proposal: %v", err)
+	}
+	if decoded.Phase != record.Phase || decoded.TargetRevisionID != record.TargetRevisionID || decoded.TargetContentHash != record.TargetContentHash {
+		t.Fatalf("committing target changed: got %+v", decoded)
+	}
+}

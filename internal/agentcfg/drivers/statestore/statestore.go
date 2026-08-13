@@ -348,6 +348,12 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
+	if fence := opts.PublicationFence; fence != nil {
+		if fence.Identity.TenantID == "" || fence.Identity.UserID == "" || fence.Identity.SessionID == "" || fence.Kind == "" || fence.EventID == "" {
+			return agentcfg.Revision{}, fmt.Errorf("%w: invalid publication fence", agentcfg.ErrInvalidConfig)
+		}
+		expectations = append(expectations, state.SlotExpectation{Identity: fence.Identity, Kind: fence.Kind, ExpectedEventID: state.EventID(fence.EventID)})
+	}
 
 	// ONE read serves both the precondition and the idempotence check. The
 	// expected pointer generation captured above is rechecked by SaveIf at
@@ -387,7 +393,9 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	parentID := ""
 	if hasActive {
 		parentID = active.RevisionID
-		if active.ContentHash == hash {
+		// A fenced publication must reach SaveIf so the receipt generation is
+		// checked even when a retry's payload is already active.
+		if active.ContentHash == hash && opts.PublicationFence == nil {
 			return active, nil
 		}
 	}

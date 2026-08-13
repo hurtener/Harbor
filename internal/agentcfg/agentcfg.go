@@ -137,6 +137,9 @@ const ExpectNoActiveRevision = "-"
 // unconditional write — byte-for-byte the behaviour that shipped before
 // this option existed, on every door.
 type SetOptions struct {
+	// PublicationFence adds an exact durable receipt generation to the
+	// publication predicate for a resumable mutation.
+	PublicationFence *PublicationFence
 	// TargetRevisionID, when non-empty, makes the new revision identity
 	// deterministic. It is used by durable resumable publications: the
 	// committing receipt records this id before the registry write, so a
@@ -178,6 +181,14 @@ type SetOptions struct {
 	// not something the runtime enforces — making the token mandatory
 	// would break every caller that does not send one.
 	ExpectedContentHash string
+}
+
+// PublicationFence identifies the durable receipt generation authorizing one
+// resumable publication.
+type PublicationFence struct {
+	Identity identity.Quadruple
+	Kind     string
+	EventID  string
 }
 
 // BootLifecycleEnsurer materialises the configured default agent's tenant
