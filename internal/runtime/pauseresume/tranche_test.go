@@ -64,7 +64,7 @@ func TestTrancheExceededFromMap_RejectsForeignShapes(t *testing.T) {
 // the pause record alone answers it.
 func TestStatus_Continuable(t *testing.T) {
 	t.Parallel()
-	if got := (pauseresume.Status{State: pauseresume.StatusPaused}).Continuable(); !got {
+	if got := (pauseresume.Status{State: pauseresume.StatusPaused, Available: true}).Continuable(); !got {
 		t.Error("Status{paused}.Continuable() = false, want true")
 	}
 	if got := (pauseresume.Status{State: pauseresume.StatusResumed}).Continuable(); got {
@@ -105,8 +105,11 @@ func TestTranchePause_Restart_DurableRedrive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status on restarted coordinator: %v", err)
 	}
-	if !st.Continuable() {
-		t.Fatalf("rehydrated Status.Continuable() = false, want true (durable redrive available)")
+	if st.Available {
+		t.Fatalf("rehydrated Status.Available = true, want false (restart redrive unavailable)")
+	}
+	if st.Continuable() {
+		t.Fatalf("rehydrated Status.Continuable() = true, want false (restart redrive unavailable)")
 	}
 	// The typed payload survives the restart on the List projection.
 	listed, err := c2.List(ctx, pauseresume.ListRequest{Identity: testID, PageSize: 50})

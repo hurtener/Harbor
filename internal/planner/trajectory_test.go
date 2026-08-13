@@ -170,8 +170,8 @@ func TestCountSuccessfulToolInvocationsSince_ExcludesControlsAndFailures(t *test
 		{Action: CallParallel{Branches: []CallTool{{Tool: "a"}, {Tool: "b"}}}},
 		{Action: RequestPause{Reason: PauseAwaitInput}},
 	}}
-	if got := CountSuccessfulToolInvocationsSince(tr, 0); got != 2 {
-		t.Errorf("CountSuccessfulToolInvocationsSince = %d, want 2", got)
+	if got := CountSuccessfulToolInvocationsSince(tr, 0); got != 1 {
+		t.Errorf("CountSuccessfulToolInvocationsSince = %d, want 1 decision", got)
 	}
 }
 

@@ -132,6 +132,7 @@ func (c *coordinator) List(ctx context.Context, req ListRequest) (ListResponse, 
 			Reason:    e.reason,
 			PausedAt:  e.pausedAt,
 			ResumedAt: e.resumedAt,
+			Available: e.available,
 		})
 	}
 

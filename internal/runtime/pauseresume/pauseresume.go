@@ -194,12 +194,16 @@ type Status struct {
 	// (restart-survival) Status never carries a Decision because a
 	// resumed checkpoint is deleted, not kept.
 	Decision Decision
+	// Available reports whether this pause can be resumed by this runtime.
+	// A tranche checkpoint rehydrated after restart is retained for truthful
+	// inspection but is unavailable because exact run-loop redrive is absent.
+	Available bool
 }
 
 // Continuable reports whether the pause record can be continued by an
 // authorised Resume — the truthful "Continue" projection of a paused
-// run. A pause is continuable exactly while it is still parked
-// (State == StatusPaused); a resumed record is terminal, and a record
+// run. A pause is continuable only while it is still parked and available;
+// a resumed record is terminal, and a record
 // that no longer exists surfaces ErrPauseNotFound instead of a Status.
 //
 // The projection never depends on planner state: a pause's checkpointed
@@ -209,7 +213,7 @@ type Status struct {
 // step-tranche pause, whose Resume grants a fresh step tranche through
 // the RunLoop without the client supplying any planner data.
 func (s Status) Continuable() bool {
-	return s.State == StatusPaused
+	return s.State == StatusPaused && s.Available
 }
 
 // Coordinator is Harbor's unified pause/resume primitive. One

@@ -47,6 +47,9 @@ type checkpointRecord struct {
 	Reason Reason `json:"reason"`
 	// State is the pause lifecycle state (paused / resumed).
 	State State `json:"state"`
+	// Available is persisted so a restarted/orphaned tranche cannot project
+	// itself as continuable.
+	Available bool `json:"available"`
 	// Identity is the (tenant, user, session) triple the pause was
 	// recorded under. Persisted IN the envelope so Status / Resume can
 	// recover the scope from a Token alone (the restart-survival path).

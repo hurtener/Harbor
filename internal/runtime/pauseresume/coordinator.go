@@ -86,7 +86,8 @@ type pauseEntry struct {
 	// zero value while State == StatusPaused. Recorded so Status (and
 	// the RunLoop's out-of-band timeout detection) can distinguish a
 	// timeout-reaped pause from an approve / reject / generic resume.
-	decision Decision
+	decision  Decision
+	available bool
 	// deletePending marks a RESUMED entry whose checkpoint delete
 	// failed: Resume flips the state before
 	// the store delete, so a delete failure would otherwise orphan the
@@ -272,6 +273,7 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 		token:        token,
 		reason:       req.Reason,
 		state:        StatusPaused,
+		available:    true,
 		identity:     req.Identity,
 		runID:        runIDFromContext(ctx),
 		payload:      cloneStringMap(req.Payload),
@@ -367,6 +369,7 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		}
 		if rehydrated.reason == ReasonConstraintsConflict {
 			if _, tranche := TrancheExceededFromMap(rehydrated.payload); tranche {
+				rehydrated.available = false
 				return fmt.Errorf("%w: token %q", ErrRestartUnavailable, token)
 			}
 		}
@@ -528,6 +531,7 @@ func (c *coordinator) Status(ctx context.Context, token Token) (Status, error) {
 			PausedAt:  entry.pausedAt,
 			ResumedAt: entry.resumedAt,
 			Decision:  entry.decision,
+			Available: entry.available,
 		}
 		c.mu.Unlock()
 		return st, nil
@@ -547,6 +551,7 @@ func (c *coordinator) Status(ctx context.Context, token Token) (Status, error) {
 		Reason:    rehydrated.reason,
 		PausedAt:  rehydrated.pausedAt,
 		ResumedAt: rehydrated.resumedAt,
+		Available: rehydrated.available,
 	}, nil
 }
 
@@ -641,6 +646,7 @@ func (e *pauseEntry) toCheckpoint() (checkpointRecord, error) {
 		Continuation:  e.continuation,
 		PausedAt:      e.pausedAt,
 		ResumedAt:     e.resumedAt,
+		Available:     e.available,
 	}
 	if e.trajectory != nil {
 		b, err := e.trajectory.Serialize()
@@ -674,7 +680,13 @@ func entryFromCheckpoint(rec checkpointRecord) (*pauseEntry, error) {
 		payload:      rec.Payload,
 		pausedAt:     rec.PausedAt,
 		resumedAt:    rec.ResumedAt,
+		available:    rec.Available,
 		continuation: continuation,
+	}
+	if rec.Reason == ReasonConstraintsConflict {
+		if _, tranche := TrancheExceededFromMap(rec.Payload); tranche {
+			entry.available = false
+		}
 	}
 	if len(rec.TrajectoryBytes) > 0 {
 		tr, err := trajectory.Deserialize(rec.TrajectoryBytes)

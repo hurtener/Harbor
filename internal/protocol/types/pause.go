@@ -84,6 +84,9 @@ type PauseSnapshot struct {
 	// ResumedAt is the wall-clock time Resume was called; the zero
 	// value (omitted) unless State == "resumed".
 	ResumedAt time.Time `json:"resumed_at,omitempty"`
+	// Available reports whether the pause can currently be resumed. A
+	// restarted tranche pause is retained for inspection but is unavailable.
+	Available bool `json:"available"`
 	// Payload is the sanitised pause payload INLINE when its serialised
 	// size is below the heavy-content threshold. Otherwise the runtime
 	// routes it through the ArtifactStore and ships PayloadRef instead

@@ -856,7 +856,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// eventual resume — the same carry-over the paused path
 			// uses (mergeAccumulatedSignals).
 			mergeAccumulatedSignals(&spec.Base, sc)
-			tok, terr := rl.requestTranchePause(runCtx, q, spec.Base.Trajectory, spec.TrancheSteps)
+			tok, terr := rl.requestTranchePause(runCtx, q, spec.TrancheSteps, trancheUsed)
 			if terr != nil {
 				return planner.Finish{}, terr
 			}
@@ -1043,6 +1043,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// silently disappear (audit lesson: silent execution gaps
 			// are §13-forbidden silent degradation).
 			var observation, llmObservation any
+			var execErr error
 			if spec.ToolExecutor != nil {
 				// dispatch on a per-step goroutine and keep
 				// draining the inbox while the execution is in flight,
@@ -1066,7 +1067,8 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					// failure — surface it verbatim.
 					return planner.Finish{}, bridgeErr
 				}
-				obs, llmObs, execErr := out.observation, out.llmObservation, out.err
+				obs, llmObs := out.observation, out.llmObservation
+				execErr = out.err
 				if execErr != nil {
 					// Fail-loud per CLAUDE.md §5 / §13: the executor's
 					// own error path (catalog lookup failed, tool Invoke
@@ -1094,7 +1096,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					// Only successful tool-bearing decisions consume the
 					// tranche. Control decisions, Finish, SpawnTask and
 					// AwaitTask are not tool invocations.
-					trancheUsed += planner.DecisionInvocationCount(decision)
+					trancheUsed += planner.DecisionToolCount(decision)
 					// Notify the per-run dispatch hook on a successful
 					// executor return, with the decision's true
 					// tool-invocation count — 1 for CallTool,
@@ -1120,7 +1122,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				// executor: its tool decisions are treated as successful
 				// dispatches for tranche accounting while preserving the
 				// historical nil observation path.
-				trancheUsed += planner.DecisionInvocationCount(decision)
+				trancheUsed += planner.DecisionToolCount(decision)
 			}
 			// Append the step to the run's Trajectory so the planner
 			// sees the prior action + observation on its next step.
@@ -1148,10 +1150,8 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					ReasoningTrace:    stepReasoning,
 					AssistantPreamble: stepAssistantContent,
 				}
-				if payload, ok := observation.(map[string]any); spec.ToolExecutor != nil && ok {
-					if _, failed := payload["error"]; failed {
-						stepRecord.Error = "tool execution failed"
-					}
+				if execErr != nil {
+					stepRecord.Error = "tool execution failed"
 				}
 				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, stepRecord)
 				if spec.TrajectoryMu != nil {
@@ -1203,11 +1203,7 @@ func (rl *RunLoop) requestPause(ctx context.Context, q identity.Quadruple, d pla
 // non-serialisable trajectory leaf, ErrInvalidReason) propagates
 // verbatim — no silent degradation, no half-persisted checkpoint, no
 // park issued for a run whose trajectory cannot be checkpointed.
-func (rl *RunLoop) requestTranchePause(ctx context.Context, q identity.Quadruple, tr *planner.Trajectory, trancheSteps int) (pauseresume.Token, error) {
-	stepsObserved := 0
-	if tr != nil {
-		stepsObserved = len(tr.Steps)
-	}
+func (rl *RunLoop) requestTranchePause(ctx context.Context, q identity.Quadruple, trancheSteps, stepsObserved int) (pauseresume.Token, error) {
 	req := pauseresume.PauseRequest{
 		Identity: q.Identity,
 		Reason:   pauseresume.ReasonConstraintsConflict,

@@ -166,11 +166,23 @@ func DecisionInvocationCount(action any) int {
 	}
 }
 
-// CountSuccessfulToolInvocationsSince counts successful tool-bearing steps
-// after baseline. A step with a non-empty Error is an attempted but failed
-// dispatch and does not consume a runtime tranche. Control decisions and
-// task-management decisions contribute zero; CallParallel contributes one
-// invocation per branch.
+// DecisionToolCount returns the canonical tranche unit for one planner
+// decision: a tool-bearing CallTool, CallParallel, or Batch is one decision;
+// controls and task-management decisions are zero. CallParallel deliberately
+// counts once even though its branches are dispatched independently.
+func DecisionToolCount(action any) int {
+	switch action.(type) {
+	case CallTool, *CallTool, CallParallel, *CallParallel, Batch, *Batch:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// CountSuccessfulToolInvocationsSince counts successful tool-bearing planner
+// decisions after baseline. A step with a non-empty Error is an attempted but
+// failed dispatch and does not consume a runtime tranche. CallParallel counts
+// as one decision, not one decision per branch.
 func CountSuccessfulToolInvocationsSince(t *Trajectory, baseline int) int {
 	if t == nil {
 		return 0
@@ -184,7 +196,7 @@ func CountSuccessfulToolInvocationsSince(t *Trajectory, baseline int) int {
 	n := 0
 	for _, step := range t.Steps[baseline:] {
 		if step.Error == "" {
-			n += DecisionInvocationCount(step.Action)
+			n += DecisionToolCount(step.Action)
 		}
 	}
 	return n

@@ -552,7 +552,7 @@ func TestNext_MaxStepsBreaker_CountsSuccessfulToolsNotControls(t *testing.T) {
 		t.Fatalf("Next: %v", err)
 	}
 	if _, ok := dec.(planner.Finish); ok {
-		t.Fatalf("decision = %T, want a planner decision after exactly two successful parallel invocations", dec)
+		t.Fatalf("decision = %T, want a planner decision after one successful parallel decision", dec)
 	}
 	if got := client.callCount(); got != 1 {
 		t.Errorf("client.calls = %d, want 1", got)
