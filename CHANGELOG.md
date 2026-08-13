@@ -19,6 +19,14 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Added
 
+- Planned the v1.27 governance/docs track: typed MCP reliability
+  classification and failure-event accounting (D-410/D-413), operator-managed
+  per-agent skill packs and a read-only composition preview with CLI/Console
+  consumers (D-411/D-414/D-415), per-server MCP App callback dispatch
+  catalogs (D-412), and an explicit session-lifetime MCP App tool-context
+  retention contract (D-416). These contracts preserve identity isolation,
+  fail-loud behavior, Protocol-client boundaries, and real SDK/transcript
+  fixture requirements.
 - Optional signed `session_reach` JWT claim (D-409): a bearer may be pinned
   to a bounded set of session IDs it may select per request. Absent, D-171's
   dynamic per-request session selection is preserved exactly; present, the

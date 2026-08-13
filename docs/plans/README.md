@@ -379,13 +379,13 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |233c | Bifrost reasoning fidelity (HA-51, D-402): raw observed reasoning is byte-exact and authoritative; details-only blocks coalesce by stable identity without whitespace rewriting, with live/planner/task/durable-history/Console parity | Bifrost LLM driver + planner/task/history + Console | §6.2, §6.5, §6.8, §6.13 | 33, 83e, 83m, 165 | 85–90% | Shipped (v1.26) |
 |234 | Agent-config retirement (D-399/D-400/D-401): terminal CAS tombstone, immutable history, exact pre-retirement hash and operation identity, deterministic paged owner-scoped cleanup after tombstone, four-slot session-write freeze, signed OAuth pair cleanup, and explicit/default new-run refusal; `agents.deregister` remains fleet-only | agentcfg + runtime projection/serve + Protocol/Console lockstep | §5.5, §6.11, §6.13, §6.16 | 232, 233, 233a, 233b | 85–90% | Shipped (v1.26) |
 |235 | Agent authority/lifecycle wave E2E + v1.26 checkpoint: real SQLite/Postgres composition of signed OAuth capability registration, session records, erasure, retirement, and byte-exact reasoning durability; two-runtime write races, N≥10 mixed-identity stress, read-only §17.5 audit and corrective gate before release | test/integration + scripts/smoke + release docs | §4, §5.5, §6.2, §6.4, §6.5, §6.8, §6.9, §6.11, §6.13, §6.16, §9 | 232, 233, 233a, 233b, 233c, 234 | inherited floors | Shipped (v1.26) |
-|236 | Typed MCP error classification: a transport-safe typed permanent-vs-retryable contract (HA-54, D-410) | tools/mcp + tools/policy | §6.4, §6.5, §6.13 | 26b, 28 | measured floors | Planned |
-|237 | Operator-managed per-agent skill packs: durable, revision-versioned, identity-addressed (HA-55, D-411) | skills + agentcfg + serve | §6.7, §6.16, §6.11, §5.2 | 201, 221, 233, 233a | measured floors | Planned |
-|238 | Per-server MCP App callback catalog distinct from the planner projection (HA-56, D-412) | tools/mcp + mcpconsole + protocol | §6.4, §7.3, §5.2, §7 | 207, 204, 109k, 109l | measured floors | Planned |
-|239 | Typed reliability classification observability on the tool-failure events (HA-57, D-413) | tools + events + protocol | §6.4, §6.13, §6.15, §5.2 | 236 | measured floors | Planned |
-|240 | Operator-verifiable per-agent skill composition preview (HA-58, D-414) | skills + agentcfg + protocol | §6.7, §6.16, §5.2, §7 | 237 | measured floors | Planned |
-|241 | Composition-preview operator consumer: CLI verb + Console skill view (HA-59, D-415) | cmd/harbor + web/console | §6.7, §6.16, §7, §8 | 240 | measured floors | Planned |
-|242 | MCP App tool-context retention policy settled: real eviction or stated session lifetime (HA-60, D-416) | mcpconsole + state + protocol | §6.10, §6.11, §7.3, §5.2 | 204, 207, 233a | measured floors | Planned |
+|236 | Typed MCP errors (HA-54) | tools/mcp + tools/policy | §6.4, §6.5, §6.13 | 26b, 28 | measured floors | Planned |
+|237 | Agent-owned skills and governed authoring (HA-55) | skills + agentcfg + serve | §6.7, §6.16, §6.11, §5.2 | 201, 221, 233, 233a | measured floors | Planned |
+|238 | App-only callback catalog (HA-56) | tools/mcp + mcpconsole + protocol | §6.4, §7.3, §5.2, §7 | 207, 204, 109k, 109l | measured floors | Planned |
+|239 | Same-run step tranche resume (HA-57) | runtime + tasks + protocol | §3.3, §6.8, §6.11, §7 | 176, 193, 233 | measured floors | Planned |
+|240 | Virtual child profiles (HA-58) | runtime + agentcfg + protocol | §5.5, §6.16, §7 | 221, 233a, 239 | measured floors | Planned |
+|241 | Artifact and output forwarding (HA-59) | artifacts + tasks + runtime + protocol | §6.8, §6.10, §6.11, §7 | 17, 146, 239, 240 | measured floors | Planned |
+|242 | Task progress (HA-60) | tasks + state + protocol | §6.8, §6.11, §7 | 239, 241 | measured floors | Planned |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -495,7 +495,7 @@ real two-client race under `-race`.
 
 - **Decision:** D-398. **Status:** Shipped (v1.26).
 
-### Phase 236 — Typed MCP error classification (HA-54)
+### Phase 236 — Typed MCP errors (HA-54)
 
 - **Subsystem:** MCP southbound driver lowering, tool-policy classifier, and
   transport fixtures (`internal/tools/drivers/mcp`, `internal/tools/policy`).
@@ -519,7 +519,7 @@ real two-client race under `-race`.
   Independent of 237/238/240/241/242.
 - **Decision:** D-410. **Status:** Planned.
 
-### Phase 237 — Operator-managed per-agent skill packs (HA-55)
+### Phase 237 — Agent-owned skills and governed authoring (HA-55)
 
 - **Subsystem:** skills store and drivers, agent-config revision registry,
   run-start composite resolver, and Protocol/Console lockstep.
@@ -543,7 +543,7 @@ real two-client race under `-race`.
   Independent of 236/238/239/242.
 - **Decision:** D-411. **Status:** Planned.
 
-### Phase 238 — Per-server MCP App callback catalog (HA-56)
+### Phase 238 — App-only callback catalog (HA-56)
 
 - **Subsystem:** MCP discovery metadata, tool catalog/planner projection,
   `internal/mcpconsole` App dispatch, and Protocol/Console lockstep.
@@ -567,73 +567,56 @@ real two-client race under `-race`.
   fixtures compose with 242's tool-context retention at wave E2E).
 - **Decision:** D-412. **Status:** Planned.
 
-### Phase 239 — Typed reliability classification observability (HA-57)
+### Phase 239 — Same-run step tranche resume (HA-57)
 
 - **Subsystem:** tool-failure events (`tool.failed`,
   `tool.policy_exhausted`), policy classifier, and Protocol/Console lockstep.
 - **RFC:** §6.4, §6.13, §6.15, §5.2. **Deps:** 236.
-- **What it delivers:** D-413 — the D-410 classification becomes observable.
-  The canonical tool-failure events gain additive, non-secret control
-  metadata: the resolved class (permanent / retryable with reason), the
-  attempt ordinal, and the configured budget — server-derived from the D-410
-  classifier, never caller-supplied, and never carrying raw arguments or
-  results (audit-redactor boundary unchanged). Absent/legacy classifications
-  render a representable `unclassified`, never a fabricated class (D-311).
-  Prefers additive optional fields on existing payloads over new event types.
+ - **What it delivers:** D-413 — a durable checkpoint at each same-run step
+   tranche and one continuation path for pause, cancellation, and crash
+   recovery. Resume verifies `(tenant,user,session,run)`, continues from the
+   last committed boundary, and never replays completed steps or creates a
+   replacement run. Progress is bounded and references artifacts rather than
+   copying raw output.
 - **Ordering:** 239 consumes 236 and is independent of 237/238/240/241/242.
 - **Decision:** D-413. **Status:** Planned.
 
-### Phase 240 — Operator-verifiable per-agent skill composition preview (HA-58)
+### Phase 240 — Virtual child profiles (HA-58)
 
 - **Subsystem:** skills composition resolver, agent-config projection, and
   Protocol surface.
 - **RFC:** §6.7, §6.16, §5.2, §7. **Deps:** 237.
-- **What it delivers:** D-414 — an operator-facing, read-only
-  composition-preview surface: identity-addressed `(tenant, user, agent)` →
-  the exact immutable snapshot the next run would compose, as names and
-  bounded verdicts (per-item visibility, filtered required-tool outcomes),
-  bodies only for the addressed caller's own row. Authority is server-derived
-  (D-299); operators with signed reach preview any user's composition for the
-  agent within the tenant, ordinary callers only their own. The preview is a
-  pure projection over durable state — never mutates, never advances a
-  revision, never writes a run — reusing the one per-run composite resolver
-  D-411 builds. Run-time failures (unresolvable pack, retirement tombstone)
-  surface the same typed result; unwired state renders representable
-  `unavailable` (D-311).
+ - **What it delivers:** D-414 — a virtual child profile derived from one
+   governed parent profile. The child is read-only, identity-addressed, and
+   resolved with bounded overrides; it cannot widen capabilities, mutate the
+   parent, or become a new isolation principal. Run-start and inspection use
+   the same resolver and typed denial/absence states.
 - **Ordering:** 240 depends on 237 and gates 241 (its operator consumer).
   Independent of 236/238/239/242.
 - **Decision:** D-414. **Status:** Planned.
 
-### Phase 241 — Composition-preview operator consumer (HA-59)
+### Phase 241 — Artifact and output forwarding (HA-59)
 
 - **Subsystem:** `harbor` CLI, Console skill/agent view, integration tests.
 - **RFC:** §6.7, §6.16, §7, §8. **Deps:** 240.
-- **What it delivers:** D-415 — the §13 primitive-with-consumer closure for
-  D-414's preview surface: a `harbor` CLI verb that inspects the effective
-  agent's composition and a Console skill/agent view rendering the preview,
-  both consuming ONLY the D-414 surface (no second composition path), both
-  through the exact signed-reach admission, rendering the typed
-  not-found/denied/unavailable states as returned — never a blank state
-  (D-311). A two-revision diff shows added/removed pack membership and
-  changed verdicts.
+ - **What it delivers:** D-415 — one artifact/output forwarding path across
+   child-profile and same-run task boundaries. Authorized consumers receive a
+   declared reference with provenance and bounded summaries; unknown,
+   expired, erased, cross-tenant, and unauthorized references fail typed
+   before bytes are exposed.
 - **Ordering:** 241 depends on 240. Independent of 236/238/239/242.
 - **Decision:** D-415. **Status:** Planned.
 
-### Phase 242 — MCP App tool-context retention policy (HA-60)
+### Phase 242 — Task progress (HA-60)
 
 - **Subsystem:** `internal/mcpconsole` tool-context records, StateStore
   drivers, Protocol error surface, and Console placeholder.
 - **RFC:** §6.10, §6.11, §7.3, §5.2. **Deps:** 204, 207, 233a.
-- **What it delivers:** D-416 — settles the HA-39 retention sub-question:
-  tool-context records either gain a real bounded, identity-scoped
-  retention/eviction policy (making `CodeNotFound` load-bearing for evicted
-  ids) or a stated session-lifetime contract (records die with session
-  erasure; `not_found` covers cross-identity and unknown-id only). Default
-  lean is the session-lifetime contract as the smallest honest option; the
-  unchosen branch's guard rails are documented, and either way the policy is
-  pinned by tests (records survive reopen; `not_found` on unknown/cross-
-  identity; removal on session erasure). The D-173 sandbox/CSP posture and
-  the D-348 honest placeholder are untouched.
+ - **What it delivers:** D-416 — a typed task-progress projection covering
+   active and completed tranches, resumability, terminal status, and forwarded
+   artifact references. It is identity-scoped, bounded, durable across the
+   owning session lifecycle, and removed by erasure; it never becomes a second
+   source of truth or a raw-output stream.
 - **Ordering:** 242 is independent of 236–241; its fixtures compose with 238
   at wave E2E.
 - **Decision:** D-416. **Status:** Planned.
