@@ -196,6 +196,22 @@ type Status struct {
 	Decision Decision
 }
 
+// Continuable reports whether the pause record can be continued by an
+// authorised Resume — the truthful "Continue" projection of a paused
+// run. A pause is continuable exactly while it is still parked
+// (State == StatusPaused); a resumed record is terminal, and a record
+// that no longer exists surfaces ErrPauseNotFound instead of a Status.
+//
+// The projection never depends on planner state: a pause's checkpointed
+// trajectory is re-attached by Resume from the record itself, so a
+// client (the pause-list projection, the Console interventions queue)
+// renders Continue from the record alone — including a
+// step-tranche pause, whose Resume grants a fresh step tranche through
+// the RunLoop without the client supplying any planner data.
+func (s Status) Continuable() bool {
+	return s.State == StatusPaused
+}
+
 // Coordinator is Harbor's unified pause/resume primitive. One
 // Coordinator is built per Runtime process and shared across all runs;
 // it is safe for concurrent use by N goroutines.

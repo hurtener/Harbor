@@ -18,8 +18,17 @@
 //  1. Honours ctx.Err() and the run's identity quadruple
 //     (§6 rule 9 — identity is mandatory; the runtime fails
 //     closed).
-//  2. Checks the [MaxSteps] circuit breaker. When the run's prior
-//     trajectory carries ≥ MaxSteps recorded steps, the planner emits
+//  2. Checks the [MaxSteps] circuit breaker. The breaker counts steps
+//     since the CURRENT bounded tranche began — `len(rc.Trajectory.
+//     Steps) - Trajectory.TrancheBaseline` — NOT the cumulative
+//     trajectory length: the runloop parks a run at its per-tranche
+//     MaxSteps with a max_steps pause checkpoint, and resumed
+//     historical steps (from the same-process exact-run
+//     continuation) legitimately push the cumulative length past
+//     MaxSteps without the planner having done new work. Counting
+//     within the tranche keeps the breaker per-tranche-relative so a
+//     resumed run does not immediately trip. When ≥ MaxSteps
+//     within-tranche steps are observed, the planner emits
 //     [planner.EventTypePlannerMaxStepsExceeded] AND returns
 //     [planner.Finish]{Reason: [planner.FinishNoPath],
 //     Metadata["max_steps_exceeded"]=true}. Fail-loudly per §13.
@@ -190,10 +199,13 @@ const PauseTaskToolName = "_pause_task"
 const ResumeTaskToolName = "_resume_task"
 
 // DefaultMaxSteps is the planner-side circuit-breaker default for the
-// observed trajectory step count. Set small enough to surface bugs
+// observed within-tranche step count. Set small enough to surface bugs
 // quickly; large enough to leave 3-step scenarios headroom. The
 // runtime's hop / cost budget is the authoritative gate;
-// the planner-side cap is defence in depth (§13).
+// the planner-side cap is defence in depth (§13). The cap is
+// PER-TRANCHE: the runloop's max_steps-pause continuation resets the
+// tranche baseline, so a resumed run's historical steps do not count
+// against a fresh tranche.
 const DefaultMaxSteps = 12
 
 // DefaultSystemPrompt is the sentinel value the planner sends as the
@@ -242,7 +254,11 @@ type Option func(*ReActPlanner)
 
 // WithMaxSteps overrides the [DefaultMaxSteps] circuit-breaker cap.
 // Values ≤ 0 fall back to [DefaultMaxSteps]. The breaker fires when
-// `len(rc.Trajectory.Steps) >= MaxSteps`; the planner emits
+// `len(rc.Trajectory.Steps) - rc.Trajectory.TrancheBaseline >= MaxSteps`
+// — i.e. when ≥ MaxSteps steps have been recorded since the current
+// bounded tranche began (TrancheBaseline is the zero value on the
+// first tranche, so the first tranche counts cumulatively exactly as
+// before); the planner emits
 // [planner.EventTypePlannerMaxStepsExceeded] AND returns
 // `Finish{NoPath, Metadata["max_steps_exceeded"]=true}`.
 func WithMaxSteps(n int) Option {
@@ -558,11 +574,31 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		}, nil
 	}
 
-	// Circuit breaker: the planner-side step cap. The breaker fires
-	// BEFORE the LLM call so a runaway never burns an additional
-	// completion. The emit is the fail-loudly surface per §13.
-	if rc.Trajectory != nil && len(rc.Trajectory.Steps) >= p.maxSteps {
-		return p.maxStepsExceeded(ctx, rc), nil
+	// Circuit breaker: the planner-side step cap, SUBORDINATE to the
+	// runloop's bounded-tranche continuation. The breaker counts steps
+	// since the CURRENT tranche began — `len(Steps) - TrancheBaseline`,
+	// where TrancheBaseline is the index into Steps at which the
+	// runloop started the current tranche (zero value on the first
+	// tranche, re-stamped at each max_steps-pause resume). Counting
+	// cumulatively here would be wrong after a resume: the checkpointed
+	// historical steps legitimately push len(Steps) past maxSteps, so a
+	// cumulative breaker would immediately finish a run whose current
+	// tranche has done zero work. Per-tranche counting keeps the
+	// breaker's runaway-loop defence without breaking exact-run
+	// continuation. The breaker fires BEFORE the LLM call so a runaway
+	// never burns an additional completion. The emit is the fail-loudly
+	// surface per §13.
+	if rc.Trajectory != nil {
+		baseline := rc.Trajectory.TrancheBaseline
+		if baseline < 0 {
+			// Defensive: a corrupted / hand-constructed baseline must
+			// never widen the window (baseline < 0 would add steps to
+			// the observed count). Clamp to the earliest step.
+			baseline = 0
+		}
+		if len(rc.Trajectory.Steps)-baseline >= p.maxSteps {
+			return p.maxStepsExceeded(ctx, rc), nil
+		}
 	}
 
 	// AC-13 / AC-20c. When the previous

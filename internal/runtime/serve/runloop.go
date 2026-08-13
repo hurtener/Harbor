@@ -160,6 +160,15 @@ type RunLoopDriverOptions struct {
 	Executor        steering.ToolExecutor
 	MaxStepsRunLoop int
 
+	// TrancheSteps grants each run a continuable step tranche: when
+	// > 0, the runloop parks the run (a typed constraints_conflict
+	// pause) once a tranche of planner steps is consumed without a
+	// terminal Finish; an authorised RESUME grants a fresh tranche and
+	// the run continues as ONE run with its cumulative trajectory.
+	// Zero (the default) disables tranche pausing — the run terminates
+	// loud at the MaxStepsRunLoop ceiling exactly as before.
+	TrancheSteps int
+
 	// operator-declared GrantedScopes
 	// threaded into the per-run catalog view's CatalogFilter. Tools
 	// whose AuthScopes exceed this set are invisible to the planner.
@@ -344,6 +353,7 @@ type RunLoopDriver struct {
 	catalog         tools.ToolCatalog
 	executor        steering.ToolExecutor
 	maxStepsRunLoop int
+	trancheSteps    int
 
 	// operator-declared GrantedScopes.
 	grantedScopes []string
@@ -481,6 +491,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		catalog:               opts.Catalog,
 		executor:              opts.Executor,
 		maxStepsRunLoop:       opts.MaxStepsRunLoop,
+		trancheSteps:          opts.TrancheSteps,
 		grantedScopes:         append([]string(nil), opts.GrantedScopes...),
 		artifactStore:         opts.ArtifactStore,
 		// disposition policy passthrough.
@@ -1592,6 +1603,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		ToolExecutor:     d.executor,   // dispatch CallTool decisions
 		OnToolDispatched: dispatchHook, // item 7 — advance Task.ToolCount on dispatch
 		MaxSteps:         d.maxStepsRunLoop,
+		TrancheSteps:     d.trancheSteps, // 0 = tranche pausing disabled (legacy terminal ceiling)
 		Compression:      d.compression,  // trajectory compression runner
 		CompletionHook:   completionHook, // run-completion transcript egress (nil = no hook)
 		Naming:           namingSpec,     // session auto-naming (nil = off)
