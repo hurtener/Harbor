@@ -18,7 +18,7 @@ func (c proposalClient) Complete(context.Context, llm.CompleteRequest) (llm.Comp
 func (proposalClient) Close(context.Context) error { return nil }
 
 func TestProposer_DraftRejectsAuthorityAndUnknownFields(t *testing.T) {
-	base := `{"name":"n","trigger":"t","steps":["s"]}`
+	const base = `{"name":"n","trigger":"t","steps":["s"]}`
 	for _, field := range []string{"origin", "origin_ref", "content_hash", "membership", "capabilities", "policy", "policy_hash", "provenance", "permissions", "unknown"} {
 		t.Run(field, func(t *testing.T) {
 			content := strings.TrimSuffix(base, "}") + `,"` + field + `":null}`
@@ -35,7 +35,8 @@ func TestProposer_DraftRejectsAuthorityAndUnknownFields(t *testing.T) {
 }
 
 func TestProposer_DraftRejectsTrailingJSON(t *testing.T) {
-	p, err := New(proposalClient{content: `{"name":"n","trigger":"t","steps":["s"]}{}`})
+	const trailingJSON = `{"name":"n","trigger":"t","steps":["s"]}{}`
+	p, err := New(proposalClient{content: trailingJSON})
 	if err != nil {
 		t.Fatal(err)
 	}
