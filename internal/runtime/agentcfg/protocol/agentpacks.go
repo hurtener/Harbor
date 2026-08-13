@@ -623,14 +623,13 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 		}
 		if getErr == nil {
 			active, activeSet, activeErr := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
-			if activeErr != nil || !activeSet || active.RevisionID != proposal.TargetRevisionID || active.ContentHash != proposal.TargetContentHash {
-				return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: committing receipt target is not active", ErrAgentPackProposalInvalid)
+			if activeErr == nil && activeSet && active.RevisionID == proposal.TargetRevisionID && active.ContentHash == proposal.TargetContentHash {
+				deleted, deleteErr := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID})
+				if deleteErr != nil || !deleted {
+					return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("finalize pack proposal receipt: %w", ErrAgentPackProposalInvalid)
+				}
+				return prototypes.AgentConfigAgentPacksCommitResponse{Revision: revisionToWire(published), Skill: packSkillSummary(skill), Hash: skill.ContentHash, ProtocolVersion: prototypes.ProtocolVersion}, nil
 			}
-			deleted, deleteErr := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID})
-			if deleteErr != nil || !deleted {
-				return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("finalize pack proposal receipt: %w", ErrAgentPackProposalInvalid)
-			}
-			return prototypes.AgentConfigAgentPacksCommitResponse{Revision: revisionToWire(published), Skill: packSkillSummary(skill), Hash: skill.ContentHash, ProtocolVersion: prototypes.ProtocolVersion}, nil
 		}
 		if !errors.Is(getErr, agentcfg.ErrRevisionNotFound) {
 			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: load committing receipt target: %v", ErrAgentPackProposalInvalid, getErr)
@@ -692,13 +691,15 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("encode committing pack proposal: %w", err)
 	}
+	committingRecordID := proposalRecord.ID
 	if proposal.Phase != "committing" {
-		if err := s.agentPackProposals.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID}}, state.StateRecord{ID: proposalRecord.ID, Identity: q, Kind: proposalKind(req.ProposalID), Bytes: committingBytes}); err != nil {
+		committingRecordID = state.NewEventID()
+		if err := s.agentPackProposals.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID}}, state.StateRecord{ID: committingRecordID, Identity: q, Kind: proposalKind(req.ProposalID), Bytes: committingBytes}); err != nil {
 			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("mark pack proposal committing: %w", err)
 		}
 	}
 	opts.TargetRevisionID = targetRevisionID
-	opts.PublicationFence = &agentcfg.PublicationFence{Identity: q, Kind: proposalKind(req.ProposalID), EventID: string(proposalRecord.ID)}
+	opts.PublicationFence = &agentcfg.PublicationFence{Identity: q, Kind: proposalKind(req.ProposalID), EventID: string(committingRecordID)}
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, opts)
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
@@ -708,7 +709,7 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: resumed publication target changed", ErrAgentPackProposalInvalid)
 		}
 	}
-	deleted, deleteErr := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID})
+	deleted, deleteErr := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: committingRecordID})
 	if deleteErr != nil || !deleted {
 		// Keep the committing receipt. A retry can finalize the exact revision;
 		// compensating the active pointer would create a second mutation.

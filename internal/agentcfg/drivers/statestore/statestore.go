@@ -414,11 +414,29 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 		CreatedAt:        now,
 		Payload:          norm,
 	}
-	if err := r.saveRevision(ctx, q, keys.revPfx, rec); err != nil {
-		return agentcfg.Revision{}, r.compensateFailedRevisionSave(ctx, q, keys.revPfx, rec, err)
+	prepared := false
+	if opts.TargetRevisionID != "" {
+		existing, loadErr := r.loadRevision(ctx, q, keys.revPfx, opts.TargetRevisionID)
+		if loadErr == nil {
+			if existing.ContentHash != rec.ContentHash || existing.ParentRevisionID != rec.ParentRevisionID || existing.Author != rec.Author || !reflect.DeepEqual(existing.Payload, rec.Payload) {
+				return agentcfg.Revision{}, fmt.Errorf("%w: prepared target revision %q does not match requested publication", agentcfg.ErrRevisionConflict, opts.TargetRevisionID)
+			}
+			rec = existing
+			prepared = true
+		} else if !errors.Is(loadErr, agentcfg.ErrRevisionNotFound) {
+			return agentcfg.Revision{}, loadErr
+		}
+	}
+	if !prepared {
+		if err := r.saveRevision(ctx, q, keys.revPfx, rec); err != nil {
+			return agentcfg.Revision{}, r.compensateFailedRevisionSave(ctx, q, keys.revPfx, rec, err)
+		}
 	}
 	if err := r.saveActiveIf(ctx, expectations, q, keys.activeKind, revID, now); err != nil {
 		if errors.Is(err, state.ErrConditionFailed) {
+			if prepared {
+				return agentcfg.Revision{}, fmt.Errorf("%w: active pointer changed during prepared publication", agentcfg.ErrRevisionConflict)
+			}
 			if retiredErr := r.ensureNotRetired(ctx, id, agentID); retiredErr != nil {
 				if !errors.Is(retiredErr, errLifecycleMalformed) {
 					return agentcfg.Revision{}, retiredErr
@@ -436,6 +454,9 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 		// otherwise. Compensate — see [registry.compensateOrphanRevision] for
 		// why a bare return here left a revision in history that no reader can
 		// reach, and why the cleanup must not be unconditional.
+		if prepared {
+			return agentcfg.Revision{}, fmt.Errorf("%w: prepared revision retained after active-pointer failure: %w", agentcfg.ErrStateUnavailable, err)
+		}
 		landed, cerr := r.compensateOrphanRevision(ctx, q, keys.revPfx, revID, err)
 		if landed {
 			// The pointer is durably on disk naming this revision: the config
