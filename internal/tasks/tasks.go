@@ -1055,7 +1055,7 @@ func ValidateRequest(req SpawnRequest) error {
 	}
 	if req.VirtualAgent != nil {
 		if err := virtualagent.ValidateBinding(*req.VirtualAgent); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+			return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 		}
 		if req.AgentID == "" || req.AgentID != req.VirtualAgent.AgentID ||
 			req.VirtualAgent.Parent != req.AgentID {

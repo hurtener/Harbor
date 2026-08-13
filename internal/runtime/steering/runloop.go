@@ -1122,9 +1122,6 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 						}
 					}
 				}
-			} else {
-				// The executor-less harness is an intentional no-op
-				// executor, preserving the historical nil observation path.
 			}
 			// Append the step to the run's Trajectory so the planner
 			// sees the prior action + observation on its next step.

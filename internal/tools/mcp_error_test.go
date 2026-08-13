@@ -38,8 +38,8 @@ func TestMCPResultErrorClassification_StructuredAndLegacyFallback(t *testing.T) 
 		t.Fatalf("unknown classification = %q, %v, want legacy transient", class, ok)
 	}
 	long := strings.Repeat("x", MCPToolErrorMessageLimit+50)
-	resultErr, ok := NewMCPToolResultError(MCPToolErrorTransient, long).(*MCPToolResultError)
-	if !ok || len(resultErr.Message) != MCPToolErrorMessageLimit {
+	var resultErr *MCPToolResultError
+	if !errors.As(NewMCPToolResultError(MCPToolErrorTransient, long), &resultErr) || len(resultErr.Message) != MCPToolErrorMessageLimit {
 		t.Fatalf("message length = %d, want %d", len(resultErr.Message), MCPToolErrorMessageLimit)
 	}
 }

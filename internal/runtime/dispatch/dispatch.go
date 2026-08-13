@@ -755,7 +755,7 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 			return tasks.TaskHandle{}, "", fmt.Errorf("%w: %q", virtualagent.ErrUnknown, key)
 		}
 		if err := virtualagent.ValidateProfile(profile); err != nil {
-			return tasks.TaskHandle{}, "", fmt.Errorf("%w: %v", virtualagent.ErrInvalid, err)
+			return tasks.TaskHandle{}, "", fmt.Errorf("%w: %w", virtualagent.ErrInvalid, err)
 		}
 		binding, err := frozen.Bind(profile)
 		if err != nil {

@@ -217,10 +217,7 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		selected, ok := cfg.Base.(skills.AgentSelectableSkillStore)
-		if !ok {
-			return nil, fmt.Errorf("%w: agent-selectable skill store required", ErrInvalidSessionSkillResolver)
-		}
+		selected := cfg.Base
 		skill, err := selected.GetScopeAgent(ctx, cfg.Run, cfg.AgentID, name, skills.ScopeUser)
 		if err != nil {
 			// User-scope membership is only a selection hint for an independently

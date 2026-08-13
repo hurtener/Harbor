@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -67,15 +66,11 @@ func (p *mutableAppProvider) set(descs []tools.ToolDescriptor) {
 
 // appDesc builds a tool descriptor for the app-catalog fixtures: an
 // ordinary tool (AppOnly=false) or an app-only callback (AppOnly=true),
-// with an Invoke that counts executions through hits so denial-before-
-// execution tests can assert ZERO executions.
-func appDesc(name string, source tools.ToolSourceID, appOnly bool, hits *atomic.Int64) tools.ToolDescriptor {
+// with an Invoke that returns a successful result.
+func appDesc(name string, source tools.ToolSourceID, appOnly bool) tools.ToolDescriptor {
 	return tools.ToolDescriptor{
 		Tool: tools.Tool{Name: name, Source: source, Transport: tools.TransportMCP, AppOnly: appOnly},
 		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
-			if hits != nil {
-				hits.Add(1)
-			}
 			return tools.ToolResult{Value: map[string]any{"ok": name}}, nil
 		},
 	}
@@ -109,11 +104,11 @@ func stageAppServer(t *testing.T, reg *Registry, providerID string, descs []tool
 func TestRegistry_ResolveAppTool_OwnServerOnly(t *testing.T) {
 	reg := NewRegistry()
 	stageAppServer(t, reg, "srv-a", []tools.ToolDescriptor{
-		appDesc("srv-a_plain", "srv-a", false, nil),
-		appDesc("srv-a_cb", "srv-a", true, nil),
+		appDesc("srv-a_plain", "srv-a", false),
+		appDesc("srv-a_cb", "srv-a", true),
 	})
 	stageAppServer(t, reg, "srv-b", []tools.ToolDescriptor{
-		appDesc("srv-b_cb", "srv-b", true, nil),
+		appDesc("srv-b_cb", "srv-b", true),
 	})
 
 	if d, ok := reg.ResolveAppTool("srv-a", "srv-a_cb"); !ok {
@@ -151,10 +146,10 @@ func TestRegistry_RefreshDiscovery_RebuildsAppViewWithNoStale(t *testing.T) {
 	ctx := idCtx(t)
 	reg := NewRegistry()
 	provider := &mutableAppProvider{id: "srv-a"}
-	provider.set([]tools.ToolDescriptor{appDesc("srv-a_cb-old", "srv-a", true, nil)})
+	provider.set([]tools.ToolDescriptor{appDesc("srv-a_cb-old", "srv-a", true)})
 	swap, err := reg.StageRegistration(ServerRegistration{
 		Provider: provider, Transport: "inmemory", InitialState: ServerStateOnline,
-	}, []tools.ToolDescriptor{appDesc("srv-a_cb-old", "srv-a", true, nil)})
+	}, []tools.ToolDescriptor{appDesc("srv-a_cb-old", "srv-a", true)})
 	if err != nil {
 		t.Fatalf("StageRegistration: %v", err)
 	}
@@ -166,7 +161,7 @@ func TestRegistry_RefreshDiscovery_RebuildsAppViewWithNoStale(t *testing.T) {
 	}
 
 	// The server's tools/list changes: cb-old is removed, cb-new is added.
-	provider.set([]tools.ToolDescriptor{appDesc("srv-a_cb-new", "srv-a", true, nil)})
+	provider.set([]tools.ToolDescriptor{appDesc("srv-a_cb-new", "srv-a", true)})
 	if _, err := reg.RefreshDiscovery(ctx, "srv-a"); err != nil {
 		t.Fatalf("RefreshDiscovery: %v", err)
 	}
@@ -190,7 +185,7 @@ func TestRegistry_RefreshDiscovery_ReconcilesVisibilityTransitions(t *testing.T)
 	reg := NewRegistry()
 	cat := tools.NewCatalog()
 	provider := &mutableAppProvider{id: "srv-transition"}
-	ordinary := appDesc("srv-transition_tool", "srv-transition", false, nil)
+	ordinary := appDesc("srv-transition_tool", "srv-transition", false)
 	provider.set([]tools.ToolDescriptor{ordinary})
 	swap, err := reg.StageRegistration(ServerRegistration{
 		Provider: provider, Transport: "inmemory", InitialState: ServerStateOnline,
@@ -208,7 +203,7 @@ func TestRegistry_RefreshDiscovery_ReconcilesVisibilityTransitions(t *testing.T)
 	}
 	initial.Commit()
 
-	provider.set([]tools.ToolDescriptor{appDesc("srv-transition_tool", "srv-transition", true, nil)})
+	provider.set([]tools.ToolDescriptor{appDesc("srv-transition_tool", "srv-transition", true)})
 	if _, err := reg.RefreshDiscovery(ctx, "srv-transition"); err != nil {
 		t.Fatalf("ordinary-to-app refresh: %v", err)
 	}
@@ -237,8 +232,8 @@ func TestRegistry_RefreshDiscovery_ReappliesAttachmentPolicy(t *testing.T) {
 	ctx := idCtx(t)
 	reg := NewRegistry()
 	provider := &mutableAppProvider{id: "srv-policy"}
-	allowed := appDesc("srv-policy_allowed", "srv-policy", true, nil)
-	denied := appDesc("srv-policy_denied", "srv-policy", true, nil)
+	allowed := appDesc("srv-policy_allowed", "srv-policy", true)
+	denied := appDesc("srv-policy_denied", "srv-policy", true)
 	provider.set([]tools.ToolDescriptor{allowed})
 	swap, err := reg.StageRegistration(ServerRegistration{
 		Provider: provider, Transport: "inmemory", InitialState: ServerStateOnline,
@@ -274,11 +269,11 @@ func TestRegistry_RefreshDiscovery_ReplacementDoesNotAcceptStaleSnapshot(t *test
 		started:            make(chan struct{}),
 		unblock:            make(chan struct{}),
 	}
-	oldOrdinary := appDesc("srv-race_old", "srv-race", false, nil)
-	old.set([]tools.ToolDescriptor{oldOrdinary, appDesc("srv-race_old_app", "srv-race", true, nil)})
+	oldOrdinary := appDesc("srv-race_old", "srv-race", false)
+	old.set([]tools.ToolDescriptor{oldOrdinary, appDesc("srv-race_old_app", "srv-race", true)})
 	initial, err := reg.StageRegistration(ServerRegistration{
 		Provider: old, Transport: "inmemory", InitialState: ServerStateOnline, Catalog: cat,
-	}, []tools.ToolDescriptor{oldOrdinary, appDesc("srv-race_old_app", "srv-race", true, nil)})
+	}, []tools.ToolDescriptor{oldOrdinary, appDesc("srv-race_old_app", "srv-race", true)})
 	if err != nil {
 		t.Fatalf("StageRegistration(initial): %v", err)
 	}
@@ -301,8 +296,8 @@ func TestRegistry_RefreshDiscovery_ReplacementDoesNotAcceptStaleSnapshot(t *test
 	<-old.started
 
 	replacement := &mutableAppProvider{id: "srv-race"}
-	newOrdinary := appDesc("srv-race_new", "srv-race", false, nil)
-	newApp := appDesc("srv-race_new_app", "srv-race", true, nil)
+	newOrdinary := appDesc("srv-race_new", "srv-race", false)
+	newApp := appDesc("srv-race_new_app", "srv-race", true)
 	replacement.set([]tools.ToolDescriptor{newOrdinary, newApp})
 	replaced, err := reg.StageRegistration(ServerRegistration{
 		Provider: replacement, Transport: "inmemory", InitialState: ServerStateOnline, Catalog: cat,
@@ -352,15 +347,15 @@ func TestRegistry_Replacement_SwapsAppCallbacksAtomically(t *testing.T) {
 	ctx := idCtx(t)
 	reg := NewRegistry()
 	stageAppServer(t, reg, "srv-a", []tools.ToolDescriptor{
-		appDesc("srv-a_cb-v1", "srv-a", true, nil),
+		appDesc("srv-a_cb-v1", "srv-a", true),
 	})
 
 	// Same-name re-attach with a NEW generation.
 	provider := &mutableAppProvider{id: "srv-a"}
-	provider.set([]tools.ToolDescriptor{appDesc("srv-a_cb-v2", "srv-a", true, nil)})
+	provider.set([]tools.ToolDescriptor{appDesc("srv-a_cb-v2", "srv-a", true)})
 	swap, err := reg.StageRegistration(ServerRegistration{
 		Provider: provider, Transport: "inmemory", InitialState: ServerStateOnline,
-	}, []tools.ToolDescriptor{appDesc("srv-a_cb-v2", "srv-a", true, nil)})
+	}, []tools.ToolDescriptor{appDesc("srv-a_cb-v2", "srv-a", true)})
 	if err != nil {
 		t.Fatalf("StageRegistration(replacement): %v", err)
 	}
@@ -383,7 +378,7 @@ func TestRegistry_Deregister_RemovesAppCallbacks(t *testing.T) {
 	ctx := idCtx(t)
 	reg := NewRegistry()
 	stageAppServer(t, reg, "srv-a", []tools.ToolDescriptor{
-		appDesc("srv-a_cb", "srv-a", true, nil),
+		appDesc("srv-a_cb", "srv-a", true),
 	})
 	if _, ok := reg.ResolveAppTool("srv-a", "srv-a_cb"); !ok {
 		t.Fatal("callback did not resolve before detach")
@@ -409,10 +404,10 @@ func TestRegistry_Deregister_RemovesAppCallbacks(t *testing.T) {
 func TestRegistry_ResolveAppTool_ConcurrentIsolation(t *testing.T) {
 	reg := NewRegistry()
 	stageAppServer(t, reg, "srv-a", []tools.ToolDescriptor{
-		appDesc("srv-a_cb", "srv-a", true, nil),
+		appDesc("srv-a_cb", "srv-a", true),
 	})
 	stageAppServer(t, reg, "srv-b", []tools.ToolDescriptor{
-		appDesc("srv-b_cb", "srv-b", true, nil),
+		appDesc("srv-b_cb", "srv-b", true),
 	})
 
 	const n = 128

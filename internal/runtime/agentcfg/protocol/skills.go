@@ -89,10 +89,7 @@ func (s *Service) SkillsUpsert(ctx context.Context, req prototypes.AgentConfigSk
 	}
 	// Read the stored skill back so the response summary carries the
 	// store-computed content hash + timestamps.
-	selected, ok := s.skills.(skills.AgentSelectableSkillStore)
-	if !ok {
-		return prototypes.AgentConfigSkillsUpsertResponse{}, fmt.Errorf("%w: agent-selectable skill store required", ErrSkillsUnavailable)
-	}
+	selected := s.skills
 	stored, err := selected.GetScopeAgent(ctx, q, req.AgentID, skill.Name, skill.Scope)
 	if err != nil {
 		return prototypes.AgentConfigSkillsUpsertResponse{}, s.compensateSkillUpsert(ctx, q, skill, prior, hadPrior, err)
@@ -141,10 +138,7 @@ func (s *Service) SkillsDelete(ctx context.Context, req prototypes.AgentConfigSk
 	// Admin manages agent-level (session-local, non-durable) skills — it never
 	// deletes a user's durable personal skill. A non-user target scope keeps
 	// this a session-local delete.
-	selected, ok := s.skills.(skills.AgentSelectableSkillStore)
-	if !ok {
-		return prototypes.AgentConfigSkillsDeleteResponse{}, fmt.Errorf("%w: agent-selectable skill store required", ErrSkillsUnavailable)
-	}
+	selected := s.skills
 	err = selected.DeleteAgent(ctx, q, req.AgentID, req.Name, skills.ScopeSession)
 	if err != nil {
 		return prototypes.AgentConfigSkillsDeleteResponse{}, err
@@ -240,10 +234,7 @@ func (s *Service) skillAtScope(ctx context.Context, q identity.Quadruple, agentI
 		}
 		return sk, err == nil, err
 	}
-	selected, ok := s.skills.(skills.AgentSelectableSkillStore)
-	if !ok {
-		return skills.Skill{}, false, fmt.Errorf("%w: agent-selectable skill store required", ErrSkillsUnavailable)
-	}
+	selected := s.skills
 	sk, err := selected.GetScopeAgent(ctx, q, agentID, name, scope)
 	if errors.Is(err, skills.ErrSkillNotFound) {
 		return skills.Skill{}, false, nil

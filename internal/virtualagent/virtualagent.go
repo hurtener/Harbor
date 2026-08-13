@@ -351,7 +351,7 @@ func ValidateProfile(p Profile) error {
 		return fmt.Errorf("%w: parent agent must be set", ErrInvalidProfile)
 	}
 	if err := ValidateOverlay(p.Overlay); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidProfile, err)
+		return fmt.Errorf("%w: %w", ErrInvalidProfile, err)
 	}
 	if len(p.InputPatterns) > 32 {
 		return fmt.Errorf("%w: input_patterns exceeds 32 entries", ErrInvalidProfile)
@@ -361,7 +361,7 @@ func ValidateProfile(p Profile) error {
 			return fmt.Errorf("%w: input pattern must be 1..256 bytes", ErrInvalidProfile)
 		}
 		if _, err := path.Match(pattern, ""); err != nil {
-			return fmt.Errorf("%w: invalid input pattern %q: %v", ErrInvalidProfile, pattern, err)
+			return fmt.Errorf("%w: invalid input pattern %q: %w", ErrInvalidProfile, pattern, err)
 		}
 	}
 	if p.InputCount < 0 || p.InputCount > 32 {
@@ -382,14 +382,14 @@ func ValidateProfile(p Profile) error {
 		compiler := jsonschema.NewCompiler()
 		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(p.OutputSchema))
 		if err != nil {
-			return fmt.Errorf("%w: output_schema cannot be decoded: %v", ErrInvalidProfile, err)
+			return fmt.Errorf("%w: output_schema cannot be decoded: %w", ErrInvalidProfile, err)
 		}
 		const schemaURL = "mem://harbor/virtual-profile-output-schema.json"
 		if err := compiler.AddResource(schemaURL, doc); err != nil {
-			return fmt.Errorf("%w: output_schema cannot be registered: %v", ErrInvalidProfile, err)
+			return fmt.Errorf("%w: output_schema cannot be registered: %w", ErrInvalidProfile, err)
 		}
 		if _, err := compiler.Compile(schemaURL); err != nil {
-			return fmt.Errorf("%w: output_schema is not a valid JSON Schema: %v", ErrInvalidProfile, err)
+			return fmt.Errorf("%w: output_schema is not a valid JSON Schema: %w", ErrInvalidProfile, err)
 		}
 		sum := sha256.Sum256(p.OutputSchema)
 		if p.OutputSchemaHash != hex.EncodeToString(sum[:]) {
@@ -408,7 +408,7 @@ func ValidateProfile(p Profile) error {
 func (p Profile) Hash() (string, error) {
 	canon, err := canonicalJSON(NormalizeProfile(p))
 	if err != nil {
-		return "", fmt.Errorf("%w: hash: %v", ErrInvalidProfile, err)
+		return "", fmt.Errorf("%w: hash: %w", ErrInvalidProfile, err)
 	}
 	sum := sha256.Sum256(canon)
 	return hex.EncodeToString(sum[:]), nil
@@ -466,7 +466,7 @@ func ValidateMap(m Map) error {
 	seen := make(map[Key]struct{}, len(m.Profiles))
 	for _, p := range m.Profiles {
 		if err := ValidateProfile(p); err != nil {
-			return fmt.Errorf("%w: profile %q: %v", ErrInvalidMap, p.Key, err)
+			return fmt.Errorf("%w: profile %q: %w", ErrInvalidMap, p.Key, err)
 		}
 		if p.Parent != owner {
 			return fmt.Errorf("%w: profile %q parent %q != owner %q (profiles are owned by one top-level agent and never recurse)",
@@ -534,7 +534,7 @@ func NewFrozenMap(m Map, revisionID, configDigest string, live LiveRevisionReade
 	for _, p := range m.Profiles {
 		h, err := p.Hash()
 		if err != nil {
-			return nil, fmt.Errorf("%w: hash profile %q: %v", ErrInvalidMap, p.Key, err)
+			return nil, fmt.Errorf("%w: hash profile %q: %w", ErrInvalidMap, p.Key, err)
 		}
 		f.profiles[p.Key] = p
 		f.hashes[p.Key] = h
@@ -573,7 +573,7 @@ func (f *FrozenMap) VerifyCurrent(ctx context.Context) error {
 	}
 	rev, digest, err := f.live(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: read live revision: %v", ErrStale, err)
+		return fmt.Errorf("%w: read live revision: %w", ErrStale, err)
 	}
 	if rev != f.RevisionID || digest != f.ConfigDigest {
 		return fmt.Errorf("%w: live parent-config revision %q/%s no longer matches the frozen pin %q/%s",
@@ -625,7 +625,7 @@ func ValidateBinding(b Binding) error {
 		return fmt.Errorf("virtualagent: binding config digest must be a 64-hex SHA-256")
 	}
 	if _, err := hex.DecodeString(b.ConfigDigest); err != nil {
-		return fmt.Errorf("virtualagent: binding config digest is not hex: %v", err)
+		return fmt.Errorf("virtualagent: binding config digest is not hex: %w", err)
 	}
 	if b.Parent != b.AgentID {
 		return fmt.Errorf("virtualagent: binding parent %q != agent %q", b.Parent, b.AgentID)
@@ -634,7 +634,7 @@ func ValidateBinding(b Binding) error {
 		return fmt.Errorf("virtualagent: binding profile hash must be a 64-hex SHA-256")
 	}
 	if _, err := hex.DecodeString(b.ProfileHash); err != nil {
-		return fmt.Errorf("virtualagent: binding profile hash is not hex: %v", err)
+		return fmt.Errorf("virtualagent: binding profile hash is not hex: %w", err)
 	}
 	if b.Profile.Key != "" {
 		if err := ValidateProfile(NormalizeProfile(b.Profile)); err != nil {
@@ -689,7 +689,7 @@ func (f *FrozenMap) VerifyPin(b Binding) (Profile, error) {
 		return Profile{}, ErrNoMap
 	}
 	if err := ValidateBinding(b); err != nil {
-		return Profile{}, fmt.Errorf("%w: %v", ErrTampered, err)
+		return Profile{}, fmt.Errorf("%w: %w", ErrTampered, err)
 	}
 	p, ok := f.Profile(b.Key)
 	if !ok {

@@ -167,10 +167,7 @@ func (s *Service) UserSkillsDelete(ctx context.Context, req prototypes.AgentConf
 	// RUNG-PRECISE: the durable user verb deletes ONLY the ScopeUser row
 	// (keyed (tenant, user), session-independent — the intended cross-session
 	// durable delete). It must never touch a same-named session-scoped row.
-	selected, ok := s.skills.(skills.AgentSelectableSkillStore)
-	if !ok {
-		return prototypes.AgentConfigUserSkillsDeleteResponse{}, fmt.Errorf("%w: agent-selectable skill store required", ErrSkillsUnavailable)
-	}
+	selected := s.skills
 	if err := selected.DeleteAgent(ctx, q, req.AgentID, req.Name, skills.ScopeUser); err != nil {
 		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err
 	}

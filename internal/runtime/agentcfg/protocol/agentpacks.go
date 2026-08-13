@@ -503,7 +503,7 @@ func (s *Service) AgentPacksPropose(ctx context.Context, req prototypes.AgentCon
 		Item: skills.PackItemFromSkill(skill),
 	})
 	if err != nil {
-		return prototypes.AgentConfigAgentPacksProposeResponse{}, fmt.Errorf("%w: encode proposal: %v", ErrAgentPacksInvalid, err)
+		return prototypes.AgentConfigAgentPacksProposeResponse{}, fmt.Errorf("%w: encode proposal: %w", ErrAgentPacksInvalid, err)
 	}
 	if err := s.agentPackProposals.Save(ctx, state.StateRecord{ID: proposalID, Identity: q, Kind: proposalKind(string(proposalID)), Bytes: recordBytes}); err != nil {
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, fmt.Errorf("save pack proposal: %w", err)
@@ -632,7 +632,7 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 			}
 		}
 		if !errors.Is(getErr, agentcfg.ErrRevisionNotFound) {
-			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: load committing receipt target: %v", ErrAgentPackProposalInvalid, getErr)
+			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: load committing receipt target: %w", ErrAgentPackProposalInvalid, getErr)
 		}
 	}
 	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
