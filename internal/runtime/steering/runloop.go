@@ -856,7 +856,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// eventual resume — the same carry-over the paused path
 			// uses (mergeAccumulatedSignals).
 			mergeAccumulatedSignals(&spec.Base, sc)
-			tok, terr := rl.requestTranchePause(runCtx, q, spec.TrancheSteps, trancheUsed)
+			tok, terr := rl.requestTranchePause(runCtx, q, spec.TrancheSteps, trancheUsed, spec.Base.Trajectory)
 			if terr != nil {
 				return planner.Finish{}, terr
 			}
@@ -1203,7 +1203,7 @@ func (rl *RunLoop) requestPause(ctx context.Context, q identity.Quadruple, d pla
 // non-serialisable trajectory leaf, ErrInvalidReason) propagates
 // verbatim — no silent degradation, no half-persisted checkpoint, no
 // park issued for a run whose trajectory cannot be checkpointed.
-func (rl *RunLoop) requestTranchePause(ctx context.Context, q identity.Quadruple, trancheSteps, stepsObserved int) (pauseresume.Token, error) {
+func (rl *RunLoop) requestTranchePause(ctx context.Context, q identity.Quadruple, trancheSteps, stepsObserved int, tr *planner.Trajectory) (pauseresume.Token, error) {
 	req := pauseresume.PauseRequest{
 		Identity: q.Identity,
 		Reason:   pauseresume.ReasonConstraintsConflict,

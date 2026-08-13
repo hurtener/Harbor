@@ -72,6 +72,9 @@ const (
 	// already ended), a `start` referencing a nonexistent parent task.
 	// Maps from steering.ErrInboxNotFound / tasks.ErrNotFound.
 	CodeNotFound Code = "not_found"
+	// CodeRestartUnavailable marks a persisted tranche pause that has no
+	// live in-process run loop capable of continuing it.
+	CodeRestartUnavailable Code = "restart_unavailable"
 	// CodeRuntimeError — a runtime-side failure the surface could not
 	// classify into a more specific code. The catch-all; a transport
 	// adapter maps it to a 500.
@@ -217,6 +220,7 @@ var canonicalCodes = map[Code]struct{}{
 	CodePayloadInvalid:             {},
 	CodeUnknownMethod:              {},
 	CodeNotFound:                   {},
+	CodeRestartUnavailable:         {},
 	CodeRuntimeError:               {},
 	CodeAuthRejected:               {},
 	CodeIdentityScopeRequired:      {},

@@ -6129,6 +6129,10 @@
           "optional": true
         },
         {
+          "key": "available",
+          "type": "boolean"
+        },
+        {
           "key": "payload",
           "type": "object",
           "optional": true

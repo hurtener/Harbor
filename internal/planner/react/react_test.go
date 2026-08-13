@@ -537,7 +537,7 @@ func TestNext_MaxStepsBreakerWithoutEmitClosure(t *testing.T) {
 func TestNext_MaxStepsBreaker_CountsSuccessfulToolsNotControls(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{responses: []llm.CompleteResponse{
-		finishToolCallResp("call_1", ""),
+		nativeToolCallResp("call_1", "followup", `{}`),
 	}}
 	p := react.New(client, react.WithMaxSteps(2))
 	q := fixedQuadruple(t, "r-maxsteps-controls")
@@ -551,8 +551,12 @@ func TestNext_MaxStepsBreaker_CountsSuccessfulToolsNotControls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Next: %v", err)
 	}
-	if _, ok := dec.(planner.Finish); ok {
-		t.Fatalf("decision = %T, want a planner decision after one successful parallel decision", dec)
+	call, ok := dec.(planner.CallTool)
+	if !ok {
+		t.Fatalf("decision = %T, want planner.CallTool after one successful parallel decision", dec)
+	}
+	if call.Tool != "followup" {
+		t.Errorf("decision tool = %q, want followup", call.Tool)
 	}
 	if got := client.callCount(); got != 1 {
 		t.Errorf("client.calls = %d, want 1", got)

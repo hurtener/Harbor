@@ -5,6 +5,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
@@ -48,6 +49,9 @@ func mapSteeringError(method string, err error) *protoerrors.Error {
 	case stderrors.Is(err, steering.ErrInboxNotFound):
 		return protoerrors.Newf(protoerrors.CodeNotFound,
 			"method %q: no live run for the requested run id", method)
+	case stderrors.Is(err, pauseresume.ErrRestartUnavailable):
+		return protoerrors.Newf(protoerrors.CodeRestartUnavailable,
+			"method %q: exact restart redrive is unavailable", method)
 
 	default:
 		// An unclassified steering error — surface it loud as a runtime

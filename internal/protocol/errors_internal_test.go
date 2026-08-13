@@ -7,6 +7,7 @@ import (
 
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
@@ -30,6 +31,7 @@ func TestMapSteeringError_AllBranches(t *testing.T) {
 		{"unsupported payload value", fmt.Errorf("wrap: %w", steering.ErrUnsupportedPayloadValue), protoerrors.CodePayloadInvalid},
 		{"unknown control type", fmt.Errorf("wrap: %w", steering.ErrUnknownControlType), protoerrors.CodeRuntimeError},
 		{"inbox not found", fmt.Errorf("wrap: %w", steering.ErrInboxNotFound), protoerrors.CodeNotFound},
+		{"restart unavailable", fmt.Errorf("wrap: %w", pauseresume.ErrRestartUnavailable), protoerrors.CodeRestartUnavailable},
 		{"unclassified", stderrors.New("some other steering failure"), protoerrors.CodeRuntimeError},
 	}
 	for _, tc := range cases {

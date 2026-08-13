@@ -142,6 +142,16 @@ func TestDecisionInvocationCount_Batch_CountsToolsOnly(t *testing.T) {
 	}
 }
 
+func TestDecisionToolCount_Batch_ToolsOnly(t *testing.T) {
+	t.Parallel()
+	if got := DecisionToolCount(Batch{Spawns: []SpawnTask{{}}}); got != 0 {
+		t.Fatalf("DecisionToolCount(spawns-only Batch) = %d, want 0", got)
+	}
+	if got := DecisionToolCount(Batch{Tools: []CallTool{{}}, Spawns: []SpawnTask{{}}}); got != 1 {
+		t.Fatalf("DecisionToolCount(mixed Batch) = %d, want 1", got)
+	}
+}
+
 // TestCountToolInvocations_BatchStep_CountsTools — a Batch step in a
 // trajectory contributes len(Tools) to the aggregate count, alongside
 // the other shapes.

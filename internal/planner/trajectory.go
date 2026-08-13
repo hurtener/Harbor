@@ -171,12 +171,20 @@ func DecisionInvocationCount(action any) int {
 // controls and task-management decisions are zero. CallParallel deliberately
 // counts once even though its branches are dispatched independently.
 func DecisionToolCount(action any) int {
-	switch action.(type) {
-	case CallTool, *CallTool, CallParallel, *CallParallel, Batch, *Batch:
+	switch d := action.(type) {
+	case CallTool, *CallTool, CallParallel, *CallParallel:
 		return 1
+	case Batch:
+		if len(d.Tools) > 0 {
+			return 1
+		}
+	case *Batch:
+		if d != nil && len(d.Tools) > 0 {
+			return 1
+		}
 	default:
-		return 0
 	}
+	return 0
 }
 
 // CountSuccessfulToolInvocationsSince counts successful tool-bearing planner

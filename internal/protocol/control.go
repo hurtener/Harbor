@@ -14,6 +14,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
@@ -680,6 +681,18 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 
 	// Look up the run's live inbox. A run with no inbox (never started,
 	// or already ended) fails closed with CodeNotFound.
+	if method == methods.MethodResume && s.pauseCoordinator != nil {
+		if token, ok := cr.Payload["token"].(string); ok && token != "" {
+			status, statusErr := s.pauseCoordinator.Status(ctx, pauseresume.Token(token))
+			if statusErr == nil && status.Reason == pauseresume.ReasonConstraintsConflict && !status.Available {
+				return nil, protoerrors.Newf(protoerrors.CodeRestartUnavailable,
+					"method %q: exact restart redrive is unavailable", string(method))
+			}
+			if statusErr != nil && !errors.Is(statusErr, pauseresume.ErrPauseNotFound) {
+				return nil, mapSteeringError(string(method), statusErr)
+			}
+		}
+	}
 	inbox, err := s.steering.Lookup(q)
 	if err != nil {
 		return nil, mapSteeringError(string(method), err)

@@ -2172,6 +2172,7 @@ export interface PauseSnapshot {
   identity: IdentityScope;
   paused_at: string;
   resumed_at?: string;
+  available: boolean;
   payload?: Record<string, unknown>;
   payload_ref?: PauseArtifactRef;
 }
@@ -2810,4 +2811,3 @@ export interface Window {
   from?: string;
   to?: string;
 }
-
