@@ -76,8 +76,8 @@ func buildPhase31Env(t *testing.T, policy approval.ApprovalPolicy) *phase31Env {
 	// Per D-094, the per-test stack assembly is centralised in
 	// harbortest/devstack.Assemble. Phase 31 only exercises the
 	// approval gate against real bus + redactor + coordinator +
-	// steering — every higher layer (catalog, auth, transports) is
-	// skipped. The gate itself is constructed locally because it
+	// steering — the catalog is assembled for the mandatory sealed
+	// views, while auth and transports are skipped. The gate itself is constructed locally because it
 	// is the artifact-under-test; the helper's role is to provide
 	// the production-shaped collaborators.
 	cfg := phase31TestConfig(t)

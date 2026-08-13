@@ -78,11 +78,15 @@ func mkSpawnAwaitTestTaskRegistry(t *testing.T, bus events.EventBus) tasks.TaskR
 	return reg
 }
 
-// newSpawnAwaitExecutor builds an executor over the supplied registry
-// with an empty catalog + a real inmem artifact store.
-func newSpawnAwaitExecutor(t *testing.T, reg tasks.TaskRegistry, heavyThreshold, maxDepth int) steering.ToolExecutor {
+// newSpawnAwaitExecutor builds an executor over the supplied registry and
+// catalog with a real inmem artifact store.
+func newSpawnAwaitExecutor(t *testing.T, reg tasks.TaskRegistry, heavyThreshold, maxDepth int, cats ...tools.ToolCatalog) steering.ToolExecutor {
 	t.Helper()
-	return NewToolExecutor(tools.NewCatalog(), newTestArtifactStore(t), reg,
+	cat := tools.NewCatalog()
+	if len(cats) != 0 {
+		cat = cats[0]
+	}
+	return NewToolExecutor(cat, newTestArtifactStore(t), reg,
 		WithHeavyThreshold(heavyThreshold),
 		WithMaxSpawnDepth(maxDepth))
 }
@@ -108,10 +112,14 @@ func countSpawnAwaitTasks(t *testing.T, reg tasks.TaskRegistry) int {
 
 // rcFor builds a RunContext whose identity is the shared test triple and
 // whose RunID (= the current task id at the dev layer) is `runID`.
-func rcFor(runID tasks.TaskID) planner.RunContext {
+func rcFor(runID tasks.TaskID, cats ...tools.ToolCatalog) planner.RunContext {
+	cat := tools.NewCatalog()
+	if len(cats) != 0 {
+		cat = cats[0]
+	}
 	return planner.RunContext{
 		Quadruple: identity.Quadruple{Identity: dispatchTestID, RunID: string(runID)},
-		Catalog:   tools.NewPlannerView(tools.NewCatalog(), tools.CatalogFilter{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}),
+		Catalog:   tools.NewPlannerView(cat, tools.CatalogFilter{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}),
 	}
 }
 
@@ -121,6 +129,7 @@ func rcFor(runID tasks.TaskID) planner.RunContext {
 func TestExecutor_SpawnTask_OrdinaryArtifactResolutionAndDisposition(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	cat := tools.NewCatalog()
 	store := newTestArtifactStore(t)
 	ref, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{
 		TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID,
@@ -128,8 +137,8 @@ func TestExecutor_SpawnTask_OrdinaryArtifactResolutionAndDisposition(t *testing.
 	if err != nil {
 		t.Fatalf("PutBytes: %v", err)
 	}
-	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
-	rc := rcFor("")
+	exec := NewToolExecutor(cat, store, reg)
+	rc := rcFor("", cat)
 	rc.DispositionPolicy = planner.DispositionPolicy{ByMIME: map[string]planner.AttachmentDisposition{"image/*": planner.DispositionRef}}
 	raw, _, err := exec.ExecuteDecision(context.Background(), rc, planner.SpawnTask{Spec: planner.SpawnSpec{
 		Query: "ordinary", InputArtifactIDs: []string{ref.ID}, InputArtifactDispositions: map[string]string{ref.ID: "inline"},
@@ -150,12 +159,13 @@ func TestExecutor_SpawnTask_OrdinaryArtifactResolutionAndDisposition(t *testing.
 func TestExecutor_SpawnTask_OrdinaryDispositionPrecedence(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	cat := tools.NewCatalog()
 	store := newTestArtifactStore(t)
 	ref, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}, []byte("png"), artifacts.PutOpts{MimeType: "image/png"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
+	exec := NewToolExecutor(cat, store, reg)
 	for _, tc := range []struct {
 		name, hint, want string
 		policy           planner.DispositionPolicy
@@ -165,7 +175,7 @@ func TestExecutor_SpawnTask_OrdinaryDispositionPrecedence(t *testing.T) {
 		{"runtime default", "", "inline", planner.DispositionPolicy{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rc := rcFor("")
+			rc := rcFor("", cat)
 			rc.DispositionPolicy = tc.policy
 			hints := map[string]string(nil)
 			if tc.hint != "" {
@@ -189,6 +199,7 @@ func TestExecutor_SpawnTask_OrdinaryDispositionPrecedence(t *testing.T) {
 func TestExecutor_SpawnTask_ArtifactScopeErrorsDoNotPersist(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	cat := tools.NewCatalog()
 	store := newTestArtifactStore(t)
 	foreign := dispatchTestID
 	foreign.SessionID = "foreign"
@@ -196,10 +207,10 @@ func TestExecutor_SpawnTask_ArtifactScopeErrorsDoNotPersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
+	exec := NewToolExecutor(cat, store, reg)
 	for _, id := range []string{"missing", foreignRef.ID} {
 		before := countSpawnAwaitTasks(t, reg)
-		_, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{Query: id, InputArtifactIDs: []string{id}}})
+		_, _, err := exec.ExecuteDecision(context.Background(), rcFor("", cat), planner.SpawnTask{Spec: planner.SpawnSpec{Query: id, InputArtifactIDs: []string{id}}})
 		if !errors.Is(err, ErrArtifactRefNotFound) {
 			t.Fatalf("id %q error = %v, want ErrArtifactRefNotFound", id, err)
 		}
@@ -212,12 +223,13 @@ func TestExecutor_SpawnTask_ArtifactScopeErrorsDoNotPersist(t *testing.T) {
 func TestExecutor_SpawnTask_ArtifactValidationRejectsBeforePersistence(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	cat := tools.NewCatalog()
 	store := newTestArtifactStore(t)
 	ref, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}, []byte("png"), artifacts.PutOpts{MimeType: "image/png"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
+	exec := NewToolExecutor(cat, store, reg)
 	for _, tc := range []struct {
 		name  string
 		ids   []string
@@ -229,7 +241,7 @@ func TestExecutor_SpawnTask_ArtifactValidationRejectsBeforePersistence(t *testin
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := countSpawnAwaitTasks(t, reg)
-			_, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{Query: tc.name, InputArtifactIDs: tc.ids, InputArtifactDispositions: tc.hints}})
+			_, _, err := exec.ExecuteDecision(context.Background(), rcFor("", cat), planner.SpawnTask{Spec: planner.SpawnSpec{Query: tc.name, InputArtifactIDs: tc.ids, InputArtifactDispositions: tc.hints}})
 			if err == nil {
 				t.Fatal("expected rejection")
 			}
@@ -243,13 +255,14 @@ func TestExecutor_SpawnTask_ArtifactValidationRejectsBeforePersistence(t *testin
 func TestExecutor_SpawnTask_PersistsArtifactReferencesOnly(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	cat := tools.NewCatalog()
 	store := newTestArtifactStore(t)
 	ref, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}, []byte("secret-bytes"), artifacts.PutOpts{MimeType: "image/png", Filename: "secret.png"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
-	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{Query: "ref-only", InputArtifactIDs: []string{ref.ID}}})
+	exec := NewToolExecutor(cat, store, reg)
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("", cat), planner.SpawnTask{Spec: planner.SpawnSpec{Query: "ref-only", InputArtifactIDs: []string{ref.ID}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,9 +291,10 @@ func TestExecutor_SpawnTask_PersistsArtifactReferencesOnly(t *testing.T) {
 func TestExecutor_SpawnTask_ArtifactHintValidationPrecedesPersistence(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	cat := tools.NewCatalog()
 	store := newTestArtifactStore(t)
-	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
-	_, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{
+	exec := NewToolExecutor(cat, store, reg)
+	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("", cat), planner.SpawnTask{Spec: planner.SpawnSpec{
 		Query: "invalid", InputArtifactIDs: []string{"one"}, InputArtifactDispositions: map[string]string{"other": "inline"},
 	}})
 	if err == nil {
@@ -294,9 +308,10 @@ func TestExecutor_SpawnTask_ArtifactHintValidationPrecedesPersistence(t *testing
 func TestExecutor_SpawnTask_NonRetain_SpawnsBackgroundTask(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
-	raw, llmObs, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{
+	raw, llmObs, err := exec.ExecuteDecision(context.Background(), rcFor("", cat), planner.SpawnTask{
 		Kind: tasks.KindBackground,
 		Spec: planner.SpawnSpec{Description: "sub goal", Query: "do the sub goal"},
 	})
@@ -340,7 +355,8 @@ func TestExecutor_SpawnTask_NonRetain_SpawnsBackgroundTask(t *testing.T) {
 func TestExecutor_SpawnTask_InheritsExactAgentReachAdmission(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 	sealer, err := toolauth.NewAESGCMSealer(make([]byte, toolauth.KEKSizeBytes))
 	if err != nil {
 		t.Fatal(err)
@@ -353,7 +369,7 @@ func TestExecutor_SpawnTask_InheritsExactAgentReachAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, _, err := exec.ExecuteDecision(ctx, rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{Query: "child"}})
+	raw, _, err := exec.ExecuteDecision(ctx, rcFor("", cat), planner.SpawnTask{Spec: planner.SpawnSpec{Query: "child"}})
 	if err != nil {
 		t.Fatalf("ExecuteDecision: %v", err)
 	}
@@ -412,9 +428,10 @@ func TestExecutor_SpawnTask_NilRegistry_Unsupported(t *testing.T) {
 func TestExecutor_AwaitTask_EmptyTaskID_Errors(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
-	_, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.AwaitTask{TaskID: ""})
+	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("", cat), planner.AwaitTask{TaskID: ""})
 	if err == nil {
 		t.Fatal("AwaitTask(empty) returned nil error, want failure")
 	}
@@ -428,11 +445,12 @@ func TestExecutor_AwaitTask_EmptyTaskID_Errors(t *testing.T) {
 func TestExecutor_AwaitTask_UnknownTask_Errors(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, _, err := exec.ExecuteDecision(ctx, rcFor(""), planner.AwaitTask{TaskID: "no-such-task"})
+	_, _, err := exec.ExecuteDecision(ctx, rcFor("", cat), planner.AwaitTask{TaskID: "no-such-task"})
 	if err == nil {
 		t.Fatal("AwaitTask(unknown) returned nil error, want not-found failure")
 	}
@@ -466,12 +484,13 @@ func markTaskComplete(t *testing.T, reg tasks.TaskRegistry, value []byte) tasks.
 func TestExecutor_AwaitTask_CompletedTask_ReturnsOutcome(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
 	envelope := []byte(`{"answer":"the sub answer","finish_reason":"goal","tool_calls_seen":2}`)
 	id := markTaskComplete(t, reg, envelope)
 
-	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.AwaitTask{TaskID: id})
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("", cat), planner.AwaitTask{TaskID: id})
 	if err != nil {
 		t.Fatalf("ExecuteDecision(AwaitTask): %v", err)
 	}
@@ -499,7 +518,8 @@ func TestExecutor_AwaitTask_HeavyResult_Projected(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	// Tiny heavy threshold so the envelope easily exceeds it.
-	exec := newSpawnAwaitExecutor(t, reg, 256, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 256, 4, cat)
 
 	big := strings.Repeat("x", 4096)
 	envelope, mErr := json.Marshal(map[string]any{"answer": big, "finish_reason": "goal"})
@@ -508,7 +528,7 @@ func TestExecutor_AwaitTask_HeavyResult_Projected(t *testing.T) {
 	}
 	id := markTaskComplete(t, reg, envelope)
 
-	raw, llmObs, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.AwaitTask{TaskID: id})
+	raw, llmObs, err := exec.ExecuteDecision(context.Background(), rcFor("", cat), planner.AwaitTask{TaskID: id})
 	if err != nil {
 		t.Fatalf("ExecuteDecision(AwaitTask): %v", err)
 	}

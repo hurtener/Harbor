@@ -341,9 +341,10 @@ func TestExecutor_CallTool_ErrorShapes(t *testing.T) {
 // fails loud with steering.ErrDecisionShapeUnsupported.
 func TestExecutor_UnsupportedDecisionShape(t *testing.T) {
 	t.Parallel()
-	exec := NewToolExecutor(tools.NewCatalog(), newTestArtifactStore(t), nil)
+	cat := tools.NewCatalog()
+	exec := NewToolExecutor(cat, newTestArtifactStore(t), nil)
 	q := dispatchTestQuad("r-unsupported")
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(tools.NewCatalog(), q), planner.Finish{})
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), planner.Finish{})
 	if !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
 		t.Fatalf("err = %v, want ErrDecisionShapeUnsupported", err)
 	}
