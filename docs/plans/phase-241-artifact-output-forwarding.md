@@ -2,7 +2,7 @@
 
 ## Summary
 
-Forward task artifacts and bounded outputs across child-profile and same-run task boundaries by reference. Consumers receive declared handles, while models and unrelated sessions do not receive raw content accidentally.
+Forward task artifacts and bounded outputs across governed virtual-child and same-run task boundaries by reference. D-420 is the phase authority: consumers receive declared handles, while models and unrelated sessions do not receive raw content accidentally.
 
 ## RFC anchor
 

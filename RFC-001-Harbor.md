@@ -517,6 +517,15 @@ trusted relaunch boundary and must not reconstruct a run from mutable current
 planner or catalog state. A future explicit relaunch seam may extend this
 contract without widening identity or creating a new run.
 
+The v1.27 continuation surface is completed by governed virtual-child run
+views, reference-only artifact/output forwarding, and a durable task-progress
+projection. Child profiles remain derived configuration views rather than
+identity principals; forwarded content remains behind authorized artifact
+references; and `TaskRow` may carry the additive bounded
+`progress_snapshot`, `virtual_key`, and `virtual_label` fields. The Console
+mirror is hand-maintained while the generated wire manifest remains owned by
+the Go canonical wire source.
+
 Steering is a Runtime capability, surfaced over the Protocol. Planners observe `Control` signals; the Runtime owns the inbox.
 
 **Control event taxonomy (nine types — Settled):**

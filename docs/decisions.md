@@ -12756,3 +12756,78 @@ profile or catalog state could alter the run and replay completed work.
 Accordingly, a fresh process exposes the receipt for inspection and returns
 the typed `ErrRestartUnavailable` result. It must not create a new run or
 accept a foreign selector.
+
+---
+
+## D-418 — Same-run step-tranche continuation is live-run continuation (HA-57)
+
+**Date:** 2026-08-13
+
+**Status:** Accepted for Phase 239 (HA-57).
+
+**Decision.** An authorized resume while the original run loop remains live
+continues the same run from the last committed step-tranche boundary, without
+replaying completed steps, changing identity, or creating a replacement task.
+Cancellation between tranches has the same deterministic boundary semantics.
+D-417 remains the bounded restart-unavailable subdecision.
+
+**Cross-references.** D-417, D-025, D-171. RFC §3.3, §6.8, §6.11, §7.
+Plan: `docs/plans/phase-239-same-run-step-tranche-resume.md`.
+
+---
+
+## D-419 — Governed virtual child profiles are derived run views (HA-58)
+
+**Date:** 2026-08-13
+
+**Status:** Accepted for Phase 240 (HA-58).
+
+**Decision.** A virtual child profile is a read-only, governed view derived
+from a parent profile. Bounded overrides cannot widen capabilities, mutate the
+parent, advance an independent revision, or become an isolation principal.
+Admission uses verified `(tenant,user,session)` authority and agent reach;
+`agent_id` and profile keys are not identity axes. Execution and inspection
+share one resolver and typed authority states.
+
+**Cross-references.** D-059, D-299, D-311, D-414. RFC §5.5, §6.16, §7.
+Plan: `docs/plans/phase-240-virtual-child-profiles.md`.
+
+---
+
+## D-420 — Virtual child execution forwards artifacts and bounded outputs by reference (HA-59)
+
+**Date:** 2026-08-13
+
+**Status:** Accepted for Phase 241 (HA-59).
+
+**Decision.** Governed virtual-child execution forwards declared artifacts and
+bounded outputs to authorized same-run consumers through existing artifact
+references, preserving provenance. Raw content is not duplicated into task
+rows, model context, unrelated sessions, or a Console-owned source of truth;
+forbidden references fail closed before bytes are exposed.
+
+**Cross-references.** D-026, D-061, D-062, D-354, D-415. RFC §6.8, §6.10,
+§6.11, §7, §8. Plan: `docs/plans/phase-241-artifact-output-forwarding.md`.
+
+---
+
+## D-421 — Task progress is a durable identity-scoped projection (HA-60)
+
+**Date:** 2026-08-13
+
+**Status:** Accepted for Phase 242 (HA-60).
+
+**Decision.** The task surface projects the latest bounded progress snapshot
+(`fraction`, `phase`, `message`, `tags`, and `updated_at`) with virtual-child
+labels and artifact references where present. It is derived from the task
+source of truth, scoped to the verified identity triple, and bounded by the
+existing session lifecycle and erasure fence. It is not a raw-output stream
+or a second task state source.
+
+**Wire consequence.** `TaskRow` gains additive optional
+`progress_snapshot`, `virtual_key`, and `virtual_label` fields;
+`ProtocolVersion` remains `0.1.0`. The hand-maintained Console mirror changes;
+the generated wire manifest does not.
+
+**Cross-references.** D-026, D-286, D-400, D-416. RFC §6.8, §6.10, §6.11,
+§7.3, §5.2. Plan: `docs/plans/phase-242-task-progress.md`.

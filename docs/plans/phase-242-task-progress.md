@@ -2,7 +2,7 @@
 
 ## Summary
 
-Expose durable task progress as a typed, identity-safe Protocol projection. Progress reports completed and active step tranches, forwarded artifact handles, and resumability without leaking raw outputs.
+Expose durable task progress as a typed, identity-safe Protocol projection. D-421 is the phase authority: progress reports completed and active step tranches, forwarded artifact handles, virtual-child labels, and resumability without leaking raw outputs.
 
 ## RFC anchor
 

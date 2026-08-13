@@ -779,7 +779,7 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("capture membership: %w", err)
 	}
 	var resolver skills.SkillReader
-	resolver, err := sessionoverlay.NewSessionSkillResolver(ctx, sessionoverlay.SessionSkillResolverConfig{
+	resolver, err = sessionoverlay.NewSessionSkillResolver(ctx, sessionoverlay.SessionSkillResolverConfig{
 		Run:        q,
 		AgentID:    effectiveAgentID,
 		Base:       d.skillStore,

@@ -2,7 +2,7 @@
 
 ## Summary
 
-Expose virtual child profiles derived from a governed parent profile. A child is a read-only, identity-addressed view with explicit overrides and no independent persistence or authority escalation.
+Expose governed virtual child profiles derived from a parent profile. D-419 is the phase authority: the child is a read-only, identity-addressed view with bounded overrides and no independent persistence or authority escalation.
 
 ## RFC anchor
 

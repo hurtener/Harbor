@@ -11,7 +11,6 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
-	"github.com/hurtener/Harbor/internal/state"
 )
 
 type agentPackTestProposer struct {

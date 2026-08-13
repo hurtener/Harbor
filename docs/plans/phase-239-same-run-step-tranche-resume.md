@@ -2,7 +2,7 @@
 
 ## Summary
 
-Resume a paused or interrupted run at the next same-run step tranche while the original run loop remains available. Persist the tranche boundary and continuation state so in-process resume does not replay completed steps or lose identity.
+Resume a paused or interrupted run at the next same-run step tranche while the original run loop remains available. Persist the tranche boundary and continuation state so in-process resume does not replay completed steps or lose identity. D-418 is the phase authority; D-417 remains the bounded restart-unavailable subdecision.
 
 ## RFC anchor
 

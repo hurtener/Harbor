@@ -382,10 +382,10 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |236 | Typed MCP errors (HA-54) | tools/mcp + tools/policy | §6.4, §6.5, §6.13 | 26b, 28 | measured floors | Planned |
 |237 | Agent-owned skills and governed authoring (HA-55) | skills + agentcfg + serve | §6.7, §6.16, §6.11, §5.2 | 201, 221, 233, 233a | measured floors | Planned |
 |238 | App-only callback catalog (HA-56) | tools/mcp + mcpconsole + protocol | §6.4, §7.3, §5.2, §7 | 207, 204, 109k, 109l | measured floors | Planned |
-|239 | Same-run step tranche resume (HA-57) | runtime + tasks + protocol | §3.3, §6.8, §6.11, §7 | 176, 193, 233 | measured floors | Planned |
-|240 | Virtual child profiles (HA-58) | runtime + agentcfg + protocol | §5.5, §6.16, §7 | 221, 233a, 239 | measured floors | Planned |
-|241 | Artifact and output forwarding (HA-59) | artifacts + tasks + runtime + protocol | §6.8, §6.10, §6.11, §7 | 17, 146, 239, 240 | measured floors | Planned |
-|242 | Task progress (HA-60) | tasks + state + protocol | §6.8, §6.11, §7 | 239, 241 | measured floors | Planned |
+|239 | Same-run step tranche resume (HA-57) | runtime + tasks + protocol | §3.3, §6.8, §6.11, §7 | 176, 193, 233 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
+|240 | Virtual child profiles (HA-58) | runtime + agentcfg + protocol | §5.5, §6.16, §7 | 221, 233a, 239 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
+|241 | Artifact and output forwarding (HA-59) | artifacts + tasks + runtime + protocol | §6.8, §6.10, §6.11, §7 | 17, 146, 239, 240 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
+|242 | Task progress (HA-60) | tasks + state + protocol | §6.8, §6.11, §7 | 239, 241 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -579,7 +579,7 @@ real two-client race under `-race`.
    replacement run. Progress is bounded and references artifacts rather than
    copying raw output.
 - **Ordering:** 239 consumes 236 and is independent of 237/238/240/241/242.
-- **Decision:** D-413. **Status:** Planned.
+- **Decision:** D-418. **Status:** Shipped (v1.27). D-413 remains settled history.
 
 ### Phase 240 — Virtual child profiles (HA-58)
 
@@ -593,7 +593,7 @@ real two-client race under `-race`.
    the same resolver and typed denial/absence states.
 - **Ordering:** 240 depends on 237 and gates 241 (its operator consumer).
   Independent of 236/238/239/242.
-- **Decision:** D-414. **Status:** Planned.
+- **Decision:** D-419. **Status:** Shipped (v1.27). D-414 remains settled history.
 
 ### Phase 241 — Artifact and output forwarding (HA-59)
 
@@ -605,7 +605,7 @@ real two-client race under `-race`.
    expired, erased, cross-tenant, and unauthorized references fail typed
    before bytes are exposed.
 - **Ordering:** 241 depends on 240. Independent of 236/238/239/242.
-- **Decision:** D-415. **Status:** Planned.
+- **Decision:** D-420. **Status:** Shipped (v1.27). D-415 remains settled history.
 
 ### Phase 242 — Task progress (HA-60)
 
@@ -619,7 +619,7 @@ real two-client race under `-race`.
    source of truth or a raw-output stream.
 - **Ordering:** 242 is independent of 236–241; its fixtures compose with 238
   at wave E2E.
-- **Decision:** D-416. **Status:** Planned.
+- **Decision:** D-421. **Status:** Shipped (v1.27). D-416 remains settled history.
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 
