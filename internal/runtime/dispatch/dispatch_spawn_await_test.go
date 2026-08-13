@@ -111,6 +111,7 @@ func countSpawnAwaitTasks(t *testing.T, reg tasks.TaskRegistry) int {
 func rcFor(runID tasks.TaskID) planner.RunContext {
 	return planner.RunContext{
 		Quadruple: identity.Quadruple{Identity: dispatchTestID, RunID: string(runID)},
+		Catalog:   tools.NewPlannerView(tools.NewCatalog(), tools.CatalogFilter{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}),
 	}
 }
 

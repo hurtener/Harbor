@@ -120,7 +120,7 @@ func TestExecutor_Batch_DispatchTable(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "sub-b"}, CallID: "s1"},
 		},
 	}
-	rawAny, llmAny, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	rawAny, llmAny, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err != nil {
 		t.Fatalf("ExecuteDecision(Batch): %v", err)
 	}
@@ -192,7 +192,7 @@ func TestExecutor_Batch_AutoGroup_ExplicitGroupNeverOverwritten(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "ungrouped"}, CallID: "s1"},
 		},
 	}
-	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err != nil {
 		t.Fatalf("ExecuteDecision(Batch): %v", err)
 	}
@@ -236,7 +236,7 @@ func TestExecutor_Batch_BreadthCap_RejectsWholeBatch(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "c"}, CallID: "s2"},
 		},
 	}
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err == nil {
 		t.Fatal("Batch with 3 spawns under cap=2 returned nil error, want whole-batch rejection")
 	}
@@ -278,7 +278,7 @@ func TestExecutor_Batch_FailFastDisagreement_Rejects(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "b", FailFast: false}, CallID: "s1"},
 		},
 	}
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err == nil {
 		t.Fatal("Batch with FailFast disagreement returned nil error, want rejection")
 	}
@@ -312,7 +312,7 @@ func TestExecutor_Batch_RetainTurn_DefensiveReject(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "b", RetainTurn: true}, CallID: "s1"},
 		},
 	}
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err == nil {
 		t.Fatal("Batch with a RetainTurn spawn returned nil error, want defensive rejection")
 	}
@@ -352,7 +352,7 @@ func TestExecutor_Batch_ToolCapExceeded_StructuralReject(t *testing.T) {
 		Tools:  toolBranches,
 		Spawns: []planner.SpawnTask{{Spec: planner.SpawnSpec{Query: "a"}, CallID: "s0"}},
 	}
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err == nil {
 		t.Fatal("over-parallel-cap Batch returned nil error, want structural rejection")
 	}
@@ -387,7 +387,7 @@ func TestExecutor_Batch_Invalid_DoesNotPersistProgress(t *testing.T) {
 		},
 		Progress: []planner.TaskProgress{{CallID: "p0", Phase: "halfway"}},
 	}
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err == nil || !errors.Is(err, planner.ErrInvalidDecision) {
 		t.Fatalf("invalid batch error = %v, want wrapped planner.ErrInvalidDecision", err)
 	}
@@ -415,7 +415,7 @@ func TestExecutor_Batch_DegenerateCombinedCount_Rejects(t *testing.T) {
 		{Spawns: []planner.SpawnTask{{Spec: planner.SpawnSpec{Query: "a"}, CallID: "s0"}}},     // one spawn
 	}
 	for i, d := range cases {
-		_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+		_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 		if err == nil {
 			t.Errorf("case %d: degenerate Batch returned nil error, want rejection", i)
 			continue
@@ -451,7 +451,7 @@ func TestExecutor_Batch_ToolHalfError_NoOrphanGroup(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "b"}, CallID: "s1"},
 		},
 	}
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err == nil {
 		t.Fatal("malformed-Join Batch returned nil error, want the tool-half error surfaced")
 	}
@@ -497,7 +497,7 @@ func TestExecutor_Batch_PerBranchErrorAsValue(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "sealed"}, GroupID: grp.ID, CallID: "s1"}, // registry reject
 		},
 	}
-	rawAny, _, err := exec.ExecuteDecision(idCtx, planner.RunContext{Quadruple: q}, d)
+	rawAny, _, err := exec.ExecuteDecision(idCtx, dispatchRunContext(cat, q), d)
 	if err != nil {
 		t.Fatalf("ExecuteDecision(Batch): unexpected whole-batch err: %v", err)
 	}
@@ -553,7 +553,7 @@ func TestExecutor_Batch_SpawnsOnly_NoTools(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "b"}, CallID: "s1"},
 		},
 	}
-	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err != nil {
 		t.Fatalf("ExecuteDecision(spawns-only Batch): %v", err)
 	}
@@ -675,7 +675,7 @@ func TestExecutor_Batch_PreservesDeclarationOrder(t *testing.T) {
 	}
 	d := planner.Batch{Tools: toolBranches, Spawns: spawns}
 
-	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err != nil {
 		t.Fatalf("ExecuteDecision(Batch): %v", err)
 	}
