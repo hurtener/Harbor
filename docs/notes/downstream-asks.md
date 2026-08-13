@@ -568,6 +568,7 @@ projection.
 4. Session lifecycle and erasure fences remove stale projections.
 5. Real durable StateStore integration proves identity propagation, a failure
    mode, and cross-session isolation.
+
 ---
 
 ## Posture signals from the downstream team
