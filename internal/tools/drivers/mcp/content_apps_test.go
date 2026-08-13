@@ -54,7 +54,7 @@ func TestProvider_AppBinding_EvictsExpiresAndCloses(t *testing.T) {
 	const resourceURI = "ui://app/main.html"
 
 	first := p.mintAppBinding(ctx, resourceURI, "srv_callback")
-	for i := range appBindingLimit {
+	for range appBindingLimit {
 		p.mintAppBinding(ctx, resourceURI, "srv_callback")
 	}
 	if p.ValidateAppBinding(ctx, first, resourceURI) {
