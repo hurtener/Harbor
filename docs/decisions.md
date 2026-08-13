@@ -12573,3 +12573,170 @@ bounded-authority refinement of D-171; D-171's per-request model is not
 superseded.
 
 **Cross-references.** D-171, D-397, D-400. RFC §5.5.
+
+---
+
+## D-410 — Typed MCP error classification is a transport-safe permanent-vs-retryable contract (HA-54)
+
+**Date:** 2026-08-13
+
+**Status:** Accepted for Phase 236 (HA-54).
+
+**Decision.** An MCP server MAY attach a typed error-classification contract to an `IsError: true` `CallToolResult` while remaining a normal MCP result for clients that do not understand the extra classification. The exact extension placement and negotiation belong to the phase design, but the contract must preserve the standard `CallToolResult` semantics and be carried through every Harbor MCP transport (stdio, streamable HTTP, SSE) without a text parser or a transport-specific side channel. A structured-content envelope with an advertised schema is one candidate; the phase must compare it with any relevant standard MCP extension before settling it.
+
+The classification expresses, at minimum:
+
+1. `invalid_argument` / validation and deterministic tool-domain failures are **permanent for the unchanged invocation**: the retry shell performs exactly one attempt, the original error result reaches the model, and the class covers a missing required selector and an unknown closed operation without silently coercing aliases.
+2. Genuine transport and provider/service failures remain retryable according to the configured policy; existing timeout and 5xx behavior is intact.
+3. An explicit, documented, and tested compatibility fallback for servers that return only ordinary `IsError` today and for absent, malformed, or unrecognised classifications — it never guesses a class from error text and never turns a foreign extension into a permanent failure accidentally.
+4. The classified result's bounded message/content and structured content are preserved for the planner/model and App paths. Classification metadata is control information, not a route to log raw tool arguments or results (CLAUDE.md §7 rule 7 and §13 hold).
+
+**Acceptance evidence (binding for the phase).** Real MCP SDK fixtures over each supported Harbor MCP transport demonstrate that typed `invalid_argument`, validation, and deterministic `tool_domain` `IsError` results make exactly one call under the default policy, with their original result content observable. A typed retryable provider/transport failure still uses the configured attempt budget and can recover; timeout and 5xx classifications retain their present policy behavior. Legacy unclassified `IsError`, missing classification, malformed classification, and an unknown future class follow the documented compatibility fallback; no test derives a class from error text. Unit coverage proves lowering, policy classification, and error wrapping; an end-to-end driver test proves the selected class reaches the retry shell without changing standard MCP result handling; the existing transient-`IsError` retry case remains as the compatibility regression fixture. §17.8: the fixtures derive from the real spec artifact, never a hand-authored fixture encoding the implementer's interpretation.
+
+**Non-goals.** No per-server retry-policy override, no redefinition of MCP's `isError` boolean, and no consumer-specific exception — Harbor provides one reusable typed reliability seam for every MCP server.
+
+**Wire consequence.** Additive classification extension; `ProtocolVersion` remains `0.1.0`. If the extension reaches the Protocol surface it triggers the full D-223/D-209 lockstep; a transport-internal shape carries none.
+
+**Cross-references.** D-274 (the true invocation-count semantics the attempt budget rests on), D-305 (driver parity + registered-driver conformance gate and §17.8 fixture discipline), D-393 and D-329 (the reliability-honesty bar), D-351 (the bounded-guarantee bar: never claim a property the mechanism lacks), D-223/D-209 (wire lockstep). RFC §6.4 (the `ToolPolicy.RetryOn` reliability shell this class feeds), §6.5, §6.13. Briefs 03, 07, 14. Plan: `docs/plans/phase-236-typed-mcp-error-classification.md`.
+
+---
+
+## D-411 — Operator-managed per-agent skill packs are a durable, revision-versioned, identity-addressed source composed per run (HA-55)
+
+**Date:** 2026-08-13
+
+**Status:** Accepted for Phase 237 (HA-55).
+
+**Decision.** Add a first-class, operator-managed **per-agent skill pack** source, durable and versioned with the agent-config revision. It is addressable by `(tenant_id, agent_id, skill_name)` for configuration selection, but `agent_id` remains a runtime/config entity, never an identity principal (D-059): every read still starts from the authenticated caller's verified `(tenant, user, session)` and its signed reach to the effective agent. The composed run snapshot contains only (a) the selected operator pack for that effective agent and tenant plus (b) that caller's permitted personal/session skills. It must never turn an ordinary tenant/global catalog read into a broad cross-user search. The tempting workarounds are rejected: `ScopeTenant`/`ScopeGlobal` labels are not implemented visibility, copying a pack into every user triple is not a mechanism, a shared service identity is not an operator path, and a CLI import triple is a local bootstrap aid, not a production registration contract.
+
+The control plane offers an elevated operator mutation path that stores the pack body and advances the selected agent's content-addressed revision atomically (or compensates on failure), with the existing diff/rollback and audit semantics. Pack `RequiredTools` metadata is never a grant: the existing run-visible-tool capability filter and redactor remain in front of the injected directory and all three `skill_*` tools. The runtime exposes the same immutable composed snapshot to directory injection, `skill_search`, `skill_get`, and `skill_list`; a change applies next run only.
+
+**Required acceptance (binding for the phase).**
+
+1. With a real durable Postgres skills/agent-config backing store, an elevated operator creates a pack and pins it to one agent; two different users and sessions in the same tenant, each with signed reach to that agent, both see it through the directory and `skill_search`/`skill_get`/`skill_list` after restart.
+2. A same-tenant user selecting a different agent, and a user in another tenant, cannot discover or fetch that pack by any name/query. Each user's personal skill remains invisible to the other user and cannot replace the operator-pack body.
+3. A pack whose `RequiredTools` mention a missing, paused, disabled, or scope-filtered MCP tool is filtered/redacted exactly as today; it never expands the run's visible tool set. The test must exercise a dynamically attached MCP source, not only in-process tools.
+4. A membership change, rollback, and revoke affect the next run only. An already-started run retains its immutable snapshot; an unselected or revoked pack answers a typed not-found/empty result without falling through to another principal's row.
+5. Non-operator callers cannot create, update, or remove packs; malformed scope/agent/identity input fails before persistence; all mutations emit the existing skill and agent-config audit/revision evidence. Include a concurrent mixed-tenant/user/agent test under `-race` with no context or authority bleed.
+
+**Cross-references.** D-059 (agent identity is not an isolation principal), D-400 (durable records fenced by lifecycle/erasure state), D-398 (mandatory multi-slot `SaveIf`), D-399 (terminal retirement tombstone + same-operation cleanup), D-256 (the durable user-tier band), D-312 (session lifecycle), D-392 (identity-scoped enumeration + widened-read audit), D-311 (absence representable), D-089/D-196 (dev-escape-hatch and driver-aggregator seams). RFC §6.7 (skills subsystem), §6.16 (agent registry + revision machinery), §6.11 (StateStore), §5.2 (Protocol surface). Brief 04. Plan: `docs/plans/phase-237-operator-agent-skill-packs.md`.
+
+---
+
+## D-412 — MCP App callbacks live in a per-server dispatch catalog distinct from the planner projection (HA-56)
+
+**Date:** 2026-08-13
+
+**Status:** Accepted for Phase 238 (HA-56).
+
+**Decision.** At MCP discovery, preserve the provider-authored `_meta.ui.visibility: ["app"]` classification and construct an internal, per-MCP-server **App dispatch catalog** alongside the ordinary planner/model projection. An app-only entry must be absent from planner context, generic `tools/list`, planner search/resolve, and ordinary model tool invocation; it must remain callable only by the rendered App associated with the same host-derived server identity through a host/App dispatch surface. No string prefix or remembered global tool name may select another server's callback.
+
+The App dispatch path remains subject to the exact existing identity triple, effective-agent capability filtering, OAuth/approval wrappers, current-state checks, redaction, and audit rules. Visibility is not a grant: a caller in a different tenant/user/session, a different agent without reach, or a rendered App from another MCP server receives a typed not-found/denied result before tool execution; a generic planner call to an app-only name must not become a backdoor merely because the name is known.
+
+Dynamic attach, reconnect, and catalog refresh must rebuild both views from one discovered server snapshot: a newly added callback becomes usable only through that server's App host, a removed callback stops resolving everywhere, and no stale callback survives a replacement or detach. The contract must hold for both HTTP and stdio MCP transports. The phase may choose the internal API and any additive wire shape, but it must make the host-derived server identity available to the dispatch check rather than trusting an App-supplied catalog name.
+
+**Required acceptance (binding for the phase).**
+
+1. A real MCP fixture publishes one ordinary tool and one `_meta.ui.visibility: ["app"]` callback from the same server. The ordinary tool is visible to the planner; the callback is absent from planner context, generic `tools/list`, search, resolve, and ordinary call paths, while the matching rendered App invokes it successfully through the same server's callback catalog.
+2. A callback request from another server's rendered App, a direct generic planner request using the remembered callback name, and a mismatched or missing server identity all fail before invocation. The test records zero callback executions and proves existing OAuth/approval/current-state gates still run for the permitted same-server invocation.
+3. Dynamic attach, reconnect, refresh, replacement, and detach tests prove the two views update atomically without stale entries, for HTTP and stdio servers. Include a paused/disabled/scope-filtered source so an app-only marker cannot bypass capability filtering.
+4. Authenticated mixed-tenant, mixed-user, and mixed-agent-reach tests prove an App callback catalog cannot cross the verified identity boundary. Run the concurrent path under `-race` without context or authority bleed.
+5. The provider compatibility fixtures named in the HA-56 register entry exercise their app-only callback metadata and prove no callback is exposed to the planner while each provider's own rendered App remains functional.
+
+**Non-goals.** `_meta.ui.visibility` is not an authorization shortcut; app-only tools are not exposed to ordinary callers; no provider-specific exceptions — one reusable Harbor catalog/dispatch primitive that preserves an MCP App callback without advertising it as a model tool.
+
+**Wire consequence.** The phase may choose an additive wire shape, `ProtocolVersion` remains `0.1.0`, and any additive shape triggers the full D-223/D-209 lockstep. The host-derived server identity must reach the dispatch check; it is never App-supplied.
+
+**Cross-references.** D-173 (the bridge-proxied sandbox posture this stays inside), D-227 (the original MCP-Apps host obligations; `visibility` enforcement deferred there), D-351 (the re-landed host obligations, the typed not-found, and the bounded-guarantee bar), D-408 (runtime-authored effective-agent admission on data-plane callbacks), D-343 (deferred progressive streaming, untouched), D-062 (no primitive without its consumer), D-061 (the Console is a Protocol client). RFC §6.4, §7.3, §5.2, §7. Briefs 03, 14. Plan: `docs/plans/phase-238-mcp-app-callback-catalog.md`.
+
+---
+
+## D-413 — Typed reliability classification is observable control metadata on the tool-failure events (HA-57)
+
+**Date:** 2026-08-13
+
+**Status:** Accepted for Phase 239 (HA-57). Harbor-internal ask; the observability consumer of D-410's classification.
+
+**Decision.** D-410 gives the retry shell a typed permanent-vs-retryable decision; without this phase the decision is invisible to the operator. The canonical failure events (`tool.failed`, `tool.policy_exhausted`) carry neither the resolved class nor the attempt accounting, so an operator cannot distinguish "deterministic failure correctly attempted once" from "provider outage retried four times" — the exact difference D-410 exists to make. The tool-failure events gain additive, non-secret **control metadata**: the resolved class (permanent / retryable with its reason class), the attempt ordinal, and the configured budget. The metadata is server-derived from the D-410 classifier — never caller-supplied, never request-body data — and is control information only: no raw tool arguments or results ever ride these events (CLAUDE.md §7 rule 7 and §13 hold; the audit-redactor boundary is unchanged). An absent or legacy classification renders a representable `unclassified` value, never a fabricated class (D-311). The phase prefers extending the existing payloads with additive optional fields over new event types unless a genuine gap is proven.
+
+**Required acceptance (binding for the phase).**
+
+1. A permanent-classified failure under the default policy emits exactly one invocation, and its failure event carries `permanent` with attempt `1` of the configured budget.
+2. A retryable classified failure emits each attempt, and the terminal exhausted event carries the final attempt and the resolved class; timeout and 5xx behavior is unchanged.
+3. Legacy unclassified `IsError` results emit `unclassified` — never a guessed class, never a fabricated budget figure.
+4. No event carries raw arguments or results; redaction-gate tests pin the boundary; the identity triple and run/task keys remain the event keys; no new identity axes.
+5. Concurrent mixed classification streams under `-race` (N≥100) prove no cross-run bleed; an end-to-end integration test with real drivers covers identity propagation and at least one failure mode.
+
+**Wire consequence.** Additive optional fields on the existing failure-event payloads; `ProtocolVersion` remains `0.1.0`; full D-223/D-209 lockstep for the event/type surfaces that reach the Protocol stream.
+
+**Cross-references.** D-410 (the classification this observes), D-305 (event parity + the registered-driver gate), D-393 and D-329 (the reliability-honesty bar), D-311 (absence representable), D-274 (invocation-count semantics), D-223/D-209 (lockstep). RFC §6.4 (the reliability shell), §6.13 (the typed event bus — the canonical projection of runtime state), §6.15 (governance/telemetry), §5.2 (Protocol observability). Briefs 03, 06, 07. Plan: `docs/plans/phase-239-reliability-classification-observability.md`.
+
+---
+
+## D-414 — The composed per-agent skill snapshot is an operator-verifiable read-only preview surface (HA-58)
+
+**Date:** 2026-08-13
+
+**Status:** Accepted for Phase 240 (HA-58). Harbor-internal ask; the verification surface for D-411's composition.
+
+**Decision.** D-411's composed run snapshot is consumed only inside a run (directory injection and the three `skill_*` tools); an operator cannot verify what a given `(tenant, user, agent)` will compose — which operator pack, which personal skills survive, which `RequiredTools` get filtered — without starting a run. The phase ships an operator-facing, read-only **composition-preview** surface: identity-addressed `(tenant, user, agent)` → the exact immutable snapshot the next run would compose, as names and bounded verdicts (per-item visibility, filtered required-tool outcomes) — bodies only for the addressed caller's own row, never cross-principal content. Authority is server-derived (the D-299 pattern): an operator with verified signed reach to the effective agent may preview any user's composition for that agent within the tenant; an ordinary caller may preview only their own. The preview is a pure projection over durable state — it never mutates, never advances a revision, never writes a run — and it reuses the same per-run composite resolver D-411 builds: one composition path, no second implementation (§13). Where the run would fail loud (unresolvable pack, retirement tombstone), the preview surfaces the same typed result; an unwired or legacy state renders a representable `unavailable`, never a fabricated composition (D-311).
+
+**Required acceptance (binding for the phase).**
+
+1. An operator preview of user A's composition for agent X returns pack names, personal-skill names, and filtered-tool verdicts that match the composition an actual next run uses (integration against the real durable store).
+2. An ordinary caller previews their own composition; a same-tenant different user and a cross-tenant caller receive a typed denial/empty result without discovering any names.
+3. A revoked or unselected pack renders the typed not-found state, never another principal's row.
+4. The preview is provably read-only: after N previews, the revision hash, revision list, skill rows, and audit trail are byte-identical (idempotence proof).
+5. Concurrent mixed-tenant/user/agent previews under `-race` (N≥100) with no context or authority bleed, plus at least one failure mode in the integration test.
+
+**Wire consequence.** One additive read surface (method or projection); `ProtocolVersion` remains `0.1.0`; full D-223/D-209 lockstep and the §18 skills operator skill updated in the same PR.
+
+**Cross-references.** D-411 (the composed snapshot and resolver this projects), D-400/D-398/D-399 (the durable fences the preview must respect), D-059 (agent identity is not an isolation axis), D-311 (absence representable), D-351 (never claim a property the mechanism lacks), D-299 (server-derived authority), D-223/D-209 (lockstep). RFC §6.7, §6.16, §5.2, §7. Brief 04. Plan: `docs/plans/phase-240-composition-preview.md`.
+
+---
+
+## D-415 — The composition preview gains an operator consumer in the same wave (HA-59)
+
+**Date:** 2026-08-13
+
+**Status:** Accepted for Phase 241 (HA-59). Depends on Phase 240 (D-414); closes §13's primitive-with-consumer rule for the preview surface.
+
+**Decision.** D-414's preview surface is a primitive; per AGENTS.md §13 (and D-062's "no page phase without its feeding surface" read backwards), the wave that introduces it MUST also introduce a consumer that exercises it end-to-end with a test. The consumer is an operator-facing pair: a `harbor` CLI verb that inspects the effective agent's composition, and a Console skill/agent view rendering the preview for the effective agent — so an operator verifies pack membership and filtered-tool verdicts before a run and can diff the preview across two revisions. Both consume ONLY the D-414 surface: no new backend logic, no second composition path (§13). Both go through the exact signed-reach admission the method enforces and render its typed not-found/denied/unavailable states as returned — never a blank state (D-311).
+
+**Required acceptance (binding for the phase).**
+
+1. The CLI verb returns the same composition an actual next run composes, against the real durable store.
+2. The Console view renders pack names, personal-skill names, and verdicts, plus the typed not-found/denied/unavailable states exactly as the method returns them.
+3. Unauthorized CLI and Console attempts fail exactly as the method fails (same reach/scope checks, same typed errors).
+4. A two-revision diff shows added/removed pack membership and changed verdicts.
+5. An end-to-end integration test with real drivers covers identity propagation, at least one failure mode, and an N≥10 concurrent stress run.
+
+**Wire consequence.** Consumer-only; nothing beyond D-414's lockstep.
+
+**Cross-references.** D-414 (the surface consumed), D-062 and AGENTS.md §13 (primitive-with-consumer), D-061 (the Console is a Protocol client), D-121 (Console design conventions), D-351 (the bounded-guarantee bar), D-223/D-209 (lockstep). RFC §6.7, §6.16, §5.2, §7, §8. Briefs 04, 06, 11, 12. Plan: `docs/plans/phase-241-composition-preview-consumer.md`.
+
+---
+
+## D-416 — MCP App tool-context records get an explicit retention policy: real eviction or a stated session-lifetime contract (HA-60)
+
+**Date:** 2026-08-13
+
+**Status:** Accepted for Phase 242 (HA-60). Harbor-internal ask; independent of the composition wave (240/241). Settles the HA-39 retention sub-question that D-347 and D-348 deliberately left open.
+
+**Decision.** The HA-39 register entry recorded an open sub-question: the read path is built for an eviction that the write path never performs. `internal/mcpconsole/toolcontext.go` documents "an unknown or cross-identity `(serverID, toolCallID)` returns a wrapped not-found whose marker the Protocol surface maps to `CodeNotFound`", and the Console adapter treats `not_found` as "no captured context, no delivery" — but there is no TTL, no eviction, and no sweeper: records are ordinary session-scoped `StateRecord` writes that this package never expires. The two halves disagree. This phase settles the policy deliberately and enforces it; the disagreement is the bug, not either answer.
+
+The default lean is the **session-lifetime contract**: tool-context records live for the session's lifetime and are removed by the existing session-erasure fences, making `not_found` cover cross-identity and unknown-id only. That is the smallest honest contract because the records are already session-scoped StateRecords that die with session erasure (D-286/D-400). The alternative — a real retention/eviction policy (bounded per-session TTL + identity-scoped idle sweep) — is adopted only if the phase measures unbounded growth in long-lived sessions that the session-lifetime contract cannot bound; either way the chosen policy is enforced by test and the unchosen branch's guard rails are documented rather than left implied.
+
+If eviction is chosen: the sweeper is bounded and identity-scoped, races with concurrent App reads resolve under the existing record write locks, an evicted id returns the typed `CodeNotFound` (load-bearing), and never a silent blank. If the session-lifetime contract is chosen: the `not_found` godoc and the D-348 Console placeholder already cover the miss, and the phase pins with tests that records survive session reopen and are removed on session erasure. The D-173 sandbox/CSP posture and the D-348 honest-placeholder render are untouched under either choice.
+
+**Required acceptance (binding for the phase).**
+
+1. Current behavior is pinned by tests before the policy lands: records survive session reopen, and `not_found` is returned for an unknown id and a cross-identity id.
+2. The chosen policy is implemented and enforced; the rejected option's consequences are documented in the phase plan and this decision's register entry.
+3. If eviction is chosen: bounded, identity-scoped, race-safe under `-race`, with a concurrent reader/writer stress run.
+4. The Console renders the honest placeholder on `not_found` exactly as D-348 shipped it — unchanged.
+5. An integration test with the real durable StateStore covers identity propagation, at least one failure mode, and cross-session isolation of records.
+
+**Wire consequence.** None for the session-lifetime contract (test-only); an eviction policy MAY add a bounded retention signal to the existing `mcp.apps.tool_context` error surface but no new method. `ProtocolVersion` remains `0.1.0`; D-223/D-209 lockstep only if a wire shape is added.
+
+**Cross-references.** D-347 (the byte read + the `CodeNotFound` anticipation), D-348 (the reopened-session placeholder), D-351 (the host obligations), D-343 (deferred progressive streaming, untouched), D-286 and D-400 (the session-erasure fences that bound the session-lifetime option), D-254 (durable history read-back). RFC §6.10, §6.11, §7.3, §5.2. Briefs 14, 03. Plan: `docs/plans/phase-242-tool-context-retention.md`.

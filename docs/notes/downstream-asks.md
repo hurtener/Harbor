@@ -28,16 +28,26 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-41 | App→host `tools/call` server-namespace confinement | web/console (MCP Apps host) | High (security) | Small | Shipped — phase 207 / D-351 (items 1–2); item 3 (`_meta.ui.visibility`) still Filed |
 | HA-42 | Progressive `tool-input-partial` streaming into a rendered App | internal/llm + internal/protocol + web/console | Low | Large | Deferred — reserved as D-343 |
 | HA-51 | Bifrost reasoning byte fidelity | internal/llm + planner + tasks + Console | Release blocker | Contained | Shipped (v1.26) — phase 233c / D-402 |
-| HA-54 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Filed |
-| HA-55 | Operator-managed per-agent skill packs across authenticated users | internal/skills + runtime/agentcfg + runtime/serve | High | Medium | Filed |
-| HA-56 | Per-server MCP App callback catalog outside planner projection | internal/tools/drivers/mcp + internal/tools + internal/mcpconsole + protocol | High | Medium | Filed |
+| HA-54 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Planned — phase 236 / D-410 |
+| HA-55 | Operator-managed per-agent skill packs across authenticated users | internal/skills + runtime/agentcfg + runtime/serve | High | Medium | Planned — phase 237 / D-411 |
+| HA-56 | Per-server MCP App callback catalog outside planner projection | internal/tools/drivers/mcp + internal/tools + internal/mcpconsole + protocol | High | Medium | Planned — phase 238 / D-412 |
+| HA-57 | Typed reliability classification observability on the tool-failure events | internal/tools + internal/events + internal/protocol | High | Contained | Planned — phase 239 / D-413 |
+| HA-58 | Operator-verifiable per-agent skill composition preview | internal/skills + runtime/agentcfg + protocol | High | Medium | Planned — phase 240 / D-414 |
+| HA-59 | Composition-preview operator consumer: CLI verb + Console skill view | cmd/harbor + web/console | Medium | Medium | Planned — phase 241 / D-415 |
+| HA-60 | MCP App tool-context retention policy settled (eviction or stated session lifetime) | internal/mcpconsole + internal/state + internal/protocol | Medium | Contained | Planned — phase 242 / D-416 |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
 is a separate MCP transport/reliability report; HA-55 is a separate runtime
 skills projection report; and HA-56 is a separate MCP App host/catalog
 report. HA-52 and HA-53 are already allocated in the shared register and are
-not available for Harbor-local filings. The entries are
+not available for Harbor-local filings. HA-54, HA-55, and HA-56 are now
+**Planned** in the v1.27 wave — phase 236 / D-410, phase 237 / D-411, and
+phase 238 / D-412 respectively (master-plan index rows and detail blocks
+carry the mapping). **HA-57 through HA-60 are Harbor-internal filings**,
+raised by the wave's own reliability/verification review rather than by an
+outside consumer, and are planned in the same wave (phase 239 / D-413,
+phase 240 / D-414, phase 241 / D-415, phase 242 / D-416). The entries are
 **framework-framed** — each names a Harbor-side capability that is absent,
 inert, or narrower than its documentation claims.
 
@@ -445,6 +455,163 @@ The contract must express, at minimum:
 one server, redefine MCP's `isError` boolean, or add a Workbench-specific
 exception. It asks Harbor to provide a reusable typed reliability seam for a
 second consumer and every future MCP server.
+
+---
+
+## HA-57 — the typed reliability classification is not observable on the failure events
+
+**Priority:** High (operational honesty). **Size:** contained. **State:**
+Planned — phase 239 / D-413 (Harbor-internal filing).
+
+**What the consumer sees.** An operator reading `tool.failed` /
+`tool.policy_exhausted` cannot tell "deterministic failure correctly attempted
+once" from "provider outage retried four times" — the exact difference HA-54
+exists to make. The classification D-410 defines lives entirely inside the
+retry shell; none of it reaches the canonical failure events.
+
+**Requested shape.** Additive, non-secret control metadata on the existing
+tool-failure events: the resolved class (permanent / retryable with reason),
+the attempt ordinal, and the configured budget — server-derived from the
+D-410 classifier, never caller-supplied, never raw arguments or results
+(§7 rule 7 / §13 hold; the audit-redactor boundary is unchanged). Legacy or
+absent classifications render a representable `unclassified`, never a
+fabricated class (D-311). Prefer extending the existing payloads over new
+event types unless a genuine gap is proven.
+
+**Required acceptance.**
+
+1. A permanent-classified failure under the default policy emits exactly one
+   invocation and its failure event carries `permanent` with attempt `1` of
+   the configured budget.
+2. A retryable classified failure emits each attempt and the terminal event
+   carries the final attempt and class; timeout/5xx behavior unchanged.
+3. Legacy unclassified results emit `unclassified` — no guessed class, no
+   fabricated budget figure.
+4. No event carries raw arguments or results; redaction-gate tests pin the
+   boundary; identity/run/task keys unchanged; no new identity axes.
+5. Concurrent mixed classification streams under `-race` (N≥100) with no
+   cross-run bleed; integration test with real drivers, identity
+   propagation, and at least one failure mode.
+
+---
+
+## HA-58 — the composed per-agent skill snapshot is not verifiable without starting a run
+
+**Priority:** High (operator trust). **Size:** medium. **State:** Planned —
+phase 240 / D-414 (Harbor-internal filing).
+
+**What the consumer sees.** HA-55's composed run snapshot is consumed only
+inside a run (directory injection and the three `skill_*` tools). An operator
+cannot verify what a given `(tenant, user, agent)` will compose — which
+operator pack, which personal skills survive, which `RequiredTools` get
+filtered — without starting a run and reading its output. The composition
+itself happens at run-start; there is no read surface for it.
+
+**Requested shape.** An operator-facing, read-only composition-preview
+surface: identity-addressed `(tenant, user, agent)` → the exact immutable
+snapshot the next run would compose, as names and bounded verdicts (per-item
+visibility, filtered required-tool outcomes) — bodies only for the addressed
+caller's own row, never cross-principal content. Authority is server-derived
+(D-299): an operator with verified signed reach to the effective agent may
+preview any user's composition for that agent within the tenant; an ordinary
+caller may preview only their own. The preview is a pure projection over
+durable state — never mutates, never advances a revision, never writes a run —
+reusing the one per-run composite resolver HA-55 builds. Run-time failures
+(unresolvable pack, retirement tombstone) surface the same typed result;
+unwired state renders representable `unavailable`, never a fabricated
+composition (D-311).
+
+**Required acceptance.**
+
+1. An operator preview of user A's composition for agent X matches the
+   composition an actual next run uses, against the real durable store.
+2. An ordinary caller previews only their own composition; a same-tenant
+   different user and a cross-tenant caller get a typed denial/empty result
+   without discovering names.
+3. A revoked or unselected pack renders the typed not-found state, never
+   another principal's row.
+4. The preview is provably read-only: revision hash, revision list, skill
+   rows, and audit unchanged after N previews.
+5. Concurrent mixed-tenant/user/agent previews under `-race` (N≥100) with no
+   context or authority bleed, plus at least one failure mode.
+
+---
+
+## HA-59 — the composition preview needs an operator consumer in the same wave
+
+**Priority:** Medium (§13 primitive-with-consumer closure). **Size:** medium.
+**State:** Planned — phase 241 / D-415, depends on 240 (Harbor-internal
+filing).
+
+**What the consumer sees.** HA-58's preview surface would be a primitive with
+no consumer: an operator can only reach it through the raw Protocol method.
+Per §13, the wave that introduces a primitive must also ship a consumer that
+exercises it end-to-end with a test.
+
+**Requested shape.** An operator-facing pair consuming ONLY the preview
+surface: a `harbor` CLI verb that inspects the effective agent's composition
+and a Console skill/agent view rendering the preview — so an operator
+verifies pack membership and filtered-tool verdicts before a run and can diff
+the preview across two revisions. No new backend logic, no second composition
+path. Both go through the exact signed-reach admission the method enforces
+and render its typed not-found/denied/unavailable states as returned — never
+a blank state (D-311).
+
+**Required acceptance.**
+
+1. The CLI verb returns the same composition an actual next run composes,
+   against the real durable store.
+2. The Console view renders pack names, personal-skill names, and verdicts
+   plus the typed not-found/denied/unavailable states exactly as returned.
+3. Unauthorized CLI and Console attempts fail exactly as the method fails.
+4. A two-revision diff shows added/removed pack membership and changed
+   verdicts.
+5. An end-to-end integration test with real drivers covers identity
+   propagation, at least one failure mode, and an N≥10 concurrent stress run.
+
+---
+
+## HA-60 — MCP App tool-context records have no explicit retention policy
+
+**Priority:** Medium (two halves disagree). **Size:** contained. **State:**
+Planned — phase 242 / D-416 (Harbor-internal filing; independent of the
+composition wave).
+
+**What the consumer sees.** This is the HA-39 sub-question that D-347 and
+D-348 deliberately left open, now filed as its own ask. The read path is
+built for an eviction the write path never performs:
+`internal/mcpconsole/toolcontext.go:195-208` documents "an unknown or
+cross-identity `(serverID, toolCallID)` returns a wrapped not-found whose
+marker the Protocol surface maps to `CodeNotFound`", and the Console adapter
+treats `not_found` as "no captured context, no delivery" — but there is no
+TTL, no eviction, and no sweeper anywhere in the package: records are written
+as ordinary session-scoped `StateRecord`s and are never expired. The two
+halves disagree.
+
+**Requested shape.** Settle the policy deliberately and enforce it. Default
+lean: the **session-lifetime contract** — records live for the session's
+lifetime and die with the existing session-erasure fences, so `not_found`
+covers cross-identity and unknown-id only (the smallest honest contract,
+since the records are already session-scoped StateRecords). Alternative: a
+real bounded, identity-scoped retention/eviction policy (per-session TTL +
+idle sweep) adopted only if the phase measures unbounded growth in
+long-lived sessions; either way the chosen policy is enforced by test and
+the unchosen branch's guard rails documented. If eviction: bounded,
+identity-scoped, race-safe under `-race`, evicted ids return the typed
+`CodeNotFound` (load-bearing), never a silent blank. The D-173 sandbox/CSP
+posture and the D-348 honest placeholder are untouched under either choice.
+
+**Required acceptance.**
+
+1. Current behavior pinned by tests before the policy lands: records survive
+   session reopen; `not_found` for unknown and cross-identity ids.
+2. The chosen policy is implemented and enforced; the rejected option's
+   consequences documented.
+3. If eviction: bounded, identity-scoped, race-safe with a concurrent
+   reader/writer stress run.
+4. The Console renders the D-348 honest placeholder on `not_found` unchanged.
+5. Integration with the real durable StateStore: identity propagation, at
+   least one failure mode, cross-session isolation of records.
 
 ---
 
