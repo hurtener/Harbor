@@ -35,6 +35,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -119,6 +120,14 @@ func newPhase53Deps(t *testing.T, rlOpts ...steering.RunLoopOption) *phase53Deps
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	cat := tools.NewCatalog()
+	if err := cat.Register(tools.ToolDescriptor{
+		Tool: tools.Tool{Name: "noop"},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{Value: map[string]any{"ok": true}}, nil
+		},
+	}); err != nil {
+		t.Fatalf("catalog.Register(noop): %v", err)
+	}
 	return &phase53Deps{
 		catalog:  cat,
 		registry: reg,

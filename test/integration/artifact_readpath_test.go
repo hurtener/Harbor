@@ -513,7 +513,18 @@ func TestE2E_ArtifactReadPath_NoArtifactStoreWiredIsTheOperatorClass(t *testing.
 // (a run's refusal must not be attributed to a sibling's success).
 func TestE2E_ArtifactReadPath_ConcurrentStress(t *testing.T) {
 	store := artifactsinmemStore(t)
-	cat := readPathRefCatalog(t)
+	cat := readPathCatalog(t, store, 4096, 16384)
+	if err := artifactstats.Register(cat); err != nil {
+		t.Fatalf("register %s: %v", artifactstats.ToolName, err)
+	}
+	if err := cat.Register(tools.ToolDescriptor{
+		Tool: tools.Tool{Name: "explodes"},
+		Invoke: func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{}, errors.New("upstream 503")
+		},
+	}); err != nil {
+		t.Fatalf("register explodes: %v", err)
+	}
 	exec := dispatch.NewToolExecutor(cat, store, nil)
 
 	a := readPathQuad("rp-tenant-a", "rp-user-a", "rp-session-a", "rp-run-stress-a")

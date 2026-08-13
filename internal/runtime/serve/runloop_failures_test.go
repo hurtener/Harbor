@@ -252,7 +252,7 @@ func TestRunOne_SkillsProjectionError_FailsRun(t *testing.T) {
 		o.SkillStore = skillStore
 		o.SessionPersonalSkills = personal
 		o.SessionSkillCutover = runSnapshotModeReader{}
-		o.AgentConfig = &countingFailRegistry{failAt: 1}
+		o.AgentConfig = &countingFailRegistry{failAt: 2}
 		o.AgentConfigID = "fail-agent"
 	})
 	spawnAndAwaitFailure(t, env.reg, nil, "runtime_fetch_error", "skills snapshot")
@@ -264,7 +264,7 @@ func TestRunOne_CatalogProjectionError_FailsRun(t *testing.T) {
 	env := newFailDriverEnv(t)
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
 		o.Catalog = tools.NewCatalog()
-		o.AgentConfig = &countingFailRegistry{failAt: 1}
+		o.AgentConfig = &countingFailRegistry{failAt: 2}
 		o.AgentConfigID = "fail-agent"
 	})
 	spawnAndAwaitFailure(t, env.reg, nil, "runtime_fetch_error", "agent-config tool-exposure projection")
@@ -276,7 +276,7 @@ func TestRunOne_CatalogProjectionError_FailsRun(t *testing.T) {
 func TestRunOne_PromptLayersProjectionError_FailsRun(t *testing.T) {
 	env := newFailDriverEnv(t)
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.AgentConfig = &countingFailRegistry{failAt: 2}
+		o.AgentConfig = &countingFailRegistry{failAt: 3}
 		o.AgentConfigID = "fail-agent"
 	})
 	spawnAndAwaitFailure(t, env.reg, nil, planner.TaskErrorCodeRunLoopError, "prompt-layer projection failed")
@@ -289,7 +289,7 @@ func TestRunOne_PromptLayersProjectionError_FailsRun(t *testing.T) {
 func TestRunOne_HookProjectionError_FailsRun(t *testing.T) {
 	env := newFailDriverEnv(t)
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.AgentConfig = &countingFailRegistry{failAt: 5}
+		o.AgentConfig = &countingFailRegistry{failAt: 6}
 		o.AgentConfigID = "fail-agent"
 	})
 	spawnAndAwaitFailure(t, env.reg, nil, planner.TaskErrorCodeRunLoopError, "run-completion-hook projection failed")
@@ -313,7 +313,7 @@ func TestRunOne_NamingProjectionError_FailsRun(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sessReg.CloseRegistry(context.Background()) })
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.AgentConfig = &countingFailRegistry{failAt: 6}
+		o.AgentConfig = &countingFailRegistry{failAt: 7}
 		o.AgentConfigID = "fail-agent"
 		o.SessionTitler = sessReg
 		o.NamingLLM = namingCompleterFunc(func(_ context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {

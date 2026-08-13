@@ -79,9 +79,8 @@ type openAIRequestEnvelope struct {
 }
 
 type openAIChatMessageJSON struct {
-	Role      string          `json:"role"`
-	Content   string          `json:"content"`
-	ToolCalls json.RawMessage `json:"tool_calls"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 // newScriptedLLMServer constructs a fake server primed with the given
@@ -396,7 +395,7 @@ func TestE2E_RealBifrost_PlannerExecutorTrajectory_HappyPath(t *testing.T) {
 	// fake-provider API-key env var, which the testing package forbids
 	// alongside t.Parallel.
 	server := newScriptedLLMServer(t,
-		scriptedToolCallResponse("call_echo", "text_echo", `{\"text\":\"hello from 83l\"}`),
+		scriptedToolCallResponse("call_echo", "text.echo", `{"text":"hello from 83l"}`),
 		scriptedFinishResponse("echo returned 'hello from 83l'"),
 	)
 
@@ -484,7 +483,7 @@ func TestE2E_RealBifrost_ToolValidationFailure_PlannerReplans(t *testing.T) {
 		// Bad-args call: text.echo's input requires a `text` string,
 		// but we send `wrong_field`. The inproc validator rejects;
 		// the planner sees the error observation.
-		scriptedToolCallResponse("call_bad", "text_echo", `{\"wrong_field\":\"oops\"}`),
+		scriptedToolCallResponse("call_bad", "text.echo", `{"wrong_field":"oops"}`),
 		// Recovery: the planner re-plans with the validator error in
 		// the trajectory + finishes with an apology.
 		scriptedFinishResponse("I could not call the echo tool — bad arguments. Sorry."),
@@ -551,10 +550,6 @@ func flattenMessages(msgs []openAIChatMessageJSON) string {
 		// that wire field so assertions cover both the catalog and rendered
 		// failed call rather than mistaking a parser omission for lost
 		// planner history.
-		if len(m.ToolCalls) > 0 {
-			b.Write(m.ToolCalls)
-			b.WriteByte('\n')
-		}
 		b.WriteString("\n---\n")
 	}
 	return b.String()
