@@ -1903,3 +1903,106 @@ D-415.
 **Session-lifetime tool context** — an MCP App tool-context record retained
 until the owning session is erased, rather than governed by an implicit TTL.
 D-416.
+
+**Skill package staging artifact** — a caller-owned `artifacts.put` output
+used as bounded input to `agent_config.user.skills.import_validate`. It is
+owned by the originating session, never grants skill membership by existing,
+and is only provenance after a commit: the installed package does not
+dereference it. D-422.
+
+**Reviewed skill-package proposal** — the durable, identity-addressed record
+created by `import_validate` and consumed exactly once by `import_commit`:
+source reference and hash, versioned `PackageHash`, ordered supporting-file
+manifest, effective agent, expected config hash, ceiling snapshot, actor,
+expiry, and state. Raw package bytes never enter it. D-422.
+
+**Durable personal skill package** — the installed form of a reviewed
+`SKILL.md` package: the complete semantic body plus every supporting-file
+path/content/hash, committed under the caller's session-zeroed `ScopeUser`
+identity and effective agent, surviving staging cleanup and restart. It is
+addressed by immutable `skillpkg://` references, never by the staging
+session's artifact identity. D-422.
+
+**`PackageHash`** — a new versioned canonical digest over the normalized
+logical semantic body (support-file references as package-relative logical
+paths or digest placeholders) plus, per support file in canonical path order,
+normalized relative path, normalized MIME, exact size, and full content
+digest. Distinct from legacy `Skill.ContentHash`, which remains unchanged;
+never hashes the `skillpkg://` URI that contains the hash itself. Review
+binding, replacement preconditions, target CAS, receipts, and idempotency use
+it. D-422.
+
+**`skillpkg://` reference** — the immutable package-asset addressing scheme
+`skillpkg://<PackageHash>/<encoded-canonical-path>` behind one mandatory
+authorized, bounded resolver that verifies selected user/effective agent,
+normalizes the path, checks package/file hashes, and applies MIME/per-read
+byte ceilings; every package consumer (`skill_get`, injection, export)
+resolves through it. D-422.
+
+**Personal skill draft** — a validated, serialized `SKILL.md` artifact
+produced by `skill_create_draft`, stored as one immutable caller-scoped
+artifact reference with bounded review metadata and an explicit
+`installed: false` state. It carries no skill membership and installs only
+through explicit Phase 243 validate/commit. D-423.
+
+**`skill_create_draft`** — the ordinary, disabled-by-default runtime tool
+that turns bounded intent and optional feedback into a personal skill draft
+via the governed authoring path's safety-wrapped LLM adapter. Zero mutation
+authority; authority comes only from the verified run context and effective
+agent. D-423.
+
+**Session lifecycle projection** — the `projection: "lifecycle"` selector on
+`sessions.list` / `sessions.inspect` returning session lifecycle metadata
+only (id, status, title/source, authoritative timestamps, derivable duration,
+honestly representable agent id) with ZERO enrichment — no history-replayer,
+task, pause, artifact, App, or counter reads, work bounded by the page size.
+Counter fields are absent or explicitly unavailable, never zero-as-not-
+computed, and counter filters/sorts paired with it fail typed. Full remains
+the default. D-424.
+
+**Conversation turn projection** — the dedicated, runtime-owned durable read
+model behind `sessions.turns.list` / `sessions.turns.get` /
+`sessions.turns.activity.list`: incrementally materialized from task/result/
+event/App authority with idempotent sequence checkpoints, restart-survivable
+on durable drivers, erased/fenced with its session, and paged by an indexed
+snapshot/keyset cursor with work proportional to page size. One row is one
+root foreground user turn. D-425.
+
+**Turn-page cursor** — the opaque exclusive older-page cursor on
+`sessions.turns.list`, snapshot/keyset anchored with an immutable task/turn
+tie-breaker so appending a turn while paging older history produces neither
+duplicates nor omissions; invalid, foreign, retention-expired, and
+snapshot-expired cursors have distinct typed outcomes. D-425.
+
+**Live resume cursor** — the exclusive cursor in a `sessions.turns.list`
+response that composes with `events.subscribe` for a gap-free page-to-live
+transition (subscribe-before-page with dedup by sequence, plus one
+`sessions.turns.get` terminal reconciliation), tied to the same turn version
+and `last_applied_event_sequence` as in-flight content snapshots. D-425.
+
+**Activity subpage** — the named, opaque-cursor bounded read
+`sessions.turns.activity.list` for ordered tool activity that exceeds the
+Protocol response ceiling; same identity, snapshot, and ordering contract as
+the parent turn, no arguments/results, and fetched only when Activity opens
+(normal transcript render does not fetch it). No anonymous subresource and no
+silent truncation. D-425.
+
+**Observability rollup projection** — a durable, rebuildable, indexed
+materialization of aggregate measures over successfully persisted canonical
+Harbor events (the indexed in-memory/SQLite/Postgres triad), consumed
+incrementally from the existing local durable event sequence with a durable
+applied-through watermark. Best-effort, never a billing-exact ledger; the
+event log stays the source of truth. The narrow, recorded amendment to
+D-296's TSDB rejection; a general-purpose Harbor TSDB and identity-labelled
+OTel metrics remain rejected. D-426.
+
+**Rollup watermark** — the durable applied-through sequence stamp a rollup
+query observes; every response carries it as the freshness/freshness-verifier
+alongside the completeness state, so a consumer can see exactly how current
+the aggregates are. D-426.
+
+**Rollup completeness state** — the explicit per-query freshness signal
+(`current`, `catching_up`, `unavailable`, plus `rebuilding` and
+retention-quality markers). A query never returns zero as a substitute for
+"projection unavailable," and a rebuild that lost source events exposes that
+historical incompleteness rather than plausible totals. D-426.

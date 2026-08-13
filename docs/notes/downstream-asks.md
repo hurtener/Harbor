@@ -35,6 +35,11 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-58 | Governed read-only virtual child profiles derived from a parent | runtime + agentcfg + protocol | High | Medium | Shipped — phase 240 / D-419 |
 | HA-59 | Virtual-child execution artifacts and bounded output forwarding by reference | artifacts + tasks + runtime + protocol | Medium | Medium | Shipped — phase 241 / D-420 |
 | HA-60 | Durable identity-scoped task-progress projection | tasks + state + protocol | Medium | Contained | Shipped — phase 242 / D-421 |
+| HA-61 | Consumer-scoped two-phase `SKILL.md` package import into durable personal skills | skills + agentcfg protocol + state + protocol | High | Contained-to-medium | Planned — phase 243 / D-422 |
+| HA-62 | Draft-only personal-skill proposer as an ordinary runtime tool | skills + tools + agentcfg + artifacts | High | Contained | Planned — phase 244 / D-423 |
+| HA-63 | Lifecycle-only session catalog and inspection projection | sessions/protocol + protocol + console | High | Contained | Planned — phase 245 / D-424 |
+| HA-64 | Durable tail-paged conversation turns and separate operator execution diagnostics | turns projection + sessions/protocol + protocol + console | High | Large | Planned — phase 246 / D-425 |
+| HA-65 | Persistent queryable observability rollups without raw-event scans | observability rollup + events + sessions + protocol + console | High | Large | Planned — phase 247 / D-426 |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -49,7 +54,15 @@ raised by the wave's own reliability/verification review rather than by an
 outside consumer, and are shipped in the same wave (phase 239 / D-418,
 phase 240 / D-419, phase 241 / D-420, phase 242 / D-421). The entries are
 **framework-framed** — each names a Harbor-side capability that is absent,
-inert, or narrower than its documentation claims.
+inert, or narrower than its documentation claims. **HA-61 through HA-65 are
+the v1.28 filings** — consumer authoring (personal-skill package import and
+draft authoring), chat-open latency (lifecycle-only session projection and
+durable tail-paged conversation turns), and administrative observability
+(rebuildable rollup projection) — each **Planned** as phase 243 / D-422,
+phase 244 / D-423, phase 245 / D-424, phase 246 / D-425, and phase 247 /
+D-426, and each **framework-framed**: they name Harbor-side surfaces that are
+absent or read-shape-mismatched against a Protocol consumer, with no
+downstream product vocabulary in the committed text.
 
 ---
 
@@ -568,6 +581,366 @@ projection.
 4. Session lifecycle and erasure fences remove stale projections.
 5. Real durable StateStore integration proves identity propagation, a failure
    mode, and cross-session isolation.
+
+---
+
+## HA-61 — consumer-scoped `SKILL.md` package import needs a two-phase validate/commit path
+
+**Priority:** High (consumer authoring). **Size:** contained-to-medium.
+**State:** Planned — phase 243 / D-422 (framework-framed filing).
+
+**What the consumer sees.** Harbor already ships `artifacts.put`, the
+path-safe `internal/skills/importer` pipeline, and the claim-free
+`agent_config.user.skills.{list,upsert,delete}` family, but the importer is
+reachable only from a trusted local filesystem/CLI path. A Protocol caller
+can upload bytes and hand-author the smaller `AgentConfigSkillInput`, but
+cannot ask Harbor to validate a complete package with a top-level
+`SKILL.md`, review the normalized result and warnings, and then save exactly
+that reviewed package as the verified caller's durable personal skill.
+Reimplementing the importer in a coordinator would create two validators and
+force a Protocol client to become authoritative for a runtime entity.
+
+**Requested shape.** Two-phase, identity-mandatory user-skill import —
+provisionally `agent_config.user.skills.import_validate` and
+`agent_config.user.skills.import_commit` — where the browser uploads a
+bounded `.zip` package (or a single Markdown file) through the existing
+`artifacts.put` method under its verified `(tenant,user,session)` and
+receives an `ArtifactRef`. Validation accepts only that caller-owned artifact
+ref plus the effective `agent_id` (neither tenant nor user is selectable
+authority), applies the ONE existing importer/validator with archive
+entry-count, expanded-byte, per-file and total-size ceilings and the path/
+type/compression-bomb rejections, and returns the closed normalized review
+plus bounded warnings and hashes — with zero user-skill mutation. Commit
+echoes the proposal and reviewed hashes, re-derives identity and effective
+Agent reach, rechecks policy and ceilings, re-resolves the exact immutable
+artifact, forces `ScopeUser`/caller ownership server-side, and atomically
+records the skill body plus membership; a moved revision, expired proposal,
+changed package, unapproved replacement, lost reach, or policy revocation
+fails before visible mutation, and response-loss retry is idempotent by
+proposal id. Supporting files become caller-scoped artifact references
+through the existing artifact store; partial upload or membership failure
+must compensate or leave a durable resumable operation, never a visible skill
+pointing at missing content.
+
+**Required acceptance.**
+
+1. Against every shipped SkillStore and ArtifactStore driver, import a
+   minimal `SKILL.md` and a package with supporting files, review, commit,
+   start a run, and observe the skill only for the correct
+   `(tenant,user,agent)`.
+2. Prove byte/hash stability, explicit same-name replace, response-loss
+   replay, and N>=100 concurrent imports under `-race`.
+3. Refuse malformed frontmatter, missing steps, unknown sections,
+   oversized/compression-bomb archives, absolute/traversal paths,
+   duplicate/case-colliding entries, symlink/hardlink/device entries,
+   dangling attachments, and MIME/extension lies.
+4. Prove cross-tenant/user/session/agent guessed refs fail without
+   enumeration; a second user cannot validate or commit the first user's
+   package; membership/policy/Agent-reach revocation between validate and
+   commit leaves no visible skill or orphaned membership.
+
+**Framing.** This is a generic Protocol consumer for Harbor's already-shipped
+skill importer and durable user-skill tier. No downstream product,
+marketplace, branding, or coordinator-specific vocabulary belongs in Harbor's
+implementation.
+
+---
+
+## HA-62 — draft-only personal-skill authoring needs an ordinary runtime tool
+
+**Priority:** High (consumer authoring UX). **Size:** contained.
+**State:** Planned — phase 244 / D-423, depends on 243 (framework-framed
+filing).
+
+**What the consumer sees.** D-411's `agent_config.agent_packs.propose` is an
+admin-scoped operator-pack authoring method paired with an admin commit. Its
+underlying proposer is draft-only, structured, safety-wrapped, and rejects
+authority-bearing fields, but an ordinary user cannot invoke that method and
+must never receive an admin credential. A consumer needs the familiar
+conversational "create a skill" experience inside an ordinary run, while
+final save remains an explicit user action through HA-61 — not a privileged
+tool side effect.
+
+**Requested shape.** A stock/config-declarable Harbor tool, provisionally
+`skill_create_draft`, disabled by default and enabled per Agent by operator
+policy. It runs inside the caller's normal authenticated run, derives
+`(tenant,user,session,agent)` exclusively from run context, accepts only a
+bounded authoring intent plus optional non-authorizing revision feedback,
+reuses the configured safety-wrapped LLM and the closed proposer schema, and
+validates the result with the same skill validator used by HA-61. It returns
+a canonical `SKILL.md` draft as a caller-scoped Harbor artifact reference
+plus bounded structured metadata — and does NOT call
+`agent_packs.commit`, `user.skills.upsert`, or HA-61 commit; does not select
+scope, user, tenant, audience, or publication; does not attach/expose
+required tools; and does not silently install anything. If an ordinary
+discovered/MCP tool can implement this exact contract using the runtime's
+existing identity and artifact services, no new authority-bearing Protocol
+method is needed; what must be canonical is the draft result shape, policy
+gate, provenance, and compatibility with HA-61.
+
+**Required acceptance.**
+
+1. In a real run, two users of one Agent independently ask the tool for
+   drafts; each receives a different caller-scoped artifact and can
+   validate/commit only their own through HA-61.
+2. A foreign tenant and guessed artifact/proposal ids fail without
+   enumeration.
+3. Disable the tool or revoke personal-skill policy/Agent reach between draft
+   and import and prove commit fails with no mutation.
+4. Prompt-inject every forbidden authority field and prove closed-schema
+   rejection; declare unavailable tools and prove the draft may warn but the
+   run tool set does not widen.
+5. Exercise edit/re-draft, model refusal, timeout/cancellation,
+   response-loss/replay, and N>=100 concurrent invocations under `-race`;
+   prove no call path reaches an admin pack mutation and no draft
+   auto-publishes or auto-installs.
+
+**Framing.** This is a generic, least-authority consumer of Harbor's governed
+skill proposer. It defines no marketplace, brand, or downstream product UI.
+
+---
+
+## HA-63 — session catalog and inspection need a lifecycle-only projection
+
+**Priority:** High (consumer latency). **Size:** contained. **State:**
+Planned — phase 245 / D-424 (framework-framed filing). Linked dependency:
+HA-64; both are required for the complete chat-open acceptance below.
+
+**What the consumer sees.** Opening a chat catalog or resolving one known
+session needs only lifecycle metadata, but `sessions.list` and
+`sessions.inspect` always run counter enrichment that scans as many as
+10,000 events per session and then reports only a partial lower bound when
+the scan truncates. A page of session rows can therefore trigger one
+historical scan per returned row; an exact-session probe pays the same scan
+merely to prove existence and obtain a title.
+
+**Requested shape.** Add an explicit lifecycle projection selector to both
+`sessions.list` and `sessions.inspect` (for example `projection: "lifecycle"`;
+the spelling is not load-bearing). It returns only session id, lifecycle
+status, title and title source, start/update/completion/last-activity
+timestamps where authoritative, duration where derivable without enrichment,
+and the effective/default agent id only where Harbor can represent it
+honestly. The lifecycle path MUST NOT invoke event-history, task, pause,
+artifact, App, or counter enrichment. Counter fields must be absent or
+explicitly unavailable; zero may not mean "not computed." Filters and sorting
+over lifecycle fields retain their existing semantics; a counter-dependent
+filter or sort paired with the lifecycle projection fails as a typed invalid
+request rather than silently switching to the expensive projection. Existing
+full projection behavior remains compatible and explicitly selectable.
+
+**Required acceptance.**
+
+1. With a real durable session containing more than 100,000 events,
+   lifecycle list and inspect perform zero history-replayer/enricher reads
+   and work remains bounded by the page size, before and after restart.
+2. A page of N session rows does not run N counter scans; existing full
+   reads still return exact/partial counters with their present honesty
+   contract.
+3. Cursor, lifecycle filter, and lifecycle sort behavior is stable;
+   incompatible counter filters fail typed and do not fall back to
+   enrichment.
+4. Same-user, foreign-user, cross-tenant, signed-session-reach, admin/fleet,
+   and erased-session cases pass on every durable driver; cross-identity
+   denial does not become an existence oracle.
+5. Protocol manifest, generated clients, docs, and Harbor's own consumer
+   chat catalog use the new projection.
+
+---
+
+## HA-64 — durable tail-paged conversation turns are needed for chat open
+
+**Priority:** High (product latency and replay correctness). **Size:** large.
+**State:** Planned — phase 246 / D-425 (framework-framed filing). Linked
+dependency: HA-63.
+
+**What the consumer sees.** Harbor has authoritative task rows/results and
+raw event history, but no consumer-grade conversation page. One Protocol
+consumer must enumerate every `tasks.list` page, locally sort the full
+history, then issue `tasks.get` plus separately paged `events.list` reads for
+each of 60 visible turns. Harbor's own Console similarly tail-pages raw state
+history and performs a task lookup for query/timing. Initial render therefore
+grows with total history, uses N+1 calls, and reconstructs product state from
+forensic events; if event enrichment fails, a valid answer can survive while
+its Activity and durable MCP App reference disappear.
+
+**Requested shape.** Add a dedicated session-centric read model rather than
+making callers join task/result/event/App authority themselves:
+`sessions.turns.list` returns a stable tail page of conversation turns;
+`sessions.turns.get` returns the same turn shape for one `(session, task)`
+and is the bounded terminal reconciliation read after live streaming; a
+bounded `sessions.turns.activity.list` subpage covers ordered tool activity
+that exceeds the Protocol response ceiling. The list request carries
+`session_id`, an opaque exclusive older-page cursor, `limit` (default 20,
+maximum 50), and the authorized projection; the response carries a session
+header, snapshot/as-of identifier, page turns in a declared stable order,
+`next_older_cursor`, `has_more`, optional remaining-older count with
+`count_exact`, a live resume cursor, and page completeness/partial reasons.
+The opaque cursor is snapshot/keyset anchored with an immutable task/turn
+tie-breaker; appending a new turn while paging older history produces neither
+duplicates nor omissions, and invalid/foreign/retention-expired/snapshot-
+expired cursors have distinct typed outcomes. Backend work is proportional to
+page size, independent of total event/turn cardinality, with a bounded
+constant number of storage operations, no full task enumeration, no
+request-path raw event scan, and no per-row reads. Each row is one root
+foreground user turn carrying everything needed to render the current chat
+without another task or event request: authoritative query and input
+timestamp, ordered input attachment metadata, a closed status enum with
+timestamps/duration and a bounded terminal reason, an explicit answer union
+(inline bounded result OR artifact reference, or `empty`/`evicted`/
+`unavailable`), running-turn content snapshots tied to the same turn version
+and `last_applied_event_sequence` as the live-resume cursor, ordered
+consumer-safe reasoning steps, ordered tool activity entries with a shared
+monotonic Activity sequence and compact cardinality-capped totals, model and
+token/cost usage with availability, consumer-safe intervention metadata (the
+opaque action token only for a caller satisfying the pause's
+resume/approval/control tier), durable ordered MCP App references whose
+replacement identity is exactly `(effective_agent_id, server_id,
+resource_uri)`, and per-component exact/partial/unavailable state. The read
+model is runtime-owned and derived from Harbor's task, result, event, and
+App-context authority; it is incrementally materialized with idempotent
+sequence checkpoints, reconciles after interruption, survives restart on
+durable drivers, and is erased/fenced with its session. `complete`,
+`partial`, `rebuilding`, `retention_gap`, `evicted`, and `unavailable` are
+distinguishable, and a missing/stale projection never triggers an unbounded
+synchronous event rebuild during chat open. The list response's exclusive
+live cursor composes with `events.subscribe` for a gap-free page-to-live
+transition (subscribe-before-page with dedup by sequence and one
+`sessions.turns.get` terminal reconciliation). Consumer versus operator is a
+hard boundary: the consumer `conversation` projection returns query, answer/
+ref, consumer-safe reasoning/activity, own pause state, App refs, and compact
+totals and must never return raw args/results/events, credentials, system
+prompt, or provider stack; the operator `operations` projection is not part
+of this ask, and no content-read/impersonation authority is requested.
+
+**Complete chat-hydration acceptance (HA-63 + HA-64).**
+
+1. A persisted session with more than 100,000 events, at least 10,000 turns,
+   and one turn with more than 100 tool calls reopens its latest 20 turns —
+   including the newest running or paused turn — with exactly one HA-63
+   lifecycle read plus one HA-64 turn-page read; the critical path performs
+   zero raw history scans, zero full task enumerations, zero per-turn
+   `tasks.get`, and zero per-turn `events.list`.
+2. The same renderable message skeletons, every inline answer, ordered
+   Activity, usage, terminal cause, and ordered App refs are returned before
+   and after durable-driver restart.
+3. Reopening a newest running or paused turn preserves its mutable version
+   and later converges to the sealed terminal row; older paging has no
+   skip/duplicate while a new turn starts; page/live handoff loses or
+   duplicates zero reasoning chunks, lifecycle changes, or App refs.
+4. Projector replay/restart is idempotent; retention gaps, evicted
+   answer/context, partial ordered collections, and rebuilding states are
+   honest and never become exact empty/zero values; session erasure makes the
+   projection unrecoverable.
+5. Same-user/session-reach, foreign-user, cross-tenant, erased-session,
+   admin, and fleet cases run across every production durable driver,
+   including N>=100 concurrent mixed identities under `-race`; a paused owner
+   without the required approval/control tier receives no action token and
+   cannot resume.
+6. Wire manifest, generated clients, capability/version discovery, protocol
+   docs, and Harbor's own consumer chat surface land with the methods. The
+   consumer's fallback may use raw reads only as an explicit
+   degraded/forensic action, never a silent normal-open path.
+
+**What remains available.** `events.list` / `state.history` remain raw
+forensic drill-down; `tasks.get` remains explicit task detail; live SSE
+remains the narrow stream; lazy App resource/context and artifact-byte reads
+remain separate. No coordinator shadow transcript or summary is introduced.
+
+---
+
+## HA-65 — administrative observability queries need a rebuildable rollup projection
+
+**Priority:** High (confirmed operational scalability gap). **Size:** large.
+**State:** Planned — phase 247 / D-426 (framework-framed filing).
+
+**What the consumer sees.** An active session can exceed Harbor's bounded
+10,000-event session-counter scan. At that point `sessions.list` and
+`sessions.inspect` warn that per-session scans are truncated and counters are
+a lower bound. The Runtime remains healthy, but `events_count`,
+`total_cost_cents`, and `total_tokens` become lower bounds, and the Console
+cannot answer basic administrative questions efficiently or exactly: cost by
+tenant/user/session/agent/model, token usage dimensions, LLM request/
+completion/failure counts, task outcome counts and failure rates, latency and
+cost trends over a period, and most-expensive/failing breakdowns — without
+replaying the raw event log. The session rollup scans at most 10,000 events
+per visible session row (`internal/sessions/protocol/enricher.go`), D-309
+chose read-time enrichment with bounded-scan truncation as an honesty
+requirement, `events.aggregate` has a separate 100,000-event bound and
+aggregates event-type counts only, `llm.cost.recorded` already carries the
+identity quadruple plus model/cost/token/latency for successful driver-level
+completions, task events already distinguish outcomes, the generic StateStore
+is not an indexed analytics interface, and OTel metrics intentionally forbid
+identity-derived labels. D-296 currently rejects Harbor becoming a counters/
+metrics TSDB or keeping a shadow history store.
+
+**Requested shape.** A first-class durable observability projection behind
+its own typed interface and §4.4 driver seam (in-memory, SQLite, Postgres),
+consuming canonical Harbor outcomes incrementally, storing aggregate rows
+rather than duplicating raw event payloads, rebuildable from the durable
+event log, supporting indexed administrative queries without scanning the
+event log or every session, preserving `(tenant, user, session)` isolation
+and server-derived admin widening, and exposing freshness/completeness
+explicitly rather than returning plausible stale or partial totals. Base
+grain `(tenant_id, user_id, session_id, model, time_bucket)` in fixed UTC
+buckets; `agent_id` and other entity dimensions only where the canonical
+event or an authoritative runtime binding supplies them, never as isolation
+principals. Additive measures include precise cost without per-event cent
+rounding, prompt/completion/reasoning/total/cache-read/cache-write tokens,
+successful LLM completions, failed LLM requests/attempts, retry and downgrade
+counts, task spawned/completed/failed/cancelled counts, a merge-safe bounded
+latency distribution, and first/last observed timestamps. "Prompts sent" is
+defined explicitly (LLM request attempts vs successful LLM completions vs
+user messages submitted are distinct counters). Each applied source event
+needs a durable idempotency identity (the existing local durable event
+sequence) with a durable applied-through cursor/watermark; restart catch-up
+and full rebuild behavior are specified; every query response carries an
+observed watermark/freshness stamp and an explicit completeness state
+(`current`, `catching_up`, `rebuilding`, or `unavailable`), and an
+unavailable projection never falls back silently to zeros. ONE Protocol-owned
+administrative query surface supports a mandatory time window,
+server-authorized filters, a closed `group_by` set, bounded bucket sizes,
+pagination with deterministic sorting, exact or explicitly partial results,
+and a maximum result/bucket budget that fails loudly; ordinary callers query
+only their authorized identity scope, and cross-identity queries require
+verified admin or `console:fleet` authority from the request context with the
+established widened-read audit evidence. The Console remains a pure Protocol
+client. The projection participates in deletion semantics: session erasure
+removes or tombstones every aggregate attributable to that session and
+reconciles parent user/tenant totals; retention policy and the rebuildable
+event-log horizon are explicit; a rebuild over a pruned log exposes that
+historical incompleteness. The existing session enricher either reads this
+projection or remains an honest fallback.
+
+**Required acceptance.**
+
+1. A session emits more than 10,000 events; session and admin usage queries
+   still return exact projection-backed totals without `counters_partial`
+   and without scanning those events at read time.
+2. Cost and all supported token dimensions reconcile exactly with canonical
+   `llm.cost.recorded` fixtures, including sub-cent calls and cache-token
+   fields, under the best-effort contract.
+3. Queries group correctly by tenant, user, session, and model across
+   multiple users, concurrent sessions, and models, with no identity bleed.
+4. Successful LLM completions, failed LLM attempts, task completions, and
+   task failures are distinct measures backed by canonical source events;
+   unsupported measures are omitted or marked unavailable, never synthesized.
+5. Replaying the same source event is idempotent; restart catch-up, crash
+   between source persistence and projection application, and concurrent
+   replica application do not lose or double-count values.
+6. Projection failure and rebuild states are visible through health/query
+   responses; a query never returns zero as a substitute for "projection
+   unavailable," and the session enricher falls back honestly.
+7. A verified fleet caller can run widened grouped queries and produces
+   exactly the required audit evidence; an ordinary caller cannot enumerate
+   another user, session, or tenant.
+8. Session erasure removes the session's rows and reconciles every
+   higher-level grouping; rebuild does not resurrect erased aggregates.
+9. SQLite and Postgres query plans use bounded indexed access for the
+   supported filters/groupings, with a large fixture proving query work is
+   independent of the total raw-event count.
+10. D-296 is explicitly amended or superseded: the decision must explain why
+    this rebuildable projection is allowed while a general-purpose Harbor
+    TSDB and identity-labelled OTel metrics remain rejected.
 
 ---
 

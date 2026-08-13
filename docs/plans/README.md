@@ -386,6 +386,11 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |240 | Governed virtual child profiles (HA-58) | runtime + agentcfg + protocol | §5.5, §6.16, §7 | 237, 239 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |241 | Virtual-child artifact/output forwarding (HA-59) | artifacts + tasks + runtime + protocol | §6.8, §6.10, §6.11, §7 | 17, 146, 239, 240 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |242 | Durable task-progress projection (HA-60) | tasks + state + protocol | §6.8, §6.10, §6.11, §7 | 239, 241 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
+|243 | Consumer-scoped two-phase skill-package import (HA-61, D-422): validate/commit workflow installing a complete `SKILL.md` package as a durable personal user skill from a caller-owned artifact; one importer/validator, versioned `PackageHash`, durable proposal CAS, mandatory `skillpkg://` resolver, forced `ScopeUser`/effective-agent commit, cross-process one-winner compensation | skills + agentcfg protocol + state + protocol | §6.7, §6.10, §6.11, §5.2, §5.5, §9 | 40, 202, 205, 209, 221, 226, 232, 233, 233a, 237 | 85–90% (target) | Pending |
+|244 | Draft-only personal-skill proposer tool (HA-62, D-423): `skill_create_draft` ordinary disabled-by-default tool producing a caller-scoped `SKILL.md` draft artifact via the governed authoring path's safety-wrapped LLM adapter; shared semantic DTO/validator/serializer/`PackageHash` with 243; zero mutation authority; install only through 243 validate/commit | skills + tools + agentcfg + artifacts | §6.4, §6.5, §6.7, §6.10, §6.13, §6.15, §5.2, §5.5 | 26, 40, 41, 202, 205, 209, 232, 237, 243 | 90–95% (target) | Pending |
+|245 | Lifecycle-only session catalog and inspection projection (HA-63, D-424): additive `projection: "lifecycle"` selector on the existing `sessions.list`/`sessions.inspect`; full remains the default; ZERO enrichment on the lifecycle path (bounded by page size, before/after restart); counter fields absent or explicitly unavailable, never zero-as-not-computed; counter filters/sorts paired with lifecycle fail as a typed invalid request | sessions/protocol + protocol + console | §6.9, §6.13, §5.2, §5.5, §7, §9 | 130, 163, 174, 177, 205, 232 | 85–90% (target) | Pending |
+|246 | Durable tail-paged conversation turns (HA-64, D-425): `sessions.turns.list`/`.get` plus bounded `.activity.list` subpage; dedicated runtime-owned projection with idempotent sequence checkpoints, indexed keyset tail paging (work ∝ page size), root-foreground-turn rows, renderable answer/reasoning/Activity/usage/App content with per-component availability, restart/erasure fences, two-read chat open with 245; Protocol-only consumer; no generic projection framework/warehouse/impersonation authority/operator analytics/live-cursor redesign/overflow analytics | turns projection + sessions/protocol + protocol + console | §6.2, §6.8, §6.9, §6.10, §6.13, §6.16, §5.2, §5.5, §7, §9 | 130, 162, 204, 205, 232, 242, 245 | 85–90% (target) | Pending |
+|247 | Durable observability rollups (HA-65, D-426): indexed triad projection of best-effort aggregates over successfully persisted canonical events (never billing-exact); existing local durable sequence, no outbox/new canonical event ID/fail-quiet LLM publication/active-active exactly-once; fixed UTC buckets, authoritative dimensions, source-backed measures, current/catching_up/unavailable + watermark/retention quality; projection-backed session counters with honest fallback; erasure fence; ONE bounded Protocol query and minimal Console consumer; narrow D-296 amendment (general TSDB + identity-labelled OTel metrics still rejected) | observability rollup + events + sessions enricher + protocol + console | §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9 | 36a, 57, 120, 130, 163, 171, 174, 205 | 85–90% (target) | Pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -621,6 +626,110 @@ real two-client race under `-race`.
    retention policy.
 - **Ordering:** 242 depends on 239 and 241; independent of 236–238.
 - **Decision:** D-421. **Status:** Shipped (v1.27). D-416 remains settled history.
+
+### Phase 243 — Consumer-scoped two-phase skill-package import (HA-61)
+
+- **Subsystem:** skills (package representation + importer), agent-config
+  Protocol service, StateStore proposal/cleanup records, Protocol/Console
+  lockstep, and the persistence triad.
+- **RFC:** §6.7, §6.10, §6.11, §5.2, §5.5, §9. **Deps:** 40, 202, 205, 209,
+  221, 226, 232, 233, 233a, and 237.
+- **What it delivers:** D-422 — `agent_config.user.skills.import_validate`
+  and `import_commit` install a reviewed complete `SKILL.md` package as a
+  durable personal user skill. The production importer/validator is the one
+  validator; a versioned `PackageHash` binds the review; commit forces
+  `ScopeUser` + effective agent, materializes supporting files into the
+  durable package (never the staging session's artifacts), and converges
+  cross-process races through durable proposal CAS plus a mandatory
+  conditional target write. The installed package is addressed by immutable
+  `skillpkg://<PackageHash>/<path>` references behind one mandatory
+  authorized resolver.
+- **Ordering:** depends on the skill/store/config/authority foundations
+  (40, 202, 205, 209, 221, 226, 232, 233, 233a, 237); gates Phase 244.
+- **Decision:** D-422. **Status:** Pending.
+
+### Phase 244 — Draft-only personal-skill proposer tool (HA-62)
+
+- **Subsystem:** skills generator/tools, governed-authoring LLM adapter,
+  artifact scoped writer, agent-config policy, and Protocol/Console lockstep.
+- **RFC:** §6.4, §6.5, §6.7, §6.10, §6.13, §6.15, §5.2, §5.5. **Deps:** 26,
+  40, 41, 202, 205, 209, 232, 237, and 243.
+- **What it delivers:** D-423 — `skill_create_draft`, an ordinary
+  disabled-by-default runtime tool, turns bounded intent + optional feedback
+  into a caller-scoped `SKILL.md` draft artifact using the governed authoring
+  path's safety-wrapped LLM adapter. It shares Phase 243's canonical semantic
+  DTO/validator/serializer/`PackageHash`; it has zero durable-skill,
+  membership, publication, or capability authority, and installation is
+  exclusively Phase 243 validate/commit.
+- **Ordering:** depends on 243 (the only install path); independent of
+  245–247.
+- **Decision:** D-423. **Status:** Pending.
+
+### Phase 245 — Lifecycle-only session catalog and inspection projection (HA-63)
+
+- **Subsystem:** sessions Protocol service/projection, Protocol/Console
+  lockstep, and the persistence triad.
+- **RFC:** §6.9, §6.13, §5.2, §5.5, §7, §9. **Deps:** 130, 163, 174, 177,
+  205, and 232.
+- **What it delivers:** D-424 — an additive `projection: "lifecycle"`
+  selector on the existing `sessions.list`/`sessions.inspect` returns
+  lifecycle metadata only, with ZERO enrichment: no history-replayer reads, no
+  counter scans, work bounded by page size before and after restart. The full
+  projection stays the default; counter fields are absent or explicitly
+  unavailable (never zero-as-not-computed); counter filters/sorts paired with
+  the lifecycle selector fail as a typed invalid request.
+- **Ordering:** depends on the session-enrichment seam (174), windowed-read
+  honesty (163), erasure (130), the projection-completeness gate (177),
+  body-scope (205), and signed agent reach (232); gates Phase 246's two-read
+  chat open.
+- **Decision:** D-424. **Status:** Pending.
+
+### Phase 246 — Durable tail-paged conversation turns (HA-64)
+
+- **Subsystem:** dedicated turns projection (with an indexed driver seam),
+  sessions Protocol service, Protocol/Console lockstep, and the persistence
+  triad.
+- **RFC:** §6.2, §6.8, §6.9, §6.10, §6.13, §6.16, §5.2, §5.5, §7, §9.
+  **Deps:** 130, 162, 204, 205, 232, 242, and 245.
+- **What it delivers:** D-425 — `sessions.turns.list`/`.get` plus the bounded
+  `.activity.list` subpage, backed by a dedicated runtime-owned projection
+  derived from task/result/event/App authority, incrementally materialized
+  with idempotent sequence checkpoints, restart-survivable on durable
+  drivers, and erased/fenced with its session. Indexed keyset tail paging
+  makes work proportional to page size; one row is one root foreground turn
+  with renderable answer/reasoning/Activity/usage/App content and explicit
+  per-component availability. Chat open is two reads (one 245 lifecycle read
+  + one turn page). No generic projection framework, warehouse,
+  impersonation authority, operator analytics, live-cursor redesign, or
+  overflow analytics ships.
+- **Ordering:** depends on 245 (the two-read chat open) plus the
+  projection/erasure/authority foundations; the minimal Console chat-open
+  consumer lands in the same wave.
+- **Decision:** D-425. **Status:** Pending.
+
+### Phase 247 — Durable observability rollups (HA-65)
+
+- **Subsystem:** observability rollup projection + drivers, events
+  (additive payload fields), session enricher, Protocol/Console lockstep.
+- **RFC:** §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9. **Deps:** 36a, 57,
+  120, 130, 163, 171, 174, and 205.
+- **What it delivers:** D-426 — an indexed-triads projection of best-effort
+  rollups over successfully persisted canonical events (never billing-exact),
+  consumed incrementally from the existing local durable sequence with a
+  durable applied-through watermark; no outbox, no new canonical event ID, no
+  fail-quiet LLM publication, no active-active exactly-once. Fixed UTC
+  buckets, authoritative dimensions, source-backed measures, and
+  current/catching_up/unavailable plus watermark/retention quality on every
+  query. The session enricher becomes projection-backed with the honest
+  partial fallback; session erasure fences and reconciles parent totals; ONE
+  bounded Protocol query surface and a minimal Console counter read ship.
+  D-426 narrowly amends D-296: a general-purpose Harbor TSDB and
+  identity-labelled OTel metrics remain rejected.
+- **Ordering:** depends on the durable event log (57), cost accounting (36a),
+  observability foundation (120), erasure (130), retention horizons (163),
+  aggregate parity (171), the session enricher seam (174), and body-scope
+  (205); gates no later phase in this wave.
+- **Decision:** D-426. **Status:** Pending.
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 

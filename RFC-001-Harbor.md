@@ -964,6 +964,32 @@ The preview returns names and bounded verdicts, bodies only for the addressed
 caller, and typed `not_found`, `denied`, or `unavailable` states. It never
 writes a run, revision, skill row, or audit record.
 
+**Consumer-scoped personal-skill package import and draft authoring
+(settled).** A Protocol caller may install a complete reviewed `SKILL.md`
+package as a durable personal user skill through a two-phase,
+identity-mandatory import family — `agent_config.user.skills.import_validate`
+and `agent_config.user.skills.import_commit` (D-422). A caller-owned
+`artifacts.put` output is bounded staging input; validation invokes the ONE
+existing importer/validator, performs zero durable skill or membership
+mutation, and returns an opaque proposal ID plus a bounded normalized review
+and hashes; commit re-derives identity and signed effective-agent reach,
+rechecks policy and ceilings, forces `ScopeUser`/owner and the effective
+`AgentID` server-side, and atomically materializes the approved package plus
+membership. The installed form is a **durable personal skill package** whose
+supporting files are copied into the package representation and addressed by
+immutable `skillpkg://<PackageHash>/<encoded-canonical-path>` references
+behind one mandatory authorized resolver — later sessions never dereference
+the staging artifact, which remains provenance only. Draft authoring is an
+ordinary, disabled-by-default runtime tool (`skill_create_draft`, D-423) that
+reuses the governed authoring path's safety-wrapped LLM adapter and shares
+the canonical semantic skill DTO, validator, deterministic serializer, and
+versioned `PackageHash` with import; it has zero mutation authority and
+installs nothing — installation is exclusively the import commit. Existing
+`skill_propose(persist=true)` and `agent_config.user.skills.upsert`,
+including caller-selected `ScopeUser`, remain unchanged and are not
+deprecated. Required-tool metadata is applicability information on every
+path; it never grants or exposes a tool.
+
 Skills are a Runtime subsystem distinct from any external skill-distribution role. They are token-savvy, DB-backed, identity-scoped, and bring two Harbor-defining features:
 
 1. **Skills.md importer** — first-class. Drop a Skills.md file/pack, get an indexed Harbor skill out the other side. The predecessor's per-skill-manual-adaptation gap is closed.
@@ -1128,6 +1154,65 @@ claiming a local compensation or a best-effort deletion. The retained
 erasure event remains content-free and reports only safe aggregate telemetry.
 
 **Session auto-naming — Settled (D-289).** Opt-in and default OFF: with no `naming` configuration the runtime's behavior is unchanged — no counters, no LLM calls, no events. When enabled (a versioned `naming` agent-config section riding `set_revision`, over a yaml `runtime.naming` fleet default, resolved once at run start with next-turn projection), the runtime titles the session itself: an additive sibling of the run-completion hook (§6.17's reserved additive-hook-point clause) fires at the run loop's terminal boundary and makes ONE governed `Complete` call on the run's wrapped LLM client — identity-carried, budget-enforced, input bounded far below the context-safety threshold — then writes through an internal auto-path that refuses manual titles. Policy knobs: `after_turns`, `repeat_every`, `max_repetitions` (required at the config/wire edges whenever repeating, default 5 for programmatically built policies — no unlimited value exists on any path), `model` (empty = the run's effective model), `max_title_len` (auto output is deterministically clamped; the manual verb, by contrast, rejects — the trusted-internal vs untrusted-boundary asymmetry is intentional). A naming failure never alters the settled run outcome and is never silent: `session.naming_failed` carries a stable error class, never content; a failure does not burn the cap (a still-due title retries until one succeeds), and a manual clear re-arms naming by zeroing the counters, so `max_repetitions` is a per-cycle cap — each clear opens a fresh arming cycle.
+
+**Session lifecycle projection (settled).** `sessions.list` and
+`sessions.inspect` accept an additive `projection` selector (D-424):
+`"full"` — the counter-enriched shape, the DEFAULT, unchanged — or
+`"lifecycle"`, which returns session lifecycle metadata only (session id,
+lifecycle status, title and title source, start/update/completion/last-
+activity timestamps where authoritative, duration where derivable without
+enrichment, and the effective/default agent id only where honestly
+representable). The lifecycle path MUST NOT invoke event-history, task,
+pause, artifact, App, or counter enrichment of any kind; its work is bounded
+by the page size before and after restart, independent of total event/turn
+cardinality, and a page of N rows never runs N counter scans. Counter fields
+are absent or explicitly marked unavailable in the lifecycle shape — zero
+never means "not computed" — and a counter-dependent filter or sort
+(`cost_above_cents`, `has_failed_task`, `has_intervention`, `cost_desc`)
+paired with the lifecycle projection fails as a typed invalid request rather
+than silently switching to the expensive projection. The selector changes
+cost and shape, never authority: each method preserves its own widening
+claims and audit behavior exactly, and cross-identity denial stays
+non-oracular.
+
+**Durable tail-paged conversation turns (settled).** A dedicated,
+runtime-owned conversation read model — `sessions.turns.list` (stable tail
+pages), `sessions.turns.get` (one `(session, task)` bounded terminal
+reconciliation read), and a bounded `sessions.turns.activity.list` subpage —
+lets a Protocol consumer render the current chat from one durable projection
+instead of joining task/result/event/App authority itself (D-425). The
+projection is derived from Harbor's task, result, event, and App-context
+authority; it is incrementally materialized with idempotent sequence
+checkpoints, survives restart on durable drivers, and is erased/fenced with
+its session (in-memory restart loss remains explicit). Paging uses an opaque
+snapshot/keyset cursor anchored with an immutable task/turn tie-breaker:
+work is proportional to page size, independent of total event/turn
+cardinality, with no full task enumeration, no request-path raw event scan,
+and no per-row reads; appending a turn while paging older history produces
+neither duplicates nor omissions. One row is one root foreground user turn;
+background/child tasks fold into the root turn's Activity or are omitted by
+an explicit relationship rule, never surfaced as invented user messages.
+Each turn carries renderable content with explicit per-component
+exact/partial/unavailable state: the query, an answer union (bounded inline
+result OR artifact reference, or `empty`/`evicted`/`unavailable` — a failed
+read never fabricates an empty answer), ordered consumer-safe reasoning
+steps, ordered tool activity with a shared monotonic Activity sequence and
+compact cardinality-capped totals plus overflow bucket, model and token/cost
+usage, consumer-safe intervention metadata (the opaque action token only
+when the verified caller satisfies the pause's resume/approval/control
+tier), and durable ordered MCP App references whose replacement identity is
+exactly `(effective_agent_id, server_id, resource_uri)`. The list response's
+exclusive live resume cursor composes with `events.subscribe` for a
+gap-free page-to-live transition (subscribe-before-page with dedup by
+sequence and one `sessions.turns.get` terminal reconciliation). Chat open is
+two reads: one lifecycle read plus one turn-page read. The consumer
+`conversation` surface returns query, answer/ref, consumer-safe reasoning/
+activity, own pause state, App refs, and compact totals; it must never return
+raw args/results/events, credentials, the system prompt, or a provider stack.
+An operator `operations` projection is not part of this surface, and no
+content-read/impersonation authority exists: admin/fleet observation implies
+no transcript access. `events.list` / `state.history` / `tasks.get` remain
+the raw drill-down and explicit task-detail surfaces.
 
 ### 6.10 Artifacts
 
@@ -1477,6 +1562,56 @@ type EventBus interface {
 **Schema versioning — Settled.** Best-effort additive: new `EventType`s and new optional fields are non-breaking. Strict semver for the bus-wire schema once third-party Consoles exist (V1.5+). (Resolves brief 06 Q-4.)
 
 **Earlier sketch (superseded by D-028 — kept for history):** an earlier draft of §6.13 carried flat identity fields (`TenantID, UserID, SessionID, RunID`) plus `EmittedAt`, plus optional metric-shaped fields (`LatencyMs *float64`, `TokensIn *uint32`, `TokensOut *uint32`, `CostUSD *float64`, `QueueDepth *QueueDepthSnapshot`), and called the bus interface `Bus`. The shipped surface uses `identity.Quadruple` (re-using Phase 01's type), `OccurredAt`, no inline metric fields (Phase 56 derives labels from `Extra`), and renamed `Bus` → `EventBus`. The earlier draft also ranged the bus interface over `Replay` directly; replay is now a Phase 06 capability layer. D-028 captures the reconciliation.
+
+**Durable observability rollups (settled — D-426, a narrow D-296 amendment).**
+A first-class durable observability rollup projection — a rebuildable,
+indexed materialization of aggregate measures over successfully persisted
+canonical Harbor events, behind its own typed interface and §4.4 driver seam
+with in-memory, SQLite, and Postgres drivers — answers administrative
+cost/token/outcome questions without scanning the raw event log at read
+time. Rollups are BEST-EFFORT aggregates over successfully persisted
+canonical events, never a billing-exact ledger; the durable event log and
+governance's cost accumulator remain the exact per-call authority. The
+projection consumes the EXISTING local durable event sequence incrementally,
+with a durable applied-through watermark: there is NO outbox, NO new
+canonical event ID, NO fail-quiet LLM publication, and NO active-active
+exactly-once claim — replay of the same source event is idempotent, restart
+catch-up and a crash between source persistence and projection application
+converge, and concurrent replica application is at-least-once idempotent on
+the local sequence with the absent exactly-once property stated, not claimed.
+The base grain is `(tenant_id, user_id, session_id, model, fixed_UTC_
+time_bucket)`; `agent_id` and other entity dimensions appear only where the
+canonical event or an authoritative runtime binding supplies them and remain
+metadata, never an isolation principal. Measures are source-backed (precise
+cost without per-event cent rounding; prompt/completion/reasoning/total/
+cache-read/cache-write tokens; successful LLM completions; failed LLM
+requests/attempts; retry and downgrade counts; task spawned/completed/failed/
+cancelled counts; a merge-safe bounded latency distribution; first/last
+observed timestamps); unsupported measures are omitted or marked unavailable,
+never synthesized, and "prompts sent" is defined by at least three distinct
+counters (LLM request attempts, successful LLM completions, user messages
+submitted). Every query response carries an observed watermark and an
+explicit completeness state — `current`, `catching_up`, `unavailable` (plus
+`rebuilding` and retention-quality signals) — and never returns zero as a
+substitute for unavailable. The session enricher (§6.9 counters, D-309)
+becomes projection-backed with the honest partial-scan fallback
+(`CountersPartial`). Session erasure removes or tombstones every aggregate
+attributable to that session and reconciles parent user/tenant totals; a
+rebuild never resurrects erased aggregates, and a rebuild over a pruned log
+exposes that historical incompleteness. ONE bounded Protocol-owned
+administrative query surface (provisional name `observability.rollups.query`)
+carries a mandatory time window, server-authorized filters, a closed
+`group_by` set, bounded buckets, pagination with deterministic sorting,
+exact-or-explicitly-partial results, and a maximum result/bucket budget that
+fails loudly; ordinary callers query only their verified identity scope, and
+widened queries require verified admin or `console:fleet` claims from the
+request context (never the body) with the established widened-read audit
+evidence. The Console remains a pure Protocol client. This AMENDS D-296
+narrowly and only as recorded there: the projection is derived, rebuildable
+state whose source of truth stays the canonical event log — it is not a
+general-purpose Harbor TSDB, does not hold the only copy of derived history,
+and does not relax the cardinality firewall; identity-labelled OTel metrics
+remain forbidden.
 
 ### 6.14 Telemetry
 
