@@ -371,6 +371,7 @@ func TestBinding_ProfileSnapshotIsSealedAndTamperEvident(t *testing.T) {
 
 func TestProfileCloneBoundaries_PreserveCanonicalProfileAndHash(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)
+	sum := sha256.Sum256(schema)
 	source := Profile{
 		Key:              "reviewer",
 		Label:            " reviewer ",
@@ -379,6 +380,7 @@ func TestProfileCloneBoundaries_PreserveCanonicalProfileAndHash(t *testing.T) {
 		InputCount:       3,
 		InputDisposition: "ref",
 		OutputSchema:     schema,
+		OutputSchemaHash: hex.EncodeToString(sum[:]),
 	}
 	canonical := NormalizeProfile(source)
 	wantHash, err := canonical.Hash()

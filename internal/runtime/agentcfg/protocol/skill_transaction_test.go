@@ -164,7 +164,11 @@ func TestSkillMutationDoors_RevisionFailureCompensatesBody(t *testing.T) {
 			if upserts, deletes := store.counts(); upserts != 1 || deletes != 1 {
 				t.Fatalf("compensation calls: upserts=%d deletes=%d, want 1/1", upserts, deletes)
 			}
-			if _, err := store.Get(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, "restore"); err != nil {
+			scope := skills.ScopeSession
+			if user {
+				scope = skills.ScopeUser
+			}
+			if _, err := store.GetScopeAgent(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, testAgentID, "restore", scope); err != nil {
 				t.Fatalf("deleted body was not restored: %v", err)
 			}
 		})

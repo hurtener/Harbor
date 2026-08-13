@@ -50,6 +50,19 @@ type acHarness struct {
 	bus      events.EventBus
 }
 
+// agentSkillReader gives the directory the same agent-bound body view that a
+// run-start reader snapshot supplies in production. Protocol upserts persist
+// agent-owned bodies, so the fallback reader must select that agent namespace.
+type agentSkillReader struct {
+	skills.SkillStore
+	agentID string
+}
+
+func (r agentSkillReader) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
+	filter.AgentID = r.agentID
+	return r.SkillStore.ListAgent(ctx, id, r.agentID, filter)
+}
+
 func newACHarness(t *testing.T) *acHarness {
 	t.Helper()
 	st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
@@ -72,7 +85,7 @@ func newACHarness(t *testing.T) *acHarness {
 		t.Fatalf("registry: %v", err)
 	}
 	activateFixtureAgent(t, reg, identity.Identity{TenantID: acTenant, UserID: acUser, SessionID: acSession}, acAgent)
-	dir, err := skills.NewDirectory(skillStore, skills.Deps{Bus: bus}, skills.DirectoryConfig{})
+	dir, err := skills.NewDirectory(agentSkillReader{SkillStore: skillStore, agentID: acAgent}, skills.Deps{Bus: bus}, skills.DirectoryConfig{})
 	if err != nil {
 		t.Fatalf("directory: %v", err)
 	}
@@ -155,12 +168,12 @@ func TestE2E_AgentConfig_ControlPlane(t *testing.T) {
 	// --- Skills consumer end-to-end: upsert two skills via the Protocol. ---
 	up1 := decode[prototypes.AgentConfigSkillsUpsertResponse](t, h.call(t, "/v1/agent_config/skills/upsert", prototypes.AgentConfigSkillsUpsertRequest{
 		AgentID: acAgent,
-		Skill:   prototypes.AgentConfigSkillInput{Name: "alpha", Trigger: "tr", Steps: []string{"s"}, Origin: "generated", Scope: "session"},
+		Skill:   controlPlaneSkill("alpha"),
 	}, adminScopes()))
 	rev1 := up1.Revision.RevisionID
 	_ = decode[prototypes.AgentConfigSkillsUpsertResponse](t, h.call(t, "/v1/agent_config/skills/upsert", prototypes.AgentConfigSkillsUpsertRequest{
 		AgentID: acAgent,
-		Skill:   prototypes.AgentConfigSkillInput{Name: "beta", Trigger: "tr", Steps: []string{"s"}, Origin: "generated", Scope: "session"},
+		Skill:   controlPlaneSkill("beta"),
 	}, adminScopes()))
 
 	// Two revised events observed, identity propagated.
@@ -220,6 +233,14 @@ func TestE2E_AgentConfig_ControlPlane(t *testing.T) {
 	}
 	if code := errCode(t, rec); code != protoerrors.CodeScopeMismatch {
 		t.Fatalf("non-admin code=%q want %q", code, protoerrors.CodeScopeMismatch)
+	}
+}
+
+func controlPlaneSkill(name string) prototypes.AgentConfigSkillInput {
+	return prototypes.AgentConfigSkillInput{
+		Name: name, Title: name + " skill", Description: "a persisted control-plane fixture skill",
+		Trigger: "when the fixture asks", Steps: []string{"perform the fixture step"},
+		Origin: "generated", Scope: "session",
 	}
 }
 
