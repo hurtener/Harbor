@@ -160,7 +160,8 @@ type TurnRow struct {
 // *int64 with the source. UsageMeasure.Value is the one pointer-backed
 // mutable field on the usage component; callers that retain a Usage
 // after a write must never be able to mutate the projection through
-// it (concurrent reuse — the D-025 gate).
+// it (concurrent reuse: a row is shared across concurrent readers,
+// so the projection stays immutable through every retained pointer).
 func cloneUsage(u Usage) Usage {
 	measures := []*UsageMeasure{
 		&u.PromptTokens, &u.CompletionTokens, &u.ReasoningTokens,
