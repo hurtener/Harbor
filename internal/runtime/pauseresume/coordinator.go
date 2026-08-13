@@ -367,7 +367,7 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		if rerr != nil {
 			return rerr
 		}
-		if !sameScope(rehydrated.identity, resumingID) || rehydrated.runID != runIDFromContext(ctx) {
+		if !sameScope(rehydrated.identity, resumingID) || (rehydrated.runID != "" && rehydrated.runID != runIDFromContext(ctx)) {
 			return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
 		}
 		if rehydrated.reason == ReasonConstraintsConflict {
@@ -398,7 +398,7 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		// foreign receipt from a missing one.
 		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
 	}
-	if entry.runID != runIDFromContext(ctx) {
+	if entry.runID != "" && entry.runID != runIDFromContext(ctx) {
 		c.mu.Unlock()
 		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
 	}
