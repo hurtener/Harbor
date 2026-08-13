@@ -48,12 +48,25 @@ import (
 //     under concurrent appends, and reports the session's truncation
 //     flag (retention eviction is explicit, never silent). The page
 //     cursor is BOUND to its owning session + the session's projection
-//     snapshot generation: a foreign-session cursor is refused with
+//     snapshot generation AND its authoritative boundary row: a
+//     foreign-session cursor is refused with
 //     ErrCursorForeignSession, a stale-snapshot cursor (the projection
 //     was erased / rebuilt under the walk) with ErrCursorSnapshotStale,
-//     and a cursor whose boundary row is no longer retained with
-//     ErrCursorExpired — each a distinct domain error for Protocol
-//     mapping. Appends during a walk never invalidate an issued cursor.
+//     a cursor whose boundary row is no longer retained with
+//     ErrCursorExpired, and a forged / altered cursor that names a
+//     retained boundary row but carries a sequence that does not equal
+//     the stored row's immutable sequence with ErrInvalidCursor — each
+//     a distinct domain error for Protocol mapping, and none ever
+//     silently re-keysets. Appends during a walk never invalidate an
+//     issued cursor.
+//   - Deep-copy on every row boundary: a driver MUST NOT let caller
+//     memory reach (or escape) durable state. A driver that retains a
+//     caller-supplied row struct (an in-memory driver) stores a DEEP
+//     copy of every slice and of every optional pointer-backed mutable
+//     field (Answer.Ref, UsageMeasure.Value); reads (GetTurn /
+//     ListTurns / returned rows) return deep copies too. Caller
+//     mutation and concurrent reuse must never alias durable state
+//     (the concurrent-reuse gate below).
 //   - The store enforces the retention bound configured at its
 //     construction: a session retains only its newest N rows; beyond
 //     N the oldest rows are evicted and the session's truncation flag
@@ -126,13 +139,17 @@ type Store interface {
 	// non-nil iff older rows remain (the driver fetches limit+1 to
 	// know exactly); info carries the page's snapshot binding and
 	// completeness. The cursor is BOUND to (session, projection
-	// snapshot): a foreign-session cursor fails with
-	// ErrCursorForeignSession, a stale-snapshot cursor (the session's
-	// snapshot generation advanced — e.g. the projection was erased /
-	// rebuilt) with ErrCursorSnapshotStale, and a cursor whose
-	// boundary row is no longer retained with ErrCursorExpired. No
-	// skips / no duplicates under concurrent appends (immutable
-	// ordering keys; appends never invalidate an issued cursor).
+	// snapshot, authoritative boundary row): a foreign-session cursor
+	// fails with ErrCursorForeignSession, a stale-snapshot cursor (the
+	// session's snapshot generation advanced — e.g. the projection was
+	// erased / rebuilt) with ErrCursorSnapshotStale, a cursor whose
+	// boundary row is no longer retained with ErrCursorExpired, and a
+	// forged / altered cursor that names a retained boundary row but
+	// carries a sequence that does not equal the stored row's
+	// immutable sequence with ErrInvalidCursor — it would otherwise
+	// silently skip or repeat rows. No skips / no duplicates under
+	// concurrent appends (immutable ordering keys; appends never
+	// invalidate an issued cursor).
 	ListTurns(ctx context.Context, id identity.Identity, before *Cursor, limit int) (rows []TurnRow, next *Cursor, info ListPageInfo, err error)
 
 	// LoadCheckpoint returns the session's last-applied runtime event

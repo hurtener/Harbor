@@ -60,12 +60,14 @@ type Factory func() (turns.Store, func())
 //   - ListTurns_NewestFirst_KeysetPaging_NoSkipNoDuplicate
 //   - ListTurns_EmptySession
 //   - ListTurns_Cursor_BindsSessionAndSnapshot
+//   - ListTurns_Cursor_BindsAuthoritativeBoundaryRow
 //   - ListTurns_AppendDuringWalk_NoSkipNoDuplicate
 //   - Checkpoint_MonotonicIdempotent
 //   - Checkpoint_ConcurrentAdvances_ConvergeToMax
 //   - FenceSession_FencesAllWrites_AndSurvivesErase
 //   - DeleteScope_RemovesRowsAndCheckpoint_KeepsFence
 //   - Row_HonestFields_RoundTrip
+//   - Row_DeepCopy_NoAliasing
 //   - Concurrent_AppendList_NoRace
 //   - Close_Then_Rejects
 func Run(t *testing.T, factory Factory) {
@@ -455,6 +457,54 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
+	t.Run("ListTurns_Cursor_BindsAuthoritativeBoundaryRow", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		id := triple("tenant-a", "user-a", "session-a")
+		for i := 1; i <= 5; i++ {
+			if _, err := s.AppendTurnIf(ctx, id, freshRow(fmt.Sprintf("run-%d", i), id)); err != nil {
+				t.Fatalf("append %d: %v", i, err)
+			}
+		}
+		page, next, _, err := s.ListTurns(ctx, id, nil, 2)
+		if err != nil {
+			t.Fatalf("page 1: %v", err)
+		}
+		if next == nil || len(page) != 2 {
+			t.Fatalf("page 1: %d rows next=%v, want 2/non-nil", len(page), next != nil)
+		}
+		// A forged / altered cursor: same session, same snapshot, same
+		// RETAINED boundary turn id — but a sequence that does not equal
+		// the stored boundary row's immutable sequence. It must fail
+		// with the typed invalid-cursor behavior, never silently
+		// re-keyset (which would skip or repeat rows).
+		for _, delta := range []int64{1000, -1} {
+			forged := *next
+			forged.Seq = next.Seq + turns.Seq(delta)
+			if _, _, _, err := s.ListTurns(ctx, id, &forged, 2); !errors.Is(err, turns.ErrInvalidCursor) {
+				t.Errorf("forged cursor (seq %d) error=%v, want ErrInvalidCursor", forged.Seq, err)
+			}
+		}
+		// The forged cursor is NOT one of the distinct binding errors:
+		// the session and snapshot bindings are intact and the boundary
+		// row IS retained — only the sequence is forged.
+		forged := *next
+		forged.Seq = next.Seq + 1000
+		if _, _, _, err := s.ListTurns(ctx, id, &forged, 2); errors.Is(err, turns.ErrCursorForeignSession) ||
+			errors.Is(err, turns.ErrCursorSnapshotStale) || errors.Is(err, turns.ErrCursorExpired) {
+			t.Errorf("forged-seq cursor misclassified as a distinct binding error: %v", err)
+		}
+		// The genuine cursor still pages with no skips / duplicates.
+		page2, next2, _, err := s.ListTurns(ctx, id, next, 2)
+		if err != nil {
+			t.Fatalf("genuine cursor page 2: %v", err)
+		}
+		if len(page2) != 2 || next2 == nil {
+			t.Errorf("genuine cursor page 2: %d rows next=%v, want 2/non-nil", len(page2), next2 != nil)
+		}
+	})
+
 	t.Run("ListTurns_AppendDuringWalk_NoSkipNoDuplicate", func(t *testing.T) {
 		s, cleanup := factory()
 		defer cleanup()
@@ -792,6 +842,80 @@ func Run(t *testing.T, factory Factory) {
 		// The ORDER of the collection is preserved (first declaration).
 		if read.Apps[0].ServerID != "srv-1" || read.Apps[1].ServerID != "srv-2" {
 			t.Errorf("apps collection order lost: %+v", read.Apps)
+		}
+	})
+
+	// Row_DeepCopy_NoAliasing pins the store's deep-copy obligation: a
+	// driver must never let caller memory reach (or escape) durable
+	// state. Caller mutation of pointer-backed mutable fields
+	// (Answer.Ref, UsageMeasure.Value) and slices after a write — or of
+	// a returned read row — must never corrupt the stored row. A
+	// byte-serializing driver passes by construction; a driver that
+	// retains structs must clone on every write and read boundary.
+	t.Run("Row_DeepCopy_NoAliasing", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		id := triple("tenant-a", "user-a", "session-a")
+
+		value := int64(42)
+		row := freshRow("run-1", id)
+		row.Answer = turns.Answer{State: turns.AnswerStateArtifactRef, Ref: &turns.AnswerRef{ID: "art_1", SizeBytes: 8}}
+		row.Usage = turns.Usage{PromptTokens: turns.UsageMeasure{State: turns.UsageExact, Value: &value}}
+		row.Inputs = []turns.Attachment{{ID: "in_1", Filename: "f.txt"}}
+		if _, err := s.AppendTurnIf(ctx, id, row); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+		// Corrupt the caller's row after the write.
+		row.Answer.Ref.ID = "CORRUPTED"
+		value = -1
+		row.Inputs[0].ID = "CORRUPTED"
+		got, err := s.GetTurn(ctx, id, "run-1")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got.Answer.Ref == nil || got.Answer.Ref.ID != "art_1" {
+			t.Errorf("append Answer.Ref aliased the caller's memory: %+v", got.Answer.Ref)
+		}
+		if got.Usage.PromptTokens.Value == nil || *got.Usage.PromptTokens.Value != 42 {
+			t.Errorf("append UsageMeasure.Value aliased the caller's memory: %+v", got.Usage.PromptTokens)
+		}
+		if len(got.Inputs) != 1 || got.Inputs[0].ID != "in_1" {
+			t.Errorf("append attachment slice aliased the caller's memory: %+v", got.Inputs)
+		}
+
+		// The update boundary has the same obligation.
+		v2 := int64(7)
+		next := got
+		next.Answer.Ref = &turns.AnswerRef{ID: "art_2", SizeBytes: 16}
+		next.Usage = turns.Usage{TotalTokens: turns.UsageMeasure{State: turns.UsageExact, Value: &v2}}
+		got2, err := s.UpdateTurnIf(ctx, id, "run-1", got.Version, next)
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		next.Answer.Ref.ID = "CORRUPTED"
+		v2 = -1
+		read2, err := s.GetTurn(ctx, id, "run-1")
+		if err != nil {
+			t.Fatalf("get 2: %v", err)
+		}
+		if read2.Answer.Ref == nil || read2.Answer.Ref.ID != "art_2" {
+			t.Errorf("update Answer.Ref aliased the caller's memory: %+v", read2.Answer.Ref)
+		}
+		if read2.Usage.TotalTokens.Value == nil || *read2.Usage.TotalTokens.Value != 7 {
+			t.Errorf("update UsageMeasure.Value aliased the caller's memory: %+v", read2.Usage.TotalTokens)
+		}
+
+		// The READ boundary must not expose driver-internal memory:
+		// mutating a returned read row must never corrupt the stored
+		// row.
+		got2.Answer.Ref.ID = "MUTATED-READ"
+		final, err := s.GetTurn(ctx, id, "run-1")
+		if err != nil {
+			t.Fatalf("get 3: %v", err)
+		}
+		if final.Answer.Ref == nil || final.Answer.Ref.ID != "art_2" {
+			t.Errorf("mutating a read row corrupted the stored row: %+v", final.Answer.Ref)
 		}
 	})
 

@@ -310,6 +310,16 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 		}
 		usage = &normalized
 	}
+	if u.Activity != nil && len(u.Activity) == 0 {
+		// The runtime feeds CUMULATIVE activity snapshots. A non-nil
+		// EMPTY feed applied to a row would erase the turn's accumulated
+		// exact activity totals (the retained window AND the exact
+		// turn-level totals) — durable truth silently lost. Refuse
+		// loudly: a caller with nothing to report passes nil (leave
+		// unchanged), and a turn with no activity is already an empty
+		// window from append.
+		return TurnRow{}, fmt.Errorf("%w: update activity is a non-nil empty feed — an empty cumulative feed would erase the turn's accumulated exact activity totals; pass nil to leave activity unchanged", ErrInvalidInput)
+	}
 	if u.Activity != nil {
 		if _, err := normalizeActivity(u.Activity, p.activityLimit); err != nil {
 			return TurnRow{}, fmt.Errorf("turns: update activity: %w", err)
@@ -352,6 +362,14 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 	}
 	if u.Answer != nil {
 		ans := *u.Answer
+		if ans.Ref != nil {
+			// Deep-copy the caller's ref pointer: the stored row must
+			// never alias caller memory (concurrent reuse — a caller
+			// mutating its AnswerRef after the write must not corrupt
+			// the projection).
+			ref := *ans.Ref
+			ans.Ref = &ref
+		}
 		ans.Complete = answerCompleteness(ans.State) // derive the uniform honesty from the closed union
 		// Component/version consistency anchor: the accumulated answer
 		// snapshot's Seq must never regress. The effective sequence is
@@ -767,7 +785,7 @@ func (p *Projector) AdvanceCheckpoint(ctx context.Context, id identity.Identity,
 // fenced: the replay's writes fail with ErrErasureFenced, so a replay
 // can never resurrect an erased session.
 //
-// THE ERASURE-PROBE GATE (P6 / G4): an in-memory-backed store loses
+// THE ERASURE-PROBE GATE: an in-memory-backed store loses
 // its STORE-LOCAL fence on a process restart — rows, checkpoint, AND
 // fence are gone — so the runtime's durable erasure cascade (the
 // ErasureProbe wired via WithErasureProbe) is the ONLY authority that
@@ -1150,9 +1168,11 @@ func clampReasoning(fed []ReasoningStep) Reasoning {
 // validateAnswer validates the answer component against the CLOSED
 // UNION state contract: exactly the content the state declares, an
 // inline answer at or above the inline bound is ErrContextLeak (heavy
-// answers MUST route by artifact reference), and the derived Complete
-// must stay consistent with State. A failed read is NEVER expressed as
-// Empty — it is Evicted or Unavailable.
+// answers MUST route by artifact reference), every artifact reference
+// metadata string is valid UTF-8, bounded, and free of NUL /
+// C0-control / DEL ambiguity, and the derived Complete must stay
+// consistent with State. A failed read is NEVER expressed as Empty —
+// it is Evicted or Unavailable.
 func validateAnswer(a Answer, inlineLimit int) error {
 	if !a.State.Valid() {
 		return fmt.Errorf("%w: answer state %q", ErrInvalidInput, a.State)
@@ -1175,6 +1195,22 @@ func validateAnswer(a Answer, inlineLimit int) error {
 		}
 		if a.Ref.ID == "" {
 			return fmt.Errorf("%w: answer ref id is empty", ErrInvalidInput)
+		}
+		if err := validateText(a.Ref.ID, "answer ref id", MaxArtifactIDRunes); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+		for _, f := range []struct {
+			name  string
+			value string
+			max   int
+		}{
+			{"mime type", a.Ref.MimeType, MaxMimeTypeRunes},
+			{"filename", a.Ref.Filename, MaxFilenameRunes},
+			{"sha256 digest", a.Ref.SHA256, MaxSHA256Runes},
+		} {
+			if err := validateText(f.value, "answer ref "+f.name, f.max); err != nil {
+				return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+			}
 		}
 		if a.Ref.SizeBytes < 0 {
 			return fmt.Errorf("%w: answer ref size is negative", ErrInvalidInput)
@@ -1208,7 +1244,10 @@ func validateAnswer(a Answer, inlineLimit int) error {
 // missing measure is unavailable, never a fabricated zero), a present
 // measure carries a non-negative exact integer amount, and the model
 // identifier is bounded, valid UTF-8, and control-free. Money is exact
-// integer micro-dollars — never float64.
+// integer micro-dollars — never float64. The returned usage carries a
+// DEEP COPY of every present Value: the projection never aliases the
+// caller's *int64 (concurrent reuse — a caller mutating its usage
+// after the write must not corrupt the stored row).
 func normalizeUsage(u Usage) (Usage, error) {
 	measures := []*UsageMeasure{
 		&u.PromptTokens, &u.CompletionTokens, &u.ReasoningTokens,
@@ -1245,14 +1284,15 @@ func normalizeUsage(u Usage) (Usage, error) {
 			return Usage{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 		}
 	}
-	return u, nil
+	return cloneUsage(u), nil
 }
 
 // normalizeAttachments validates one attachment metadata list (every
-// id non-empty, sizes non-negative, count bounded) and normalizes each
-// entry's honest reference availability: an unset Availability is
-// Unavailable ("no availability was reported"), never a fabricated
-// "available" claim. A nil slice passes through as nil.
+// id non-empty and bounded, every string field valid UTF-8 and free of
+// NUL / C0-control / DEL ambiguity, sizes non-negative, count bounded)
+// and normalizes each entry's honest reference availability: an unset
+// Availability is Unavailable ("no availability was reported"), never a
+// fabricated "available" claim. A nil slice passes through as nil.
 func normalizeAttachments(atts []Attachment) ([]Attachment, error) {
 	if atts == nil {
 		return nil, nil
@@ -1264,6 +1304,23 @@ func normalizeAttachments(atts []Attachment) ([]Attachment, error) {
 	for i, a := range atts {
 		if a.ID == "" {
 			return nil, fmt.Errorf("%w: attachment %d has an empty id", ErrInvalidInput, i)
+		}
+		if err := validateText(a.ID, "attachment id", MaxArtifactIDRunes); err != nil {
+			return nil, fmt.Errorf("%w: attachment %d: %v", ErrInvalidInput, i, err)
+		}
+		for _, f := range []struct {
+			name  string
+			value string
+			max   int
+		}{
+			{"filename", a.Filename, MaxFilenameRunes},
+			{"mime type", a.MimeType, MaxMimeTypeRunes},
+			{"sha256 digest", a.SHA256, MaxSHA256Runes},
+			{"disposition", a.Disposition, MaxAttachmentDispositionRunes},
+		} {
+			if err := validateText(f.value, "attachment "+f.name, f.max); err != nil {
+				return nil, fmt.Errorf("%w: attachment %d: %v", ErrInvalidInput, i, err)
+			}
 		}
 		if a.SizeBytes < 0 {
 			return nil, fmt.Errorf("%w: attachment %d has a negative size", ErrInvalidInput, i)

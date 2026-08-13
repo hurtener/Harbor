@@ -735,6 +735,72 @@ func TestActivity_TotalsSurviveInlineOverflow(t *testing.T) {
 	}
 }
 
+// TestProjector_Update_NonNilEmptyActivity_Refused pins the fail-loud
+// semantic for an accidental non-nil EMPTY Update.Activity: the runtime
+// feeds CUMULATIVE activity snapshots, and an empty cumulative feed
+// applied to a row would erase the turn's accumulated exact activity
+// totals. The projector refuses it with ErrInvalidInput — durable
+// truth is never silently erased — and a caller with nothing to report
+// passes nil (leave unchanged). No new "clear activity" API exists.
+func TestProjector_Update_NonNilEmptyActivity_Refused(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := appendTurn(p, id, "run-1")
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	// Accumulate exact activity totals first.
+	fed := []ActivityRow{
+		{Tool: "a", Status: ActivitySucceeded},
+		{Tool: "b", Status: ActivityFailed},
+	}
+	got, err := p.Update(context.Background(), id, "run-1", row.Version, Update{Activity: fed})
+	if err != nil {
+		t.Fatalf("update activity: %v", err)
+	}
+	if got.Activity.Totals.Succeeded != 1 || got.Activity.Totals.Failed != 1 {
+		t.Fatalf("precondition: exact totals must be accumulated, got %+v", got.Activity.Totals)
+	}
+
+	// A non-nil EMPTY feed is refused — it would erase the totals.
+	if _, err := p.Update(context.Background(), id, "run-1", got.Version, Update{Activity: []ActivityRow{}}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("non-nil empty activity feed error=%v, want ErrInvalidInput (never silently erases exact totals)", err)
+	}
+	// The refusal is unconditional: even a turn with NO accumulated
+	// activity refuses a non-nil empty feed (pass nil for "no
+	// activity"; a fresh turn is already an empty window at append).
+	row2, err := appendTurn(p, id, "run-2")
+	if err != nil {
+		t.Fatalf("append 2: %v", err)
+	}
+	if _, err := p.Update(context.Background(), id, "run-2", row2.Version, Update{Activity: []ActivityRow{}}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("non-nil empty feed on an empty turn error=%v, want ErrInvalidInput", err)
+	}
+
+	// The refused write never mutated the row: the exact totals survive
+	// and the version is untouched.
+	stored, err := p.Get(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Activity.Totals != got.Activity.Totals {
+		t.Errorf("refused empty feed erased the totals: %+v, want %+v", stored.Activity.Totals, got.Activity.Totals)
+	}
+	if stored.Version != got.Version {
+		t.Errorf("refused empty feed bumped the version: %d, want %d", stored.Version, got.Version)
+	}
+
+	// nil leaves activity unchanged (the documented no-op channel).
+	unchanged, err := p.Update(context.Background(), id, "run-1", stored.Version, Update{Status: StatusRunning})
+	if err != nil {
+		t.Fatalf("update status only: %v", err)
+	}
+	if unchanged.Activity.Totals != got.Activity.Totals {
+		t.Errorf("nil activity feed changed the totals: %+v, want %+v", unchanged.Activity.Totals, got.Activity.Totals)
+	}
+}
+
 // TestActivity_NoThirdRead_APIAbsent pins the P1 surface decision: the
 // v1.28 Protocol surface is exactly `sessions.turns.list/get` — there
 // is no third activity read. The ActivityReader / PageActivity /
@@ -2037,6 +2103,92 @@ func TestProjector_AppRefs_BoundsAndControlRejection(t *testing.T) {
 	}
 }
 
+// TestProjector_AttachmentAndAnswerRef_StringBounds pins the closed
+// UTF-8 / control / NUL and size bounds on attachment and artifact
+// reference string fields: control-laden, invalid-UTF-8, and
+// over-bound values are rejected (ErrInvalidInput) before they can
+// reach a row, using the package limits MaxArtifactIDRunes /
+// MaxFilenameRunes / MaxMimeTypeRunes / MaxSHA256Runes /
+// MaxAttachmentDispositionRunes. Valid values still pass.
+func TestProjector_AttachmentAndAnswerRef_StringBounds(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := appendTurn(p, id, "run-1")
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	v := row.Version
+
+	// Attachment fields: control / NUL / invalid UTF-8 / over-bound are
+	// rejected on both the append and the update surfaces.
+	attachCases := []struct {
+		name string
+		att  Attachment
+	}{
+		{"nul id", Attachment{ID: "a\x00b"}},
+		{"control filename", Attachment{ID: "a", Filename: "f\x1b.txt"}},
+		{"del mime type", Attachment{ID: "a", MimeType: "text/\x7fplain"}},
+		{"invalid utf-8 sha256", Attachment{ID: "a", SHA256: "\xff\xfe"}},
+		{"nul disposition", Attachment{ID: "a", Disposition: "tool:\x00x"}},
+		{"over-bound id", Attachment{ID: strings.Repeat("a", MaxArtifactIDRunes+1)}},
+		{"over-bound filename", Attachment{ID: "a", Filename: strings.Repeat("f", MaxFilenameRunes+1)}},
+		{"over-bound mime type", Attachment{ID: "a", MimeType: strings.Repeat("m", MaxMimeTypeRunes+1)}},
+		{"over-bound sha256", Attachment{ID: "a", SHA256: strings.Repeat("a", MaxSHA256Runes+1)}},
+		{"over-bound disposition", Attachment{ID: "a", Disposition: strings.Repeat("d", MaxAttachmentDispositionRunes+1)}},
+	}
+	for _, tc := range attachCases {
+		t.Run("append "+tc.name, func(t *testing.T) {
+			if _, err := p.Append(context.Background(), id, Append{TurnID: TurnID("bad-att"), Query: "q", Inputs: []Attachment{tc.att}}); !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("append error=%v, want ErrInvalidInput", err)
+			}
+		})
+		t.Run("update "+tc.name, func(t *testing.T) {
+			if _, err := p.Update(context.Background(), id, "run-1", v, Update{Outputs: []Attachment{tc.att}}); !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("update error=%v, want ErrInvalidInput", err)
+			}
+		})
+	}
+
+	// AnswerRef fields: control / invalid UTF-8 / over-bound are
+	// rejected on the update surface (the only answer write surface).
+	refCases := []struct {
+		name string
+		ref  AnswerRef
+	}{
+		{"nul id", AnswerRef{ID: "art\x00x"}},
+		{"control mime type", AnswerRef{ID: "a", MimeType: "text/\x01plain"}},
+		{"invalid utf-8 filename", AnswerRef{ID: "a", Filename: "\xff"}},
+		{"del sha256", AnswerRef{ID: "a", SHA256: "ab\x7f"}},
+		{"over-bound id", AnswerRef{ID: strings.Repeat("a", MaxArtifactIDRunes+1)}},
+		{"over-bound mime type", AnswerRef{ID: "a", MimeType: strings.Repeat("m", MaxMimeTypeRunes+1)}},
+		{"over-bound filename", AnswerRef{ID: "a", Filename: strings.Repeat("f", MaxFilenameRunes+1)}},
+		{"over-bound sha256", AnswerRef{ID: "a", SHA256: strings.Repeat("a", MaxSHA256Runes+1)}},
+	}
+	for _, tc := range refCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ans := Answer{State: AnswerStateArtifactRef, Ref: &tc.ref}
+			if _, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: &ans}); !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("error=%v, want ErrInvalidInput", err)
+			}
+		})
+	}
+
+	// Valid values still pass (regression guard).
+	okAtt := []Attachment{{ID: "in_1", Filename: "f.txt", MimeType: "text/plain", SHA256: "ab", Disposition: "ref", Availability: CompletenessComplete}}
+	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Inputs: okAtt}); err != nil {
+		t.Errorf("valid attachment rejected: %v", err)
+	}
+	// The update above bumped the version; re-fetch for the next write.
+	row, err = p.Get(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	okRef := Answer{State: AnswerStateArtifactRef, Ref: &AnswerRef{ID: "art_1", MimeType: "text/plain", Filename: "a.txt", SHA256: "ab", SizeBytes: 8}}
+	if _, err := p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &okRef}); err != nil {
+		t.Errorf("valid answer ref rejected: %v", err)
+	}
+}
+
 // TestProjector_DeepCopy_InputSlicesNeverAliasTheStoredRow pins the P4
 // deep-copy contract: mutating a caller's input slice AFTER an append
 // / update / attach never corrupts the stored projection (D-025
@@ -2106,6 +2258,137 @@ func TestProjector_DeepCopy_InputSlicesNeverAliasTheStoredRow(t *testing.T) {
 	}
 	if got.Apps[0].ToolName != "tool" {
 		t.Errorf("app refs aliased the caller's slice: %q", got.Apps[0].ToolName)
+	}
+}
+
+// TestProjector_DeepCopy_PointerBackedFieldsNeverAliasTheStoredRow
+// pins the deep-copy contract for the OPTIONAL POINTER-BACKED mutable
+// fields — Answer.Ref and UsageMeasure.Value — on the projection
+// mutation edge: a caller mutating its AnswerRef or its usage *int64
+// after an update must never corrupt the returned row or the stored
+// row, and mutating the returned row must never corrupt the stored
+// row (D-025 concurrent reuse).
+func TestProjector_DeepCopy_PointerBackedFieldsNeverAliasTheStoredRow(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := appendTurn(p, id, "run-1")
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	value := int64(42)
+	ref := AnswerRef{ID: "art_1", MimeType: "text/plain", SizeBytes: 4096, SHA256: "ab"}
+	ans := Answer{State: AnswerStateArtifactRef, Ref: &ref}
+	usage := Usage{PromptTokens: UsageMeasure{State: UsageExact, Value: &value}}
+	got, err := p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &ans, Usage: &usage})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// Corrupt the caller's pointer-backed inputs after the write.
+	ref.ID = "CORRUPTED"
+	ref.Filename = "CORRUPTED"
+	value = -1
+
+	// The RETURNED row must hold its own copies (it must not alias the
+	// caller's pointers).
+	if got.Answer.Ref == nil || got.Answer.Ref.ID != "art_1" {
+		t.Errorf("returned Answer.Ref aliased the caller's ref: %+v", got.Answer.Ref)
+	}
+	if got.Usage.PromptTokens.Value == nil || *got.Usage.PromptTokens.Value != 42 {
+		t.Errorf("returned usage value aliased the caller's *int64: %+v", got.Usage.PromptTokens)
+	}
+
+	// The STORED row must hold its own copies.
+	stored, err := p.Get(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Answer.Ref == nil || stored.Answer.Ref.ID != "art_1" {
+		t.Errorf("stored Answer.Ref aliased the caller's ref: %+v", stored.Answer.Ref)
+	}
+	if stored.Usage.PromptTokens.Value == nil || *stored.Usage.PromptTokens.Value != 42 {
+		t.Errorf("stored usage value aliased the caller's *int64: %+v", stored.Usage.PromptTokens)
+	}
+
+	// Mutating the RETURNED row must not corrupt the stored row.
+	got.Answer.Ref.ID = "MUTATED-RETURN"
+	stored, err = p.Get(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("Get 2: %v", err)
+	}
+	if stored.Answer.Ref.ID != "art_1" {
+		t.Errorf("mutating the returned row corrupted the stored row: %+v", stored.Answer.Ref)
+	}
+}
+
+// TestProjector_ConcurrentReuse_PointerBackedInputsNoAliasingRace is
+// the race-friendly mutation test for the pointer-backed fields: a
+// writer mutates its caller-owned AnswerRef / usage *int64 AFTER the
+// write while a reader goroutine inspects the row the update returned.
+// If the projection aliased caller memory, the two goroutines would
+// share the same objects and the -race detector flags the access; the
+// deep-copy contract keeps them separate, and the reader asserts the
+// values never drift from the originals.
+func TestProjector_ConcurrentReuse_PointerBackedInputsNoAliasingRace(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := appendTurn(p, id, "run-1")
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	value := int64(42)
+	ref := AnswerRef{ID: "art-1", MimeType: "text/plain", SizeBytes: 8}
+	ans := Answer{State: AnswerStateArtifactRef, Ref: &ref}
+	usage := Usage{PromptTokens: UsageMeasure{State: UsageExact, Value: &value}}
+	got, err := p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &ans, Usage: &usage})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	res := make(chan TurnRow, 1)
+	res <- got
+	readerErrs := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		r := <-res
+		// Busy-read the returned row's pointer-backed fields while the
+		// writer mutates the caller's inputs (20000 iterations give the
+		// scheduler ample overlap for the -race detector).
+		for j := 0; j < 20000; j++ {
+			if r.Answer.Ref == nil || r.Answer.Ref.ID != "art-1" {
+				readerErrs <- fmt.Errorf("reader saw a corrupted Answer.Ref: %+v", r.Answer.Ref)
+				return
+			}
+			if r.Usage.PromptTokens.Value == nil || *r.Usage.PromptTokens.Value != 42 {
+				readerErrs <- fmt.Errorf("reader saw a corrupted usage value: %+v", r.Usage.PromptTokens)
+				return
+			}
+		}
+		readerErrs <- nil
+	}()
+	for j := 0; j < 20000; j++ {
+		ref.ID = "CORRUPTED"
+		value = -1
+	}
+	wg.Wait()
+	if err := <-readerErrs; err != nil {
+		t.Fatalf("reader: %v", err)
+	}
+
+	// The stored row is intact after the concurrent mutation.
+	stored, err := p.Get(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Answer.Ref == nil || stored.Answer.Ref.ID != "art-1" {
+		t.Errorf("stored Answer.Ref corrupted: %+v", stored.Answer.Ref)
+	}
+	if stored.Usage.PromptTokens.Value == nil || *stored.Usage.PromptTokens.Value != 42 {
+		t.Errorf("stored usage value corrupted: %+v", stored.Usage.PromptTokens)
 	}
 }
 

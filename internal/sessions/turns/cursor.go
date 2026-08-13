@@ -36,9 +36,14 @@ const cursorVersion = "2"
 // (the projection was erased / rebuilt — the as-of retention
 // generation advanced) is rejected with ErrCursorSnapshotStale; a
 // cursor whose boundary row is no longer retained (evicted past the
-// retention bound) is rejected with ErrCursorExpired. Each is a
-// DISTINCT domain error so the Protocol layer can map them onto
-// distinct wire codes.
+// retention bound) is rejected with ErrCursorExpired; and a forged /
+// altered cursor that names a RETAINED boundary row but carries a
+// sequence that does not equal the stored row's immutable Sequence is
+// rejected with ErrInvalidCursor — it would otherwise silently skip or
+// repeat rows (the keyset filter would page from a sequence no stored
+// row owns). Each is a DISTINCT domain error so the Protocol layer can
+// map them onto distinct wire codes; the store enforces the binding
+// against the authoritative boundary row at list time.
 type Cursor struct {
 	// SessionID is the owning session the cursor was minted for.
 	SessionID string
@@ -47,7 +52,9 @@ type Cursor struct {
 	// snapshot at read time. Erasure advances it; a mismatch rejects
 	// the cursor as stale.
 	Snapshot uint64
-	// Seq is the boundary row's immutable sequence.
+	// Seq is the boundary row's immutable sequence — MUST equal the
+	// stored boundary row's Sequence; the store refuses a cursor whose
+	// sequence does not match (a forged / altered cursor).
 	Seq Seq
 	// TurnID is the boundary row's immutable tie-breaker.
 	TurnID TurnID

@@ -447,7 +447,8 @@ func (s *testStore) ListTurns(ctx context.Context, id identity.Identity, before 
 		return nil, nil, zero, err
 	}
 	// Opaque-cursor BINDING: the cursor is only valid for this session,
-	// against this projection snapshot, with a retained boundary row.
+	// against this projection snapshot, with a retained boundary row
+	// whose immutable sequence matches the cursor's.
 	if before != nil {
 		if before.SessionID != id.SessionID {
 			return nil, nil, zero, fmt.Errorf("%w: cursor names session %q, request is %q",
@@ -457,12 +458,23 @@ func (s *testStore) ListTurns(ctx context.Context, id identity.Identity, before 
 			return nil, nil, zero, fmt.Errorf("%w: cursor snapshot %d, current %d",
 				ErrCursorSnapshotStale, before.Snapshot, snapshot)
 		}
-		if _, _, err := s.loadRow(ctx, id, before.TurnID); err != nil {
+		boundary, _, err := s.loadRow(ctx, id, before.TurnID)
+		if err != nil {
 			if errors.Is(err, ErrTurnNotFound) {
 				return nil, nil, zero, fmt.Errorf("%w: boundary row %q is no longer retained",
 					ErrCursorExpired, before.TurnID)
 			}
 			return nil, nil, zero, err
+		}
+		// The cursor is BOUND to the AUTHORITATIVE boundary row: a
+		// forged / altered cursor that names a retained row but carries
+		// a sequence that does not equal the stored row's immutable
+		// sequence is refused with ErrInvalidCursor — the keyset filter
+		// would otherwise page from a sequence no stored row owns,
+		// silently skipping or repeating rows.
+		if boundary.Sequence != before.Seq {
+			return nil, nil, zero, fmt.Errorf("%w: cursor sequence %d does not match the stored boundary row %q (sequence %d) — forged or altered cursor",
+				ErrInvalidCursor, before.Seq, before.TurnID, boundary.Sequence)
 		}
 	}
 

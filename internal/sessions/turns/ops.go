@@ -35,7 +35,12 @@ import "time"
 // pinned too, so its structural omissions cannot silently regress.
 //
 // Slice semantics: on Update, a nil slice means "leave unchanged"; a
-// non-nil slice (including an empty one) means "replace wholesale".
+// non-nil slice (including an empty one) means "replace wholesale" —
+// with ONE deliberate exception: Activity is a cumulative feed, so a
+// non-nil EMPTY Activity feed is REFUSED (ErrInvalidInput) rather than
+// replacing the window: an empty cumulative snapshot applied to a row
+// would erase the turn's accumulated exact activity totals (the exact
+// retained/dropped truth). A caller with nothing to report passes nil.
 
 // opsFieldSet is the authoritative allowlist of the DTO field sets,
 // keyed by type name. The pin test (ops_safety_test.go) holds each
@@ -162,6 +167,11 @@ type Update struct {
 	// Activity replaces the retained activity window when non-nil
 	// (cumulative feed, oldest first; the projector keeps the newest
 	// configured-window rows and reports the lower-bound overflow).
+	// A non-nil EMPTY feed is REFUSED (ErrInvalidInput): the runtime
+	// feeds cumulative snapshots, and an empty cumulative feed applied
+	// to a row would erase the turn's accumulated exact activity
+	// totals — durable truth is never silently erased. Pass nil to
+	// leave activity unchanged.
 	Activity []ActivityRow
 	// Inputs replaces the input attachment list when non-nil (an empty
 	// non-nil slice clears).

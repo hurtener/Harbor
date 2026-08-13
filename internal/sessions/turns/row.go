@@ -155,6 +155,27 @@ type TurnRow struct {
 	Apps []AppRef
 }
 
+// cloneUsage returns a deep copy of a Usage: every present
+// UsageMeasure.Value is copied, so the returned usage shares no
+// *int64 with the source. UsageMeasure.Value is the one pointer-backed
+// mutable field on the usage component; callers that retain a Usage
+// after a write must never be able to mutate the projection through
+// it (concurrent reuse — the D-025 gate).
+func cloneUsage(u Usage) Usage {
+	measures := []*UsageMeasure{
+		&u.PromptTokens, &u.CompletionTokens, &u.ReasoningTokens,
+		&u.CacheReadTokens, &u.CacheWriteTokens, &u.TotalTokens,
+		&u.CostMicroUSD, &u.LatencyNS,
+	}
+	for _, m := range measures {
+		if m.Value != nil {
+			v := *m.Value
+			m.Value = &v
+		}
+	}
+	return u
+}
+
 // Agent is the agent binding component.
 type Agent struct {
 	// ID is the registered agent id the run executed under; empty when

@@ -89,7 +89,12 @@
 // foreign-session cursor, a stale-snapshot cursor, and an
 // expired/retention cursor are each rejected with a DISTINCT domain
 // error (ErrCursorForeignSession / ErrCursorSnapshotStale /
-// ErrCursorExpired) for Protocol mapping. Each page exposes its
+// ErrCursorExpired) for Protocol mapping. The cursor is ALSO bound to
+// its authoritative boundary row: a forged / altered cursor that names
+// a retained boundary row but carries a sequence that does not equal
+// the stored row's immutable sequence is refused with ErrInvalidCursor
+// — it would otherwise silently skip or repeat rows. Each page exposes
+// its
 // snapshot as-of, the next older cursor, has_more, the exact
 // older-row remaining count when known, the explicit completeness /
 // partial reason, and a live-resume sequence sufficient to compose
@@ -702,6 +707,20 @@ const (
 	// redacted text; the projection bounds it and rejects over-bound
 	// or control-laden input loudly.
 	MaxTerminalMessageRunes = 512
+	// Attachment / AnswerRef string-field bounds (runes, post-UTF-8
+	// validation). Every attachment metadata field and every artifact
+	// reference metadata field is valid UTF-8, free of NUL / C0-control
+	// / DEL ambiguity (see projector.validateText), and bounded — an
+	// over-bound or control-laden field fails loud before it can reach
+	// a row.
+	MaxArtifactIDRunes = 512 // Attachment.ID and AnswerRef.ID (content-addressed artifact id)
+	MaxFilenameRunes   = 512 // Attachment.Filename and AnswerRef.Filename (display metadata)
+	MaxMimeTypeRunes   = 128 // Attachment.MimeType and AnswerRef.MimeType
+	MaxSHA256Runes     = 64  // Attachment.SHA256 and AnswerRef.SHA256 (a full hex digest is 64 chars)
+	// MaxAttachmentDispositionRunes bounds the per-attachment input
+	// hint (`ref` / `inline` / `provider_native` / `tool:<name>`);
+	// empty on output attachments.
+	MaxAttachmentDispositionRunes = 256
 )
 
 // Sentinel errors. Callers compare via errors.Is.
@@ -801,7 +820,9 @@ func (realClock) Now() time.Time { return time.Now() }
 // in-memory-backed store after a restart is an HONEST availability gap
 // (an erased session COULD be rebuilt from sequence zero — the loss is
 // explicit, never claimed otherwise). Runtimes with a durable erasure
-// cascade MUST wire the probe so that gap is closed (P6 / G4).
+// cascade MUST wire the probe so that gap is closed — an erased
+// session is then never rebuilt from sequence zero merely because the
+// in-memory store restarted.
 type ErasureProbe interface {
 	// Erased reports whether the runtime's durable erasure cascade /
 	// fence has erased (or is in the process of erasing) the session.

@@ -342,6 +342,68 @@ func TestList_CursorBinding_RejectsForeignStaleExpired(t *testing.T) {
 	}
 }
 
+// TestList_CursorBinding_RejectsForgedBoundarySequence pins the
+// authoritative-boundary-row binding: a forged / altered cursor that
+// names a RETAINED boundary turn but carries a sequence that does not
+// equal the stored row's immutable sequence is refused with the typed
+// ErrInvalidCursor — never silently re-keyset (which would skip or
+// repeat rows).
+func TestList_CursorBinding_RejectsForgedBoundarySequence(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	seedTurns(t, p, id, 5)
+
+	page, err := p.List(context.Background(), id, ListOptions{Limit: 2})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if page.NextCursor == nil {
+		t.Fatalf("no next cursor — the walk cannot continue")
+	}
+
+	// The genuine cursor names boundary row "run-003" with its real
+	// sequence; a forged variant keeps the session, snapshot, and turn
+	// id intact but alters the sequence.
+	boundary, err := p.Get(context.Background(), id, page.NextCursor.TurnID)
+	if err != nil {
+		t.Fatalf("Get boundary row: %v", err)
+	}
+	if boundary.Sequence != page.NextCursor.Seq {
+		t.Fatalf("test precondition: cursor seq %d must equal the boundary row's %d", page.NextCursor.Seq, boundary.Sequence)
+	}
+	for _, delta := range []Seq{1000, -1} {
+		forged := *page.NextCursor
+		forged.Seq = page.NextCursor.Seq + delta
+		_, err = p.List(context.Background(), id, ListOptions{Before: &forged, Limit: 2})
+		if !errors.Is(err, ErrInvalidCursor) {
+			t.Errorf("forged boundary-sequence cursor (seq %d) error=%v, want ErrInvalidCursor", forged.Seq, err)
+		}
+		// The forged cursor is NOT one of the distinct binding errors:
+		// the session and snapshot bindings are intact and the boundary
+		// row IS retained — only the sequence is forged.
+		if errors.Is(err, ErrCursorForeignSession) || errors.Is(err, ErrCursorSnapshotStale) || errors.Is(err, ErrCursorExpired) {
+			t.Errorf("forged-seq cursor misclassified as a distinct binding error: %v", err)
+		}
+	}
+
+	// The genuine cursor still pages the walk with no skips / no
+	// duplicates.
+	page2, err := p.List(context.Background(), id, ListOptions{Before: page.NextCursor, Limit: 10})
+	if err != nil {
+		t.Fatalf("genuine cursor page 2: %v", err)
+	}
+	if len(page2.Rows) != 3 {
+		t.Errorf("genuine cursor page 2 has %d rows, want 3 (no skips)", len(page2.Rows))
+	}
+	seen := map[TurnID]bool{}
+	for _, r := range page2.Rows {
+		if seen[r.TurnID] {
+			t.Errorf("duplicate %q after genuine cursor (no duplicates)", r.TurnID)
+		}
+		seen[r.TurnID] = true
+	}
+}
+
 // TestList_NoSkipNoDuplicate_UnderConcurrentAppends is the load-bearing
 // paging guarantee: appends race while a reader walks every page; each
 // turn present when the walk starts is returned exactly once, in a

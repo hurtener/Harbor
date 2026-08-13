@@ -40,6 +40,36 @@ func sessionKeyOf(id identity.Identity) string {
 	return id.TenantID + "|" + id.UserID + "|" + id.SessionID
 }
 
+// cloneRow deep-copies a turn row so a struct-retaining driver never
+// lets caller memory reach (or escape) durable state — the store
+// contract's deep-copy obligation, pinned by Row_DeepCopy_NoAliasing.
+// Every slice and every optional pointer-backed mutable field
+// (Answer.Ref, UsageMeasure.Value) is copied.
+func cloneRow(r turns.TurnRow) turns.TurnRow {
+	out := r
+	if out.Answer.Ref != nil {
+		ref := *out.Answer.Ref
+		out.Answer.Ref = &ref
+	}
+	out.Inputs = append([]turns.Attachment(nil), out.Inputs...)
+	out.Outputs = append([]turns.Attachment(nil), out.Outputs...)
+	out.Apps = append([]turns.AppRef(nil), out.Apps...)
+	out.Reasoning.Steps = append([]turns.ReasoningStep(nil), out.Reasoning.Steps...)
+	out.Activity.Rows = append([]turns.ActivityRow(nil), out.Activity.Rows...)
+	measures := []*turns.UsageMeasure{
+		&out.Usage.PromptTokens, &out.Usage.CompletionTokens, &out.Usage.ReasoningTokens,
+		&out.Usage.CacheReadTokens, &out.Usage.CacheWriteTokens, &out.Usage.TotalTokens,
+		&out.Usage.CostMicroUSD, &out.Usage.LatencyNS,
+	}
+	for _, m := range measures {
+		if m.Value != nil {
+			v := *m.Value
+			m.Value = &v
+		}
+	}
+	return out
+}
+
 func newSmokeDriver() *smokeDriver {
 	return &smokeDriver{
 		rows:        map[smokeKey]turns.TurnRow{},
@@ -101,8 +131,10 @@ func (d *smokeDriver) AppendTurnIf(ctx context.Context, id identity.Identity, ro
 	row.Sequence = turns.Seq(d.seqs[sk])
 	row.TieBreaker = row.TurnID
 	row.Version = 1
-	d.rows[k] = row
-	return row, nil
+	// Deep-copy on the write boundary: a struct-retaining driver must
+	// never let caller memory become durable state.
+	d.rows[k] = cloneRow(row)
+	return cloneRow(row), nil
 }
 
 func (d *smokeDriver) mutate(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow, sealed bool) (turns.TurnRow, error) {
@@ -126,8 +158,9 @@ func (d *smokeDriver) mutate(ctx context.Context, id identity.Identity, turnID t
 	next.TieBreaker = current.TieBreaker
 	next.Sealed = sealed
 	next.Version = current.Version + 1
-	d.rows[k] = next
-	return next, nil
+	// Deep-copy on the write boundary (see AppendTurnIf).
+	d.rows[k] = cloneRow(next)
+	return cloneRow(next), nil
 }
 
 func (d *smokeDriver) UpdateTurnIf(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow) (turns.TurnRow, error) {
@@ -192,7 +225,9 @@ func (d *smokeDriver) GetTurn(ctx context.Context, id identity.Identity, turnID 
 	if !ok {
 		return turns.TurnRow{}, turns.ErrTurnNotFound
 	}
-	return row, nil
+	// Deep-copy on the read boundary: a caller mutating a returned row
+	// must never corrupt the stored row.
+	return cloneRow(row), nil
 }
 
 func (d *smokeDriver) ListTurns(ctx context.Context, id identity.Identity, before *turns.Cursor, limit int) ([]turns.TurnRow, *turns.Cursor, turns.ListPageInfo, error) {
@@ -214,7 +249,8 @@ func (d *smokeDriver) ListTurns(ctx context.Context, id identity.Identity, befor
 	sk := sessionKeyOf(id)
 	snapshot := d.snapshots[sk]
 	// Opaque-cursor BINDING: session + projection snapshot + a
-	// retained boundary row.
+	// retained boundary row whose immutable sequence matches the
+	// cursor's.
 	if before != nil {
 		if before.SessionID != id.SessionID {
 			return nil, nil, zero, fmt.Errorf("%w: cursor names session %q, request is %q",
@@ -224,15 +260,25 @@ func (d *smokeDriver) ListTurns(ctx context.Context, id identity.Identity, befor
 			return nil, nil, zero, fmt.Errorf("%w: cursor snapshot %d, current %d",
 				turns.ErrCursorSnapshotStale, before.Snapshot, snapshot)
 		}
-		if _, ok := d.rows[keyOf(id, before.TurnID)]; !ok {
+		boundary, ok := d.rows[keyOf(id, before.TurnID)]
+		if !ok {
 			return nil, nil, zero, fmt.Errorf("%w: boundary row %q is no longer retained",
 				turns.ErrCursorExpired, before.TurnID)
+		}
+		// The cursor is BOUND to the AUTHORITATIVE boundary row: a
+		// forged / altered cursor that names a retained row but carries
+		// a sequence that does not equal the stored row's immutable
+		// sequence is refused with ErrInvalidCursor — it would otherwise
+		// silently skip or repeat rows.
+		if boundary.Sequence != before.Seq {
+			return nil, nil, zero, fmt.Errorf("%w: cursor sequence %d does not match the stored boundary row %q (sequence %d) — forged or altered cursor",
+				turns.ErrInvalidCursor, before.Seq, before.TurnID, boundary.Sequence)
 		}
 	}
 	var rows []turns.TurnRow
 	for k, row := range d.rows {
 		if k.tenant == id.TenantID && k.user == id.UserID && k.session == id.SessionID {
-			rows = append(rows, row)
+			rows = append(rows, cloneRow(row))
 		}
 	}
 	sort.Slice(rows, func(i, j int) bool {
