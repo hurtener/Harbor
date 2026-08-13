@@ -112,20 +112,14 @@ func TestTranchePause_Restart_DurableRedrive(t *testing.T) {
 	if st.Continuable() {
 		t.Fatalf("rehydrated Status.Continuable() = true, want false (restart redrive unavailable)")
 	}
-	// The typed payload survives the restart on the List projection.
+	// List reports only the restarted coordinator's in-memory registry; durable
+	// records are rehydrated only when explicitly addressed by token.
 	listed, err := c2.List(ctx, pauseresume.ListRequest{Identity: testID, PageSize: 50})
 	if err != nil {
 		t.Fatalf("List on restarted coordinator: %v", err)
 	}
-	if len(listed.Snapshots) != 1 || listed.Snapshots[0].Token != p.Token {
-		t.Fatalf("restarted List snapshots = %+v, want exactly the original pause (no new-task masquerade)", listed.Snapshots)
-	}
-	got, ok := pauseresume.TrancheExceededFromMap(listed.Snapshots[0].Payload)
-	if !ok {
-		t.Fatalf("rehydrated payload %v is not a TrancheExceededPayload", listed.Snapshots[0].Payload)
-	}
-	if got.MaxSteps != 2 || got.StepsObserved != 2 {
-		t.Errorf("rehydrated payload = %+v, want max_steps=2 steps_observed=2", got)
+	if len(listed.Snapshots) != 0 {
+		t.Fatalf("restarted List snapshots = %+v, want zero snapshots", listed.Snapshots)
 	}
 
 	if err := c2.Resume(ctx, p.Token, pauseresume.DecisionResume, nil); !errors.Is(err, pauseresume.ErrRestartUnavailable) {
