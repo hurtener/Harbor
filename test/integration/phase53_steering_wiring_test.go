@@ -54,11 +54,13 @@ import (
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // phase53Deps bundles the real drivers the Phase 53 wiring tests
 // consume. All production drivers — no mocks at the seam.
 type phase53Deps struct {
+	catalog  tools.ToolCatalog
 	registry *steering.Registry
 	coord    pauseresume.Coordinator
 	bus      events.EventBus
@@ -117,6 +119,7 @@ func newPhase53Deps(t *testing.T, rlOpts ...steering.RunLoopOption) *phase53Deps
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	return &phase53Deps{
+		catalog:  tools.NewCatalog(),
 		registry: reg,
 		coord:    coord,
 		bus:      bus,
@@ -255,7 +258,7 @@ func TestE2E_Phase53_PauseRoundTrip_ThroughCoordinator(t *testing.T) {
 	go func() {
 		fin, err := deps.runLoop.Run(ctx, steering.RunSpec{
 			Planner:  p,
-			Base:     planner.RunContext{Quadruple: q, Goal: "do a HITL-gated thing"},
+			Base:     planner.RunContext{Quadruple: q, Goal: "do a HITL-gated thing", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 			MaxSteps: 16,
 		})
 		done <- result{fin, err}
@@ -430,7 +433,7 @@ func TestE2E_Phase53_NineEventMatrix(t *testing.T) {
 		seen := newControlObserverPlanner(t, planner.FinishGoal)
 		runWithPreEnqueueSpec(t, deps, q, steering.RunSpec{
 			Planner:  seen,
-			Base:     planner.RunContext{Quadruple: q, Goal: "g"},
+			Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 			TaskID:   handle.ID,
 			MaxSteps: 16,
 		}, func() {
@@ -480,7 +483,7 @@ func TestE2E_Phase53_NineEventMatrix(t *testing.T) {
 		go func() {
 			fin, err := deps.runLoop.Run(ctx, steering.RunSpec{
 				Planner:  p,
-				Base:     planner.RunContext{Quadruple: q, Goal: "g"},
+				Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 				MaxSteps: 16,
 			})
 			done <- struct {
@@ -526,7 +529,7 @@ func TestE2E_Phase53_NineEventMatrix(t *testing.T) {
 		go func() {
 			fin, err := deps.runLoop.Run(ctx, steering.RunSpec{
 				Planner:  p,
-				Base:     planner.RunContext{Quadruple: q, Goal: "g"},
+				Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 				MaxSteps: 16,
 			})
 			if err == nil && fin.Reason != planner.FinishGoal {
@@ -578,7 +581,7 @@ func TestE2E_Phase53_NoEventAppliedMidToolCall(t *testing.T) {
 	ctx := ctxFor(t, q)
 	fin, err := deps.runLoop.Run(ctx, steering.RunSpec{
 		Planner:  slow,
-		Base:     planner.RunContext{Quadruple: q, Goal: "g"},
+		Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 		MaxSteps: 16,
 	})
 	if err != nil {
@@ -680,7 +683,7 @@ func TestE2E_Phase53_ConcurrencyMidStep(t *testing.T) {
 			ctx := ctxFor(t, q)
 			fin, err := deps.runLoop.Run(ctx, steering.RunSpec{
 				Planner:  cp,
-				Base:     planner.RunContext{Quadruple: q, Goal: "g"},
+				Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 				MaxSteps: 16,
 			})
 			mu.Lock()
@@ -844,7 +847,7 @@ func runWithPreEnqueue(t *testing.T, deps *phase53Deps, q identity.Quadruple, p 
 	t.Helper()
 	runWithPreEnqueueSpec(t, deps, q, steering.RunSpec{
 		Planner:  p,
-		Base:     planner.RunContext{Quadruple: q, Goal: "g"},
+		Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 		MaxSteps: 32,
 	}, enqueueFn)
 }

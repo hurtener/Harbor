@@ -234,6 +234,14 @@ func htSeedPause(t *testing.T, coord pauseresume.Coordinator, id identity.Identi
 // field — the arm that FOLLOWS the raise).
 func htExecutor(t *testing.T, rig htRig, store artifacts.ArtifactStore, size int) steering.ToolExecutor {
 	t.Helper()
+	cat := htCatalog(t, size)
+	return dispatch.NewToolExecutor(cat, store, nil,
+		dispatch.WithHeavyThreshold(rig.cfg.Artifacts.HeavyOutputThresholdBytes),
+		dispatch.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+}
+
+func htCatalog(t *testing.T, size int) tools.ToolCatalog {
+	t.Helper()
 	cat := tools.NewCatalog()
 	blob := strings.Repeat("d", size)
 	if err := cat.Register(tools.ToolDescriptor{
@@ -244,19 +252,17 @@ func htExecutor(t *testing.T, rig htRig, store artifacts.ArtifactStore, size int
 	}); err != nil {
 		t.Fatalf("Register bulk: %v", err)
 	}
-	return dispatch.NewToolExecutor(cat, store, nil,
-		dispatch.WithHeavyThreshold(rig.cfg.Artifacts.HeavyOutputThresholdBytes),
-		dispatch.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	return cat
 }
 
-func htRunTool(t *testing.T, exec steering.ToolExecutor, id identity.Identity, runID string) map[string]any {
+func htRunTool(t *testing.T, exec steering.ToolExecutor, cat tools.ToolCatalog, id identity.Identity, runID string) map[string]any {
 	t.Helper()
 	q := identity.Quadruple{Identity: id, RunID: runID}
 	ctx, err := identity.WithRun(context.Background(), id, runID)
 	if err != nil {
 		t.Fatalf("identity.WithRun: %v", err)
 	}
-	_, llmObs, err := exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q},
+	_, llmObs, err := exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q, Catalog: tools.NewPlannerView(cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 		planner.CallTool{Tool: "bulk", Args: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatalf("ExecuteDecision: %v", err)
@@ -287,7 +293,7 @@ func TestE2E_HeavyThreshold_DefaultConfiguration_RaiseAndPinsTogether(t *testing
 		t.Fatalf("artifacts.Open: %v", err)
 	}
 	defer func() { _ = inlineStore.Close(context.Background()) }()
-	obs := htRunTool(t, htExecutor(t, rig, inlineStore, htConsoleBand), id, "run-inline")
+	obs := htRunTool(t, htExecutor(t, rig, inlineStore, htConsoleBand), htCatalog(t, htConsoleBand), id, "run-inline")
 	if obs["truncated"] == true {
 		t.Fatalf("a %d-byte tool result was promoted on the default configuration", htConsoleBand)
 	}
@@ -306,7 +312,7 @@ func TestE2E_HeavyThreshold_DefaultConfiguration_RaiseAndPinsTogether(t *testing
 		t.Fatalf("artifacts.Open: %v", err)
 	}
 	defer func() { _ = promoteStore.Close(context.Background()) }()
-	obs = htRunTool(t, htExecutor(t, rig, promoteStore, 256*1024), id, "run-promote")
+	obs = htRunTool(t, htExecutor(t, rig, promoteStore, 256*1024), htCatalog(t, 256*1024), id, "run-promote")
 	if obs["truncated"] != true {
 		t.Fatalf("a 256 KiB tool result was NOT promoted: %#v", obs)
 	}
@@ -347,7 +353,7 @@ func TestE2E_HeavyThreshold_DecouplingArm_OperatorRaiseDoesNotWidenTheConsole(t 
 		t.Fatalf("artifacts.Open: %v", err)
 	}
 	defer func() { _ = store.Close(context.Background()) }()
-	obs := htRunTool(t, htExecutor(t, rig, store, 200*1024), id, "run-operator")
+	obs := htRunTool(t, htExecutor(t, rig, store, 200*1024), htCatalog(t, 200*1024), id, "run-operator")
 	if obs["truncated"] == true {
 		t.Fatalf("a 200 KiB result was promoted under an operator threshold of %d", operator)
 	}
@@ -453,7 +459,7 @@ func TestE2E_HeavyThreshold_ArtifactStoreFailure_DegradesLoudlyNeverInlines(t *t
 	}
 	defer func() { _ = real.Close(context.Background()) }()
 
-	obs := htRunTool(t, htExecutor(t, rig, htFailingStore{real}, 256*1024), id, "run-failure")
+	obs := htRunTool(t, htExecutor(t, rig, htFailingStore{real}, 256*1024), htCatalog(t, 256*1024), id, "run-failure")
 	if obs["truncated"] != true {
 		t.Fatalf("the store failure did not degrade to a truncation summary: %#v", obs)
 	}

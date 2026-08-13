@@ -106,6 +106,7 @@ const (
 
 // phase111bEnv bundles the wired real artifacts.
 type phase111bEnv struct {
+	cat      tools.ToolCatalog
 	bus      events.EventBus
 	coord    pauseresume.Coordinator
 	provider toolauth.OAuthProvider
@@ -268,6 +269,7 @@ func buildPhase111bEnv(t *testing.T) *phase111bEnv {
 	t.Cleanup(func() { _ = taskReg.Close(context.Background()) })
 
 	return &phase111bEnv{
+		cat:          cat,
 		bus:          bus,
 		coord:        coord,
 		provider:     prov,
@@ -417,6 +419,7 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 			Quadruple:  q,
 			Goal:       "exercise the phase 111b OAuth completion choreography",
 			Trajectory: &planner.Trajectory{},
+			Catalog:    tools.NewPlannerView(env.cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID}),
 		},
 		MaxSteps:     10,
 		ToolExecutor: env.executor,
