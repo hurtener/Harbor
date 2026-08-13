@@ -24,8 +24,8 @@ func WithTrustedCompletionHook(ctx context.Context) context.Context {
 // IsTrustedCompletionHook reports whether ctx was marked by the completion
 // hook dispatcher.
 func IsTrustedCompletionHook(ctx context.Context) bool {
-	trusted, _ := ctx.Value(trustedCompletionHookContextKey{}).(bool)
-	return trusted
+	trusted, ok := ctx.Value(trustedCompletionHookContextKey{}).(bool)
+	return ok && trusted
 }
 
 // DefaultCompletionHookTimeout bounds the detached run-completion hook
