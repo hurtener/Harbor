@@ -1,6 +1,9 @@
 package protocol
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestVerifyProposalPolicy_RejectsTamperingAndVersionDrift(t *testing.T) {
 	policy := AgentPackAuthoringPolicy{ID: agentPackAuthoringPolicyID, Version: agentPackAuthoringPolicyVersion, Instructions: agentPackAuthoringInstructions, ProposerSchema: agentPackAuthoringProposerSchema, PermittedTools: []string{"tool"}}
@@ -12,15 +15,15 @@ func TestVerifyProposalPolicy_RejectsTamperingAndVersionDrift(t *testing.T) {
 		"schema":       {ID: policy.ID, Version: policy.Version, Instructions: policy.Instructions, ProposerSchema: "changed", PermittedTools: policy.PermittedTools},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := verifyProposalPolicy(tampered, policy, hash); err != ErrAgentPackProposalInvalid {
+			if err := verifyProposalPolicy(tampered, policy, hash); !errors.Is(err, ErrAgentPackProposalInvalid) {
 				t.Fatalf("error = %v, want invalid proposal", err)
 			}
 		})
 	}
-	if err := verifyProposalPolicy(policy, policy, "sha256:tampered"); err != ErrAgentPackProposalInvalid {
+	if err := verifyProposalPolicy(policy, policy, "sha256:tampered"); !errors.Is(err, ErrAgentPackProposalInvalid) {
 		t.Fatalf("tampered hash error = %v", err)
 	}
-	if err := verifyProposalPolicy(AgentPackAuthoringPolicy{}, policy, ""); err != ErrAgentPackProposalInvalid {
+	if err := verifyProposalPolicy(AgentPackAuthoringPolicy{}, policy, ""); !errors.Is(err, ErrAgentPackProposalInvalid) {
 		t.Fatalf("legacy policy error = %v", err)
 	}
 }
