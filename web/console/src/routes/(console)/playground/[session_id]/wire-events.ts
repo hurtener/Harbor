@@ -248,6 +248,8 @@ export interface AppAvailableEvent {
 	/** Runtime-authored effective agent configuration for Apps data-plane calls. */
 	agentID: string;
 	serverID: string;
+	/** Runtime-authored callback capability; absent on history reconstruction. */
+	binding: string;
 	resourceUri: string;
 	/** The per-result display-mode hint (`inline` / `fullscreen` / `pip`), or ''. */
 	displayMode: string;
@@ -284,6 +286,7 @@ export function decodeAppAvailable(data: string): AppAvailableEvent | null {
 		taskID,
 		agentID: str(frame.payload.AgentID),
 		serverID,
+		binding: str(frame.payload.Binding),
 		resourceUri,
 		displayMode: str(frame.payload.DisplayMode),
 		rawHtmlTrusted: frame.payload.RawHTMLTrusted === true,

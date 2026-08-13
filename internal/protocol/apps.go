@@ -171,7 +171,7 @@ type AppToolInvoker interface {
 }
 
 type appBindingInvoker interface {
-	CallToolWithBinding(context.Context, string, string, string, json.RawMessage) (MCPAppToolResultRow, error)
+	CallToolWithBinding(context.Context, string, string, string, string, json.RawMessage) (MCPAppToolResultRow, error)
 }
 
 // AppsDeps bundles the runtime-side seams an AppsSurface reads through.
@@ -377,7 +377,7 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	var res MCPAppToolResultRow
 	var err error
 	if bound, ok := s.invoker.(appBindingInvoker); ok {
-		res, err = bound.CallToolWithBinding(idCtx, r.ServerID, r.Binding, r.Tool, r.Arguments)
+		res, err = bound.CallToolWithBinding(idCtx, r.ServerID, r.Binding, r.ResourceURI, r.Tool, r.Arguments)
 	} else {
 		res, err = s.invoker.CallTool(idCtx, r.ServerID, r.Tool, r.Arguments)
 	}

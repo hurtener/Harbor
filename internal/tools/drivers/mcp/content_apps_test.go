@@ -10,7 +10,10 @@ import (
 
 func TestProvider_AppBinding_IsOpaqueAndScoped(t *testing.T) {
 	p := &Provider{}
-	ctx := identity.With(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"})
+	ctx, err := identity.With(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"})
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
 	token := p.mintAppBinding(ctx, "ui://app/main.html", "srv_callback")
 	if token == "" || token == "srv-a" {
 		t.Fatal("binding must be a non-empty opaque capability")
@@ -21,7 +24,10 @@ func TestProvider_AppBinding_IsOpaqueAndScoped(t *testing.T) {
 	if p.ValidateAppBinding(ctx, token+"x", "srv_callback") {
 		t.Fatal("forged binding was accepted")
 	}
-	other := identity.With(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "other"})
+	other, err := identity.With(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "other"})
+	if err != nil {
+		t.Fatalf("identity.With(other): %v", err)
+	}
 	if p.ValidateAppBinding(other, token, "srv_callback") {
 		t.Fatal("binding crossed identity scope")
 	}

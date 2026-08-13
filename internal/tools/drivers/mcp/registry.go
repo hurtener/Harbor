@@ -69,7 +69,7 @@ type appBindingProvider interface {
 
 // ValidateAppBinding verifies a runtime-issued callback capability against the
 // named server. The token, rather than server_id, is the callback authority.
-func (r *Registry) ValidateAppBinding(ctx context.Context, serverID, token, tool string) bool {
+func (r *Registry) ValidateAppBinding(ctx context.Context, serverID, token, resourceURI string) bool {
 	r.mu.RLock()
 	entry := r.servers[serverID]
 	r.mu.RUnlock()
@@ -77,7 +77,7 @@ func (r *Registry) ValidateAppBinding(ctx context.Context, serverID, token, tool
 		return false
 	}
 	p, ok := entry.provider.(appBindingProvider)
-	return ok && p.ValidateAppBinding(ctx, token, tool)
+	return ok && p.ValidateAppBinding(ctx, token, resourceURI)
 }
 
 // compile-time assertion: the MCP *Provider satisfies serverProvider.

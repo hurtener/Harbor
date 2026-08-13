@@ -520,13 +520,19 @@ type Provider struct {
 	selectedMode MCPTransportMode
 	bindingsMu   sync.Mutex
 	bindings     map[string]appBinding
+	bindingOrder []string
 }
 
 type appBinding struct {
 	identity    identity.Identity
 	resourceURI string
-	tool        string
+	expiresAt   time.Time
 }
+
+const (
+	appBindingLimit = 256
+	appBindingTTL   = 15 * time.Minute
+)
 
 func (p *Provider) mintAppBinding(ctx context.Context, resourceURI, tool string) string {
 	id, ok := identity.From(ctx)
@@ -542,22 +548,34 @@ func (p *Provider) mintAppBinding(ctx context.Context, resourceURI, tool string)
 	if p.bindings == nil {
 		p.bindings = make(map[string]appBinding)
 	}
-	p.bindings[token] = appBinding{identity: id, resourceURI: resourceURI, tool: tool}
+	now := time.Now()
+	for len(p.bindingOrder) >= appBindingLimit {
+		old := p.bindingOrder[0]
+		p.bindingOrder = p.bindingOrder[1:]
+		delete(p.bindings, old)
+	}
+	p.bindings[token] = appBinding{identity: id, resourceURI: resourceURI, expiresAt: now.Add(appBindingTTL)}
+	p.bindingOrder = append(p.bindingOrder, token)
 	p.bindingsMu.Unlock()
 	return token
 }
 
 // ValidateAppBinding accepts only a capability minted by this provider for the
-// same identity, resource, and callback tool.
-func (p *Provider) ValidateAppBinding(ctx context.Context, token, tool string) bool {
+// same provider, identity, and rendered resource. The capability authorizes
+// callbacks on that provider; it is deliberately not bound to the render tool.
+func (p *Provider) ValidateAppBinding(ctx context.Context, token, resourceURI string) bool {
 	id, ok := identity.From(ctx)
 	if !ok || token == "" {
 		return false
 	}
 	p.bindingsMu.Lock()
 	b, found := p.bindings[token]
+	if found && !time.Now().Before(b.expiresAt) {
+		delete(p.bindings, token)
+		found = false
+	}
 	p.bindingsMu.Unlock()
-	return found && b.identity == id && b.tool == tool
+	return found && b.identity == id && b.resourceURI == resourceURI
 }
 
 // New constructs a Provider. The Provider is NOT connected; the
@@ -1671,6 +1689,10 @@ func (p *Provider) onResourceUpdated(ctx context.Context, req *mcpsdk.ResourceUp
 // retain their receipt while failed legs keep their exact handle for the next
 // call. Safe to call multiple times.
 func (p *Provider) Close(ctx context.Context) error {
+	p.bindingsMu.Lock()
+	p.bindings = nil
+	p.bindingOrder = nil
+	p.bindingsMu.Unlock()
 	p.closeMu.Lock()
 	defer p.closeMu.Unlock()
 

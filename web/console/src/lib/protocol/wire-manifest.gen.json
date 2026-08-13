@@ -4889,6 +4889,11 @@
           "optional": true
         },
         {
+          "key": "resource_uri",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "tool",
           "type": "string"
         },

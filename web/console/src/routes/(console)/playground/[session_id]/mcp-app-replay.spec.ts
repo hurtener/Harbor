@@ -34,6 +34,7 @@ const APP_PAYLOAD: Record<string, unknown> = {
   ResourceURI: 'ui://reports/dashboard.html',
   DisplayMode: 'inline',
   RawHTMLTrusted: false
+  ,Binding: 'must-not-replay'
 };
 
 const CONTEXT: MCPAppToolContext = {
@@ -92,6 +93,7 @@ function liveMessage(): ChatMessage {
 function replayedMessage(turn: HistoryTurn): ChatMessage {
   const m = hydratedAgentMessage(turn, { at: turn.at, durationMs: 0, toolCalls: [] });
   if (m === null) throw new Error('the turn projected to no agent message');
+  if (m.app?.binding) throw new Error('replay unexpectedly restored callback authority');
   return m;
 }
 

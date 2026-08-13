@@ -283,16 +283,16 @@ func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI s
 // SAME: the identity / agent-reach / current-state exposure gate below and
 // the wrapped descriptor's approval / OAuth / identity path.
 func (a *AppsAccessor) CallTool(ctx context.Context, serverID, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
-	return a.callTool(ctx, serverID, "", tool, args)
+	return a.callTool(ctx, serverID, "", "", tool, args)
 }
 
 // CallToolWithBinding dispatches an app callback using its opaque render
 // capability while preserving the ordinary invoker compatibility seam.
-func (a *AppsAccessor) CallToolWithBinding(ctx context.Context, serverID, binding, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
-	return a.callTool(ctx, serverID, binding, tool, args)
+func (a *AppsAccessor) CallToolWithBinding(ctx context.Context, serverID, binding, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	return a.callTool(ctx, serverID, binding, resourceURI, tool, args)
 }
 
-func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	desc, ok := a.cat.Resolve(tool)
 	if !ok {
 		// Not in the ordinary planner/model catalog. The only authority
@@ -305,7 +305,7 @@ func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, tool str
 				protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool)
 		}
 		appDesc, appOK := a.reg.ResolveAppTool(serverID, tool)
-		if appOK && !a.reg.ValidateAppBinding(ctx, serverID, binding, tool) {
+		if appOK && !a.reg.ValidateAppBinding(ctx, serverID, binding, resourceURI) {
 			appOK = false
 		}
 		if !appOK {

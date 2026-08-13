@@ -159,6 +159,8 @@ type MCPAppCallToolRequest struct {
 	// backward-compatible clients).
 	ServerID string `json:"server_id,omitempty"`
 	Binding  string `json:"binding,omitempty"`
+	// ResourceURI is host-supplied render authority, never sandbox-authored.
+	ResourceURI string `json:"resource_uri,omitempty"`
 	// Tool is the catalog tool name to invoke (the Harbor-side
 	// `<source>_<tool>` name).
 	Tool string `json:"tool"`

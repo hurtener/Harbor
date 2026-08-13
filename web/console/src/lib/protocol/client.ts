@@ -517,7 +517,7 @@ export class MCPServersNamespace {
 		return this.#t.request<R>('/v1/control/mcp.servers.read_resource', {
 			server_id: serverID,
 			resource_uri: resourceURI,
-			...(agentID ? { agent_id: agentID } : {})
+      ...(agentID ? { agent_id: agentID } : {}),
 		});
 	}
 }
@@ -540,13 +540,14 @@ export class MCPAppsNamespace {
 	 * the Harbor catalog tool name (`<source>_<tool>`); `args` is the raw JSON
 	 * argument object the tool's schema validates on the wire.
 	 */
-	callTool<R = unknown>(serverID: string, tool: string, args?: unknown, agentID?: string, binding?: string): Promise<R> {
+  callTool<R = unknown>(serverID: string, tool: string, args?: unknown, agentID?: string, binding?: string, resourceURI?: string): Promise<R> {
 		return this.#t.request<R>('/v1/control/mcp.apps.call_tool', {
 			server_id: serverID,
 			tool,
 			arguments: args,
 			...(agentID ? { agent_id: agentID } : {})
-			...(binding ? { binding } : {})
+          ...(binding ? { binding } : {}),
+          ...(resourceURI ? { resource_uri: resourceURI } : {})
 		});
 	}
 	/**
