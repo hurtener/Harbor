@@ -717,7 +717,15 @@ available to planner/model and App consumers. The same classification is
 projected as optional, non-secret metadata on `tool.failed` and
 `tool.policy_exhausted`: class, reason, attempt, and configured budget. An
 absent class is represented as `unclassified`; raw arguments and results never
-enter the event.
+enter the event. The classified outcome survives the runloop's step recording
+and appears in the actual next ReAct prompt: the typed class, the retry-policy
+outcome, the bounded provider message, and the retained bounded result content
+are preserved, and a generic step error never masks the richer classified
+observation. Legacy unstructured errors may render a generic safe fallback.
+Canonical task/tool events and the planner observation agree on the terminal
+error. A typed deterministic failure in the `revision_conflict` shape is
+permanent for the unchanged invocation and carries the current revision in its
+bounded message so the next prompt can re-read and retry.
 
 ### 6.5 LLM client layer
 

@@ -1878,7 +1878,10 @@ walkthroughs, and PTY tests; functional-but-unpolished is not shippable. Phase
 **Inert baseline** — `scripts/smoke/inert-baseline.txt`, the declared-debt list of inert SHIPPED-phase smokes that predate the inert gate. It is not an exemption list: an unlisted inert script FAILs preflight, and a listed script that starts asserting is reported as a stale line to delete in the same PR. Its steady state is EMPTY — it was drained from 24 entries to 0 (thirteen classifier false positives, eleven real repairs), and `scripts/smoke/phase-223.sh` asserts the drained state plus two properties the preflight sweep cannot see: every remaining line names a file that exists, and names a phase that is actually `Shipped`. Phase 223, D-368.
 **MCP error classification** — typed control metadata on an `IsError` result
 that distinguishes a permanent unchanged-call failure from a retryable service
-failure without parsing prose. D-410.
+failure without parsing prose; the typed class, retry-policy outcome, bounded
+provider message, and retained bounded result content survive the runloop's
+step recording and appear in the next ReAct prompt, and a generic step error
+never masks them. D-410.
 
 **Operator skill pack** — a durable, revisioned, per-agent skill source
 selected by agent configuration and composed with caller-owned skills at run

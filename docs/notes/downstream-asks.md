@@ -28,7 +28,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-41 | App→host `tools/call` server-namespace confinement | web/console (MCP Apps host) | High (security) | Small | Shipped — phase 207 / D-351 (items 1–2); item 3 (`_meta.ui.visibility`) still Filed |
 | HA-42 | Progressive `tool-input-partial` streaming into a rendered App | internal/llm + internal/protocol + web/console | Low | Large | Deferred — reserved as D-343 |
 | HA-51 | Bifrost reasoning byte fidelity | internal/llm + planner + tasks + Console | Release blocker | Contained | Shipped (v1.26) — phase 233c / D-402 |
-| HA-54 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Planned — phase 236 / D-410 |
+| HA-54 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Shipped (v1.27) — phase 236 / D-410 |
 | HA-55 | Operator-managed per-agent skill packs across authenticated users | internal/skills + runtime/agentcfg + runtime/serve | High | Medium | Planned — phase 237 / D-411 |
 | HA-56 | Per-server MCP App callback catalog outside planner projection | internal/tools/drivers/mcp + internal/tools + internal/mcpconsole + protocol | High | Medium | Planned — phase 238 / D-412 |
 | HA-57 | Finite same-run step-tranche receipts/resume of the original live run | runtime + tasks + protocol | High | Contained | Shipped — phase 239 / D-418 |
@@ -390,6 +390,23 @@ The two things it needs, per D-343 and confirmed in-tree:
 **Priority:** High (functional correctness and avoidable downstream load).
 **Size:** contained (typed transport contract plus policy/transport tests; no
 new tool protocol method).
+**State:** Shipped (v1.27) — phase 236 / D-410.
+
+**Governance amendment — confirmed planner-replay gap.** A verification
+review confirmed that the classified outcome must survive the runloop's step
+recording and reach the actual next ReAct prompt: the typed class,
+retry-policy outcome, bounded provider message, and retained bounded MCP
+result content are preserved through step recording and appear in the next
+ReAct prompt; a generic `Step.Error` never masks the richer classified
+`LLMObservation`; legacy unstructured errors may render a generic safe
+fallback; and canonical task/tool events agree with the planner observation
+on the terminal error. The full-path acceptance runs `IsError` → typed
+classification → retry policy → runloop → the next ReAct prompt end to end: a
+permanent class invokes exactly once, a typed deterministic failure in the
+`revision_conflict` shape carries the current revision for reread/retry, a
+retryable provider failure uses the configured policy, and raw arguments or
+secrets never reach the observation or the prompt. No new phase, decision,
+HA, event, or Protocol method is allocated; HA-54 remains phase 236 / D-410.
 
 **What the consumer sees.** A tool can reject an invalid request correctly,
 yet Harbor repeats the identical request four times under the default tool
