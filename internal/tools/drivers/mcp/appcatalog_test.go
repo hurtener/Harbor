@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,23 @@ type mutableAppProvider struct {
 	mu    sync.Mutex
 	id    tools.ToolSourceID
 	descs []tools.ToolDescriptor
+}
+
+type blockedDiscoveryProvider struct {
+	mutableAppProvider
+	started chan struct{}
+	unblock chan struct{}
+	signal  sync.Once
+}
+
+func (p *blockedDiscoveryProvider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error) {
+	p.signal.Do(func() { close(p.started) })
+	select {
+	case <-p.unblock:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return p.mutableAppProvider.Discover(ctx)
 }
 
 func (p *mutableAppProvider) SourceID() tools.ToolSourceID { return p.id }
@@ -241,6 +259,88 @@ func TestRegistry_RefreshDiscovery_ReappliesAttachmentPolicy(t *testing.T) {
 	}
 	if _, ok := reg.ResolveAppTool("srv-policy", "srv-policy_denied"); ok {
 		t.Fatal("denied callback became callable after refresh")
+	}
+}
+
+// TestRegistry_RefreshDiscovery_ReplacementDoesNotAcceptStaleSnapshot proves
+// a blocked discovery from the prior generation cannot overwrite either view
+// after a same-name replacement publishes.
+func TestRegistry_RefreshDiscovery_ReplacementDoesNotAcceptStaleSnapshot(t *testing.T) {
+	ctx := idCtx(t)
+	reg := NewRegistry()
+	cat := tools.NewCatalog()
+	old := &blockedDiscoveryProvider{
+		mutableAppProvider: mutableAppProvider{id: "srv-race"},
+		started:            make(chan struct{}),
+		unblock:            make(chan struct{}),
+	}
+	oldOrdinary := appDesc("srv-race_old", "srv-race", false, nil)
+	old.set([]tools.ToolDescriptor{oldOrdinary, appDesc("srv-race_old_app", "srv-race", true, nil)})
+	initial, err := reg.StageRegistration(ServerRegistration{
+		Provider: old, Transport: "inmemory", InitialState: ServerStateOnline, Catalog: cat,
+	}, []tools.ToolDescriptor{oldOrdinary, appDesc("srv-race_old_app", "srv-race", true, nil)})
+	if err != nil {
+		t.Fatalf("StageRegistration(initial): %v", err)
+	}
+	if _, err := initial.Publish(ctx, func() error {
+		swap, err := cat.StageSource("srv-race", ordinaryDescriptors([]tools.ToolDescriptor{oldOrdinary}), false)
+		if err != nil {
+			return err
+		}
+		swap.Commit()
+		return nil
+	}); err != nil {
+		t.Fatalf("Publish(initial): %v", err)
+	}
+
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, err := reg.RefreshDiscovery(ctx, "srv-race")
+		refreshDone <- err
+	}()
+	<-old.started
+
+	replacement := &mutableAppProvider{id: "srv-race"}
+	newOrdinary := appDesc("srv-race_new", "srv-race", false, nil)
+	newApp := appDesc("srv-race_new_app", "srv-race", true, nil)
+	replacement.set([]tools.ToolDescriptor{newOrdinary, newApp})
+	replaced, err := reg.StageRegistration(ServerRegistration{
+		Provider: replacement, Transport: "inmemory", InitialState: ServerStateOnline, Catalog: cat,
+	}, []tools.ToolDescriptor{newOrdinary, newApp})
+	if err != nil {
+		t.Fatalf("StageRegistration(replacement): %v", err)
+	}
+	if _, err := replaced.Publish(ctx, func() error {
+		swap, err := cat.StageSource("srv-race", ordinaryDescriptors([]tools.ToolDescriptor{newOrdinary}), true)
+		if err != nil {
+			return err
+		}
+		swap.Commit()
+		return nil
+	}); err != nil {
+		t.Fatalf("Publish(replacement): %v", err)
+	}
+	close(old.unblock)
+
+	refreshErr := <-refreshDone
+	if !errors.Is(refreshErr, ErrDiscoveryStale) {
+		t.Fatalf("stale RefreshDiscovery error = %v, want ErrDiscoveryStale", refreshErr)
+	}
+	var stale *DiscoveryStaleError
+	if !errors.As(refreshErr, &stale) || !stale.Retry {
+		t.Fatalf("stale RefreshDiscovery error = %v, want retryable typed result", refreshErr)
+	}
+	if _, ok := cat.Resolve("srv-race_old"); ok {
+		t.Fatal("stale refresh restored the old ordinary view")
+	}
+	if _, ok := cat.Resolve("srv-race_new"); !ok {
+		t.Fatal("replacement ordinary view was lost")
+	}
+	if _, ok := reg.ResolveAppTool("srv-race", "srv-race_old_app"); ok {
+		t.Fatal("stale refresh restored the old App view")
+	}
+	if _, ok := reg.ResolveAppTool("srv-race", "srv-race_new_app"); !ok {
+		t.Fatal("replacement App view was lost")
 	}
 }
 

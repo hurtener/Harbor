@@ -229,7 +229,20 @@ var (
 	// already-registered id. See CheckServerIDUnambiguous for why that
 	// matters and what the rule is.
 	ErrAmbiguousServerID = fmt.Errorf("mcp: ambiguous server id (separator collision with a registered server)")
+	// ErrDiscoveryStale means a refresh completed for a server generation that
+	// is no longer current. Callers may retry against the replacement.
+	ErrDiscoveryStale = errors.New("mcp: discovery result is stale")
 )
+
+// DiscoveryStaleError is the bounded, retryable outcome for a refresh whose
+// captured server entry was replaced while discovery was in flight.
+type DiscoveryStaleError struct {
+	Retry bool
+}
+
+func (e *DiscoveryStaleError) Error() string { return ErrDiscoveryStale.Error() }
+
+func (e *DiscoveryStaleError) Is(target error) bool { return target == ErrDiscoveryStale }
 
 // maxListPageSize / defaultListPageSize bound the ListServers page.
 const (
@@ -1730,8 +1743,15 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 	start := r.clock()
 	descs, derr := e.provider.Discover(ctx)
 	latency := r.clock().Sub(start).Milliseconds()
+	r.mu.Lock()
+	if r.servers[name] != e {
+		r.mu.Unlock()
+		return nil, &DiscoveryStaleError{Retry: true}
+	}
 	if derr != nil {
-		r.recordError(name)
+		e.stats.errorRatePerMin++
+		e.stats.state = ServerStateError
+		r.mu.Unlock()
 		return nil, fmt.Errorf("mcp: RefreshDiscovery %q: %w", name, derr)
 	}
 	// Reapply the registration policy to every fresh snapshot before either
@@ -1739,7 +1759,6 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 	descs = filterDiscoveredTools(descs, name, e.toolAllowlist, e.toolDenylist)
 	tc, rc, pc := classifyDescriptors(descs, name)
 
-	r.mu.Lock()
 	e.stats.discoveryCounter++
 	discoveryID := fmt.Sprintf("%s-disc-%d", name, e.stats.discoveryCounter)
 	e.stats.toolCount = tc
