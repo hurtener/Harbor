@@ -388,9 +388,10 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |242 | Durable task-progress projection (HA-60) | tasks + state + protocol | §6.8, §6.10, §6.11, §7 | 239, 241 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |243 | Consumer-scoped two-phase skill-package import (HA-61, D-422): validate/commit workflow installing a complete `SKILL.md` package as a durable personal user skill from a caller-owned artifact; one importer/validator, versioned `PackageHash`, durable proposal CAS, mandatory `skillpkg://` resolver, forced `ScopeUser`/effective-agent commit, cross-process one-winner compensation | skills + agentcfg protocol + state + protocol | §6.7, §6.10, §6.11, §5.2, §5.5, §9 | 40, 202, 205, 209, 221, 226, 232, 233, 233a, 237 | 85–90% (target) | Pending |
 |244 | Draft-only personal-skill proposer tool (HA-62, D-423): `skill_create_draft` ordinary disabled-by-default tool producing a caller-scoped `SKILL.md` draft artifact via the governed authoring path's safety-wrapped LLM adapter; shared semantic DTO/validator/serializer/`PackageHash` with 243; zero mutation authority; install only through 243 validate/commit | skills + tools + agentcfg + artifacts | §6.4, §6.5, §6.7, §6.10, §6.13, §6.15, §5.2, §5.5 | 26, 40, 41, 202, 205, 209, 232, 237, 243 | 90–95% (target) | Pending |
-|245 | Lifecycle-only session catalog and inspection projection (HA-63, D-424): additive `projection: "lifecycle"` selector on the existing `sessions.list`/`sessions.inspect`; full remains the default; ZERO enrichment on the lifecycle path (bounded by page size, before/after restart); counter fields absent or explicitly unavailable, never zero-as-not-computed; counter filters/sorts paired with lifecycle fail as a typed invalid request | sessions/protocol + protocol + console | §6.9, §6.13, §5.2, §5.5, §7, §9 | 130, 163, 174, 177, 205, 232 | 85–90% (target) | Pending |
-|246 | Durable tail-paged conversation turns (HA-64, D-425): `sessions.turns.list`/`.get` plus bounded `.activity.list` subpage; dedicated runtime-owned projection with idempotent sequence checkpoints, indexed keyset tail paging (work ∝ page size), root-foreground-turn rows, renderable answer/reasoning/Activity/usage/App content with per-component availability, restart/erasure fences, two-read chat open with 245; Protocol-only consumer; no generic projection framework/warehouse/impersonation authority/operator analytics/live-cursor redesign/overflow analytics | turns projection + sessions/protocol + protocol + console | §6.2, §6.8, §6.9, §6.10, §6.13, §6.16, §5.2, §5.5, §7, §9 | 130, 162, 204, 205, 232, 242, 245 | 85–90% (target) | Pending |
-|247 | Durable observability rollups (HA-65, D-426): indexed triad projection of best-effort aggregates over successfully persisted canonical events (never billing-exact); existing local durable sequence, no outbox/new canonical event ID/fail-quiet LLM publication/active-active exactly-once; fixed UTC buckets, authoritative dimensions, source-backed measures, current/catching_up/unavailable + watermark/retention quality; projection-backed session counters with honest fallback; erasure fence; ONE bounded Protocol query and minimal Console consumer; narrow D-296 amendment (general TSDB + identity-labelled OTel metrics still rejected) | observability rollup + events + sessions enricher + protocol + console | §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9 | 36a, 57, 120, 130, 163, 171, 174, 205 | 85–90% (target) | Pending |
+|245 | Lifecycle-only session catalog and inspection projection (HA-63, D-424): additive `projection: "lifecycle"` selector on the existing `sessions.list`/`sessions.inspect`; full remains the default; ZERO enrichment on the lifecycle path (bounded by page size, before/after restart); explicit counter availability — counter fields explicitly marked unavailable, never merely absent and never zero-as-not-computed; counter filters/sorts paired with lifecycle fail as a typed invalid request | sessions/protocol + protocol + console | §6.9, §6.13, §5.2, §5.5, §7, §9 | 130, 163, 174, 177, 205, 232 | 85–90% (target) | Pending |
+|246 | Durable tail-paged conversation turns (HA-64, D-425): `sessions.turns.list`/`.get` as the two named public methods; dedicated runtime-owned projection with idempotent sequence checkpoints, indexed keyset tail paging (work ∝ page size), root-foreground-turn rows, renderable answer/reasoning/Activity/usage/App content with per-component availability, Activity inline at least the configured budget (a named activity method is only a conditional fallback), restart/erasure fences, two-read chat open with 245; Protocol-only consumer; no generic projection framework/warehouse/impersonation authority/operator analytics/live-cursor redesign/overflow analytics | turns projection + sessions/protocol + protocol + console | §6.2, §6.8, §6.9, §6.10, §6.13, §6.16, §5.2, §5.5, §7, §9 | 130, 162, 204, 205, 232, 242, 245 | 85–90% (target) | Pending |
+|247 | Durable observability rollups (HA-65, D-426): indexed triad projection of best-effort aggregates over successfully persisted canonical events (never billing-exact); existing local durable sequence, no outbox/new canonical event ID/active-active exactly-once, fail-loud LLM publication unchanged and projection failures best-effort; fixed UTC buckets with exactly the authoritative tenant/user/session/model dimensions (no agent_id even conditionally), existing source-backed measures only, unsupported absent/unavailable; current/catching_up/unavailable + watermark/retention quality; projection-backed session counters with honest fallback; erasure fence; ONE bounded Protocol query `observability.query` and minimal Console consumer; narrow D-296 amendment (general TSDB + identity-labelled OTel metrics still rejected) | observability rollup + events + sessions enricher + protocol + console | §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9 | 36a, 57, 120, 130, 163, 171, 174, 205 | 85–90% (target) | Pending |
+|248 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent (HA-66, D-427): config-file-relative strict eager immutable loader before readiness; no loader persistence/admin verbs/config revisions/lifecycle materialization; exact tenant+boot-agent binding with no invented boot identity; combined operator tier applied last under strict shared merge/collision/cap; boot-owned mutation/remove guards; deterministic set hash in run snapshot/preview; single prod/devstack path; explicit RunOnce/embed decision; ONE shared effective-composition resolver + preview (completes D-414 on the boot base); `EnsureBootAgentLifecycle` separate and unchanged | skills + config + runtime/serve + devstack | §6.7, §6.16, §5.2, §5.5, §7, §9 | 2, 40, 232, 237, 240 | 85–90% (target) | Pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -675,8 +676,9 @@ real two-client race under `-race`.
   selector on the existing `sessions.list`/`sessions.inspect` returns
   lifecycle metadata only, with ZERO enrichment: no history-replayer reads, no
   counter scans, work bounded by page size before and after restart. The full
-  projection stays the default; counter fields are absent or explicitly
-  unavailable (never zero-as-not-computed); counter filters/sorts paired with
+  projection stays the default; counter fields use explicit availability —
+  explicitly marked unavailable, never merely absent and never
+  zero-as-not-computed; counter filters/sorts paired with
   the lifecycle selector fail as a typed invalid request.
 - **Ordering:** depends on the session-enrichment seam (174), windowed-read
   honesty (163), erasure (130), the projection-completeness gate (177),
@@ -691,17 +693,20 @@ real two-client race under `-race`.
   triad.
 - **RFC:** §6.2, §6.8, §6.9, §6.10, §6.13, §6.16, §5.2, §5.5, §7, §9.
   **Deps:** 130, 162, 204, 205, 232, 242, and 245.
-- **What it delivers:** D-425 — `sessions.turns.list`/`.get` plus the bounded
-  `.activity.list` subpage, backed by a dedicated runtime-owned projection
+- **What it delivers:** D-425 — `sessions.turns.list`/`.get` as the two
+  named public methods, backed by a dedicated runtime-owned projection
   derived from task/result/event/App authority, incrementally materialized
   with idempotent sequence checkpoints, restart-survivable on durable
   drivers, and erased/fenced with its session. Indexed keyset tail paging
   makes work proportional to page size; one row is one root foreground turn
   with renderable answer/reasoning/Activity/usage/App content and explicit
-  per-component availability. Chat open is two reads (one 245 lifecycle read
-  + one turn page). No generic projection framework, warehouse,
-  impersonation authority, operator analytics, live-cursor redesign, or
-  overflow analytics ships.
+  per-component availability. Bounded Activity rides inline covering at least
+  Harbor's configured per-turn tool-call budget; a separate named activity
+  method is only a conditional fallback if the Protocol response ceiling
+  forces the exact attachment contract. Chat open is two reads (one 245
+  lifecycle read + one turn page). No generic projection framework,
+  warehouse, impersonation authority, operator analytics, live-cursor
+  redesign, or overflow analytics ships.
 - **Ordering:** depends on 245 (the two-read chat open) plus the
   projection/erasure/authority foundations; the minimal Console chat-open
   consumer lands in the same wave.
@@ -709,20 +714,24 @@ real two-client race under `-race`.
 
 ### Phase 247 — Durable observability rollups (HA-65)
 
-- **Subsystem:** observability rollup projection + drivers, events
-  (additive payload fields), session enricher, Protocol/Console lockstep.
+- **Subsystem:** observability rollup projection + drivers, session
+  enricher, Protocol/Console lockstep.
 - **RFC:** §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9. **Deps:** 36a, 57,
   120, 130, 163, 171, 174, and 205.
 - **What it delivers:** D-426 — an indexed-triads projection of best-effort
   rollups over successfully persisted canonical events (never billing-exact),
   consumed incrementally from the existing local durable sequence with a
   durable applied-through watermark; no outbox, no new canonical event ID, no
-  fail-quiet LLM publication, no active-active exactly-once. Fixed UTC
-  buckets, authoritative dimensions, source-backed measures, and
+  active-active exactly-once, and the fail-loud LLM publication contract is
+  unchanged with projection application failures best-effort. Fixed UTC
+  buckets with exactly the authoritative tenant/user/session/model dimensions
+  (no `agent_id` even conditionally), existing source-backed measures only
+  with unsupported absent/unavailable, and
   current/catching_up/unavailable plus watermark/retention quality on every
   query. The session enricher becomes projection-backed with the honest
-  partial fallback; session erasure fences and reconciles parent totals; ONE
-  bounded Protocol query surface and a minimal Console counter read ship.
+  partial fallback; session erasure fences and reconciles parent totals; the
+  one bounded Protocol query surface is `observability.query` and a minimal
+  Console counter read ships.
   D-426 narrowly amends D-296: a general-purpose Harbor TSDB and
   identity-labelled OTel metrics remain rejected.
 - **Ordering:** depends on the durable event log (57), cost accounting (36a),
@@ -730,6 +739,32 @@ real two-client race under `-race`.
   aggregate parity (171), the session enricher seam (174), and body-scope
   (205); gates no later phase in this wave.
 - **Decision:** D-426. **Status:** Pending.
+
+### Phase 248 — Boot-declared resource-free operator skill baseline (HA-66)
+
+- **Subsystem:** skills (loader + effective-composition resolver/preview),
+  config (boot-declared baseline schema), runtime/serve (boot wiring +
+  `EnsureBootAgentLifecycle` separation), devstack (single loader path).
+- **RFC:** §6.7, §6.16, §5.2, §5.5, §7, §9. **Deps:** 2, 40, 232, 237, and
+  240.
+- **What it delivers:** D-427 — a config-file-relative strict eager immutable
+  loader that runs before readiness, imports every baseline entry through the
+  ONE existing importer/validator (fail-loud otherwise), and freezes the set
+  for the process lifetime. No loader persistence, admin verbs, config
+  revisions, or lifecycle materialization. Exact `(tenant, boot_agent_id)`
+  binding with no invented boot identity; the combined operator tier
+  (personal/session → durable pack tier → boot baseline) applied last under
+  strict shared merge/collision/cap rules; boot-owned mutation/remove guards;
+  a deterministic set hash in the run snapshot and composition preview; the
+  single prod/devstack loader path; an explicit RunOnce/embed support
+  decision. Because D-414's preview is absent/incomplete on the boot base,
+  the phase delivers ONE shared effective-composition resolver + preview that
+  includes the baseline, reusing the D-411/D-414 composition path rather than
+  a parallel one. `EnsureBootAgentLifecycle` is separate and unchanged.
+- **Ordering:** depends on the config loader (2), the skills importer (40),
+  signed agent reach (232), operator skill packs (237), and the composition
+  preview (240); gates no later phase in this wave.
+- **Decision:** D-427. **Status:** Pending.
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 

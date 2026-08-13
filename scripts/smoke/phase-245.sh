@@ -9,10 +9,11 @@
 # there is no live-server leg and no "surface works" assertion. When the
 # phase ships, the implementor extends this script with the live assertions
 # from the plan's "Smoke script additions" section (lifecycle list returns
-# lifecycle fields and no counter fields; a counter filter/sort paired with
-# the lifecycle selector fails with the canonical typed error; the default
-# projection still returns counters; cross-identity lifecycle reads are
-# non-oracular not-found).
+# lifecycle fields with explicit counter availability — counters explicitly
+# marked unavailable, never zero-as-not-computed; a counter filter/sort paired
+# with the lifecycle selector fails with the canonical typed error; the
+# default projection still returns counters; cross-identity lifecycle reads
+# are non-oracular not-found).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"

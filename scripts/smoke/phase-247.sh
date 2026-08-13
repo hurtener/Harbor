@@ -8,11 +8,14 @@
 # there is no live-server leg and no "surface works" assertion. When the
 # phase ships, the implementor extends this script with the live assertions
 # from the plan's "Smoke script additions" section (a >10,000-event durable
-# session answers the one administrative query with projection-backed totals
+# session answers the one administrative query `observability.query` with
+# projection-backed totals
 # without counters_partial and without read-time scans; a stale/unavailable
 # projection surfaces catching_up/unavailable — never zero — and the session
 # enricher falls back honestly; a widened fleet query emits the established
-# audit evidence and an ordinary caller cannot enumerate another identity).
+# audit evidence and an ordinary caller cannot enumerate another identity;
+# the dimension set is exactly the fixed UTC bucket plus authoritative
+# tenant/user/session/model — no agent_id).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"
@@ -25,4 +28,6 @@ assert_grep_present "watermark" docs/plans/phase-247-observability-rollups.md "d
 assert_grep_present "current" docs/plans/phase-247-observability-rollups.md "completeness states are planned"
 assert_grep_present "D-296" docs/plans/phase-247-observability-rollups.md "D-296 amendment is planned"
 assert_grep_present "indexed" docs/plans/phase-247-observability-rollups.md "indexed triad is planned"
+assert_grep_present "observability.query" docs/plans/phase-247-observability-rollups.md "the one administrative query is observability.query"
+assert_grep_present "not a rollup" docs/plans/phase-247-observability-rollups.md "agent_id is not a rollup dimension (settled)"
 smoke_summary

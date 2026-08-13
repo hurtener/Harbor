@@ -12952,13 +12952,14 @@ id only where Harbor can represent it honestly — and MUST NOT invoke
 event-history, task, pause, artifact, App, or counter enrichment of any kind:
 work is bounded by the page size before and after restart, independent of
 total event/turn cardinality, and a page of N rows never runs N counter
-scans. Counter fields are absent or explicitly marked unavailable in the
-lifecycle shape; zero never means "not computed". A counter-dependent filter
+scans. Counter fields use explicit availability: they are explicitly marked
+unavailable in the lifecycle shape (never merely absent, and never
+zero-as-not-computed). A counter-dependent filter
 or sort (`cost_above_cents`, `has_failed_task`, `has_intervention`,
 `cost_desc`) paired with the lifecycle projection fails as a typed invalid
 request rather than silently switching to the expensive projection, and the
 projection registers with the projection-completeness gate so its
-intentionally-absent fields are allow-listed with reasons. The full
+explicitly-unavailable counter fields are allow-listed with reasons. The full
 projection remains compatible and explicitly selectable by operator surfaces
 that display counters. The selector changes cost and shape, never authority:
 each method preserves its own widening claims and audit behavior exactly; a
@@ -12995,11 +12996,15 @@ erasure), D-409 (session reach), D-397 (agent reach), D-313/D-349
 **Status:** Accepted for Phase 246 (HA-64).
 
 **Decision.** Add a dedicated, runtime-owned conversation read model —
-`sessions.turns.list` (stable tail pages), `sessions.turns.get` (one
-`(session, task)` bounded terminal reconciliation read), and a bounded
-`sessions.turns.activity.list` subpage — so a Protocol consumer renders the
+`sessions.turns.list` (stable tail pages) and `sessions.turns.get` (one
+`(session, task)` bounded terminal reconciliation read) — the two named
+public methods — so a Protocol consumer renders the
 current chat from one durable projection instead of joining
-task/result/event/App authority itself. The projection is derived from
+task/result/event/App authority itself. Bounded Activity rides inline
+covering at least Harbor's configured per-turn tool-call budget; a separate
+named activity method is NOT part of this phase — it is stated only as a
+conditional fallback, added only if the Protocol response ceiling forces the
+exact attachment contract. The projection is derived from
 Harbor's task, result, event, and App-context authority; incrementally
 materialized with idempotent sequence checkpoints; restart-survivable on
 durable drivers; and erased/fenced with its session (in-memory restart loss
@@ -13089,23 +13094,23 @@ its own typed interface and §4.4 driver seam with in-memory, SQLite, and
 Postgres implementations and one conformance suite (the indexed triad). It
 consumes canonical Harbor outcomes incrementally from the EXISTING local
 durable event log — `llm.cost.recorded`, task lifecycle events, and other
-canonical outcome events, plus bounded additive payload fields where a
-measure has no carrier today — stores aggregate rows rather than duplicating
+canonical outcome events — stores aggregate rows rather than duplicating
 raw payloads, and is rebuildable from the durable event log. Rollups are
 BEST-EFFORT aggregates over successfully persisted canonical events; they are
 never a billing-exact ledger, and the durable event log plus governance's
 cost accumulator remain the exact per-call authority. Idempotency and
 recovery use the existing per-runtime durable event sequence: there is NO
-outbox, NO new canonical event ID, NO fail-quiet LLM publication, and NO
-active-active exactly-once claim — replay of the same source event is
+outbox, NO new canonical event ID, and NO active-active exactly-once claim —
+the fail-loud LLM publication contract is unchanged and projection application
+failures are best-effort; replay of the same source event is
 idempotent, restart catch-up and a crash between source persistence and
 projection application converge, and concurrent replica application is
 documented as at-least-once idempotent on the local sequence, with the absent
-exactly-once property stated rather than claimed. The base grain is
-`(tenant_id, user_id, session_id, model, fixed_UTC_time_bucket)`; `agent_id`
-and other entity dimensions appear only where the canonical event or an
-authoritative runtime binding supplies them and remain metadata, never an
-isolation principal. Measures are source-backed: precise cost without
+exactly-once property stated rather than claimed. The base grain is exactly
+the fixed UTC bucket plus the authoritative dimensions `(tenant_id, user_id,
+session_id, model)`; `agent_id` is not a rollup dimension (not even
+conditionally) and no other entity dimension is added. Measures are
+source-backed: precise cost without
 per-event cent rounding, prompt/completion/reasoning/total/cache-read/
 cache-write tokens, successful LLM completions, failed LLM requests/attempts,
 retry and downgrade counts, task spawned/completed/failed/cancelled counts,
@@ -13113,7 +13118,7 @@ a merge-safe bounded latency distribution, and first/last observed
 timestamps; unsupported measures are omitted or marked unavailable, never
 synthesized, and "prompts sent" is defined by at least three distinct
 counters (LLM request attempts, successful LLM completions, user messages
-submitted). Every query response carries an observed watermark/freshness
+submitted), each backed by an existing canonical event where one exists. Every query response carries an observed watermark/freshness
 stamp and an explicit completeness state — `current`, `catching_up`,
 `unavailable` (plus `rebuilding` and retention-quality signals) — and never
 returns zero as a substitute for unavailable. The existing session enricher
@@ -13123,8 +13128,8 @@ erasure removes or tombstones every aggregate attributable to that session
 and reconciles parent user/tenant totals; a rebuild never resurrects erased
 aggregates, and if source events needed for a full rebuild have been removed
 the rebuilt projection exposes that historical incompleteness. ONE bounded
-Protocol-owned administrative query surface ships (provisional name
-`observability.rollups.query`): mandatory time window, server-authorized
+Protocol-owned administrative query surface ships (`observability.query`):
+mandatory time window, server-authorized
 filters, a closed `group_by` set, bounded buckets, pagination with
 deterministic sorting, exact-or-explicitly-partial results, and a maximum
 result/bucket budget that fails loudly. Ordinary callers query only their
@@ -13182,3 +13187,96 @@ representation), D-300/D-301 (credential-plane and metrics posture), D-025
 audit), D-312/D-400 (erasure fences), D-353/D-254 (bounded windowed reads),
 D-020 (audit redaction). RFC §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9.
 Plan: `docs/plans/phase-247-observability-rollups.md`.
+
+---
+
+## D-427 — The resolved boot/default agent gets a boot-declared resource-free operator skill baseline: config-file-relative strict eager immutable loader before readiness, boot-owned entries, a deterministic set hash, and one shared effective-composition resolver + preview (HA-66)
+
+**Date:** 2026-08-13
+
+**Status:** Accepted for Phase 248 (HA-66).
+
+**Decision.** A runtime serving its resolved boot/default agent may declare a
+resource-free operator skill baseline directly in boot configuration, so the
+boot agent's skill composition is complete before any durable pack or
+personal-skill membership exists. The baseline loads through a
+**config-file-relative, strict, eager, immutable loader** that runs before
+readiness: paths resolve relative to the config file, every entry must import
+through the ONE existing importer/validator or the boot fails loud, and the
+loaded set is frozen for the process lifetime. The loader itself has **no
+persistence, no admin verbs, no config revisions, and no lifecycle
+materialization**: it writes no skill store row, exposes no Protocol mutation
+surface, advances no agent-config revision, and creates no lifecycle record —
+the baseline is boot-declared read-only state. It binds **exactly to the
+resolved boot/default agent for the boot tenant**: the resolved
+`(tenant, boot_agent_id)` pair, never a placeholder or wildcard, and never an
+invented boot identity — if the deployment's default agent cannot be
+resolved, the runtime fails loud at boot rather than synthesizing one. The
+baseline composes as the **combined operator tier applied last**: the run
+snapshot merges the caller's permitted personal/session skills first, then
+the durable operator pack tier (D-411), then the boot baseline — so
+operator-authored content deterministically wins over caller content under
+strict shared merge/collision/cap rules: a name collision with a caller-owned
+skill is resolved by the operator-tier-last rule, a collision with the
+durable pack tier is a typed boot-time conflict (never last-write-wins), and
+the composed set respects the existing shared cap. Boot-declared baseline
+entries are **boot-owned**: mutation and removal guards refuse every Protocol
+write to a boot-declared name (edit the config file and restart). The
+baseline contributes a **deterministic set hash** over its normalized entries
+to the run snapshot and to the composition preview, so an operator can verify
+exactly what the boot agent composes. Production and devstack use the
+**single loader path** — the devstack's synthetic boot agent resolves the
+same loader, never a second implementation. The phase states an explicit
+**RunOnce/embed support decision** rather than leaving the embedded one-shot
+path ambiguous. D-414's preview is **absent/incomplete on this base** — it
+resolves durable pack membership and personal skills, but nothing declares or
+previews the config-file baseline — so this phase delivers ONE shared
+**effective-composition resolver + preview** that includes the boot baseline,
+reusing the D-411/D-414 composition path rather than inventing a parallel
+one. `EnsureBootAgentLifecycle` is **separate and unchanged**: it still
+materializes the first empty agent-level revision when the lifecycle slot is
+absent, and this phase never claims startup performs no revision writes
+whatsoever — only that the baseline loader itself performs none.
+
+**Required acceptance (binding for the phase).**
+
+1. With a config-file-declared baseline, a fresh runtime boots to readiness
+   with the baseline loaded eagerly and immutably, and the composition preview
+   for the resolved boot agent shows the baseline entries plus the D-414
+   durable/personal tiers — one resolver, one preview, no parallel path.
+2. A malformed, unresolvable, or un-importable baseline entry fails the boot
+   loud before readiness; an unresolvable default agent fails loud rather than
+   inventing a boot identity.
+3. The loader performs zero durable writes: skill rows, agent-config
+   revisions, lifecycle records, and admin verbs are all provably untouched by
+   boot with a baseline declared (asserted by not-invoked spy / store-hash
+   idempotence, not by timing).
+4. The boot baseline binds exactly to the resolved `(tenant, boot_agent_id)`;
+   a different tenant or a non-default agent never composes it, and no
+   placeholder/wildcard identity is ever served.
+5. Composition order is personal/session → durable pack tier → boot baseline
+   with the operator tier applied last; a caller-name collision resolves by
+   the operator-tier-last rule, a pack-tier collision is a typed boot-time
+   conflict, and the shared cap holds.
+6. Protocol mutation and removal verbs refuse every boot-declared baseline
+   name with the canonical typed error and no partial effect.
+7. The deterministic set hash over the normalized baseline entries appears in
+   the run snapshot and the composition preview and is stable across restarts
+   for an unchanged config file.
+8. Production and the devstack resolve the same loader path; the devstack's
+   synthetic boot agent composes the baseline exactly like a production boot
+   agent.
+9. The RunOnce/embed support decision is stated explicitly in the plan and
+   pinned by a test on the chosen path.
+10. N>=100 concurrent compositions under `-race` against one shared resolver
+    show no context bleed, no cancellation cross-talk, no goroutine leak, and
+    byte-identical snapshots for identical inputs.
+
+**Cross-references.** EXTENDS D-411 (the durable operator pack tier this
+baseline joins), D-414 (the composition preview this phase completes for the
+boot base), D-059 (agent identity is not an isolation principal), D-350/D-355
+(boot-declared names are boot-owned; edit the yaml and restart), D-311
+(absence representable), D-351 (never claim a property the mechanism lacks),
+D-025 (concurrent reuse), D-299 (server-derived authority). RFC §6.7, §6.16,
+§5.2, §5.5, §7, §9. Plan:
+`docs/plans/phase-248-boot-operator-skill-baseline.md`.

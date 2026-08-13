@@ -10,9 +10,10 @@
 # from the plan's "Smoke script additions" section (open a durable session's
 # chat in two reads — lifecycle + turn page — and assert the newest 20 turns
 # render without a per-turn tasks.get/events.list; paging older history has
-# no skip/duplicate while a new turn starts; the activity subpage returns
-# ordered entries with no arguments/results; cross-identity turns are typed
-# not-found).
+# no skip/duplicate while a new turn starts; inline Activity returns ordered
+# entries with no arguments/results, and the conditional activity fallback
+# ships only if the response ceiling forces it; cross-identity turns are
+# typed not-found).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"
@@ -21,7 +22,8 @@ assert_file docs/plans/phase-246-durable-conversation-turns.md "phase 246 plan e
 assert_grep_present "D-425" docs/decisions.md "D-425 is recorded (HA-64)"
 assert_grep_present "Pending" docs/plans/README.md "phase 246 is Planned/Pending in the master plan"
 assert_grep_present "sessions.turns.list" docs/plans/phase-246-durable-conversation-turns.md "tail-paged turn list is planned"
-assert_grep_present "sessions.turns.activity.list" docs/plans/phase-246-durable-conversation-turns.md "bounded activity subpage is planned"
+assert_grep_present "sessions.turns.get" docs/plans/phase-246-durable-conversation-turns.md "terminal reconciliation read is planned"
+assert_grep_present "conditional fallback" docs/plans/phase-246-durable-conversation-turns.md "a named activity method is only a conditional fallback (settled)"
 assert_grep_present "two reads" docs/plans/phase-246-durable-conversation-turns.md "two-read chat open is planned"
 assert_grep_present "idempotent sequence checkpoints" docs/plans/phase-246-durable-conversation-turns.md "incremental projection is planned"
 assert_grep_present "erased/fenced" docs/plans/phase-246-durable-conversation-turns.md "erasure fence is planned"

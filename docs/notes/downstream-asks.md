@@ -40,6 +40,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-63 | Lifecycle-only session catalog and inspection projection | sessions/protocol + protocol + console | High | Contained | Planned — phase 245 / D-424 |
 | HA-64 | Durable tail-paged conversation turns and separate operator execution diagnostics | turns projection + sessions/protocol + protocol + console | High | Large | Planned — phase 246 / D-425 |
 | HA-65 | Persistent queryable observability rollups without raw-event scans | observability rollup + events + sessions + protocol + console | High | Large | Planned — phase 247 / D-426 |
+| HA-66 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent | skills + config + runtime/serve + devstack | Medium | Contained | Planned — phase 248 / D-427 |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -54,15 +55,16 @@ raised by the wave's own reliability/verification review rather than by an
 outside consumer, and are shipped in the same wave (phase 239 / D-418,
 phase 240 / D-419, phase 241 / D-420, phase 242 / D-421). The entries are
 **framework-framed** — each names a Harbor-side capability that is absent,
-inert, or narrower than its documentation claims. **HA-61 through HA-65 are
-the v1.28 filings** — consumer authoring (personal-skill package import and
-draft authoring), chat-open latency (lifecycle-only session projection and
-durable tail-paged conversation turns), and administrative observability
-(rebuildable rollup projection) — each **Planned** as phase 243 / D-422,
-phase 244 / D-423, phase 245 / D-424, phase 246 / D-425, and phase 247 /
-D-426, and each **framework-framed**: they name Harbor-side surfaces that are
-absent or read-shape-mismatched against a Protocol consumer, with no
-downstream product vocabulary in the committed text.
+inert, or narrower than its documentation claims. **HA-61 through HA-66 are
+the v1.28 filings** — personal-skill package import and draft authoring,
+chat-open latency (lifecycle-only session projection and durable tail-paged
+conversation turns), administrative observability (rebuildable rollup
+projection), and the boot-declared operator skill baseline — each
+**Planned** as phase 243 / D-422, phase 244 / D-423, phase 245 / D-424,
+phase 246 / D-425, phase 247 / D-426, and phase 248 / D-427, and each
+**framework-framed**: they name Harbor-side surfaces that are absent or
+read-shape-mismatched against the Protocol surface, with no product
+vocabulary in the committed text.
 
 ---
 
@@ -721,8 +723,9 @@ status, title and title source, start/update/completion/last-activity
 timestamps where authoritative, duration where derivable without enrichment,
 and the effective/default agent id only where Harbor can represent it
 honestly. The lifecycle path MUST NOT invoke event-history, task, pause,
-artifact, App, or counter enrichment. Counter fields must be absent or
-explicitly unavailable; zero may not mean "not computed." Filters and sorting
+artifact, App, or counter enrichment. Counter fields use explicit
+availability: they are explicitly marked unavailable in the lifecycle shape
+(never merely absent); zero may not mean "not computed." Filters and sorting
 over lifecycle fields retain their existing semantics; a counter-dependent
 filter or sort paired with the lifecycle projection fails as a typed invalid
 request rather than silently switching to the expensive projection. Existing
@@ -767,9 +770,12 @@ its Activity and durable MCP App reference disappear.
 making callers join task/result/event/App authority themselves:
 `sessions.turns.list` returns a stable tail page of conversation turns;
 `sessions.turns.get` returns the same turn shape for one `(session, task)`
-and is the bounded terminal reconciliation read after live streaming; a
-bounded `sessions.turns.activity.list` subpage covers ordered tool activity
-that exceeds the Protocol response ceiling. The list request carries
+and is the bounded terminal reconciliation read after live streaming. These
+two are the named public methods. Bounded Activity rides inline covering at
+least Harbor's configured per-turn tool-call budget; a separate named
+activity method is NOT required — it is stated only as a conditional fallback
+if the Protocol response ceiling forces the exact attachment contract. The
+list request carries
 `session_id`, an opaque exclusive older-page cursor, `limit` (default 20,
 maximum 50), and the authorized projection; the response carries a session
 header, snapshot/as-of identifier, page turns in a declared stable order,
@@ -859,7 +865,7 @@ remain separate. No coordinator shadow transcript or summary is introduced.
 a lower bound. The Runtime remains healthy, but `events_count`,
 `total_cost_cents`, and `total_tokens` become lower bounds, and the Console
 cannot answer basic administrative questions efficiently or exactly: cost by
-tenant/user/session/agent/model, token usage dimensions, LLM request/
+tenant/user/session/model, token usage dimensions, LLM request/
 completion/failure counts, task outcome counts and failure rates, latency and
 cost trends over a period, and most-expensive/failing breakdowns — without
 replaying the raw event log. The session rollup scans at most 10,000 events
@@ -881,26 +887,31 @@ event log, supporting indexed administrative queries without scanning the
 event log or every session, preserving `(tenant, user, session)` isolation
 and server-derived admin widening, and exposing freshness/completeness
 explicitly rather than returning plausible stale or partial totals. Base
-grain `(tenant_id, user_id, session_id, model, time_bucket)` in fixed UTC
-buckets; `agent_id` and other entity dimensions only where the canonical
-event or an authoritative runtime binding supplies them, never as isolation
-principals. Additive measures include precise cost without per-event cent
+grain is exactly the fixed UTC bucket plus the authoritative dimensions
+`(tenant_id, user_id, session_id, model)`; `agent_id` is not a rollup
+dimension (not even conditionally). Measures are existing source-backed only
+— precise cost without per-event cent
 rounding, prompt/completion/reasoning/total/cache-read/cache-write tokens,
 successful LLM completions, failed LLM requests/attempts, retry and downgrade
 counts, task spawned/completed/failed/cancelled counts, a merge-safe bounded
-latency distribution, and first/last observed timestamps. "Prompts sent" is
+latency distribution, and first/last observed timestamps — and unsupported
+measures are omitted or marked unavailable, never synthesized. "Prompts sent" is
 defined explicitly (LLM request attempts vs successful LLM completions vs
-user messages submitted are distinct counters). Each applied source event
+user messages submitted are distinct counters, each backed by an existing
+canonical event where it exists). Each applied source event
 needs a durable idempotency identity (the existing local durable event
 sequence) with a durable applied-through cursor/watermark; restart catch-up
 and full rebuild behavior are specified; every query response carries an
 observed watermark/freshness stamp and an explicit completeness state
 (`current`, `catching_up`, `rebuilding`, or `unavailable`), and an
 unavailable projection never falls back silently to zeros. ONE Protocol-owned
-administrative query surface supports a mandatory time window,
+administrative query surface (`observability.query`) supports a mandatory
+time window,
 server-authorized filters, a closed `group_by` set, bounded bucket sizes,
 pagination with deterministic sorting, exact or explicitly partial results,
-and a maximum result/bucket budget that fails loudly; ordinary callers query
+and a maximum result/bucket budget that fails loudly; the fail-loud LLM
+publication contract is unchanged and projection application failures are
+best-effort. Ordinary callers query
 only their authorized identity scope, and cross-identity queries require
 verified admin or `console:fleet` authority from the request context with the
 established widened-read audit evidence. The Console remains a pure Protocol
@@ -941,6 +952,74 @@ projection or remains an honest fallback.
 10. D-296 is explicitly amended or superseded: the decision must explain why
     this rebuildable projection is allowed while a general-purpose Harbor
     TSDB and identity-labelled OTel metrics remain rejected.
+
+---
+
+## HA-66 — the resolved boot/default agent needs a boot-declared resource-free operator skill baseline
+
+**Priority:** Medium (operator deployment posture). **Size:** contained.
+**State:** Planned — phase 248 / D-427 (Harbor-internal filing).
+
+**What the operator sees.** Harbor's operator skill tier (D-411) is durable
+and per-agent, and D-414's composition preview reads that durable state. But
+a runtime serving its resolved boot/default agent has no config-file-declared
+baseline: the boot agent's skill composition is empty until an operator
+stands up the full durable pack workflow, and the preview surface cannot show
+a baseline that was never declared anywhere. A deployment that wants a small,
+immutable, operator-owned skill set on its default agent before any durable
+pack membership exists has no path.
+
+**Requested shape.** A boot-declared, resource-free operator skill baseline
+for the resolved boot/default agent: a config-file-relative strict eager
+immutable loader that runs before readiness, validates every entry through
+the ONE existing importer/validator (fail-loud otherwise), and freezes the
+set for the process lifetime. The loader performs no persistence, exposes no
+admin verbs, advances no config revision, and materializes no lifecycle
+record. The baseline binds exactly to the resolved `(tenant, boot_agent_id)`
+pair — never a placeholder or wildcard, never an invented boot identity — and
+composes as the combined operator tier applied last (personal/session skills
+first, then the durable pack tier, then the boot baseline) under strict
+shared merge/collision/cap rules. Boot-declared entries are boot-owned:
+mutation and removal guards refuse every Protocol write (edit the config file
+and restart). A deterministic set hash over the normalized baseline entries
+rides the run snapshot and the composition preview so an operator can verify
+exactly what the boot agent composes. Production and devstack use the single
+loader path, and the RunOnce/embed support decision is explicit. Because
+D-414's preview is absent/incomplete on this base, the phase delivers ONE
+shared effective-composition resolver + preview that includes the baseline
+rather than a parallel path. `EnsureBootAgentLifecycle` is separate and
+unchanged; the baseline loader itself performs no revision writes, and the
+phase never claims startup performs no revision writes whatsoever.
+
+**Required acceptance.**
+
+1. A config-file-declared baseline loads eagerly and immutably before
+   readiness and appears in the composition preview for the resolved boot
+   agent alongside the D-414 durable/personal tiers — one resolver, one
+   preview.
+2. A malformed, unresolvable, or un-importable baseline entry fails the boot
+   loud before readiness; an unresolvable default agent fails loud rather than
+   inventing a boot identity.
+3. The loader performs zero durable writes (skill rows, config revisions,
+   lifecycle records, admin verbs) — asserted by a not-invoked spy / store
+   idempotence, not timing.
+4. The baseline binds exactly to the resolved `(tenant, boot_agent_id)`;
+   other tenants and non-default agents never compose it.
+5. Composition order is personal/session → durable pack tier → boot baseline
+   (operator tier last); caller-name collisions resolve by the
+   operator-tier-last rule, pack-tier collisions are a typed boot-time
+   conflict, and the shared cap holds.
+6. Protocol mutation/removal verbs refuse every boot-declared baseline name
+   with a canonical typed error and no partial effect.
+7. The deterministic set hash is stable across restarts for an unchanged
+   config file and appears in the run snapshot and the preview.
+8. Production and the devstack resolve the same loader path; the devstack's
+   synthetic boot agent composes the baseline exactly like production.
+9. The RunOnce/embed support decision is stated explicitly in the plan and
+   pinned by a test.
+10. N>=100 concurrent compositions under `-race` against one shared resolver
+    show no context bleed, no cancellation cross-talk, no goroutine leak, and
+    byte-identical snapshots for identical inputs.
 
 ---
 

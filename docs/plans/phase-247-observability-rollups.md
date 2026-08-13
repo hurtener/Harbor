@@ -66,9 +66,9 @@ identity-labelled OTel metrics remain rejected.
   interface and §4.4 seam with in-memory, SQLite, and Postgres drivers and one
   conformance suite (the indexed triad).
 - Consume canonical Harbor outcomes incrementally from the existing local
-  durable event log: `llm.cost.recorded`, task lifecycle events,
-  tool/planner/steering outcomes where canonical, and any bounded new payload
-  fields required for failed-attempt or user-message measures.
+  durable event log: `llm.cost.recorded`, task lifecycle events, and other
+  canonical outcome events — existing source-backed measures only, with no new
+  canonical events or payload fields added merely to fill analytics.
 - Store aggregate rows, never duplicate raw event payloads; rebuild fully from
   the durable event log.
 - Expose fixed UTC buckets with authoritative dimensions and source-backed
@@ -89,10 +89,12 @@ identity-labelled OTel metrics remain rejected.
 - No billing-exact ledger: rollups are best-effort aggregates over
   successfully persisted canonical events; exact per-call billing remains the
   event log's authority and governance's cost accumulator.
-- No outbox, no new canonical event ID, no fail-quiet LLM publication, no
-  active-active exactly-once: the projection uses the existing per-runtime
+- No outbox, no new canonical event ID, no active-active exactly-once: the
+  projection uses the existing per-runtime
   durable event sequence for idempotency and a durable applied-through
-  watermark; multi-replica application is documented as at-least-once
+  watermark; the fail-loud LLM publication contract is unchanged and
+  projection application failures are best-effort; multi-replica application
+  is documented as at-least-once
   idempotent on that local sequence, never claimed exactly-once across
   active-active replicas.
 - No general-purpose Harbor TSDB and no identity-labelled OTel metrics:
@@ -119,18 +121,21 @@ identity-labelled OTel metrics remain rejected.
       not observe).
 - [ ] Queries group correctly by tenant, user, session, and model across
       multiple users, concurrent sessions, and models, with no identity bleed.
-      `agent_id` and other entity dimensions appear only where the canonical
-      event or an authoritative runtime binding supplies them, and remain
-      metadata, never an isolation principal.
+      The dimension set is exactly the fixed UTC bucket plus the authoritative
+      `(tenant_id, user_id, session_id, model)` — `agent_id` is not a rollup
+      dimension, not even conditionally, and no other entity dimension is
+      added.
 - [ ] Successful LLM completions, failed LLM attempts, task completions, and
-      task failures are distinct source-backed measures; unsupported measures
-      are omitted or marked unavailable, never synthesized. "Prompts sent" is
+      task failures are distinct source-backed measures backed by existing
+      canonical events; unsupported measures are omitted or marked
+      unavailable, never synthesized. "Prompts sent" is
       defined explicitly by at least three distinct counters: LLM request
       attempts, successful LLM completions, and user messages submitted to a
-      session.
+      session (each backed by an existing canonical event where it exists).
 - [ ] The projection consumes only successfully persisted canonical events
-      from the existing local durable sequence; there is no outbox, no new
-      canonical event ID, and no fail-quiet LLM publication. Replaying the same
+      from the existing local durable sequence; there is no outbox and no new
+      canonical event ID. The fail-loud LLM publication contract is unchanged
+      and projection application failures are best-effort. Replaying the same
       source event is idempotent; restart catch-up, a crash between source
       persistence and projection application, and concurrent replica
       application do not lose or double-count values under the documented
@@ -143,8 +148,9 @@ identity-labelled OTel metrics remain rejected.
       the session enricher's projection-backed counters fall back to the
       existing honest partial scan (`CountersPartial`) when the projection is
       unavailable or stale.
-- [ ] Fixed UTC buckets are the base grain; the base dimension set is
-      `(tenant_id, user_id, session_id, model, time_bucket)` with additive
+- [ ] Fixed UTC buckets are the base grain; the base dimension set is exactly
+      `(tenant_id, user_id, session_id, model, time_bucket)` with existing
+      source-backed
       measures (precise cost without per-event cent rounding; prompt/
       completion/reasoning/total/cache-read/cache-write tokens; successful LLM
       completions; failed LLM requests/attempts; retry and downgrade counts;
@@ -169,12 +175,13 @@ identity-labelled OTel metrics remain rejected.
       honest fallback — this phase ships the projection-backed path with the
       honest fallback, and `sessions.list` / `sessions.inspect` never regress
       to a false-empty page (D-309's WARN-3 rule holds).
-- [ ] ONE bounded Protocol query surface ships: mandatory time window,
+- [ ] ONE bounded Protocol query surface ships (`observability.query`):
+      mandatory time window,
       server-authorized filters over tenant/user/session/model (where
       authoritative) and outcome, a closed `group_by` set, bounded bucket
       sizes, pagination and deterministic sorting for ranked results, exact or
       explicitly partial/freshness-marked results, and a maximum
-      result/bucket budget that fails loudly when exceeded. No second
+      result/bucket budget that fails loudly. No second
       administrative query surface is added.
 - [ ] A minimal Console consumer uses only the typed Protocol surface: the
       Sessions page counter read is projection-backed through
@@ -199,9 +206,6 @@ identity-labelled OTel metrics remain rejected.
   conformance suite
 - `internal/observability/rollup/drivers/{inmem,sqlite,postgres}/` — the
   indexed triad behind the §4.4 seam
-- `internal/events/` — bounded new payload fields for failed-attempt /
-  user-message measures where the canonical events do not yet carry them
-  (additive only, no new event-ID scheme)
 - `internal/sessions/protocol/enricher.go` — projection-backed counters with
   the honest partial fallback
 - `internal/protocol/{types,methods,errors,bodyscope,singlesource,transports}/`
@@ -218,8 +222,7 @@ identity-labelled OTel metrics remain rejected.
 
 ## Public API surface
 
-- One administrative query method (provisionally
-  `observability.rollups.query`; exact name settled during planning): a
+- One administrative query method (`observability.query`): a
   mandatory time window, server-authorized filters, a closed `group_by` set,
   bounded buckets, pagination with deterministic ordering, and a
   freshness/completeness block (`state: current|catching_up|unavailable`,
@@ -261,7 +264,8 @@ identity-labelled OTel metrics remain rejected.
 
 - Before implementation, a pending static skeleton records this plan.
 - When implemented, produce a >10,000-event durable session, run the one
-  administrative query, and assert projection-backed totals without
+  administrative query `observability.query`, and assert projection-backed
+  totals without
   `counters_partial` and without read-time scans; assert a stale/unavailable
   projection surfaces `catching_up`/`unavailable` (never zero) and the session
   enricher falls back honestly; assert a widened fleet query emits the
@@ -282,9 +286,11 @@ identity-labelled OTel metrics remain rejected.
 
 ## Risks / open questions
 
-- The additive canonical payload fields for failed-attempt and user-message
-  measures must be bounded and redacted by construction; the exact field
-  shapes are a planning-time decision against the shipped event types.
+- Every measure must map to an existing canonical event payload; a measure
+  with no existing carrier is unsupported and omitted or marked unavailable,
+  never synthesized, and no new canonical event is added merely to fill
+  analytics. The exact mapping is a planning-time decision against the shipped
+  event types.
 - The durable applied-through watermark is per-runtime (the existing local
   durable sequence); operators running multiple replicas share one storage
   backend, so replica application must be at-least-once idempotent on that

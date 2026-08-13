@@ -3,9 +3,9 @@
 ## Summary
 
 Add a dedicated, runtime-owned conversation read model —
-`sessions.turns.list` (stable tail pages), `sessions.turns.get` (one
-`(session, task)` terminal reconciliation read), and a bounded
-`sessions.turns.activity.list` subpage — so a Protocol consumer renders the
+`sessions.turns.list` (stable tail pages) and `sessions.turns.get` (one
+`(session, task)` terminal reconciliation read) — the two named public
+methods — so a Protocol consumer renders the
 current chat from one durable projection instead of joining task/result/event/
 App authority itself. Together with Phase 245's lifecycle read, a persisted
 session reopens its latest turns in exactly two reads, independent of total
@@ -58,8 +58,12 @@ history.
 
 ## Goals
 
-- Ship `sessions.turns.list`, `sessions.turns.get`, and the bounded
-  `sessions.turns.activity.list` subpage with the full contract below.
+- Ship `sessions.turns.list` and `sessions.turns.get` as the two named public
+  methods with the full contract below.
+- Bounded Activity rides inline covering at least Harbor's configured per-turn
+  tool-call budget; a separate named activity method is NOT part of this
+  phase — stated only as a conditional fallback if the Protocol response
+  ceiling forces the exact attachment contract.
 - Build one dedicated, runtime-owned conversation-turn projection derived from
   Harbor's task, result, event, and App-context authority, incrementally
   materialized with idempotent sequence checkpoints, restart-survivable on
@@ -157,11 +161,13 @@ history.
       availability/exactness. The Activity collection is required — counters
       alone cannot hydrate the existing Activity panel or explain parallel
       fan-out. The inline bound covers at least Harbor's configured per-turn
-      tool-call budget; when an operator raises that budget beyond the Protocol
-      response ceiling, the response returns the retained prefix plus an
-      explicit lower-bound state and a named, opaque-cursor
-      `sessions.turns.activity.list` read with the same identity, snapshot,
-      ordering, and no-arguments/no-results contract. Normal transcript render
+      tool-call budget. A separate named activity method is NOT required: it
+      is stated only as a conditional fallback — if the Protocol response
+      ceiling forces the exact attachment contract, the response returns the
+      retained prefix plus an explicit lower-bound state and a named,
+      opaque-cursor activity read (provisionally `sessions.turns.activity.list`)
+      with the same identity, snapshot, ordering, and no-arguments/no-results
+      contract. Normal transcript render
       does not fetch that subresource; opening Activity may. There is no
       anonymous subresource and no silent truncation.
 - [ ] Active intervention metadata needed to reopen a paused own-user turn is
@@ -258,9 +264,11 @@ history.
   remaining_older_count?, count_exact, live_resume_cursor,
   page_completeness, partial_reason?}` out.
 - `sessions.turns.get` — `{session_id, task_id}` in; the same turn shape out.
-- `sessions.turns.activity.list` — `{session_id, task_id, activity_cursor?,
-  limit}` in; an ordered, bounded Activity page out (identity, snapshot,
-  ordering, no-arguments/no-results).
+- Conditional fallback only (not a required method): if the Protocol response
+  ceiling forces the exact attachment contract, a named, opaque-cursor
+  activity read — `{session_id, task_id, activity_cursor?, limit}` in; an
+  ordered, bounded Activity page out (identity, snapshot, ordering,
+  no-arguments/no-results).
 - `ConversationTurn` — the consumer shape above (query, answer union, ordered
   reasoning, ordered Activity, compact totals, usage, intervention metadata,
   ordered App refs, per-component availability, projection version,
@@ -272,8 +280,10 @@ history.
 - **Unit:** turn shape builders and per-component availability; answer union
   (inline/ref/empty/evicted/unavailable — failed read never fabricates empty);
   cursor keyset/snapshot anchoring and tie-breaker; tail-page boundary
-  (append-while-paging: no skip/duplicate); activity subpage bound and
-  cardinality-cap/overflow-bucket totals; terminal-reason mapping; reasoning/
+  (append-while-paging: no skip/duplicate); inline Activity bound covering at
+  least the configured budget plus the conditional activity fallback when the
+  response ceiling forces it, and cardinality-cap/overflow-bucket totals;
+  terminal-reason mapping; reasoning/
   Activity ordering and shared sequence; App-ref replacement identity;
   intervention-tier gating; sealed-vs-mutable versioning; projection
   checkpoint idempotency; erasure fence.
@@ -290,7 +300,8 @@ history.
   projection conformance suite (indexed paging, checkpoint idempotency,
   erasure fence); Protocol integration across driver combinations owns
   authority and cross-principal assertions.
-- **Concurrency / leak:** N>=100 mixed-identity list/get/activity calls on one
+- **Concurrency / leak:** N>=100 mixed-identity list/get calls (plus the
+  conditional activity fallback when it ships) on one
   shared projection and handler set under `-race`, with cancellation barriers
   and a final goroutine baseline.
 - **Fuzz:** cursor decoding, turn decoding, and page-boundary inputs with
@@ -302,8 +313,9 @@ history.
 - When implemented, open a durable session's chat in two reads (lifecycle +
   turn page) and assert the newest 20 turns render without a per-turn
   `tasks.get` / `events.list`; assert paging older history has no skip/duplicate
-  while a new turn starts; assert the activity subpage returns ordered entries
-  with no arguments/results; assert cross-identity turns are typed not-found.
+  while a new turn starts; assert inline Activity returns ordered entries
+  with no arguments/results (and, if the conditional activity fallback ships,
+  assert it too); assert cross-identity turns are typed not-found.
 
 ## Coverage target
 
@@ -330,7 +342,8 @@ history.
   App-context) to have converged; the seal rule and the rebuilding state must
   be explicit so a partially-applied turn is never presented as complete.
 - The inline Activity bound rides the configured per-turn tool-call budget;
-  the overflow path (prefix + lower-bound state + named activity subpage)
+  the conditional overflow path (prefix + lower-bound state + named activity
+  read, only if the response ceiling forces the exact attachment contract)
   must be tested with a real over-budget turn.
 
 ## Glossary additions
