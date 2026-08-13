@@ -79,6 +79,33 @@ type runOutcome struct {
 	err error
 }
 
+// enqueueBatch appends the controls to the run's inbox ATOMICALLY —
+// one lock hold, one wake — so the RunLoop can never drain between
+// them. The batch-arbitration semantics under test (CANCEL wins a
+// drained batch that also carries RESUME / APPROVE / REJECT, in either
+// queue order) only hold when both controls land in the SAME drain;
+// two back-to-back Enqueues race the loop's drain of the first — a
+// drain that can terminalize the run and retire the inbox before the
+// second Enqueue lands, surfacing ErrInboxNotFound (the flake this
+// helper closes). Each event is validated and stamped exactly as
+// Enqueue does (via the same validateEvent / enqueueLocked split);
+// only the append + wake are batched.
+func enqueueBatch(t *testing.T, in *Inbox, evs ...ControlEvent) {
+	t.Helper()
+	for _, ev := range evs {
+		if err := in.validateEvent(ev); err != nil {
+			t.Fatalf("enqueueBatch: %v", err)
+		}
+	}
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	for _, ev := range evs {
+		if err := in.enqueueLocked(ev); err != nil {
+			t.Fatalf("enqueueBatch: %v", err)
+		}
+	}
+}
+
 // TestRun_TrancheExhaustion_ParksWithoutTerminalFailure asserts the
 // authoritative step-tranche counter parks the run after exactly
 // TrancheSteps planner steps — no terminal failure, no further planner
@@ -249,11 +276,17 @@ func TestRun_Tranche_CancelWithResumeApproveRejectBatch_TerminalizesInEitherOrde
 			if err != nil {
 				t.Fatalf("Lookup: %v", err)
 			}
-			for _, typ := range []ControlType{tc.first, tc.last} {
-				if err := in.Enqueue(ControlEvent{Type: typ, Identity: runA, CallerScope: ScopeOwnerUser, CallerTenant: runA.TenantID}); err != nil {
-					t.Fatalf("Enqueue(%s): %v", typ, err)
-				}
-			}
+			// Enqueue both controls ATOMICALLY (one lock hold, one
+			// wake): the batch-arbitration semantics under test only
+			// hold when both controls land in the SAME drain. Two
+			// back-to-back Enqueues race the loop's drain of the first
+			// — a drain that terminalizes the run and retires the
+			// inbox before the second Enqueue lands, surfacing
+			// ErrInboxNotFound (the CI flake pinned here).
+			enqueueBatch(t, in,
+				ControlEvent{Type: tc.first, Identity: runA, CallerScope: ScopeOwnerUser, CallerTenant: runA.TenantID},
+				ControlEvent{Type: tc.last, Identity: runA, CallerScope: ScopeOwnerUser, CallerTenant: runA.TenantID},
+			)
 			select {
 			case got := <-out:
 				if got.err != nil {
