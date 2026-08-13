@@ -28,6 +28,16 @@
   // affordance for it (D-311). The detail's Cost History tab (D-179) stays
   // the per-event breakdown.
   //
+  // Projection (D-424): the page explicitly requests `projection: 'full'` —
+  // its Events / Cost columns, the `cost_desc` sort, and the counter
+  // facets depend on the read-time counters. The Playground chat catalog
+  // (the session switcher) is the `lifecycle` consumer instead. A full
+  // row carries an explicit `counter_status` marker; a row whose counters
+  // are absent (`unavailable` — no Enricher wired on this runtime, or
+  // `not_requested` — a lifecycle row that must never appear here) renders
+  // its cost as a dash rather than a believable "$0.00": a zero counter
+  // never reads as a measured zero (D-424).
+  //
   // Svelte 5 runes (D-092); design tokens only; HarborClient +
   // connection.ts only (CONVENTIONS.md §6).
   import { goto } from '$app/navigation';
@@ -39,8 +49,13 @@
   import SessionFacetChips from '$lib/components/sessions/SessionFacetChips.svelte';
   import IdentityCell from '$lib/components/sessions/IdentityCell.svelte';
   import { formatCostCents, formatDurationNS, formatRelative, shortSessionID, statusKind } from '$lib/sessions/format.js';
+  import {
+    counterAvailability,
+    countersAreAbsent,
+    countersArePartial,
+    MAX_SESSION_TITLE_LEN
+  } from '$lib/sessions/types.js';
   import type { SessionFilter, SessionRow, SessionSort } from '$lib/sessions/types.js';
-  import { MAX_SESSION_TITLE_LEN } from '$lib/sessions/types.js';
   import type { TaskRow } from '$lib/protocol/tasks.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { operatorIdOf } from '$lib/db/schema.js';
@@ -131,7 +146,19 @@
     status = 'loading';
     loadError = null;
     try {
-      const resp = await sessionsClient.list({ filter: currentFilter(), sort, cursor, limit: pageSize });
+      // D-424 — the page renders counter columns (Events / Cost), offers
+      // the `cost_desc` sort, and feeds the counter-dependent facets, so it
+      // needs the FULL projection, stated explicitly. Omitted would default
+      // to full too, but the explicit marker documents the counter
+      // dependence (the chat catalog consumer requests `lifecycle` instead)
+      // and stays honest if the default ever changes.
+      const resp = await sessionsClient.list({
+        filter: currentFilter(),
+        sort,
+        cursor,
+        limit: pageSize,
+        projection: 'full'
+      });
       rows = resp.rows;
       truncated = resp.truncated;
       nextCursor = resp.next_cursor;
@@ -389,25 +416,46 @@
     // enrichment map only when the wire reports zero (an older runtime or a
     // not-yet-active session). A partial row is an HONEST LOWER BOUND — the
     // "≥" prefix says so rather than presenting a believable exact number
-    // (D-311).
+    // (D-311). The four-state marker drives the partial decision (D-424);
+    // an absent marker falls back to the legacy `counters_partial` flag.
+    const availability = counterAvailability(row);
     const wire = row.events_count;
     if (wire > 0) {
-      return row.counters_partial ? `≥${wire}` : String(wire);
+      return countersArePartial(availability) ? `≥${wire}` : String(wire);
     }
     const n = eventCounts.get(row.session_id);
     if (n === undefined) return '—';
-    return row.counters_partial ? `≥${n}` : String(n);
+    return countersArePartial(availability) ? `≥${n}` : String(n);
   }
 
   /**
    * Per-session cost, formatted with a "≥" prefix when the row's counters
    * are a partial lower bound (WARN-1 / D-311 honest-partial): a cost_desc
    * sort or cost-above filter over such a row is non-authoritative, so the
-   * figure is shown as "at least" rather than an exact amount.
+   * figure is shown as "at least" rather than an exact amount. A row whose
+   * counters are ABSENT (`unavailable` — no Enricher wired on this
+   * runtime, or `not_requested` — a lifecycle row that must never appear
+   * on this full-projection page) renders a dash: its zero cost means "not
+   * computed", never "measured as zero" (D-424).
    */
   function costLabel(row: SessionRow): string {
+    const availability = counterAvailability(row);
+    if (countersAreAbsent(availability)) return '—';
     const formatted = formatCostCents(row.total_cost_cents);
-    return row.counters_partial ? `≥${formatted}` : formatted;
+    return countersArePartial(availability) ? `≥${formatted}` : formatted;
+  }
+
+  /** The cost cell's hover title — names the honest-absence / lower-bound state. */
+  function costCellTitle(row: SessionRow): string {
+    const availability = counterAvailability(row);
+    if (countersAreAbsent(availability)) {
+      return availability === 'unavailable'
+        ? 'Counters unavailable on this runtime — no cost recorded'
+        : 'Counters not requested for this row';
+    }
+    return countersArePartial(availability)
+      ? 'Lower bound — the per-session scan was truncated; a cost sort/filter over this row is non-authoritative'
+      : '';
   }
 
   /** Active processing time (Σ run durations), formatted; "—" until enriched. */
@@ -631,8 +679,8 @@
             <td><IdentityCell identity={s.identity} /></td>
             <td>{formatRelative(s.started_at)}</td>
             <td>{formatRelative(s.last_activity_at)}</td>
-            <td class="numeric">{eventsLabel(s)}</td>
-            <td class="numeric" title={s.counters_partial ? 'Lower bound — the per-session scan was truncated; a cost sort/filter over this row is non-authoritative' : ''}>{costLabel(s)}</td>
+            <td class="numeric" data-testid="row-events">{eventsLabel(s)}</td>
+            <td class="numeric" data-testid="row-cost" title={costCellTitle(s)}>{costLabel(s)}</td>
             <td title="Active processing time — sum of run durations, not wall-clock">{durationLabel(s.session_id)}</td>
           {/snippet}
         </DataTable>

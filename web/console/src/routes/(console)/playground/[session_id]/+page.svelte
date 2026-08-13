@@ -45,6 +45,10 @@
   import TraceToggle, { type TraceNode } from '$lib/components/playground/TraceToggle.svelte';
   import { ChatPanel, type ChatMessage, type ChatProtocolClient } from '$lib/chat/index.js';
   import { MAX_SESSION_TITLE_LEN } from '$lib/sessions/types.js';
+  import {
+    chatCatalogListRequest,
+    SessionsProtocol
+  } from '$lib/protocol/sessions.js';
   import AppPanel from '$lib/components/playground/AppPanel.svelte';
   import AppTabStrip from '$lib/components/playground/AppTabStrip.svelte';
   import SplitPane from '$lib/components/playground/SplitPane.svelte';
@@ -1065,13 +1069,18 @@
   // Re-invoked on `session.title_changed` (subscribeEvents) so a rename
   // of the ACTIVE session — the only session whose events the page's
   // triple-scoped SSE subscription carries — refreshes the labels.
+  //
+  // D-424 — the chat catalog explicitly requests the `lifecycle`
+  // projection: the switcher needs only id / title / last activity, and
+  // the lifecycle row skips ALL counter enrichment (its counters read
+  // `not_requested`; a counter-dependent filter or sort is rejected
+  // `invalid_request` on a lifecycle request, so this request never asks
+  // for one).
   async function refreshSessionList(): Promise<void> {
     if (client === null) return;
     try {
-      const resp = await client.sessions.list<{
-        rows?: Array<{ session_id: string; last_activity_at?: string; title?: string }>;
-      }>({ filter: {}, limit: 50 });
-      sessionList = resp.rows ?? [];
+      const resp = await new SessionsProtocol(client).list(chatCatalogListRequest());
+      sessionList = resp.rows;
     } catch {
       sessionList = [];
     }
