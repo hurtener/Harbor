@@ -379,9 +379,9 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |233c | Bifrost reasoning fidelity (HA-51, D-402): raw observed reasoning is byte-exact and authoritative; details-only blocks coalesce by stable identity without whitespace rewriting, with live/planner/task/durable-history/Console parity | Bifrost LLM driver + planner/task/history + Console | §6.2, §6.5, §6.8, §6.13 | 33, 83e, 83m, 165 | 85–90% | Shipped (v1.26) |
 |234 | Agent-config retirement (D-399/D-400/D-401): terminal CAS tombstone, immutable history, exact pre-retirement hash and operation identity, deterministic paged owner-scoped cleanup after tombstone, four-slot session-write freeze, signed OAuth pair cleanup, and explicit/default new-run refusal; `agents.deregister` remains fleet-only | agentcfg + runtime projection/serve + Protocol/Console lockstep | §5.5, §6.11, §6.13, §6.16 | 232, 233, 233a, 233b | 85–90% | Shipped (v1.26) |
 |235 | Agent authority/lifecycle wave E2E + v1.26 checkpoint: real SQLite/Postgres composition of signed OAuth capability registration, session records, erasure, retirement, and byte-exact reasoning durability; two-runtime write races, N≥10 mixed-identity stress, read-only §17.5 audit and corrective gate before release | test/integration + scripts/smoke + release docs | §4, §5.5, §6.2, §6.4, §6.5, §6.8, §6.9, §6.11, §6.13, §6.16, §9 | 232, 233, 233a, 233b, 233c, 234 | inherited floors | Shipped (v1.26) |
-|236 | Typed MCP errors (HA-54) | tools/mcp + tools/policy | §6.4, §6.5, §6.13 | 26b, 28 | measured floors | Planned |
-|237 | Agent-owned skills and governed authoring (HA-55) | skills + agentcfg + serve | §6.7, §6.16, §6.11, §5.2 | 201, 221, 233, 233a | measured floors | Planned |
-|238 | App-only callback catalog (HA-56) | tools/mcp + mcpconsole + protocol | §6.4, §7.3, §5.2, §7 | 207, 204, 109k, 109l | measured floors | Planned |
+|236 | Typed MCP errors (HA-54) | tools/mcp + tools/policy | §6.4, §6.5, §6.13 | 26b, 28 | measured floors | Shipped (v1.27) |
+|237 | Agent-owned skills and governed authoring (HA-55) | skills + agentcfg + serve | §6.7, §6.16, §6.11, §5.2 | 201, 221, 233, 233a | measured floors | Shipped (v1.27) |
+|238 | App-only callback catalog (HA-56) | tools/mcp + mcpconsole + protocol | §6.4, §7.3, §5.2, §7 | 207, 204, 109k, 109l | measured floors | Shipped (v1.27) |
 |239 | Same-run step-tranche resume (HA-57) | runtime + tasks + protocol | §3.3, §6.8, §6.11, §7 | 176, 193, 233 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |240 | Governed virtual child profiles (HA-58) | runtime + agentcfg + protocol | §5.5, §6.16, §7 | 237, 239 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |241 | Virtual-child artifact/output forwarding (HA-59) | artifacts + tasks + runtime + protocol | §6.8, §6.10, §6.11, §7 | 17, 146, 239, 240 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
@@ -517,7 +517,7 @@ real two-client race under `-race`.
   consumer-specific exception. §17.8 fixtures derive from the real spec.
 - **Ordering:** 236 gates 239 (its classification-observability consumer).
   Independent of 237/238/240/241/242.
-- **Decision:** D-410. **Status:** Planned.
+- **Decision:** D-410. **Status:** Shipped (v1.27).
 
 ### Phase 237 — Agent-owned skills and governed authoring (HA-55)
 
@@ -541,7 +541,7 @@ real two-client race under `-race`.
   `skill_search`, `skill_get`, and `skill_list`; changes apply next run only.
 - **Ordering:** 237 gates 240 (the composition-preview verification surface).
   Independent of 236/238/239/242.
-- **Decision:** D-411. **Status:** Planned.
+- **Decision:** D-411. **Status:** Shipped (v1.27).
 
 ### Phase 238 — App-only callback catalog (HA-56)
 
@@ -565,7 +565,7 @@ real two-client race under `-race`.
   ordinary-caller exposure, no provider-specific exceptions.
 - **Ordering:** 238 is independent of 236/237/239/240/241/242 (its App-host
   fixtures compose with 242's durable task-progress projection at wave E2E).
-- **Decision:** D-412. **Status:** Planned.
+- **Decision:** D-412. **Status:** Shipped (v1.27).
 
 ### Phase 239 — Same-run step-tranche resume (HA-57)
 
