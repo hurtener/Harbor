@@ -69,7 +69,7 @@ Declared in `internal/protocol/types`.
 | `agent_id` | `string` |  |
 | `connection` | `types.AgentConfigMCPConnectionDescriptor` — see [`AgentConfigMCPConnectionDescriptor`](./types.md#agentconfigmcpconnectiondescriptor) |  |
 | `headers` | `map[string]string` | optional (`omitempty`) |
-| `expected_content_hash` | `string` | optional (`omitempty`) |
+| `expected_content_hash` | `string` |  |
 
 ## AgentConfigAddMCPConnectionResponse
 
@@ -380,144 +380,6 @@ Declared in `internal/protocol/types`.
 | `added` | `[]string` | optional (`omitempty`) |
 | `removed` | `[]string` | optional (`omitempty`) |
 
-## AgentConfigAgentPackItem
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `name` | `string` |  |
-| `title` | `string` | optional (`omitempty`) |
-| `description` | `string` | optional (`omitempty`) |
-| `trigger` | `string` |  |
-| `task_type` | `string` | optional (`omitempty`) |
-| `tags` | `[]string` | optional (`omitempty`) |
-| `steps` | `[]string` |  |
-| `preconditions` | `[]string` | optional (`omitempty`) |
-| `failure_modes` | `[]string` | optional (`omitempty`) |
-| `required_tools` | `[]string` | optional (`omitempty`) |
-| `required_ns` | `[]string` | optional (`omitempty`) |
-| `required_tags` | `[]string` | optional (`omitempty`) |
-| `origin` | `string` | optional (`omitempty`) |
-| `scope` | `string` | optional (`omitempty`) |
-| `origin_ref` | `string` | optional (`omitempty`) |
-| `extra` | `map[string]string` | optional (`omitempty`) |
-
-## AgentConfigAgentPacksCommitRequest
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
-| `agent_id` | `string` |  |
-| `scope` | `string` | optional (`omitempty`) |
-| `skill` | `types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) |  |
-| `reviewed_hash` | `string` |  |
-| `provenance` | `string` |  |
-| `proposal_id` | `string` |  |
-| `expected_content_hash` | `string` |  |
-
-## AgentConfigAgentPacksCommitResponse
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
-| `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
-| `hash` | `string` |  |
-| `protocol_version` | `string` |  |
-
-## AgentConfigAgentPacksListRequest
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
-| `agent_id` | `string` |  |
-
-## AgentConfigAgentPacksListResponse
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `items` | `[]types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) | optional (`omitempty`) |
-| `protocol_version` | `string` |  |
-
-## AgentConfigAgentPacksProposeRequest
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
-| `agent_id` | `string` |  |
-| `scope` | `string` | optional (`omitempty`) |
-| `intent` | `string` |  |
-| `expected_content_hash` | `string` |  |
-| `dry_run` | `bool` | optional (`omitempty`) |
-
-## AgentConfigAgentPacksProposeResponse
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `skill` | `types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) |  |
-| `hash` | `string` |  |
-| `warnings` | `[]string` | optional (`omitempty`) |
-| `provenance` | `string` |  |
-| `proposal_id` | `string` |  |
-| `expected_content_hash` | `string` |  |
-| `dry_run` | `bool` |  |
-| `protocol_version` | `string` |  |
-
-## AgentConfigAgentPacksRemoveRequest
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
-| `agent_id` | `string` |  |
-| `name` | `string` |  |
-| `expected_content_hash` | `string` | optional (`omitempty`) |
-
-## AgentConfigAgentPacksRemoveResponse
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
-| `protocol_version` | `string` |  |
-
-## AgentConfigAgentPacksUpsertRequest
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
-| `agent_id` | `string` |  |
-| `scope` | `string` | optional (`omitempty`) |
-| `skill` | `types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) |  |
-| `expected_content_hash` | `string` | optional (`omitempty`) |
-
-## AgentConfigAgentPacksUpsertResponse
-
-Declared in `internal/protocol/types`.
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
-| `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
-| `hash` | `string` |  |
-| `protocol_version` | `string` |  |
-
 ## AgentConfigPayload
 
 Declared in `internal/protocol/types`.
@@ -616,7 +478,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `provider_name` | `string` | optional (`omitempty`) |
-| `expected_content_hash` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigRemoveOAuthMCPCapabilityResponse
 
@@ -661,7 +523,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `operation_id` | `string` |  |
-| `expected_content_hash` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigRetireResponse
 
@@ -981,7 +843,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `payload` | `types.AgentConfigPayload` — see [`AgentConfigPayload`](./types.md#agentconfigpayload) |  |
-| `expected_content_hash` | `string` | optional (`omitempty`) |
+| `expected_content_hash` | `string` |  |
 
 ## AgentConfigSetRevisionResponse
 
