@@ -386,8 +386,8 @@ func TestE2E_Phase53_NineEventMatrix(t *testing.T) {
 		runWithPreEnqueue(t, deps, q, seen, func() {
 			enqueue(t, deps.registry, q, steering.ControlCancel, steering.ScopeOwnerUser, map[string]any{"hard": false})
 		})
-		if seen.stepCount() != 0 {
-			t.Errorf("planner steps = %d, want 0 (soft CANCEL is terminal)", seen.stepCount())
+		if seen.stepCount() != 1 {
+			t.Errorf("planner steps = %d, want 1 (soft CANCEL is terminal after the initial turn)", seen.stepCount())
 		}
 	})
 
@@ -410,8 +410,8 @@ func TestE2E_Phase53_NineEventMatrix(t *testing.T) {
 		runWithPreEnqueue(t, deps, q, seen, func() {
 			enqueue(t, deps.registry, q, steering.ControlCancel, steering.ScopeOwnerUser, map[string]any{"hard": true})
 		})
-		if seen.stepCount() != 0 {
-			t.Errorf("planner steps = %d, want 0 (hard CANCEL is terminal)", seen.stepCount())
+		if seen.stepCount() != 1 {
+			t.Errorf("planner steps = %d, want 1 (hard CANCEL is terminal after the initial turn)", seen.stepCount())
 		}
 		hookMu.Lock()
 		defer hookMu.Unlock()
@@ -599,7 +599,7 @@ func TestE2E_Phase53_NoEventAppliedMidToolCall(t *testing.T) {
 		t.Fatalf("RunLoop.Run: %v", err)
 	}
 	if fin.Reason != planner.FinishCancelled {
-		t.Fatalf("Finish.Reason = %q, want cancelled (the mid-step CANCEL must terminate the run on the NEXT step)", fin.Reason)
+		t.Fatalf("Finish.Reason = %q, want cancelled (the mid-step CANCEL terminalizes at the next boundary without another planner turn)", fin.Reason)
 	}
 	// The no-mid-call invariant: step 0 saw an EMPTY Control (the CANCEL
 	// was enqueued AFTER step 0's Next was already running), and the
