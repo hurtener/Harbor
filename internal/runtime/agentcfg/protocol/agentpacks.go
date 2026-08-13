@@ -705,7 +705,7 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
 	if committing {
-		if rev.RevisionID != targetRevisionID || rev.ContentHash != targetContentHash {
+		if rev.RevisionID != targetRevisionID || rev.ContentHash != proposal.TargetContentHash {
 			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: resumed publication target changed", ErrAgentPackProposalInvalid)
 		}
 	}
