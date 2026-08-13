@@ -572,7 +572,7 @@ real two-client race under `-race`.
 - **Subsystem:** tool-failure events (`tool.failed`,
   `tool.policy_exhausted`), policy classifier, and Protocol/Console lockstep.
 - **RFC:** §6.4, §6.13, §6.15, §5.2. **Deps:** 236.
- - **What it delivers:** D-413 — a durable checkpoint at each same-run step
+- **What it delivers:** D-413 — a durable checkpoint at each same-run step
    tranche and one continuation path for pause, cancellation, and crash
    recovery. Resume verifies `(tenant,user,session,run)`, continues from the
    last committed boundary, and never replays completed steps or creates a
@@ -586,7 +586,7 @@ real two-client race under `-race`.
 - **Subsystem:** skills composition resolver, agent-config projection, and
   Protocol surface.
 - **RFC:** §6.7, §6.16, §5.2, §7. **Deps:** 237.
- - **What it delivers:** D-414 — a virtual child profile derived from one
+- **What it delivers:** D-414 — a virtual child profile derived from one
    governed parent profile. The child is read-only, identity-addressed, and
    resolved with bounded overrides; it cannot widen capabilities, mutate the
    parent, or become a new isolation principal. Run-start and inspection use
@@ -599,7 +599,7 @@ real two-client race under `-race`.
 
 - **Subsystem:** `harbor` CLI, Console skill/agent view, integration tests.
 - **RFC:** §6.7, §6.16, §7, §8. **Deps:** 240.
- - **What it delivers:** D-415 — one artifact/output forwarding path across
+- **What it delivers:** D-415 — one artifact/output forwarding path across
    child-profile and same-run task boundaries. Authorized consumers receive a
    declared reference with provenance and bounded summaries; unknown,
    expired, erased, cross-tenant, and unauthorized references fail typed
@@ -612,7 +612,7 @@ real two-client race under `-race`.
 - **Subsystem:** `internal/mcpconsole` tool-context records, StateStore
   drivers, Protocol error surface, and Console placeholder.
 - **RFC:** §6.10, §6.11, §7.3, §5.2. **Deps:** 204, 207, 233a.
- - **What it delivers:** D-416 — a typed task-progress projection covering
+- **What it delivers:** D-416 — a typed task-progress projection covering
    active and completed tranches, resumability, terminal status, and forwarded
    artifact references. It is identity-scoped, bounded, durable across the
    owning session lifecycle, and removed by erasure; it never becomes a second
