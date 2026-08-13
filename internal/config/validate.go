@@ -1364,7 +1364,7 @@ func normalizeBootAgentPackInclude(name string) string {
 //
 // The helper is pure: no filesystem reads, no lifecycle calls, no state
 // writes, and no mutation of the receiver — safe to call concurrently on
-// a shared immutable *Config (D-025).
+// a shared immutable *Config.
 func (c *Config) ValidateBootAgentPacksForAgent(resolvedAgentID string) error {
 	return ValidateBootAgentPacks(c.Skills.BootAgentPacks, resolvedAgentID)
 }

@@ -753,8 +753,8 @@ type SkillsConfig struct {
 // protocol-managed mechanism — this block is the boot-time file source
 // the resolver consumes, addressed by (tenant_id, agent_id) at
 // configuration-selection time. agent_id never becomes an isolation
-// principal (D-059): the run still starts from the caller's verified
-// identity triple and its signed reach to the effective agent.
+// principal: the run still starts from the caller's verified identity
+// triple and its signed reach to the effective agent.
 //
 // Layout in YAML:
 //
