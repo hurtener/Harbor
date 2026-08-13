@@ -375,11 +375,32 @@ func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContex
 		return e.pauseTask(ctx, rc, d)
 	case planner.ResumeTask:
 		return e.resumeTask(ctx, rc, d)
+	case planner.TaskProgress:
+		return e.taskProgress(ctx, rc, d)
 	case planner.Batch:
 		return e.batch(ctx, rc, d)
 	default:
 		return nil, nil, fmt.Errorf("%w: %T", steering.ErrDecisionShapeUnsupported, decision)
 	}
+}
+
+func (e *toolExecutor) taskProgress(ctx context.Context, rc planner.RunContext, d planner.TaskProgress) (any, any, error) {
+	rr, ok := e.tasks.(tasks.ProgressReporterRegistry)
+	if !ok {
+		return nil, nil, fmt.Errorf("%w: TaskProgress reporter unavailable", steering.ErrDecisionShapeUnsupported)
+	}
+	reporter, err := rr.ProgressReporter(ctx, tasks.TaskID(rc.Quadruple.RunID))
+	if err != nil {
+		return nil, nil, fmt.Errorf("TaskProgress: bind reporter: %w", err)
+	}
+	res, err := reporter.ReportProgress(ctx, tasks.ReportProgressRequest{
+		Fraction: d.Fraction, Phase: d.Phase, Message: d.Message, Tags: d.Tags,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("TaskProgress: report: %w", err)
+	}
+	obs := map[string]any{"recorded": res.Recorded, "emitted": res.Emitted}
+	return obs, obs, nil
 }
 
 // withArtifactResolver seats the resolver an artifact-reference tool
@@ -697,6 +718,7 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 			"%w: Batch requires at least 2 combined branches, got %d tools + %d spawns",
 			planner.ErrInvalidDecision, len(d.Tools), len(d.Spawns)+len(d.Progress))
 	}
+	var progressObs []planner.BatchProgressObservation
 	if len(d.Progress) > 0 {
 		rr, ok := e.tasks.(tasks.ProgressReporterRegistry)
 		if !ok {
@@ -706,10 +728,15 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 		if err != nil {
 			return nil, nil, fmt.Errorf("dispatch task progress: %w", err)
 		}
-		for _, p := range d.Progress {
-			if _, err := reporter.ReportProgress(ctx, tasks.ReportProgressRequest{Fraction: p.Fraction, Phase: p.Phase, Message: p.Message, Tags: p.Tags}); err != nil {
-				return nil, nil, fmt.Errorf("dispatch task progress: %w", err)
+		for i, p := range d.Progress {
+			o := planner.BatchProgressObservation{CallID: p.CallID, Index: i}
+			res, err := reporter.ReportProgress(ctx, tasks.ReportProgressRequest{Fraction: p.Fraction, Phase: p.Phase, Message: p.Message, Tags: p.Tags})
+			if err != nil {
+				o.Error = err.Error()
+			} else {
+				o.Recorded, o.Emitted = res.Recorded, res.Emitted
 			}
+			progressObs = append(progressObs, o)
 		}
 	}
 
@@ -780,6 +807,7 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 	}
 
 	var raw, llm planner.BatchObservation
+	raw.Progress, llm.Progress = progressObs, progressObs
 
 	// === Tools half — dispatched BEFORE any spawn-side registry side
 	// effect. A tool-half whole-call error (a malformed Join, a pause

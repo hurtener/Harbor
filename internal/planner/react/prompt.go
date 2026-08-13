@@ -990,6 +990,29 @@ func buildUserContent(rc planner.RunContext) string {
 func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayMode, stepIdx int) (llm.ChatMessage, *llm.ChatMessage, bool) {
 	call, ok := step.Action.(planner.CallTool)
 	if !ok {
+		if progress, progressOK := step.Action.(planner.TaskProgress); progressOK {
+			callID := progress.CallID
+			if callID == "" {
+				callID = fmt.Sprintf("react.callid.%d", stepIdx)
+			}
+			args, _ := json.Marshal(struct {
+				Fraction *float64 `json:"fraction,omitempty"`
+				Phase    string   `json:"phase,omitempty"`
+				Message  string   `json:"message,omitempty"`
+				Tags     []string `json:"tags,omitempty"`
+			}{progress.Fraction, progress.Phase, progress.Message, progress.Tags})
+			asst := llm.ChatMessage{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCallStructured{{ID: callID, Name: TaskProgressToolName, Args: args}}}
+			if step.AssistantPreamble != "" {
+				asst.Content = textContent(step.AssistantPreamble)
+			}
+			observation := renderNativeObservation(step)
+			if observation == "" {
+				observation = "(tool returned no observation)"
+			}
+			id := callID
+			tool := &llm.ChatMessage{Role: llm.RoleTool, Content: textContent(observation), ToolCallID: &id}
+			return asst, tool, true
+		}
 		return llm.ChatMessage{}, nil, false
 	}
 	callID := call.CallID
@@ -1388,18 +1411,22 @@ func renderNativeBatchStep(step planner.Step, call planner.Batch, replayMode pla
 	// Build the combined tool_calls (tools first, then spawns) and the
 	// matching RoleTool bodies in lockstep, so each assistant tool_call has
 	// exactly one answer at the same position.
-	total := len(call.Tools) + len(call.Spawns)
+	total := len(call.Tools) + len(call.Spawns) + len(call.Progress)
 	toolCalls := make([]llm.ToolCallStructured, 0, total)
 	bodies := make([]string, 0, total)
 
 	toolByIndex := map[int]planner.ParallelBranchObservation{}
 	spawnByIndex := map[int]planner.BatchSpawnObservation{}
+	progressByIndex := map[int]planner.BatchProgressObservation{}
 	if hasObs {
 		for _, b := range obs.Tools {
 			toolByIndex[b.Index] = b
 		}
 		for _, s := range obs.Spawns {
 			spawnByIndex[s.Index] = s
+		}
+		for _, p := range obs.Progress {
+			progressByIndex[p.Index] = p
 		}
 	}
 
@@ -1432,6 +1459,28 @@ func renderNativeBatchStep(step planner.Step, call planner.Batch, replayMode pla
 		body := ""
 		if o, ok := spawnByIndex[si]; ok {
 			body = renderBatchSpawnBody(o)
+		}
+		bodies = append(bodies, body)
+	}
+	for pi, progress := range call.Progress {
+		cid := progress.CallID
+		if cid == "" {
+			cid = fmt.Sprintf("react.callid.%d.p%d", stepIdx, pi)
+		}
+		args, _ := json.Marshal(struct {
+			Fraction *float64 `json:"fraction,omitempty"`
+			Phase    string   `json:"phase,omitempty"`
+			Message  string   `json:"message,omitempty"`
+			Tags     []string `json:"tags,omitempty"`
+		}{progress.Fraction, progress.Phase, progress.Message, progress.Tags})
+		toolCalls = append(toolCalls, llm.ToolCallStructured{ID: cid, Name: TaskProgressToolName, Args: args})
+		body := ""
+		if o, ok := progressByIndex[pi]; ok {
+			if o.Error != "" {
+				body = "Progress error: " + oneLine(o.Error)
+			} else {
+				body = fmt.Sprintf(`{"recorded":%t,"emitted":%t}`, o.Recorded, o.Emitted)
+			}
 		}
 		bodies = append(bodies, body)
 	}

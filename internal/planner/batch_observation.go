@@ -33,6 +33,18 @@ type BatchObservation struct {
 	// Spawns is the per-spawn-branch REGISTRATION outcome slice,
 	// index-aligned to [Batch.Spawns].
 	Spawns []BatchSpawnObservation `json:"spawns,omitempty"`
+
+	// Progress is keyed by the native progress call's CallID and index.
+	Progress []BatchProgressObservation `json:"progress,omitempty"`
+}
+
+// BatchProgressObservation is the result of one native TaskProgress call.
+type BatchProgressObservation struct {
+	CallID   string `json:"call_id,omitempty"`
+	Index    int    `json:"index"`
+	Recorded bool   `json:"recorded"`
+	Emitted  bool   `json:"emitted"`
+	Error    string `json:"error,omitempty"`
 }
 
 // BatchSpawnObservation is one [Batch.Spawns] entry's REGISTRATION

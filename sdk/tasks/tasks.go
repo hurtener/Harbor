@@ -42,6 +42,11 @@ type (
 	ProgressReportResult = internal.ProgressReportResult
 	// ProgressPolicy bounds the ReportProgress coalescing/rate policy.
 	ProgressPolicy = internal.ProgressPolicy
+	// ProgressReporter is permanently bound to one task; it has no target
+	// argument and is the normal SDK progress surface.
+	ProgressReporter = internal.ProgressReporter
+	// ProgressReporterRegistry issues reporters bound to a task identity.
+	ProgressReporterRegistry = internal.ProgressReporterRegistry
 	// TaskFilter scopes a List call.
 	TaskFilter = internal.TaskFilter
 	// TaskSummary is the compact list projection.

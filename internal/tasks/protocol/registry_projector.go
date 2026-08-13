@@ -342,9 +342,7 @@ func projectRow(t *tasks.Task) prototypes.TaskRow {
 		// bound the runtime's configured default — "defaulted", not
 		// "unknown", since every row without it bound the default by
 		// construction.
-		AgentID:      t.AgentID,
-		VirtualKey:   string(t.ID),
-		VirtualLabel: t.Description,
+		AgentID: t.AgentID,
 	}
 	if t.ParentTaskID != nil {
 		row.ParentTaskID = string(*t.ParentTaskID)
