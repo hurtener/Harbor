@@ -98,12 +98,12 @@ func (*runSnapshotReader) Search(context.Context, identity.Quadruple, string, in
 	return nil, errors.New("run snapshot must use its frozen candidate searcher")
 }
 
-func (*runSnapshotReader) GetScopeAgent(context.Context, identity.Quadruple, string, string, skills.Scope) (skills.Skill, error) {
-	return skills.Skill{}, skills.ErrSkillNotFound
+func (r *runSnapshotReader) GetScopeAgent(ctx context.Context, id identity.Quadruple, _ string, name string, scope skills.Scope) (skills.Skill, error) {
+	return r.GetScope(ctx, id, name, scope)
 }
 
-func (*runSnapshotReader) SearchAgent(context.Context, identity.Quadruple, string, string, int) ([]skills.RankedSkill, error) {
-	return nil, errors.New("run snapshot must use its frozen candidate searcher")
+func (r *runSnapshotReader) SearchAgent(ctx context.Context, id identity.Quadruple, _ string, query string, limit int) ([]skills.RankedSkill, error) {
+	return r.Search(ctx, id, query, limit)
 }
 
 func (*runSnapshotReader) SearchSnapshot(ctx context.Context, id identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
