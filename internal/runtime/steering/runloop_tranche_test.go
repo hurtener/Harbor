@@ -49,7 +49,7 @@ func waitForPause(t *testing.T, coord *stubCoordinator, want int) {
 // lastTrancheRequest decodes the stub's most recent PauseRequest and
 // asserts it is the step-tranche park shape: constraints_conflict with
 // the typed TrancheExceededPayload and the run's live trajectory.
-func lastTrancheRequest(t *testing.T, coord *stubCoordinator, wantMax, wantSteps int) {
+func lastTrancheRequest(t *testing.T, coord *stubCoordinator, wantMax, wantObserved, wantTrajectory int) {
 	t.Helper()
 	coord.mu.Lock()
 	req := coord.lastRequest
@@ -61,14 +61,14 @@ func lastTrancheRequest(t *testing.T, coord *stubCoordinator, wantMax, wantSteps
 	if !ok {
 		t.Fatalf("tranche park Payload %v is not a TrancheExceededPayload", req.Payload)
 	}
-	if payload.Cause != pauseresume.TrancheCauseMaxStepsExceeded || payload.MaxSteps != wantMax || payload.StepsObserved != wantSteps {
-		t.Errorf("tranche park payload = %+v, want {cause=max_steps_exceeded max_steps=%d steps_observed=%d}", payload, wantMax, wantSteps)
+	if payload.Cause != pauseresume.TrancheCauseMaxStepsExceeded || payload.MaxSteps != wantMax || payload.StepsObserved != wantObserved {
+		t.Errorf("tranche park payload = %+v, want {cause=max_steps_exceeded max_steps=%d steps_observed=%d}", payload, wantMax, wantObserved)
 	}
 	if req.Trajectory == nil {
 		t.Fatal("tranche park did not checkpoint the run's trajectory")
 	}
-	if got := len(req.Trajectory.Steps); got != wantSteps {
-		t.Errorf("checkpointed trajectory steps = %d, want %d (cumulative, one run)", got, wantSteps)
+	if got := len(req.Trajectory.Steps); got != wantTrajectory {
+		t.Errorf("checkpointed trajectory steps = %d, want %d (cumulative, one run)", got, wantTrajectory)
 	}
 }
 
@@ -109,7 +109,7 @@ func TestRun_TrancheExhaustion_ParksWithoutTerminalFailure(t *testing.T) {
 		t.Fatalf("run terminated while parked: fin=%+v err=%v (a tranche park must not be terminal)", out.fin, out.err)
 	case <-time.After(50 * time.Millisecond):
 	}
-	lastTrancheRequest(t, coord, 2, 2)
+	lastTrancheRequest(t, coord, 2, 2, 2)
 
 	// An authorised RESUME continues the SAME run to its terminal
 	// Finish — no new task, no second park (the planner finishes before
@@ -297,7 +297,7 @@ func TestRun_TrancheResume_GrantsFreshTranche_PreservesOneRun(t *testing.T) {
 
 	// Cycle 1: park after the first tranche (2 steps, 2 trajectory steps).
 	waitForPause(t, coord, 1)
-	lastTrancheRequest(t, coord, 2, 2)
+	lastTrancheRequest(t, coord, 2, 2, 2)
 	if steps := p.stepCount(); steps != 2 {
 		t.Fatalf("cycle-1 planner steps = %d, want 2", steps)
 	}
@@ -318,7 +318,7 @@ func TestRun_TrancheResume_GrantsFreshTranche_PreservesOneRun(t *testing.T) {
 	// Cycle 2: a fresh tranche grants two MORE steps, then parks again.
 	// The trajectory is CUMULATIVE (4 steps) — one run, never reset.
 	waitForPause(t, coord, 2)
-	lastTrancheRequest(t, coord, 2, 2)
+	lastTrancheRequest(t, coord, 2, 2, 4)
 	if steps := p.stepCount(); steps != 4 {
 		t.Fatalf("cycle-2 planner steps = %d, want 4 (2 per tranche × 2 cycles)", steps)
 	}
@@ -388,7 +388,7 @@ func TestRun_TranchePlannerPause_DoesNotResetTranche(t *testing.T) {
 	if steps := p.stepCount(); steps != 3 {
 		t.Fatalf("planner steps at the tranche park = %d, want 3 (2 before the planner pause + 1 after — the planner pause did NOT reset the tranche)", steps)
 	}
-	lastTrancheRequest(t, coord, 3, 3)
+	lastTrancheRequest(t, coord, 3, 3, 3)
 
 	if err := in.Enqueue(ControlEvent{
 		Type:         ControlResume,

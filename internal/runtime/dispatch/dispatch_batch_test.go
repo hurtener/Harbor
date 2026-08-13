@@ -581,6 +581,10 @@ func TestExecutor_Batch_OrdinaryArtifactsPreserveOrderAndPairing(t *testing.T) {
 	reg := &countingRegistry{TaskRegistry: mkSpawnAwaitTestTaskRegistry(t, bus)}
 	exec := NewToolExecutor(tools.NewCatalog(), store, reg, WithMaxBatchSpawns(5))
 	q := dispatchTestQuad("r-artifact-batch")
+	idCtx, err := identity.With(t.Context(), q.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rc := planner.RunContext{Quadruple: q, DispositionPolicy: planner.DispositionPolicy{ByMIME: map[string]planner.AttachmentDisposition{"image/*": planner.DispositionRef}}}
 	d := planner.Batch{Spawns: []planner.SpawnTask{
 		{CallID: "first", Spec: planner.SpawnSpec{Query: "first", InputArtifactIDs: []string{refs[0].ID}, InputArtifactDispositions: map[string]string{refs[0].ID: "inline"}}},
@@ -595,7 +599,7 @@ func TestExecutor_Batch_OrdinaryArtifactsPreserveOrderAndPairing(t *testing.T) {
 		t.Fatalf("spawn order = %+v", raw.Spawns)
 	}
 	for i, want := range []struct{ id, disposition string }{{refs[0].ID, "inline"}, {refs[1].ID, "ref"}} {
-		task, err := reg.Get(dispatchTestCtx(t, q), tasks.TaskID(raw.Spawns[i].TaskID))
+		task, err := reg.Get(idCtx, tasks.TaskID(raw.Spawns[i].TaskID))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -619,11 +623,13 @@ func TestExecutor_SpawnTask_VirtualProfileOwnsArtifactDisposition(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := virtualagent.WithFrozenMap(dispatchTestCtx(t, dispatchTestQuad("r-virtual")), frozen)
 	q := dispatchTestQuad("r-virtual")
-	if _, err := reg.Spawn(dispatchTestCtx(t, q), tasks.SpawnRequest{Identity: q, Query: "parent"}); err != nil {
+	parent, err := reg.Spawn(dispatchTestCtx(t, q), tasks.SpawnRequest{Identity: q, Kind: tasks.KindForeground, Query: "parent"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	q.RunID = string(parent.ID)
+	ctx := virtualagent.WithFrozenMap(dispatchTestCtx(t, q), frozen)
 	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
 	raw, _, err := exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q, DispositionPolicy: planner.DispositionPolicy{Default: planner.DispositionInline}}, planner.SpawnTask{Spec: planner.SpawnSpec{Query: "virtual", VirtualAgent: "reviewer", InputArtifactIDs: []string{ref.ID}, InputArtifactDispositions: map[string]string{ref.ID: "inline"}}})
 	if err != nil {
