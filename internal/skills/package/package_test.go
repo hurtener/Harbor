@@ -187,6 +187,164 @@ func TestSupportFileValidate_DataChecks(t *testing.T) {
 	}
 }
 
+// TestSupportFileValidate_MaterializedEmptyBytes pins the P3 closure:
+// a materialized empty `[]byte{}` is NOT the manifest-only view. A
+// nil `Data` is manifest-only (digest + size accepted unverified);
+// a non-nil empty slice MUST be verified — size, digest, and MIME
+// content — so a false digest on empty bytes can no longer bypass
+// verification (the previous `len(f.Data) > 0` guard treated
+// `[]byte{}` as manifest-only).
+func TestSupportFileValidate_MaterializedEmptyBytes(t *testing.T) {
+	emptyDigest := sha256Hex(nil) // sha256 of zero bytes: e3b0c442...
+	materialized := skillpkg.SupportFile{
+		Path:   "empty.txt",
+		Mime:   "text/plain; charset=utf-8",
+		Size:   0,
+		Digest: emptyDigest,
+		Data:   []byte{},
+	}
+	// The size and digest of the materialized empty bytes verify, then
+	// the MIME content gate rejects empty text (ambiguous data) — the
+	// verification chain RUNS, it is not skipped.
+	if err := materialized.Validate(); !errors.Is(err, skillpkg.ErrMimeContentMismatch) {
+		t.Fatalf("materialized empty text: err=%v, want ErrMimeContentMismatch (verification must run)", err)
+	}
+
+	// A false digest on materialized empty bytes is now caught (the
+	// bypass: `[]byte{}` + Size 0 + false digest used to pass because
+	// len(Data) == 0 skipped every check).
+	falseDigest := materialized
+	falseDigest.Digest = strings.Repeat("0", 64)
+	if err := falseDigest.Validate(); !errors.Is(err, skillpkg.ErrSupportDigestMismatch) {
+		t.Fatalf("materialized empty with false digest: err=%v, want ErrSupportDigestMismatch", err)
+	}
+
+	// A size lie on materialized empty bytes is caught too.
+	liesSize := materialized
+	liesSize.Size = 1
+	if err := liesSize.Validate(); !errors.Is(err, skillpkg.ErrSupportSizeMismatch) {
+		t.Fatalf("materialized empty with lying size: err=%v, want ErrSupportSizeMismatch", err)
+	}
+
+	// Nil Data is still the manifest-only view: the same digest + size
+	// pass without byte verification.
+	manifestOnly := materialized
+	manifestOnly.Data = nil
+	if err := manifestOnly.Validate(); err != nil {
+		t.Fatalf("manifest-only empty support file rejected: %v", err)
+	}
+}
+
+// TestPackageValidate_NameSkillAgreement pins the dual-name closure:
+// the package envelope name must equal the canonical form of the
+// carried skill name. Two disagreeing names would let the same
+// reviewed hash present different names to different consumers.
+func TestPackageValidate_NameSkillAgreement(t *testing.T) {
+	p := testPackage()
+	if err := p.Validate(); err != nil {
+		t.Fatalf("valid package rejected: %v", err)
+	}
+	// Case / whitespace variants of the skill name still agree with
+	// the canonical package name.
+	variants := []struct {
+		name      string
+		skillName string
+	}{
+		{"case variant", "Demo-Skill"},
+		{"whitespace variant", "  demo-skill  "},
+	}
+	for _, v := range variants {
+		t.Run(v.name, func(t *testing.T) {
+			q := p
+			q.Skill.Name = v.skillName
+			if err := q.Validate(); err != nil {
+				t.Fatalf("package with skill name %q rejected: %v", v.skillName, err)
+			}
+		})
+	}
+	// A genuinely different skill name disagrees with the package name.
+	mismatch := p
+	mismatch.Skill.Name = "other-skill"
+	if err := mismatch.Validate(); !errors.Is(err, skillpkg.ErrInvalidPackage) {
+		t.Fatalf("mismatched skill name: err=%v, want ErrInvalidPackage", err)
+	}
+}
+
+// TestPackageSkillValidate_SectionCardinality pins the P5 bound:
+// Preconditions and FailureModes are ordered text lists like Steps and
+// share the same cardinality limit (MaxPackageSections).
+func TestPackageSkillValidate_SectionCardinality(t *testing.T) {
+	over := make([]string, skillpkg.MaxPackageSections+1)
+	for i := range over {
+		over[i] = "entry"
+	}
+	s := testSkill()
+	s.Preconditions = over
+	if err := s.Validate(); !errors.Is(err, skillpkg.ErrInvalidSkillContent) {
+		t.Fatalf("oversized Preconditions: err=%v, want ErrInvalidSkillContent", err)
+	}
+	s2 := testSkill()
+	s2.FailureModes = over
+	if err := s2.Validate(); !errors.Is(err, skillpkg.ErrInvalidSkillContent) {
+		t.Fatalf("oversized FailureModes: err=%v, want ErrInvalidSkillContent", err)
+	}
+	// At the bound, both validate.
+	at := make([]string, skillpkg.MaxPackageSections)
+	for i := range at {
+		at[i] = "entry"
+	}
+	s3 := testSkill()
+	s3.Preconditions = at
+	s3.FailureModes = at
+	if err := s3.Validate(); err != nil {
+		t.Fatalf("at-bound sections rejected: %v", err)
+	}
+}
+
+// TestSupportFileValidate_URIRepresentability pins the P6.3 closure:
+// every support path Package.Validate accepts must be representable by
+// the exact bounded skillpkg URI constructor. A path within the raw
+// path bound but beyond the URI path budget is rejected at the DTO
+// boundary (it would fail NewURI / MaterializeSupportRefs later).
+func TestSupportFileValidate_URIRepresentability(t *testing.T) {
+	// A path at exactly MaxPackageURIPathRunes (433 runes across
+	// three bounded segments) validates and its URI fits MaxURIRunes.
+	pathAt := func(total int) string {
+		return strings.Repeat("a", 200) + "/" + strings.Repeat("b", 200) + "/" + strings.Repeat("c", total-402)
+	}
+	at := pathAt(skillpkg.MaxPackageURIPathRunes) // 200+1+200+1+31 = 433
+	f := skillpkg.SupportFile{
+		Path:   at,
+		Mime:   "text/plain; charset=utf-8",
+		Size:   1,
+		Digest: sha256Hex([]byte("x")),
+		Data:   []byte("x"),
+	}
+	if err := f.Validate(); err != nil {
+		t.Fatalf("at-bound URI path rejected: %v", err)
+	}
+	hash, err := skillpkg.PackageHash(skillpkg.Package{
+		Name:     "x",
+		Skill:    skillpkg.PackageSkill{Name: "x", Trigger: "t", Steps: []string{"s"}},
+		Supports: []skillpkg.SupportFile{f},
+	})
+	if err != nil {
+		t.Fatalf("PackageHash: %v", err)
+	}
+	if _, err := skillpkg.NewURI(hash, at); err != nil {
+		t.Fatalf("NewURI(at-bound path): %v", err)
+	}
+	// One rune beyond the URI path budget is rejected by
+	// SupportFile.Validate — and would exceed MaxURIRunes in the URI
+	// constructor.
+	over := pathAt(skillpkg.MaxPackageURIPathRunes + 1)
+	fo := f
+	fo.Path = over
+	if err := fo.Validate(); !errors.Is(err, skillpkg.ErrInvalidSupport) {
+		t.Fatalf("over-URI-bound path: err=%v, want ErrInvalidSupport", err)
+	}
+}
+
 func TestPackageSkillValidate_AnnotationBounds(t *testing.T) {
 	s := testSkill()
 	s.Tags = make([]string, skillpkg.MaxPackageTags+1)

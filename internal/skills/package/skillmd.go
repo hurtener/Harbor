@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/goccy/go-yaml"
 )
@@ -34,6 +35,10 @@ var (
 	// ErrSkillMDTooLarge — the SKILL.md document exceeds the size
 	// bound.
 	ErrSkillMDTooLarge = errors.New("skillpkg: SKILL.md exceeds the size bound")
+	// ErrSkillMDNotUTF8 — the SKILL.md document is not valid UTF-8.
+	// A SKILL.md document must be UTF-8 (the frontmatter and the body
+	// are text).
+	ErrSkillMDNotUTF8 = errors.New("skillpkg: SKILL.md is not valid UTF-8")
 	// ErrSkillMDFrontmatterMissing — SKILL.md has no YAML frontmatter
 	// fences.
 	ErrSkillMDFrontmatterMissing = errors.New("skillpkg: SKILL.md frontmatter missing")
@@ -110,6 +115,7 @@ func ValidateRootSkillEntries(entries []ArchiveEntry) error {
 // root SKILL.md bytes. It enforces:
 //
 //   - size bound (ErrSkillMDTooLarge);
+//   - valid UTF-8 (ErrSkillMDNotUTF8 — the document is text);
 //   - YAML frontmatter fences at the very start and a closing fence
 //     (ErrSkillMDFrontmatterMissing / ErrSkillMDMalformedYAML);
 //   - the frontmatter parses and carries a non-empty `trigger`
@@ -124,6 +130,9 @@ func ValidateSkillMarkdown(b []byte, limits MarkdownLimits) error {
 	limits = limits.Normalize()
 	if int64(len(b)) > limits.MaxBytes {
 		return fmt.Errorf("%w: %d bytes exceeds %d", ErrSkillMDTooLarge, len(b), limits.MaxBytes)
+	}
+	if !utf8.Valid(b) {
+		return fmt.Errorf("%w: %d bytes are not valid UTF-8", ErrSkillMDNotUTF8, len(b))
 	}
 	if !bytes.HasPrefix(b, []byte("---\n")) {
 		return ErrSkillMDFrontmatterMissing

@@ -84,6 +84,13 @@ const (
 	// MaxPackageAnnotations bounds each of RequiredTools /
 	// RequiredNS / RequiredTags.
 	MaxPackageAnnotations = 32
+	// MaxPackageSections bounds each of Preconditions / FailureModes.
+	// The two ordered text lists mirror the shape of Steps (ordered
+	// text entries a planner renders), so the same cardinality bound
+	// applies; an unbounded section list would let one package carry
+	// an arbitrarily large logical body under the per-entry rune
+	// bound.
+	MaxPackageSections = 64
 	// MaxPackageSupports bounds the support-manifest cardinality.
 	MaxPackageSupports = 1024
 	// MaxPackageTotalBytes bounds the sum of all support-file
@@ -100,6 +107,24 @@ const (
 	MaxPackagePathSegmentRunes = 255
 	// MaxURIRunes bounds the whole `skillpkg://` support URI string.
 	MaxURIRunes = 512
+	// MaxPackageURIPathRunes bounds a canonical support path so that
+	// EVERY path Package.Validate accepts is representable by the
+	// exact bounded skillpkg URI constructor: the whole URI string
+	// (`skillpkg://<v1:<64-hex>>/<path>`) must stay within
+	// MaxURIRunes. The value is derived, not guessed:
+	// MaxURIRunes - len("skillpkg://") - len("v1:") - 64 - len("/").
+	MaxPackageURIPathRunes = MaxURIRunes - len(URIScheme) - len("://") - len(HashVersionV1) - 1 - 64 - 1
+	// MaxCanonicalBytes bounds the canonical serialization input
+	// accepted by FromCanonicalBytes, enforced BEFORE decoding so no
+	// unbounded allocation can happen from an oversized or
+	// pathological document. The bound is a closed constant with
+	// headroom over the worst-case canonical form of a valid package
+	// (the JSON-escaped sum of every bounded logical text field —
+	// MaxPackageSteps / MaxPackageSections / MaxPackageTags /
+	// MaxPackageAnnotations entries of up to MaxPackageTextRunes
+	// runes — plus the support manifest of up to MaxPackageSupports
+	// bounded paths + MIME + size + digest).
+	MaxCanonicalBytes = 16 << 20 // 16 MiB
 
 	// DefaultMaxArchiveEntries is the default archive entry-count
 	// bound (zip-bomb count gate).

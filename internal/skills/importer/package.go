@@ -12,6 +12,18 @@
 // `skillpkg://<PackageHash>/<encoded-canonical-support-path>` URI —
 // one URI per support file, delivered by PackageIngest.SupportURI.
 //
+// The package frontmatter is CLOSED: the pure parser accepts only the
+// canonical key set (name, title, trigger, task_type, tags,
+// required_tools, required_namespaces, required_tags) and REJECTS
+// authority-bearing fields (scope, origin, tenant, user, agent,
+// authority, audience) and any other unknown key
+// (ErrPackageFrontmatterDisallowed). The stored-skill envelope
+// (Origin, Scope, Extra) is fixed by the parser, never by caller
+// YAML, so the returned stored Skill is a deterministic function of
+// the canonical Package — it cannot vary outside the Package/hash for
+// caller-controlled content. The intended later user-import service
+// applies authority outside this pure parser.
+//
 // Support references in the logical body are validated through the
 // canonical ordinary-Markdown scanner (skillpkg.ScanSupportRefs):
 // inline and reference-style links AND images must resolve to manifest
@@ -49,6 +61,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/goccy/go-yaml"
+
 	"github.com/hurtener/Harbor/internal/skills"
 	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 )
@@ -74,6 +88,19 @@ var ErrPackageSupportRefRemote = errors.New("importer: package support reference
 // ErrPackageMarkdownNotUTF8 — the single-document ingest received
 // bytes that are not valid UTF-8. A SKILL.md document must be UTF-8.
 var ErrPackageMarkdownNotUTF8 = errors.New("importer: package SKILL.md is not valid UTF-8")
+
+// ErrPackageFrontmatterDisallowed — the root SKILL.md frontmatter of a
+// complete skill package carries a field outside the CLOSED package
+// key set (name, title, trigger, task_type, tags, required_tools,
+// required_namespaces, required_tags). Authority-bearing fields
+// (scope, origin, tenant, user, agent, authority, audience) and any
+// other unknown key are rejected: the pure package ingest must not
+// let caller YAML set storage / authority envelope fields that the
+// canonical Package/hash does not cover — otherwise the same reviewed
+// PackageHash could present a different export-visible envelope. The
+// intended later user-import service applies authority OUTSIDE this
+// pure parser.
+var ErrPackageFrontmatterDisallowed = errors.New("importer: package frontmatter carries a disallowed or unknown field")
 
 // PackageSource carries the bytes of ONE complete skill package
 // archive. PathHint is display metadata only (used for the
@@ -104,13 +131,17 @@ type PackageMarkdownSource struct {
 }
 
 // PackageIngest is the outcome of the pure package ingest paths: the
-// parsed stored `skills.Skill` form (Origin=Pack), the canonical
-// package DTO, and the versioned PackageHash. Support-file references
-// are derived on demand via SupportURI (the hash-before-URI
-// materialization contract: the hash never depends on the URI form).
+// parsed stored `skills.Skill` form (Origin=OriginPack, Scope fixed to
+// the project default — the pure parser rejects authority-bearing
+// frontmatter, so caller YAML can never set the storage envelope),
+// the canonical package DTO, and the versioned PackageHash.
+// Support-file references are derived on demand via SupportURI (the
+// hash-before-URI materialization contract: the hash never depends on
+// the URI form).
 type PackageIngest struct {
 	// Skill is the parsed root SKILL.md in stored-skill form
-	// (Origin=OriginPack, Scope defaulted like the file path).
+	// (Origin=OriginPack, Scope=ScopeProject, empty Extra — the
+	// storage envelope is a deterministic function of the package).
 	Skill skills.Skill
 	// Package is the canonical complete-skill-package DTO (logical
 	// skill content + ordered normalized support manifest).
@@ -213,6 +244,49 @@ func doImportPackageMarkdown(ctx context.Context, src PackageMarkdownSource) (Pa
 	return PackageIngest{Skill: skill, Package: pkg, Hash: hash}, nil
 }
 
+// packageFrontmatterFields is the CLOSED frontmatter key set the pure
+// package ingest accepts. It deliberately EXCLUDES `scope` (and every
+// other authority-bearing / storage-envelope key such as origin,
+// tenant, user, agent, authority, audience): the canonical
+// Package/hash does not carry those fields, so a package whose
+// frontmatter set them could present the same reviewed hash with a
+// different export-visible envelope. The later user-import service
+// applies authority outside this pure parser.
+type packageFrontmatterFields struct {
+	Name               string   `yaml:"name"`
+	Title              string   `yaml:"title"`
+	Trigger            string   `yaml:"trigger"`
+	TaskType           string   `yaml:"task_type"`
+	Tags               []string `yaml:"tags"`
+	RequiredTools      []string `yaml:"required_tools"`
+	RequiredNamespaces []string `yaml:"required_namespaces"`
+	RequiredTags       []string `yaml:"required_tags"`
+}
+
+// parsePackageFrontmatter parses the raw package frontmatter through
+// goccy go-yaml with unknown-field rejection: any key outside the
+// closed package key set — including authority-bearing fields like
+// scope / origin / tenant / user / agent / authority / audience — is
+// rejected (ErrPackageFrontmatterDisallowed wrapping the YAML error,
+// which names the offending key). Duplicate keys are also rejected
+// (goccy rejects them by default).
+func parsePackageFrontmatter(raw []byte) (frontmatterFields, error) {
+	var f packageFrontmatterFields
+	if err := yaml.UnmarshalWithOptions(raw, &f, yaml.DisallowUnknownField()); err != nil {
+		return frontmatterFields{}, fmt.Errorf("%w: %w", ErrPackageFrontmatterDisallowed, err)
+	}
+	return frontmatterFields{
+		Name:               f.Name,
+		Title:              f.Title,
+		Trigger:            f.Trigger,
+		TaskType:           f.TaskType,
+		Tags:               f.Tags,
+		RequiredTools:      f.RequiredTools,
+		RequiredNamespaces: f.RequiredNamespaces,
+		RequiredTags:       f.RequiredTags,
+	}, nil
+}
+
 // parseSkillToPackage is the shared canonical parse of ONE root
 // SKILL.md document into the stored-skill form and the canonical
 // package DTO. `supports` are the validated support entries of the
@@ -225,7 +299,12 @@ func doImportPackageMarkdown(ctx context.Context, src PackageMarkdownSource) (Pa
 // machine (same frontmatter scan, same body classification as the
 // file path; attachment substitution is intentionally absent — the
 // body keeps its relative paths and the support manifest is the
-// resolver's reference).
+// resolver's reference). The frontmatter is parsed through the CLOSED
+// package key set (parsePackageFrontmatter): authority-bearing and
+// unknown keys are rejected, and the stored-skill envelope is fixed
+// by the parser (Origin=OriginPack, Scope=ScopeProject, Extra empty),
+// so the returned stored Skill is a deterministic function of the
+// canonical Package.
 func parseSkillToPackage(ctx context.Context, skillMD []byte, pathHint string, supports []skillpkg.ArchiveEntry, manifest map[string]struct{}) (skills.Skill, skillpkg.Package, error) {
 	if err := skillpkg.ValidateSkillMarkdown(skillMD, skillpkg.MarkdownLimits{}); err != nil {
 		return skills.Skill{}, skillpkg.Package{}, fmt.Errorf("importer: package SKILL.md: %w", err)
@@ -234,7 +313,7 @@ func parseSkillToPackage(ctx context.Context, skillMD []byte, pathHint string, s
 	if err != nil {
 		return skills.Skill{}, skillpkg.Package{}, err
 	}
-	fields, err := parseFrontmatter(rawFM.Bytes)
+	fields, err := parsePackageFrontmatter(rawFM.Bytes)
 	if err != nil {
 		return skills.Skill{}, skillpkg.Package{}, err
 	}
@@ -255,10 +334,15 @@ func parseSkillToPackage(ctx context.Context, skillMD []byte, pathHint string, s
 	if strings.TrimSpace(name) == "" {
 		name = nameFallbackFromHint(pathHint)
 	}
-	scope := skills.Scope(fields.Scope)
-	if scope == "" {
-		scope = skills.ScopeProject
-	}
+	// The pure package parser fixes the storage envelope: Scope is
+	// always the project default (authority-bearing frontmatter such
+	// as `scope` is rejected above, so caller YAML can never set it),
+	// Origin is always OriginPack, and Extra stays empty. The returned
+	// stored Skill is therefore a deterministic function of the
+	// canonical Package — it cannot vary outside the Package/hash for
+	// caller-controlled content. Export reproduces the document from
+	// the canonical fields (synthesized frontmatter), never from
+	// stashed caller bytes.
 	skill := skills.Skill{
 		Name:          name,
 		Title:         fields.Title,
@@ -273,11 +357,7 @@ func parseSkillToPackage(ctx context.Context, skillMD []byte, pathHint string, s
 		RequiredNS:    fields.RequiredNamespaces,
 		RequiredTags:  fields.RequiredTags,
 		Origin:        skills.OriginPack,
-		Scope:         scope,
-		Extra: map[string]any{
-			"_importer.frontmatter_raw": string(rawFM.Bytes),
-			"_importer.source_sha256":   sourceHashHex(skillMD),
-		},
+		Scope:         skills.ScopeProject,
 	}
 	skill.ContentHash = skills.CanonicalContentHash(skill)
 	if err := skill.Validate(); err != nil {
@@ -520,9 +600,13 @@ func assembleBody(skill skills.Skill) string {
 	return b.String()
 }
 
-// assembleDocument rebuilds the full SKILL.md document: the raw
-// frontmatter stashed by the ingest (synthesized for a caller-built
-// skill) plus the canonical body.
+// assembleDocument rebuilds the full SKILL.md document: the
+// deterministic frontmatter derived from the stored skill's canonical
+// fields plus the canonical body. A package-ingested skill carries no
+// stashed raw frontmatter (Extra is empty — the pure parser does not
+// preserve caller bytes), so the frontmatter is always synthesized;
+// the fallback to a stashed raw slot exists only for file-path skills
+// that passed through Import.
 func assembleDocument(ingest PackageIngest, body string) []byte {
 	rawFM, ok := skillFrontmatterRaw(ingest.Skill)
 	if !ok {

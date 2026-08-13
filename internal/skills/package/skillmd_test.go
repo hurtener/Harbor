@@ -103,3 +103,19 @@ func TestValidateSkillMarkdown_TooLarge(t *testing.T) {
 		t.Fatalf("err=%v, want ErrSkillMDTooLarge", err)
 	}
 }
+
+// TestValidateSkillMarkdown_NotUTF8 pins the P6.1 closure: a SKILL.md
+// document must be valid UTF-8. The check lives in the canonical
+// document gate, so the ZIP ingest path (which runs this gate on the
+// root SKILL.md) rejects non-UTF-8 documents, not just the
+// single-document path.
+func TestValidateSkillMarkdown_NotUTF8(t *testing.T) {
+	bad := []byte("---\ntrigger: t\n---\n\xff\xfe not utf-8\n## Steps\n- s\n")
+	if err := skillpkg.ValidateSkillMarkdown(bad, skillpkg.MarkdownLimits{}); !errors.Is(err, skillpkg.ErrSkillMDNotUTF8) {
+		t.Fatalf("err=%v, want ErrSkillMDNotUTF8", err)
+	}
+	// Valid UTF-8 (including non-ASCII text) passes the gate.
+	if err := skillpkg.ValidateSkillMarkdown([]byte("---\ntrigger: t\n---\n# Café guide\n\n## Steps\n- s\n"), skillpkg.MarkdownLimits{}); err != nil {
+		t.Fatalf("valid UTF-8 rejected: %v", err)
+	}
+}

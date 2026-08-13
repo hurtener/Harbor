@@ -55,6 +55,16 @@ const (
 	PackageURIScheme = skillpkg.URIScheme
 	// PackageHashVersionV1 is the current package-hash version.
 	PackageHashVersionV1 = skillpkg.HashVersionV1
+	// PackageMaxSections bounds each of Preconditions / FailureModes.
+	PackageMaxSections = skillpkg.MaxPackageSections
+	// PackageMaxURIPathRunes bounds a canonical support path so every
+	// path Package.Validate accepts is representable by the exact
+	// bounded skillpkg URI constructor.
+	PackageMaxURIPathRunes = skillpkg.MaxPackageURIPathRunes
+	// PackageMaxCanonicalBytes bounds the canonical serialization
+	// input accepted by PackageFromCanonicalBytes (enforced before
+	// decoding).
+	PackageMaxCanonicalBytes = skillpkg.MaxCanonicalBytes
 )
 
 // PackageHash returns the versioned content hash of the complete
@@ -133,6 +143,7 @@ var (
 	ErrSkillMDNotRoot            = skillpkg.ErrSkillMDNotRoot
 	ErrSkillMDCaseMismatch       = skillpkg.ErrSkillMDCaseMismatch
 	ErrSkillMDTooLarge           = skillpkg.ErrSkillMDTooLarge
+	ErrSkillMDNotUTF8            = skillpkg.ErrSkillMDNotUTF8
 	ErrSkillMDFrontmatterMissing = skillpkg.ErrSkillMDFrontmatterMissing
 	ErrSkillMDMalformedYAML      = skillpkg.ErrSkillMDMalformedYAML
 	ErrSkillMDMissingTrigger     = skillpkg.ErrSkillMDMissingTrigger

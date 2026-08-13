@@ -261,6 +261,134 @@ func TestImportPackage_AfterClose(t *testing.T) {
 	}
 }
 
+// TestImportPackage_RejectsAuthorityAndUnknownFrontmatter pins the
+// P1 closure: the pure package ingest accepts ONLY the closed
+// frontmatter key set. Authority-bearing fields (scope, origin,
+// tenant, user, agent, authority, audience) and any other unknown key
+// are rejected — caller YAML can never set the storage/authority
+// envelope, so the same reviewed PackageHash cannot present a
+// different export-visible envelope.
+func TestImportPackage_RejectsAuthorityAndUnknownFrontmatter(t *testing.T) {
+	imp, _ := newImporter(t)
+	mdWith := func(keyValue string) string {
+		return "---\nname: x\ntrigger: t\n" + keyValue + "\n---\n## Steps\n- do the thing\n"
+	}
+	for _, keyValue := range []string{
+		"scope: user",
+		"origin: remote",
+		"tenant: acme",
+		"user: alice",
+		"agent: a-1",
+		"authority: admin",
+		"audience: public",
+		"x-custom: v",
+	} {
+		md := mdWith(keyValue)
+		// ZIP path.
+		if _, err := imp.ImportPackage(context.Background(), importer.PackageSource{
+			Archive: packageZip(t, map[string]string{"SKILL.md": md}),
+		}); !errors.Is(err, importer.ErrPackageFrontmatterDisallowed) {
+			t.Fatalf("ImportPackage(frontmatter %q): err=%v, want ErrPackageFrontmatterDisallowed", keyValue, err)
+		}
+		// Single-document path shares the same closed parse.
+		if _, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{
+			Markdown: []byte(md),
+		}); !errors.Is(err, importer.ErrPackageFrontmatterDisallowed) {
+			t.Fatalf("ImportPackageMarkdown(frontmatter %q): err=%v, want ErrPackageFrontmatterDisallowed", keyValue, err)
+		}
+	}
+	// Duplicate frontmatter keys are rejected too — by the canonical
+	// document gate (goccy rejects duplicate mapping keys by default,
+	// surfacing as ErrSkillMDMalformedYAML) before the closed package
+	// parse even runs; the pure parser's own rejection is
+	// defense-in-depth behind it.
+	dup := "---\nname: x\nname: y\ntrigger: t\n---\n## Steps\n- s\n"
+	if _, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{
+		Markdown: []byte(dup),
+	}); !errors.Is(err, skills.ErrSkillMDMalformedYAML) {
+		t.Fatalf("duplicate frontmatter key: err=%v, want ErrSkillMDMalformedYAML", err)
+	}
+	// The full closed key set is accepted.
+	ok := "---\nname: x\ntitle: T\ntrigger: t\ntask_type: code\ntags: [a]\nrequired_tools: [tool-a]\nrequired_namespaces: [ns-a]\nrequired_tags: [tag-a]\n---\n## Steps\n- s\n"
+	if _, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{
+		Markdown: []byte(ok),
+	}); err != nil {
+		t.Fatalf("closed key set rejected: %v", err)
+	}
+}
+
+// TestPackageIngest_StoredSkillHashBound pins the P7 closure: the
+// returned stored Skill is a deterministic function of the canonical
+// Package. Two byte-different SKILL.md documents with the same logical
+// content (frontmatter key order, whitespace) produce the same
+// Package, the same PackageHash, the same stored Skill — including
+// ContentHash and an EMPTY Extra (no stashed raw YAML, no source
+// hash) — so the stored envelope cannot vary outside the Package/hash
+// for caller-controlled content.
+func TestPackageIngest_StoredSkillHashBound(t *testing.T) {
+	imp, _ := newImporter(t)
+	docA := "---\nname: bound-skill\ntrigger: when asked for the bound skill\n---\nA bound body.\n\n## Steps\n- do the thing\n"
+	docB := "---\ntrigger: when asked for the bound skill\nname: bound-skill\n---\nA bound body.\n\n## Steps\n- do the thing\n"
+
+	a, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: []byte(docA), PathHint: "a.md"})
+	if err != nil {
+		t.Fatalf("ImportPackageMarkdown(A): %v", err)
+	}
+	b, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: []byte(docB), PathHint: "b.md"})
+	if err != nil {
+		t.Fatalf("ImportPackageMarkdown(B): %v", err)
+	}
+	if a.Hash != b.Hash {
+		t.Fatalf("hash varies for identical logical content: %q vs %q", a.Hash, b.Hash)
+	}
+	cbA, err := skillpkg.CanonicalBytes(a.Package)
+	if err != nil {
+		t.Fatalf("CanonicalBytes(A): %v", err)
+	}
+	cbB, err := skillpkg.CanonicalBytes(b.Package)
+	if err != nil {
+		t.Fatalf("CanonicalBytes(B): %v", err)
+	}
+	if !bytes.Equal(cbA, cbB) {
+		t.Fatalf("canonical package varies for identical logical content")
+	}
+	if a.Skill.ContentHash != b.Skill.ContentHash {
+		t.Fatalf("stored ContentHash varies for identical logical content: %q vs %q", a.Skill.ContentHash, b.Skill.ContentHash)
+	}
+	// The stored envelope is fixed: Origin/Scope are parser constants
+	// and Extra is EMPTY — no caller-controlled bytes are preserved.
+	if a.Skill.Origin != skills.OriginPack || b.Skill.Origin != skills.OriginPack {
+		t.Fatalf("Origin must be OriginPack for both, got %q / %q", a.Skill.Origin, b.Skill.Origin)
+	}
+	if a.Skill.Scope != skills.ScopeProject || b.Skill.Scope != skills.ScopeProject {
+		t.Fatalf("Scope must be ScopeProject for both, got %q / %q", a.Skill.Scope, b.Skill.Scope)
+	}
+	if len(a.Skill.Extra) != 0 || len(b.Skill.Extra) != 0 {
+		t.Fatalf("stored Extra must be empty (no caller bytes preserved), got %v / %v", a.Skill.Extra, b.Skill.Extra)
+	}
+	if a.Skill.Name != b.Skill.Name || a.Skill.Description != b.Skill.Description ||
+		a.Skill.Trigger != b.Skill.Trigger || strings.Join(a.Skill.Steps, "\n") != strings.Join(b.Skill.Steps, "\n") {
+		t.Fatalf("stored semantic fields vary for identical logical content: %+v vs %+v", a.Skill, b.Skill)
+	}
+}
+
+// TestImportPackage_ZipSkillMDNotUTF8 pins the P6.1 closure on the
+// ZIP path: a package archive whose root SKILL.md is not valid UTF-8
+// is rejected at ingest. The archive-level MIME content gate (the
+// root document is a text/markdown entry) rejects the non-UTF-8 bytes
+// first, with the canonical document gate's own UTF-8 check
+// (ErrSkillMDNotUTF8, covered in skillmd_test.go) enforcing the same
+// rule for direct ValidateSkillMarkdown callers.
+func TestImportPackage_ZipSkillMDNotUTF8(t *testing.T) {
+	imp, _ := newImporter(t)
+	z := packageZip(t, map[string]string{
+		"SKILL.md": "---\ntrigger: t\n---\n\xff\xfe not utf-8\n## Steps\n- s\n",
+	})
+	if _, err := imp.ImportPackage(context.Background(), importer.PackageSource{Archive: z}); !errors.Is(err, skillpkg.ErrArchiveMimeContentMismatch) {
+		t.Fatalf("ZIP SKILL.md non-UTF-8: err=%v, want ErrArchiveMimeContentMismatch", err)
+	}
+}
+
 const packageMarkdownMD = "---\nname: markdown-skill\ntrigger: when asked for a markdown skill\n---\nA pure single-document skill.\n\n## Steps\n- do the thing\n\n## Preconditions\n- have the thing\n"
 
 func TestImportPackageMarkdown_Valid(t *testing.T) {

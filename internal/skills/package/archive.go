@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 )
 
 // archive.go — the archive validation primitives for complete skill
@@ -21,9 +20,11 @@ import (
 //   - exact and case-folded path collisions (the case class — the
 //     canonical path charset is ASCII-only, which closes the Unicode
 //     normalization collision class by construction);
-//   - symlink / device / FIFO / socket / irregular entries (the
-//     links/devices class; directory entries are skipped as
-//     content-free);
+//   - symlink / directory / device / FIFO / socket / irregular
+//     entries (the links/devices class — every non-regular entry
+//     FAILS the archive, including directory-shaped names and
+//     directory mode bits, BEFORE any suffix-based handling can skip
+//     it; there is no "content-free" skip);
 //   - nested archives (zip / gzip / tar / bzip2 / xz / zstd / 7z /
 //     rar magic inside an entry's decompressed bytes);
 //   - unsupported MIME (extensions outside the canonical allowlist)
@@ -55,9 +56,12 @@ var (
 	// ErrArchivePathCollision — two entries share an exact or
 	// case-folded canonical path.
 	ErrArchivePathCollision = errors.New("skillpkg: archive path collision")
-	// ErrArchiveNonRegular — an entry is a symlink, device, FIFO,
-	// socket, or other non-regular file.
-	ErrArchiveNonRegular = errors.New("skillpkg: archive contains a non-regular entry (link/device)")
+	// ErrArchiveNonRegular — an entry is a symlink, directory, device,
+	// FIFO, socket, or other non-regular file. There is no
+	// content-free skip: every non-regular entry (including
+	// directory-shaped names and directory mode bits) fails the
+	// archive before any suffix-based handling.
+	ErrArchiveNonRegular = errors.New("skillpkg: archive contains a non-regular entry (link/directory/device)")
 	// ErrArchiveNested — an entry's content is itself an archive.
 	ErrArchiveNested = errors.New("skillpkg: archive contains a nested archive")
 	// ErrArchiveMimeUnsupported — an entry's MIME is outside the
@@ -193,13 +197,15 @@ func ValidateArchive(b []byte, limits ArchiveLimits) ([]ArchiveEntry, error) {
 	var claimedTotal, actualTotal int64
 
 	for _, f := range zr.File {
-		// Directory entries carry no content and are skipped, never
-		// materialized. The zip convention marks them either by a
-		// trailing slash on the name or by the mode's directory bit;
-		// both are checked BEFORE path canonicalization because a
-		// trailing slash is not a canonical path.
-		if strings.HasSuffix(f.Name, "/") || f.Mode().IsDir() {
-			continue
+		// Every non-regular entry — directory (trailing-slash name or
+		// directory mode bits), symlink, device, FIFO, socket — is
+		// REJECTED, never skipped: the check runs BEFORE path
+		// canonicalization so a hostile name (a traversal path, a
+		// SKILL.md case variant, a collision) cannot hide inside a
+		// "content-free" directory-shaped entry, and before any
+		// suffix-based handling exists at all.
+		if mode := f.Mode(); !mode.IsRegular() {
+			return nil, fmt.Errorf("%w: %q mode=%v", ErrArchiveNonRegular, f.Name, mode)
 		}
 
 		path, err := canonicalizePath(f.Name)
@@ -219,11 +225,6 @@ func ValidateArchive(b []byte, limits ArchiveLimits) ([]ArchiveEntry, error) {
 		}
 		exact[path] = struct{}{}
 		folded[key] = struct{}{}
-
-		mode := f.Mode()
-		if !mode.IsRegular() {
-			return nil, fmt.Errorf("%w: %q mode=%v", ErrArchiveNonRegular, path, mode)
-		}
 
 		size := int64(f.UncompressedSize64)
 		compressed := int64(f.CompressedSize64)

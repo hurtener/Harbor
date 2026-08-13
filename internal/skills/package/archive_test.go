@@ -67,17 +67,34 @@ func TestValidateArchive_Valid(t *testing.T) {
 	}
 }
 
-func TestValidateArchive_SkipsDirectoryEntries(t *testing.T) {
-	z := buildZip(t, []zipEntry{
-		{name: "dir/", data: ""},
-		{name: "dir/file.txt", data: "hi"},
-	})
-	entries, err := skillpkg.ValidateArchive(z, skillpkg.ArchiveLimits{})
-	if err != nil {
-		t.Fatalf("ValidateArchive: %v", err)
+// TestValidateArchive_RejectsDirectoryEntries pins the P6.2 closure:
+// every directory-shaped archive entry — a trailing-slash name or a
+// directory mode bit — FAILS the archive (ErrArchiveNonRegular), it is
+// never skipped as "content-free". A hostile name cannot hide inside a
+// directory-shaped entry, and a SKILL.md case-variant directory cannot
+// slip past the root-entry invariant.
+func TestValidateArchive_RejectsDirectoryEntries(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []zipEntry
+	}{
+		{"trailing slash", []zipEntry{{name: "dir/", data: ""}, {name: "dir/file.txt", data: "hi"}}},
+		{"directory mode", []zipEntry{{name: "dir", data: "", mode: fs.ModeDir}, {name: "dir/file.txt", data: "hi"}}},
+		{"root skill directory", []zipEntry{{name: "SKILL.md/", data: ""}}},
+		{"case-variant skill directory", []zipEntry{{name: "skill.md/", data: ""}}},
+		{"traversal-shaped directory", []zipEntry{{name: "../escape/", data: ""}}},
 	}
-	if len(entries) != 1 || entries[0].Path != "dir/file.txt" {
-		t.Fatalf("entries = %+v", entries)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			z := buildZip(t, c.entries)
+			_, err := skillpkg.ValidateArchive(z, skillpkg.ArchiveLimits{})
+			if err == nil {
+				t.Fatalf("ValidateArchive(%s): expected rejection, got nil", c.name)
+			}
+			if !errors.Is(err, skillpkg.ErrArchiveNonRegular) {
+				t.Fatalf("ValidateArchive(%s): err=%v, want ErrArchiveNonRegular", c.name, err)
+			}
+		})
 	}
 }
 

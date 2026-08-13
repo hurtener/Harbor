@@ -51,6 +51,12 @@ func (s PackageSkill) Validate() error {
 	if len(s.Steps) > MaxPackageSteps {
 		return fmt.Errorf("%w: Steps exceed %d", ErrInvalidSkillContent, MaxPackageSteps)
 	}
+	if len(s.Preconditions) > MaxPackageSections {
+		return fmt.Errorf("%w: Preconditions exceed %d", ErrInvalidSkillContent, MaxPackageSections)
+	}
+	if len(s.FailureModes) > MaxPackageSections {
+		return fmt.Errorf("%w: FailureModes exceed %d", ErrInvalidSkillContent, MaxPackageSections)
+	}
 	for i, step := range s.Steps {
 		if err := boundedText(fmt.Sprintf("steps[%d]", i), step); err != nil {
 			return fmt.Errorf("%w: %w", ErrInvalidSkillContent, err)
@@ -93,16 +99,28 @@ func boundedText(field, text string) error {
 
 // Validate checks the closed shape of ONE support-manifest entry: the
 // canonical path, a supported MIME, an exact non-negative size, and a
-// 64-hex digest. When the entry carries materialized Data, the digest
-// and size MUST match the bytes exactly (ErrSupportDigestMismatch /
-// ErrSupportSizeMismatch) — a manifest that lies about its own
-// content fails loudly rather than hashing unverified claims.
+// 64-hex digest. When the entry carries materialized Data — INCLUDING
+// a materialized empty `[]byte{}` (distinguished from a nil
+// manifest-only `Data` by `Data != nil`) — the digest and size MUST
+// match the bytes exactly (ErrSupportDigestMismatch /
+// ErrSupportSizeMismatch) and the MIME must be satisfied by them; a
+// manifest that lies about its own content fails loudly rather than
+// hashing unverified claims. A nil `Data` is the manifest-only view
+// and skips the byte checks.
 func (f SupportFile) Validate() error {
 	if _, err := canonicalizePath(f.Path); err != nil {
 		return wrapSupportPathErr(err)
 	}
 	if f.Path == RootSkillFileName {
 		return errSupportf("Path %q is the root skill document, not a support file", f.Path)
+	}
+	// URI representability: a support path Package.Validate accepts
+	// must always be representable by the exact bounded skillpkg URI
+	// constructor (NewURI enforces MaxURIRunes on the whole URI, so a
+	// path longer than MaxPackageURIPathRunes would be accepted here
+	// but rejected at materialization time — a dual-boundary gap).
+	if rl := len([]rune(f.Path)); rl > MaxPackageURIPathRunes {
+		return errSupportf("Path %q is %d runes; the %s:// URI carries at most %d path runes", f.Path, rl, URIScheme, MaxPackageURIPathRunes)
 	}
 	if !mimeSupported(f.Mime) {
 		return fmt.Errorf("%w: %q (path %q)", ErrUnsupportedMime, f.Mime, f.Path)
@@ -113,7 +131,7 @@ func (f SupportFile) Validate() error {
 	if !isHexDigest(f.Digest) {
 		return errSupportf("Digest %q is not a 64-char lowercase hex sha256", f.Digest)
 	}
-	if len(f.Data) > 0 {
+	if f.Data != nil {
 		if int64(len(f.Data)) != f.Size {
 			return fmt.Errorf("%w: %q declares size %d but carries %d bytes", ErrSupportSizeMismatch, f.Path, f.Size, len(f.Data))
 		}
@@ -177,6 +195,14 @@ func (p Package) Validate() error {
 	}
 	if err := p.Skill.Validate(); err != nil {
 		return fmt.Errorf("%w: skill: %w", ErrInvalidPackage, err)
+	}
+	// Dual-name closure: the package name must be the canonical form
+	// of the skill name it carries. A package whose envelope name and
+	// skill name disagree would let the same reviewed hash present two
+	// different names to different consumers — the name pair is a
+	// single identity and must agree under canonicalization.
+	if p.Name != CanonicalName(p.Skill.Name) {
+		return errInvalidf("Name %q is not the canonical form of the skill name %q", p.Name, p.Skill.Name)
 	}
 	if len(p.Supports) > MaxPackageSupports {
 		return errInvalidf("supports exceed %d entries", MaxPackageSupports)
