@@ -698,6 +698,81 @@ skills:
         legacy_writers_drained: false
 ```
 
+### skills.boot_agent_packs
+
+Restart-required operator declarations that load **node-local boot agent
+packs** at boot (Phase 248 — D-427): a bounded list of per-agent skill
+packages read from the filesystem. Default: empty — no packs are loaded.
+Validation: requires a configured `skills.driver` and `skills.dsn`; a
+declaration on an unconfigured skills block fails boot loud.
+
+Each entry names exactly ONE `(tenant_id, agent_id)` pair — an exact,
+case-sensitive opaque tenant key and the resolved boot agent it belongs
+to. There are no wildcards, no tenant-wide application, and no runtime
+discovery: a declaration is honored only for that exact tenant + resolved
+boot agent, and only when the effective agent actually resolves to the
+declared `agent_id`.
+
+The driver/DSN pair provisions the store that persists **revision** and
+**personal** skill state — the boot packs themselves are never stored
+there. With `driver: postgres` that state is durable and shared across
+replicas, but the boot packs remain node-local: each node reloads them
+from its own files at boot, so a file change on one node never converges
+the others. Treat pack files as per-node configuration, not a shared
+catalog.
+
+Each entry carries `tenant_id`, `agent_id`, `directory`, and `include`:
+
+- `tenant_id` — the exact, case-sensitive opaque tenant key (above).
+- `agent_id` — the exact resolved boot agent the pack belongs to.
+- `directory` — the pack root, resolved **relative to the directory
+  containing this config file, never the process working directory**.
+- `include` — one or more package directories, each RELATIVE to
+  `directory`. One `include` entry is exactly one package directory
+  containing exactly one case-sensitive top-level regular UTF-8
+  `SKILL.md`. The v1.28 contract is resource-free: no auxiliary resource
+  payloads ride alongside the skill body.
+
+Loading is strict and fails loud. The loader rejects symlinks, hardlinks,
+special files (FIFO / socket / device), path traversal outside the pack
+root, duplicate declarations (the same tenant + agent, or the same package
+included twice), and any out-of-bounds shape. Packs load eagerly and
+immutably BEFORE the runtime is ready; the loaded set is fixed for the
+process lifetime, and file changes take effect only on restart — never
+hot-reloaded.
+
+The loader is read-only by construction: it performs no writes, exposes
+no admin verbs, has no lifecycle, and never creates agents or widens
+reach. It is separate from the existing `EnsureBootAgentLifecycle` boot
+maintenance, which MAY still write revisions; the two coexist.
+
+Boot-pack items and revision (`agent_packs`) items form ONE operator tier,
+resolved last in the run-visible composition. A skill present in both a
+boot pack and the revision with the same content hash is accepted
+(deduplicated); the same skill at DIFFERENT hashes is a conflict that
+fails loud. The combined item count (boot + revision) is capped at 256.
+Boot-owned items are read-only at every mutation surface — write verbs
+refuse them. Preview surfaces report boot-pack provenance and the content
+hash of each loaded package.
+
+Headless `RunOnce` against a boot-pack agent is unsupported and fails
+loud — it never silently runs without the packs.
+
+```yaml
+skills:
+  driver: postgres
+  dsn: ${SKILLS_DSN}
+  boot_agent_packs:
+    - tenant_id: acme
+      agent_id: harbor-dev-agent
+      directory: /etc/harbor/skills
+      include:
+        - workbench-foundation
+        - workbench-prototype-authoring
+        - workbench-brand-identity
+        - workbench-deck-authoring
+```
+
 ---
 
 ## Tasks

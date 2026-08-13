@@ -665,6 +665,36 @@ planner:
 #   # Capability filtering, redaction, and the budgeter apply
 #   # unchanged on top.
 #   retrieval: semantic
+#   # Phase 248 (D-427) — node-local boot agent packs (the v1.28
+#   # contract). Each entry names exactly ONE (tenant_id, agent_id)
+#   # pair; the skills block must be configured (driver + dsn).
+#   # Packs are node-local: Postgres persists revision/personal
+#   # state, but each node reloads its own pack files at boot and
+#   # never converges replicas. `directory` is relative to THIS
+#   # FILE's directory, never the CWD; one `include` entry = one
+#   # package directory with exactly one case-sensitive top-level
+#   # regular UTF-8 `SKILL.md` (resource-free in v1.28). Strict
+#   # loader — symlinks, hardlinks, special files, traversal,
+#   # duplicates, and out-of-bounds all fail boot loud. Eager
+#   # immutable load before readiness; restart-only changes. Read-
+#   # only: no writes, no admin verbs, no lifecycle, no new agents /
+#   # reach; separate from EnsureBootAgentLifecycle (which may still
+#   # write revisions). Boot + revision items are ONE operator tier,
+#   # resolved last; same hash in both = dedup, different hash =
+#   # conflict; combined 256 cap. Boot-owned mutations are read-only;
+#   # preview surfaces report provenance + hash. Headless RunOnce is
+#   # unsupported — fails loud, never silently runs without packs.
+#   driver: postgres
+#   dsn: ${SKILLS_DSN}
+#   boot_agent_packs:
+#     - tenant_id: acme
+#       agent_id: harbor-dev-agent
+#       directory: /etc/harbor/skills
+#       include:
+#         - workbench-foundation
+#         - workbench-prototype-authoring
+#         - workbench-brand-identity
+#         - workbench-deck-authoring
 
 tools:
   # Phase 27 HTTP tool driver manifests — loaded at boot by the
