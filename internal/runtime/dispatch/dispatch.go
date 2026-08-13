@@ -739,7 +739,7 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		}
 		req.AgentID = frozen.Owner
 		req.VirtualAgent = &binding
-		if len(req.InputArtifactIDs) > profile.InputCount && profile.InputCount > 0 {
+		if len(req.InputArtifactIDs) > profile.InputCount {
 			return tasks.TaskHandle{}, "", fmt.Errorf("%w: profile input_count=%d", ErrArtifactRefNotFound, profile.InputCount)
 		}
 		if len(profile.InputPatterns) > 0 {
@@ -752,6 +752,10 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 				}
 			}
 		}
+		// Virtual-agent profiles own child input disposition. Never carry
+		// planner/model hints into a virtual child; an empty profile value
+		// deliberately leaves resolution to the validated runtime default.
+		req.InputArtifactDispositions = nil
 		if profile.InputDisposition != "" {
 			req.InputArtifactDispositions = make(map[string]string, len(req.InputArtifactIDs))
 			for _, id := range req.InputArtifactIDs {

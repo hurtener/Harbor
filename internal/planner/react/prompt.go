@@ -1191,6 +1191,12 @@ func spawnTaskReplayArgs(d planner.SpawnTask) json.RawMessage {
 	if d.Spec.PropagateOnCancel != "" {
 		spec["propagate_on_cancel"] = d.Spec.PropagateOnCancel
 	}
+	if d.Spec.VirtualAgent != "" {
+		spec["virtual_agent"] = d.Spec.VirtualAgent
+	}
+	if d.Spec.InputArtifactIDs != nil {
+		spec["input_artifact_ids"] = append([]string(nil), d.Spec.InputArtifactIDs...)
+	}
 	env := map[string]any{
 		"kind": string(d.Kind),
 		"spec": spec,

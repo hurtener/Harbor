@@ -459,11 +459,20 @@ var (
         "priority": {"type": "integer"},
         "retain_turn": {"type": "boolean"},
         "fail_fast": {"type": "boolean"},
-        "propagate_on_cancel": {
-          "type": "string",
-          "enum": ["cascade", "isolate"],
-          "description": "cascade (default; omit for this): cancelling a parent task sweeps this task too. isolate: this task survives YOUR cancellation of an ancestor, but never a direct cancel by the operator."
-        }
+         "propagate_on_cancel": {
+           "type": "string",
+           "enum": ["cascade", "isolate"],
+           "description": "cascade (default; omit for this): cancelling a parent task sweeps this task too. isolate: this task survives YOUR cancellation of an ancestor, but never a direct cancel by the operator."
+         },
+         "virtual_agent": {
+           "type": "string",
+           "description": "Optional frozen virtual-agent profile key. The child inherits only the selected profile's trusted configuration overlay."
+         },
+         "input_artifact_ids": {
+           "type": "array",
+           "items": {"type": "string"},
+           "description": "Optional artifact IDs inherited by the child. Pass IDs only; bytes, URLs, schemas, and disposition hints are not accepted."
+         }
       }
     }
   },

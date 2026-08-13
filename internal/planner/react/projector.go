@@ -1,6 +1,7 @@
 package react
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -395,17 +396,21 @@ func translateNativeSpawn(tc llm.ToolCallStructured) (planner.SpawnTask, error) 
 		Kind    string `json:"kind"`
 		GroupID string `json:"group_id"`
 		Spec    struct {
-			Description       string `json:"description"`
-			Query             string `json:"query"`
-			Priority          int    `json:"priority"`
-			RetainTurn        bool   `json:"retain_turn"`
-			FailFast          bool   `json:"fail_fast"`
-			PropagateOnCancel string `json:"propagate_on_cancel"`
+			Description       string   `json:"description"`
+			Query             string   `json:"query"`
+			Priority          int      `json:"priority"`
+			RetainTurn        bool     `json:"retain_turn"`
+			FailFast          bool     `json:"fail_fast"`
+			PropagateOnCancel string   `json:"propagate_on_cancel"`
+			VirtualAgent      string   `json:"virtual_agent"`
+			InputArtifactIDs  []string `json:"input_artifact_ids"`
 		} `json:"spec"`
 	}
 	var env spawnArgsEnvelope
 	if len(tc.Args) > 0 {
-		if err := json.Unmarshal(tc.Args, &env); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(tc.Args))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&env); err != nil {
 			return planner.SpawnTask{}, fmt.Errorf(
 				"%w: react._spawn_task args malformed JSON: %w (raw=%q)",
 				planner.ErrInvalidDecision, err, string(tc.Args),
@@ -445,6 +450,8 @@ func translateNativeSpawn(tc llm.ToolCallStructured) (planner.SpawnTask, error) 
 			RetainTurn:        env.Spec.RetainTurn,
 			FailFast:          env.Spec.FailFast,
 			PropagateOnCancel: env.Spec.PropagateOnCancel,
+			VirtualAgent:      env.Spec.VirtualAgent,
+			InputArtifactIDs:  append([]string(nil), env.Spec.InputArtifactIDs...),
 		},
 		GroupID: tasks.TaskGroupID(env.GroupID),
 	}, nil
