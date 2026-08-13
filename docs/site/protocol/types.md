@@ -2320,6 +2320,8 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` | optional (`omitempty`) |
 | `server_id` | `string` | optional (`omitempty`) |
+| `binding` | `string` | optional (`omitempty`) |
+| `resource_uri` | `string` | optional (`omitempty`) |
 | `tool` | `string` |  |
 | `arguments` | `json.RawMessage` | optional (`omitempty`) |
 
@@ -2348,6 +2350,7 @@ Declared in `internal/protocol/types`.
 | `resource_uri` | `string` |  |
 | `display_mode` | `string` | optional (`omitempty`) |
 | `raw_html_trusted` | `bool` |  |
+| `binding` | `string` | optional (`omitempty`) |
 
 ## MCPAuthorizationServerView
 

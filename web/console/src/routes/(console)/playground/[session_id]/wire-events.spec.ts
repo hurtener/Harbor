@@ -315,6 +315,7 @@ describe('decodeAppAvailable', () => {
 			displayMode: 'inline',
 			rawHtmlTrusted: false,
 			toolCallId: 'tc_01weather',
+			binding: '',
 			// The originating tool name — the host projects it onto the
 			// `ui/initialize` host-context `toolInfo`.
 			toolName: 'get_forecast'

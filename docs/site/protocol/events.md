@@ -666,6 +666,7 @@ Payload `AppAvailablePayload` — safe payload (delivered typed, verbatim).
 |---|---|---|
 | `Identity` | `identity.Quadruple` |  |
 | `AgentID` | `string` |  |
+| `Binding` | `string` |  |
 | `ServerID` | `tools.ToolSourceID` |  |
 | `ToolCallID` | `string` |  |
 | `ToolName` | `string` |  |
@@ -1676,6 +1677,7 @@ Payload `ToolFailedPayload` — safe payload (delivered typed, verbatim).
 | `Transport` | `tools.TransportKind` |  |
 | `Attempts` | `int` |  |
 | `ErrorClass` | `tools.ErrorClass` |  |
+| `ConfiguredBudget` | `int` | optional (`omitempty`) |
 | `ErrorMessage` | `string` |  |
 | `ScopeShortfall` | `*tools.ScopeShortfallDetail` | optional (`omitempty`) |
 
@@ -1712,6 +1714,7 @@ Payload `ToolPolicyExhaustedPayload` — safe payload (delivered typed, verbatim
 | `Transport` | `tools.TransportKind` |  |
 | `Attempts` | `int` |  |
 | `LastClass` | `tools.ErrorClass` |  |
+| `ConfiguredBudget` | `int` | optional (`omitempty`) |
 | `LastError` | `string` |  |
 
 ## `tool.provider_credential_fetch_failed`
