@@ -227,7 +227,7 @@ func (s Status) Continuable() bool {
 //     and trajectory.ErrToolContextLost verbatim out of Resume — no
 //     silent-degradation path;
 //   - validate the resuming identity scope against the pause's scope
-//     (ErrScopeMismatch);
+//     (ErrPauseNotFound);
 //   - treat Resume as idempotent — a second Resume of the same Token
 //     returns ErrAlreadyResumed, never a double-apply.
 type Coordinator interface {

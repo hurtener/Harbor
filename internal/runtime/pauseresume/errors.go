@@ -41,10 +41,9 @@ var (
 
 	ErrNotTranchePause = errors.New("pauseresume: pause is not a step-tranche pause")
 
-	// ErrScopeMismatch — Resume was called with an identity triple
-	// whose (tenant, user, session) does not match the triple the
-	// pause was Requested under. Authentication on resume is checked
-	// against the original pause's identity scope (RFC §3.3).
+	// ErrScopeMismatch is retained for source compatibility. Resume never
+	// returns it: a foreign token is indistinguishable from a missing token
+	// and returns ErrPauseNotFound.
 	ErrScopeMismatch = errors.New("pauseresume: resume identity scope does not match pause")
 
 	// ErrInvalidReason — Request was called with a Reason that is not

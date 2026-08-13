@@ -367,7 +367,7 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		if rerr != nil {
 			return rerr
 		}
-		if !sameScope(rehydrated.identity, resumingID) || (rehydrated.runID != "" && rehydrated.runID != runIDFromContext(ctx)) {
+		if !sameScope(rehydrated.identity, resumingID) {
 			return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
 		}
 		if rehydrated.reason == ReasonConstraintsConflict {
@@ -396,10 +396,6 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		c.mu.Unlock()
 		// Tokens are private selectors. Do not let a caller distinguish a
 		// foreign receipt from a missing one.
-		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
-	}
-	if entry.runID != "" && entry.runID != runIDFromContext(ctx) {
-		c.mu.Unlock()
 		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
 	}
 	// An accepted decision may be running durable continuation work outside
@@ -541,7 +537,7 @@ func (c *coordinator) CancelTranche(ctx context.Context, token Token) error {
 		c.mu.Unlock()
 		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
 	}
-	if !sameScope(entry.identity, id) || (entry.runID != "" && entry.runID != runIDFromContext(ctx)) {
+	if !sameScope(entry.identity, id) {
 		c.mu.Unlock()
 		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
 	}

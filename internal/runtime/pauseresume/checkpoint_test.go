@@ -95,7 +95,7 @@ func TestStatus_CorruptCheckpointFailsLoud(t *testing.T) {
 // TestResume_BareIdentityContextAccepted verifies the
 // identityFromContext fallback branch: a context carrying a bare
 // Identity (attached via identity.With, not WithRun) still satisfies
-// the resuming-scope check.
+// the exact-triple resuming-scope check.
 func TestResume_BareIdentityContextAccepted(t *testing.T) {
 	t.Parallel()
 	c := pauseresume.New()

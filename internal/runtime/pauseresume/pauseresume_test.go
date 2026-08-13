@@ -220,8 +220,8 @@ func TestResume_ScopeMismatchRejected(t *testing.T) {
 	otherID := identity.Identity{TenantID: "t2", UserID: "u1", SessionID: "s1"}
 	resumeCtx := runCtx(t, otherID, "run-1")
 	err = c.Resume(resumeCtx, p.Token, pauseresume.DecisionResume, nil)
-	if !errors.Is(err, pauseresume.ErrScopeMismatch) {
-		t.Fatalf("Resume: err=%v, want ErrScopeMismatch", err)
+	if !errors.Is(err, pauseresume.ErrPauseNotFound) {
+		t.Fatalf("Resume: err=%v, want ErrPauseNotFound", err)
 	}
 }
 
