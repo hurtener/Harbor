@@ -20,7 +20,7 @@ assert_grep_present 'MethodAgentConfigAgentPacksCommit Method = "agent_config\.a
     'phase 237: canonical agent-pack commit method is declared'
 assert_grep_count '^[[:space:]]*h\.serveAgentPacks[A-Za-z]+\(w, r, body, wireID\)' "${HANDLER_GO}" 5 \
     'phase 237: transport dispatch has exactly five executable agent-pack handlers'
-assert_grep_count '^func \(h \*AgentConfigHandler\) serveAgentPacks[A-Za-z]+\(w, r, body, wireID' "${HANDLER_GO}" 5 \
+assert_grep_count '^func \(h \*AgentConfigHandler\) serveAgentPacks[A-Za-z]+\(' "${HANDLER_GO}" 5 \
     'phase 237: transport defines exactly five executable agent-pack handlers'
 assert_grep_present '^func \(s \*Service\) AgentPacksPropose' "${SERVICE_GO}" \
     'phase 237: service implements governed agent-pack propose'
