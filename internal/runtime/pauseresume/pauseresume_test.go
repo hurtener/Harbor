@@ -155,6 +155,12 @@ func TestResume_SecondResumeReturnsAlreadyResumed(t *testing.T) {
 	if err := c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil); err != nil {
 		t.Fatalf("Resume #1: %v", err)
 	}
+	foreignID := identity.Identity{TenantID: "t2", UserID: "u1", SessionID: "s1"}
+	foreignCtx := runCtx(t, foreignID, "run-foreign")
+	err = c.Resume(foreignCtx, p.Token, pauseresume.DecisionResume, nil)
+	if !errors.Is(err, pauseresume.ErrPauseNotFound) {
+		t.Fatalf("foreign Resume after owner resume: err=%v, want ErrPauseNotFound", err)
+	}
 	err = c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil)
 	if !errors.Is(err, pauseresume.ErrAlreadyResumed) {
 		t.Fatalf("Resume #2: err=%v, want ErrAlreadyResumed", err)

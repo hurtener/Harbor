@@ -388,15 +388,15 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		}
 	}
 
-	if entry.state == StatusResumed {
-		c.mu.Unlock()
-		return fmt.Errorf("%w: token %q", ErrAlreadyResumed, token)
-	}
 	if !sameScope(entry.identity, resumingID) {
 		c.mu.Unlock()
 		// Tokens are private selectors. Do not let a caller distinguish a
 		// foreign receipt from a missing one.
 		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
+	}
+	if entry.state == StatusResumed {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrAlreadyResumed, token)
 	}
 	// An accepted decision may be running durable continuation work outside
 	// c.mu. Its claim wins against every later decision, including terminal
