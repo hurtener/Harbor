@@ -1117,9 +1117,11 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// A virtual child is admitted only through the verified reach receipt and
 	// only against the currently active, identity-scoped revision. Resolve the
 	// section once, freeze it, and validate every receipt pin before the run can
-	// reach a planner or a tool. A present empty section is a tombstone, not a
-	// fallback to boot YAML.
+	// reach a planner or a tool. The active revision remains the parent
+	// lifecycle/tombstone authority, but its profile contents do not replace
+	// the sealed receipt below.
 	var frozenProfiles *virtualagent.FrozenMap
+	var virtualProfile *virtualagent.Profile
 	if task.VirtualAgent != nil {
 		if !agentReachAdmitted || admittedAgentID != task.VirtualAgent.AgentID {
 			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_unavailable", Message: "virtual profile requires verified agent reach"}); fErr != nil {
@@ -1127,15 +1129,25 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			}
 			return
 		}
+		if err := virtualagent.ValidateBinding(*task.VirtualAgent); err != nil {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_tampered", Message: err.Error()}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		// The active revision is consulted only as the parent lifecycle /
+		// tombstone authority. Its profile contents are deliberately not used:
+		// the binding is the sealed run receipt, so an edit after admission
+		// cannot stale a delayed or restarted child.
 		if d.agentConfig == nil {
 			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_unavailable", Message: "agent config registry unavailable"}); fErr != nil {
 				d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
 			}
 			return
 		}
-		rev, ok, rErr := d.agentConfig.Active(taskCtx, identity.Quadruple{Identity: q.Identity}, effectiveAgentID, agentcfg.ConfigScopeAgent)
+		_, ok, rErr := d.agentConfig.Active(taskCtx, identity.Quadruple{Identity: q.Identity}, effectiveAgentID, agentcfg.ConfigScopeAgent)
 		if rErr != nil || !ok {
-			msg := "active agent config revision unavailable"
+			msg := "active parent lifecycle unavailable"
 			if rErr != nil {
 				msg += ": " + rErr.Error()
 			}
@@ -1144,29 +1156,8 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			}
 			return
 		}
-		section, present := rev.Payload.VirtualAgentsSectionView()
-		profileMap := d.virtualProfiles
-		if present {
-			if section == nil || len(section.Profiles) == 0 {
-				if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_tombstone", Message: "active virtual profile section is empty"}); fErr != nil {
-					d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
-				}
-				return
-			}
-			profileMap = virtualagent.Map{Owner: section.Owner, MaxProfiles: section.MaxProfiles, Profiles: section.Profiles}
-		}
-		frozenProfiles, rErr = virtualagent.NewFrozenMap(profileMap, rev.RevisionID, rev.ContentHash, nil)
-		if rErr != nil {
-			rErr = fmt.Errorf("freeze virtual profiles: %w", rErr)
-		} else {
-			_, rErr = frozenProfiles.VerifyPin(*task.VirtualAgent)
-		}
-		if rErr != nil {
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_stale", Message: rErr.Error()}); fErr != nil {
-				d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
-			}
-			return
-		}
+		profile := virtualagent.NormalizeProfile(task.VirtualAgent.Profile)
+		virtualProfile = &profile
 	} else if d.agentConfig != nil && effectiveAgentID != "" {
 		if rev, ok, rErr := d.agentConfig.Active(taskCtx, identity.Quadruple{Identity: q.Identity}, effectiveAgentID, agentcfg.ConfigScopeAgent); rErr == nil && ok {
 			section, present := rev.Payload.VirtualAgentsSectionView()
@@ -1351,6 +1342,14 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			}
 			return
 		}
+		views, sErr = d.projectAgentConfigSkills(taskCtx, effectiveAgentID, q, views)
+		if sErr != nil {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: "agent-config skills projection: " + sErr.Error()}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		views = applyVirtualSkills(views, virtualProfile)
 		skillsCtx = runctx.ProjectSkillsDirectory(views)
 	}
 
@@ -1414,6 +1413,9 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			return
 		}
 		catalogView = view
+		if virtualProfile != nil {
+			catalogView = tools.NewExclusionView(catalogView, virtualProfile.Overlay.PausedServers, virtualProfile.Overlay.DisabledTools)
+		}
 	}
 
 	// wire the planner's event-emit closure so
@@ -1610,9 +1612,9 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		return
 	}
-	if task.VirtualAgent != nil {
-		profile, ok := frozenProfiles.Profile(task.VirtualAgent.Key)
-		if !ok {
+	if virtualProfile != nil {
+		profile := *virtualProfile
+		if profile.Key == "" {
 			d.logger.ErrorContext(taskCtx, "RunLoopDriver: virtual profile disappeared after pin verification")
 			if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_stale", Message: "verified virtual profile is unavailable"}); mErr != nil {
 				d.logger.Warn("RunLoopDriver: MarkFailed after virtual profile failure failed", slog.String("err", mErr.Error()))
@@ -1623,8 +1625,8 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	}
 	maxSteps := d.maxStepsRunLoop
 	tokenBudget := d.tokenBudget
-	if task.VirtualAgent != nil {
-		profile, _ := frozenProfiles.Profile(task.VirtualAgent.Key)
+	if virtualProfile != nil {
+		profile := *virtualProfile
 		maxSteps = virtualagent.OverlayClampMaxSteps(maxSteps, profile.Overlay.MaxSteps)
 		tokenBudget = virtualagent.OverlayClampTokenBudget(tokenBudget, profile.Overlay.TokenBudget)
 	}
@@ -1735,7 +1737,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	if frozenProfiles != nil {
 		runCtx = virtualagent.WithFrozenMap(runCtx, frozenProfiles)
 	}
-	if task.VirtualAgent != nil {
+	if virtualProfile != nil {
 		binding := virtualagent.CloneBinding(*task.VirtualAgent)
 		runCtx = virtualagent.WithRunBinding(runCtx, &binding)
 	}
@@ -1921,13 +1923,16 @@ func applyVirtualOverlay(base *planner.LLMOverrides, profile virtualagent.Profil
 		out.Temperature = &v
 	}
 	if o.MaxTokens != nil {
-		out.MaxTokens = cloneInt(o.MaxTokens)
+		out.MaxTokens = virtualagent.OverlayClampMaxTokens(out.MaxTokens, o.MaxTokens)
 	}
 	if o.ReasoningEffort != nil {
 		out.ReasoningEffort = cloneString(o.ReasoningEffort)
 	}
 	if o.Instructions != "" {
 		v := o.Instructions
+		if out.ExtraInstructions != nil && *out.ExtraInstructions != "" {
+			v = *out.ExtraInstructions + "\n" + v
+		}
 		out.ExtraInstructions = &v
 	}
 	if o.IsZero() {
@@ -1935,6 +1940,23 @@ func applyVirtualOverlay(base *planner.LLMOverrides, profile virtualagent.Profil
 	}
 	if o.Instructions != "" {
 		out.ExtraSystemBlocks = append(append([]planner.NamedBlock(nil), out.ExtraSystemBlocks...), planner.NamedBlock{Name: virtualagent.BlockName(profile.Key), Body: o.Instructions})
+	}
+	return out
+}
+
+func applyVirtualSkills(views []skills.SkillView, profile *virtualagent.Profile) []skills.SkillView {
+	if profile == nil || profile.Overlay.Skills == nil {
+		return views
+	}
+	allowed := make(map[string]struct{}, len(*profile.Overlay.Skills))
+	for _, name := range *profile.Overlay.Skills {
+		allowed[name] = struct{}{}
+	}
+	out := make([]skills.SkillView, 0, len(views))
+	for _, view := range views {
+		if _, ok := allowed[view.Name]; ok {
+			out = append(out, view)
+		}
 	}
 	return out
 }
