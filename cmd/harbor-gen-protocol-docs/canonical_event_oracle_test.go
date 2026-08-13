@@ -138,9 +138,9 @@ task.patch_applied
 task.patch_rejected
 task.paused
 task.prioritised
+task.progress
 task.resumed
 task.spawned
-task.progress
 task.started
 tool.approval_requested
 tool.approved
