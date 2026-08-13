@@ -11,6 +11,7 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -94,10 +95,32 @@ func TestAgentPacksCommit_ResumesPreparedTargetWithoutSecondRevision(t *testing.
 	if receipt.ID == "" || receiptFields["phase"] != "committing" || receiptFields["target_revision_id"] == "" || receiptFields["target_content_hash"] == "" {
 		t.Fatalf("receipt did not durably capture exact target: %v", receiptFields)
 	}
+	if _, err := reg.Rollback(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, testAgentID, receiptFields["target_revision_id"], agentcfg.ConfigScopeAgent, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("publish prepared target: %v", err)
+	}
+	tampered := append([]byte(nil), receipt.Bytes...)
+	var tamperedFields map[string]any
+	if err := json.Unmarshal(tampered, &tamperedFields); err != nil {
+		t.Fatalf("decode receipt for tampering: %v", err)
+	}
+	tamperedFields["policy_hash"] = "sha256:tampered"
+	tampered, err = json.Marshal(tamperedFields)
+	if err != nil {
+		t.Fatalf("encode tampered receipt: %v", err)
+	}
+	if err := proposals.SaveIf(ctx, []state.SlotExpectation{{Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, Kind: "agentcfg.agent_pack.proposal." + proposal.ProposalID, ExpectedEventID: receipt.ID}}, state.StateRecord{ID: receipt.ID, Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, Kind: "agentcfg.agent_pack.proposal." + proposal.ProposalID, Bytes: tampered}); err != nil {
+		t.Fatalf("tamper receipt: %v", err)
+	}
 
 	second, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithAgentPackProposalState(proposals), agentcfgprotocol.WithAgentPackCatalog(catalog))
 	if err != nil {
 		t.Fatalf("NewService retry: %v", err)
+	}
+	if _, err := second.AgentPacksCommit(ctx, commit); !errors.Is(err, agentcfgprotocol.ErrAgentPackProposalInvalid) {
+		t.Fatalf("tampered receipt commit error = %v, want invalid proposal", err)
+	}
+	if err := proposals.SaveIf(ctx, []state.SlotExpectation{{Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, Kind: "agentcfg.agent_pack.proposal." + proposal.ProposalID, ExpectedEventID: receipt.ID}}, state.StateRecord{ID: receipt.ID, Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, Kind: "agentcfg.agent_pack.proposal." + proposal.ProposalID, Bytes: receipt.Bytes}); err != nil {
+		t.Fatalf("restore receipt: %v", err)
 	}
 	resumed, err := second.AgentPacksCommit(ctx, commit)
 	if err != nil {

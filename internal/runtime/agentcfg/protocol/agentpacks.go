@@ -163,15 +163,23 @@ func writeCanonicalStrings(b *strings.Builder, values []string) {
 	b.WriteByte(']')
 }
 
-// verifyProposalPolicy intentionally rejects legacy receipts. There is no
-// deterministic normalization that can prove which server policy produced a
-// receipt lacking its policy binding, so replaying one would be unsafe.
-func verifyProposalPolicy(received, current AgentPackAuthoringPolicy, hash string) error {
+// verifyProposalPolicyBinding intentionally rejects legacy receipts. There is
+// no deterministic normalization that can prove which server policy produced
+// a receipt lacking its policy binding, so replaying one would be unsafe.
+func verifyProposalPolicyBinding(received AgentPackAuthoringPolicy, hash string) error {
 	receivedHash := canonicalPolicyHash(received)
-	currentHash := canonicalPolicyHash(current)
 	if received.ID != agentPackAuthoringPolicyID || received.Version != agentPackAuthoringPolicyVersion ||
-		received.ID != current.ID || received.Version != current.Version ||
-		hash == "" || hash != receivedHash || hash != currentHash {
+		hash == "" || hash != receivedHash {
+		return ErrAgentPackProposalInvalid
+	}
+	return nil
+}
+
+func verifyProposalPolicy(received, current AgentPackAuthoringPolicy, hash string) error {
+	if err := verifyProposalPolicyBinding(received, hash); err != nil {
+		return err
+	}
+	if received.ID != current.ID || received.Version != current.Version || hash != canonicalPolicyHash(current) {
 		return ErrAgentPackProposalInvalid
 	}
 	return nil
@@ -734,6 +742,9 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	if err != nil || proposal.AgentID != req.AgentID || proposal.ExpectedContentHash != req.ExpectedContentHash || proposal.ReviewedHash != req.ReviewedHash {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
 	}
+	if err := verifyProposalPolicyBinding(proposal.Policy, proposal.PolicyHash); err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
+	}
 	if err := normalizePackProposalProvenance(&proposal); err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
@@ -774,13 +785,17 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 		}
 		if getErr == nil {
 			active, activeSet, activeErr := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
-			if activeErr == nil && activeSet && active.RevisionID == proposal.TargetRevisionID && active.ContentHash == proposal.TargetContentHash {
+			if activeErr != nil {
+				return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("load committing receipt active revision: %w", activeErr)
+			}
+			if activeSet && active.RevisionID == proposal.TargetRevisionID && active.ContentHash == proposal.TargetContentHash {
 				deleted, deleteErr := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID})
 				if deleteErr != nil || !deleted {
 					return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("finalize pack proposal receipt: %w", ErrAgentPackProposalInvalid)
 				}
 				return prototypes.AgentConfigAgentPacksCommitResponse{Revision: revisionToWire(published), Skill: packSkillSummary(skill), Hash: skill.ContentHash, ProtocolVersion: prototypes.ProtocolVersion}, nil
 			}
+			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: committing receipt target is not active", ErrAgentPackProposalInvalid)
 		}
 		if !errors.Is(getErr, agentcfg.ErrRevisionNotFound) {
 			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: load committing receipt target: %w", ErrAgentPackProposalInvalid, getErr)
