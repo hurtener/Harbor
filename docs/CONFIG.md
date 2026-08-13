@@ -751,9 +751,24 @@ resolved last in the run-visible composition. A skill present in both a
 boot pack and the revision with the same content hash is accepted
 (deduplicated); the same skill at DIFFERENT hashes is a conflict that
 fails loud. The combined item count (boot + revision) is capped at 256.
-Boot-owned items are read-only at every mutation surface — write verbs
-refuse them. Preview surfaces report boot-pack provenance and the content
-hash of each loaded package.
+
+Boot-owned items are read-only at every mutation surface, and the
+refusal is precise. A new write / upsert / proposal commit / rollback /
+activation that targets a boot-owned canonical name fails with a typed
+boot-owned conflict even when the payload carries the same content hash
+— the NAME is boot-owned, not the bytes. Removal may delete a real
+legacy active-revision shadow (a revision `agent_packs` record at that
+name), but a boot-only removal — a name whose only contributor is the
+boot pack — returns a typed read-only refusal and never removes the boot
+contribution.
+
+Preview surfaces report the effective-composition provenance of each
+item as the exact closed set `boot` / `revision` / `both`, alongside the
+per-package semantic content hash of each loaded package. The loaded
+boot pack set as a whole carries the deterministic `boot_pack_set_hash`
+— a node-local digest over the set, distinct from any per-package hash,
+and never shared through the store: boot packs stay per-node, so
+Postgres never converges them.
 
 Headless `RunOnce` against a boot-pack agent is unsupported and fails
 loud — it never silently runs without the packs.

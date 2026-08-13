@@ -681,9 +681,18 @@ planner:
 #   # reach; separate from EnsureBootAgentLifecycle (which may still
 #   # write revisions). Boot + revision items are ONE operator tier,
 #   # resolved last; same hash in both = dedup, different hash =
-#   # conflict; combined 256 cap. Boot-owned mutations are read-only;
-#   # preview surfaces report provenance + hash. Headless RunOnce is
-#   # unsupported — fails loud, never silently runs without packs.
+#   # conflict; combined 256 cap. Boot-owned names are read-only at
+#   # every mutation surface: new writes / upserts / proposal commit /
+#   # rollback / activation targeting a boot-owned canonical name fail
+#   # with a typed boot-owned conflict even for the same hash; removal
+#   # may delete a real legacy active-revision shadow, but a boot-only
+#   # removal returns a typed read-only refusal and never removes the
+#   # boot contribution. Preview provenance is the exact closed set
+#   # boot / revision / both, with the per-package semantic content
+#   # hash plus the deterministic boot_pack_set_hash of the loaded
+#   # pack set (node-local — never converged via Postgres). Headless
+#   # RunOnce is unsupported — fails loud, never silently runs without
+#   # packs.
 #   driver: postgres
 #   dsn: ${SKILLS_DSN}
 #   boot_agent_packs:
