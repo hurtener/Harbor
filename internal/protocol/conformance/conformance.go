@@ -488,6 +488,7 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodeSessionSkillReadUnstable:   http.StatusConflict,
 	protoerrors.CodeAgentRetired:               http.StatusConflict,
 	protoerrors.CodeAgentRetirementConflict:    http.StatusConflict,
+	protoerrors.CodeRestartUnavailable:         http.StatusConflict,
 }
 
 // errorCodeMatrix is the closed set of canonical Protocol error codes
@@ -546,6 +547,7 @@ var errorCodeMatrix = []protoerrors.Code{
 	protoerrors.CodeSessionSkillReadUnstable,
 	protoerrors.CodeAgentRetired,
 	protoerrors.CodeAgentRetirementConflict,
+	protoerrors.CodeRestartUnavailable,
 }
 
 // methodScopeFor returns the steering scope the suite uses when

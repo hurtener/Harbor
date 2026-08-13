@@ -699,11 +699,17 @@ func (f *FrozenMap) VerifyPin(b Binding) (Profile, error) {
 		return Profile{}, fmt.Errorf("%w: current parent-config revision %q/%s != bound %q/%s",
 			ErrStale, f.RevisionID, shortDigest(f.ConfigDigest), b.ConfigRevisionID, shortDigest(b.ConfigDigest))
 	}
-	h, _ := f.HashOf(b.Key)
+	h, ok := f.HashOf(b.Key)
+	if !ok {
+		return Profile{}, fmt.Errorf("%w: profile %q disappeared from frozen map", ErrMissing, b.Key)
+	}
 	if h != b.ProfileHash {
 		return Profile{}, fmt.Errorf("%w: profile %q hash %s != bound %s", ErrTampered, b.Key, shortDigest(h), shortDigest(b.ProfileHash))
 	}
-	snapshotHash, _ := b.Profile.Hash()
+	snapshotHash, err := b.Profile.Hash()
+	if err != nil {
+		return Profile{}, fmt.Errorf("%w: profile snapshot hash: %v", ErrTampered, err)
+	}
 	if snapshotHash != b.ProfileHash || !profilesEqual(p, b.Profile) {
 		return Profile{}, fmt.Errorf("%w: profile snapshot disagrees with current profile", ErrTampered)
 	}
@@ -863,7 +869,11 @@ func WithFrozenMap(ctx context.Context, f *FrozenMap) context.Context {
 // FrozenMapFrom returns the frozen map attached to ctx (nil when
 // absent).
 func FrozenMapFrom(ctx context.Context) *FrozenMap {
-	f, _ := ctx.Value(frozenMapKey).(*FrozenMap)
+	value := ctx.Value(frozenMapKey)
+	f, ok := value.(*FrozenMap)
+	if !ok {
+		return nil
+	}
 	return f
 }
 
@@ -878,7 +888,11 @@ func WithRunBinding(ctx context.Context, b *Binding) context.Context {
 // RunBindingFrom returns the current run's own profile binding (nil
 // when the run is not a virtual-profile run).
 func RunBindingFrom(ctx context.Context) *Binding {
-	b, _ := ctx.Value(runBindingKey).(*Binding)
+	value := ctx.Value(runBindingKey)
+	b, ok := value.(*Binding)
+	if !ok {
+		return nil
+	}
 	return b
 }
 

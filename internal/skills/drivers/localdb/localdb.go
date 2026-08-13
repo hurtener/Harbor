@@ -296,7 +296,7 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
              failure_modes_json, required_tools_json, required_ns_json,
              required_tags_json, origin, origin_ref, scope_tenant, scope_project,
              content_hash, created_at, updated_at, last_used, use_count, extra_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(tenant, user, session, scope, agent_id, name) DO UPDATE SET
             title              = excluded.title,
             description        = excluded.description,

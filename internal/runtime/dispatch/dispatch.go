@@ -837,23 +837,12 @@ func resolveChildDispositions(rc planner.RunContext, ids []string, hints map[str
 	return out, nil
 }
 
-func cloneStringMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
-}
-
 func profileInputMatches(patterns []string, filename, mime string) bool {
 	for _, pattern := range patterns {
-		if ok, _ := path.Match(pattern, filename); ok {
+		if ok, err := path.Match(pattern, filename); err == nil && ok {
 			return true
 		}
-		if ok, _ := path.Match(pattern, mime); ok {
+		if ok, err := path.Match(pattern, mime); err == nil && ok {
 			return true
 		}
 	}

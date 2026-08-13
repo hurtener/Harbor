@@ -995,12 +995,15 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 			if callID == "" {
 				callID = fmt.Sprintf("react.callid.%d", stepIdx)
 			}
-			args, _ := json.Marshal(struct {
+			args, err := json.Marshal(struct {
 				Fraction *float64 `json:"fraction,omitempty"`
 				Phase    string   `json:"phase,omitempty"`
 				Message  string   `json:"message,omitempty"`
 				Tags     []string `json:"tags,omitempty"`
 			}{progress.Fraction, progress.Phase, progress.Message, progress.Tags})
+			if err != nil {
+				return llm.ChatMessage{}, nil, false
+			}
 			asst := llm.ChatMessage{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCallStructured{{ID: callID, Name: TaskProgressToolName, Args: args}}}
 			if step.AssistantPreamble != "" {
 				asst.Content = textContent(step.AssistantPreamble)
@@ -1473,12 +1476,15 @@ func renderNativeBatchStep(step planner.Step, call planner.Batch, replayMode pla
 		if cid == "" {
 			cid = fmt.Sprintf("react.callid.%d.p%d", stepIdx, pi)
 		}
-		args, _ := json.Marshal(struct {
+		args, err := json.Marshal(struct {
 			Fraction *float64 `json:"fraction,omitempty"`
 			Phase    string   `json:"phase,omitempty"`
 			Message  string   `json:"message,omitempty"`
 			Tags     []string `json:"tags,omitempty"`
 		}{progress.Fraction, progress.Phase, progress.Message, progress.Tags})
+		if err != nil {
+			args = nil
+		}
 		toolCalls = append(toolCalls, llm.ToolCallStructured{ID: cid, Name: TaskProgressToolName, Args: args})
 		body := ""
 		if o, ok := progressByIndex[pi]; ok {

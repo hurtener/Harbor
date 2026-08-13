@@ -207,7 +207,7 @@ func undeclaredModelToolNameError(name string) error {
 	return fmt.Errorf("%w: model-authored tool name %q was not declared for this run", planner.ErrInvalidDecision, name)
 }
 
-func translateNativeProgress(tc llm.ToolCallStructured) (planner.Decision, error) {
+func translateNativeProgress(tc llm.ToolCallStructured) (planner.TaskProgress, error) {
 	var in struct {
 		Fraction *float64 `json:"fraction"`
 		Phase    string   `json:"phase"`
@@ -215,7 +215,7 @@ func translateNativeProgress(tc llm.ToolCallStructured) (planner.Decision, error
 		Tags     []string `json:"tags"`
 	}
 	if err := json.Unmarshal(tc.Args, &in); err != nil {
-		return nil, fmt.Errorf("%w: invalid %s arguments: %v", planner.ErrInvalidDecision, TaskProgressToolName, err)
+		return planner.TaskProgress{}, fmt.Errorf("%w: invalid %s arguments: %w", planner.ErrInvalidDecision, TaskProgressToolName, err)
 	}
 	return planner.TaskProgress{Fraction: in.Fraction, Phase: in.Phase, Message: in.Message, Tags: in.Tags, CallID: tc.ID}, nil
 }
@@ -303,7 +303,7 @@ func projectBatch(resp llm.CompleteResponse, resolve func(string) (string, bool)
 			if err != nil {
 				return nil, err
 			}
-			progress = append(progress, p.(planner.TaskProgress))
+			progress = append(progress, p)
 			continue
 		}
 		catalogName, ok := resolve(tc.Name)

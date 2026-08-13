@@ -72,7 +72,7 @@ func (p VirtualAgentProfileConfig) ToProfile(owner string) (virtualagent.Profile
 
 	prof = virtualagent.NormalizeProfile(prof)
 	if err := virtualagent.ValidateProfile(prof); err != nil {
-		return virtualagent.Profile{}, fmt.Errorf("virtual_agents.profiles[%q]: %v", p.Key, err)
+		return virtualagent.Profile{}, fmt.Errorf("virtual_agents.profiles[%q]: %w", p.Key, err)
 	}
 	return prof, nil
 }

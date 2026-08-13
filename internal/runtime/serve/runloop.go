@@ -2005,14 +2005,6 @@ func cloneString(v *string) *string {
 	return &c
 }
 
-func cloneInt(v *int) *int {
-	if v == nil {
-		return nil
-	}
-	c := *v
-	return &c
-}
-
 // resolveSessionArtifacts builds the session-artifact manifest the
 // planner renders into the read-only `<session_artifacts>` block (
 // ). It lists `ArtifactStore.List` scoped to the run's
