@@ -823,6 +823,17 @@ type ConfigPayload struct {
 	// introduced the section); deep validation happens at the run-start
 	// freeze, matching every other section's validation boundary.
 	VirtualAgents *VirtualAgentsSection `json:"virtual_agents,omitempty"`
+	// AgentPacks, when non-nil, pins the operator-managed per-agent skill
+	// pack: the bounded, sorted set of FULL skill bodies selected for this
+	// agent. It is addressed by `(tenant, agent, name)` at
+	// configuration-selection time, durable and versioned WITH this
+	// revision (body + membership are one atomic write — a pinned name can
+	// never dangle without its body). The pack is resolved at run start for
+	// every authorised user of the agent plus only that caller's
+	// personal/session skills, and its metadata never widens the run's
+	// visible tool set. A nil section pins no pack; an empty non-nil section
+	// is the explicit empty pack.
+	AgentPacks []skills.AgentPackItem `json:"agent_packs,omitempty"`
 }
 
 // VirtualAgentsSection is the versioned virtual-agent profile section of
@@ -839,19 +850,6 @@ type VirtualAgentsSection struct {
 	MaxProfiles int `json:"max_profiles,omitempty"`
 	// Profiles is the canonical profile list (key-sorted, key-unique).
 	Profiles []virtualagent.Profile `json:"profiles,omitempty"`
-
-	// AgentPacks, when non-nil, pins the operator-managed per-agent skill
-	// pack: the bounded, sorted set of FULL skill bodies selected for this
-	// agent (HA-55). It is addressed by `(tenant, agent, name)` at
-	// configuration-selection time, durable and versioned WITH this
-	// revision (body + membership are one atomic write — a pinned name can
-	// never dangle without its body). The pack is resolved at run start for
-	// every authorised user of the agent plus only that caller's
-	// personal/session skills, and its `RequiredTools`/`RequiredNS`/
-	// `RequiredTags` are filter metadata that never widen the run's visible
-	// tool set. A nil section pins no pack; an empty non-nil section is the
-	// explicit empty pack.
-	AgentPacks []skills.AgentPackItem `json:"agent_packs,omitempty"`
 }
 
 // Revision is an immutable, content-addressed agent-config record with a
@@ -1738,7 +1736,7 @@ func DiffVirtualAgents(from, to ConfigPayload) VirtualAgentsDiff {
 
 	fromByKey := profileKeys(fromSec, fromSet)
 	toByKey := profileKeys(toSec, toSet)
-	for _, k := range toByKey {
+	for k := range toByKey {
 		fp, fok := fromByKey[k]
 		if !fok {
 			d.Added = append(d.Added, k)
@@ -1749,7 +1747,7 @@ func DiffVirtualAgents(from, to ConfigPayload) VirtualAgentsDiff {
 		}
 		d.Changed = append(d.Changed, k)
 	}
-	for _, k := range fromByKey {
+	for k := range fromByKey {
 		if _, ok := toByKey[k]; !ok {
 			d.Removed = append(d.Removed, k)
 		}
