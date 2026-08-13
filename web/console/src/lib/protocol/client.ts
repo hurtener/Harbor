@@ -101,6 +101,12 @@ import type {
 	AgentConfigUserSkillsListResponse,
 	AgentConfigUserSkillsUpsertResponse,
 	AgentConfigUserSkillsDeleteResponse,
+	AgentConfigAgentPackItem,
+	AgentConfigAgentPacksListResponse,
+	AgentConfigAgentPacksUpsertResponse,
+	AgentConfigAgentPacksRemoveResponse,
+	AgentConfigAgentPacksProposeResponse,
+	AgentConfigAgentPacksCommitResponse,
 } from './agentconfig.js';
 
 /* ------------------------------------------------------------------ */
@@ -1273,6 +1279,21 @@ export class AgentConfigNamespace {
 			agent_id: agentId,
 			revision_id: revisionId,
 		});
+	}
+	agentPacksList(agentId: string): Promise<AgentConfigAgentPacksListResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/list', { agent_id: agentId });
+	}
+	agentPacksUpsert(agentId: string, skill: AgentConfigAgentPackItem, expectedContentHash?: string): Promise<AgentConfigAgentPacksUpsertResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/upsert', { agent_id: agentId, skill, expected_content_hash: expectedContentHash });
+	}
+	agentPacksRemove(agentId: string, name: string, expectedContentHash?: string): Promise<AgentConfigAgentPacksRemoveResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/remove', { agent_id: agentId, name, expected_content_hash: expectedContentHash });
+	}
+	agentPacksPropose(agentId: string, intent: string, expectedContentHash: string): Promise<AgentConfigAgentPacksProposeResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/propose', { agent_id: agentId, intent, expected_content_hash: expectedContentHash });
+	}
+	agentPacksCommit(agentId: string, proposalId: string, skill: AgentConfigAgentPackItem, reviewedHash: string, provenance: string, expectedContentHash: string): Promise<AgentConfigAgentPacksCommitResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/commit', { agent_id: agentId, proposal_id: proposalId, skill, reviewed_hash: reviewedHash, provenance, expected_content_hash: expectedContentHash });
 	}
 	/** `agent_config.set_tool_exposure` — set MCP pause/resume + per-tool
 	 * policy (desired-state replace of the tool-exposure section); records a

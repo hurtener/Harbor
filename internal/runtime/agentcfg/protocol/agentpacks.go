@@ -34,6 +34,7 @@ package protocol
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -42,11 +43,16 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/state"
 )
 
 // Agent-pack sentinel errors. The wire handler maps each onto a canonical
 // Protocol code; in-process callers compare with errors.Is.
 var (
+	// ErrAgentPacksReadOnly rejects the generic whole-payload authoring door.
+	// Pack bodies are accepted only by the dedicated verbs, which apply the
+	// server provenance stamp and the pack invariants before persistence.
+	ErrAgentPacksReadOnly = errors.New("agentcfg/protocol: agent packs require the dedicated pack verbs")
 	// ErrAgentPacksInvalid — a pack verb received a malformed item, a
 	// non-agent scope, a smuggled origin, a caller-supplied origin_ref, an
 	// over-bounded pack, or an empty/over-bounded intent. Fails closed
@@ -56,6 +62,12 @@ var (
 	// AgentPackProposer is wired on this runtime (→ 501 at the wire edge).
 	// The deterministic pack verbs stay live regardless.
 	ErrAgentPackProposeUnavailable = errors.New("agentcfg/protocol: agent pack proposer not wired on this runtime")
+	// ErrAgentPackProposalUnavailable means the durable proposal ledger was not
+	// wired. A proposal must never be represented by forgeable client text.
+	ErrAgentPackProposalUnavailable = errors.New("agentcfg/protocol: durable agent pack proposal ledger not wired")
+	// ErrAgentPackProposalInvalid means the proposal token is absent, expired,
+	// consumed, or bound to different server-side inputs.
+	ErrAgentPackProposalInvalid = errors.New("agentcfg/protocol: invalid or consumed agent pack proposal")
 	// ErrAgentPackHashMismatch — commit's ReviewedHash does not equal the
 	// canonical content hash of the submitted body. The commit is refused
 	// and NOTHING is persisted (the two-phase CAS half).
@@ -85,6 +97,27 @@ type AgentPackDraft struct {
 	// Warnings are non-fatal review notes (e.g. a required tool that is not
 	// currently run-visible — filter metadata only, never a grant).
 	Warnings []string
+}
+
+type agentPackProposalRecord struct {
+	AgentID             string               `json:"agent_id"`
+	ExpectedContentHash string               `json:"expected_content_hash"`
+	ReviewedHash        string               `json:"reviewed_hash"`
+	Item                skills.AgentPackItem `json:"item"`
+}
+
+const agentPackProposalKindPrefix = "agentcfg.agent_pack.proposal."
+
+func proposalKind(id string) string { return agentPackProposalKindPrefix + id }
+
+func marshalProposal(r agentPackProposalRecord) ([]byte, error) { return json.Marshal(r) }
+
+func unmarshalProposal(b []byte) (agentPackProposalRecord, error) {
+	var r agentPackProposalRecord
+	if err := json.Unmarshal(b, &r); err != nil {
+		return r, fmt.Errorf("decode pack proposal: %w", err)
+	}
+	return r, nil
 }
 
 // AgentPackProposer is the governed two-phase authoring seam. The concrete
@@ -396,6 +429,9 @@ func (s *Service) AgentPacksPropose(ctx context.Context, req prototypes.AgentCon
 	if err := validateAgentPackScope(req.Scope); err != nil {
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, err
 	}
+	if strings.TrimSpace(req.ExpectedContentHash) == "" {
+		return prototypes.AgentConfigAgentPacksProposeResponse{}, fmt.Errorf("%w: expected_content_hash is mandatory", ErrAgentPacksInvalid)
+	}
 	if r := len([]rune(req.Intent)); r == 0 || r > maxAgentPackIntentRunes {
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, fmt.Errorf("%w: intent must be non-empty and ≤ %d runes (got %d)", ErrAgentPacksInvalid, maxAgentPackIntentRunes, r)
 	}
@@ -429,13 +465,29 @@ func (s *Service) AgentPacksPropose(ctx context.Context, req prototypes.AgentCon
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, fmt.Errorf("%w: proposer returned an invalid draft: %w", ErrAgentPacksInvalid, err)
 	}
+	if s.agentPackProposals == nil {
+		return prototypes.AgentConfigAgentPacksProposeResponse{}, ErrAgentPackProposalUnavailable
+	}
+	proposalID := state.NewEventID()
+	recordBytes, err := marshalProposal(agentPackProposalRecord{
+		AgentID: req.AgentID, ExpectedContentHash: req.ExpectedContentHash,
+		ReviewedHash: skill.ContentHash, Item: skills.PackItemFromSkill(skill),
+	})
+	if err != nil {
+		return prototypes.AgentConfigAgentPacksProposeResponse{}, fmt.Errorf("%w: encode proposal: %v", ErrAgentPacksInvalid, err)
+	}
+	if err := s.agentPackProposals.Save(ctx, state.StateRecord{ID: proposalID, Identity: q, Kind: proposalKind(string(proposalID)), Bytes: recordBytes}); err != nil {
+		return prototypes.AgentConfigAgentPacksProposeResponse{}, fmt.Errorf("save pack proposal: %w", err)
+	}
 	return prototypes.AgentConfigAgentPacksProposeResponse{
-		Skill:           agentPackItemToWire(skills.PackItemFromSkill(skill)),
-		Hash:            skill.ContentHash,
-		Warnings:        append([]string(nil), draft.Warnings...),
-		Provenance:      packProposedProvenance(req.AgentID, skill.ContentHash),
-		DryRun:          req.DryRun,
-		ProtocolVersion: prototypes.ProtocolVersion,
+		Skill:               agentPackItemToWire(skills.PackItemFromSkill(skill)),
+		Hash:                skill.ContentHash,
+		Warnings:            append([]string(nil), draft.Warnings...),
+		Provenance:          packProposedProvenance(req.AgentID, skill.ContentHash),
+		ProposalID:          string(proposalID),
+		ExpectedContentHash: req.ExpectedContentHash,
+		DryRun:              req.DryRun,
+		ProtocolVersion:     prototypes.ProtocolVersion,
 	}, nil
 }
 
@@ -492,6 +544,20 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	if strings.TrimSpace(req.ReviewedHash) == "" {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: reviewed_hash is empty", ErrAgentPacksInvalid)
 	}
+	if strings.TrimSpace(req.ExpectedContentHash) == "" || strings.TrimSpace(req.ProposalID) == "" {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: proposal_id and expected_content_hash are mandatory", ErrAgentPacksInvalid)
+	}
+	if s.agentPackProposals == nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalUnavailable
+	}
+	proposalRecord, err := s.agentPackProposals.Load(ctx, q, proposalKind(req.ProposalID))
+	if err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
+	}
+	proposal, err := unmarshalProposal(proposalRecord.Bytes)
+	if err != nil || proposal.AgentID != req.AgentID || proposal.ExpectedContentHash != req.ExpectedContentHash || proposal.ReviewedHash != req.ReviewedHash {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
+	}
 	item := agentPackItemToDomain(req.Skill)
 	if err := item.Validate(); err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: %w", ErrAgentPacksInvalid, err)
@@ -505,6 +571,14 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	if skill.ContentHash != req.ReviewedHash {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: computed=%s reviewed=%s (a changed body is a changed review)",
 			ErrAgentPackHashMismatch, skill.ContentHash, req.ReviewedHash)
+	}
+	wantBody, err := json.Marshal(skills.PackItemFromSkill(skill))
+	if err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("compare pack proposal: %w", err)
+	}
+	proposalBody, err := json.Marshal(proposal.Item)
+	if err != nil || string(wantBody) != string(proposalBody) {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
 	}
 	// CAS half 2 — the proposal stamp is binding: a commit must echo the
 	// exact proposal it reviewed.
@@ -540,6 +614,13 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, opts)
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
+	}
+	deleted, deleteErr := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID})
+	if deleteErr != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("consume pack proposal: %w", deleteErr)
+	}
+	if !deleted {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
 	}
 	return prototypes.AgentConfigAgentPacksCommitResponse{
 		Revision:        revisionToWire(rev),

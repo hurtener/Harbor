@@ -208,11 +208,12 @@ type Service struct {
 	// concrete (which owns the LLM call under the agent's configured model)
 	// is injected at the cmd/harbor + devstack boundary; this package depends
 	// only on the interface.
-	agentPackProposer AgentPackProposer
-	bus               events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
-	logger            *slog.Logger
-	now               Clock
-	runSnapshots      *runsnapshot.Gate
+	agentPackProposer  AgentPackProposer
+	agentPackProposals state.StateStore
+	bus                events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
+	logger             *slog.Logger
+	now                Clock
+	runSnapshots       *runsnapshot.Gate
 
 	// preparer drives the unpublished MCP prepare/persist/activate lifecycle.
 	// Optional — nil ⇒ add_mcp_connection returns ErrConnectionAttachUnavailable
@@ -560,6 +561,16 @@ func WithAgentPackProposer(p AgentPackProposer) Option {
 	return func(s *Service) {
 		if p != nil {
 			s.agentPackProposer = p
+		}
+	}
+}
+
+// WithAgentPackProposalState wires the durable, identity-scoped single-use
+// proposal ledger. Without it, governed pack authoring fails closed.
+func WithAgentPackProposalState(store state.StateStore) Option {
+	return func(s *Service) {
+		if store != nil {
+			s.agentPackProposals = store
 		}
 	}
 }
@@ -1020,6 +1031,9 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
+	if req.Payload.AgentPacks != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, ErrAgentPacksReadOnly
+	}
 	// Signed pair state is server-owned. An omitted value is carried forward by
 	// the registry. A supplied read-only projection must equal the active pair;
 	// it is never trusted as an authoring input.

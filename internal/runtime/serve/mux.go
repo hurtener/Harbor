@@ -693,6 +693,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithAllowWireInjection(in.AllowWireInjection),
 			agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(in.SignedOAuthMCPCapabilityAuthorities),
 			agentcfgprotocol.WithSignedOAuthMCPOperationState(in.State),
+			agentcfgprotocol.WithAgentPackProposalState(in.State),
 		}
 		if in.MCPAttacher != nil {
 			if preparer, ok := in.MCPAttacher.(agentcfgprotocol.ConnectionPreparer); ok {

@@ -1211,6 +1211,17 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// rejected BEFORE any registry write (no revision, no event).
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrAgentPacksInvalid),
+		errors.Is(err, agentcfgprotocol.ErrAgentPacksReadOnly),
+		errors.Is(err, agentcfgprotocol.ErrAgentPackHashMismatch),
+		errors.Is(err, agentcfgprotocol.ErrAgentPackProvenanceMismatch),
+		errors.Is(err, agentcfgprotocol.ErrAgentPackProposalInvalid):
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest, m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrAgentPackProposalUnavailable),
+		errors.Is(err, agentcfgprotocol.ErrAgentPackProposeUnavailable):
+		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented, m + ": agent pack proposal service is not wired"
+	case errors.Is(err, agentcfgprotocol.ErrAgentPackNotFound):
+		return protoerrors.CodeNotFound, http.StatusNotFound, m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrCoordinatorUnavailable):
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
 			m + ": " + err.Error()

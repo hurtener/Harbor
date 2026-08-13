@@ -1713,6 +1713,12 @@ type AgentConfigAgentPacksProposeResponse struct {
 	// Provenance is the deterministic stamp `pack.proposed.<agent>.<hash[:16]>`
 	// the commit must echo; a changed provenance is refused.
 	Provenance string `json:"provenance"`
+	// ProposalID is an opaque, server-issued single-use ledger key. It is not
+	// derivable from the body or hash and is bound to the proposing identity.
+	ProposalID string `json:"proposal_id"`
+	// ExpectedContentHash is the exact active revision the proposal was made
+	// against; commit must repeat it.
+	ExpectedContentHash string `json:"expected_content_hash"`
 	// DryRun echoes the request's dry_run flag.
 	DryRun          bool   `json:"dry_run"`
 	ProtocolVersion string `json:"protocol_version"`
@@ -1737,9 +1743,11 @@ type AgentConfigAgentPacksCommitRequest struct {
 	// Provenance is the deterministic stamp returned by propose; a changed
 	// provenance is refused.
 	Provenance string `json:"provenance"`
+	// ProposalID is the opaque durable proposal receipt returned by propose.
+	ProposalID string `json:"proposal_id"`
 	// ExpectedContentHash is the OPTIONAL expected-revision token — the CAS
 	// that refuses a moved policy base with `revision_conflict`.
-	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
+	ExpectedContentHash string `json:"expected_content_hash"`
 }
 
 // AgentConfigAgentPacksCommitResponse is the `agent_config.agent_packs.commit`

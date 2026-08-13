@@ -1316,7 +1316,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	}
 
 	var skillsCtx []any
-	if d.skillsDirectory != nil {
+	if d.catalog == nil && d.skillsDirectory != nil {
 		// the skills Directory is the
 		// `<skills_context>` producer — a bounded, STABLE
 		// pinned-then-recent browse window (identity-scoped via
@@ -1422,6 +1422,21 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		if virtualProfile != nil {
 			catalogView = tools.NewExclusionView(catalogView, virtualProfile.Overlay.PausedServers, virtualProfile.Overlay.DisabledTools)
 		}
+	}
+	if d.catalog != nil && d.skillsDirectory != nil {
+		allowed := make([]string, 0)
+		for _, tool := range catalogView.List() {
+			allowed = append(allowed, tool.Name)
+		}
+		views, sErr := d.skillsDirectory.View(taskCtx, skills.DirectoryCapability{AllowedTools: allowed})
+		if sErr != nil {
+			d.logger.ErrorContext(taskCtx, "RunLoopDriver: skills Directory.View failed; failing run", slog.String("err", sErr.Error()))
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: fmt.Sprintf("skills Directory.View: %v", sErr)}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		skillsCtx = runctx.ProjectSkillsDirectory(views)
 	}
 
 	// wire the planner's event-emit closure so
