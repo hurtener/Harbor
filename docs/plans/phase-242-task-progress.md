@@ -33,7 +33,7 @@ Expose durable task progress as a typed, identity-safe Protocol projection. D-42
 
 ## Non-goals
 
-- No raw output streaming, unrelated artifact retention, new identity axis, second progress source, or MCP App tool-context retention policy.
+- No raw output streaming, unrelated artifact retention, new identity axis, or second progress source.
 
 ## Acceptance criteria
 
@@ -51,7 +51,7 @@ Expose durable task progress as a typed, identity-safe Protocol projection. D-42
 
 ## Public API surface
 
-- `TaskRow` gains additive optional `progress_snapshot`, `virtual_key`, and `virtual_label` fields; `ProtocolVersion` remains unchanged. This is not an MCP App tool-context retention surface.
+- `TaskRow` gains additive optional `progress_snapshot`, `virtual_key`, and `virtual_label` fields; `ProtocolVersion` remains unchanged. This is a task-progress projection only.
 
 ## Test plan
 

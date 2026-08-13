@@ -46,7 +46,7 @@ not available for Harbor-local filings. HA-54, HA-55, and HA-56 are now
 phase 238 / D-412 respectively (master-plan index rows and detail blocks
 carry the mapping). **HA-57 through HA-60 are Harbor-internal filings**,
 raised by the wave's own reliability/verification review rather than by an
-outside consumer, and are planned in the same wave (phase 239 / D-413,
+outside consumer, and are shipped in the same wave (phase 239 / D-418,
 phase 240 / D-419, phase 241 / D-420, phase 242 / D-421). The entries are
 **framework-framed** — each names a Harbor-side capability that is absent,
 inert, or narrower than its documentation claims.
@@ -556,8 +556,8 @@ the verified identity triple and fenced by session lifecycle and erasure.
 **Requested shape.** Add additive optional `progress_snapshot`, `virtual_key`,
 and `virtual_label` fields to `TaskRow`, derived from the task source of
 truth. Keep the snapshot bounded, enforce identity-scoped reads, and remove
-the projection at session erasure. This does not add an MCP App tool-context
-retention policy or D-416 surface.
+the projection at session erasure. This phase is limited to the task-progress
+projection.
 **Required acceptance.**
 
 1. `TaskRow` exposes the three additive optional fields without a protocol
