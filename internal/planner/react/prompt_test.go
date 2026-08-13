@@ -930,6 +930,155 @@ func TestRenderObservationForLLM_CarriesTheErrorClass(t *testing.T) {
 	}
 }
 
+// classifiedMCPFailureStep builds the trajectory step the run loop
+// records for a classified MCP `IsError` failure (HA-54 amendment): a
+// structured classified LLMObservation carrying the typed MCP class, the
+// terminal policy projection, and the retained bounded result — and, for
+// the masking-leg assertions, a GENERIC Step.Error stamp on top of it
+// (the pre-amendment runloop shape, or a legacy persisted trajectory).
+func classifiedMCPFailureStep() planner.Step {
+	return planner.Step{
+		Action: planner.CallTool{Tool: "mcp_conflict", CallID: "c1", Args: json.RawMessage(`{"document_id":"doc-1"}`)},
+		Error:  "tool execution failed",
+		LLMObservation: map[string]any{
+			"error":                              `tool "mcp_conflict" invoke: mcp: server returned tool error (conflict): document changed; current revision is rev-42`,
+			planner.ObservationMCPClassKey:       string(tools.MCPToolErrorConflict),
+			planner.ObservationPolicyClassKey:    string(tools.ErrClassPermanent),
+			planner.ObservationPolicyAttemptsKey: 1,
+			planner.ObservationPolicyBudgetKey:   1,
+			"result":                             map[string]any{"current_revision": "rev-42"},
+		},
+	}
+}
+
+// TestRenderNativeObservation_ClassifiedObservationWinsOverGenericError
+// is the HA-54 masking gate on the NATIVE render path: a structured
+// classified LLMObservation (MCP class / bounded message / retry
+// outcome / bounded result) renders into the RoleTool body even when a
+// generic Step.Error is stamped on the step — the generic string never
+// masks the richer payload. Also asserts the raw args never leak into
+// the observation body.
+func TestRenderNativeObservation_ClassifiedObservationWinsOverGenericError(t *testing.T) {
+	t.Parallel()
+	body := renderNativeObservation(classifiedMCPFailureStep())
+
+	for _, want := range []string{
+		string(tools.MCPToolErrorConflict), // the typed provider class
+		planner.ObservationMCPClassKey,     // the class key
+		"document changed",                 // the bounded actionable message
+		string(tools.ErrClassPermanent),    // the retryability projection
+		"rev-42",                           // the retained bounded result
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("native observation drops %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "tool execution failed") {
+		t.Errorf("the generic Step.Error masked the classified observation:\n%s", body)
+	}
+	if strings.Contains(body, "document_id") || strings.Contains(body, "doc-1") {
+		t.Errorf("raw tool args leaked into the observation body:\n%s", body)
+	}
+}
+
+// TestRenderObservationForLLM_ClassifiedObservationWinsOverGenericError
+// is the same masking gate on the LEGACY render path (the non-native
+// assistant-text fallback).
+func TestRenderObservationForLLM_ClassifiedObservationWinsOverGenericError(t *testing.T) {
+	t.Parallel()
+	body := renderObservationForLLM(classifiedMCPFailureStep())
+
+	if !strings.Contains(body, string(tools.MCPToolErrorConflict)) || !strings.Contains(body, "document changed") {
+		t.Errorf("legacy observation drops the classified class/message:\n%s", body)
+	}
+	if !strings.Contains(body, "rev-42") {
+		t.Errorf("legacy observation drops the retained bounded result:\n%s", body)
+	}
+	if strings.Contains(body, "tool execution failed") {
+		t.Errorf("the generic Step.Error masked the classified observation:\n%s", body)
+	}
+}
+
+// TestRenderParallelFallbackBody_ClassifiedObservationWinsOverGenericError
+// is the same masking gate on the PARALLEL fallback path (a CallParallel
+// step whose whole-call abort the runloop wrapped as a flat error map).
+func TestRenderParallelFallbackBody_ClassifiedObservationWinsOverGenericError(t *testing.T) {
+	t.Parallel()
+	body := renderParallelFallbackBody(classifiedMCPFailureStep())
+
+	if !strings.Contains(body, string(tools.MCPToolErrorConflict)) || !strings.Contains(body, "document changed") {
+		t.Errorf("parallel fallback drops the classified class/message:\n%s", body)
+	}
+	if !strings.Contains(body, "rev-42") {
+		t.Errorf("parallel fallback drops the retained bounded result:\n%s", body)
+	}
+	if strings.Contains(body, "tool execution failed") {
+		t.Errorf("the generic Step.Error masked the classified observation:\n%s", body)
+	}
+}
+
+// TestRenderNativeBatchStep_WholeCallAbortSurfacesClassifiedObservation
+// is the BATCH fallback gate: a Batch step whose dispatch aborted
+// whole-call carries no BatchObservation aggregate, so the renderer must
+// fall back to the centralized failure-first precedence — the classified
+// MCP observation reaches every RoleTool answer instead of being
+// flattened to "(tool returned no observation)" — while every call_id is
+// still answered exactly once (the provider wire invariant).
+func TestRenderNativeBatchStep_WholeCallAbortSurfacesClassifiedObservation(t *testing.T) {
+	t.Parallel()
+	call := planner.Batch{
+		Tools: []planner.CallTool{
+			{Tool: "alpha", Args: json.RawMessage(`{"a":1}`), CallID: "t_a"},
+			{Tool: "beta", Args: json.RawMessage(`{"b":2}`), CallID: "t_b"},
+		},
+	}
+	step := classifiedMCPFailureStep()
+	step.Action = call
+	// Deliberately NO BatchObservation: the whole-call abort shape.
+
+	asst, toolMsgs := renderNativeBatchStep(step, call, planner.ReasoningReplayNever, 0)
+	if len(asst.ToolCalls) != 2 || len(toolMsgs) != 2 {
+		t.Fatalf("got %d tool_calls / %d tool msgs, want 2/2", len(asst.ToolCalls), len(toolMsgs))
+	}
+	for i, tm := range toolMsgs {
+		if tm.Role != llm.RoleTool || tm.ToolCallID == nil || *tm.ToolCallID != asst.ToolCalls[i].ID {
+			t.Errorf("tool msg[%d] role/ID = %q/%v, want RoleTool matched to %q", i, tm.Role, tm.ToolCallID, asst.ToolCalls[i].ID)
+		}
+		body := ""
+		if tm.Content.Text != nil {
+			body = *tm.Content.Text
+		}
+		if !strings.Contains(body, string(tools.MCPToolErrorConflict)) || !strings.Contains(body, "document changed") {
+			t.Errorf("batch body[%d] drops the classified class/message:\n%s", i, body)
+		}
+		if !strings.Contains(body, "rev-42") {
+			t.Errorf("batch body[%d] drops the retained bounded result:\n%s", i, body)
+		}
+		if strings.Contains(body, "tool execution failed") {
+			t.Errorf("batch body[%d] rendered the generic error instead of the classified observation:\n%s", i, body)
+		}
+	}
+}
+
+// TestRenderNativeObservation_UnclassifiedErrorKeepsGenericFallback pins
+// the acceptance-6 leg on the renderer: a legacy unstructured failure —
+// a generic Step.Error with NO classified LLMObservation — still renders
+// the generic safe fallback, byte-identical to the pre-amendment shape.
+func TestRenderNativeObservation_UnclassifiedErrorKeepsGenericFallback(t *testing.T) {
+	t.Parallel()
+	step := planner.Step{
+		Action:         planner.CallTool{Tool: "plain", CallID: "c1"},
+		Error:          "tool execution failed",
+		LLMObservation: map[string]any{"error": "tool blew up"},
+	}
+	if body := renderNativeObservation(step); body != "Tool error: tool execution failed" {
+		t.Errorf("native render = %q, want the generic fallback %q", body, "Tool error: tool execution failed")
+	}
+	if body := renderObservationForLLM(step); body != "Observation (error): tool execution failed" {
+		t.Errorf("legacy render = %q, want the generic fallback %q", body, "Observation (error): tool execution failed")
+	}
+}
+
 // TestBuildSystemContent_RendersAdditionalGuidanceWhenSet asserts the
 // <additional_guidance> section appears, wrapping the operator string
 // verbatim, when extraGuidance is non-empty.

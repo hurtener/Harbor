@@ -61,6 +61,36 @@ type ClassifiedError interface {
 // rendered back into the prompt, so the key travels with it.
 const ObservationClassKey = "error_class"
 
+// The remaining keys are the step-observation payload vocabulary the
+// runtime's run loop stamps on a FAILED step's LLMObservation map
+// alongside "error" (and the optional bounded "result") when the
+// executor error chain carries the fact. They are JSON field names —
+// the observation is persisted in the trajectory and rendered back
+// into the next prompt, so each key travels with it — and the ONLY
+// contract between the producer (the run loop) and the consumers (the
+// ReAct prompt renderers, which use their presence to prefer the
+// richer classified payload over a generic Step.Error).
+const (
+	// ObservationMCPClassKey carries the typed MCP provider class
+	// (tools.MCPToolErrorClass: invalid_argument / conflict / transient /
+	// ...) when the failure was lowered from an MCP `IsError` result.
+	ObservationMCPClassKey = "mcp_class"
+
+	// ObservationPolicyClassKey carries the terminal ToolPolicy
+	// projection (tools.ErrorClass: permanent / transient / 5xx /
+	// timeout) when the failure went through the reliability shell —
+	// the retryability the planner may act on.
+	ObservationPolicyClassKey = "policy_class"
+
+	// ObservationPolicyAttemptsKey carries the terminal attempt count
+	// (total invocations the shell made, first included).
+	ObservationPolicyAttemptsKey = "attempts"
+
+	// ObservationPolicyBudgetKey carries the configured total-attempt
+	// budget the shell was allowed.
+	ObservationPolicyBudgetKey = "budget"
+)
+
 // ObservationClassOf reports the class carried anywhere in err's wrap
 // chain, or the empty class when err is nil or carries none.
 //

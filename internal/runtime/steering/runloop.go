@@ -13,6 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/approval"
 )
 
@@ -1104,6 +1105,13 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// are §13-forbidden silent degradation).
 			var observation, llmObservation any
 			var execErr error
+			// failureStructured records whether the failed dispatch
+			// carried a structured classified projection (bounded result,
+			// planner class, typed MCP class, or terminal policy
+			// projection) — the signal that the generic Step.Error stamp
+			// must be suppressed so it cannot mask the richer
+			// LLMObservation. Stack-local per-run state.
+			failureStructured := false
 			if spec.ToolExecutor != nil {
 				// dispatch on a per-step goroutine and keep
 				// draining the inbox while the execution is in flight,
@@ -1137,32 +1145,27 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					// can re-plan. The runloop does NOT abort the run
 					// on a single tool error — that's the planner's
 					// call (it may repair, try another tool, or finish).
-					errPayload := map[string]any{"error": execErr.Error()}
-					// When the executor named a KIND for the failure,
-					// carry it as its own key so a planner can tell an
-					// unresolvable artifact reference from a tool's own
-					// error without matching a message. Absent when the
-					// failure is the tool's own, which keeps the
-					// unclassified payload byte-identical to what every
-					// prior turn produced.
-					if obs != nil {
-						// MCP result errors carry a bounded result alongside the
-						// classified error. Keep both reachable to the planner and
-						// LLM consumer; ordinary errors have no fabricated result.
-						errPayload["result"] = obs
-					}
-					if class := planner.ObservationClassOf(execErr); class != "" {
-						errPayload[planner.ObservationClassKey] = string(class)
-					}
-					observation = errPayload
+					//
+					// The payload carries EVERY machine-readable fact
+					// the error chain holds — the bounded "error" text,
+					// the bounded "result" when the error carried one
+					// (an MCP `IsError` lowers into exactly that), the
+					// planner observation class, the typed MCP provider
+					// class, and the terminal ToolPolicy projection
+					// (class / attempts / budget) — so the next prompt
+					// renders the classification as FIELDS instead of
+					// burying them in an opaque message. This is the
+					// HA-54 amendment's preservation leg: an MCP
+					// failure's typed class + bounded actionable message
+					// + retry outcome + bounded result must survive
+					// dispatch → runloop → trajectory → next ReAct
+					// prompt.
+					failureStructured = failureIsClassified(obs, llmObs, execErr)
+					observation = buildExecutorErrorPayload(execErr, obs)
 					if llmObs != nil {
-						llmPayload := map[string]any{"error": execErr.Error(), "result": llmObs}
-						if class := planner.ObservationClassOf(execErr); class != "" {
-							llmPayload[planner.ObservationClassKey] = string(class)
-						}
-						llmObservation = llmPayload
+						llmObservation = buildExecutorErrorPayload(execErr, llmObs)
 					} else {
-						llmObservation = errPayload
+						llmObservation = observation
 					}
 				} else {
 					observation = obs
@@ -1214,7 +1217,19 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					ReasoningTrace:    stepReasoning,
 					AssistantPreamble: stepAssistantContent,
 				}
-				if execErr != nil {
+				if execErr != nil && !failureStructured {
+					// The generic fallback is stamped ONLY when the
+					// failure carries no structured classified
+					// projection — a legacy unstructured tool error.
+					// For a failure whose LLMObservation already names
+					// the bounded class / message / retry outcome /
+					// result as fields, stamping the generic string here
+					// would MASK that richer payload: every ReAct render
+					// path (native, legacy, parallel fallback, batch
+					// fallback) prefers Step.Error over
+					// Step.LLMObservation. The classified observation is
+					// the honest failure surface (HA-54 amendment); the
+					// generic string stays the legacy safe fallback.
 					stepRecord.Error = "tool execution failed"
 				}
 				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, stepRecord)
@@ -1500,6 +1515,100 @@ func (rl *RunLoop) appendInvalidDecisionStep(spec RunSpec, nerr error) {
 	spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, planner.Step{
 		Error: nerr.Error(),
 	})
+}
+
+// buildExecutorErrorPayload assembles the step's error-observation map
+// for a failed executor dispatch. It carries every machine-readable
+// fact the error chain holds:
+//
+//   - "error" — the wrapped executor error text. Bounded by
+//     construction: the MCP driver bounds the provider message to
+//     MCPToolErrorMessageLimit and the error chain only wraps it with
+//     the tool name + the "mcp:" sentinel prefix. The payload never
+//     echoes raw tool arguments, credentials, or provider bytes.
+//   - "result" — the bounded lowered/projected result, when the error
+//     carried one (an MCP `IsError` lowers into exactly that shape).
+//     Ordinary errors have no fabricated result.
+//   - [planner.ObservationClassKey] — when the executor named a KIND
+//     (an unresolvable artifact reference vs the tool's own error).
+//   - [planner.ObservationMCPClassKey] — the typed MCP provider class,
+//     when the failure was lowered from an MCP `IsError` result.
+//   - [planner.ObservationPolicyClassKey] /
+//     [planner.ObservationPolicyAttemptsKey] /
+//     [planner.ObservationPolicyBudgetKey] — the terminal ToolPolicy
+//     projection (retryability class, attempts taken, configured
+//     budget), when the failure went through the reliability shell.
+//
+// The same fact set the canonical terminal tool event
+// (tool.failed / tool.policy_exhausted) carries — the planner
+// observation and the event describe the SAME final class / message /
+// attempt outcome (HA-54 amendment; no new event type, no retry-policy
+// change).
+func buildExecutorErrorPayload(execErr error, result any) map[string]any {
+	payload := map[string]any{"error": execErr.Error()}
+	if result != nil {
+		payload["result"] = result
+	}
+	if class := planner.ObservationClassOf(execErr); class != "" {
+		payload[planner.ObservationClassKey] = string(class)
+	}
+	if mcpClass, policyClass, attempts, budget := executorFailureProjection(execErr); policyClass != "" {
+		// The MCP class and the policy projection come from the same
+		// error chain; stamp the MCP class whenever present, and the
+		// policy fields whenever the shell produced a terminal
+		// projection. attempts is the terminal attempt count — ≥ 1 for
+		// a dispatched-then-failed call, 0 for a validation rejection
+		// that never reached an invocation (both are honest).
+		if mcpClass != "" {
+			payload[planner.ObservationMCPClassKey] = mcpClass
+		}
+		payload[planner.ObservationPolicyClassKey] = policyClass
+		payload[planner.ObservationPolicyAttemptsKey] = attempts
+		payload[planner.ObservationPolicyBudgetKey] = budget
+	}
+	return payload
+}
+
+// executorFailureProjection extracts the typed MCP provider class and
+// the terminal ToolPolicy projection (class / attempts / budget) from
+// an executor error chain, reading through the %w hops that separate
+// the tool driver's error from the run loop's observation assembly
+// (driver → policy shell → dispatch → here). Returns empty values for
+// facts the chain does not carry.
+func executorFailureProjection(err error) (mcpClass string, policyClass string, attempts, budget int) {
+	var mcpErr *tools.MCPToolResultError
+	if errors.As(err, &mcpErr) {
+		// The typed class is always a recognized class: the constructor
+		// coerces an unrecognized provider classification to transient.
+		mcpClass = string(mcpErr.Class)
+	}
+	var policyErr *tools.PolicyError
+	if errors.As(err, &policyErr) {
+		policyClass = string(policyErr.Class)
+		attempts = policyErr.Attempts
+		budget = policyErr.Budget
+	}
+	return mcpClass, policyClass, attempts, budget
+}
+
+// failureIsClassified reports whether a failed executor dispatch
+// carries a structured classified projection on its observation —
+// a bounded result, a planner observation class, a typed MCP class, or
+// a terminal policy projection. For those the runloop SUPPRESSES the
+// generic Step.Error stamp: the classified LLMObservation is the honest
+// failure surface and a generic "tool execution failed" string would
+// mask it on every ReAct render path. A legacy unstructured failure
+// (a plain tool error with none of these) keeps the generic safe
+// fallback.
+func failureIsClassified(obs, llmObs any, execErr error) bool {
+	if obs != nil || llmObs != nil {
+		return true
+	}
+	if planner.ObservationClassOf(execErr) != "" {
+		return true
+	}
+	mcpClass, policyClass, _, _ := executorFailureProjection(execErr)
+	return mcpClass != "" || policyClass != ""
 }
 
 // emitNativeRepairExhausted publishes the fail-loudly observability

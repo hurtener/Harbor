@@ -1424,6 +1424,23 @@ func renderNativeBatchStep(step planner.Step, call planner.Batch, replayMode pla
 	toolCalls := make([]llm.ToolCallStructured, 0, total)
 	bodies := make([]string, 0, total)
 
+	// Whole-batch abort fallback: when the step carries NO
+	// BatchObservation aggregate (a whole-call executor abort the runloop
+	// wrapped as a flat error/observation map), render ONE shared body —
+	// the same centralized failure-first precedence the parallel fallback
+	// uses — and answer every call_id with it so the N-answers wire
+	// invariant still holds AND the failure is not flattened to a
+	// placeholder. A classified MCP failure (class / bounded message /
+	// retry outcome / bounded result) survives the replay here instead of
+	// being dropped as "(tool returned no observation)".
+	var fallbackBody string
+	if !hasObs {
+		fallbackBody = renderParallelFallbackBody(step)
+		if fallbackBody == "" {
+			fallbackBody = "(tool returned no observation)"
+		}
+	}
+
 	toolByIndex := map[int]planner.ParallelBranchObservation{}
 	spawnByIndex := map[int]planner.BatchSpawnObservation{}
 	progressByIndex := map[int]planner.BatchProgressObservation{}
@@ -1449,9 +1466,11 @@ func renderNativeBatchStep(step planner.Step, call planner.Batch, replayMode pla
 			Name: sanitizeToolName(b.Tool),
 			Args: json.RawMessage(safeArgs(b.Args)),
 		})
-		body := ""
-		if o, ok := toolByIndex[ti]; ok {
-			body = renderParallelBranchBody(o)
+		body := fallbackBody
+		if hasObs {
+			if o, ok := toolByIndex[ti]; ok {
+				body = renderParallelBranchBody(o)
+			}
 		}
 		bodies = append(bodies, body)
 	}
@@ -1465,9 +1484,11 @@ func renderNativeBatchStep(step planner.Step, call planner.Batch, replayMode pla
 			Name: SpawnTaskToolName,
 			Args: spawnTaskReplayArgs(sp),
 		})
-		body := ""
-		if o, ok := spawnByIndex[si]; ok {
-			body = renderBatchSpawnBody(o)
+		body := fallbackBody
+		if hasObs {
+			if o, ok := spawnByIndex[si]; ok {
+				body = renderBatchSpawnBody(o)
+			}
 		}
 		bodies = append(bodies, body)
 	}
@@ -1486,12 +1507,14 @@ func renderNativeBatchStep(step planner.Step, call planner.Batch, replayMode pla
 			args = nil
 		}
 		toolCalls = append(toolCalls, llm.ToolCallStructured{ID: cid, Name: TaskProgressToolName, Args: args})
-		body := ""
-		if o, ok := progressByIndex[pi]; ok {
-			if o.Error != "" {
-				body = "Progress error: " + oneLine(o.Error)
-			} else {
-				body = fmt.Sprintf(`{"recorded":%t,"emitted":%t}`, o.Recorded, o.Emitted)
+		body := fallbackBody
+		if hasObs {
+			if o, ok := progressByIndex[pi]; ok {
+				if o.Error != "" {
+					body = "Progress error: " + oneLine(o.Error)
+				} else {
+					body = fmt.Sprintf(`{"recorded":%t,"emitted":%t}`, o.Recorded, o.Emitted)
+				}
 			}
 		}
 		bodies = append(bodies, body)
@@ -1626,11 +1649,16 @@ func renderParallelBranchBody(b planner.ParallelBranchObservation) string {
 // where a CallParallel step carries no per-branch aggregate (a
 // whole-call executor abort the runloop wrapped as a flat error map, or
 // a malformed trajectory). Surfaces failures / errors first, then any
-// heavy-content wrapper, then the generic projection.
+// heavy-content wrapper, then the generic projection. A structured
+// CLASSIFIED LLMObservation wins over a GENERIC Step.Error exactly as
+// the single-call renderers do (HA-54 amendment).
 func renderParallelFallbackBody(step planner.Step) string {
 	if step.Failure != nil {
 		return fmt.Sprintf("Tool failure: %s — %s",
 			step.Failure.Code, oneLine(step.Failure.Message))
+	}
+	if body, ok := renderClassifiedObservation(step); ok {
+		return body
 	}
 	if step.Error != "" {
 		return "Tool error: " + oneLine(step.Error)
@@ -1666,6 +1694,15 @@ func renderNativeObservation(step planner.Step) string {
 		return fmt.Sprintf("Tool failure: %s — %s",
 			step.Failure.Code, oneLine(step.Failure.Message))
 	}
+	// A structured CLASSIFIED observation (the runtime's error
+	// observation map carrying the planner class, the typed MCP class,
+	// the terminal policy projection, or a bounded result alongside the
+	// error) wins over a GENERIC Step.Error: the classified payload is
+	// the honest failure surface and the generic "tool execution
+	// failed" stamp must never mask it (HA-54 amendment).
+	if body, ok := renderClassifiedObservation(step); ok {
+		return body
+	}
 	if step.Error != "" {
 		return "Tool error: " + oneLine(step.Error)
 	}
@@ -1682,6 +1719,50 @@ func renderNativeObservation(step planner.Step) string {
 		return renderAny(step.Observation)
 	}
 	return ""
+}
+
+// renderClassifiedObservation returns the rendered body of a STRUCTURED
+// CLASSIFIED failure carried on the step's LLMObservation — the
+// runtime's error-observation map holding machine-readable
+// classification — and whether such a payload is present.
+//
+// A payload counts as structured classified when it carries an "error"
+// key AND at least one classification key: the planner observation
+// class ([planner.ObservationClassKey]), the typed MCP provider class
+// ([planner.ObservationMCPClassKey]), the terminal policy projection
+// ([planner.ObservationPolicyClassKey]), or a bounded "result"
+// alongside the error (the MCP `IsError` lowered-result shape). These
+// are exactly the maps the run loop stamps on a failed executor
+// dispatch.
+//
+// A GENERIC Step.Error must never mask this richer payload: the run
+// loop stamps `Step.Error` with the "tool execution failed" fallback
+// for legacy unstructured failures only, and every ReAct renderer
+// (native, legacy, parallel fallback, batch fallback) routes classified
+// observations here BEFORE the Error branch, so the bounded class /
+// actionable provider message / retry outcome / bounded result reach
+// the next prompt instead of being flattened to a one-line generic
+// error. A legacy single-key `{"error": ...}` map is NOT classified and
+// falls through to the Error / plain-observation branches unchanged.
+func renderClassifiedObservation(step planner.Step) (string, bool) {
+	m, ok := step.LLMObservation.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	if _, hasErr := m["error"]; !hasErr {
+		return "", false
+	}
+	for _, key := range []string{
+		planner.ObservationClassKey,
+		planner.ObservationMCPClassKey,
+		planner.ObservationPolicyClassKey,
+		"result",
+	} {
+		if _, present := m[key]; present {
+			return renderAny(m), true
+		}
+	}
+	return "", false
 }
 
 // renderHeavyContentObservation detects the two known heavy-content
@@ -1970,11 +2051,17 @@ func renderActionForLLM(action any) string {
 // safe to round-trip through the LLM.
 //
 // Error / Failure are surfaced first when present (the planner needs
-// to see failures to course-correct).
+// to see failures to course-correct) — EXCEPT that a structured
+// CLASSIFIED LLMObservation wins over a GENERIC Step.Error, so the
+// runtime's classified failure payload (class / bounded message /
+// retry outcome / bounded result) is never masked (HA-54 amendment).
 func renderObservationForLLM(step planner.Step) string {
 	if step.Failure != nil {
 		return fmt.Sprintf("Observation (failure): %s — %s",
 			step.Failure.Code, oneLine(step.Failure.Message))
+	}
+	if body, ok := renderClassifiedObservation(step); ok {
+		return "Observation: " + body
 	}
 	if step.Error != "" {
 		return "Observation (error): " + oneLine(step.Error)
