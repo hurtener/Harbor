@@ -383,7 +383,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |237 | Agent-owned skills and governed authoring (HA-55) | skills + agentcfg + serve | §6.7, §6.16, §6.11, §5.2 | 201, 221, 233, 233a | measured floors | Planned |
 |238 | App-only callback catalog (HA-56) | tools/mcp + mcpconsole + protocol | §6.4, §7.3, §5.2, §7 | 207, 204, 109k, 109l | measured floors | Planned |
 |239 | Same-run step-tranche resume (HA-57) | runtime + tasks + protocol | §3.3, §6.8, §6.11, §7 | 176, 193, 233 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
-|240 | Governed virtual child profiles (HA-58) | runtime + agentcfg + protocol | §5.5, §6.16, §7 | 221, 233a, 239 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
+|240 | Governed virtual child profiles (HA-58) | runtime + agentcfg + protocol | §5.5, §6.16, §7 | 237, 239 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |241 | Virtual-child artifact/output forwarding (HA-59) | artifacts + tasks + runtime + protocol | §6.8, §6.10, §6.11, §7 | 17, 146, 239, 240 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |242 | Durable task-progress projection (HA-60) | tasks + state + protocol | §6.8, §6.10, §6.11, §7 | 239, 241 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 
@@ -564,7 +564,7 @@ real two-client race under `-race`.
   replacement or detach. Non-goals: no authorization shortcut, no
   ordinary-caller exposure, no provider-specific exceptions.
 - **Ordering:** 238 is independent of 236/237/239/240/241/242 (its App-host
-  fixtures compose with 242's tool-context retention at wave E2E).
+  fixtures compose with 242's durable task-progress projection at wave E2E).
 - **Decision:** D-412. **Status:** Planned.
 
 ### Phase 239 — Same-run step-tranche resume (HA-57)
@@ -585,7 +585,7 @@ real two-client race under `-race`.
 
 - **Subsystem:** skills composition resolver, agent-config projection, and
   Protocol surface.
-- **RFC:** §6.7, §6.16, §5.2, §7. **Deps:** 237.
+- **RFC:** §6.7, §6.16, §5.2, §7. **Deps:** 237, 239.
 - **What it delivers:** D-419 — a governed, read-only virtual child profile
    derived from a parent. Bounded overrides cannot widen capability, mutate the
    parent, or create an independent revision; the virtual profile is never an
@@ -605,7 +605,8 @@ real two-client race under `-race`.
    provenance. Raw content is not forwarded or exposed across sessions; denied
    references fail closed before bytes are exposed. No CLI or Console
    composition-preview consumer is part of this phase.
-- **Ordering:** 241 depends on 240. Independent of 236/238/239/242.
+- **Ordering:** 241 depends on 239 and 240; independent of 236, 237, 238, and
+  242.
 - **Decision:** D-420. **Status:** Shipped (v1.27). D-415 remains settled history.
 
 ### Phase 242 — Durable task-progress projection (HA-60)

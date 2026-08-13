@@ -37,7 +37,7 @@ Persist finite same-run step-tranche receipts and resume the original live run a
 ### Bounded restart contract
 
 The current architecture cannot safely relaunch a frozen run in this phase.
- The durable receipt contains the trajectory and selector, but no trusted
+The durable receipt contains the trajectory and selector, but no trusted
 completion boundary or frozen planner/executor/run-context factory. `RunLoop.Run`
 receives those dependencies through its live `RunSpec`; rebuilding them from
 mutable current profile or catalog state could alter the frozen run. A fresh

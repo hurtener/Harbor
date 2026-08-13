@@ -74,7 +74,7 @@ Forward task artifacts and bounded outputs across governed virtual-child and sam
 
 ## Dependencies
 
-- Depends on Phase 240; independent of Phases 236, 238, 239, and 242.
+- Depends on Phases 239 and 240; independent of Phases 236, 237, 238, and 242.
 
 ## Risks / open questions
 
