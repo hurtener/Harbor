@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/internal/identity"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/hurtener/Harbor/internal/identity"
 )
 
 func appIdentity(t *testing.T, session string) context.Context {
