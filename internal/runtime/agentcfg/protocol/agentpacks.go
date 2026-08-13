@@ -103,6 +103,7 @@ type agentPackProposalRecord struct {
 	AgentID             string               `json:"agent_id"`
 	ExpectedContentHash string               `json:"expected_content_hash"`
 	ReviewedHash        string               `json:"reviewed_hash"`
+	Provenance          string               `json:"provenance"`
 	Item                skills.AgentPackItem `json:"item"`
 	Phase               string               `json:"phase,omitempty"`
 	TargetRevisionID    string               `json:"target_revision_id,omitempty"`
@@ -485,7 +486,8 @@ func (s *Service) AgentPacksPropose(ctx context.Context, req prototypes.AgentCon
 	proposalID := state.NewEventID()
 	recordBytes, err := marshalProposal(agentPackProposalRecord{
 		AgentID: req.AgentID, ExpectedContentHash: req.ExpectedContentHash,
-		ReviewedHash: skill.ContentHash, Item: skills.PackItemFromSkill(skill),
+		ReviewedHash: skill.ContentHash, Provenance: packProposedProvenance(req.AgentID, skill.ContentHash),
+		Item: skills.PackItemFromSkill(skill),
 	})
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, fmt.Errorf("%w: encode proposal: %v", ErrAgentPacksInvalid, err)
@@ -545,10 +547,6 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	}
 	release := s.lockAgent(q.TenantID, req.AgentID)
 	defer release()
-	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
-	if err := s.precheckExpectedRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, opts); err != nil {
-		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
-	}
 	if err := validateAgentPackScope(req.Scope); err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
@@ -569,7 +567,7 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
 	}
 	proposal, err := unmarshalProposal(proposalRecord.Bytes)
-	if err != nil || proposal.AgentID != req.AgentID || proposal.ExpectedContentHash != req.ExpectedContentHash || proposal.ReviewedHash != req.ReviewedHash {
+	if err != nil || proposal.AgentID != req.AgentID || proposal.ExpectedContentHash != req.ExpectedContentHash || proposal.ReviewedHash != req.ReviewedHash || proposal.Provenance != packProposedProvenance(req.AgentID, req.ReviewedHash) {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
 	}
 	item := agentPackItemToDomain(req.Skill)
@@ -594,6 +592,10 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	if err != nil || string(wantBody) != string(proposalBody) {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
 	}
+	if req.Provenance != proposal.Provenance {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: got=%q want=%q",
+			ErrAgentPackProvenanceMismatch, req.Provenance, proposal.Provenance)
+	}
 	if proposal.Phase == "committing" {
 		if proposal.TargetRevisionID == "" || proposal.TargetContentHash == "" {
 			return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
@@ -611,6 +613,10 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("finalize pack proposal receipt: %w", ErrAgentPackProposalInvalid)
 		}
 		return prototypes.AgentConfigAgentPacksCommitResponse{Revision: revisionToWire(published), Skill: packSkillSummary(skill), Hash: skill.ContentHash, ProtocolVersion: prototypes.ProtocolVersion}, nil
+	}
+	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
+	if err := s.precheckExpectedRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, opts); err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
 	// CAS half 2 — the proposal stamp is binding: a commit must echo the
 	// exact proposal it reviewed.
@@ -650,7 +656,7 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	targetRevisionID := string(state.NewEventID())
 	committingBytes, err := marshalProposal(agentPackProposalRecord{
 		AgentID: req.AgentID, ExpectedContentHash: req.ExpectedContentHash,
-		ReviewedHash: req.ReviewedHash, Item: proposal.Item,
+		ReviewedHash: req.ReviewedHash, Provenance: proposal.Provenance, Item: proposal.Item,
 		Phase: "committing", TargetRevisionID: targetRevisionID, TargetContentHash: targetHash,
 	})
 	if err != nil {
