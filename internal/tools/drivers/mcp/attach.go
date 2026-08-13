@@ -582,6 +582,9 @@ func (p *PreparedAttachment) ActivateUnder(ctx context.Context, admit func(conte
 			OAuthDiscoveryAllowedOrigins: append([]string(nil), p.ms.OAuthDiscoveryAllowedOrigins...),
 			Owner:                        p.deps.Owner,
 			DescriptorFingerprint:        p.deps.DescriptorFingerprint,
+			Catalog:                      p.deps.Catalog,
+			ToolAllowlist:                append([]string(nil), p.deps.ToolAllowlist...),
+			ToolDenylist:                 append([]string(nil), p.deps.ToolDenylist...),
 		}, p.descriptors)
 		if err != nil {
 			return fmt.Errorf("registry.StageRegistration: %w", err)

@@ -108,7 +108,7 @@ function fakeHostClient(
       reads.push([serverID, resourceURI, agentID]);
       return { resourceUri: resourceURI, mimeType: 'text/html', content: '<p>dashboard</p>' };
     },
-    async callTool(tool) {
+    async callTool(_serverID, tool) {
       return { tool, content: { ok: true }, isError: false };
     },
     async listResources() {

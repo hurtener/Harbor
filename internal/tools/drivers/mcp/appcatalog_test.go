@@ -164,6 +164,86 @@ func TestRegistry_RefreshDiscovery_RebuildsAppViewWithNoStale(t *testing.T) {
 	}
 }
 
+// TestRegistry_RefreshDiscovery_ReconcilesVisibilityTransitions proves that
+// one refresh snapshot moves a descriptor between the ordinary and App-only
+// views in both directions, without leaving either stale projection behind.
+func TestRegistry_RefreshDiscovery_ReconcilesVisibilityTransitions(t *testing.T) {
+	ctx := idCtx(t)
+	reg := NewRegistry()
+	cat := tools.NewCatalog()
+	provider := &mutableAppProvider{id: "srv-transition"}
+	ordinary := appDesc("srv-transition_tool", "srv-transition", false, nil)
+	provider.set([]tools.ToolDescriptor{ordinary})
+	swap, err := reg.StageRegistration(ServerRegistration{
+		Provider: provider, Transport: "inmemory", InitialState: ServerStateOnline,
+		Catalog: cat,
+	}, []tools.ToolDescriptor{ordinary})
+	if err != nil {
+		t.Fatalf("StageRegistration: %v", err)
+	}
+	if _, err := swap.Publish(ctx, nil); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	initial, err := cat.StageSource("srv-transition", ordinaryDescriptors([]tools.ToolDescriptor{ordinary}), false)
+	if err != nil {
+		t.Fatalf("initial catalog stage: %v", err)
+	}
+	initial.Commit()
+
+	provider.set([]tools.ToolDescriptor{appDesc("srv-transition_tool", "srv-transition", true, nil)})
+	if _, err := reg.RefreshDiscovery(ctx, "srv-transition"); err != nil {
+		t.Fatalf("ordinary-to-app refresh: %v", err)
+	}
+	if _, ok := cat.Resolve("srv-transition_tool"); ok {
+		t.Fatal("ordinary descriptor survived transition to App-only")
+	}
+	if _, ok := reg.ResolveAppTool("srv-transition", "srv-transition_tool"); !ok {
+		t.Fatal("App-only descriptor missing after ordinary-to-app transition")
+	}
+
+	provider.set([]tools.ToolDescriptor{ordinary})
+	if _, err := reg.RefreshDiscovery(ctx, "srv-transition"); err != nil {
+		t.Fatalf("app-to-ordinary refresh: %v", err)
+	}
+	if _, ok := reg.ResolveAppTool("srv-transition", "srv-transition_tool"); ok {
+		t.Fatal("App-only descriptor survived transition to ordinary")
+	}
+	if _, ok := cat.Resolve("srv-transition_tool"); !ok {
+		t.Fatal("ordinary descriptor missing after App-only-to-ordinary transition")
+	}
+}
+
+// TestRegistry_RefreshDiscovery_ReappliesAttachmentPolicy proves refresh
+// cannot resurrect a callback excluded by the attachment allow/deny policy.
+func TestRegistry_RefreshDiscovery_ReappliesAttachmentPolicy(t *testing.T) {
+	ctx := idCtx(t)
+	reg := NewRegistry()
+	provider := &mutableAppProvider{id: "srv-policy"}
+	allowed := appDesc("srv-policy_allowed", "srv-policy", true, nil)
+	denied := appDesc("srv-policy_denied", "srv-policy", true, nil)
+	provider.set([]tools.ToolDescriptor{allowed})
+	swap, err := reg.StageRegistration(ServerRegistration{
+		Provider: provider, Transport: "inmemory", InitialState: ServerStateOnline,
+		ToolAllowlist: []string{"allowed"}, ToolDenylist: []string{"denied"},
+	}, []tools.ToolDescriptor{allowed})
+	if err != nil {
+		t.Fatalf("StageRegistration: %v", err)
+	}
+	if _, err := swap.Publish(ctx, nil); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	provider.set([]tools.ToolDescriptor{allowed, denied})
+	if _, err := reg.RefreshDiscovery(ctx, "srv-policy"); err != nil {
+		t.Fatalf("policy refresh: %v", err)
+	}
+	if _, ok := reg.ResolveAppTool("srv-policy", "srv-policy_allowed"); !ok {
+		t.Fatal("allowlisted callback missing after policy refresh")
+	}
+	if _, ok := reg.ResolveAppTool("srv-policy", "srv-policy_denied"); ok {
+		t.Fatal("denied callback became callable after refresh")
+	}
+}
+
 // TestRegistry_Replacement_SwapsAppCallbacksAtomically proves a same-name
 // replacement (re-attach / hot reload) swaps the App dispatch view with
 // the new generation: the old callbacks stop resolving, the new ones

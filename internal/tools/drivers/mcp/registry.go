@@ -278,6 +278,11 @@ type serverEntry struct {
 	// snapshot that seeds the catalog publication, so attach / reconnect /
 	// refresh / replacement / detach move both views together.
 	appOnly map[string]tools.ToolDescriptor
+	// catalog is the ordinary planner/model projection paired with appOnly.
+	// Refreshes reconcile both views from one filtered discovery snapshot.
+	catalog       tools.ToolCatalog
+	toolAllowlist []string
+	toolDenylist  []string
 
 	// stats is the mutable per-server runtime state. Guarded by the
 	// Registry's mu (RWMutex). Documented invariants: every field is
@@ -405,6 +410,15 @@ type ServerRegistration struct {
 	// DescriptorFingerprint is the canonical digest of the complete
 	// NON-SECRET runtime-added descriptor. Empty for boot registrations.
 	DescriptorFingerprint string
+	// Catalog is the ordinary planner/model projection paired with this
+	// registration, allowing refresh to reconcile both views together.
+	Catalog tools.ToolCatalog
+	// ToolAllowlist is the signed restrictive tool-name policy applied to
+	// discovery snapshots before either projection is rebuilt.
+	ToolAllowlist []string
+	// ToolDenylist is the signed restrictive tool-name policy applied to
+	// discovery snapshots before either projection is rebuilt.
+	ToolDenylist []string
 }
 
 // CheckServerIDUnambiguous reports whether registering `name` would leave the
@@ -555,6 +569,9 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 		oauthAllowedOrigins:   append([]string(nil), reg.OAuthDiscoveryAllowedOrigins...),
 		owner:                 reg.Owner,
 		descriptorFingerprint: reg.DescriptorFingerprint,
+		catalog:               reg.Catalog,
+		toolAllowlist:         append([]string(nil), reg.ToolAllowlist...),
+		toolDenylist:          append([]string(nil), reg.ToolDenylist...),
 		stats: serverStats{
 			state:             st,
 			oauthBindingCount: reg.OAuthBindingCount,
@@ -1698,14 +1715,10 @@ func (r *Registry) ListPrompts(ctx context.Context, name string) ([]PromptView, 
 //
 // # The App dispatch view rebuilds with the snapshot
 //
-// The fresh descriptor set ALSO rebuilds the server's App dispatch catalog
-// (entry.appOnly) under the same write lock, so a refresh picks up newly
-// added app-only callbacks (usable only through this server's App host) and
-// drops removed ones (they stop resolving everywhere — they were never in the
-// ordinary catalog). The ordinary planner/model catalog is deliberately NOT
-// re-published here: catalog publication happens once per attach / replacement
-// (the dispatch linearization point), and a refresh stays a stats + App-view
-// observation, matching the documented stats-only posture of the ordinary view.
+// The fresh descriptor set rebuilds BOTH projections under the registry write
+// lock: the ordinary planner/model catalog and the server's App dispatch
+// catalog (entry.appOnly). A refresh therefore picks up and removes callbacks
+// in either visibility direction without leaving a stale projection behind.
 func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*DiscoveryResult, error) {
 	if err := requireIdentity(ctx); err != nil {
 		return nil, err
@@ -1721,6 +1734,9 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 		r.recordError(name)
 		return nil, fmt.Errorf("mcp: RefreshDiscovery %q: %w", name, derr)
 	}
+	// Reapply the registration policy to every fresh snapshot before either
+	// catalog view is derived. A refresh must never resurrect a denied tool.
+	descs = filterDiscoveredTools(descs, name, e.toolAllowlist, e.toolDenylist)
 	tc, rc, pc := classifyDescriptors(descs, name)
 
 	r.mu.Lock()
@@ -1736,6 +1752,14 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 		StartMs:   start.UnixMilli(),
 		LatencyMs: latency,
 	})
+	if e.catalog != nil {
+		catalogSwap, cerr := e.catalog.StageSource(tools.ToolSourceID(name), ordinaryDescriptors(descs), true)
+		if cerr != nil {
+			r.mu.Unlock()
+			return nil, fmt.Errorf("mcp: refresh catalog %q: %w", name, cerr)
+		}
+		catalogSwap.Commit()
+	}
 	// Rebuild the App dispatch view from the SAME fresh snapshot that just
 	// re-derived the counts — one discovered set, two views.
 	e.appOnly = partitionAppOnly(descs)

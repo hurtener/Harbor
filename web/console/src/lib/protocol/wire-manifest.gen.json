@@ -4539,6 +4539,11 @@
           "optional": true
         },
         {
+          "key": "server_id",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "tool",
           "type": "string"
         },

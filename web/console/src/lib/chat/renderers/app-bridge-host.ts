@@ -276,7 +276,8 @@ export interface MCPAppHostClient {
    * not-found, so the confinement rejection is distinguishable from a transport
    * failure.
    */
-  callTool(tool: string, args?: unknown, agentID?: string): Promise<MCPAppToolResult>;
+  /** Route an app callback with the host-derived server identity. */
+  callTool(serverID: string, tool: string, args?: unknown, agentID?: string): Promise<MCPAppToolResult>;
   /** Route `resources/list` → `mcp.servers.resources`. */
   listResources(serverID: string, agentID?: string): Promise<MCPAppResourceListing[]>;
   /**
@@ -584,7 +585,7 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
       const qualified = qualifyAppToolName(serverID, name);
       let result: MCPAppToolResult;
       try {
-        result = await client.callTool(qualified, args, agentID);
+        result = await client.callTool(serverID, qualified, args, agentID);
       } catch (err) {
         if (err instanceof MCPAppToolNotFoundError) {
           // Re-raise naming what the APP asked for (the bare name) and the
