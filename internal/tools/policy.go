@@ -444,7 +444,7 @@ func runWithPolicy(
 		// If the parent ctx died (not just the per-attempt one),
 		// terminate.
 		if parentErr := ctx.Err(); parentErr != nil {
-			return result, terminalPolicyError(parentErr, attempt+1, totalAttempts, ClassifyError(parentErr, false))
+			return result, terminalPolicyError(policyCancellationError(parentErr, invokeErr), attempt+1, totalAttempts, ClassifyError(parentErr, false))
 		}
 		// If the class isn't in RetryOn, terminate.
 		if !resolved.retryAllowed(lastClass) {

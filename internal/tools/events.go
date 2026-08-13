@@ -90,7 +90,7 @@ type ToolFailedPayload struct {
 	Transport        TransportKind
 	Attempts         int
 	ErrorClass       ErrorClass
-	ConfiguredBudget int
+	ConfiguredBudget int `json:",omitempty"`
 	ErrorMessage     string
 	// ScopeShortfall carries the structured downstream insufficient-scope
 	// step-up when the terminal failure was an *ErrInsufficientScope. Nil for
@@ -122,6 +122,6 @@ type ToolPolicyExhaustedPayload struct {
 	Transport        TransportKind
 	Attempts         int
 	LastClass        ErrorClass
-	ConfiguredBudget int
+	ConfiguredBudget int `json:",omitempty"`
 	LastError        string
 }

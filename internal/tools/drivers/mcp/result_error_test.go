@@ -14,9 +14,12 @@ func TestLowerCallToolResult_TypedErrorPreservesLoweredResult(t *testing.T) {
 		IsError:           true,
 		Content:           []mcpsdk.Content{&mcpsdk.TextContent{Text: "provider says no"}},
 		StructuredContent: map[string]any{"answer": "structured"},
-		Meta: mcpsdk.Meta{tools.MCPResultErrorNamespace: map[string]any{
-			"error": map[string]any{"class": string(tools.MCPToolErrorConflict), "message": "already exists"},
-		}},
+		Meta: mcpsdk.Meta{
+			"ui": map[string]any{"resourceUri": "ui://app/main.html"},
+			tools.MCPResultErrorNamespace: map[string]any{
+				"error": map[string]any{"class": string(tools.MCPToolErrorConflict), "message": "already exists"},
+			},
+		},
 	}
 	value, err := lowerCallToolResult(res)
 	if err == nil || !errors.Is(err, tools.ErrMCPToolError) {
@@ -31,6 +34,20 @@ func TestLowerCallToolResult_TypedErrorPreservesLoweredResult(t *testing.T) {
 	var typed *tools.MCPToolResultError
 	if !errors.As(err, &typed) || typed.Class != tools.MCPToolErrorConflict {
 		t.Fatalf("typed error = %#v", typed)
+	}
+	lowered, ok := typed.Result.Value.(MCPToolValue)
+	if !ok {
+		t.Fatalf("typed result value = %T, want MCPToolValue", typed.Result.Value)
+	}
+	if lowered.Text != "provider says no" {
+		t.Fatalf("typed result text = %q", lowered.Text)
+	}
+	structured, ok := lowered.StructuredContent.(map[string]any)
+	if !ok || structured["answer"] != "structured" {
+		t.Fatalf("typed result structured content = %#v", lowered.StructuredContent)
+	}
+	if lowered.AppRef == nil || lowered.AppRef.ResourceURI != "ui://app/main.html" {
+		t.Fatalf("typed result AppRef = %+v", lowered.AppRef)
 	}
 }
 

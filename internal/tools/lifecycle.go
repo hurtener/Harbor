@@ -176,7 +176,7 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, t
 				Transport:        transport,
 				Attempts:         policyAttempts(policyErr, 1),
 				ErrorClass:       policyClass(policyErr, ErrClassPermanent),
-				ConfiguredBudget: policyBudget(policyErr, 1),
+				ConfiguredBudget: policyBudget(policyErr, 0),
 				ErrorMessage:     err.Error(),
 				ScopeShortfall:   shortfall,
 			},
