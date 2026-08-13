@@ -21,6 +21,6 @@ assert_grep_present "D-423" docs/decisions.md "D-423 is recorded (HA-62)"
 assert_grep_present "Pending" docs/plans/README.md "phase 244 is Planned/Pending in the master plan"
 assert_grep_present "skill_create_draft" docs/plans/phase-244-personal-skill-draft-tool.md "draft tool is planned"
 assert_grep_present "disabled by default" docs/plans/phase-244-personal-skill-draft-tool.md "disabled-by-default posture is planned"
-assert_grep_present "zero" docs/plans/phase-244-personal-skill-draft-tool.md "zero mutation authority is planned"
+assert_grep_present "fail without mutation" docs/plans/phase-244-personal-skill-draft-tool.md "zero mutation authority is planned"
 assert_grep_present "Phase 243" docs/plans/phase-244-personal-skill-draft-tool.md "install path is exclusively Phase 243 validate/commit"
 smoke_summary

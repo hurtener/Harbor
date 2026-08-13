@@ -67,7 +67,7 @@ Governance amendment (HA-54 planner-replay gap; Pending (v1.28)) — file/test o
 - `internal/planner/react/prompt.go` — the ReAct renderer MUST surface the
   classified `LLMObservation` in the next prompt; legacy unstructured errors
   render a generic safe fallback.
-- `test/integration/mcp_error_replay_test.go` — the full-path replay test.
+- `test/integration/mcp_failure_replay_test.go` — the full-path replay test.
 
 ## Public API surface
 
@@ -78,7 +78,7 @@ Governance amendment (HA-54 planner-replay gap; Pending (v1.28)) — file/test o
 
 - **Unit:** envelope validation, lowering, fallback, policy mapping, wrapping, bounded-content preservation.
 - **Integration:** real SDK-derived MCP fixtures over stdio/streamable HTTP/SSE through the retry shell; identity and a forced failure.
-- **Full path (replay):** `test/integration/mcp_error_replay_test.go` drives
+- **Full path (replay):** `test/integration/mcp_failure_replay_test.go` drives
   `IsError` → typed classification → retry policy → runloop step recording →
   the actual next ReAct prompt; the typed class, bounded provider message,
   retryability/final-attempt outcome, and retained bounded result content

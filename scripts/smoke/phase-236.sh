@@ -23,7 +23,7 @@ assert_grep_present "Protocol" docs/plans/phase-236-typed-mcp-errors.md "Protoco
 assert_grep_present "survive runloop step recording" docs/plans/phase-236-typed-mcp-errors.md "classification/retry/bounded result survive runloop step recording"
 assert_grep_present "appear in the actual next ReAct prompt" docs/plans/phase-236-typed-mcp-errors.md "the next ReAct prompt is the replay destination"
 assert_grep_present "Step\.Error.*never masks" docs/plans/phase-236-typed-mcp-errors.md "a generic Step.Error never masks the classified LLMObservation"
-assert_grep_present "mcp_error_replay_test.go" docs/plans/phase-236-typed-mcp-errors.md "the full-path replay test is owned by the phase"
+assert_grep_present "mcp_failure_replay_test.go" docs/plans/phase-236-typed-mcp-errors.md "the full-path replay test is owned by the phase"
 assert_grep_present "revision_conflict.*current revision" docs/plans/phase-236-typed-mcp-errors.md "revision_conflict carries the current revision for reread/retry"
 assert_grep_present "planner-replay closure" docs/decisions.md "D-410 carries the planner-replay closure amendment"
 # D-410's plan cross-reference must name the real plan file — the wrong name
