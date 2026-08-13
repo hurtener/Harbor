@@ -59,8 +59,9 @@ fi
 #     assertion/removal/audit identity, but normal data-plane use MUST carry
 #     the exact effective agent restored from durable authenticated reach
 #     admission. Keep the two channels distinct. The embedded parser below
-#     checks the containment relationships, not merely that each symbol exists:
-#     a moved assignment or a control-plane lookup must fail closed. ---
+#     checks the two ordered reach-admitted blocks and their containment
+#     relationships, not merely that each symbol exists: a moved assignment or
+#     a control-plane lookup must fail closed. ---
 # The parser owns the fail-closed relationships between receipt restoration,
 # effective-agent selection, and signed-capability data-plane authorization.
 if python3 <<'PY'
@@ -173,13 +174,22 @@ try:
         r"\brunCtx\s*=\s*tools\.WithEffectiveAgentConfig\s*\(\s*runCtx\s*,\s*effectiveAgentID\s*\)",
         run_fn,
     ))
-    if len(restores) != 1 or len(assignments) != 1 or len(calls) != 1 or len(reach_blocks) != 1:
-        fail("runOne restore, effective-agent assignment, stamp, or admitted block is missing or ambiguous")
-    block_start, block_end = reach_blocks[0]
-    if not (restores[0].start() < block_start):
-        fail("runOne reach receipt restore is missing or follows the admitted block")
-    if not (block_start < assignments[0].start() < block_end and block_start < calls[0].start() < block_end):
-        fail("runOne effective-agent assignment and stamp are not both inside the admitted block")
+    if len(restores) != 1 or len(assignments) != 1 or len(calls) != 1:
+        fail("runOne restore, effective-agent assignment, or stamp is missing or ambiguous")
+    if len(reach_blocks) != 2:
+        fail("runOne must contain exactly two ordered admitted blocks")
+    first_start, first_end = reach_blocks[0]
+    second_start, second_end = reach_blocks[1]
+    if first_end >= second_start:
+        fail("runOne admitted blocks are overlapping, nested, or out of order")
+    if not (restores[0].start() < first_start):
+        fail("runOne reach receipt restore is missing or follows the first admitted block")
+    if not (first_start < assignments[0].start() < first_end):
+        fail("runOne effective-agent assignment is missing from the first admitted block")
+    if not (second_start < calls[0].start() < second_end):
+        fail("runOne effective-agent stamp is missing from the second admitted block")
+    if not (restores[0].start() < assignments[0].start() < calls[0].start()):
+        fail("runOne restore, effective-agent assignment, and stamp are out of order")
 
     with open("internal/tools/auth/drivers/tokenexchange/tokenexchange.go", encoding="utf-8") as handle:
         tokenexchange = handle.read()
