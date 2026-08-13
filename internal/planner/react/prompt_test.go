@@ -2,6 +2,7 @@ package react
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -1631,6 +1632,227 @@ func TestRenderNativeShapes_SuccessArgsReplayedUnchanged(t *testing.T) {
 	asst, _ = renderNativeBatchStep(bstep, bcall, planner.ReasoningReplayNever, 0)
 	if len(asst.ToolCalls) != 1 || string(asst.ToolCalls[0].Args) != `{"a":1}` {
 		t.Errorf("batch success args changed: %+v", asst.ToolCalls)
+	}
+}
+
+// controlReplayCase is one row of the table-driven control-step replay
+// fixtures: a standalone native planner-control action
+// [renderNativeControlStep] must replay under its reserved tool name,
+// carrying the typed reconstructed args whose raw values the
+// `sentinel` sample represents.
+type controlReplayCase struct {
+	name     string
+	action   any
+	wantName string
+	sentinel string
+}
+
+// controlReplayCases returns every standalone native planner-control
+// action the control-step renderer supports — spawn, await, task-status,
+// cancel, steer, pause, resume — with the reserved tool name it replays
+// under and a sentinel raw arg value whose absence proves a FAILED
+// replay redacted the payload.
+func controlReplayCases() []controlReplayCase {
+	return []controlReplayCase{
+		{
+			name: "spawn",
+			action: planner.SpawnTask{
+				Kind: tasks.KindBackground,
+				Spec: planner.SpawnSpec{
+					Description:       "dig",
+					Query:             "research sub-question A",
+					Priority:          5,
+					RetainTurn:        true,
+					FailFast:          true,
+					PropagateOnCancel: "isolate",
+					VirtualAgent:      "reviewer",
+					InputArtifactIDs:  []string{"art-1"},
+				},
+				GroupID: tasks.TaskGroupID("grp-1"),
+			},
+			wantName: SpawnTaskToolName,
+			sentinel: "research sub-question A",
+		},
+		{
+			name:     "await",
+			action:   planner.AwaitTask{TaskID: tasks.TaskID("task-A")},
+			wantName: AwaitTaskToolName,
+			sentinel: "task-A",
+		},
+		{
+			name:     "task-status",
+			action:   planner.TaskStatusQuery{TaskIDs: []tasks.TaskID{"task-A", "task-B"}},
+			wantName: TaskStatusToolName,
+			sentinel: "task-A",
+		},
+		{
+			name:     "cancel",
+			action:   planner.CancelTask{TaskID: tasks.TaskID("task-B"), Reason: "lost the race"},
+			wantName: CancelTaskToolName,
+			sentinel: "lost the race",
+		},
+		{
+			name:     "steer",
+			action:   planner.SteerTask{TaskID: tasks.TaskID("task-A"), Directive: "focus on auth"},
+			wantName: SteerTaskToolName,
+			sentinel: "focus on auth",
+		},
+		{
+			name:     "pause",
+			action:   planner.PauseTask{TaskID: tasks.TaskID("task-B"), Reason: "hold"},
+			wantName: PauseTaskToolName,
+			sentinel: "hold",
+		},
+		{
+			name:     "resume",
+			action:   planner.ResumeTask{TaskID: tasks.TaskID("task-B"), Directive: "carry on"},
+			wantName: ResumeTaskToolName,
+			sentinel: "carry on",
+		},
+	}
+}
+
+// TestRenderNativeControlStep_FailureSurfacesRedactArgs pins the
+// control-step leg of the replay redaction contract: for EVERY
+// standalone native planner-control action
+// [renderNativeControlStep] supports (spawn / await / task-status /
+// cancel / steer / pause / resume), a step carrying ANY terminal
+// failure surface — a generic Error stamp, a structured
+// [planner.FailureRecord], or a structured classified observation —
+// replays the reconstructed assistant tool-call args as a deterministic
+// bounded `{}` so no raw task ids / directives / reasons (which may
+// carry secrets) reach the next prompt. The reserved tool name, the
+// deterministic `react.callid.<step-index>` call ID, the
+// assistant/tool pairing, and the safe generic / classified observation
+// body are preserved.
+func TestRenderNativeControlStep_FailureSurfacesRedactArgs(t *testing.T) {
+	t.Parallel()
+
+	failModes := []struct {
+		name     string
+		step     func(action any) planner.Step
+		wantBody string // the safe failure surface the RoleTool body must preserve
+	}{
+		{
+			name: "generic-error",
+			step: func(action any) planner.Step {
+				return planner.Step{
+					Action:         action,
+					Error:          "tool execution failed",
+					LLMObservation: map[string]any{"error": "tool blew up"},
+				}
+			},
+			wantBody: "Tool error: tool execution failed",
+		},
+		{
+			name: "failure-record",
+			step: func(action any) planner.Step {
+				return planner.Step{
+					Action: action,
+					Failure: &planner.FailureRecord{
+						Code:    "schema_repair_exhausted",
+						Message: "bad shape",
+					},
+				}
+			},
+			wantBody: "schema_repair_exhausted",
+		},
+		{
+			name: "classified-observation",
+			step: func(action any) planner.Step {
+				s := classifiedMCPFailureStep()
+				s.Action = action
+				return s
+			},
+			wantBody: "document changed",
+		},
+	}
+
+	const stepIdx = 7
+	for _, mode := range failModes {
+		t.Run(mode.name, func(t *testing.T) {
+			for _, tc := range controlReplayCases() {
+				t.Run(tc.name, func(t *testing.T) {
+					step := mode.step(tc.action)
+					asst, toolMsg, native := renderNativeControlStep(step, planner.ReasoningReplayNever, stepIdx)
+					if !native {
+						t.Fatalf("renderNativeControlStep returned native=false for a %s step", tc.name)
+					}
+					if len(asst.ToolCalls) != 1 {
+						t.Fatalf("%s: assistant tool_calls = %d, want 1", tc.name, len(asst.ToolCalls))
+					}
+					call := asst.ToolCalls[0]
+					if string(call.Args) != "{}" {
+						t.Errorf("%s replay args = %s, want the bounded {} object", tc.name, string(call.Args))
+					}
+					var probe map[string]any
+					if err := json.Unmarshal(call.Args, &probe); err != nil {
+						t.Errorf("%s replay args are not valid JSON: %v", tc.name, err)
+					}
+					if strings.Contains(string(call.Args), tc.sentinel) {
+						t.Errorf("%s replay args leak the raw control args: %s", tc.name, string(call.Args))
+					}
+					if call.ID != fmt.Sprintf("react.callid.%d", stepIdx) || call.Name != tc.wantName {
+						t.Errorf("%s tool_call = {%q,%q}, want {%q,%q}", tc.name, call.ID, call.Name, fmt.Sprintf("react.callid.%d", stepIdx), tc.wantName)
+					}
+					if toolMsg == nil || toolMsg.ToolCallID == nil || *toolMsg.ToolCallID != call.ID {
+						t.Errorf("%s role-tool pairing lost: %+v", tc.name, toolMsg)
+					}
+					if toolMsg == nil || toolMsg.Content.Text == nil || !strings.Contains(*toolMsg.Content.Text, mode.wantBody) {
+						t.Errorf("%s tool body drops the safe failure surface %q: %+v", tc.name, mode.wantBody, toolMsg.Content.Text)
+					}
+					if toolMsg != nil && toolMsg.Content.Text != nil && strings.Contains(*toolMsg.Content.Text, tc.sentinel) {
+						t.Errorf("%s tool body leaks the raw control args: %s", tc.name, *toolMsg.Content.Text)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestRenderNativeControlStep_SuccessPreservesTypedArgs asserts the
+// success-path leg of the control-step replay contract: for EVERY
+// standalone native planner-control action, a successful step replays
+// the reconstructed typed args unchanged — non-empty and carrying the
+// model-authored task ids / directives / reasons — with the reserved
+// tool name, the deterministic call ID, the assistant/tool pairing, and
+// the observation body intact. Redaction applies only to failed calls
+// (see [stepFailed]).
+func TestRenderNativeControlStep_SuccessPreservesTypedArgs(t *testing.T) {
+	t.Parallel()
+
+	const stepIdx = 7
+	for _, tc := range controlReplayCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			step := planner.Step{Action: tc.action, LLMObservation: map[string]any{"ok": true}}
+			asst, toolMsg, native := renderNativeControlStep(step, planner.ReasoningReplayNever, stepIdx)
+			if !native {
+				t.Fatalf("renderNativeControlStep returned native=false for a %s step", tc.name)
+			}
+			if len(asst.ToolCalls) != 1 {
+				t.Fatalf("%s: assistant tool_calls = %d, want 1", tc.name, len(asst.ToolCalls))
+			}
+			call := asst.ToolCalls[0]
+			if string(call.Args) == "{}" {
+				t.Errorf("%s success args were redacted: %s", tc.name, string(call.Args))
+			}
+			if !strings.Contains(string(call.Args), tc.sentinel) {
+				t.Errorf("%s success replay dropped the typed args: args = %s", tc.name, string(call.Args))
+			}
+			var probe map[string]any
+			if err := json.Unmarshal(call.Args, &probe); err != nil {
+				t.Errorf("%s success args are not valid JSON: %v", tc.name, err)
+			}
+			if call.ID != fmt.Sprintf("react.callid.%d", stepIdx) || call.Name != tc.wantName {
+				t.Errorf("%s tool_call = {%q,%q}, want {%q,%q}", tc.name, call.ID, call.Name, fmt.Sprintf("react.callid.%d", stepIdx), tc.wantName)
+			}
+			if toolMsg == nil || toolMsg.ToolCallID == nil || *toolMsg.ToolCallID != call.ID {
+				t.Errorf("%s role-tool pairing lost: %+v", tc.name, toolMsg)
+			}
+			if toolMsg == nil || toolMsg.Content.Text == nil || !strings.Contains(*toolMsg.Content.Text, "ok") {
+				t.Errorf("%s tool body drops the observation: %+v", tc.name, toolMsg.Content.Text)
+			}
+		})
 	}
 }
 

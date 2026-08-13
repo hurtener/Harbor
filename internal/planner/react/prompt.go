@@ -1153,6 +1153,16 @@ func renderNativeControlStep(step planner.Step, replayMode planner.ReasoningRepl
 		return llm.ChatMessage{}, nil, false
 	}
 
+	if stepFailed(step) {
+		// A failed control call never replays its reconstructed args —
+		// the task ids / directives / reasons were authored for a
+		// dispatch that failed terminally and may carry secrets, so the
+		// deterministic bounded `{}` keeps the assistant tool_call /
+		// role-tool pairing wire-valid while redacting the payload (see
+		// [stepFailed] and [replayCallArgs]).
+		args = json.RawMessage("{}")
+	}
+
 	callID := fmt.Sprintf("react.callid.%d", stepIdx)
 	assistantText := step.AssistantPreamble
 	if replayMode == planner.ReasoningReplayText && step.ReasoningTrace != "" {
