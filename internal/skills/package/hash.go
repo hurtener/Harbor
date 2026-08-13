@@ -12,10 +12,10 @@ import (
 // PackageHash is the identity of a COMPLETE skill package: the
 // logical canonical skill content PLUS the ordered normalized support
 // manifest (canonical path, MIME, exact size, digest per entry). It
-// is computed over the canonical serialization BEFORE the `skillpkg:`
-// URI is materialized — the URI embeds the hash verbatim, so the hash
-// never depends on the URI form and any authorized resolver can
-// verify a package against its reference.
+// is computed over the canonical serialization BEFORE a `skillpkg://`
+// support URI is materialized — the URI embeds the hash verbatim, so
+// the hash never depends on the URI form and any authorized resolver
+// can verify a package against its reference.
 //
 // The hash is VERSIONED and distinct from the legacy
 // `skills.CanonicalContentHash`: the stored-row content hash covers

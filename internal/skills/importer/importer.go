@@ -128,13 +128,23 @@ type Importer interface {
 	// ImportPackage validates a complete skill package archive (zip)
 	// and parses its root SKILL.md into the canonical package DTO
 	// plus the stored-skill form, computing the versioned
-	// PackageHash and the resolver-neutral `skillpkg:` URI. PURE:
-	// no storage writes, no artifact uploads — the archive and
+	// PackageHash. Support files are referenced through the immutable
+	// `skillpkg://<PackageHash>/<encoded-canonical-support-path>`
+	// URI (PackageIngest.SupportURI — one URI per support file).
+	// PURE: no storage writes, no artifact uploads — the archive and
 	// SKILL.md validation primitives (traversal, collisions,
 	// links/devices, nested archives, MIME, decompression and
 	// count/size/ratio bounds, one-root-case-exact-SKILL.md) live in
 	// the canonical semantic core.
 	ImportPackage(ctx context.Context, src PackageSource) (PackageIngest, error)
+
+	// ImportPackageMarkdown ingests ONE bounded UTF-8 SKILL.md
+	// document as a resource-free complete skill package (no support
+	// files) via the same parser / canonical DTO / hash as
+	// ImportPackage. Any relative support-file reference in the body
+	// is rejected because no support manifest exists. PURE: no
+	// storage writes, no artifact uploads.
+	ImportPackageMarkdown(ctx context.Context, src PackageMarkdownSource) (PackageIngest, error)
 
 	// Close releases resources. Idempotent. Currently a no-op
 	// (the importer holds no long-lived resources), but included

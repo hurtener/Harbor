@@ -1,7 +1,7 @@
 // package_suite.go — the canonical complete-skill-package semantic
 // suite. It is the shared assertion set every consumer of the
 // complete-skill-package core inherits: the versioned package hash,
-// the deterministic serializer, the bounded resolver-neutral URI, and
+// the deterministic serializer, the bounded immutable support URI, and
 // the archive / SKILL.md validation primitives. Unlike the SkillStore
 // driver suite, the core is concrete (there are no drivers to
 // parameterise), so the suite takes no factory — it runs against the
@@ -73,18 +73,28 @@ func RunPackageSemanticsSuite(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PackageHash: %v", err)
 		}
-		u, err := skills.NewPackageURI(h, p.Name)
+		path := p.Supports[0].Path
+		u, err := skills.NewPackageURI(h, path)
 		if err != nil {
 			t.Fatalf("NewPackageURI: %v", err)
 		}
-		if strings.Contains(u.String(), "//") {
-			t.Fatalf("URI %q carries an authority component", u.String())
+		s := u.String()
+		if !strings.HasPrefix(s, "skillpkg://"+h+"/"+path) {
+			t.Fatalf("URI %q does not carry hash+support path verbatim", s)
 		}
-		parsed, err := skills.ParsePackageURI(u.String())
+		// The `//` is the scheme's authority delimiter; the authority
+		// position must never carry userinfo, host, query, or
+		// fragment material.
+		for _, forbidden := range []string{"@", "?", "#"} {
+			if strings.Contains(s, forbidden) {
+				t.Fatalf("URI %q carries %q material", s, forbidden)
+			}
+		}
+		parsed, err := skills.ParsePackageURI(s)
 		if err != nil {
 			t.Fatalf("ParsePackageURI: %v", err)
 		}
-		if parsed.Hash != h || parsed.Name != p.Name {
+		if parsed.Hash != h || parsed.Path != path {
 			t.Fatalf("URI round-trip mismatch: %+v", parsed)
 		}
 	})

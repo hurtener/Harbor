@@ -11,6 +11,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/skills/importer"
+	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 )
 
 // packageZip builds a complete-skill-package archive in memory.
@@ -85,17 +86,38 @@ func TestImportPackage_Valid(t *testing.T) {
 		t.Fatalf("Package.Validate: %v", err)
 	}
 
-	// Hash + URI: versioned, distinct from the stored ContentHash,
-	// and the URI round-trips.
+	// Hash + support URI: versioned, distinct from the stored
+	// ContentHash, and the URI round-trips. The URI references ONE
+	// support file — never the package name.
 	if !strings.HasPrefix(ingest.Hash, "v1:") || ingest.Hash == ingest.Skill.ContentHash {
 		t.Fatalf("hash %q (content %q)", ingest.Hash, ingest.Skill.ContentHash)
 	}
-	if ingest.URI.String() != "skillpkg:"+ingest.Hash+"/packaged-demo" {
-		t.Fatalf("URI = %q", ingest.URI.String())
+	u, err := ingest.SupportURI("assets/logo.png")
+	if err != nil {
+		t.Fatalf("SupportURI: %v", err)
 	}
-	parsed, err := skills.ParsePackageURI(ingest.URI.String())
-	if err != nil || parsed.Hash != ingest.Hash {
+	if u.String() != "skillpkg://"+ingest.Hash+"/assets/logo.png" {
+		t.Fatalf("URI = %q", u.String())
+	}
+	parsed, err := skills.ParsePackageURI(u.String())
+	if err != nil || parsed.Hash != ingest.Hash || parsed.Path != "assets/logo.png" {
 		t.Fatalf("URI round-trip: %+v err=%v", parsed, err)
+	}
+	// Every manifest entry yields its own immutable support URI.
+	seen := map[string]bool{}
+	for _, f := range ingest.Package.Supports {
+		su, err := ingest.SupportURI(f.Path)
+		if err != nil {
+			t.Fatalf("SupportURI(%q): %v", f.Path, err)
+		}
+		if seen[su.String()] {
+			t.Fatalf("duplicate support URI %q", su.String())
+		}
+		seen[su.String()] = true
+	}
+	// A path outside the manifest fails loudly.
+	if _, err := ingest.SupportURI("assets/nope.png"); !errors.Is(err, importer.ErrPackageSupportRefMissing) {
+		t.Fatalf("SupportURI(missing): err=%v, want ErrPackageSupportRefMissing", err)
 	}
 	if err := skills.VerifyPackageHash(ingest.Package, ingest.Hash); err != nil {
 		t.Fatalf("VerifyPackageHash: %v", err)
@@ -119,7 +141,15 @@ func TestImportPackage_DeterministicHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportPackage: %v", err)
 	}
-	if a.Hash != b.Hash || a.URI.String() != b.URI.String() {
+	ua, err := a.SupportURI("assets/logo.png")
+	if err != nil {
+		t.Fatalf("SupportURI(a): %v", err)
+	}
+	ub, err := b.SupportURI("assets/logo.png")
+	if err != nil {
+		t.Fatalf("SupportURI(b): %v", err)
+	}
+	if a.Hash != b.Hash || ua.String() != ub.String() {
 		t.Fatalf("hash not deterministic: %q vs %q", a.Hash, b.Hash)
 	}
 }
@@ -169,5 +199,114 @@ func TestImportPackage_AfterClose(t *testing.T) {
 	_ = imp.Close(context.Background())
 	if _, err := imp.ImportPackage(context.Background(), importer.PackageSource{}); !errors.Is(err, importer.ErrImporterClosed) {
 		t.Fatalf("ImportPackage after Close: err=%v, want ErrImporterClosed", err)
+	}
+	if _, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{}); !errors.Is(err, importer.ErrImporterClosed) {
+		t.Fatalf("ImportPackageMarkdown after Close: err=%v, want ErrImporterClosed", err)
+	}
+}
+
+const packageMarkdownMD = "---\nname: markdown-skill\ntrigger: when asked for a markdown skill\n---\nA pure single-document skill.\n\n## Steps\n- do the thing\n\n## Preconditions\n- have the thing\n"
+
+func TestImportPackageMarkdown_Valid(t *testing.T) {
+	imp, _ := newImporter(t)
+	ingest, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{
+		Markdown: []byte(packageMarkdownMD),
+		PathHint: "markdown-skill.md",
+	})
+	if err != nil {
+		t.Fatalf("ImportPackageMarkdown: %v", err)
+	}
+
+	// Stored-skill form, identical shape to the ZIP path.
+	if ingest.Skill.Name != "markdown-skill" || ingest.Skill.Origin != skills.OriginPack || ingest.Skill.Scope != skills.ScopeProject {
+		t.Fatalf("Skill = %+v", ingest.Skill)
+	}
+	if ingest.Skill.Trigger != "when asked for a markdown skill" || len(ingest.Skill.Steps) != 1 {
+		t.Fatalf("Skill content = %+v", ingest.Skill)
+	}
+
+	// Resource-free package: same parser / canonical DTO / hash, but
+	// NO support manifest.
+	if ingest.Package.Name != "markdown-skill" {
+		t.Fatalf("package name = %q", ingest.Package.Name)
+	}
+	if len(ingest.Package.Supports) != 0 {
+		t.Fatalf("resource-free package carried supports: %+v", ingest.Package.Supports)
+	}
+	if err := ingest.Package.Validate(); err != nil {
+		t.Fatalf("Package.Validate: %v", err)
+	}
+
+	// Versioned hash, distinct from the stored ContentHash, and
+	// verifiable against the DTO.
+	if !strings.HasPrefix(ingest.Hash, "v1:") || ingest.Hash == ingest.Skill.ContentHash {
+		t.Fatalf("hash %q (content %q)", ingest.Hash, ingest.Skill.ContentHash)
+	}
+	if err := skills.VerifyPackageHash(ingest.Package, ingest.Hash); err != nil {
+		t.Fatalf("VerifyPackageHash: %v", err)
+	}
+
+	// A resource-free package has no support files, so it has no
+	// support URI — SupportURI always fails loudly.
+	if _, err := ingest.SupportURI("assets/logo.png"); !errors.Is(err, importer.ErrPackageSupportRefMissing) {
+		t.Fatalf("SupportURI on resource-free package: err=%v, want ErrPackageSupportRefMissing", err)
+	}
+}
+
+func TestImportPackageMarkdown_DeterministicHash(t *testing.T) {
+	imp, _ := newImporter(t)
+	src := importer.PackageMarkdownSource{Markdown: []byte(packageMarkdownMD), PathHint: "markdown-skill.md"}
+	a, err := imp.ImportPackageMarkdown(context.Background(), src)
+	if err != nil {
+		t.Fatalf("ImportPackageMarkdown: %v", err)
+	}
+	b, err := imp.ImportPackageMarkdown(context.Background(), src)
+	if err != nil {
+		t.Fatalf("ImportPackageMarkdown: %v", err)
+	}
+	if a.Hash != b.Hash || a.Package.Name != b.Package.Name {
+		t.Fatalf("markdown ingest not deterministic: %q vs %q", a.Hash, b.Hash)
+	}
+}
+
+func TestImportPackageMarkdown_Rejects(t *testing.T) {
+	imp, _ := newImporter(t)
+	cases := []struct {
+		name    string
+		md      []byte
+		wantErr error
+	}{
+		{"invalid utf8", []byte("---\ntrigger: t\n---\n\xff\xfe\n## Steps\n- s\n"), importer.ErrPackageMarkdownNotUTF8},
+		{"over bound", bytes.Repeat([]byte("a"), skillpkg.MaxPackageSkillMDBytes+1), skills.ErrSkillMDTooLarge},
+		{"no frontmatter", []byte("plain text"), skills.ErrSkillMDFrontmatterMissing},
+		{"missing trigger", []byte("---\nname: x\n---\n## Steps\n- s\n"), skills.ErrSkillMDMissingTrigger},
+		{"empty steps", []byte("---\ntrigger: t\n---\nno steps\n"), skills.ErrSkillMDEmptySteps},
+		{"unknown section", []byte("---\ntrigger: t\n---\n## Steps\n- s\n## Bizarre\n- x\n"), importer.ErrUnknownSection},
+		{"support ref in description", []byte("---\nname: x\ntrigger: t\n---\n![diagram](assets/logo.png)\n\n## Steps\n- s\n"), importer.ErrPackageSupportRefMissing},
+		{"support ref in step", []byte("---\nname: x\ntrigger: t\n---\n## Steps\n- see ![diagram](assets/logo.png)\n"), importer.ErrPackageSupportRefMissing},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: c.md})
+			if err == nil {
+				t.Fatalf("ImportPackageMarkdown: expected %v, got nil", c.wantErr)
+			}
+			if !errors.Is(err, c.wantErr) {
+				t.Fatalf("ImportPackageMarkdown: err=%v, want %v", err, c.wantErr)
+			}
+		})
+	}
+	// A scheme/absolute reference is not a support-file reference and
+	// stays verbatim (matching the ZIP path's skip behavior).
+	imp2, _ := newImporter(t)
+	withExternal := []byte("---\nname: ext\ntrigger: t\n---\n![remote](https://example.com/x.png)\n\n## Steps\n- s\n")
+	if _, err := imp2.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: withExternal}); err != nil {
+		t.Fatalf("external reference rejected: %v", err)
+	}
+	// Explicitly blank (no name) with no hint also fails validation.
+	if _, err := imp2.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{
+		Markdown: []byte("---\ntrigger: t\n---\n## Steps\n- s\n"),
+	}); !errors.Is(err, skills.ErrInvalidSkill) {
+		t.Fatalf("nameless markdown: err=%v, want ErrInvalidSkill", err)
 	}
 }

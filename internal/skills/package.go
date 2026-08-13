@@ -6,7 +6,7 @@ package skills
 // `skillpkg` subpackage (internal/skills/package): the DTO
 // (`Package`, `PackageSkill`, `SupportFile`), the validator, the
 // deterministic serializer, the versioned `PackageHash`, the bounded
-// resolver-neutral `skillpkg:` URI, and the archive / SKILL.md
+// immutable `skillpkg://` support URI, and the archive / SKILL.md
 // validation primitives. This file re-exports the core surface on the
 // `skills` package so consumers can address it without importing the
 // subpackage directly; the subpackage remains the single definition
@@ -37,7 +37,8 @@ type (
 	SupportFile = skillpkg.SupportFile
 	// ArchiveEntry is one validated archive entry.
 	ArchiveEntry = skillpkg.ArchiveEntry
-	// PackageURI is the bounded resolver-neutral package reference.
+	// PackageURI is the bounded immutable support-file reference of
+	// one support file of a complete skill package.
 	PackageURI = skillpkg.URI
 	// PackageArchiveLimits bounds an archive scan.
 	PackageArchiveLimits = skillpkg.ArchiveLimits
@@ -58,8 +59,8 @@ const (
 
 // PackageHash returns the versioned content hash of the complete
 // package: the logical canonical skill content plus the ordered
-// normalized support manifest, hashed BEFORE skillpkg URI
-// materialization. Distinct from the legacy `CanonicalContentHash`.
+// normalized support manifest, hashed BEFORE a skillpkg support URI
+// is materialized. Distinct from the legacy `CanonicalContentHash`.
 func PackageHash(p Package) (string, error) { return skillpkg.PackageHash(p) }
 
 // VerifyPackageHash reports whether the package's computed hash
@@ -74,12 +75,14 @@ func CanonicalPackageBytes(p Package) ([]byte, error) { return skillpkg.Canonica
 // serialization produced by CanonicalPackageBytes.
 func PackageFromCanonicalBytes(b []byte) (Package, error) { return skillpkg.FromCanonicalBytes(b) }
 
-// ParsePackageURI parses a bounded resolver-neutral `skillpkg:` URI.
+// ParsePackageURI parses a bounded immutable `skillpkg://` support
+// URI into its versioned PackageHash and canonical support path.
 func ParsePackageURI(s string) (PackageURI, error) { return skillpkg.ParseURI(s) }
 
-// NewPackageURI builds a package URI from a versioned PackageHash and
-// an optional canonical name hint.
-func NewPackageURI(hash, name string) (PackageURI, error) { return skillpkg.NewURI(hash, name) }
+// NewPackageURI builds the immutable support URI of ONE support file
+// of a package: `skillpkg://<versioned PackageHash>/<encoded
+// canonical support path>`.
+func NewPackageURI(hash, path string) (PackageURI, error) { return skillpkg.NewURI(hash, path) }
 
 // ValidatePackageArchive scans a zip archive into the ordered
 // canonical entry list, rejecting traversal, absolute/case/Unicode

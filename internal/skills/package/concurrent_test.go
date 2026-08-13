@@ -46,7 +46,7 @@ func TestConcurrentReuse_HashValidateURIParallel(t *testing.T) {
 				errs <- err
 				return
 			}
-			u, err := skillpkg.NewURI(h, q.Name)
+			u, err := skillpkg.NewURI(h, q.Supports[0].Path)
 			if err != nil {
 				errs <- err
 				return

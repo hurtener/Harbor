@@ -8,11 +8,20 @@
 // root SKILL.md through the SAME frontmatter + body state machine the
 // file path uses (parseBodyLines — one canonical parse, two entry
 // points), and produces the canonical package DTO plus its versioned
-// PackageHash and resolver-neutral `skillpkg:` URI.
+// PackageHash. Support files are referenced through the immutable
+// `skillpkg://<PackageHash>/<encoded-canonical-support-path>` URI —
+// one URI per support file, delivered by PackageIngest.SupportURI.
 //
-// ImportPackage is PURE: it performs no storage writes and no
-// artifact uploads. The existing file-import surface (Import /
-// Export / ImportAndStore) is untouched; this path is additive.
+// ImportPackageMarkdown is the pure single-document sibling: it
+// ingests ONE bounded UTF-8 SKILL.md document as a RESOURCE-FREE
+// complete skill package (no support manifest) through the same
+// parser / canonical DTO / hash. Any relative support-file reference
+// in the body is rejected, because no support manifest exists to
+// satisfy it.
+//
+// Both paths are PURE: they perform no storage writes and no artifact
+// uploads. The existing file-import surface (Import / Export /
+// ImportAndStore) is untouched; these paths are additive.
 
 package importer
 
@@ -22,6 +31,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/skills"
 	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
@@ -29,10 +39,15 @@ import (
 
 // ErrPackageSupportRefMissing — the SKILL.md body references a
 // relative support path that is not present in the archive's
-// validated support manifest. A package whose body points at a file
-// the archive does not carry is broken; it fails loudly rather than
-// materializing dangling references.
+// validated support manifest (or, for the resource-free single-
+// document ingest, any support reference at all). A package whose
+// body points at a file the package does not carry is broken; it
+// fails loudly rather than materializing dangling references.
 var ErrPackageSupportRefMissing = errors.New("importer: package support reference missing from archive")
+
+// ErrPackageMarkdownNotUTF8 — the single-document ingest received
+// bytes that are not valid UTF-8. A SKILL.md document must be UTF-8.
+var ErrPackageMarkdownNotUTF8 = errors.New("importer: package SKILL.md is not valid UTF-8")
 
 // PackageSource carries the bytes of ONE complete skill package
 // archive. PathHint is display metadata only (used for the
@@ -46,9 +61,27 @@ type PackageSource struct {
 	PathHint string
 }
 
-// PackageIngest is the outcome of ImportPackage: the parsed stored
-// `skills.Skill` form (Origin=Pack), the canonical package DTO, the
-// versioned PackageHash, and the resolver-neutral package URI.
+// PackageMarkdownSource carries the bytes of ONE bounded UTF-8
+// SKILL.md document for the pure single-document ingest path. The
+// document IS the package's root skill document by construction
+// (there is no archive, so the one-root-case-exact-SKILL.md invariant
+// is vacuous). PathHint is display metadata only (name fallback).
+type PackageMarkdownSource struct {
+	// Markdown is the raw UTF-8 SKILL.md bytes. Bounded by
+	// skillpkg.MaxPackageSkillMDBytes; must be valid UTF-8; must
+	// satisfy the canonical SKILL.md gate (frontmatter, trigger,
+	// steps).
+	Markdown []byte
+	// PathHint names the source (used for the name fallback). Empty
+	// is acceptable.
+	PathHint string
+}
+
+// PackageIngest is the outcome of the pure package ingest paths: the
+// parsed stored `skills.Skill` form (Origin=Pack), the canonical
+// package DTO, and the versioned PackageHash. Support-file references
+// are derived on demand via SupportURI (the hash-before-URI
+// materialization contract: the hash never depends on the URI form).
 type PackageIngest struct {
 	// Skill is the parsed root SKILL.md in stored-skill form
 	// (Origin=OriginPack, Scope defaulted like the file path).
@@ -59,9 +92,21 @@ type PackageIngest struct {
 	// Hash is the versioned package hash (v1:<64-hex>) — distinct
 	// from Skill.ContentHash, which covers only the skill body.
 	Hash string
-	// URI is the bounded resolver-neutral package reference derived
-	// from Hash (hash-before-URI-materialization).
-	URI skillpkg.URI
+}
+
+// SupportURI returns the immutable support URI of ONE support file of
+// the package: `skillpkg://<Hash>/<encoded canonical path>`. The path
+// must name an entry of the validated support manifest
+// (ErrPackageSupportRefMissing otherwise). A resource-free package
+// (the single-SKILL.md ingest) carries no support files, so
+// SupportURI always fails for it.
+func (pi PackageIngest) SupportURI(path string) (skillpkg.URI, error) {
+	for _, f := range pi.Package.Supports {
+		if f.Path == path {
+			return skillpkg.NewURI(pi.Hash, path)
+		}
+	}
+	return skillpkg.URI{}, fmt.Errorf("%w: %q is not in the package support manifest", ErrPackageSupportRefMissing, path)
 }
 
 // ImportPackage validates a complete skill package archive and parses
@@ -80,6 +125,21 @@ func (i *importerImpl) ImportPackage(ctx context.Context, src PackageSource) (Pa
 	return doImportPackage(ctx, src)
 }
 
+// ImportPackageMarkdown ingests ONE bounded UTF-8 SKILL.md document as
+// a resource-free complete skill package via the same parser /
+// canonical DTO / hash as ImportPackage. Any relative support-file
+// reference in the body is rejected because no support manifest
+// exists. Pure: no storage writes, no artifact uploads.
+func (i *importerImpl) ImportPackageMarkdown(ctx context.Context, src PackageMarkdownSource) (PackageIngest, error) {
+	if i.closed.Load() {
+		return PackageIngest{}, ErrImporterClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return PackageIngest{}, err
+	}
+	return doImportPackageMarkdown(ctx, src)
+}
+
 func doImportPackage(ctx context.Context, src PackageSource) (PackageIngest, error) {
 	entries, err := skillpkg.ValidateArchive(src.Archive, skillpkg.ArchiveLimits{})
 	if err != nil {
@@ -90,45 +150,84 @@ func doImportPackage(ctx context.Context, src PackageSource) (PackageIngest, err
 	}
 
 	var skillMD []byte
+	manifest := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
 		if e.Path == skillpkg.RootSkillFileName {
 			skillMD = append([]byte(nil), e.Data...)
-			break
+			continue
 		}
+		manifest[e.Path] = struct{}{}
 	}
-	if err := skillpkg.ValidateSkillMarkdown(skillMD, skillpkg.MarkdownLimits{}); err != nil {
-		return PackageIngest{}, fmt.Errorf("importer: package SKILL.md: %w", err)
-	}
-
-	// Parse the root SKILL.md through the shared canonical state
-	// machine (same frontmatter scan, same body classification as the
-	// file path; attachment substitution is intentionally absent —
-	// the body keeps its relative paths and the support manifest is
-	// the resolver's reference).
-	rawFM, body, err := scanFrontmatter(skillMD)
+	skill, pkg, err := parseSkillToPackage(ctx, skillMD, src.PathHint, entries, manifest)
 	if err != nil {
 		return PackageIngest{}, err
+	}
+	hash, err := skillpkg.PackageHash(pkg)
+	if err != nil {
+		return PackageIngest{}, fmt.Errorf("importer: package hash: %w", err)
+	}
+	return PackageIngest{Skill: skill, Package: pkg, Hash: hash}, nil
+}
+
+func doImportPackageMarkdown(ctx context.Context, src PackageMarkdownSource) (PackageIngest, error) {
+	if !utf8.Valid(src.Markdown) {
+		return PackageIngest{}, ErrPackageMarkdownNotUTF8
+	}
+	// A single document: no support manifest, so no support reference
+	// can ever resolve — the empty manifest makes every relative body
+	// reference fail loudly.
+	skill, pkg, err := parseSkillToPackage(ctx, src.Markdown, src.PathHint, nil, map[string]struct{}{})
+	if err != nil {
+		return PackageIngest{}, err
+	}
+	hash, err := skillpkg.PackageHash(pkg)
+	if err != nil {
+		return PackageIngest{}, fmt.Errorf("importer: package hash: %w", err)
+	}
+	return PackageIngest{Skill: skill, Package: pkg, Hash: hash}, nil
+}
+
+// parseSkillToPackage is the shared canonical parse of ONE root
+// SKILL.md document into the stored-skill form and the canonical
+// package DTO. `supports` are the validated support entries of the
+// package (nil for the resource-free single-document path); `manifest`
+// is the support-path set body references are validated against
+// (empty for the resource-free path, so any relative reference
+// fails).
+//
+// The root SKILL.md is parsed through the shared canonical state
+// machine (same frontmatter scan, same body classification as the
+// file path; attachment substitution is intentionally absent — the
+// body keeps its relative paths and the support manifest is the
+// resolver's reference).
+func parseSkillToPackage(ctx context.Context, skillMD []byte, pathHint string, supports []skillpkg.ArchiveEntry, manifest map[string]struct{}) (skills.Skill, skillpkg.Package, error) {
+	if err := skillpkg.ValidateSkillMarkdown(skillMD, skillpkg.MarkdownLimits{}); err != nil {
+		return skills.Skill{}, skillpkg.Package{}, fmt.Errorf("importer: package SKILL.md: %w", err)
+	}
+	rawFM, body, err := scanFrontmatter(skillMD)
+	if err != nil {
+		return skills.Skill{}, skillpkg.Package{}, err
 	}
 	fields, err := parseFrontmatter(rawFM.Bytes)
 	if err != nil {
-		return PackageIngest{}, err
+		return skills.Skill{}, skillpkg.Package{}, err
 	}
 	if strings.TrimSpace(fields.Trigger) == "" {
-		return PackageIngest{}, fmt.Errorf("%w: %w",
+		return skills.Skill{}, skillpkg.Package{}, fmt.Errorf("%w: %w",
 			ErrMissingTrigger, skills.ErrInvalidSkill)
 	}
 	description, sections, err := parseBodyLines(ctx, body)
 	if err != nil {
-		return PackageIngest{}, err
+		return skills.Skill{}, skillpkg.Package{}, err
 	}
 	steps := sections[sectionSteps]
 	if len(steps) == 0 {
-		return PackageIngest{}, fmt.Errorf("%w: %w",
+		return skills.Skill{}, skillpkg.Package{}, fmt.Errorf("%w: %w",
 			ErrEmptySteps, skills.ErrInvalidSkill)
 	}
 	name := fields.Name
 	if strings.TrimSpace(name) == "" {
-		name = nameFallbackFromHint(src.PathHint)
+		name = nameFallbackFromHint(pathHint)
 	}
 	scope := skills.Scope(fields.Scope)
 	if scope == "" {
@@ -156,7 +255,7 @@ func doImportPackage(ctx context.Context, src PackageSource) (PackageIngest, err
 	}
 	skill.ContentHash = skills.CanonicalContentHash(skill)
 	if err := skill.Validate(); err != nil {
-		return PackageIngest{}, err
+		return skills.Skill{}, skillpkg.Package{}, err
 	}
 
 	// Canonical package DTO: logical content + ordered normalized
@@ -180,7 +279,7 @@ func doImportPackage(ctx context.Context, src PackageSource) (PackageIngest, err
 			RequiredTags:  skill.RequiredTags,
 		},
 	}
-	for _, e := range entries {
+	for _, e := range supports {
 		if e.Path == skillpkg.RootSkillFileName {
 			continue
 		}
@@ -194,23 +293,10 @@ func doImportPackage(ctx context.Context, src PackageSource) (PackageIngest, err
 	}
 
 	// Every relative body reference must name a manifest entry.
-	manifest := make(map[string]struct{}, len(pkg.Supports))
-	for _, f := range pkg.Supports {
-		manifest[f.Path] = struct{}{}
-	}
 	if err := validatePackageSupportRefs(skill, manifest); err != nil {
-		return PackageIngest{}, err
+		return skills.Skill{}, skillpkg.Package{}, err
 	}
-
-	hash, err := skillpkg.PackageHash(pkg)
-	if err != nil {
-		return PackageIngest{}, fmt.Errorf("importer: package hash: %w", err)
-	}
-	uri, err := skillpkg.NewURI(hash, skillpkg.CanonicalName(skill.Name))
-	if err != nil {
-		return PackageIngest{}, fmt.Errorf("importer: package URI: %w", err)
-	}
-	return PackageIngest{Skill: skill, Package: pkg, Hash: hash, URI: uri}, nil
+	return skill, pkg, nil
 }
 
 // validatePackageSupportRefs enforces that every relative inline

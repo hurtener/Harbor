@@ -1,7 +1,7 @@
 // Package skillpkg owns Harbor's canonical complete-skill-package
 // semantic core: the DTO, validator, deterministic serializer,
-// versioned package hash, package URI, and the archive / SKILL.md
-// validation primitives.
+// versioned package hash, package support URI, and the archive /
+// SKILL.md validation primitives.
 //
 // A complete skill package is the distributable unit that carries a
 // skill's logical content (its root SKILL.md, parsed) PLUS an ordered
@@ -25,9 +25,9 @@
 // `skills.CanonicalContentHash` (the stored-row content hash), which
 // covers only the skill body fields and carries no version and no
 // manifest. The package hash is computed over the canonical
-// serialization BEFORE the `skillpkg:` URI is materialized; the URI
-// embeds the hash verbatim so any authorized resolver can verify a
-// package against its reference.
+// serialization BEFORE a `skillpkg://` support URI is materialized;
+// the URI embeds the hash verbatim so any authorized resolver can
+// verify a package against its reference.
 //
 // Concurrency. Every function in this package is pure with respect to
 // its arguments: no mutable package-level state, no caches, no
@@ -48,13 +48,15 @@ import (
 // rejected.
 const RootSkillFileName = "SKILL.md"
 
-// URI scheme constants. The package URI is the bounded,
-// resolver-neutral reference form: `skillpkg:<versioned-hash>` with an
-// optional `/name` hint. There is deliberately NO authority component
-// (`//host`) — nothing is resolved over the network, so nothing in
-// the URI may name a resolver.
+// URI scheme constants. The package support URI is the bounded,
+// immutable, resolver-neutral reference of ONE support file of a
+// complete skill package:
+// `skillpkg://<versioned-hash>/<encoded-canonical-support-path>`.
+// The authority position carries the versioned PackageHash verbatim —
+// never a resolver host, userinfo, port, or authorization material —
+// because nothing is resolved over the network.
 const (
-	// URIScheme is the scheme prefix of every package URI.
+	// URIScheme is the scheme prefix of every package support URI.
 	URIScheme = "skillpkg"
 	// HashVersionV1 is the current package-hash version. The
 	// versioned hash string is "v1:<64-hex>"; a future v2 changes
@@ -96,10 +98,8 @@ const (
 	MaxPackagePathRunes = 1024
 	// MaxPackagePathSegmentRunes bounds one path segment.
 	MaxPackagePathSegmentRunes = 255
-	// MaxURIRunes bounds the whole `skillpkg:` URI string.
+	// MaxURIRunes bounds the whole `skillpkg://` support URI string.
 	MaxURIRunes = 512
-	// MaxURINameRunes bounds the optional URI name hint.
-	MaxURINameRunes = 64
 
 	// DefaultMaxArchiveEntries is the default archive entry-count
 	// bound (zip-bomb count gate).
