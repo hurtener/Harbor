@@ -189,7 +189,7 @@ func TestRun_Tranche_CancelCleanupFailureStillReturnsTerminalCancellation(t *tes
 	}
 }
 
-func TestRun_Tranche_CancelResumeBatch_TerminalizesInEitherOrder(t *testing.T) {
+func TestRun_Tranche_CancelWithResumeApproveRejectBatch_TerminalizesInEitherOrder(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		first ControlType
@@ -197,6 +197,10 @@ func TestRun_Tranche_CancelResumeBatch_TerminalizesInEitherOrder(t *testing.T) {
 	}{
 		{name: "cancel-before-resume", first: ControlCancel, last: ControlResume},
 		{name: "resume-before-cancel", first: ControlResume, last: ControlCancel},
+		{name: "cancel-before-approve", first: ControlCancel, last: ControlApprove},
+		{name: "approve-before-cancel", first: ControlApprove, last: ControlCancel},
+		{name: "cancel-before-reject", first: ControlCancel, last: ControlReject},
+		{name: "reject-before-cancel", first: ControlReject, last: ControlCancel},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rl, reg, coord := newTestRunLoop(t)
@@ -227,8 +231,8 @@ func TestRun_Tranche_CancelResumeBatch_TerminalizesInEitherOrder(t *testing.T) {
 			case <-time.After(3 * time.Second):
 				t.Fatal("run did not terminalize after CANCEL/RESUME batch")
 			}
-			if calls, _ := coord.snapshot(); calls != 1 {
-				t.Errorf("Coordinator.Request calls = %d, want 1", calls)
+			if calls, resumes := coord.snapshot(); calls != 1 || resumes != 0 {
+				t.Errorf("Coordinator calls = request %d, resume %d; want request 1, resume 0", calls, resumes)
 			}
 			if calls, cancelled := coord.trancheSnapshot(pauseresume.Token("stub-token")); calls != 1 || !cancelled {
 				t.Errorf("tranche cancellation = calls %d, cancelled %v; want one terminal cancellation", calls, cancelled)

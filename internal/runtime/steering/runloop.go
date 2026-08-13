@@ -770,10 +770,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			}
 		}
 
-		// Cancellation wins the whole drained batch, including when RESUME
-		// appeared first and already consumed the token. Never re-enter the
-		// planner after a batch containing CANCEL.
-		if sc.cancellationBatch && sc.signals.Cancelled {
+		// Cancellation wins the whole drained batch, including when RESUME,
+		// APPROVE, or REJECT appeared first. Keep an outstanding tranche
+		// token live until the cancellation cleanup below consumes it.
+		if sc.cancellationBatch && sc.signals.Cancelled && outstandingToken == "" {
 			return planner.Finish{
 				Reason: planner.FinishCancelled,
 				Metadata: map[string]any{
@@ -785,7 +785,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// A REJECT that advanced a pause terminates the run: a rejected
 		// HITL gate is a constraint conflict the planner cannot resolve.
 		// The Coordinator.Resume already happened in applyEvent.
-		if sc.resumeRequested && sc.resumeKind == ControlReject {
+		if sc.resumeRequested && sc.resumeKind == ControlReject && !sc.cancellationBatch {
 			return planner.Finish{
 				Reason: planner.FinishConstraintsConflict,
 				Metadata: map[string]any{
@@ -836,20 +836,13 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			if sc.signals.Cancelled {
 				if outstandingTranche {
 					if cancelErr := pauseresume.CancelTranche(runCtx, rl.coord, outstandingToken); cancelErr != nil {
-						var cleanupErr *pauseresume.TrancheCancellationError
-						if errors.As(cancelErr, &cleanupErr) {
-							rl.logger.WarnContext(runCtx, "steering: tranche cancellation cleanup pending after terminal cancellation",
-								slog.String("tenant_id", q.TenantID),
-								slog.String("user_id", q.UserID),
-								slog.String("session_id", q.SessionID),
-								slog.String("run_id", q.RunID),
-								slog.String("pause_token", string(outstandingToken)),
-								slog.Any("error", cancelErr))
-							return planner.Finish{Reason: planner.FinishCancelled, Metadata: map[string]any{
-								"run_id": q.RunID, "steering_reason": "cancel_while_paused",
-							}}, nil
-						}
-						return planner.Finish{}, fmt.Errorf("steering: consuming tranche pause on cancellation: %w", cancelErr)
+						rl.logger.WarnContext(runCtx, "steering: tranche cancellation cleanup failed after terminal cancellation",
+							slog.String("tenant_id", q.TenantID),
+							slog.String("user_id", q.UserID),
+							slog.String("session_id", q.SessionID),
+							slog.String("run_id", q.RunID),
+							slog.String("pause_token", string(outstandingToken)),
+							slog.Any("error", cancelErr))
 					}
 				}
 				return planner.Finish{
