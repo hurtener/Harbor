@@ -46,6 +46,47 @@ func TestSessionSort_IsValid(t *testing.T) {
 	}
 }
 
+func TestSessionProjection_IsValid(t *testing.T) {
+	t.Parallel()
+	want := map[types.SessionProjection]bool{
+		types.SessionProjectionFull:      true,
+		types.SessionProjectionLifecycle: true,
+		"":                               false,
+		"FULL":                           false,
+		"complete":                       false,
+		"lifecycle ":                     false, //nolint:gocritic // trailing space is the deliberate test input — whitespace must not match a valid projection.
+	}
+	for p, expected := range want {
+		if got := types.IsValidSessionProjection(p); got != expected {
+			t.Errorf("IsValidSessionProjection(%q) = %v, want %v", p, got, expected)
+		}
+	}
+}
+
+func TestCounterStatus_ConstantsAndValidity(t *testing.T) {
+	t.Parallel()
+	// The four canonical states are distinct and valid.
+	if !types.IsValidCounterStatus(types.CounterStatusCurrent) ||
+		!types.IsValidCounterStatus(types.CounterStatusPartial) ||
+		!types.IsValidCounterStatus(types.CounterStatusNotRequested) ||
+		!types.IsValidCounterStatus(types.CounterStatusUnavailable) {
+		t.Fatal("the four canonical counter-status values must all be valid")
+	}
+	// The zero value and junk are not valid — a row without a marker is
+	// never mistaken for a named availability state.
+	for s, expected := range map[types.CounterStatus]bool{
+		"":         false,
+		"zero":     false,
+		"CURRENT":  false,
+		"not_yet":  false,
+		"current ": false, //nolint:gocritic // trailing space is the deliberate test input — whitespace must not match a valid status.
+	} {
+		if got := types.IsValidCounterStatus(s); got != expected {
+			t.Errorf("IsValidCounterStatus(%q) = %v, want %v", s, got, expected)
+		}
+	}
+}
+
 func TestSessionsListRequest_MarshalRoundTrip(t *testing.T) {
 	t.Parallel()
 	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
@@ -179,6 +220,101 @@ func TestSessionRow_AgentAbsence_Representable(t *testing.T) {
 	}
 	if !out.CountersPartial {
 		t.Error("CountersPartial round-trip lost — the honest lower-bound marker must survive the wire (D-309 WARN-1)")
+	}
+}
+
+// TestSessionsListRequest_Projection_OmittedStaysOffWireAndRoundTrips pins
+// the default-compatible contract of the additive projection selector: a
+// client that never sends the field must be byte-identical to the original
+// wire shape (no `projection` key), and an explicit lifecycle projection
+// must round-trip.
+func TestSessionsListRequest_Projection_OmittedStaysOffWireAndRoundTrips(t *testing.T) {
+	t.Parallel()
+	req := types.SessionsListRequest{
+		Identity: types.IdentityScope{Tenant: "t1", User: "u1", Session: "s1"},
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "projection") {
+		t.Fatalf("an omitted projection must stay OFF the wire (default-compatible); got %s", raw)
+	}
+	req.Projection = types.SessionProjectionLifecycle
+	raw2, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var out types.SessionsListRequest
+	if err := json.Unmarshal(raw2, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if out.Projection != types.SessionProjectionLifecycle {
+		t.Errorf("Projection round-trip: got %q, want %q", out.Projection, types.SessionProjectionLifecycle)
+	}
+}
+
+// TestSessionsInspectRequest_ProjectionRoundTrips pins the same
+// default-compatible selector on `sessions.inspect`.
+func TestSessionsInspectRequest_ProjectionRoundTrips(t *testing.T) {
+	t.Parallel()
+	req := types.SessionsInspectRequest{
+		Identity:  types.IdentityScope{Tenant: "t1", User: "u1", Session: "s1"},
+		SessionID: "s1",
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "projection") {
+		t.Fatalf("an omitted projection must stay OFF the wire; got %s", raw)
+	}
+	req.Projection = types.SessionProjectionFull
+	raw2, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var out types.SessionsInspectRequest
+	if err := json.Unmarshal(raw2, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if out.Projection != types.SessionProjectionFull {
+		t.Errorf("Projection round-trip: got %q, want %q", out.Projection, types.SessionProjectionFull)
+	}
+}
+
+// TestSessionRow_CounterStatus_RepresentableAndRoundTrips pins the explicit
+// counter-availability marker: an empty marker is OMITTED on the wire (a
+// row constructed without one must not fabricate an availability state),
+// and every canonical marker round-trips as a value.
+func TestSessionRow_CounterStatus_RepresentableAndRoundTrips(t *testing.T) {
+	t.Parallel()
+	row := types.SessionRow{SessionID: "s1", Status: types.SessionStatusRunning}
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "counter_status") {
+		t.Fatalf("an empty counter_status must be omitted on the wire; got %s", raw)
+	}
+	for _, cs := range []types.CounterStatus{
+		types.CounterStatusCurrent,
+		types.CounterStatusPartial,
+		types.CounterStatusNotRequested,
+		types.CounterStatusUnavailable,
+	} {
+		row2 := types.SessionRow{SessionID: "s1", CounterStatus: cs}
+		raw2, err := json.Marshal(row2)
+		if err != nil {
+			t.Fatalf("Marshal(%q): %v", cs, err)
+		}
+		var out types.SessionRow
+		if err := json.Unmarshal(raw2, &out); err != nil {
+			t.Fatalf("Unmarshal(%q): %v", cs, err)
+		}
+		if out.CounterStatus != cs {
+			t.Errorf("CounterStatus round-trip: got %q, want %q", out.CounterStatus, cs)
+		}
 	}
 }
 

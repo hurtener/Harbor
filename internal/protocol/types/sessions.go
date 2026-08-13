@@ -109,6 +109,44 @@ func IsValidSessionSort(s SessionSort) bool {
 	return false
 }
 
+// SessionProjection is the wire enum selecting how much of a session's
+// row a `sessions.list` / `sessions.inspect` projection carries. It is
+// additive: an omitted value (or SessionProjectionFull) reproduces the
+// original projection exactly.
+type SessionProjection string
+
+// Canonical session projections.
+const (
+	// SessionProjectionFull is the default projection — the session's
+	// lifecycle catalog fields plus, when the runtime wires a counter
+	// Enricher, the read-time counter rollup (cost / tokens / tasks /
+	// events / intervention / failed-task). An omitted Projection resolves
+	// to this value.
+	SessionProjectionFull SessionProjection = "full"
+	// SessionProjectionLifecycle is the lifecycle-only projection — the
+	// session catalog fields (status, timestamps, title, identity) with NO
+	// counter / history / task / pause enrichment. The row's counters stay
+	// at their honest zero values and SessionRow.CounterStatus reads
+	// "not_requested", so a zero never reads as a measured zero. A
+	// counter-dependent filter or sort (cost_above_cents / has_failed_task
+	// / has_intervention / cost_desc) is rejected `invalid_request` on a
+	// lifecycle request: a lifecycle row has no counters to narrow or order
+	// by, and a false-empty / mis-ordered page over them would reproduce
+	// the false-absence class.
+	SessionProjectionLifecycle SessionProjection = "lifecycle"
+)
+
+// IsValidSessionProjection reports whether p is one of the two canonical
+// projections. An empty value resolves to SessionProjectionFull at the
+// method edge and is not itself valid.
+func IsValidSessionProjection(p SessionProjection) bool {
+	switch p {
+	case SessionProjectionFull, SessionProjectionLifecycle:
+		return true
+	}
+	return false
+}
+
 // Window is a half-open time range filter. Both bounds are optional;
 // a nil bound means "unbounded on that side". A non-nil From / To
 // filters sessions whose StartedAt falls inside [From, To].
@@ -168,6 +206,15 @@ type SessionsListRequest struct {
 	// Sort selects the row ordering; an empty value applies
 	// SessionSortStartedDesc.
 	Sort SessionSort `json:"sort,omitempty"`
+	// Projection selects the row projection. An empty value (omitted)
+	// applies SessionProjectionFull — the original behavior, byte-for-byte.
+	// SessionProjectionLifecycle skips ALL counter / history / task / pause
+	// enrichment: the returned rows carry the lifecycle catalog fields
+	// only, their counters stay zero, and their CounterStatus reads
+	// "not_requested". A counter-dependent filter or sort on a lifecycle
+	// request is rejected `invalid_request` (the row has no counters to
+	// narrow or order by).
+	Projection SessionProjection `json:"projection,omitempty"`
 	// Cursor is the opaque pagination cursor returned by a previous
 	// SessionsListResponse.NextCursor. Empty starts from the first page.
 	Cursor string `json:"cursor,omitempty"`
@@ -175,6 +222,47 @@ type SessionsListRequest struct {
 	// DefaultSessionListLimit. A value above MaxSessionListLimit is a
 	// 400 (CodeInvalidRequest) — never a silent clamp.
 	Limit int `json:"limit,omitempty"`
+}
+
+// CounterStatus is the explicit wire marker for the availability of a
+// SessionRow's counter fields (tasks_count / events_count /
+// total_cost_cents / total_tokens / has_pending_intervention /
+// has_failed_task). It makes every zero counter SELF-DESCRIBING: a
+// consumer can tell "these are exact zeros" from "these were never
+// computed" without guessing. Additive field — omitted on the wire when
+// the row carries no marker.
+type CounterStatus string
+
+// Canonical counter-availability states.
+const (
+	// CounterStatusCurrent — the counters were computed in full by the
+	// counter Enricher and are exact (CountersPartial is false). A zero
+	// counter means "measured as zero".
+	CounterStatusCurrent CounterStatus = "current"
+	// CounterStatusPartial — the counters were computed but at least one
+	// read behind them could not be taken in full; every count is an
+	// HONEST LOWER BOUND (CountersPartial is true). A zero counter means
+	// "lower bound of zero", never "measured as zero".
+	CounterStatusPartial CounterStatus = "partial"
+	// CounterStatusNotRequested — the row is a lifecycle-only projection;
+	// the counters were never computed because the request did not ask for
+	// them. The zero values mean "not requested", never "measured as zero".
+	CounterStatusNotRequested CounterStatus = "not_requested"
+	// CounterStatusUnavailable — no counter Enricher is wired on this
+	// runtime, so the counters cannot be computed at all. The zero values
+	// mean "this build cannot provide them", never "measured as zero".
+	CounterStatusUnavailable CounterStatus = "unavailable"
+)
+
+// IsValidCounterStatus reports whether s is one of the four canonical
+// counter-availability states.
+func IsValidCounterStatus(s CounterStatus) bool {
+	switch s {
+	case CounterStatusCurrent, CounterStatusPartial,
+		CounterStatusNotRequested, CounterStatusUnavailable:
+		return true
+	}
+	return false
 }
 
 // SessionRow is the catalog-row projection of a session. It is the row
@@ -265,6 +353,15 @@ type SessionRow struct {
 	// field — omitted on the wire when false (the common case: every read
 	// succeeded and the counts are exact).
 	CountersPartial bool `json:"counters_partial,omitempty"`
+	// CounterStatus is the explicit availability of this row's counter
+	// fields — the four-state superset of CountersPartial: "current"
+	// (computed in full and exact), "partial" (computed but an honest lower
+	// bound — the same state CountersPartial marks), "not_requested" (a
+	// lifecycle-only projection skipped the counters), or "unavailable"
+	// (no Enricher is wired on this runtime). A consumer reading zero
+	// counters consults CounterStatus before concluding "genuinely zero".
+	// Additive field — omitted on the wire when the row carries no marker.
+	CounterStatus CounterStatus `json:"counter_status,omitempty"`
 }
 
 // SessionsListResponse is the `sessions.list` reply: a page of catalog
@@ -320,6 +417,12 @@ type SessionsInspectRequest struct {
 	Identity IdentityScope `json:"identity"`
 	// SessionID is the session to inspect.
 	SessionID string `json:"session_id"`
+	// Projection selects the row projection. An empty value (omitted)
+	// applies SessionProjectionFull — the original behavior, byte-for-byte.
+	// SessionProjectionLifecycle returns the lifecycle catalog fields with
+	// NO counter / history / task / pause enrichment; the row's counters
+	// stay zero and its CounterStatus reads "not_requested".
+	Projection SessionProjection `json:"projection,omitempty"`
 }
 
 // SessionsInspectResponse is the `sessions.inspect` reply — the full

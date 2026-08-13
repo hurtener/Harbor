@@ -35,7 +35,19 @@ import (
 // tasks.Projector enricher. When no Enricher is wired, the counters stay
 // ZERO — honest ("we don't have this data"), not silent degradation — and
 // the Service loud-rejects a facet/sort over them (WARN-3) so an unwired
-// build never returns a false-empty counter page.
+// build never returns a false-empty counter page. Every row's explicit
+// counter availability is marked via SessionRow.CounterStatus
+// (current / partial / not_requested / unavailable) so a zero counter never
+// reads as a measured zero.
+//
+// # Lifecycle-only projection
+//
+// `projection=lifecycle` requests (pageLifecycleOnly / inspectLifecycleOnly)
+// are served from the catalog projection / page path BEFORE any Enricher
+// call: the counters are never read, stay zero, and are marked
+// CounterStatus=not_requested. The filter / sort / cursor / truncation and
+// the identity-scope / admin-widening semantics are exactly the full
+// projection's — only the counter payload is absent.
 //
 // # Concurrent reuse
 //
@@ -93,13 +105,16 @@ func NewListerProjector(lister sessions.SessionLister, opts ...ListerProjectorOp
 // rather than returning a false-empty page (WARN-3).
 func (p *ListerProjector) CountersAvailable() bool { return p.enricher != nil }
 
-// enrich overlays the enricher's counter rollup onto a projected row. A
-// nil enricher leaves the honest zeros in place (no overlay). It scopes the
-// enricher read to the ROW's own identity so an admin listing another
-// tenant's session reads exactly that session's counters (no cross-session
-// bleed).
+// enrich overlays the enricher's counter rollup onto a projected row and
+// marks the row's explicit counter availability. A nil enricher leaves the
+// honest zeros in place and marks the counters UNAVAILABLE (the zeros mean
+// "this build cannot provide them", never "measured as zero" — D-311
+// representable absence). It scopes the enricher read to the ROW's own
+// identity so an admin listing another tenant's session reads exactly that
+// session's counters (no cross-session bleed).
 func (p *ListerProjector) enrich(ctx context.Context, snap sessions.SessionSnapshot, row *prototypes.SessionRow) {
 	if p.enricher == nil {
+		row.CounterStatus = prototypes.CounterStatusUnavailable
 		return
 	}
 	sid := identity.Identity{
@@ -115,6 +130,11 @@ func (p *ListerProjector) enrich(ctx context.Context, snap sessions.SessionSnaps
 	row.HasPendingIntervention = c.HasPendingIntervention
 	row.HasFailedTask = c.HasFailedTask
 	row.CountersPartial = c.Partial
+	if c.Partial {
+		row.CounterStatus = prototypes.CounterStatusPartial
+	} else {
+		row.CounterStatus = prototypes.CounterStatusCurrent
+	}
 }
 
 // ListSessions implements Projector.ListSessions. It builds the
@@ -138,12 +158,20 @@ func (p *ListerProjector) ListSessions(ctx context.Context, id identity.Identity
 // enrichRows applies counter rollups with bounded parallelism. Each worker
 // writes one distinct row index, preserving the catalog order for the Service
 // filter/sort layer while preventing a large counter-dependent list from
-// opening one event/task/pause scan per goroutine.
+// opening one event/task/pause scan per goroutine. On a projector with NO
+// Enricher wired, no reads are possible — every row is marked explicitly
+// CounterStatus=unavailable so the honest zeros never read as measured zeros.
 func (p *ListerProjector) enrichRows(ctx context.Context, snaps []sessions.SessionSnapshot, rows []prototypes.SessionRow) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if p.enricher == nil || len(rows) == 0 {
+	if len(rows) == 0 {
+		return nil
+	}
+	if p.enricher == nil {
+		for i := range rows {
+			rows[i].CounterStatus = prototypes.CounterStatusUnavailable
+		}
 		return nil
 	}
 	workers := min(maxCounterEnrichmentWorkers, len(rows))
@@ -216,11 +244,13 @@ func (p *ListerProjector) listSnapshots(ctx context.Context, id identity.Identit
 	return snaps, nil
 }
 
-// pageBeforeEnrichment applies only lifecycle-backed filter/sort/cursor work
-// before enriching the returned page. Service calls it exclusively for
-// requests without counter predicates or a cost sort; applying it to those
-// requests would be wrong because their values are supplied by Enricher.
-func (p *ListerProjector) pageBeforeEnrichment(
+// pagedCatalog resolves the identity-scoped lifecycle catalog, applies the
+// facet filter + sort, and slices the requested page — the machinery shared
+// by the pre-enrichment page path (which enriches the page afterwards) and
+// the lifecycle-only page path (which never touches the Enricher). It
+// returns the page rows, the page's source snapshots (for the optional
+// enrichment pass), and the cursor / truncation metadata.
+func (p *ListerProjector) pagedCatalog(
 	ctx context.Context,
 	id identity.Identity,
 	f prototypes.SessionFilter,
@@ -228,13 +258,10 @@ func (p *ListerProjector) pageBeforeEnrichment(
 	srt prototypes.SessionSort,
 	cursor *pageCursor,
 	limit int,
-) (prototypes.SessionsListResponse, error) {
-	if requiresCounters(f, srt) {
-		return prototypes.SessionsListResponse{}, fmt.Errorf("%w: counter filter or cost sort cannot page before enrichment", ErrInvalidRequest)
-	}
+) (page []prototypes.SessionRow, pageSnapshots []sessions.SessionSnapshot, truncated bool, next string, err error) {
 	snaps, err := p.listSnapshots(ctx, id, f, adminScoped)
 	if err != nil {
-		return prototypes.SessionsListResponse{}, err
+		return nil, nil, false, "", err
 	}
 	type candidate struct {
 		snapshot sessions.SessionSnapshot
@@ -255,14 +282,64 @@ func (p *ListerProjector) pageBeforeEnrichment(
 		rows[i] = candidates[i].row
 	}
 	start, end, truncated, next := pageBounds(rows, cursor, srt, limit)
-	page := make([]prototypes.SessionRow, end-start)
-	pageSnapshots := make([]sessions.SessionSnapshot, end-start)
+	page = make([]prototypes.SessionRow, end-start)
+	pageSnapshots = make([]sessions.SessionSnapshot, end-start)
 	for i := start; i < end; i++ {
 		page[i-start] = candidates[i].row
 		pageSnapshots[i-start] = candidates[i].snapshot
 	}
+	return page, pageSnapshots, truncated, next, nil
+}
+
+// pageBeforeEnrichment applies only lifecycle-backed filter/sort/cursor work
+// before enriching the returned page. Service calls it exclusively for
+// requests without counter predicates or a cost sort; applying it to those
+// requests would be wrong because their values are supplied by Enricher.
+func (p *ListerProjector) pageBeforeEnrichment(
+	ctx context.Context,
+	id identity.Identity,
+	f prototypes.SessionFilter,
+	adminScoped bool,
+	srt prototypes.SessionSort,
+	cursor *pageCursor,
+	limit int,
+) (prototypes.SessionsListResponse, error) {
+	if requiresCounters(f, srt) {
+		return prototypes.SessionsListResponse{}, fmt.Errorf("%w: counter filter or cost sort cannot page before enrichment", ErrInvalidRequest)
+	}
+	page, pageSnapshots, truncated, next, err := p.pagedCatalog(ctx, id, f, adminScoped, srt, cursor, limit)
+	if err != nil {
+		return prototypes.SessionsListResponse{}, err
+	}
 	if err := p.enrichRows(ctx, pageSnapshots, page); err != nil {
 		return prototypes.SessionsListResponse{}, fmt.Errorf("sessions/protocol: enrich session page: %w", err)
+	}
+	return prototypes.SessionsListResponse{Rows: page, NextCursor: next, Truncated: truncated}, nil
+}
+
+// pageLifecycleOnly serves a `projection=lifecycle` list request: the same
+// identity-scoped filter / sort / cursor / truncation machinery as the
+// full projection, but it returns from the catalog page path BEFORE any
+// Enricher call — the counters are never read, stay zero, and are marked
+// CounterStatus=not_requested so a zero never reads as a measured zero.
+func (p *ListerProjector) pageLifecycleOnly(
+	ctx context.Context,
+	id identity.Identity,
+	f prototypes.SessionFilter,
+	adminScoped bool,
+	srt prototypes.SessionSort,
+	cursor *pageCursor,
+	limit int,
+) (prototypes.SessionsListResponse, error) {
+	if requiresCounters(f, srt) {
+		return prototypes.SessionsListResponse{}, fmt.Errorf("%w: counter filter or cost sort cannot page a lifecycle-only projection", ErrInvalidRequest)
+	}
+	page, _, truncated, next, err := p.pagedCatalog(ctx, id, f, adminScoped, srt, cursor, limit)
+	if err != nil {
+		return prototypes.SessionsListResponse{}, err
+	}
+	for i := range page {
+		page[i].CounterStatus = prototypes.CounterStatusNotRequested
 	}
 	return prototypes.SessionsListResponse{Rows: page, NextCursor: next, Truncated: truncated}, nil
 }
@@ -299,6 +376,43 @@ func (p *ListerProjector) InspectSession(ctx context.Context, id identity.Identi
 		if snap.ID == sessionID {
 			row := projectRow(snap)
 			p.enrich(ctx, snap, &row)
+			return prototypes.SessionsInspectResponse{
+				Row:                 row,
+				RecentInterventions: []prototypes.InterventionSummary{},
+				RecentArtifacts:     []prototypes.ArtifactRefSummary{},
+			}, nil
+		}
+	}
+	return prototypes.SessionsInspectResponse{}, fmt.Errorf("%w: session %q", ErrSessionNotFound, sessionID)
+}
+
+// inspectLifecycleOnly serves a `projection=lifecycle` inspect request: the
+// same identity-scoped lookup and not-found semantics as InspectSession, but
+// returning BEFORE any Enricher call. The row carries the lifecycle catalog
+// fields with CounterStatus=not_requested and its counters stay zero; the
+// recent-interventions / recent-artifacts capped slices stay empty exactly
+// as InspectSession ships them.
+func (p *ListerProjector) inspectLifecycleOnly(ctx context.Context, id identity.Identity, sessionID string, adminScoped bool) (prototypes.SessionsInspectResponse, error) {
+	regFilter := sessions.SessionListFilter{
+		SessionIDs:    []string{sessionID},
+		IncludeClosed: true,
+	}
+	if !adminScoped {
+		// scope by the caller's full (tenant, user) so the
+		// registry hydrates the catalog and a closed/past session created
+		// by a prior process is inspectable after a restart — exactly the
+		// InspectSession lookup.
+		regFilter.TenantIDs = []string{id.TenantID}
+		regFilter.UserIDs = []string{id.UserID}
+	}
+	snaps, err := p.lister.ListSnapshots(ctx, regFilter)
+	if err != nil {
+		return prototypes.SessionsInspectResponse{}, fmt.Errorf("sessions/protocol: inspect snapshots: %w", err)
+	}
+	for _, snap := range snaps {
+		if snap.ID == sessionID {
+			row := projectRow(snap)
+			row.CounterStatus = prototypes.CounterStatusNotRequested
 			return prototypes.SessionsInspectResponse{
 				Row:                 row,
 				RecentInterventions: []prototypes.InterventionSummary{},
@@ -364,3 +478,8 @@ func projectRow(snap sessions.SessionSnapshot) prototypes.SessionRow {
 
 // Compile-time assertion: *ListerProjector satisfies Projector.
 var _ Projector = (*ListerProjector)(nil)
+
+// Compile-time assertion: *ListerProjector satisfies the private
+// lifecycle-only projection seam the Service dispatches
+// `projection=lifecycle` requests to.
+var _ lifecycleProjector = (*ListerProjector)(nil)
