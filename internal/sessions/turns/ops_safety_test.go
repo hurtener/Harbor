@@ -138,10 +138,16 @@ func typeByName(name string) (reflect.Type, bool) {
 		return reflect.TypeOf(Answer{}), true
 	case "Usage":
 		return reflect.TypeOf(Usage{}), true
+	case "UsageMeasure":
+		return reflect.TypeOf(UsageMeasure{}), true
 	case "Attachment":
 		return reflect.TypeOf(Attachment{}), true
 	case "ActivityRow":
 		return reflect.TypeOf(ActivityRow{}), true
+	case "ActivityTotals":
+		return reflect.TypeOf(ActivityTotals{}), true
+	case "Activity":
+		return reflect.TypeOf(Activity{}), true
 	case "ReasoningStep":
 		return reflect.TypeOf(ReasoningStep{}), true
 	case "Reasoning":

@@ -25,8 +25,9 @@ import (
 // version checks make concurrent writers safe).
 //
 // This is NOT Protocol wiring and NOT a driver: it is the domain core
-// the future `sessions.turns.list` / `sessions.turns.get` Protocol
-// surface and the runtime event→observation mapping will call.
+// the `sessions.turns.list` / `sessions.turns.get` Protocol surface
+// (the v1.28 surface — exactly those two reads, no activity
+// subresource) and the runtime event→observation mapping will call.
 type Projector struct {
 	store Store
 	clock Clock
@@ -42,15 +43,10 @@ type Projector struct {
 	// toolBudget is the runtime's configured per-turn tool-call
 	// budget. New fails loud when activityLimit < toolBudget AND
 	// toolBudget <= MaxActivityRows; a budget ABOVE the Protocol
-	// ceiling is served by the capped inline window plus the named
-	// bounded ActivityReader fallback (activityReader) — construction
+	// ceiling is served by the capped inline window plus the honest
+	// overflow contract (More + Dropped + exact totals) — construction
 	// never fails on an over-ceiling budget.
 	toolBudget int
-	// activityReader is the runtime-wired bounded activity-read
-	// fallback (PageActivity delegates to it). Nil when none was wired:
-	// an over-budget turn's full activity is then honestly unreadable
-	// (the row still carries the More / Dropped lower-bound marker).
-	activityReader ActivityReader
 	// probe is the runtime's durable erasure authority consulted by
 	// Reconcile when the store-local fence may have been lost (an
 	// in-memory-backed store after a process restart). Nil means the
@@ -81,9 +77,8 @@ func WithInlineAnswerLimit(n int) ProjectorOption {
 // while that budget is at or below the Protocol ceiling — inline
 // capacity must cover the budget — or above the absolute Protocol
 // ceiling MaxActivityRows. A turn whose actual tool calls exceed the
-// window overflows honestly (More + Dropped + Partial) and the full
-// activity is read through the named bounded ActivityReader
-// (WithActivityReader).
+// window overflows honestly (More + Dropped + Partial) and the exact
+// turn-level totals survive in Activity.Totals.
 func WithActivityLimit(n int) ProjectorOption {
 	return func(p *Projector) { p.activityLimit = n }
 }
@@ -93,21 +88,11 @@ func WithActivityLimit(n int) ProjectorOption {
 // configured inline activity limit (WithActivityLimit) is below it —
 // UNLESS the budget exceeds the absolute Protocol ceiling
 // MaxActivityRows: then construction NEVER fails (the inline window is
-// capped at the ceiling and the row overflows honestly to the named
-// bounded ActivityReader fallback).
+// capped at the ceiling and the row overflows honestly with the exact
+// totals — the v1.28 surface has no third activity read, so the
+// overflow is the honest lower-bound contract, never a hidden dump).
 func WithToolBudget(n int) ProjectorOption {
 	return func(p *Projector) { p.toolBudget = n }
-}
-
-// WithActivityReader wires the named bounded activity-read fallback
-// the row's explicit lower-bound (Activity.More) points at. It is the
-// ONLY subresource read the projection exposes (no generic subresource
-// framework). Required for over-ceiling tool budgets: when the
-// configured per-turn budget exceeds MaxActivityRows the runtime MUST
-// wire the reader so an over-budget turn's full activity stays
-// readable. PageActivity refuses loudly when none is wired.
-func WithActivityReader(r ActivityReader) ProjectorOption {
-	return func(p *Projector) { p.activityReader = r }
 }
 
 // WithErasureProbe wires the runtime's DURABLE erasure authority the
@@ -129,8 +114,8 @@ func WithErasureProbe(pb ErasureProbe) ProjectorOption {
 // Protocol ceiling) fails loud at construction — never a nil-panicking
 // or silently-defaulted projector. A tool budget ABOVE the ceiling is
 // NOT a construction failure: the inline window is capped at the
-// ceiling, the row overflows honestly, and the full activity is read
-// through the wired ActivityReader.
+// ceiling and the row overflows honestly (More + Dropped + exact
+// totals).
 func New(store Store, opts ...ProjectorOption) (*Projector, error) {
 	if store == nil {
 		return nil, fmt.Errorf("turns: New requires a non-nil Store")
@@ -161,18 +146,15 @@ func New(store Store, opts ...ProjectorOption) (*Projector, error) {
 	return p, nil
 }
 
-// ActivityReader returns the wired bounded activity-read fallback
-// (nil when none was wired). PageActivity refuses loudly on a nil
-// reader.
-func (p *Projector) ActivityReader() ActivityReader { return p.activityReader }
-
 // Append creates the mutable row for a root foreground run (mutation
-// DTO Append — structurally free of transcript / reasoning /
-// App-correlation / pause tokens). The Store mints the immutable
-// per-session sequence atomically; an idempotent re-append of an
-// existing turn id returns the existing row unchanged (a replay
+// DTO Append — structurally free of transcript / raw provider
+// thinking / App-correlation / pause tokens). The Store mints the
+// immutable per-session sequence atomically; an idempotent re-append
+// of an existing turn id returns the existing row unchanged (a replay
 // no-op). The write is erasure-fenced: an erased session refuses it
-// with ErrErasureFenced.
+// with ErrErasureFenced. The pause invariants are enforced: a
+// `paused` turn requires an active, available, valid pause episode,
+// and a `pending` / `running` turn cannot carry one.
 func (p *Projector) Append(ctx context.Context, id identity.Identity, a Append) (TurnRow, error) {
 	if err := validateIdentity(id); err != nil {
 		return TurnRow{}, err
@@ -200,7 +182,8 @@ func (p *Projector) Append(ctx context.Context, id identity.Identity, a Append) 
 	if utf8.RuneCountInString(a.Query) > MaxQueryRunes {
 		return TurnRow{}, fmt.Errorf("%w: query exceeds %d runes", ErrInvalidInput, MaxQueryRunes)
 	}
-	if err := validateActivity(a.Activity, p.activityLimit); err != nil {
+	activity, err := normalizeActivity(a.Activity, p.activityLimit)
+	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: append activity: %w", err)
 	}
 	inputs, err := normalizeAttachments(a.Inputs)
@@ -214,6 +197,19 @@ func (p *Projector) Append(ctx context.Context, id identity.Identity, a Append) 
 	pause, err := normalizePause(a.Pause)
 	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: append pause: %w", err)
+	}
+	// Pause invariants: a paused turn requires an active, available,
+	// valid pause episode; a pending / running turn cannot carry an
+	// active one (a requested episode is the honest pre-quiesce state
+	// and is fine while non-paused).
+	if err := enforcePauseInvariants(status, pause); err != nil {
+		return TurnRow{}, fmt.Errorf("turns: append pause: %w", err)
+	}
+	// A fresh row's usage is canonical all-unavailable: every measure
+	// states UsageUnavailable with no value (never a fabricated zero).
+	initialUsage, err := normalizeUsage(Usage{})
+	if err != nil {
+		return TurnRow{}, fmt.Errorf("turns: append usage: %w", err)
 	}
 	bindingSource, err := deriveBindingSource(a.AgentID, a.AgentBindingSource)
 	if err != nil {
@@ -261,13 +257,13 @@ func (p *Projector) Append(ctx context.Context, id identity.Identity, a Append) 
 		},
 		Answer:    Answer{State: AnswerStateUnavailable, Complete: CompletenessUnavailable},
 		Pause:     pause,
-		Usage:     Usage{Complete: CompletenessUnavailable},
+		Usage:     initialUsage,
 		Reasoning: Reasoning{Complete: CompletenessUnavailable},
 		Inputs:    inputs,
 		Outputs:   outputs,
 		Apps:      nil,
 	}
-	row.Activity = clampActivity(assignActivityPositions(a.Activity), p.activityLimit)
+	row.Activity = activity
 	stored, err := p.store.AppendTurnIf(ctx, id, row)
 	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: append %q: %w", a.TurnID, err)
@@ -276,13 +272,16 @@ func (p *Projector) Append(ctx context.Context, id identity.Identity, a Append) 
 }
 
 // Update mutates a MUTABLE row in place (mutation DTO Update —
-// structurally free of transcript / reasoning / App-correlation /
-// pause tokens). Non-nil components replace the stored component
-// wholesale (usage is cumulative totals; activity is the cumulative
-// feed). expectedVersion must match the stored row's current Version;
-// a concurrent write wins with ErrStaleVersion and the caller reloads
-// and retries (a replay of an already-applied update treats it as
-// "already applied").
+// structurally free of transcript / raw provider thinking /
+// App-correlation / pause tokens). Non-nil components replace the
+// stored component wholesale (usage is a cumulative snapshot; activity
+// is the cumulative feed). The pause invariants are enforced on the
+// merged result: a `paused` row requires an active, available, valid
+// pause episode, and a `pending` / `running` row cannot carry one (a
+// resume must clear the episode explicitly). expectedVersion must
+// match the stored row's current Version; a concurrent write wins with
+// ErrStaleVersion and the caller reloads and retries (a replay of an
+// already-applied update treats it as "already applied").
 func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, u Update) (TurnRow, error) {
 	if err := validateIdentity(id); err != nil {
 		return TurnRow{}, err
@@ -303,13 +302,18 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 			return TurnRow{}, fmt.Errorf("turns: update answer: %w", err)
 		}
 	}
+	var usage *Usage
 	if u.Usage != nil {
-		if err := validateUsage(*u.Usage); err != nil {
+		normalized, err := normalizeUsage(*u.Usage)
+		if err != nil {
 			return TurnRow{}, fmt.Errorf("turns: update usage: %w", err)
 		}
+		usage = &normalized
 	}
-	if err := validateActivity(u.Activity, p.activityLimit); err != nil {
-		return TurnRow{}, fmt.Errorf("turns: update activity: %w", err)
+	if u.Activity != nil {
+		if _, err := normalizeActivity(u.Activity, p.activityLimit); err != nil {
+			return TurnRow{}, fmt.Errorf("turns: update activity: %w", err)
+		}
 	}
 	inputs, err := normalizeAttachments(u.Inputs)
 	if err != nil {
@@ -369,10 +373,14 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 		merged.Answer = ans
 	}
 	if u.Usage != nil {
-		merged.Usage = *u.Usage
+		merged.Usage = *usage
 	}
 	if u.Activity != nil {
-		merged.Activity = clampActivity(assignActivityPositions(u.Activity), p.activityLimit)
+		act, err := normalizeActivity(u.Activity, p.activityLimit)
+		if err != nil {
+			return TurnRow{}, fmt.Errorf("turns: update activity: %w", err)
+		}
+		merged.Activity = act
 	}
 	if u.Inputs != nil {
 		merged.Inputs = inputs
@@ -382,6 +390,12 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 	}
 	if u.Pause != nil {
 		merged.Pause = pause
+	}
+	// Pause invariants on the merged result: a paused row requires an
+	// active, available, valid pause episode; a pending / running row
+	// cannot carry an active one.
+	if err := enforcePauseInvariants(merged.Status, merged.Pause); err != nil {
+		return TurnRow{}, fmt.Errorf("turns: update pause: %w", err)
 	}
 	if u.EventSeq > current.LastAppliedEventSeq {
 		merged.LastAppliedEventSeq = u.EventSeq // the guard above guarantees > 0 here
@@ -398,11 +412,16 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 // current row: a complete seal requires the Answer component in a
 // definite state — inline / artifact_ref / empty (ErrSealIncomplete
 // naming "answer" otherwise; an evicted or unavailable answer is NOT a
-// complete seal); a failed seal requires a non-empty ErrorClass
-// ("error_class"). A same-status re-seal of an already-sealed row is
-// an idempotent no-op that returns the sealed row (replay-friendly); a
-// conflicting re-seal fails with ErrTurnSealed. After a successful
-// seal the row is immutable.
+// complete seal); a failed seal requires a non-empty ErrorClass from
+// the CLOSED set ("error_class"). FinishReason (when supplied) and
+// ErrorClass are closed enums, and the bounded redacted terminal
+// messages are validated. The seal RESOLVES / CLEARS any active pause
+// episode without retaining callback/approval authority (the Pause
+// component never carried a token; sealing drops the episode). A
+// same-status re-seal of an already-sealed row is an idempotent no-op
+// that returns the sealed row (replay-friendly); a conflicting re-seal
+// fails with ErrTurnSealed. After a successful seal the row is
+// immutable.
 func (p *Projector) Seal(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, s Seal) (TurnRow, error) {
 	if err := validateIdentity(id); err != nil {
 		return TurnRow{}, err
@@ -415,6 +434,22 @@ func (p *Projector) Seal(ctx context.Context, id identity.Identity, turnID TurnI
 	}
 	if !s.Status.Terminal() {
 		return TurnRow{}, fmt.Errorf("%w: status %q is not terminal", ErrNotTerminal, s.Status)
+	}
+	if s.FinishReason != "" && !s.FinishReason.Valid() {
+		return TurnRow{}, fmt.Errorf("%w: finish reason %q is not a closed finish reason", ErrInvalidInput, s.FinishReason)
+	}
+	if s.ErrorClass != "" && !s.ErrorClass.Valid() {
+		return TurnRow{}, fmt.Errorf("%w: error class %q is not a closed error class", ErrInvalidInput, s.ErrorClass)
+	}
+	for _, msg := range []struct{ name, value string }{
+		{"finish message", s.FinishMessage},
+		{"error message", s.ErrorMessage},
+	} {
+		if msg.value != "" {
+			if err := validateText(msg.value, "terminal "+msg.name, MaxTerminalMessageRunes); err != nil {
+				return TurnRow{}, fmt.Errorf("%w: seal %s: %v", ErrInvalidInput, msg.name, err)
+			}
+		}
 	}
 
 	current, err := p.store.GetTurn(ctx, id, turnID)
@@ -456,8 +491,15 @@ func (p *Projector) Seal(ctx context.Context, id identity.Identity, turnID TurnI
 	sealed.Sealed = true
 	sealed.FinishReason = s.FinishReason
 	sealed.ErrorClass = s.ErrorClass
+	sealed.FinishMessage = s.FinishMessage
+	sealed.ErrorMessage = s.ErrorMessage
 	sealed.FinishedAt = finished
 	sealed.UpdatedAt = now
+	// Terminal sealing resolves / clears any active pause episode
+	// without retaining callback / approval authority: the sealed row
+	// honestly reports no pause episode (the component never carried a
+	// token, and a terminal turn is not paused).
+	sealed.Pause = Pause{Availability: CompletenessUnavailable}
 	if s.EventSeq > current.LastAppliedEventSeq {
 		sealed.LastAppliedEventSeq = s.EventSeq // the guard above guarantees > 0 here
 	}
@@ -468,15 +510,17 @@ func (p *Projector) Seal(ctx context.Context, id identity.Identity, turnID TurnI
 	return stored, nil
 }
 
-// AttachReasoning attaches the bounded ORDERED reasoning component
-// through its separately named channel (NOT the generic ops — the ops
-// are structurally unable to contain reasoning). Steps are fed in
-// chronological trajectory order with strictly increasing (gap-
-// tolerant) indices; the projector retains the first MaxReasoningSteps
-// and reports the tail drop as Partial + Dropped. An empty feed marks
-// the component Unavailable. Replaces any prior reasoning wholesale
-// and stamps the observation's EventSeq on the accumulated snapshot
-// (Reasoning.Seq).
+// AttachReasoning attaches the bounded ORDERED DERIVED reasoning
+// component through its separately named channel (NOT the generic ops
+// — the ops are structurally unable to contain reasoning). Steps are
+// fed in chronological trajectory order with strictly increasing
+// (gap-tolerant) indices and carry a CLOSED kind only — raw provider
+// thinking is structurally absent; a source that cannot classify a
+// step into the closed set omits the step honestly. The projector
+// retains the first MaxReasoningSteps and reports the tail drop as
+// Partial + Dropped. An empty feed marks the component Unavailable.
+// Replaces any prior reasoning wholesale and stamps the observation's
+// EventSeq on the accumulated snapshot (Reasoning.Seq).
 func (p *Projector) AttachReasoning(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, r ReasoningInput) (TurnRow, error) {
 	if err := validateIdentity(id); err != nil {
 		return TurnRow{}, err
@@ -658,12 +702,13 @@ func (p *Projector) Get(ctx context.Context, id identity.Identity, turnID TurnID
 
 // OpsTurn serves the OPERATIONS-SAFE READ projection of one turn — a
 // pure, STRUCTURALLY DISTINCT DTO (OpsTurnRow) that omits the consumer
-// fields the operations surface must never see (query, answer,
-// reasoning traces, pause tokens, App resource URI / tool_call_id, App
-// context/input/result) while retaining lifecycle / agent binding /
-// timing / usage / cost / tool-name / status / counts / availability.
-// It is the read shape the future operations Protocol lane consumes;
-// the mutation DTOs are NOT that surface.
+// fields the operations surface must never see (query, answer, raw
+// provider thinking / reasoning summaries, pause tokens, App resource
+// URI / tool_call_id, App context/input/result) while retaining
+// lifecycle / agent binding / timing / per-measure usage / cost /
+// tool-name / status / counts / availability / bounded redacted
+// terminal messages. It is the read shape the operations Protocol lane
+// consumes; the mutation DTOs are NOT that surface.
 func (p *Projector) OpsTurn(ctx context.Context, id identity.Identity, turnID TurnID) (OpsTurnRow, error) {
 	row, err := p.Get(ctx, id, turnID)
 	if err != nil {
@@ -843,11 +888,13 @@ func projectOps(row TurnRow) OpsTurnRow {
 		FinishedAt:          row.FinishedAt,
 		FinishReason:        row.FinishReason,
 		ErrorClass:          row.ErrorClass,
+		FinishMessage:       row.FinishMessage,
+		ErrorMessage:        row.ErrorMessage,
 		AgentID:             row.Agent.ID,
 		AgentName:           row.Agent.Name,
 		AgentBindingSource:  row.Agent.BindingSource,
 		Usage:               row.Usage,
-		Activity:            row.Activity.Rows,
+		Activity:            row.Activity,
 		ReasoningSteps:      len(row.Reasoning.Steps),
 		Inputs:              len(row.Inputs),
 		Outputs:             len(row.Outputs),
@@ -923,78 +970,144 @@ func definiteAnswer(a Answer) bool {
 	return false
 }
 
-// validateActivity validates the per-row shape of a fed activity list
-// (position ordinal, tool non-empty + bounded, status valid, summary
-// bounded) against the configured inline activity window. The window
-// clamp (overflow → explicit lower-bound) happens separately in
-// clampActivity. Feeds are the CUMULATIVE activity of the turn and may
-// legitimately exceed the window by any margin (an over-budget turn,
-// or a replay of one) — overflow is the honest Partial/More/Dropped
-// contract, never a validation failure; only the tool-name bound and
-// per-row shape fail loud.
-func validateActivity(fed []ActivityRow, limit int) error {
+// normalizeActivity validates the per-row shape of a fed activity list
+// (tool non-empty + bounded, status valid, terminal class derived,
+// policy-exhausted consistency, invocation / batch ids bounded and
+// control-free, summary bounded), stamps each row's IMMUTABLE position
+// ordinal (the feed index — feeds are cumulative, so a position never
+// changes and appends only ever add HIGHER positions), computes the
+// EXACT turn-level totals across the FULL fed list, and clamps the
+// inline window to the last `limit` rows. The window clamp (overflow →
+// explicit lower-bound More + Dropped + Partial) is the honest
+// contract for an over-budget turn; the totals keep the turn summary
+// intact. An empty feed is a complete empty window. The returned rows
+// are deep-copied — the stored projection never aliases the caller's
+// backing array (concurrent reuse).
+func normalizeActivity(fed []ActivityRow, limit int) (Activity, error) {
+	if len(fed) == 0 {
+		return Activity{Complete: CompletenessComplete, Totals: ActivityTotals{}}, nil
+	}
+	out := make([]ActivityRow, len(fed))
+	var totals ActivityTotals
 	for i, row := range fed {
 		if row.Tool == "" {
-			return fmt.Errorf("%w: activity row %d has an empty tool name", ErrInvalidInput, i)
+			return Activity{}, fmt.Errorf("%w: activity row %d has an empty tool name", ErrInvalidInput, i)
 		}
 		if err := validateText(row.Tool, "activity tool", MaxToolNameRunes); err != nil {
-			return fmt.Errorf("%w: activity row %d: %v", ErrInvalidInput, i, err)
+			return Activity{}, fmt.Errorf("%w: activity row %d: %v", ErrInvalidInput, i, err)
+		}
+		if row.InvocationID != "" {
+			if err := validateText(row.InvocationID, "activity invocation id", MaxInvocationIDRunes); err != nil {
+				return Activity{}, fmt.Errorf("%w: activity row %d: %v", ErrInvalidInput, i, err)
+			}
+		}
+		if row.BatchID != "" {
+			if err := validateText(row.BatchID, "activity batch id", MaxBatchIDRunes); err != nil {
+				return Activity{}, fmt.Errorf("%w: activity row %d: %v", ErrInvalidInput, i, err)
+			}
 		}
 		status := row.Status
 		if status == "" {
 			status = ActivityInvoked
 		}
 		if !status.Valid() {
-			return fmt.Errorf("%w: activity row %d status %q", ErrInvalidInput, i, row.Status)
+			return Activity{}, fmt.Errorf("%w: activity row %d status %q", ErrInvalidInput, i, row.Status)
+		}
+		if row.PolicyExhausted && status != ActivityPolicyExhausted {
+			return Activity{}, fmt.Errorf("%w: activity row %d marks policy_exhausted with status %q — policy exhaustion IS the policy_exhausted status",
+				ErrInvalidInput, i, status)
+		}
+		if status == ActivityPolicyExhausted && !row.PolicyExhausted {
+			return Activity{}, fmt.Errorf("%w: activity row %d has status %q but policy_exhausted is false",
+				ErrInvalidInput, i, status)
+		}
+		if row.AttemptCount < 0 {
+			return Activity{}, fmt.Errorf("%w: activity row %d has a negative attempt count", ErrInvalidInput, i)
 		}
 		if utf8.RuneCountInString(row.Summary) > MaxActivitySummaryRunes {
-			return fmt.Errorf("%w: activity row %d summary exceeds %d runes", ErrInvalidInput, i, MaxActivitySummaryRunes)
+			return Activity{}, fmt.Errorf("%w: activity row %d summary exceeds %d runes", ErrInvalidInput, i, MaxActivitySummaryRunes)
 		}
-	}
-	return nil
-}
-
-// assignActivityPositions stamps each fed row's IMMUTABLE position
-// ordinal (the feed index). Feeds are cumulative, so a position never
-// changes for a row's lifetime and appends only ever add HIGHER
-// positions — the keyset key the ActivityReader pages over. The row
-// is deep-copied (the stored projection never aliases the caller's
-// backing array — concurrent reuse).
-func assignActivityPositions(fed []ActivityRow) []ActivityRow {
-	out := make([]ActivityRow, len(fed))
-	for i, row := range fed {
 		row.Position = i
+		row.Status = status
+		row.TerminalClass = activityTerminalClass(status)
+		switch status {
+		case ActivityInvoked:
+			totals.Invoked++
+		case ActivityRetried:
+			totals.Retried++
+		case ActivitySucceeded:
+			totals.Succeeded++
+		case ActivityFailed:
+			totals.Failed++
+		case ActivityCancelled:
+			totals.Cancelled++
+		case ActivityPolicyExhausted:
+			totals.PolicyExhausted++
+		}
 		out[i] = row
 	}
-	return out
-}
 
-// clampActivity retains the LAST `limit` rows of the fed sequence
-// (the recent window) and reports the overflow as the explicit
-// lower-bound: More + Dropped, with the component Partial. An empty
-// feed is a complete empty window (the runtime fed the current
-// cumulative list and it has no rows). The retained window is
-// deep-copied — it never aliases the caller's backing array.
-func clampActivity(fed []ActivityRow, limit int) Activity {
-	if len(fed) == 0 {
-		return Activity{Complete: CompletenessComplete}
+	if len(out) <= limit {
+		return Activity{Rows: out, Complete: CompletenessComplete, Totals: totals}, nil
 	}
-	if len(fed) <= limit {
-		return Activity{Rows: append([]ActivityRow(nil), fed...), Complete: CompletenessComplete}
-	}
-	kept := append([]ActivityRow(nil), fed[len(fed)-limit:]...)
+	kept := append([]ActivityRow(nil), out[len(out)-limit:]...)
 	return Activity{
 		Rows:     kept,
 		Complete: CompletenessPartial,
 		More:     true,
-		Dropped:  len(fed) - limit,
+		Dropped:  len(out) - limit,
+		Totals:   totals,
+	}, nil
+}
+
+// activityTerminalClass derives the CLOSED terminal classification of
+// one activity status: in-flight statuses (invoked / retried) are
+// "none"; each terminal status maps to exactly one terminal class. The
+// row's TerminalClass is derived, so it can never be fed
+// inconsistently.
+func activityTerminalClass(s ActivityStatus) ActivityTerminalClass {
+	switch s {
+	case ActivitySucceeded:
+		return ActivityTerminalSucceeded
+	case ActivityFailed:
+		return ActivityTerminalFailed
+	case ActivityCancelled:
+		return ActivityTerminalCancelled
+	case ActivityPolicyExhausted:
+		return ActivityTerminalPolicyExhausted
+	default: // invoked, retried — in flight
+		return ActivityTerminalNone
 	}
 }
 
-// validateReasoningSteps validates the ordered step sequence: indices
-// non-negative and strictly increasing (gap-tolerant — steps without
-// reasoning are not fed), traces bounded. The clamp (overflow → first
-// N kept, tail dropped) happens in clampReasoning.
+// enforcePauseInvariants enforces the durable pause lifecycle
+// invariants of a row: a `paused` row MUST carry an active, available,
+// valid pause episode (Availability Complete + Lifecycle Active), and
+// a `pending` / `running` row MUST NOT carry an active one (a
+// requested episode — the honest pre-quiesce state — is fine while
+// non-paused; a resume must clear the episode explicitly).
+func enforcePauseInvariants(status Status, pause Pause) error {
+	active := pause.Availability == CompletenessComplete && pause.Lifecycle == PauseLifecycleActive
+	if status == StatusPaused {
+		if !active {
+			return fmt.Errorf("%w: a paused turn requires an active, available, valid pause episode (status %q, pause availability %q lifecycle %q)",
+				ErrInvalidInput, status, pause.Availability, pause.Lifecycle)
+		}
+		return nil
+	}
+	if active {
+		return fmt.Errorf("%w: a %q turn cannot carry an active pause — resume must clear the episode explicitly",
+			ErrInvalidInput, status)
+	}
+	return nil
+}
+
+// validateReasoningSteps validates the ordered DERIVED step sequence:
+// indices non-negative and strictly increasing (gap-tolerant — steps
+// without a safe derivative are not fed), kind a member of the CLOSED
+// set. The clamp (overflow → first N kept, tail dropped) happens in
+// clampReasoning. Structurally, a step can only carry an index and a
+// kind — raw provider thinking cannot be represented.
 func validateReasoningSteps(steps []ReasoningStep) error {
 	if len(steps) > MaxReasoningSteps*4 {
 		return fmt.Errorf("%w: reasoning feed exceeds %d steps", ErrInvalidInput, MaxReasoningSteps*4)
@@ -1008,8 +1121,8 @@ func validateReasoningSteps(steps []ReasoningStep) error {
 			return fmt.Errorf("%w: reasoning step %d index %d is not strictly increasing", ErrInvalidInput, i, step.Index)
 		}
 		prev = step.Index
-		if utf8.RuneCountInString(step.Trace) > MaxStepTraceRunes {
-			return fmt.Errorf("%w: reasoning step %d trace exceeds %d runes", ErrInvalidInput, i, MaxStepTraceRunes)
+		if !step.Kind.Valid() {
+			return fmt.Errorf("%w: reasoning step %d kind %q is not a closed reasoning kind", ErrInvalidInput, i, step.Kind)
 		}
 	}
 	return nil
@@ -1088,21 +1201,51 @@ func validateAnswer(a Answer, inlineLimit int) error {
 	return nil
 }
 
-// validateUsage validates the cumulative usage rollup shape.
-func validateUsage(u Usage) error {
-	if !u.Complete.Valid() {
-		return fmt.Errorf("%w: usage completeness %q", ErrInvalidInput, u.Complete)
+// normalizeUsage canonicalizes and validates the cumulative per-measure
+// usage rollup: an empty per-measure state means the measure is
+// unavailable (the honest zero-value default — normalized to the
+// closed UsageUnavailable), an unavailable measure carries NO value (a
+// missing measure is unavailable, never a fabricated zero), a present
+// measure carries a non-negative exact integer amount, and the model
+// identifier is bounded, valid UTF-8, and control-free. Money is exact
+// integer micro-dollars — never float64.
+func normalizeUsage(u Usage) (Usage, error) {
+	measures := []*UsageMeasure{
+		&u.PromptTokens, &u.CompletionTokens, &u.ReasoningTokens,
+		&u.CacheReadTokens, &u.CacheWriteTokens, &u.TotalTokens,
+		&u.CostMicroUSD, &u.LatencyNS,
 	}
-	if u.PromptTokens < 0 || u.CompletionTokens < 0 || u.ReasoningTokens < 0 || u.TotalTokens < 0 {
-		return fmt.Errorf("%w: usage token counts must be non-negative", ErrInvalidInput)
+	names := []string{
+		"prompt_tokens", "completion_tokens", "reasoning_tokens",
+		"cache_read_tokens", "cache_write_tokens", "total_tokens",
+		"cost_micro_usd", "latency_ns",
 	}
-	if u.CostUSD < 0 {
-		return fmt.Errorf("%w: usage cost must be non-negative", ErrInvalidInput)
+	for i, m := range measures {
+		if m.State == "" {
+			m.State = UsageUnavailable
+		}
+		if !m.State.Valid() {
+			return Usage{}, fmt.Errorf("%w: usage %s state %q", ErrInvalidInput, names[i], m.State)
+		}
+		if m.State == UsageUnavailable {
+			if m.Value != nil {
+				return Usage{}, fmt.Errorf("%w: usage %s is unavailable but carries a value — a missing measure is never a fabricated amount", ErrInvalidInput, names[i])
+			}
+			continue
+		}
+		if m.Value == nil {
+			return Usage{}, fmt.Errorf("%w: usage %s is %q but carries no value", ErrInvalidInput, names[i], m.State)
+		}
+		if *m.Value < 0 {
+			return Usage{}, fmt.Errorf("%w: usage %s must be non-negative", ErrInvalidInput, names[i])
+		}
 	}
-	if utf8.RuneCountInString(u.Model) > MaxModelRunes {
-		return fmt.Errorf("%w: usage model exceeds %d runes", ErrInvalidInput, MaxModelRunes)
+	if u.Model != "" {
+		if err := validateText(u.Model, "usage model", MaxModelRunes); err != nil {
+			return Usage{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
 	}
-	return nil
+	return u, nil
 }
 
 // normalizeAttachments validates one attachment metadata list (every

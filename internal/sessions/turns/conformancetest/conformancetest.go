@@ -29,6 +29,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime"
 	"sync"
 	"testing"
@@ -278,7 +279,7 @@ func Run(t *testing.T, factory Factory) {
 		sealed := row
 		sealed.Status = turns.StatusFailed
 		sealed.Sealed = true
-		sealed.ErrorClass = "runloop_error"
+		sealed.ErrorClass = turns.ErrorClassTransient
 		got, err := s.SealTurnIf(ctx, id, "run-1", row.Version, sealed)
 		if err != nil {
 			t.Fatalf("seal: %v", err)
@@ -696,6 +697,30 @@ func Run(t *testing.T, factory Factory) {
 			{EffectiveAgentID: "agent-1", ServerID: "srv-1", ResourceURI: "ui://srv/app", DisplayMode: "inline", RawHTMLTrusted: false, ToolCallID: "tc-1", ToolName: "tool-a", Availability: turns.AppAvailable, Complete: turns.CompletenessComplete},
 			{EffectiveAgentID: "", ServerID: "srv-2", ResourceURI: "ui://srv/app2", ToolName: "tool-b", Availability: turns.AppDegraded, Complete: turns.CompletenessComplete},
 		}
+		// The changed core DTO: per-measure usage, derived reasoning,
+		// content-free activity with exact totals, and closed terminal
+		// enums must survive a driver round-trip byte-for-byte.
+		prompt := int64(100)
+		total := int64(150)
+		row.Usage = turns.Usage{
+			PromptTokens: turns.UsageMeasure{State: turns.UsageExact, Value: &prompt},
+			TotalTokens:  turns.UsageMeasure{State: turns.UsageExact, Value: &total},
+			Model:        "model-x",
+		}
+		row.Reasoning = turns.Reasoning{
+			Steps:    []turns.ReasoningStep{{Index: 0, Kind: turns.ReasoningKindToolCall}, {Index: 2, Kind: turns.ReasoningKindSpawn}},
+			Complete: turns.CompletenessComplete,
+			Seq:      7,
+		}
+		row.Activity = turns.Activity{
+			Rows:     []turns.ActivityRow{{Position: 0, Tool: "t1", Status: turns.ActivitySucceeded, TerminalClass: turns.ActivityTerminalSucceeded}},
+			Complete: turns.CompletenessComplete,
+			Totals:   turns.ActivityTotals{Succeeded: 1},
+		}
+		row.FinishReason = turns.FinishGoal
+		row.ErrorClass = turns.ErrorClassTransient
+		row.FinishMessage = "goal reached"
+		row.ErrorMessage = "recovered transiently"
 		if _, err := s.AppendTurnIf(ctx, id, row); err != nil {
 			t.Fatalf("append: %v", err)
 		}
@@ -723,6 +748,37 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if read.LastAppliedEventSeq != 42 {
 			t.Errorf("LastAppliedEventSeq lost: %d, want 42", read.LastAppliedEventSeq)
+		}
+		// Per-measure usage round-trips with availability + exact value.
+		if m := read.Usage.PromptTokens; m.State != turns.UsageExact || m.Value == nil || *m.Value != 100 {
+			t.Errorf("usage prompt tokens lost: %+v", read.Usage.PromptTokens)
+		}
+		// The driver is a transport: the unreported measure's state is
+		// preserved byte-for-byte exactly as fed (the projector is the
+		// normalizer; the driver must not invent availability). The
+		// whole Usage struct must round-trip unmodified.
+		if !reflect.DeepEqual(read.Usage, row.Usage) {
+			t.Errorf("usage struct drifted through the driver:\n  got:  %+v\n  want: %+v", read.Usage, row.Usage)
+		}
+		if read.Usage.Model != "model-x" {
+			t.Errorf("usage model lost: %q", read.Usage.Model)
+		}
+		// Derived reasoning round-trips as index+kind only.
+		if len(read.Reasoning.Steps) != 2 || read.Reasoning.Steps[1].Kind != turns.ReasoningKindSpawn || read.Reasoning.Seq != 7 {
+			t.Errorf("derived reasoning lost: %+v", read.Reasoning)
+		}
+		// Content-free activity + exact totals round-trip.
+		if len(read.Activity.Rows) != 1 || read.Activity.Rows[0].Tool != "t1" || read.Activity.Rows[0].TerminalClass != turns.ActivityTerminalSucceeded {
+			t.Errorf("activity row lost: %+v", read.Activity.Rows)
+		}
+		if read.Activity.Totals != (turns.ActivityTotals{Succeeded: 1}) {
+			t.Errorf("activity totals lost: %+v", read.Activity.Totals)
+		}
+		// Closed terminal enums + bounded messages round-trip.
+		if read.FinishReason != turns.FinishGoal || read.ErrorClass != turns.ErrorClassTransient ||
+			read.FinishMessage != "goal reached" || read.ErrorMessage != "recovered transiently" {
+			t.Errorf("terminal fields lost: reason=%q class=%q fm=%q em=%q",
+				read.FinishReason, read.ErrorClass, read.FinishMessage, read.ErrorMessage)
 		}
 		if len(read.Apps) != 2 {
 			t.Fatalf("apps collection lost: %d entries, want 2 (ordered)", len(read.Apps))

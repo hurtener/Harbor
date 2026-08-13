@@ -108,8 +108,18 @@ func TestProjector_Append_CreatesMutableRunningRow(t *testing.T) {
 	if row.Answer.Complete != CompletenessUnavailable {
 		t.Errorf("Answer.Complete=%q, want unavailable", row.Answer.Complete)
 	}
-	if row.Usage.Complete != CompletenessUnavailable {
-		t.Errorf("Usage.Complete=%q, want unavailable", row.Usage.Complete)
+	// Every usage measure is honestly unavailable on a fresh turn, with
+	// NO value — never a fabricated zero.
+	for name, m := range usageMeasures(row.Usage) {
+		if m.State != UsageUnavailable {
+			t.Errorf("fresh Usage.%s state=%q, want unavailable", name, m.State)
+		}
+		if m.Value != nil {
+			t.Errorf("fresh Usage.%s carries a value %d — a missing measure is unavailable, never zero", name, *m.Value)
+		}
+	}
+	if row.Usage.Model != "" {
+		t.Errorf("fresh Usage.Model=%q, want empty (unavailable)", row.Usage.Model)
 	}
 	if row.Reasoning.Complete != CompletenessUnavailable {
 		t.Errorf("Reasoning.Complete=%q, want unavailable", row.Reasoning.Complete)
@@ -202,14 +212,22 @@ func TestProjector_Update_MutatesMutableRowInPlace(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 
-	usage := Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, CostUSD: 0.01, Model: "gpt-x", Complete: CompletenessComplete}
+	usage := Usage{
+		PromptTokens:     usageExact(100),
+		CompletionTokens: usageExact(50),
+		TotalTokens:      usageExact(150),
+		CostMicroUSD:     usageExact(2500), // $0.0025 in exact integer micro-dollars
+		Model:            "gpt-x",
+	}
 	answer := Answer{State: AnswerStateInline, Inline: "It is sunny."}
 	act := []ActivityRow{{Tool: "search", Status: ActivitySucceeded, Summary: "0.4s"}}
+	pause := Pause{Class: PauseClassHitlApproval, Reason: "approval", Lifecycle: PauseLifecycleActive}
 	upd, err := p.Update(context.Background(), id, "run-1", row.Version, Update{
 		Status:   StatusPaused,
 		Answer:   &answer,
 		Usage:    &usage,
 		Activity: act,
+		Pause:    &pause,
 	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
@@ -217,11 +235,20 @@ func TestProjector_Update_MutatesMutableRowInPlace(t *testing.T) {
 	if upd.Status != StatusPaused {
 		t.Errorf("Status=%q, want paused", upd.Status)
 	}
+	if upd.Pause.Availability != CompletenessComplete || upd.Pause.Lifecycle != PauseLifecycleActive {
+		t.Errorf("paused row must carry an active available pause: %+v", upd.Pause)
+	}
 	if upd.Version != row.Version+1 {
 		t.Errorf("Version=%d, want %d", upd.Version, row.Version+1)
 	}
-	if upd.Usage.TotalTokens != 150 || upd.Usage.Model != "gpt-x" {
-		t.Errorf("Usage not replaced: %+v", upd.Usage)
+	if got := upd.Usage.TotalTokens; got.State != UsageExact || got.Value == nil || *got.Value != 150 {
+		t.Errorf("Usage.TotalTokens not replaced: %+v", got)
+	}
+	if upd.Usage.Model != "gpt-x" {
+		t.Errorf("Usage.Model not replaced: %+v", upd.Usage)
+	}
+	if got := upd.Usage.CostMicroUSD; got.State != UsageExact || got.Value == nil || *got.Value != 2500 {
+		t.Errorf("Usage.CostMicroUSD not replaced (must be exact integer micro-dollars): %+v", got)
 	}
 	if upd.Answer.Inline != "It is sunny." {
 		t.Errorf("Answer not replaced: %+v", upd.Answer)
@@ -229,16 +256,19 @@ func TestProjector_Update_MutatesMutableRowInPlace(t *testing.T) {
 	if len(upd.Activity.Rows) != 1 || upd.Activity.Rows[0].Tool != "search" || upd.Activity.Complete != CompletenessComplete {
 		t.Errorf("Activity not replaced: %+v", upd.Activity)
 	}
+	if upd.Activity.Rows[0].TerminalClass != ActivityTerminalSucceeded || upd.Activity.Rows[0].Position != 0 {
+		t.Errorf("Activity row derived fields wrong: %+v", upd.Activity.Rows[0])
+	}
 
 	// nil components leave the stored ones unchanged.
-	upd2, err := p.Update(context.Background(), id, "run-1", upd.Version, Update{Status: StatusRunning})
+	upd2, err := p.Update(context.Background(), id, "run-1", upd.Version, Update{Status: StatusRunning, Pause: &Pause{Availability: CompletenessUnavailable}})
 	if err != nil {
 		t.Fatalf("Update 2: %v", err)
 	}
 	if upd2.Status != StatusRunning {
 		t.Errorf("Status=%q, want running", upd2.Status)
 	}
-	if upd2.Answer.Inline != "It is sunny." || upd2.Usage.TotalTokens != 150 {
+	if upd2.Answer.Inline != "It is sunny." || *upd2.Usage.TotalTokens.Value != 150 {
 		t.Errorf("nil components must leave the row unchanged: %+v", upd2)
 	}
 }
@@ -287,7 +317,7 @@ func sealComplete(p *Projector, id identity.Identity, turnID TurnID, version int
 			return err
 		}
 	}
-	_, err = p.Seal(context.Background(), id, turnID, row.Version, Seal{Status: StatusComplete, FinishReason: "goal"})
+	_, err = p.Seal(context.Background(), id, turnID, row.Version, Seal{Status: StatusComplete, FinishReason: FinishGoal})
 	return err
 }
 
@@ -312,9 +342,20 @@ func TestProjector_Update_ValidationFailsLoud(t *testing.T) {
 	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: &contentInUnavailable}); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("content in unavailable answer error=%v, want ErrInvalidInput", err)
 	}
-	negUsage := Usage{PromptTokens: -1, Complete: CompletenessComplete}
+	negUsage := Usage{PromptTokens: usageExact(-1)}
 	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Usage: &negUsage}); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("negative usage error=%v, want ErrInvalidInput", err)
+	}
+	// An unavailable measure must carry NO value — a missing measure is
+	// unavailable, never a fabricated zero.
+	lyingUsage := Usage{PromptTokens: UsageMeasure{State: UsageUnavailable, Value: usageInt64(0)}}
+	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Usage: &lyingUsage}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("unavailable-with-value usage error=%v, want ErrInvalidInput", err)
+	}
+	// A present measure must carry a value.
+	valueless := Usage{PromptTokens: UsageMeasure{State: UsageExact}}
+	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Usage: &valueless}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("exact-without-value usage error=%v, want ErrInvalidInput", err)
 	}
 	// The referenced answer is the D-026-safe route for heavy content.
 	refAns := Answer{State: AnswerStateArtifactRef, Ref: &AnswerRef{ID: "art_1", MimeType: "text/plain", SizeBytes: 1 << 20, SHA256: "ab"}}
@@ -352,11 +393,11 @@ func TestProjector_Seal_RequiresTerminalSources(t *testing.T) {
 	}
 
 	// Cancelled seal needs nothing beyond the lifecycle.
-	sealed, err := p.Seal(context.Background(), id, "run-1", row.Version, Seal{Status: StatusCancelled, FinishReason: "cancelled"})
+	sealed, err := p.Seal(context.Background(), id, "run-1", row.Version, Seal{Status: StatusCancelled, FinishReason: FinishCancelled})
 	if err != nil {
 		t.Fatalf("cancelled seal: %v", err)
 	}
-	if !sealed.Sealed || sealed.Status != StatusCancelled || sealed.FinishReason != "cancelled" {
+	if !sealed.Sealed || sealed.Status != StatusCancelled || sealed.FinishReason != FinishCancelled {
 		t.Errorf("sealed row wrong: %+v", sealed)
 	}
 	if !sealed.FinishedAt.Equal(testClockStart) {
@@ -410,7 +451,7 @@ func TestProjector_Seal_ReSealSemantics(t *testing.T) {
 		t.Errorf("re-seal changed the sealed row: %+v", again)
 	}
 	// Conflicting re-seal fails loud.
-	if _, err := p.Seal(context.Background(), id, "run-1", sealed.Version, Seal{Status: StatusFailed, ErrorClass: "x"}); !errors.Is(err, ErrTurnSealed) {
+	if _, err := p.Seal(context.Background(), id, "run-1", sealed.Version, Seal{Status: StatusFailed, ErrorClass: ErrorClassTransient}); !errors.Is(err, ErrTurnSealed) {
 		t.Errorf("conflicting re-seal error=%v, want ErrTurnSealed", err)
 	}
 }
@@ -436,9 +477,9 @@ func TestProjector_AttachReasoning_OrderedAndBounded(t *testing.T) {
 	}
 
 	steps := []ReasoningStep{
-		{Index: 0, Trace: "first thought"},
-		{Index: 2, Trace: "gap-tolerant step"},
-		{Index: 5, Trace: "third thought"},
+		{Index: 0, Kind: ReasoningKindToolCall},
+		{Index: 2, Kind: ReasoningKindSpawn},
+		{Index: 5, Kind: ReasoningKindAwait},
 	}
 	got, err := p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: steps})
 	if err != nil {
@@ -447,7 +488,7 @@ func TestProjector_AttachReasoning_OrderedAndBounded(t *testing.T) {
 	if got.Reasoning.Complete != CompletenessComplete || len(got.Reasoning.Steps) != 3 {
 		t.Errorf("reasoning projection wrong: %+v", got.Reasoning)
 	}
-	if got.Reasoning.Steps[1].Index != 2 || got.Reasoning.Steps[1].Trace != "gap-tolerant step" {
+	if got.Reasoning.Steps[1].Index != 2 || got.Reasoning.Steps[1].Kind != ReasoningKindSpawn {
 		t.Errorf("ordered steps wrong: %+v", got.Reasoning.Steps)
 	}
 
@@ -455,7 +496,7 @@ func TestProjector_AttachReasoning_OrderedAndBounded(t *testing.T) {
 	// drop as Partial + Dropped.
 	overflow := make([]ReasoningStep, MaxReasoningSteps+5)
 	for i := range overflow {
-		overflow[i] = ReasoningStep{Index: i, Trace: "t"}
+		overflow[i] = ReasoningStep{Index: i, Kind: ReasoningKindToolCall}
 	}
 	got2, err := p.AttachReasoning(context.Background(), id, "run-1", got.Version, ReasoningInput{Steps: overflow})
 	if err != nil {
@@ -478,12 +519,13 @@ func TestProjector_AttachReasoning_OrderedAndBounded(t *testing.T) {
 	}
 
 	// Non-monotonic indices fail loud.
-	if _, err := p.AttachReasoning(context.Background(), id, "run-1", got3.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 3, Trace: "a"}, {Index: 1, Trace: "b"}}}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := p.AttachReasoning(context.Background(), id, "run-1", got3.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 3, Kind: ReasoningKindToolCall}, {Index: 1, Kind: ReasoningKindToolCall}}}); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("non-increasing indices error=%v, want ErrInvalidInput", err)
 	}
-	// Over-bound trace fails loud.
-	if _, err := p.AttachReasoning(context.Background(), id, "run-1", got3.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 0, Trace: strings.Repeat("t", MaxStepTraceRunes+1)}}}); !errors.Is(err, ErrInvalidInput) {
-		t.Errorf("over-bound trace error=%v, want ErrInvalidInput", err)
+	// A kind outside the CLOSED set fails loud — raw thinking has no
+	// representable form.
+	if _, err := p.AttachReasoning(context.Background(), id, "run-1", got3.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 0, Kind: ReasoningKind("raw_thinking")}}}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("unknown reasoning kind error=%v, want ErrInvalidInput", err)
 	}
 }
 
@@ -617,177 +659,111 @@ func TestProjector_ActivityOverflow_ExplicitLowerBound(t *testing.T) {
 	if len(got.Activity.Rows) != DefaultActivityLimit {
 		t.Errorf("retained %d rows, want %d", len(got.Activity.Rows), DefaultActivityLimit)
 	}
+	// The EXACT totals cover the FULL fed activity — truncating the
+	// inline window never erases the turn summary.
+	if got.Activity.Totals.Succeeded != int64(len(fed)) {
+		t.Errorf("Activity.Totals.Succeeded=%d, want %d (the full fed count, not the window)", got.Activity.Totals.Succeeded, len(fed))
+	}
+	if got.Activity.Totals.Invoked != 0 || got.Activity.Totals.Failed != 0 {
+		t.Errorf("Activity.Totals must not invent categories: %+v", got.Activity.Totals)
+	}
 }
 
-// TestActivityReader_Contract_CompletesTheLowerBound proves the
-// separately named optional activity-read contract: when a row's
-// window overflows (More == true), a caller pages the FULL activity
-// through ActivityReader — including the rows the projection dropped —
-// and a non-overflowed row (More == false) never needs the reader.
-// The paging is keyset-cursor based (immutable Position ordinals), so
-// appends only ever add higher positions and an issued cursor stays
-// stable (no skips, no duplicates).
-func TestActivityReader_Contract_CompletesTheLowerBound(t *testing.T) {
-	// The durable-log reconstruction the runtime-wired reader serves:
-	// the fed rows with their immutable position ordinals.
-	fed := make([]ActivityRow, DefaultActivityLimit+7)
-	full := make([]ActivityRow, len(fed))
-	for i := range fed {
-		fed[i] = ActivityRow{Tool: "t", Status: ActivitySucceeded, Summary: "0.1s"}
-		full[i] = fed[i]
-		full[i].Position = i
-	}
-	reader := &recordingActivityReader{rows: full}
-	p, err := New(newTestStoreOrFail(t), WithActivityReader(reader))
-	if err != nil {
-		t.Fatalf("New with reader: %v", err)
-	}
+// TestActivity_TotalsSurviveInlineOverflow pins the exact turn-level
+// totals contract: even when the inline window truncates an
+// over-budget feed, Activity.Totals carries the exact per-status
+// counts across the FULL fed activity, so list/get still render the
+// turn's activity summary.
+func TestActivity_TotalsSurviveInlineOverflow(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
 	id := tripleA()
 	row, err := appendTurn(p, id, "run-1")
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
+	// A deliberately mixed feed that exceeds the default window by a
+	// wide margin.
+	fed := []ActivityRow{
+		{Tool: "a", Status: ActivitySucceeded},
+		{Tool: "b", Status: ActivityFailed},
+		{Tool: "c", Status: ActivityCancelled},
+		{Tool: "d", Status: ActivityPolicyExhausted, PolicyExhausted: true},
+		{Tool: "e", Status: ActivityRetried},
+		{Tool: "f", Status: ActivityInvoked},
+	}
+	// Grow to exceed the window while preserving the mix.
+	for len(fed) < DefaultActivityLimit+5 {
+		fed = append(fed, ActivityRow{Tool: "x", Status: ActivitySucceeded})
+	}
 	got, err := p.Update(context.Background(), id, "run-1", row.Version, Update{Activity: fed})
 	if err != nil {
 		t.Fatalf("update activity: %v", err)
 	}
-	if !got.Activity.More {
-		t.Fatalf("precondition: the overflow marker must be set")
+	if !got.Activity.More || got.Activity.Dropped == 0 {
+		t.Fatalf("precondition: inline overflow required, got %+v", got.Activity)
 	}
-	// Page the full activity oldest-first through the keyset cursor.
-	var paged []ActivityRow
-	var cursor *ActivityCursor
-	pages := 0
-	for {
-		page, err := p.PageActivity(context.Background(), id, "run-1", cursor, 10)
-		if err != nil {
-			t.Fatalf("PageActivity: %v", err)
-		}
-		pages++
-		paged = append(paged, page.Rows...)
-		if !page.HasMore {
-			if page.NextCursor != nil {
-				t.Errorf("HasMore=false but NextCursor non-nil")
-			}
-			break
-		}
-		if page.NextCursor == nil {
-			t.Fatalf("HasMore=true but NextCursor nil")
-		}
-		cursor = page.NextCursor
+	want := ActivityTotals{
+		Invoked:         1,
+		Succeeded:       int64(len(fed) - 5),
+		Failed:          1,
+		Cancelled:       1,
+		Retried:         1,
+		PolicyExhausted: 1,
 	}
-	if len(paged) != len(full) {
-		t.Errorf("reader returned %d rows, want %d (the full activity)", len(paged), len(full))
+	if got.Activity.Totals != want {
+		t.Errorf("Activity.Totals=%+v, want %+v (exact across the FULL fed activity)", got.Activity.Totals, want)
 	}
-	if pages != (len(full)+9)/10 {
-		t.Errorf("paged %d pages, want %d (bounded page size 10)", pages, (len(full)+9)/10)
+	if int64(got.Activity.Dropped)+int64(len(got.Activity.Rows)) != int64(len(fed)) {
+		t.Errorf("window accounting wrong: dropped %d + retained %d != fed %d",
+			got.Activity.Dropped, len(got.Activity.Rows), len(fed))
 	}
-	// Oldest-first and no duplicates across the cursor walk.
-	for i, r := range paged {
-		if r.Position != i {
-			t.Errorf("paged row %d has Position=%d, want %d (oldest-first, no skips/dups)", i, r.Position, i)
-		}
+	// The retained window is the NEWEST rows with their derived
+	// terminal classes and immutable positions.
+	last := got.Activity.Rows[len(got.Activity.Rows)-1]
+	if last.Position != len(fed)-1 || last.TerminalClass != ActivityTerminalSucceeded {
+		t.Errorf("retained newest row wrong: %+v", last)
 	}
 
-	// A non-overflowed window (More == false) never needs the reader.
-	small, err := p.Update(context.Background(), id, "run-1", got.Version, Update{Activity: []ActivityRow{{Tool: "a", Status: ActivitySucceeded}}})
+	// Re-feeding the same cumulative list replaces the totals
+	// wholesale (cumulative snapshot semantics).
+	got2, err := p.Update(context.Background(), id, "run-1", got.Version, Update{Activity: fed})
 	if err != nil {
-		t.Fatalf("update small activity: %v", err)
+		t.Fatalf("re-feed activity: %v", err)
 	}
-	if small.Activity.More || small.Activity.Dropped != 0 {
-		t.Errorf("small window must carry no lower-bound marker: %+v", small.Activity)
-	}
-
-	// The reader contract's bounded page size is enforced by
-	// PageActivity: an over-bound limit fails loud, and a projector
-	// with no wired reader refuses the call.
-	if _, err := p.PageActivity(context.Background(), id, "run-1", nil, MaxActivityPageSize+1); !errors.Is(err, ErrInvalidInput) {
-		t.Errorf("over-bound activity page limit error=%v, want ErrInvalidInput", err)
-	}
-	pNoReader, err := New(newTestStoreOrFail(t))
-	if err != nil {
-		t.Fatalf("New without reader: %v", err)
-	}
-	if _, err := pNoReader.PageActivity(context.Background(), id, "run-1", nil, 10); !errors.Is(err, ErrInvalidInput) {
-		t.Errorf("PageActivity without a wired reader error=%v, want ErrInvalidInput", err)
+	if got2.Activity.Totals != want {
+		t.Errorf("re-feed Activity.Totals=%+v, want the same exact totals %+v", got2.Activity.Totals, want)
 	}
 }
 
-// TestActivityReader_AppendStability_NoSkipNoDuplicate pins the P3
-// append-stability guarantee: appending activity rows (higher
-// positions) while a keyset walk is in progress never skips or
-// duplicates a row the walk already issued a cursor for.
-func TestActivityReader_AppendStability_NoSkipNoDuplicate(t *testing.T) {
-	// The durable-log reconstruction the reader serves: 4 rows, then 4
-	// more appended mid-walk (positions 4..7).
-	all := make([]ActivityRow, 0, 8)
-	for i := 0; i < 4; i++ {
-		all = append(all, ActivityRow{Position: i, Tool: "t", Status: ActivitySucceeded})
+// TestActivity_NoThirdRead_APIAbsent pins the P1 surface decision: the
+// v1.28 Protocol surface is exactly `sessions.turns.list/get` — there
+// is no third activity read. The ActivityReader / PageActivity /
+// activity-cursor API is gone: the projector exposes no activity
+// paging method and the Activity component carries no reader / cursor
+// / page fields.
+func TestActivity_NoThirdRead_APIAbsent(t *testing.T) {
+	projType := reflect.TypeOf((*Projector)(nil))
+	if _, ok := projType.MethodByName("PageActivity"); ok {
+		t.Errorf("Projector.PageActivity must not exist — the v1.28 surface is exactly list/get, no third activity read")
 	}
-	reader := &recordingActivityReader{rows: all}
-	p2, err := New(newTestStoreOrFail(t), WithActivityReader(reader), WithActivityLimit(2), WithToolBudget(2))
-	if err != nil {
-		t.Fatalf("New with reader: %v", err)
+	if _, ok := projType.MethodByName("ActivityReader"); ok {
+		t.Errorf("Projector.ActivityReader must not exist — no activity-read contract")
 	}
-	id := tripleA()
-	row, err := appendTurn(p2, id, "run-1")
-	if err != nil {
-		t.Fatalf("append: %v", err)
-	}
-	// Feed the first 4 rows: with the 2-row inline window this
-	// overflows honestly (More + Dropped) — the reader serves the full
-	// activity.
-	if _, err := p2.Update(context.Background(), id, "run-1", row.Version, Update{Activity: all}); err != nil {
-		t.Fatalf("update activity: %v", err)
-	}
-	got, err := p2.Get(context.Background(), id, "run-1")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if !got.Activity.More || got.Activity.Dropped != 2 {
-		t.Fatalf("precondition: overflow marker required (Dropped=%d), want 2", got.Activity.Dropped)
-	}
-
-	// Page the first page, then APPEND more rows (positions 4..7),
-	// then continue paging: the walk must return each pre-append row
-	// exactly once and the appended rows exactly once (they are NEWER
-	// positions — the cursor only ever moves forward).
-	first, err := p2.PageActivity(context.Background(), id, "run-1", nil, 2)
-	if err != nil {
-		t.Fatalf("first page: %v", err)
-	}
-	appended := []ActivityRow{
-		{Position: 4, Tool: "t", Status: ActivitySucceeded},
-		{Position: 5, Tool: "t", Status: ActivitySucceeded},
-		{Position: 6, Tool: "t", Status: ActivitySucceeded},
-		{Position: 7, Tool: "t", Status: ActivitySucceeded},
-	}
-	all = append(all, appended...)
-	reader.rows = all
-
-	var walked []int
-	for _, r := range first.Rows {
-		walked = append(walked, r.Position)
-	}
-	cursor := first.NextCursor
-	for cursor != nil {
-		page, err := p2.PageActivity(context.Background(), id, "run-1", cursor, 2)
-		if err != nil {
-			t.Fatalf("walk page: %v", err)
+	actType := reflect.TypeOf(Activity{})
+	for _, forbidden := range []string{"Reader", "Cursor", "Page", "NextCursor"} {
+		if _, ok := actType.FieldByName(forbidden); ok {
+			t.Errorf("Activity.%s must never exist — no activity subresource surface", forbidden)
 		}
-		for _, r := range page.Rows {
-			walked = append(walked, r.Position)
-		}
-		cursor = page.NextCursor
 	}
-	// Exactly 8 positions, strictly increasing (oldest-first, no skips,
-	// no duplicates).
-	if len(walked) != 8 {
-		t.Fatalf("walked %d rows, want 8", len(walked))
-	}
-	for i, pos := range walked {
-		if pos != i {
-			t.Errorf("walk position %d = %d, want %d (no skips/duplicates under append)", i, pos, i)
+	// The mutation DTOs are structurally free of any activity-read
+	// plumbing too.
+	for _, tn := range []reflect.Type{
+		reflect.TypeOf(Append{}), reflect.TypeOf(Update{}),
+	} {
+		for i := 0; i < tn.NumField(); i++ {
+			if strings.Contains(tn.Field(i).Name, "Reader") || strings.Contains(tn.Field(i).Name, "Cursor") {
+				t.Errorf("%s.%s must never exist — no third activity read", tn.Name(), tn.Field(i).Name)
+			}
 		}
 	}
 }
@@ -801,35 +777,6 @@ func newTestStoreOrFail(t *testing.T) *testStore {
 		t.Fatalf("newTestStore: %v", err)
 	}
 	return st
-}
-
-// recordingActivityReader is a test-grade ActivityReader over a fixed
-// row slice whose rows carry their immutable Position ordinals (the
-// durable log's reconstruction); the keyset cursor pages by Position.
-type recordingActivityReader struct {
-	rows []ActivityRow
-}
-
-func (r *recordingActivityReader) Activity(_ context.Context, _ identity.Identity, _ TurnID, before *ActivityCursor, limit int) ([]ActivityRow, *ActivityCursor, error) {
-	if limit < 1 || limit > MaxActivityPageSize {
-		return nil, nil, ErrInvalidInput
-	}
-	start := 0
-	if before != nil {
-		start = before.Position + 1
-	}
-	if start >= len(r.rows) {
-		return nil, nil, nil
-	}
-	end := start + limit
-	if end > len(r.rows) {
-		end = len(r.rows)
-	}
-	var next *ActivityCursor
-	if end < len(r.rows) {
-		next = &ActivityCursor{Position: r.rows[end-1].Position}
-	}
-	return r.rows[start:end], next, nil
 }
 
 func TestProjector_Checkpoint_MonotonicIdempotent(t *testing.T) {
@@ -1067,7 +1014,7 @@ func TestProjector_ErasureFence_RefusesWritesAfterErasureBegins(t *testing.T) {
 	if _, err := p.Seal(context.Background(), id, "run-1", row.Version, Seal{Status: StatusCancelled}); !errors.Is(err, ErrErasureFenced) {
 		t.Errorf("seal during erasure error=%v, want ErrErasureFenced", err)
 	}
-	if _, err := p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 0, Trace: "t"}}}); !errors.Is(err, ErrErasureFenced) {
+	if _, err := p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 0, Kind: ReasoningKindToolCall}}}); !errors.Is(err, ErrErasureFenced) {
 		t.Errorf("attach reasoning during erasure error=%v, want ErrErasureFenced", err)
 	}
 	if _, err := p.AttachAppRefs(context.Background(), id, "run-1", row.Version, AppRefInput{Refs: []AppRef{{ServerID: "s", ResourceURI: "ui://s/a"}}}); !errors.Is(err, ErrErasureFenced) {
@@ -1335,6 +1282,27 @@ func TestProjector_AnswerStates_ClosedUnion(t *testing.T) {
 
 func ansPtr(a Answer) *Answer { return &a }
 
+// usageExact builds an exact usage measure with the given value.
+func usageExact(v int64) UsageMeasure { return UsageMeasure{State: UsageExact, Value: &v} }
+
+// usageInt64 returns a pointer to v for building UsageMeasure values.
+func usageInt64(v int64) *int64 { return &v }
+
+// usageMeasures returns the numeric measures of a Usage keyed by name
+// for uniform per-measure assertions.
+func usageMeasures(u Usage) map[string]UsageMeasure {
+	return map[string]UsageMeasure{
+		"PromptTokens":     u.PromptTokens,
+		"CompletionTokens": u.CompletionTokens,
+		"ReasoningTokens":  u.ReasoningTokens,
+		"CacheReadTokens":  u.CacheReadTokens,
+		"CacheWriteTokens": u.CacheWriteTokens,
+		"TotalTokens":      u.TotalTokens,
+		"CostMicroUSD":     u.CostMicroUSD,
+		"LatencyNS":        u.LatencyNS,
+	}
+}
+
 func TestProjector_HonestFields_TimestampBindingAttachmentsEventSeq(t *testing.T) {
 	p, _ := newTestProjector(t, 0, false)
 	id := tripleA()
@@ -1392,7 +1360,7 @@ func TestProjector_HonestFields_TimestampBindingAttachmentsEventSeq(t *testing.T
 
 	// AttachReasoning stamps the reasoning snapshot's event sequence.
 	got2, err := p.AttachReasoning(context.Background(), id, "run-1", got.Version, ReasoningInput{
-		Steps:    []ReasoningStep{{Index: 0, Trace: "think"}},
+		Steps:    []ReasoningStep{{Index: 0, Kind: ReasoningKindToolCall}},
 		EventSeq: 13,
 	})
 	if err != nil {
@@ -1483,7 +1451,7 @@ func TestProjector_ActivityBudget_ConfigRequiresCoverage(t *testing.T) {
 		t.Errorf("in-budget activity must be fully covered: %+v", got.Activity)
 	}
 	// A feed beyond the configured budget overflows honestly (More +
-	// Dropped + Partial) — the named ActivityReader pages the rest.
+	// Dropped + Partial) and the exact totals cover the full feed.
 	over := make([]ActivityRow, 24+5)
 	for i := range over {
 		over[i] = ActivityRow{Tool: "t", Status: ActivitySucceeded}
@@ -1497,6 +1465,9 @@ func TestProjector_ActivityBudget_ConfigRequiresCoverage(t *testing.T) {
 	}
 	if len(got2.Activity.Rows) != 24 {
 		t.Errorf("retained %d rows, want 24 (the configured window)", len(got2.Activity.Rows))
+	}
+	if got2.Activity.Totals.Succeeded != int64(len(over)) {
+		t.Errorf("over-budget totals must cover the full feed: %+v", got2.Activity.Totals)
 	}
 }
 
@@ -1515,12 +1486,16 @@ func TestProjector_OpsTurn_StructuralOmissions(t *testing.T) {
 		t.Fatalf("Append: %v", err)
 	}
 	ans := Answer{State: AnswerStateInline, Inline: "secret answer"}
-	row, err = p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &ans, Usage: &Usage{PromptTokens: 10, TotalTokens: 10, Model: "m", Complete: CompletenessComplete}, EventSeq: 4})
+	row, err = p.Update(context.Background(), id, "run-1", row.Version, Update{
+		Answer:   &ans,
+		Usage:    &Usage{PromptTokens: usageExact(10), TotalTokens: usageExact(10), Model: "m"},
+		EventSeq: 4,
+	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	if _, err := p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{
-		Steps:    []ReasoningStep{{Index: 0, Trace: "secret reasoning"}},
+		Steps:    []ReasoningStep{{Index: 0, Kind: ReasoningKindToolCall}},
 		EventSeq: 5,
 	}); err != nil {
 		t.Fatalf("AttachReasoning: %v", err)
@@ -1553,8 +1528,16 @@ func TestProjector_OpsTurn_StructuralOmissions(t *testing.T) {
 	if ops.AgentID != "agent-1" || ops.AgentBindingSource != AgentBindingExplicit {
 		t.Errorf("ops agent binding wrong: %+v", ops)
 	}
-	if ops.Usage.TotalTokens != 10 {
+	if ops.Usage.TotalTokens.State != UsageExact || ops.Usage.TotalTokens.Value == nil || *ops.Usage.TotalTokens.Value != 10 {
 		t.Errorf("ops usage lost: %+v", ops.Usage)
+	}
+	if ops.Usage.PromptTokens.State != UsageExact || ops.Usage.PromptTokens.Value == nil || *ops.Usage.PromptTokens.Value != 10 {
+		t.Errorf("ops usage prompt lost: %+v", ops.Usage)
+	}
+	// Per-measure honesty flows into the operations read: measures the
+	// runtime never reported stay unavailable with NO value.
+	if ops.Usage.CostMicroUSD.State != UsageUnavailable || ops.Usage.CostMicroUSD.Value != nil {
+		t.Errorf("ops usage cost must be unavailable-without-value: %+v", ops.Usage.CostMicroUSD)
 	}
 	if ops.ReasoningSteps != 1 {
 		t.Errorf("ops reasoning count=%d, want 1", ops.ReasoningSteps)
@@ -1570,7 +1553,8 @@ func TestProjector_OpsTurn_StructuralOmissions(t *testing.T) {
 	}
 
 	// Structurally absent from the operations READ row: query, answer,
-	// reasoning traces, resource URI, tool_call_id, App context. The
+	// raw provider thinking (reasoning summaries), resource URI,
+	// tool_call_id, App context. The
 	// types have no such fields (asserted reflectively — a compile-time
 	// guarantee enforced by the ops_safety allowlist pin + scan).
 	opsType := reflect.TypeOf(OpsTurnRow{})
@@ -1730,18 +1714,18 @@ func TestProjector_EventSequence_MonotonicIdempotent_NoOpAtOrBelow(t *testing.T)
 
 	// The same monotonic guard applies to the SEPARATELY NAMED
 	// channels and Seal.
-	row, err = p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 0, Trace: "t"}}, EventSeq: 14})
+	row, err = p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 0, Kind: ReasoningKindToolCall}}, EventSeq: 14})
 	if err != nil {
 		t.Fatalf("AttachReasoning: %v", err)
 	}
 	if row.LastAppliedEventSeq != 14 || row.Reasoning.Seq != 14 {
 		t.Fatalf("post-reasoning seqs wrong: row=%d reasoning=%d, want 14/14", row.LastAppliedEventSeq, row.Reasoning.Seq)
 	}
-	replayedReasoning, err := p.AttachReasoning(context.Background(), id, "run-1", 12345, ReasoningInput{Steps: []ReasoningStep{{Index: 9, Trace: "MUST NOT"}}, EventSeq: 14})
+	replayedReasoning, err := p.AttachReasoning(context.Background(), id, "run-1", 12345, ReasoningInput{Steps: []ReasoningStep{{Index: 9, Kind: ReasoningKindSpawn}}, EventSeq: 14})
 	if err != nil {
 		t.Fatalf("replay reasoning: %v", err)
 	}
-	if replayedReasoning.Version != row.Version || len(replayedReasoning.Reasoning.Steps) != 1 || replayedReasoning.Reasoning.Steps[0].Trace != "t" {
+	if replayedReasoning.Version != row.Version || len(replayedReasoning.Reasoning.Steps) != 1 || replayedReasoning.Reasoning.Steps[0].Kind != ReasoningKindToolCall {
 		t.Errorf("equal-seq reasoning replay changed the row: %+v", replayedReasoning.Reasoning)
 	}
 
@@ -1827,14 +1811,14 @@ func TestProjector_EventSequence_ComponentSeqNeverRegresses(t *testing.T) {
 
 	// Reasoning.Seq monotonic: attach at 20, then a lower-seq attach
 	// (10) must not regress it.
-	row, err = p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 0, Trace: "t"}}, EventSeq: 20})
+	row, err = p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 0, Kind: ReasoningKindToolCall}}, EventSeq: 20})
 	if err != nil {
 		t.Fatalf("AttachReasoning 20: %v", err)
 	}
 	if row.Reasoning.Seq != 20 {
 		t.Fatalf("Reasoning.Seq=%d, want 20", row.Reasoning.Seq)
 	}
-	row, err = p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 1, Trace: "u"}}, EventSeq: 10})
+	row, err = p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 1, Kind: ReasoningKindAwait}}, EventSeq: 10})
 	if err != nil {
 		t.Fatalf("AttachReasoning 10: %v", err)
 	}
@@ -1917,8 +1901,10 @@ func TestProjector_EventSequence_ConcurrentAdvances_ConvergeMonotonic(t *testing
 // TestProjector_ToolBudget_AboveCeiling_ConstructionSucceeds pins the
 // P3 contract: a configured per-turn tool budget ABOVE the Protocol
 // inline ceiling (MaxActivityRows) NEVER fails construction — the
-// inline window is capped at the ceiling, the row overflows honestly,
-// and the named bounded ActivityReader serves the full activity.
+// inline window is capped at the ceiling, the row overflows honestly
+// (More + Dropped + Partial), and the exact turn-level totals survive.
+// The v1.28 surface is exactly `sessions.turns.list/get` — there is no
+// third activity read to fall back to.
 func TestProjector_ToolBudget_AboveCeiling_ConstructionSucceeds(t *testing.T) {
 	// Budget > ceiling with the DEFAULT inline limit: construction
 	// succeeds (the old behavior failed loud here).
@@ -1940,16 +1926,16 @@ func TestProjector_ToolBudget_AboveCeiling_ConstructionSucceeds(t *testing.T) {
 
 	// An over-ceiling-budget turn feeds > 128 rows and overflows
 	// HONESTLY (More + Dropped + Partial); the capped window retains
-	// the newest rows and PageActivity pages the full activity through
-	// the wired reader.
+	// the newest rows and the EXACT totals cover the full fed activity
+	// (the turn summary survives even though the older rows are not
+	// retained and no third activity read exists).
 	all := make([]ActivityRow, MaxActivityRows+40)
 	for i := range all {
 		all[i] = ActivityRow{Position: i, Tool: "t", Status: ActivitySucceeded}
 	}
-	reader := &recordingActivityReader{rows: all}
-	p2, err := New(newTestStoreOrFail(t), WithToolBudget(MaxActivityRows+50), WithActivityLimit(MaxActivityRows), WithActivityReader(reader))
+	p2, err := New(newTestStoreOrFail(t), WithToolBudget(MaxActivityRows+50), WithActivityLimit(MaxActivityRows))
 	if err != nil {
-		t.Fatalf("New over-ceiling with reader: %v", err)
+		t.Fatalf("New over-ceiling: %v", err)
 	}
 	id := tripleA()
 	row, err := appendTurn(p2, id, "run-1")
@@ -1971,22 +1957,20 @@ func TestProjector_ToolBudget_AboveCeiling_ConstructionSucceeds(t *testing.T) {
 		t.Errorf("retained window must be the newest rows: last position=%d, want %d",
 			got.Activity.Rows[len(got.Activity.Rows)-1].Position, len(all)-1)
 	}
-	// The full activity is readable through the reader (all rows).
-	var walked []ActivityRow
-	var cursor *ActivityCursor
-	for {
-		page, err := p2.PageActivity(context.Background(), id, "run-1", cursor, 64)
-		if err != nil {
-			t.Fatalf("PageActivity: %v", err)
-		}
-		walked = append(walked, page.Rows...)
-		if !page.HasMore {
-			break
-		}
-		cursor = page.NextCursor
+	// The exact totals cover the FULL fed activity — the turn summary
+	// is renderable through list/get even without a third activity
+	// read.
+	if got.Activity.Totals.Succeeded != int64(len(all)) {
+		t.Errorf("Activity.Totals.Succeeded=%d, want %d (exact across the full fed activity)", got.Activity.Totals.Succeeded, len(all))
 	}
-	if len(walked) != len(all) {
-		t.Errorf("PageActivity returned %d rows, want %d (the full activity)", len(walked), len(all))
+	// A fresh Get (as list/get would serve) carries the same honest
+	// lower-bound and totals after a restart-free round trip.
+	reread, err := p2.Get(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !reread.Activity.More || reread.Activity.Totals != got.Activity.Totals {
+		t.Errorf("persisted row lost the honest overflow/totals: %+v", reread.Activity)
 	}
 }
 
@@ -2095,18 +2079,18 @@ func TestProjector_DeepCopy_InputSlicesNeverAliasTheStoredRow(t *testing.T) {
 	}
 
 	// AttachReasoning: the fed steps are deep-copied.
-	steps := []ReasoningStep{{Index: 0, Trace: "think"}}
+	steps := []ReasoningStep{{Index: 0, Kind: ReasoningKindToolCall}}
 	got, err = p.AttachReasoning(context.Background(), id, "run-1", got.Version, ReasoningInput{Steps: steps})
 	if err != nil {
 		t.Fatalf("AttachReasoning: %v", err)
 	}
-	steps[0].Trace = "CORRUPTED"
+	steps[0].Kind = ReasoningKindSpawn
 	got, err = p.Get(context.Background(), id, "run-1")
 	if err != nil {
 		t.Fatalf("Get 3: %v", err)
 	}
-	if got.Reasoning.Steps[0].Trace != "think" {
-		t.Errorf("reasoning aliased the caller's slice: %q", got.Reasoning.Steps[0].Trace)
+	if got.Reasoning.Steps[0].Kind != ReasoningKindToolCall {
+		t.Errorf("reasoning aliased the caller's slice: %+v", got.Reasoning.Steps[0])
 	}
 
 	// AttachAppRefs: the fed refs are deep-copied.

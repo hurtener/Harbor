@@ -1,7 +1,9 @@
 // Package turns owns Harbor's runtime-side conversation-turn
 // projection: the durable, bounded, tail-paged read model that backs
-// the future `sessions.turns.list` / `sessions.turns.get` Protocol
-// surface.
+// the `sessions.turns.list` / `sessions.turns.get` Protocol surface
+// (the v1.28 Protocol surface is EXACTLY those two reads — there is
+// no third activity / analytics subresource, and the projection never
+// reads `state.history` from a consumer).
 //
 // # What a turn is
 //
@@ -21,24 +23,29 @@
 // renderable user query, the assistant answer (inline text below the
 // heavy-content threshold, or an artifact reference), input/output
 // attachment METADATA (never bytes), the lifecycle state, agent
-// binding with its honest provenance, token/cost usage, bounded ordered
-// reasoning steps, bounded content-free activity rows, an ordered MCP
-// App reference collection with component availability, and the durable
-// pause component. The projection NEVER reconstructs the raw
-// conversation history: reads serve the projection only, and the
-// durable event log (`state.history`) remains the raw-history home.
+// binding with its honest provenance, per-measure honest token/cost
+// usage, bounded ordered DERIVED reasoning summaries (never raw
+// provider thinking), bounded content-free activity rows with exact
+// turn-level totals, an ordered MCP App reference collection with
+// component availability, and the durable pause component. The
+// projection NEVER reconstructs the raw conversation history: reads
+// serve the projection only, and the durable event log
+// (`state.history`) remains the raw-history home, never read through
+// a consumer surface.
 //
 // # DTO families — consumer read, operations read, mutation (binding)
 //
 // The package deliberately separates THREE DTO families:
 //
 //   - CONSUMER-SAFE READ (`TurnRow` and its component types, row.go)
-//     is the read surface `sessions.turns.list/get` will project. It
+//     is the read surface `sessions.turns.list/get` projects. It
 //     carries only derived content: rendered query, inline/reference
-//     answer, attachment metadata, lifecycle/agent/usage, bounded
-//     ordered reasoning and activity, an ORDERED collection of MCP App
-//     references with availability, and the durable pause component.
-//     It never carries raw tool arguments/results, raw transcripts, or
+//     answer, attachment metadata, lifecycle/agent, per-measure honest
+//     usage, bounded ordered DERIVED reasoning summaries and bounded
+//     content-free activity (with exact totals), an ORDERED collection
+//     of MCP App references with availability, and the durable pause
+//     component. It never carries raw provider thinking (no trace /
+//     chain-of-thought / transcript), raw tool arguments/results, or
 //     pause/resume/approval tokens.
 //
 //   - OPERATIONS-SAFE READ (`OpsTurnRow`, row.go) is a pure,
@@ -47,25 +54,25 @@
 //     retains lifecycle / agent binding / timing / usage / cost /
 //     content-free tool activity / counts / App availability summaries
 //     / pause class-reason-lifecycle, and structurally omits the query,
-//     the answer, reasoning traces, pause tokens, the App resource URI
-//     and tool_call_id, and App context/input/result. `Projector.OpsTurn`
-//     serves it; the future operations Protocol lane consumes it.
+//     the answer, raw provider thinking, pause tokens, the App resource
+//     URI and tool_call_id, and App context/input/result. `Projector.OpsTurn`
+//     serves it; the operations Protocol lane consumes it.
 //
 //   - MUTATION DTOs (`ops.Append`, `ops.Update`, `ops.Seal`, ops.go)
 //     are the projector's WRITE surface. They are NOT the operations
 //     read projection and do not satisfy any consumer-vs-operations
 //     authority matrix: the authority matrix is about READ projections
 //     (TurnRow vs OpsTurnRow above). The mutation DTOs are minimal
-//     write shapes — structurally free of transcript, reasoning traces,
-//     App correlation, and pause/resume/approval tokens — because a
-//     write channel that could carry raw content would let the runtime
-//     wiring leak it into the projection, and an allowlist pin test
-//     (ops_safety_test.go) holds their field sets to the documented
-//     allowlist so no content field can be added silently. The two
-//     content-bearing components — reasoning steps and App refs — are
-//     written ONLY through their separately named attach channels
-//     (`AttachReasoning`, `AttachAppRefs`), never through the generic
-//     ops.
+//     write shapes — structurally free of transcript, raw provider
+//     thinking, App correlation, and pause/resume/approval tokens —
+//     because a write channel that could carry raw content would let
+//     the runtime wiring leak it into the projection, and an allowlist
+//     pin test (ops_safety_test.go) holds their field sets to the
+//     documented allowlist so no content field can be added silently.
+//     The two separately named component channels — derived reasoning
+//     steps and App refs — are written ONLY through their named attach
+//     channels (`AttachReasoning`, `AttachAppRefs`), never through the
+//     generic ops.
 //
 // # Ordering, paging, retention
 //
@@ -94,13 +101,19 @@
 //
 // # Lifecycle of a row
 //
-// A turn starts MUTABLE (status `running` or `paused`) and versioned:
-// the runtime updates it in place (answer, usage, activity, ...),
-// each accepted write bumping `Version`. It becomes a SEALED terminal
-// row (`complete` / `failed` / `cancelled`) through `Seal`, which
-// refuses until the terminal status's REQUIRED sources are present
-// (a `complete` seal requires the answer component; a `failed` seal
-// requires the error class). Sealed rows are immutable: the store
+// A turn starts MUTABLE (status `pending`, `running`, or `paused`)
+// and versioned: the runtime updates it in place (answer, usage,
+// activity, ...), each accepted write bumping `Version`. A `pending`
+// turn has been created but has not started executing; `running`
+// means it is actively executing; `paused` means it is quiesced on
+// the unified pause/resume primitive and MUST carry an active,
+// available, valid pause episode (a non-paused status MUST NOT carry
+// one). It becomes a SEALED terminal row (`complete` / `failed` /
+// `cancelled`) through `Seal`, which refuses until the terminal
+// status's REQUIRED sources are present (a `complete` seal requires
+// the answer component; a `failed` seal requires the error class) and
+// which resolves/clears any active pause episode without retaining
+// callback/approval authority. Sealed rows are immutable: the store
 // refuses every later mutation.
 //
 // # Restart, reconcile, erasure
@@ -172,20 +185,26 @@ type TurnID string
 // paging stable under concurrent appends.
 type Seq int64
 
-// Status is the turn row's lifecycle state. Rows in StatusRunning or
-// StatusPaused are MUTABLE and versioned; rows in a terminal status
-// are SEALED and immutable.
+// Status is the turn row's lifecycle state. Rows in StatusPending,
+// StatusRunning, or StatusPaused are MUTABLE and versioned; rows in a
+// terminal status are SEALED and immutable.
 type Status string
 
 // Turn lifecycle statuses.
 const (
+	// StatusPending — the turn has been created (its row exists and is
+	// versioned) but the root foreground run has not started executing
+	// yet. Mutable. A pending turn carries no answer and no active
+	// pause.
+	StatusPending Status = "pending"
 	// StatusRunning — the run is actively executing. Mutable.
 	StatusRunning Status = "running"
 	// StatusPaused — the run is paused (HITL approval, OAuth, A2A
 	// INPUT_REQUIRED, steering PAUSE — the unified pause/resume
-	// primitive). Mutable. The row deliberately carries NO pause or
-	// resume token: the projection must never become a pause-token
-	// warehouse, and resuming is the runtime's concern.
+	// primitive). Mutable. A paused turn REQUIRES an active, available,
+	// valid pause episode (see Pause); the row deliberately carries NO
+	// pause or resume token: the projection must never become a
+	// pause-token warehouse, and resuming is the runtime's concern.
 	StatusPaused Status = "paused"
 	// StatusComplete — the run finished successfully (a terminal
 	// `task.completed`). SEALED: immutable once sealed.
@@ -198,8 +217,9 @@ const (
 	StatusCancelled Status = "cancelled"
 )
 
-// Mutable reports whether s is a mutable (running / paused) status.
-func (s Status) Mutable() bool { return s == StatusRunning || s == StatusPaused }
+// Mutable reports whether s is a mutable (pending / running / paused)
+// status.
+func (s Status) Mutable() bool { return s == StatusPending || s == StatusRunning || s == StatusPaused }
 
 // Terminal reports whether s is a sealed terminal status.
 func (s Status) Terminal() bool {
@@ -241,18 +261,125 @@ type ActivityStatus string
 
 // Activity row statuses.
 const (
-	// ActivityInvoked — the dispatch is in flight.
+	// ActivityInvoked — the dispatch is in flight (its first attempt).
 	ActivityInvoked ActivityStatus = "invoked"
+	// ActivityRetried — the dispatch is in flight on a retry attempt
+	// (an earlier attempt failed but the retry policy allowed another).
+	ActivityRetried ActivityStatus = "retried"
 	// ActivitySucceeded — the dispatch completed.
 	ActivitySucceeded ActivityStatus = "succeeded"
-	// ActivityFailed — the dispatch failed.
+	// ActivityFailed — the dispatch failed terminally (the retry
+	// policy either did not apply or has not exhausted — see
+	// ActivityPolicyExhausted for the exhausted case).
 	ActivityFailed ActivityStatus = "failed"
+	// ActivityCancelled — the dispatch was cancelled (the run was
+	// cancelled mid-dispatch).
+	ActivityCancelled ActivityStatus = "cancelled"
+	// ActivityPolicyExhausted — the dispatch failed and the retry
+	// policy budget was exhausted; no further attempt is allowed.
+	ActivityPolicyExhausted ActivityStatus = "policy_exhausted"
 )
 
 // Valid reports whether s is one of the declared activity statuses.
 func (s ActivityStatus) Valid() bool {
 	switch s {
-	case ActivityInvoked, ActivitySucceeded, ActivityFailed:
+	case ActivityInvoked, ActivityRetried, ActivitySucceeded, ActivityFailed,
+		ActivityCancelled, ActivityPolicyExhausted:
+		return true
+	}
+	return false
+}
+
+// ActivityTerminalClass is the CLOSED terminal classification of one
+// activity row — the honest class a consumer renders a finished
+// dispatch with. It is DERIVED by the projector from the row's
+// ActivityStatus (a dispatch's lifecycle implies exactly one terminal
+// class), so it can never be fed inconsistently.
+type ActivityTerminalClass string
+
+// Activity terminal classes.
+const (
+	// ActivityTerminalNone — the dispatch is not terminal (it is in
+	// flight: invoked or retried).
+	ActivityTerminalNone ActivityTerminalClass = "none"
+	// ActivityTerminalSucceeded — the dispatch completed successfully.
+	ActivityTerminalSucceeded ActivityTerminalClass = "succeeded"
+	// ActivityTerminalFailed — the dispatch failed terminally.
+	ActivityTerminalFailed ActivityTerminalClass = "failed"
+	// ActivityTerminalCancelled — the dispatch was cancelled.
+	ActivityTerminalCancelled ActivityTerminalClass = "cancelled"
+	// ActivityTerminalPolicyExhausted — the dispatch failed and the
+	// retry policy budget was exhausted.
+	ActivityTerminalPolicyExhausted ActivityTerminalClass = "policy_exhausted"
+)
+
+// Valid reports whether c is one of the declared terminal classes.
+func (c ActivityTerminalClass) Valid() bool {
+	switch c {
+	case ActivityTerminalNone, ActivityTerminalSucceeded, ActivityTerminalFailed,
+		ActivityTerminalCancelled, ActivityTerminalPolicyExhausted:
+		return true
+	}
+	return false
+}
+
+// ReasoningKind is the CLOSED set of safe DERIVED reasoning step
+// classes a turn row may carry. A reasoning step is a content-free
+// summary of one trajectory position (the planner step that produced
+// it) — never the provider's raw thinking. The projection is
+// STRUCTURALLY unable to carry raw provider text: ReasoningStep holds
+// an index and a kind only, and a source that cannot classify a step
+// into one of these kinds omits the step (the component reports the
+// honest gap via its availability / dropped counts) instead of
+// degrading into arbitrary text.
+type ReasoningKind string
+
+// Reasoning step classes.
+const (
+	// ReasoningKindToolCall — the trajectory position performed a tool
+	// call.
+	ReasoningKindToolCall ReasoningKind = "tool_call"
+	// ReasoningKindSpawn — the trajectory position spawned a child
+	// task.
+	ReasoningKindSpawn ReasoningKind = "spawn"
+	// ReasoningKindAwait — the trajectory position awaited a child
+	// task.
+	ReasoningKindAwait ReasoningKind = "await"
+)
+
+// Valid reports whether k is one of the declared reasoning kinds.
+func (k ReasoningKind) Valid() bool {
+	switch k {
+	case ReasoningKindToolCall, ReasoningKindSpawn, ReasoningKindAwait:
+		return true
+	}
+	return false
+}
+
+// UsageState is the CLOSED per-measure availability/exactness state of
+// one usage measure. A measure is either unavailable (no source
+// reported it — NEVER presented as an exact zero), exact (the source
+// reported a precise cumulative amount), or estimated (the source
+// reported an approximate cumulative amount).
+type UsageState string
+
+// Usage measure states.
+const (
+	// UsageUnavailable — no source reported this measure. The measure
+	// carries no value (a missing measure is unavailable, never a
+	// fabricated zero).
+	UsageUnavailable UsageState = "unavailable"
+	// UsageExact — the source reported the exact cumulative amount.
+	UsageExact UsageState = "exact"
+	// UsageEstimated — the source reported an estimated cumulative
+	// amount (exactness is honestly stated as approximate).
+	UsageEstimated UsageState = "estimated"
+)
+
+// Valid reports whether s is one of the declared usage states.
+func (s UsageState) Valid() bool {
+	switch s {
+	case UsageUnavailable, UsageExact, UsageEstimated:
 		return true
 	}
 	return false
@@ -406,6 +533,71 @@ func (l PauseLifecycle) Valid() bool {
 	return false
 }
 
+// FinishReason is the CLOSED terminal finish reason of a turn — a
+// stable, low-cardinality code drawn from the runtime's canonical
+// planner finish reasons, never an unbounded free-form string. Empty
+// means the runtime reported no finish reason (honest "not reported",
+// never a fabricated claim).
+type FinishReason string
+
+// Terminal finish reasons.
+const (
+	// FinishGoal — the run satisfied the user goal. The canonical
+	// success terminal.
+	FinishGoal FinishReason = "goal"
+	// FinishNoPath — the planner could not find a path to the goal.
+	FinishNoPath FinishReason = "no_path"
+	// FinishCancelled — the run was cancelled (a CANCEL control event,
+	// parent-task cascade, or deadline expiry honoured early).
+	FinishCancelled FinishReason = "cancelled"
+	// FinishDeadlineExceeded — the run hit its configured deadline.
+	FinishDeadlineExceeded FinishReason = "deadline_exceeded"
+	// FinishConstraintsConflict — the run terminated because a
+	// constraint conflict could not be resolved.
+	FinishConstraintsConflict FinishReason = "constraints_conflict"
+)
+
+// Valid reports whether r is one of the declared finish reasons.
+func (r FinishReason) Valid() bool {
+	switch r {
+	case FinishGoal, FinishNoPath, FinishCancelled, FinishDeadlineExceeded,
+		FinishConstraintsConflict:
+		return true
+	}
+	return false
+}
+
+// ErrorClass is the CLOSED content-free terminal error class of a
+// failed run — a stable low-cardinality code drawn from the runtime's
+// canonical tool / run-loop error classes, never an error message and
+// never caller content. Empty unless the run failed.
+type ErrorClass string
+
+// Terminal error classes.
+const (
+	// ErrorClassTransient — a transient failure (retryable by policy).
+	ErrorClassTransient ErrorClass = "transient"
+	// ErrorClassTimeout — the operation timed out.
+	ErrorClassTimeout ErrorClass = "timeout"
+	// ErrorClass5xx — the upstream service failed (5xx class).
+	ErrorClass5xx ErrorClass = "5xx"
+	// ErrorClassPermanent — a permanent failure (not retryable).
+	ErrorClassPermanent ErrorClass = "permanent"
+	// ErrorClassUnclassified — the failure could not be classified
+	// into a more specific class.
+	ErrorClassUnclassified ErrorClass = "unclassified"
+)
+
+// Valid reports whether c is one of the declared error classes.
+func (c ErrorClass) Valid() bool {
+	switch c {
+	case ErrorClassTransient, ErrorClassTimeout, ErrorClass5xx,
+		ErrorClassPermanent, ErrorClassUnclassified:
+		return true
+	}
+	return false
+}
+
 // Projection bounds. These are the projection core's choke points:
 // everything the row carries is bounded, and an over-bound input
 // fails loud (ErrInvalidInput) rather than being silently truncated —
@@ -428,8 +620,8 @@ const (
 	// A Store implementation is configured with its own bound; this is
 	// the default the reference shape documents.
 	MaxRetainedTurns = 200
-	// MaxReasoningSteps bounds the ordered reasoning steps a turn row
-	// carries. Overflow keeps the FIRST MaxReasoningSteps (the
+	// MaxReasoningSteps bounds the ordered derived reasoning steps a
+	// turn row carries. Overflow keeps the FIRST MaxReasoningSteps (the
 	// chronological sequence) and marks the component Partial with the
 	// dropped count — reasoning overflow is a partial-state, not a
 	// silent truncation.
@@ -441,8 +633,10 @@ const (
 	// must be >= the runtime's configured per-turn tool-call budget
 	// (WithToolBudget), and is capped at this ceiling. A turn whose
 	// actual tool calls exceed the configured window overflows honestly
-	// (More + Dropped + Partial) and the full activity is read through
-	// the named bounded ActivityReader — never a generic subresource.
+	// (More + Dropped + Partial) and the turn-level summary survives in
+	// the exact ActivityTotals — the v1.28 surface is exactly
+	// `sessions.turns.list/get`, so there is no third activity read and
+	// the projection never reads `state.history` from a consumer.
 	MaxActivityRows = 128
 	// DefaultActivityLimit is the projector's default inline activity
 	// window (WithActivityLimit when none is configured).
@@ -452,8 +646,9 @@ const (
 	// (WithToolBudget when none is configured). Construction fails loud
 	// when the configured limit is below the configured budget WHILE
 	// that budget is at or below the Protocol ceiling; a budget ABOVE
-	// the ceiling is served by the capped inline window plus the named
-	// bounded ActivityReader fallback (never a construction failure).
+	// the ceiling is served by the capped inline window plus the honest
+	// overflow contract (More + Dropped + exact totals) — never a
+	// construction failure.
 	DefaultToolBudget = 16
 	// MaxAttachmentsPerSide bounds the input / output attachment
 	// metadata lists.
@@ -488,20 +683,25 @@ const (
 	// summary (duration / error class — never raw arguments or
 	// results).
 	MaxActivitySummaryRunes = 512
-	// MaxActivityPageSize bounds one ActivityReader page. A larger
-	// limit fails loud (ErrInvalidInput) — bounded paging, never an
-	// accidental dump of a whole over-budget turn.
-	MaxActivityPageSize = MaxActivityRows
+	// MaxInvocationIDRunes bounds one activity row's stable
+	// invocation / tool-call identity (an opaque correlation id — never
+	// a tool argument).
+	MaxInvocationIDRunes = 256
+	// MaxBatchIDRunes bounds one activity row's batch / group
+	// correlation id (an opaque correlation id when the runtime groups
+	// dispatches).
+	MaxBatchIDRunes = 256
 	// MaxPauseReasonRunes bounds the pause component's content-free
 	// reason text (a short derived string — never a token, never raw
 	// approval context).
 	MaxPauseReasonRunes = 512
 	// MaxModelRunes bounds the usage model identifier.
 	MaxModelRunes = 256
-	// MaxStepTraceRunes bounds one reasoning step's provider thinking
-	// trace. A trace beyond the bound fails loud (ErrInvalidInput) — a
-	// single step must fit the bounded row.
-	MaxStepTraceRunes = 16 * 1024
+	// MaxTerminalMessageRunes bounds the terminal (finish / error)
+	// redacted consumer-safe message. The runtime MUST pass already
+	// redacted text; the projection bounds it and rejects over-bound
+	// or control-laden input loudly.
+	MaxTerminalMessageRunes = 512
 )
 
 // Sentinel errors. Callers compare via errors.Is.

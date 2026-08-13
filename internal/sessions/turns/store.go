@@ -25,11 +25,11 @@ import (
 //     observe a duplicate sequence. It is IDEMPOTENT on the turn id:
 //     an existing row is returned as-is (a replay of an
 //     already-applied append is a no-op, never an error).
-//   - Mutable rows (running / paused) are VERSIONED: every accepted
-//     write bumps the row's Version, and UpdateTurnIf / SealTurnIf
-//     refuse a stale expected version (ErrStaleVersion). Sealed
-//     (terminal) rows are immutable: every mutation of a sealed row
-//     fails with ErrTurnSealed.
+//   - Mutable rows (pending / running / paused) are VERSIONED: every
+//     accepted write bumps the row's Version, and UpdateTurnIf /
+//     SealTurnIf refuse a stale expected version (ErrStaleVersion).
+//     Sealed (terminal) rows are immutable: every mutation of a sealed
+//     row fails with ErrTurnSealed.
 //   - Every write is ERASURE-FENCED by a STORE-LOCAL durable session
 //     fence: FenceSession marks the session fenced in the driver's OWN
 //     backend, and AppendTurnIf / UpdateTurnIf / SealTurnIf /

@@ -12,12 +12,15 @@ import "time"
 // Every component carries a Completeness state, every list is bounded,
 // and the consumer types deliberately carry only derived content
 // (rendered query, inline or referenced answer, attachment metadata,
-// lifecycle/agent/usage, bounded ordered reasoning and activity, an
-// ordered App reference collection plus availability, and the durable
-// pause component).
+// lifecycle/agent, per-measure honest usage, bounded ordered DERIVED
+// reasoning summaries — never raw provider thinking — bounded
+// content-free activity with exact turn-level totals, an ordered App
+// reference collection plus availability, and the durable pause
+// component).
 //
-// Structurally absent from the CONSUMER family: raw tool arguments /
-// results, raw transcripts, and pause/resume/approval tokens. The App
+// Structurally absent from the CONSUMER family: raw provider thinking
+// (no trace / chain-of-thought / transcript of any kind), raw tool
+// arguments / results, and pause/resume/approval tokens. The App
 // reference DOES carry an optional tool_call_id — as correlation
 // metadata for the identity-scoped `mcp.apps.tool_context` lazy
 // context-delivery channel, never as authority (an absent id still
@@ -85,13 +88,26 @@ type TurnRow struct {
 	// FinishedAt is the terminal instant; zero while the row is
 	// mutable.
 	FinishedAt time.Time
-	// FinishReason is the terminal finish reason (the planner's
-	// Finish.Reason verbatim when supplied); empty while mutable.
-	FinishReason string
-	// ErrorClass is the content-free terminal error class of a failed
-	// run (a stable low-cardinality code — never an error message, and
-	// never caller content). Empty unless the run failed.
-	ErrorClass string
+	// FinishReason is the CLOSED terminal finish reason (a stable
+	// low-cardinality code — see FinishReason); empty while mutable and
+	// empty on a terminal row when the runtime reported none (honest
+	// "not reported", never fabricated).
+	FinishReason FinishReason
+	// ErrorClass is the CLOSED content-free terminal error class of a
+	// failed run (a stable low-cardinality code — see ErrorClass;
+	// never an error message, and never caller content). Empty unless
+	// the run failed.
+	ErrorClass ErrorClass
+	// FinishMessage is the bounded redacted consumer-safe finish
+	// message when the runtime supplied one ("" = none available). The
+	// runtime MUST pass already-redacted text; the projection bounds
+	// it (MaxTerminalMessageRunes) and refuses over-bound or
+	// control-laden input loudly.
+	FinishMessage string
+	// ErrorMessage is the bounded redacted consumer-safe error message
+	// when the runtime supplied one ("" = none available). Same
+	// redaction obligation and bound as FinishMessage.
+	ErrorMessage string
 
 	// Agent is the agent binding the run executed under, with the
 	// honest provenance of that binding. Unavailable when the runtime
@@ -117,15 +133,19 @@ type TurnRow struct {
 	// Outputs are the turn's output attachment metadata (artifact
 	// references; never bytes), each with reference availability.
 	Outputs []Attachment
-	// Usage is the cumulative token/cost/model rollup. Unavailable
-	// when no cost source reported.
+	// Usage is the cumulative per-measure honest token/cost/latency/
+	// model rollup. Every measure states its own availability /
+	// exactness — an absent measure is unavailable, never a fabricated
+	// zero. The runtime feeds CUMULATIVE snapshots (never deltas).
 	Usage Usage
-	// Reasoning is the bounded ordered reasoning step sequence, with
+	// Reasoning is the bounded ordered DERIVED reasoning summary, with
 	// the event sequence that produced the current accumulated
-	// snapshot (0 when none was recorded).
+	// snapshot (0 when none was recorded). Steps carry a closed kind
+	// only — raw provider thinking never enters the row.
 	Reasoning Reasoning
 	// Activity is the bounded content-free activity (tool dispatch)
-	// window.
+	// window plus the exact turn-level totals across the full fed
+	// activity.
 	Activity Activity
 	// Apps is the turn's ORDERED collection of interactive MCP App
 	// references, with component availability. Order is first-
@@ -258,32 +278,70 @@ type Attachment struct {
 	Availability Completeness
 }
 
-// Usage is the cumulative token / cost / model rollup. The runtime
-// feeds CUMULATIVE totals (never deltas); each accepted update
-// replaces the component wholesale.
+// Usage is the cumulative per-measure honest token / cost / latency /
+// model rollup. The runtime feeds CUMULATIVE snapshots (never deltas);
+// each accepted update replaces the component wholesale. Honesty is
+// PER MEASURE: each numeric measure carries its own closed
+// availability / exactness state (UsageMeasure) — an absent source is
+// `unavailable` with NO value (never a fabricated zero), and an exact
+// integer amount is only claimed when the source actually reported
+// one. Money is never accumulated in float64: cost is exact integer
+// micro-dollars. Model is a bounded identifier; an empty Model is the
+// honest "no model reported".
 type Usage struct {
-	// PromptTokens is the cumulative prompt-side token count.
-	PromptTokens int64
-	// CompletionTokens is the cumulative completion-side token count.
-	CompletionTokens int64
-	// ReasoningTokens is the cumulative reasoning-channel token count.
-	ReasoningTokens int64
-	// TotalTokens is the cumulative total token count.
-	TotalTokens int64
-	// CostUSD is the cumulative dollar cost.
-	CostUSD float64
-	// Model is the model id last reported by the cost source.
+	// PromptTokens is the cumulative prompt-side token measure.
+	PromptTokens UsageMeasure
+	// CompletionTokens is the cumulative completion-side token
+	// measure.
+	CompletionTokens UsageMeasure
+	// ReasoningTokens is the cumulative reasoning-channel token
+	// measure (when the provider reports a separate reasoning channel).
+	ReasoningTokens UsageMeasure
+	// CacheReadTokens is the cumulative cache-read token measure (when
+	// the provider reports one).
+	CacheReadTokens UsageMeasure
+	// CacheWriteTokens is the cumulative cache-write token measure
+	// (when the provider reports one).
+	CacheWriteTokens UsageMeasure
+	// TotalTokens is the cumulative total token measure.
+	TotalTokens UsageMeasure
+	// CostMicroUSD is the cumulative cost measure in EXACT INTEGER
+	// micro-dollars (1e-6 USD) — never float64. 2_500_000 = $2.50.
+	CostMicroUSD UsageMeasure
+	// LatencyNS is the cumulative active-duration measure in
+	// nanoseconds (when the source reports one).
+	LatencyNS UsageMeasure
+	// Model is the model identifier last reported by the usage source,
+	// bounded by MaxModelRunes; empty means unavailable (no model
+	// reported). A model identifier is exact when present.
 	Model string
-	// Complete is the honest state: Complete when a cost source
-	// reported, Unavailable when none did (a run whose provider
-	// reports no usage is honestly "no data", not zero spend).
-	Complete Completeness
 }
 
-// Reasoning is the bounded ORDERED reasoning component. Steps are in
+// UsageMeasure is ONE cumulative usage measure: a closed
+// availability / exactness state plus the exact integer amount in the
+// measure's unit (tokens, micro-dollars, nanoseconds). Value is nil
+// exactly when the measure is unavailable — a missing measure is
+// unavailable, never a fabricated zero — and non-negative when
+// present. Cumulative snapshot semantics: the value is the run's
+// total so far, replaced wholesale on each accepted update.
+type UsageMeasure struct {
+	// State states the availability / exactness: unavailable (no
+	// source), exact, or estimated.
+	State UsageState
+	// Value is the exact integer amount (nil iff State is
+	// unavailable).
+	Value *int64
+}
+
+// Reasoning is the bounded ORDERED reasoning component — a DERIVED,
+// consumer-safe summary of the run's trajectory thinking. Steps are in
 // chronological trajectory order (index strictly increasing); the
-// component is the consumer-safe ordered form the live trajectory
-// projection and the reopened transcript both render.
+// component is the ordered form a reopened transcript renders. Steps
+// carry a closed ReasoningKind only: the projection is structurally
+// unable to carry raw provider thinking (no trace, no
+// chain-of-thought, no transcript), and a source that cannot classify
+// a step into the closed set omits the step — the component reports
+// the honest gap through its availability / dropped counts.
 type Reasoning struct {
 	// Steps are the retained ordered steps (at most MaxReasoningSteps,
 	// the FIRST of the fed sequence). Empty when the source reported
@@ -305,26 +363,34 @@ type Reasoning struct {
 	Seq uint64
 }
 
-// ReasoningStep is one provider thinking trace at one trajectory
-// position. The trace is the provider's raw reasoning text — the same
-// bytes the live trajectory projection serves — so it reaches the row
-// ONLY through the separately named AttachReasoning channel, never
-// through the generic ops (mutation DTO contract).
+// ReasoningStep is one DERIVED reasoning step summary at one
+// trajectory position: its immutable index and its closed kind. It
+// deliberately has NO text field — raw provider thinking (traces,
+// chain-of-thought, transcripts, arbitrary provider text) cannot be
+// represented in the row, only this structurally safe derived summary.
 type ReasoningStep struct {
 	// Index is the step's 0-based position in the run's trajectory
 	// step sequence (positions are kept, gaps allowed — steps without
-	// reasoning are not fed).
+	// a safe derivative are not fed).
 	Index int
-	// Trace is the provider-side thinking trace (bounded by
-	// MaxStepTraceRunes).
-	Trace string
+	// Kind is the closed derived step class (tool_call / spawn /
+	// await). A source that cannot classify a step into the closed set
+	// omits the step honestly.
+	Kind ReasoningKind
 }
 
 // Activity is the bounded content-free activity component: one row per
 // tool dispatch, oldest first as fed. The inline window is configured
 // on the projector (WithActivityLimit) — it must cover the runtime's
 // configured per-turn tool-call budget and is capped at the absolute
-// Protocol ceiling MaxActivityRows.
+// Protocol ceiling MaxActivityRows. The v1.28 Protocol surface is
+// exactly `sessions.turns.list/get` — there is no third activity /
+// analytics read and the projection never reads `state.history` from a
+// consumer — so when the source activity exceeds the inline window the
+// row exposes the honest partial / dropped / lower-bound state AND the
+// exact turn-level ActivityTotals, which keep the turn summary
+// renderable in list/get even though the older rows themselves are not
+// retained.
 type Activity struct {
 	// Rows are the retained rows (at most the configured inline
 	// activity limit, the LAST of the fed sequence — the recent
@@ -336,38 +402,103 @@ type Activity struct {
 	// More is the EXPLICIT LOWER-BOUND marker: true when activity rows
 	// older than the retained window exist (the fed sequence exceeded
 	// the inline limit — a turn that outran its configured tool-call
-	// budget, or an over-budget replay). The full activity is read
-	// through the separately named optional activity-read contract
-	// (ActivityReader) the runtime wires over the durable event log —
-	// there is no generic subresource framework.
+	// budget, or an over-budget replay). Those older rows are NOT
+	// exposed by list/get (the v1.28 surface has no activity
+	// subresource); the exact Totals keep the turn-level summary
+	// intact.
 	More bool
 	// Dropped is the number of fed rows NOT retained (the oldest
 	// ones). Zero unless More is true.
 	Dropped int
+	// Totals are the compact EXACT counts across the FULL fed
+	// activity (source-backed: counted from the cumulative feed the
+	// runtime reported, by each row's current lifecycle status).
+	// Truncating the inline window never erases the turn summary.
+	Totals ActivityTotals
+}
+
+// ActivityTotals are the compact EXACT per-status counts across the
+// full fed activity of the turn. They are source-backed (counted from
+// the cumulative feed the runtime reported), bounded (six int64
+// counters), and survive inline-window truncation so a turn that
+// outran its tool-call budget still renders its exact activity summary
+// through list/get.
+type ActivityTotals struct {
+	// Invoked is the count of dispatch rows currently in flight on
+	// their first attempt.
+	Invoked int64
+	// Succeeded is the count of dispatch rows that completed
+	// successfully.
+	Succeeded int64
+	// Failed is the count of dispatch rows that failed terminally
+	// (excluding policy exhaustion — see PolicyExhausted).
+	Failed int64
+	// Cancelled is the count of dispatch rows cancelled.
+	Cancelled int64
+	// Retried is the count of dispatch rows currently in flight on a
+	// retry attempt.
+	Retried int64
+	// PolicyExhausted is the count of dispatch rows whose retry policy
+	// budget was exhausted.
+	PolicyExhausted int64
 }
 
 // ActivityRow is one content-free tool dispatch row. It NEVER carries
-// raw arguments or results (CLAUDE.md §7 rule 7); Summary is a short
-// derived string (duration, error class) bounded by
-// MaxActivitySummaryRunes.
+// raw arguments or results (the runtime's audit-redaction discipline
+// covers the source side; the projection validates shape only), and it
+// retains enough bounded content-free data to render the dispatch's
+// lifecycle and retry behaviour after a restart: stable identity,
+// immutable ordinal, planner step / event sequence when known, batch
+// correlation when known, status, timing, attempt count, terminal
+// class, retryability / policy exhaustion, and a bounded safe summary.
 type ActivityRow struct {
 	// Position is the row's IMMUTABLE 0-based ordinal in the turn's
 	// cumulative tool-dispatch sequence (the feed index at the moment
 	// the row entered the projection; feeds are cumulative, so a
 	// position never changes and appends only ever add HIGHER
-	// positions). It is the keyset key the named ActivityReader pages
-	// over — oldest-first paging by ascending Position never skips or
-	// duplicates under concurrent appends.
+	// positions).
 	Position int
+	// InvocationID is the stable invocation / tool-call identity of
+	// the dispatch (an opaque correlation id the runtime mints once per
+	// dispatch — never a tool argument); empty when the runtime
+	// reported none.
+	InvocationID string
 	// Tool is the invoked tool name.
 	Tool string
+	// StepSequence is the planner step / event sequence that produced
+	// this dispatch when the runtime knows it; 0 means not recorded.
+	StepSequence uint64
+	// BatchID is the batch / group correlation id when the runtime
+	// groups this dispatch with siblings; empty when none.
+	BatchID string
 	// Status is the dispatch's lifecycle.
 	Status ActivityStatus
+	// TerminalClass is the DERIVED closed terminal classification of
+	// the dispatch (none while in flight). Derived by the projector
+	// from Status, so it is always consistent.
+	TerminalClass ActivityTerminalClass
+	// StartedAt is the dispatch start instant when the runtime
+	// supplied one; zero otherwise.
+	StartedAt time.Time
+	// FinishedAt is the dispatch finish instant when the runtime
+	// supplied one; zero while in flight or when not reported.
+	FinishedAt time.Time
+	// Duration is the dispatch duration when the runtime reported it;
+	// 0 means not reported (never a fabricated instant result).
+	Duration time.Duration
+	// AttemptCount is the 1-based attempt number when the runtime
+	// reported it; 0 means not reported.
+	AttemptCount int
+	// Retryable reports whether the dispatch is retryable per the
+	// runtime's retry policy (true only when the runtime reported it).
+	Retryable bool
+	// PolicyExhausted reports whether the dispatch's retry policy
+	// budget was exhausted (true iff Status is policy_exhausted).
+	PolicyExhausted bool
 	// Summary is the short content-free summary ("" while invoked).
+	// Bounded by MaxActivitySummaryRunes — never raw arguments or
+	// results.
 	Summary string
-	// At is the dispatch instant when the runtime supplied one; zero
-	// otherwise.
-	At time.Time
 }
 
 // AppRefKey is the COMPARABLE TYPED replacement identity of one MCP
@@ -451,20 +582,21 @@ type AppRef struct {
 // from TurnRow — an operations reader cannot reach the consumer fields
 // through it.
 //
-// Retained: lifecycle (status / sealed / version / finish reason /
-// error class), the task/run identity (TaskID + RunID — the
-// operations surface needs both), agent binding (id / name /
-// provenance), timing (started / updated / finished), usage / cost,
-// content-free activity (tool names, statuses, summaries), component
-// COUNTS (reasoning steps, input / output attachments), App
+// Retained: lifecycle (status / sealed / version / closed finish
+// reason / closed error class / bounded redacted terminal messages),
+// the task/run identity (TaskID + RunID — the operations surface
+// needs both), agent binding (id / name / provenance), timing (started
+// / updated / finished), per-measure honest usage / cost, content-free
+// activity (tool names, statuses, summaries, exact totals), component
+// COUNTS (derived reasoning steps, input / output attachments), App
 // availability summaries (effective agent id, server id, tool name,
 // availability), the pause class / reason / lifecycle / availability,
 // and the row's last-applied event sequence.
 //
 // Structurally omitted (no field can reach them): the renderable
-// query, the answer (inline and reference), reasoning traces, pause /
-// resume / approval tokens, the App resource URI and tool_call_id, and
-// App context / input / result.
+// query, the answer (inline and reference), raw provider thinking
+// (reasoning summaries), pause / resume / approval tokens, the App
+// resource URI and tool_call_id, and App context / input / result.
 type OpsTurnRow struct {
 	// TurnID is the row key.
 	TurnID TurnID
@@ -487,22 +619,25 @@ type OpsTurnRow struct {
 	StartedAt  time.Time
 	UpdatedAt  time.Time
 	FinishedAt time.Time
-	// FinishReason and ErrorClass are the content-free terminal
-	// descriptors.
-	FinishReason string
-	ErrorClass   string
+	// FinishReason / ErrorClass are the CLOSED content-free terminal
+	// descriptors; FinishMessage / ErrorMessage are the bounded
+	// redacted consumer-safe terminal messages when available.
+	FinishReason  FinishReason
+	ErrorClass    ErrorClass
+	FinishMessage string
+	ErrorMessage  string
 	// AgentID / AgentName / AgentBindingSource are the agent binding.
 	AgentID            string
 	AgentName          string
 	AgentBindingSource AgentBindingSource
-	// Usage is the cumulative token / cost rollup.
+	// Usage is the cumulative per-measure honest token / cost rollup.
 	Usage Usage
-	// Activity is the retained content-free activity window (tool
-	// names / statuses / summaries — the tool-name + status + counts
-	// the operations surface retains).
-	Activity []ActivityRow
-	// ReasoningSteps is the COUNT of retained reasoning steps (never
-	// the traces themselves).
+	// Activity is the retained content-free activity window plus the
+	// exact turn-level totals (tool names / statuses / summaries /
+	// totals — the content-free shape the operations surface retains).
+	Activity Activity
+	// ReasoningSteps is the COUNT of retained derived reasoning steps
+	// (never the steps themselves).
 	ReasoningSteps int
 	// Inputs / Outputs are the attachment COUNTS (never the metadata).
 	Inputs  int
