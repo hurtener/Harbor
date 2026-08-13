@@ -108,10 +108,10 @@ func (p *ListerProjector) CountersAvailable() bool { return p.enricher != nil }
 // enrich overlays the enricher's counter rollup onto a projected row and
 // marks the row's explicit counter availability. A nil enricher leaves the
 // honest zeros in place and marks the counters UNAVAILABLE (the zeros mean
-// "this build cannot provide them", never "measured as zero" — D-311
-// representable absence). It scopes the enricher read to the ROW's own
-// identity so an admin listing another tenant's session reads exactly that
-// session's counters (no cross-session bleed).
+// "this build cannot provide them", never "measured as zero" — an
+// explicitly represented absence). It scopes the enricher read to the ROW's
+// own identity so an admin listing another tenant's session reads exactly
+// that session's counters (no cross-session bleed).
 func (p *ListerProjector) enrich(ctx context.Context, snap sessions.SessionSnapshot, row *prototypes.SessionRow) {
 	if p.enricher == nil {
 		row.CounterStatus = prototypes.CounterStatusUnavailable
