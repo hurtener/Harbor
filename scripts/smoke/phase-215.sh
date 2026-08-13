@@ -61,12 +61,9 @@ fi
 #     admission. Keep the two channels distinct. The embedded parser below
 #     checks the containment relationships, not merely that each symbol exists:
 #     a moved assignment or a control-plane lookup must fail closed. ---
-# The receipt restoration and effective-agent selection remain complementary
-# whole-source checks; the parser owns the fail-closed relationships between
-# those values and the signed-capability data-plane authorization.
-if grep -q 'admissionCtx, admittedAgentID, agentReachAdmitted = d\.agentReachAdmissions\.Restore(taskCtx, task)' internal/runtime/serve/runloop.go 2>/dev/null \
-    && grep -q 'effectiveAgentID = admittedAgentID' internal/runtime/serve/runloop.go 2>/dev/null; then
-    if python3 <<'PY'
+# The parser owns the fail-closed relationships between receipt restoration,
+# effective-agent selection, and signed-capability data-plane authorization.
+if python3 <<'PY'
 import re
 import sys
 
@@ -167,13 +164,22 @@ try:
     reach_blocks = []
     for match in re.finditer(r"\bif\s+agentReachAdmitted\s*\{", run_fn):
         reach_blocks.append((match.start(), matching_brace(run_fn, match.end() - 1)))
+    restores = list(re.finditer(
+        r"\badmissionCtx\s*,\s*admittedAgentID\s*,\s*agentReachAdmitted\s*=\s*d\.agentReachAdmissions\.Restore\s*\(\s*taskCtx\s*,\s*task\s*\)",
+        run_fn,
+    ))
+    assignments = list(re.finditer(r"\beffectiveAgentID\s*=\s*admittedAgentID\b", run_fn))
     calls = list(re.finditer(
         r"\brunCtx\s*=\s*tools\.WithEffectiveAgentConfig\s*\(\s*runCtx\s*,\s*effectiveAgentID\s*\)",
         run_fn,
     ))
-    containing = [block for block in reach_blocks if any(block[0] < call.start() < block[1] for call in calls)]
-    if len(calls) != 1 or len(containing) != 1:
-        fail("runOne effective-agent assignment is missing, duplicated, or outside the admitted block")
+    if len(restores) != 1 or len(assignments) != 1 or len(calls) != 1 or len(reach_blocks) != 1:
+        fail("runOne restore, effective-agent assignment, stamp, or admitted block is missing or ambiguous")
+    block_start, block_end = reach_blocks[0]
+    if not (restores[0].start() < block_start):
+        fail("runOne reach receipt restore is missing or follows the admitted block")
+    if not (block_start < assignments[0].start() < block_end and block_start < calls[0].start() < block_end):
+        fail("runOne effective-agent assignment and stamp are not both inside the admitted block")
 
     with open("internal/tools/auth/drivers/tokenexchange/tokenexchange.go", encoding="utf-8") as handle:
         tokenexchange = handle.read()
@@ -204,13 +210,10 @@ try:
 except OSError as error:
     fail("cannot read structural source: %s" % error)
 PY
-    then
+then
     ok "phase 215 static: signed-capability use is bound to restored reach admission, not boot provenance"
-    else
-        fail "phase 215 static: signed-capability structural admission parser rejected the source shape"
-    fi
 else
-    fail "phase 215 static: signed-capability admission is incomplete — restore reach receipt, stamp effective agent, and require it at token exchange"
+    fail "phase 215 static: signed-capability structural admission parser rejected the source shape"
 fi
 
 # --- The run-start ORDERING guard: tasks.Get must precede
