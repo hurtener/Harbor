@@ -386,9 +386,9 @@ func (d *driver) GetTurn(ctx context.Context, id identity.Identity, turnID turns
 // page is bounded by the retention bound and the page limit, and an
 // append during a walk only extends the tail (a newer row can never
 // satisfy an already-issued cursor). next is non-nil iff older rows
-// remain (the driver fetches limit+1 to know exactly); info carries
-// the page's snapshot binding, completeness, and the exact older-row
-// remaining count.
+// remain; info carries the page's snapshot binding, completeness, and
+// the exact older-row remaining count, computed from the bounded
+// retained window (never a scan of the raw history).
 //
 // The cursor is BOUND to (session, projection snapshot, authoritative
 // boundary row): a foreign-session cursor fails with
