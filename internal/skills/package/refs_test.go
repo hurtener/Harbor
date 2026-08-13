@@ -108,6 +108,45 @@ func TestScanSupportRefs_FencedCodeSkipped(t *testing.T) {
 	}
 }
 
+// TestScanSupportRefs_FencedDefinitionsSkipped pins the P1 fence-skip
+// closure for reference DEFINITIONS: a `[label]: dest` line inside a
+// backtick or tilde fence is example text, not a real definition. It
+// is not emitted, it does not resolve usages, and it does not
+// participate in the last-wins label dedup — a real same-label
+// definition outside the fence always wins, whether the fenced line
+// precedes or follows it.
+func TestScanSupportRefs_FencedDefinitionsSkipped(t *testing.T) {
+	// Fenced definition AFTER a real definition: the fenced line must
+	// not override the real dest for usages.
+	body := "Real [logo]: assets/logo.png, usage ![logo][logo].\n\n" +
+		"[logo]: assets/logo.png\n\n" +
+		"```\n[logo]: assets/fake.png\n```\n"
+	got := refKeys(t, body)
+	want := []string{"I:assets/logo.png", "D:assets/logo.png"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("after-real refs = %v, want %v", got, want)
+	}
+
+	// Fenced definition BEFORE a real definition (backtick), and a
+	// tilde-fenced same-label line: only the real definition is
+	// scanned, and the usage resolves to it.
+	body2 := "```\n[guide]: docs/fake.md\n[guide]: docs/fake2.md\n```\n" +
+		"Real [guide][guide].\n\n" +
+		"[guide]: docs/guide.md\n\n" +
+		"~~~\n[guide]: docs/fake3.md\n~~~\n"
+	got2 := refKeys(t, body2)
+	want2 := []string{"L:docs/guide.md", "D:docs/guide.md"}
+	if strings.Join(got2, " ") != strings.Join(want2, " ") {
+		t.Fatalf("before-real refs = %v, want %v", got2, want2)
+	}
+
+	// A fence containing ONLY definitions emits nothing.
+	body3 := "```\n[a]: assets/a.png\n[b]: assets/b.png\n~~~\n[c]: assets/c.png\n```\n"
+	if got3 := refKeys(t, body3); len(got3) != 0 {
+		t.Fatalf("fence-only definitions emitted refs: %v", got3)
+	}
+}
+
 func TestScanSupportRefs_UnterminatedFenceClosesAtEOF(t *testing.T) {
 	body := "```\n![fake](assets/logo.png)\n"
 	if got := refKeys(t, body); len(got) != 0 {

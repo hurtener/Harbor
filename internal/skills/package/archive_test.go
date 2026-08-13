@@ -115,6 +115,7 @@ func TestValidateArchive_Rejects(t *testing.T) {
 		{"dot segment", []zipEntry{{name: "a/./b.txt", data: "x"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchivePathInvalid},
 		{"empty name", []zipEntry{{name: "", data: "x"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchivePathInvalid},
 		{"non-ascii", []zipEntry{{name: "assets/éclair.png", data: "x"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchivePathInvalid},
+		{"uri path over budget", []zipEntry{{name: strings.Repeat("a", 200) + "/" + strings.Repeat("b", 200) + "/" + strings.Repeat("c", 28) + ".txt", data: "x"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchivePathInvalid},
 		{"case collision", []zipEntry{
 			{name: "SKILL.md", data: validMD},
 			{name: "skill.md", data: validMD},
@@ -183,5 +184,43 @@ func TestValidateArchive_EmptyArchive(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("expected no entries, got %d", len(entries))
+	}
+}
+
+// TestValidateArchive_URIPathBoundary pins the archive-side URI
+// representability closure: a support path at exactly
+// MaxPackageURIPathRunes is accepted and URI-representable, while one
+// rune beyond it is rejected at the archive boundary with
+// ErrArchivePathInvalid (it would otherwise only fail later at
+// PackageHash).
+func TestValidateArchive_URIPathBoundary(t *testing.T) {
+	at := strings.Repeat("a", 200) + "/" + strings.Repeat("b", 200) + "/" + strings.Repeat("c", 27) + ".txt"
+	if len(at) != skillpkg.MaxPackageURIPathRunes {
+		t.Fatalf("fixture path is %d runes, want %d", len(at), skillpkg.MaxPackageURIPathRunes)
+	}
+	z := buildZip(t, []zipEntry{
+		{name: "SKILL.md", data: "---\ntrigger: demo\n---\n## Steps\n- do it\n"},
+		{name: at, data: "x"},
+	})
+	entries, err := skillpkg.ValidateArchive(z, skillpkg.ArchiveLimits{})
+	if err != nil {
+		t.Fatalf("ValidateArchive at URI path bound: %v", err)
+	}
+	if len(entries) != 2 || entries[1].Path != at {
+		t.Fatalf("entries = %+v", entries)
+	}
+	// The at-bound path is fully URI-representable: hash + URI succeed.
+	h, err := skillpkg.PackageHash(skillpkg.Package{
+		Name:  "x",
+		Skill: skillpkg.PackageSkill{Name: "x", Trigger: "t", Steps: []string{"s"}},
+		Supports: []skillpkg.SupportFile{
+			{Path: at, Mime: "text/plain; charset=utf-8", Size: 1, Digest: sha256Hex([]byte("x")), Data: []byte("x")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PackageHash(at-bound path): %v", err)
+	}
+	if _, err := skillpkg.NewURI(h, at); err != nil {
+		t.Fatalf("NewURI(at-bound path): %v", err)
 	}
 }

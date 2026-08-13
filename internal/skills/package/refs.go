@@ -29,9 +29,15 @@ import (
 // Boundedness: the scanner is a single linear pass over the input
 // with fixed-size regexp matches; no recursion, no unbounded
 // expansion. Fenced code blocks (``` and ~~~) are skipped so a code
-// example cannot smuggle a false reference. Inline code spans and
-// indented code blocks are NOT fence-aware (matching the file-import
-// path's scanner); refs inside them are treated as body refs.
+// example cannot smuggle a false reference. The fence-skip invariant
+// covers every occurrence class — inline links/images, reference
+// usages (including the collapsed `[x][]` and shortcut `[x]` forms),
+// AND reference definitions: a definition inside a fence is never
+// scanned, validated, materialized, deduplicated against real
+// definitions, or mutated, and it never resolves usages. Inline code
+// spans and indented code blocks are NOT fence-aware (matching the
+// file-import path's scanner); refs inside them are treated as body
+// refs.
 
 // SupportRefKind classifies a support reference occurrence.
 type SupportRefKind int
@@ -130,7 +136,21 @@ type defEntry struct {
 // order).
 func ScanSupportRefs(text string) []SupportRef {
 	var out []SupportRef
-	entries := scanDefinitions(text)
+	// Fenced code blocks (``` / ~~~) are not reference content. The
+	// fence-skip predicate is shared by every occurrence class: inline
+	// links/images, reference usages, shortcut/collapsed forms, and the
+	// definitions themselves (a fenced definition must neither resolve
+	// usages nor participate in the last-wins label dedup).
+	fences := fencedSpans(text)
+	inFence := func(pos int) bool {
+		for _, f := range fences {
+			if pos >= f.start && pos < f.end {
+				return true
+			}
+		}
+		return false
+	}
+	entries := scanDefinitions(text, inFence)
 	defs := make(map[string]refDefinition, len(entries))
 	for _, e := range entries {
 		defs[e.label] = e.def
@@ -141,16 +161,6 @@ func ScanSupportRefs(text string) []SupportRef {
 	usageKinds := map[string]SupportRefKind{}
 
 	var occupied []span
-	// Fenced code blocks (``` / ~~~) are not reference content.
-	fences := fencedSpans(text)
-	inFence := func(start int) bool {
-		for _, f := range fences {
-			if start >= f.start && start < f.end {
-				return true
-			}
-		}
-		return false
-	}
 
 	// 1. Inline links and images: (!?)[...](dest).
 	for _, m := range inlineRefRe.FindAllStringSubmatchIndex(text, -1) {
@@ -302,8 +312,12 @@ func extractInlineDest(destText string, base int) (dest string, start, end int) 
 // returns the entries in line order. A definition's destination is the
 // first token after the colon (or the angle-bracket contents when the
 // destination is `<dest>`); a trailing title (`"..."`, `'...'`,
-// `(...)`) is not part of the destination.
-func scanDefinitions(text string) []defEntry {
+// `(...)`) is not part of the destination. Definitions whose line
+// falls inside a fenced code block (inFence(lineStart)) are skipped
+// entirely: they are not scanned, cannot resolve usages, and do not
+// participate in the last-wins label dedup — a fenced `[label]` line
+// is example text, never a real definition.
+func scanDefinitions(text string, inFence func(int) bool) []defEntry {
 	var defs []defEntry
 	for lineStart := 0; lineStart <= len(text); {
 		lineEnd := strings.IndexByte(text[lineStart:], '\n')
@@ -315,6 +329,10 @@ func scanDefinitions(text string) []defEntry {
 		} else {
 			raw = text[lineStart : lineStart+lineEnd]
 			next = lineStart + lineEnd + 1
+		}
+		if inFence(lineStart) {
+			lineStart = next
+			continue
 		}
 		trimmed := strings.TrimLeft(raw, " \t")
 		lead := len(raw) - len(trimmed)

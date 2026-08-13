@@ -204,6 +204,13 @@ func TestImportPackage_Rejects(t *testing.T) {
 		{"skillmd no frontmatter", packageZip(t, map[string]string{"SKILL.md": "plain"}), skills.ErrSkillMDFrontmatterMissing},
 		{"skillmd missing trigger", packageZip(t, map[string]string{"SKILL.md": "---\nname: x\n---\n## Steps\n- s\n"}), skills.ErrSkillMDMissingTrigger},
 		{"skillmd empty steps", packageZip(t, map[string]string{"SKILL.md": "---\ntrigger: t\n---\nno steps\n"}), skills.ErrSkillMDEmptySteps},
+		// An empty `- ` item is rejected at the SKILL.md gate first
+		// (bodyHasSteps requires a non-empty item); the DTO-level empty
+		// item check (PackageSkill.Validate) is defense-in-depth for
+		// the canonical-bytes / direct-construction paths.
+		{"empty step item", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\n## Steps\n- \n",
+		}), skills.ErrSkillMDEmptySteps},
 		{"unknown section", packageZip(t, map[string]string{"SKILL.md": "---\ntrigger: t\n---\n## Steps\n- s\n## Bizarre\n- x\n"}), importer.ErrUnknownSection},
 		{"missing support ref", packageZip(t, map[string]string{
 			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![missing](assets/nope.png)\n\n## Steps\n- s\n",
@@ -247,6 +254,69 @@ func TestImportPackage_Rejects(t *testing.T) {
 				t.Fatalf("ImportPackage: err=%v, want %v", err, c.wantErr)
 			}
 		})
+	}
+}
+
+// TestImportPackage_FencedExamplesNotDemanded pins the P1 fence-skip
+// closure on the ingest path: refs AND definitions inside fenced code
+// blocks are example text. The importer does not demand fenced example
+// assets, a fenced same-label definition never overrides the real
+// definition (whether it precedes or follows it), and materialization
+// rewrites only the real outside-fence definition span — the export
+// round-trip reproduces the exact logical document.
+func TestImportPackage_FencedExamplesNotDemanded(t *testing.T) {
+	imp, _ := newImporter(t)
+	md := "---\nname: fenced-demo\ntrigger: when asked about fences\n---\n" +
+		"Real ![logo](assets/logo.png).\n\n" +
+		"```\n![fake](assets/fake.png)\n[fake]: assets/fake.png\n```\n" +
+		"[logo]: assets/logo.png\n\n" +
+		"~~~\n[logo]: assets/fake.png\n~~~\n\n" +
+		"Ref usage [logo][logo].\n\n" +
+		"## Steps\n" +
+		"\n" +
+		"- do the thing\n"
+	z := packageZip(t, map[string]string{
+		"SKILL.md":        md,
+		"assets/logo.png": string(pngBytes()),
+	})
+	ingest, err := imp.ImportPackage(context.Background(), importer.PackageSource{Archive: z, PathHint: "fenced-demo.zip"})
+	if err != nil {
+		t.Fatalf("ImportPackage with fenced example refs: %v", err)
+	}
+	// The only demanded support is the real image; the fenced example
+	// assets are not part of the package contract.
+	if len(ingest.Package.Supports) != 1 || ingest.Package.Supports[0].Path != "assets/logo.png" {
+		t.Fatalf("supports = %+v", ingest.Package.Supports)
+	}
+
+	// Materialization rewrites only the real refs (inline image + the
+	// real definition span); the fenced example content stays
+	// byte-for-byte relative.
+	mat, err := imp.MaterializePackageBody(context.Background(), ingest)
+	if err != nil {
+		t.Fatalf("MaterializePackageBody: %v", err)
+	}
+	if !strings.Contains(mat, "![logo](skillpkg://"+ingest.Hash+"/assets/logo.png)") {
+		t.Fatalf("real inline image not materialized:\n%s", mat)
+	}
+	if !strings.Contains(mat, "[logo]: skillpkg://"+ingest.Hash+"/assets/logo.png") {
+		t.Fatalf("real definition span not materialized:\n%s", mat)
+	}
+	if !strings.Contains(mat, "```\n![fake](assets/fake.png)\n[fake]: assets/fake.png\n```\n") {
+		t.Fatalf("backtick-fenced example mutated:\n%s", mat)
+	}
+	if !strings.Contains(mat, "~~~\n[logo]: assets/fake.png\n~~~\n") {
+		t.Fatalf("tilde-fenced example mutated:\n%s", mat)
+	}
+
+	// The export round-trip still reproduces the exact logical
+	// document (frontmatter synthesized from the canonical fields).
+	ex, err := imp.ExportPackage(context.Background(), ingest, mat)
+	if err != nil {
+		t.Fatalf("ExportPackage: %v", err)
+	}
+	if string(ex.Document) != md {
+		t.Fatalf("exported document drifted:\n--- got ---\n%s\n--- want ---\n%s", ex.Document, md)
 	}
 }
 
@@ -465,6 +535,9 @@ func TestImportPackageMarkdown_Rejects(t *testing.T) {
 		{"no frontmatter", []byte("plain text"), skills.ErrSkillMDFrontmatterMissing},
 		{"missing trigger", []byte("---\nname: x\n---\n## Steps\n- s\n"), skills.ErrSkillMDMissingTrigger},
 		{"empty steps", []byte("---\ntrigger: t\n---\nno steps\n"), skills.ErrSkillMDEmptySteps},
+		// Rejected at the SKILL.md gate (empty `- ` item); the DTO
+		// check is defense-in-depth.
+		{"empty step item", []byte("---\nname: x\ntrigger: t\n---\n## Steps\n- \n"), skills.ErrSkillMDEmptySteps},
 		{"unknown section", []byte("---\ntrigger: t\n---\n## Steps\n- s\n## Bizarre\n- x\n"), importer.ErrUnknownSection},
 		{"support ref in description", []byte("---\nname: x\ntrigger: t\n---\n![diagram](assets/logo.png)\n\n## Steps\n- s\n"), importer.ErrPackageSupportRefMissing},
 		{"support ref in step", []byte("---\nname: x\ntrigger: t\n---\n## Steps\n- see ![diagram](assets/logo.png)\n"), importer.ErrPackageSupportRefMissing},

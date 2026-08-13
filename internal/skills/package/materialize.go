@@ -91,13 +91,24 @@ func MaterializeSupportRefs(body string, pkg Package) (string, error) {
 }
 
 // DematerializeSupportRefs reverses MaterializeSupportRefs for the
-// EXACT package: every `skillpkg://` token in the body is parsed, and
-// only tokens whose URI belongs to this package's hash and names a
-// manifest entry are rewritten back to their relative canonical path.
-// A token that is not a parseable package support URI
-// (ErrSupportRefMalformedURI), carries a different package's hash
-// (ErrSupportRefForeignURI), or names a path outside the manifest
-// (ErrSupportRefDangling) refuses loudly — no partial dematerialization.
+// EXACT package: it rewrites the `skillpkg://` URIs that sit at ACTUAL
+// reference destinations — the inline destination of an ordinary
+// link/image or a reference definition's destination — back to their
+// relative canonical paths, keeping any trailing `#fragment` anchor in
+// place. It is the bounded Markdown-aware inverse: the scan is the
+// same ordinary-Markdown scanner materialization uses, so mere prose
+// mentions of `skillpkg://`, fenced-code examples, foreign or
+// malformed URI tokens outside a reference construct, and sentence
+// punctuation around prose URIs are NOT rewritten and do NOT fail —
+// they are not reference destinations.
+//
+// A `skillpkg://` URI at a REAL reference destination refuses loudly,
+// with no partial dematerialization: a token that is not a parseable
+// package support URI (ErrSupportRefMalformedURI), carries a different
+// package's hash (ErrSupportRefForeignURI), or names a path outside
+// the manifest (ErrSupportRefDangling). Because materialization only
+// ever writes URIs into reference destinations, the exact
+// materialize -> dematerialize round-trip is preserved.
 func DematerializeSupportRefs(body string, pkg Package) (string, error) {
 	hash, err := PackageHash(pkg)
 	if err != nil {
@@ -109,40 +120,40 @@ func DematerializeSupportRefs(body string, pkg Package) (string, error) {
 	}
 
 	var rewrites []rewrite
-	idx := 0
-	for {
-		i := strings.Index(body[idx:], URIScheme+"://")
-		if i < 0 {
-			break
+	for _, r := range ScanSupportRefs(body) {
+		if r.Start == r.End {
+			continue // reference-style usage; the definition carries the span
 		}
-		start := idx + i
-		end := start + len(URIScheme) + len("://")
-		for end < len(body) {
-			switch body[end] {
-			// The URI token ends at a markdown construct boundary, a
-			// fragment anchor, or whitespace.
-			case ')', ']', '"', '\'', '#', '>', ' ', '\t', '\n', '\r':
-				goto tokenEnd
-			}
-			end++
+		if !strings.HasPrefix(r.Dest, URIScheme+"://") {
+			continue // not a materialized support reference
 		}
-	tokenEnd:
-		tok := body[start:end]
-		u, perr := ParseURI(tok)
+		// A `#fragment` document anchor after the URI stays in place
+		// (the rewrite span covers the URI token only; the fragment
+		// text begins at r.Start+len(uriPart) and is never spliced).
+		uriPart := r.Dest
+		if i := strings.IndexByte(r.Dest, '#'); i >= 0 {
+			uriPart = r.Dest[:i]
+		}
+		u, perr := ParseURI(uriPart)
 		if perr != nil {
-			return "", fmt.Errorf("%w: %q: %v", ErrSupportRefMalformedURI, tok, perr)
+			return "", fmt.Errorf("%w: %q: %v", ErrSupportRefMalformedURI, uriPart, perr)
 		}
 		if u.Hash != hash {
-			return "", fmt.Errorf("%w: %q carries hash %q, want %q", ErrSupportRefForeignURI, tok, u.Hash, hash)
+			return "", fmt.Errorf("%w: %q carries hash %q, want %q", ErrSupportRefForeignURI, uriPart, u.Hash, hash)
 		}
 		if _, ok := manifest[u.Path]; !ok {
-			return "", fmt.Errorf("%w: %q names %q", ErrSupportRefDangling, tok, u.Path)
+			return "", fmt.Errorf("%w: %q names %q", ErrSupportRefDangling, uriPart, u.Path)
 		}
-		rewrites = append(rewrites, rewrite{start: start, end: end, replacement: u.Path})
-		idx = end
+		rewrites = append(rewrites, rewrite{start: r.Start, end: r.Start + len(uriPart), replacement: u.Path})
 	}
 	if len(rewrites) == 0 {
 		return body, nil
+	}
+	sort.Slice(rewrites, func(i, j int) bool { return rewrites[i].start < rewrites[j].start })
+	for i := 1; i < len(rewrites); i++ {
+		if rewrites[i].start < rewrites[i-1].end {
+			return "", fmt.Errorf("%w: overlapping rewrite spans in body (ambiguous reference structure)", ErrSupportRefDangling)
+		}
 	}
 	return applyRewrites(body, rewrites), nil
 }

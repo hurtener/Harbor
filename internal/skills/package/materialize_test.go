@@ -120,33 +120,136 @@ func TestDematerializeSupportRefs_ExactInverse(t *testing.T) {
 
 // TestDematerializeSupportRefs_RefusesForeignMalformedDangling pins
 // the refusal contract: only URIs of the exact package/hash whose
-// paths are manifest entries dematerialize; everything else refuses
-// loudly.
+// paths are manifest entries dematerialize; a `skillpkg://` URI at an
+// ACTUAL reference destination that is foreign, malformed, or dangling
+// refuses loudly. Prose / fenced-code mentions outside a reference
+// construct are NOT reference destinations and are covered by
+// TestDematerializeSupportRefs_ProseAndFencedURIsUntouched.
 func TestDematerializeSupportRefs_RefusesForeignMalformedDangling(t *testing.T) {
 	p := packageWithRefs(t)
 	h := packageHashOf(t, p)
 	foreignHash := "v1:" + strings.Repeat("0", 64)
 
-	foreign := "see skillpkg://" + foreignHash + "/assets/logo.png"
+	foreign := "see [x](skillpkg://" + foreignHash + "/assets/logo.png)"
 	if _, err := skillpkg.DematerializeSupportRefs(foreign, p); !errors.Is(err, skillpkg.ErrSupportRefForeignURI) {
 		t.Fatalf("foreign: err=%v, want ErrSupportRefForeignURI", err)
 	}
-	malformed := "see skillpkg://not-a-uri/at-all"
+	foreignDef := "see [x][a].\n\n[a]: skillpkg://" + foreignHash + "/assets/logo.png"
+	if _, err := skillpkg.DematerializeSupportRefs(foreignDef, p); !errors.Is(err, skillpkg.ErrSupportRefForeignURI) {
+		t.Fatalf("foreign definition: err=%v, want ErrSupportRefForeignURI", err)
+	}
+	malformed := "see [x](skillpkg://not-a-uri/at-all)"
 	if _, err := skillpkg.DematerializeSupportRefs(malformed, p); !errors.Is(err, skillpkg.ErrSupportRefMalformedURI) {
 		t.Fatalf("malformed: err=%v, want ErrSupportRefMalformedURI", err)
 	}
-	dangling := "see skillpkg://" + h + "/assets/nope.png"
+	dangling := "see [x](skillpkg://" + h + "/assets/nope.png)"
 	if _, err := skillpkg.DematerializeSupportRefs(dangling, p); !errors.Is(err, skillpkg.ErrSupportRefDangling) {
 		t.Fatalf("dangling: err=%v, want ErrSupportRefDangling", err)
 	}
-	// A correct URI in prose dematerializes back to its path.
-	ok := "see skillpkg://" + h + "/assets/logo.png"
+	// A correct URI at a real reference destination dematerializes
+	// back to its relative path.
+	ok := "see [x](skillpkg://" + h + "/assets/logo.png)"
 	got, err := skillpkg.DematerializeSupportRefs(ok, p)
 	if err != nil {
 		t.Fatalf("DematerializeSupportRefs(valid): %v", err)
 	}
-	if got != "see assets/logo.png" {
-		t.Fatalf("got %q, want %q", got, "see assets/logo.png")
+	if got != "see [x](assets/logo.png)" {
+		t.Fatalf("got %q, want %q", got, "see [x](assets/logo.png)")
+	}
+}
+
+// TestDematerializeSupportRefs_ProseAndFencedURIsUntouched pins the
+// bounded Markdown-aware inverse: dematerialization operates ONLY on
+// actual reference destinations. Mere prose mentions of
+// `skillpkg://` — including foreign, malformed, and dangling examples
+// and sentence punctuation glued to the URI — plus fenced-code
+// examples, are neither rewritten nor failed on.
+func TestDematerializeSupportRefs_ProseAndFencedURIsUntouched(t *testing.T) {
+	p := packageWithRefs(t)
+	h := packageHashOf(t, p)
+	foreignHash := "v1:" + strings.Repeat("0", 64)
+
+	// Prose with a VALID URI of this package: not a reference
+	// destination, so it stays verbatim (no rewrite, no error).
+	prose := "The URI format is skillpkg://" + h + "/assets/logo.png."
+	if got, err := skillpkg.DematerializeSupportRefs(prose, p); err != nil {
+		t.Fatalf("prose valid URI: %v", err)
+	} else if got != prose {
+		t.Fatalf("prose valid URI rewritten: %q", got)
+	}
+
+	// Prose with foreign / malformed / dangling example URIs and
+	// sentence punctuation: untouched.
+	prose2 := "See skillpkg://" + foreignHash + "/assets/logo.png, or " +
+		"skillpkg://not-a-uri/at-all, or skillpkg://" + h + "/assets/nope.png."
+	if got, err := skillpkg.DematerializeSupportRefs(prose2, p); err != nil {
+		t.Fatalf("prose foreign/malformed/dangling URIs: %v", err)
+	} else if got != prose2 {
+		t.Fatalf("prose foreign/malformed/dangling URIs rewritten: %q", got)
+	}
+
+	// Fenced-code examples — inline, usage, and definition forms — are
+	// not reference destinations: untouched even when they are foreign
+	// or malformed.
+	fenced := "```\n[x](skillpkg://" + h + "/assets/logo.png)\n" +
+		"[logo]: skillpkg://" + foreignHash + "/assets/x.png\n```\n" +
+		"~~~\n[y][z] and skillpkg://not-a-uri/at-all\n~~~\n"
+	if got, err := skillpkg.DematerializeSupportRefs(fenced, p); err != nil {
+		t.Fatalf("fenced examples: %v", err)
+	} else if got != fenced {
+		t.Fatalf("fenced examples rewritten: %q", got)
+	}
+
+	// A real reference destination with a fragment anchor keeps the
+	// anchor and drops only the URI.
+	anchored := "See [section](skillpkg://" + h + "/docs/guide.md#sec)."
+	want := "See [section](docs/guide.md#sec)."
+	if got, err := skillpkg.DematerializeSupportRefs(anchored, p); err != nil {
+		t.Fatalf("anchored destination: %v", err)
+	} else if got != want {
+		t.Fatalf("anchored destination = %q, want %q", got, want)
+	}
+}
+
+// TestMaterializeSupportRefs_FencedRefsUntouched pins the P1
+// materialization closure: refs AND definitions inside backtick /
+// tilde fences are neither scanned nor rewritten — fenced example
+// assets are never demanded and fenced definition spans are never
+// mutated. Only the real outside-fence definition span is rewritten.
+func TestMaterializeSupportRefs_FencedRefsUntouched(t *testing.T) {
+	p := packageWithRefs(t)
+	h := packageHashOf(t, p)
+
+	// A fenced definition precedes a real same-label definition, and a
+	// tilde fence carries a fenced image + fenced definition AFTER the
+	// real definition. Only the real refs materialize.
+	body := "```\n[guide]: docs/fake.md\n```\n" +
+		"Real ![diagram](assets/logo.png) and [guide][guide].\n\n" +
+		"[guide]: docs/guide.md\n\n" +
+		"~~~\n![fake](assets/fake.png)\n[logo]: assets/fake.png\n~~~\n"
+	got, err := skillpkg.MaterializeSupportRefs(body, p)
+	if err != nil {
+		t.Fatalf("MaterializeSupportRefs: %v", err)
+	}
+	if !strings.Contains(got, "![diagram](skillpkg://"+h+"/assets/logo.png)") {
+		t.Fatalf("real inline ref not materialized:\n%s", got)
+	}
+	if !strings.Contains(got, "[guide]: skillpkg://"+h+"/docs/guide.md") {
+		t.Fatalf("real definition span not materialized:\n%s", got)
+	}
+	// Fenced content stays byte-for-byte: relative paths, no URI, no
+	// mutation of the fenced definition span.
+	if !strings.Contains(got, "```\n[guide]: docs/fake.md\n```\n") {
+		t.Fatalf("backtick-fenced definition mutated:\n%s", got)
+	}
+	if !strings.Contains(got, "~~~\n![fake](assets/fake.png)\n[logo]: assets/fake.png\n~~~\n") {
+		t.Fatalf("tilde-fenced content mutated:\n%s", got)
+	}
+	if n := strings.Count(got, "skillpkg://"); n != 2 {
+		t.Fatalf("materialized %d URIs, want exactly 2 (real inline + real definition):\n%s", n, got)
+	}
+	if strings.Contains(got, "assets/fake.png") && !strings.Contains(got, "![fake](assets/fake.png)") {
+		t.Fatalf("fenced example asset was rewritten:\n%s", got)
 	}
 }
 

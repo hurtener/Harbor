@@ -107,6 +107,10 @@ func TestPackageValidate_Rejects(t *testing.T) {
 		{"version too long", func(p *skillpkg.Package) { p.Version = strings.Repeat("v", skillpkg.MaxPackageVersionRunes+1) }},
 		{"missing trigger", func(p *skillpkg.Package) { p.Skill.Trigger = "" }},
 		{"empty steps", func(p *skillpkg.Package) { p.Skill.Steps = nil }},
+		{"empty step item", func(p *skillpkg.Package) { p.Skill.Steps = []string{""} }},
+		{"whitespace step item", func(p *skillpkg.Package) { p.Skill.Steps = []string{"   "} }},
+		{"empty precondition item", func(p *skillpkg.Package) { p.Skill.Preconditions = []string{""} }},
+		{"empty failure mode item", func(p *skillpkg.Package) { p.Skill.FailureModes = []string{""} }},
 		{"steps too many", func(p *skillpkg.Package) {
 			p.Skill.Steps = make([]string, skillpkg.MaxPackageSteps+1)
 			for i := range p.Skill.Steps {

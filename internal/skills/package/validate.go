@@ -58,6 +58,9 @@ func (s PackageSkill) Validate() error {
 		return fmt.Errorf("%w: FailureModes exceed %d", ErrInvalidSkillContent, MaxPackageSections)
 	}
 	for i, step := range s.Steps {
+		if strings.TrimSpace(step) == "" {
+			return fmt.Errorf("%w: steps[%d] is empty (procedural list items must be non-empty)", ErrInvalidSkillContent, i)
+		}
 		if err := boundedText(fmt.Sprintf("steps[%d]", i), step); err != nil {
 			return fmt.Errorf("%w: %w", ErrInvalidSkillContent, err)
 		}
@@ -83,6 +86,9 @@ func (s PackageSkill) Validate() error {
 		}
 	}
 	for _, item := range append(append([]string(nil), s.Preconditions...), s.FailureModes...) {
+		if strings.TrimSpace(item) == "" {
+			return fmt.Errorf("%w: section list contains an empty entry (procedural list items must be non-empty)", ErrInvalidSkillContent)
+		}
 		if err := boundedText("text entry", item); err != nil {
 			return fmt.Errorf("%w: %w", ErrInvalidSkillContent, err)
 		}

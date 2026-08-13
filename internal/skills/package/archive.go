@@ -20,6 +20,8 @@ import (
 //   - exact and case-folded path collisions (the case class — the
 //     canonical path charset is ASCII-only, which closes the Unicode
 //     normalization collision class by construction);
+//   - paths beyond the skillpkg-URI path budget (MaxPackageURIPathRunes
+//     — a path the exact bounded URI constructor could not carry);
 //   - symlink / directory / device / FIFO / socket / irregular
 //     entries (the links/devices class — every non-regular entry
 //     FAILS the archive, including directory-shaped names and
@@ -48,7 +50,9 @@ var (
 	ErrArchiveCorrupt = errors.New("skillpkg: archive is corrupt")
 	// ErrArchivePathInvalid — an entry path is structurally invalid
 	// (absolute, backslash, empty segment, out-of-charset, non-ASCII,
-	// oversized, `.` segment).
+	// oversized, `.` segment) or beyond the skillpkg-URI path budget
+	// (MaxPackageURIPathRunes — a path the exact bounded URI
+	// constructor cannot represent).
 	ErrArchivePathInvalid = errors.New("skillpkg: archive path is not canonical")
 	// ErrArchiveTraversal — an entry path escapes the package root
 	// (`..` segment).
@@ -215,6 +219,16 @@ func ValidateArchive(b []byte, limits ArchiveLimits) ([]ArchiveEntry, error) {
 				return nil, fmt.Errorf("%w: %s", ErrArchiveTraversal, pe.msg)
 			}
 			return nil, fmt.Errorf("%w: %s", ErrArchivePathInvalid, err.Error())
+		}
+		// URI representability: every path the archive accepts must be
+		// representable by the exact bounded skillpkg URI constructor.
+		// canonicalizePath only enforces the raw path bound
+		// (MaxPackagePathRunes); the URI carries a narrower path budget
+		// (MaxPackageURIPathRunes), so a path beyond it would pass the
+		// archive boundary and only fail later at PackageHash — reject
+		// it here with the archive path error instead.
+		if rl := len([]rune(path)); rl > MaxPackageURIPathRunes {
+			return nil, fmt.Errorf("%w: %q is %d runes; the %s:// support URI carries at most %d path runes", ErrArchivePathInvalid, path, rl, URIScheme, MaxPackageURIPathRunes)
 		}
 		if _, dup := exact[path]; dup {
 			return nil, fmt.Errorf("%w: duplicate path %q", ErrArchivePathCollision, path)
