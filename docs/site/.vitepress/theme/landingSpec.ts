@@ -44,7 +44,7 @@ export const hero = {
 };
 
 export const announcement = {
-  text: "v1.16.0 just shipped — parallel intent: one planner turn can fan out tools and spawn background tasks at once, with a task-management control surface and an operator-first cancel hierarchy",
+  text: "v1.27 just shipped — typed tool failures, governed agent skills, app-only MCP callbacks, resumable step tranches, virtual profiles, artifact forwarding, and task progress",
   link: "/reference/changelog",
 };
 
