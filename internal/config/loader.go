@@ -106,9 +106,11 @@ func Load(ctx context.Context, path string, opts ...LoadOption) (*Config, error)
 // include "(source: <bytes>)" instead of a path. Options mirror Load.
 //
 // Because there is no source file, `tools.http_manifests` relative
-// entries are NOT resolved against a config directory here (there is
-// none) — they pass through unresolved, exactly like a hand-built
-// `*Config` an embedder constructs in Go.
+// entries and `skills.boot_agent_packs[].directory` relative values
+// are NOT resolved against a config directory here (there is none) —
+// they pass through unresolved, exactly like a hand-built `*Config` an
+// embedder constructs in Go, so the later boot loader can fail loud
+// rather than resolving against the process CWD.
 func LoadFromBytes(ctx context.Context, data []byte, opts ...LoadOption) (*Config, error) {
 	return loadFromBytesNamed(ctx, data, "<bytes>", "", opts...)
 }
@@ -116,7 +118,9 @@ func LoadFromBytes(ctx context.Context, data []byte, opts ...LoadOption) (*Confi
 // LoadFromBytesAt parses raw YAML bytes the caller already read from
 // path, without re-reading the file. It applies the same env-var
 // overrides, `tools.http_manifests` relative-path resolution (against
-// `filepath.Dir(path)`, §7 rule 5), and validation pipeline as Load —
+// `filepath.Dir(path)`, §7 rule 5), `skills.boot_agent_packs`
+// relative-directory resolution (the same provenance — the config
+// file's directory, never CWD), and validation pipeline as Load —
 // the only difference from Load is that the caller supplies the bytes
 // instead of this function reading them. Error messages record path
 // as the source, exactly as Load's do.
@@ -129,8 +133,9 @@ func LoadFromBytes(ctx context.Context, data []byte, opts ...LoadOption) (*Confi
 // An empty path degrades to LoadFromBytes semantics: no config
 // directory is derived (`filepath.Dir("")` would be "." — the process
 // CWD, which is NOT the config file's directory), so relative
-// `tools.http_manifests` entries pass through unresolved and error
-// messages record "<bytes>" as the source.
+// `tools.http_manifests` entries and relative
+// `skills.boot_agent_packs` directories pass through unresolved and
+// error messages record "<bytes>" as the source.
 func LoadFromBytesAt(ctx context.Context, data []byte, path string, opts ...LoadOption) (*Config, error) {
 	if strings.TrimSpace(path) == "" {
 		return LoadFromBytes(ctx, data, opts...)
@@ -140,8 +145,9 @@ func LoadFromBytesAt(ctx context.Context, data []byte, path string, opts ...Load
 
 // loadFromBytesNamed is the shared implementation. The name is used
 // only for error messages; it has no effect on parsing. configDir is
-// the directory `tools.http_manifests` relative entries resolve
-// against; empty when there is no real config-file source (LoadFromBytes).
+// the directory `tools.http_manifests` relative entries and
+// `skills.boot_agent_packs` relative directories resolve against;
+// empty when there is no real config-file source (LoadFromBytes).
 func loadFromBytesNamed(ctx context.Context, data []byte, source, configDir string, opts ...LoadOption) (*Config, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -171,6 +177,9 @@ func loadFromBytesNamed(ctx context.Context, data []byte, source, configDir stri
 		// field path out of the error string (e.g. `harbor validate`'s
 		// classifyLoaderError) don't need a second code path for this
 		// one check.
+		return nil, fmt.Errorf("%w: %w", ErrConfigInvalid, cfg.wrapValidationError(err))
+	}
+	if err := resolveBootAgentPackDirectories(cfg, configDir); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfigInvalid, cfg.wrapValidationError(err))
 	}
 	if err := cfg.Validate(); err != nil {
@@ -255,6 +264,60 @@ func resolveHTTPManifestPaths(cfg *Config, configDir string) error {
 	return nil
 }
 
+// resolveBootAgentPackDirectories resolves each
+// `skills.boot_agent_packs[].directory` against configDir — the loaded
+// config file's directory, NEVER the process CWD — using the same loader
+// provenance pattern `resolveHTTPManifestPaths` establishes (CLAUDE.md §7
+// rule 5, the skills-importer path-safety posture).
+//
+// Unlike the HTTP-manifest resolver this pass is PURELY LEXICAL and
+// performs NO filesystem reads: no filepath.EvalSymlinks re-check. The
+// `skills.boot_agent_packs` declaration is a boot-time file SOURCE whose
+// directory may legitimately not exist yet at Load time, and the phase
+// contract pins validation/normalization to zero filesystem reads — the
+// lexical Clean+prefix containment check is the §7 rule 5 half that
+// matters for a not-yet-existing path, and the boot resolver owns
+// existence + symlink checks on its own read path.
+//
+// An empty configDir (LoadFromBytes / a hand-built *Config) is a no-op:
+// relative directories pass through UNRESOLVED, retaining their explicit
+// relative state so the later boot loader can fail loud rather than
+// silently resolving against the process CWD. An ABSOLUTE directory is
+// `filepath.Clean`ed and accepted unconditionally — the documented
+// `/etc/harbor/skills` operator deployment shape, the same trust posture
+// as `tools.http_manifests` absolute entries.
+func resolveBootAgentPackDirectories(cfg *Config, configDir string) error {
+	if configDir == "" || len(cfg.Skills.BootAgentPacks) == 0 {
+		return nil
+	}
+	canonicalDir, err := filepath.Abs(filepath.Clean(configDir))
+	if err != nil {
+		return fmt.Errorf("skills.boot_agent_packs: resolve config directory %q: %w", configDir, err)
+	}
+	for i := range cfg.Skills.BootAgentPacks {
+		p := &cfg.Skills.BootAgentPacks[i]
+		trimmed := strings.TrimSpace(p.Directory)
+		if trimmed == "" {
+			// Leave untouched so validateBootAgentPacks reports the clean
+			// "must not be empty" message rather than a confusing
+			// path-escape one (mirrors the manifest resolver's empty
+			// entry handling).
+			continue
+		}
+		if filepath.IsAbs(trimmed) {
+			p.Directory = filepath.Clean(trimmed)
+			continue
+		}
+		joined := filepath.Clean(filepath.Join(canonicalDir, trimmed))
+		if !pathHasPrefixWithinRoot(joined, canonicalDir) {
+			return fieldError(fmt.Sprintf("skills.boot_agent_packs[%d].directory", i),
+				fmt.Sprintf("%q escapes the config directory %q", trimmed, canonicalDir))
+		}
+		p.Directory = joined
+	}
+	return nil
+}
+
 // pathHasPrefixWithinRoot is the canonical prefix check (CLAUDE.md §7
 // rule 5): true when p equals root or lies strictly under it,
 // avoiding the false-positive where root=/a would otherwise match
@@ -272,14 +335,15 @@ func pathHasPrefixWithinRoot(p, root string) bool {
 // This is the seam for CLI flag layering and Console
 // pushed config (post-V1); Harbor ships only the mechanism.
 //
-// Constraint: `tools.http_manifests` entries injected here skip the
+// Constraint: `tools.http_manifests` entries and
+// `skills.boot_agent_packs[].directory` values injected here skip the
 // Load-time relative-path resolution (the config file's directory is
 // not retained on *Config, so there is nothing to resolve against —
-// only the structural re-validation runs). Overrides that set
-// manifest paths must use ABSOLUTE paths; a relative entry passes
-// through unresolved and resolves against the process CWD at boot
-// via the HTTP driver's own Clean+Abs, exactly like a hand-built
-// *Config's would.
+// only the structural re-validation runs). Overrides that set manifest
+// paths or pack directories must use ABSOLUTE paths; a relative entry
+// passes through unresolved and resolves against the process CWD at
+// boot via the consuming driver's own Clean+Abs, exactly like a
+// hand-built *Config's would.
 func WithOverrides(c *Config, overrides map[string]string) (*Config, error) {
 	if c == nil {
 		return nil, fmt.Errorf("%w: WithOverrides called with nil *Config", ErrConfigInvalid)

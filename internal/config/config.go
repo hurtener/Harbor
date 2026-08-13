@@ -733,7 +733,98 @@ type SkillsConfig struct {
 	// declaration that controls durable session-personal-skill migration.
 	// An omitted declaration leaves a tenant in read-only dual-read mode.
 	SessionPersonalCutover SessionPersonalCutoverConfig `yaml:"session_personal_cutover,omitempty"`
+
+	// BootAgentPacks is the boot YAML declaration of the operator-managed
+	// per-agent skill pack FILE sources the runtime's boot resolver
+	// composes for the boot/default agent (see BootAgentPackConfig for the
+	// entry shape + bounds). Absent (the zero value) means no boot pack
+	// source — omission is byte-compatible with a runtime that predates
+	// the feature. Optional; when non-empty it REQUIRES the skills driver
+	// + DSN contract (validated — the composite resolver needs the
+	// configured skill store to compose against). Restart-required.
+	BootAgentPacks []BootAgentPackConfig `yaml:"boot_agent_packs,omitempty"`
 }
+
+// BootAgentPackConfig declares ONE boot-time, operator-managed per-agent
+// skill pack source: a filesystem directory of package-directory skills
+// the runtime's boot resolver composes into the boot agent's run view.
+// It is the config-side, file-source declaration of the per-agent skill
+// pack surface; the durable revision-versioned packs remain the
+// protocol-managed mechanism — this block is the boot-time file source
+// the resolver consumes, addressed by (tenant_id, agent_id) at
+// configuration-selection time. agent_id never becomes an isolation
+// principal (D-059): the run still starts from the caller's verified
+// identity triple and its signed reach to the effective agent.
+//
+// Layout in YAML:
+//
+//	skills:
+//	  boot_agent_packs:
+//	    - tenant_id: acme
+//	      agent_id: harbor-dev-agent
+//	      directory: /etc/harbor/skills
+//	      include: [workbench-foundation]
+//
+// Fields:
+//   - `tenant_id` / `agent_id` — the (tenant, agent) pair the pack is
+//     declared for. Required; each pair must be unique across the list.
+//     `agent_id` MUST equal the runtime-resolved boot/default agent id —
+//     enforced by [Config.ValidateBootAgentPacksForAgent], which the
+//     runtime calls with the authoritative resolved value. The config
+//     package does not know that value and never hard-codes it.
+//   - `directory` — the skills directory on disk. May be ABSOLUTE (the
+//     authoritative `/etc/harbor/skills` deployment shape) or RELATIVE; a
+//     relative directory resolves against the loaded config file's
+//     directory at Load time (the `tools.http_manifests` provenance
+//     pattern), NEVER the process CWD. A config loaded without a file
+//     source (LoadFromBytes / a hand-built *Config) keeps the relative
+//     value unresolved so the later boot loader can fail loud rather
+//     than silently falling back to CWD.
+//   - `include` — the exact list of package-directory names under
+//     `directory` to compose. Each entry is EXACTLY ONE relative
+//     package-directory name: non-empty, single-segment, no `.` / `..`,
+//     no `/` or `\` separator, no absolute / drive / URI form. Required
+//     (≥ 1); unique within the entry both raw and after case-normalised
+//     comparison (the resolver matches package-directory names
+//     case-insensitively, mirroring skills.CanonicalPackName).
+//
+// Bounds (deterministic, exported for the loader + the boot resolver):
+// at most [MaxBootAgentPacks] declarations; at most
+// [MaxBootAgentPackIncludes] includes per declaration; at most
+// [MaxBootAgentPackAggregateIncludes] includes in aggregate; each
+// identity-ish per-field string bounded by [MaxBootAgentPackFieldRunes]
+// and the directory by [MaxBootAgentPackDirectoryRunes]. Restart-required.
+type BootAgentPackConfig struct {
+	TenantID  string   `yaml:"tenant_id"`
+	AgentID   string   `yaml:"agent_id"`
+	Directory string   `yaml:"directory"`
+	Include   []string `yaml:"include"`
+}
+
+// Boot agent pack bounds. Exported so the loader (this package) and the
+// future boot resolver (the skills subsystem) share ONE deterministic,
+// closed contract — a declaration cannot be accepted at config load and
+// refused at boot because the two sides disagree on a ceiling.
+const (
+	// MaxBootAgentPacks bounds the number of declarations in
+	// `skills.boot_agent_packs`.
+	MaxBootAgentPacks = 64
+	// MaxBootAgentPackIncludes bounds the `include` entries on ONE
+	// declaration.
+	MaxBootAgentPackIncludes = 64
+	// MaxBootAgentPackFieldRunes bounds each identity-ish per-declaration
+	// string field (tenant_id, agent_id, one include name) in runes.
+	MaxBootAgentPackFieldRunes = 256
+	// MaxBootAgentPackDirectoryRunes bounds the `directory` field in
+	// runes. Larger than the identity fields because a real filesystem
+	// path legitimately runs longer than a token.
+	MaxBootAgentPackDirectoryRunes = 4096
+	// MaxBootAgentPackAggregateIncludes bounds the TOTAL include count
+	// across every declaration — the boot resolver enumerates all of
+	// them into one composed view, so the aggregate is what bounds the
+	// composed snapshot.
+	MaxBootAgentPackAggregateIncludes = 256
+)
 
 // SessionPersonalCutoverConfig contains the finite tenant declarations the
 // runtime may migrate. It is intentionally static configuration, not a

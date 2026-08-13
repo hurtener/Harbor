@@ -668,6 +668,51 @@ Each entry carries `tenant_id`, `epoch`, `roster_digest`, and
 - `legacy_writers_drained` defaults to `false`. Set it `true` only after all
   older writers are drained and the roster has been independently attested.
 
+### skills.boot_agent_packs
+
+Optional, restart-required declarations of boot-time, operator-managed
+per-agent skill pack FILE sources the runtime's boot resolver composes
+for the boot/default agent (Phase 248 — HA-66). Each entry declares one
+`(tenant_id, agent_id)` target, a `directory` on disk, and the exact
+`include` list of package-directory names under it to compose:
+
+```yaml
+skills:
+  driver: localdb
+  dsn: ":memory:"
+  boot_agent_packs:
+    - tenant_id: acme
+      agent_id: harbor-dev-agent
+      directory: /etc/harbor/skills
+      include: [workbench-foundation]
+```
+
+- `tenant_id` / `agent_id` — the (tenant, agent) pair the pack is
+  declared for. Required; each pair must be unique across the list.
+  `agent_id` must equal the runtime-resolved boot/default agent id —
+  the config validator does not know that value; the runtime enforces
+  the match at boot.
+- `directory` — the skills directory. May be absolute (the
+  `/etc/harbor/skills` deployment shape) or relative; a relative
+  directory resolves against the loaded config file's directory, never
+  the process CWD. A config loaded without a file source (embedder /
+  `LoadFromBytes`) keeps the relative value unresolved so boot fails
+  loud rather than falling back to CWD.
+- `include` — exactly-one relative package-directory name per entry:
+  non-empty, single-segment, no `.`/`..`, no `/` or `\` separator, no
+  absolute / drive / URI form. Required (≥ 1); unique within the entry
+  both raw and case-normalised.
+
+Bounds (deterministic, exported as `config.MaxBootAgentPacks` /
+`MaxBootAgentPackIncludes` / `MaxBootAgentPackFieldRunes` /
+`MaxBootAgentPackDirectoryRunes` / `MaxBootAgentPackAggregateIncludes`):
+at most 64 declarations, at most 64 includes per declaration, at most
+256 includes in aggregate, 256 runes per identity-ish field, 4096 runes
+per directory. A non-empty block requires `skills.driver` and
+`skills.dsn` (the boot resolver composes against the configured skill
+store).
+
+
 The list is bounded to 256 entries. `tenant_id`, `epoch`, and `roster_digest`
 must each be non-empty printable ASCII tokens with no leading or trailing
 whitespace (maximum lengths: 128, 128, and 256 bytes respectively). Tenant IDs
