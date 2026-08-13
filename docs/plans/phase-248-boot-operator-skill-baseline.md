@@ -189,8 +189,8 @@ D-427 is the phase authority.
 ## Files added or changed
 
 - `internal/config/` — boot-declared baseline schema (config-file-relative
-  paths, include directory, entries, declaration/item/file/aggregate bounds)
-  + validation
+  paths, include directory, entries, declaration/item/file/aggregate bounds) +
+  validation
 - `internal/skills/` — the strict eager immutable baseline loader using the
   ONE existing importer/validator; normalized entry set + deterministic set
   hash; the strict merge of boot baseline + active durable revision

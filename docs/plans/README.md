@@ -379,7 +379,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |233c | Bifrost reasoning fidelity (HA-51, D-402): raw observed reasoning is byte-exact and authoritative; details-only blocks coalesce by stable identity without whitespace rewriting, with live/planner/task/durable-history/Console parity | Bifrost LLM driver + planner/task/history + Console | §6.2, §6.5, §6.8, §6.13 | 33, 83e, 83m, 165 | 85–90% | Shipped (v1.26) |
 |234 | Agent-config retirement (D-399/D-400/D-401): terminal CAS tombstone, immutable history, exact pre-retirement hash and operation identity, deterministic paged owner-scoped cleanup after tombstone, four-slot session-write freeze, signed OAuth pair cleanup, and explicit/default new-run refusal; `agents.deregister` remains fleet-only | agentcfg + runtime projection/serve + Protocol/Console lockstep | §5.5, §6.11, §6.13, §6.16 | 232, 233, 233a, 233b | 85–90% | Shipped (v1.26) |
 |235 | Agent authority/lifecycle wave E2E + v1.26 checkpoint: real SQLite/Postgres composition of signed OAuth capability registration, session records, erasure, retirement, and byte-exact reasoning durability; two-runtime write races, N≥10 mixed-identity stress, read-only §17.5 audit and corrective gate before release | test/integration + scripts/smoke + release docs | §4, §5.5, §6.2, §6.4, §6.5, §6.8, §6.9, §6.11, §6.13, §6.16, §9 | 232, 233, 233a, 233b, 233c, 234 | inherited floors | Shipped (v1.26) |
-|236 | Typed MCP errors (HA-54) | tools/mcp + tools/policy + runtime/steering + planner/react | §6.4, §6.5, §6.13 | 26b, 28 | measured floors | Shipped (v1.27) |
+|236 | Typed MCP errors (HA-54) | tools/mcp + tools/policy + runtime/steering + planner/react | §6.4, §6.5, §6.13 | 26b, 28 | measured floors | Shipped (v1.27); planner-replay amendment Pending (v1.28) |
 |237 | Agent-owned skills and governed authoring (HA-55) | skills + agentcfg + serve | §6.7, §6.16, §6.11, §5.2 | 201, 221, 233, 233a | measured floors | Shipped (v1.27) |
 |238 | App-only callback catalog (HA-56) | tools/mcp + mcpconsole + protocol | §6.4, §7.3, §5.2, §7 | 207, 204, 109k, 109l | measured floors | Shipped (v1.27) |
 |239 | Same-run step-tranche resume (HA-57) | runtime + tasks + protocol | §3.3, §6.8, §6.11, §7 | 176, 193, 233 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
@@ -521,7 +521,8 @@ real two-client race under `-race`.
   result's bounded message/content and structured content are preserved for
   the planner/model and App paths. Classification metadata is control
   information — never a route to raw tool arguments or results. A confirmed
-  planner-replay gap is closed: the typed class, retry-policy outcome,
+  planner-replay gap is addressed by a Pending (v1.28) governance amendment:
+  the typed class, retry-policy outcome,
   bounded provider message, and retained bounded MCP result content survive
   runloop step recording and appear in the actual next ReAct prompt, and the
   generic `Step.Error` never masks the richer classified `LLMObservation`;
@@ -529,8 +530,9 @@ real two-client race under `-race`.
   task/tool events agree with the planner observation on the terminal error.
   Non-goals: no per-server policy override, no redefinition of MCP `isError`,
   no consumer-specific exception. §17.8 fixtures derive from the real spec.
-- **Planner-replay acceptance (governance amendment; HA-54 stays phase 236 /
-  D-410, no new phase or decision):** the full-path test proves `IsError` →
+- **Planner-replay acceptance (governance amendment, Pending (v1.28); HA-54
+  stays phase 236 / D-410, no new phase or decision):** the full-path test
+  proves `IsError` →
   typed classification → retry policy → runloop → the actual next ReAct
   prompt; a permanent class invokes exactly once, a typed deterministic
   failure in the `revision_conflict` shape carries the current revision for
@@ -538,7 +540,7 @@ real two-client race under `-race`.
   arguments or secrets never reach the observation or the prompt.
 - **Ordering:** 236 gates 239 (its classification-observability consumer).
   Independent of 237/238/240/241/242.
-- **Decision:** D-410. **Status:** Shipped (v1.27).
+- **Decision:** D-410. **Status:** Shipped (v1.27); planner-replay amendment Pending (v1.28).
 
 ### Phase 237 — Agent-owned skills and governed authoring (HA-55)
 
