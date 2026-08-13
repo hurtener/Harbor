@@ -795,7 +795,8 @@ func TestE2E_WaveV124_ByteEligibleConnectionStillSubstitutesAfterReattach(t *tes
 		t.Fatalf("identity.WithRun: %v", err)
 	}
 	foreignCallsBefore := fix.callCount()
-	if _, _, ferr := r.exec.ExecuteDecision(otherCtx, planner.RunContext{Quadruple: otherQ},
+	if _, _, ferr := r.exec.ExecuteDecision(otherCtx, planner.RunContext{Quadruple: otherQ,
+		Catalog: tools.NewPlannerView(r.catalog, tools.CatalogFilter{TenantID: other.TenantID, UserID: other.UserID, SessionID: other.SessionID})},
 		planner.CallTool{
 			CallID: "wv-eg-foreign",
 			Tool:   "wv-egress_ingest",
