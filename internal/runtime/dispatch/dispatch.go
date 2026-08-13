@@ -502,6 +502,10 @@ type runResolver struct {
 	trust bool
 }
 
+func (e *toolExecutor) resolverForRun(ctx context.Context, rc planner.RunContext) parallel.Resolver {
+	return runResolver{base: e.cat, view: rc.Catalog, trust: steering.IsTrustedCompletionHook(ctx)}
+}
+
 func (r runResolver) Resolve(name string) (tools.ToolDescriptor, bool) {
 	if !r.trust {
 		if r.view == nil {
@@ -536,8 +540,7 @@ func (r runResolver) Resolve(name string) (tools.ToolDescriptor, bool) {
 // §13); the runloop wraps them as the step's error observation and the
 // planner re-plans.
 func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, d planner.CallParallel) (any, any, error) {
-	resolver := runResolver{base: e.cat, view: rc.Catalog, trust: steering.IsTrustedCompletionHook(ctx)}
-	results, err := e.parallel.Execute(ctx, d, parallel.WithNonAtomicSetup(), parallel.WithResolver(resolver))
+	results, err := e.parallel.Execute(ctx, d, parallel.WithNonAtomicSetup(), parallel.WithResolver(e.resolverForRun(ctx, rc)))
 	if err != nil {
 		return nil, nil, fmt.Errorf("parallel dispatch: %w", err)
 	}
@@ -870,7 +873,8 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 	if len(d.Tools) > 0 {
 		results, err := e.parallel.Execute(ctx,
 			planner.CallParallel{Branches: d.Tools, Join: d.Join},
-			parallel.WithNonAtomicSetup())
+			parallel.WithNonAtomicSetup(),
+			parallel.WithResolver(e.resolverForRun(ctx, rc)))
 		if err != nil {
 			return nil, nil, fmt.Errorf("batch tool dispatch: %w", err)
 		}
