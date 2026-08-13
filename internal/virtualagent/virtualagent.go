@@ -708,7 +708,7 @@ func (f *FrozenMap) VerifyPin(b Binding) (Profile, error) {
 	}
 	snapshotHash, err := b.Profile.Hash()
 	if err != nil {
-		return Profile{}, fmt.Errorf("%w: profile snapshot hash: %v", ErrTampered, err)
+		return Profile{}, fmt.Errorf("%w: profile snapshot hash: %w", ErrTampered, err)
 	}
 	if snapshotHash != b.ProfileHash || !profilesEqual(p, b.Profile) {
 		return Profile{}, fmt.Errorf("%w: profile snapshot disagrees with current profile", ErrTampered)
