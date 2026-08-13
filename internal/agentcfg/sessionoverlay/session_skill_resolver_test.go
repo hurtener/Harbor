@@ -101,6 +101,14 @@ func (r *resolverReader) Search(context.Context, identity.Quadruple, string, int
 	return nil, errors.New("resolver must rank the composed view itself")
 }
 
+func (r *resolverReader) GetScopeAgent(ctx context.Context, id identity.Quadruple, _ string, name string, scope skills.Scope) (skills.Skill, error) {
+	return r.GetScope(ctx, id, name, scope)
+}
+
+func (r *resolverReader) SearchAgent(ctx context.Context, id identity.Quadruple, _ string, query string, limit int) ([]skills.RankedSkill, error) {
+	return r.Search(ctx, id, query, limit)
+}
+
 // SearchSnapshot is this test store's configured frozen-candidate policy.
 func (r *resolverReader) SearchSnapshot(ctx context.Context, _ identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
 	if err := ctx.Err(); err != nil {
@@ -135,6 +143,9 @@ func (*resolverReader) Upsert(context.Context, identity.Quadruple, skills.Skill)
 	return errors.New("not used")
 }
 func (*resolverReader) Delete(context.Context, identity.Quadruple, string, skills.Scope) error {
+	return errors.New("not used")
+}
+func (*resolverReader) DeleteAgent(context.Context, identity.Quadruple, string, string, skills.Scope) error {
 	return errors.New("not used")
 }
 func (*resolverReader) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }

@@ -708,7 +708,7 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 			return tasks.TaskHandle{}, "", ErrArtifactStoreUnavailable
 		}
 		scoped := artifacts.NewScoped(e.artifacts, artifacts.ArtifactScope{
-			TenantID: rc.TenantID, UserID: rc.UserID, SessionID: rc.SessionID,
+			TenantID: rc.Quadruple.TenantID, UserID: rc.Quadruple.UserID, SessionID: rc.Quadruple.SessionID,
 		})
 		for _, id := range d.Spec.InputArtifactIDs {
 			ref, found, getErr := scoped.GetRef(taskCtx, id)
@@ -753,7 +753,7 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		if len(profile.InputPatterns) > 0 {
 			for _, id := range req.InputArtifactIDs {
 				ref, found, getErr := artifacts.NewScoped(e.artifacts, artifacts.ArtifactScope{
-					TenantID: rc.TenantID, UserID: rc.UserID, SessionID: rc.SessionID,
+					TenantID: rc.Quadruple.TenantID, UserID: rc.Quadruple.UserID, SessionID: rc.Quadruple.SessionID,
 				}).GetRef(taskCtx, id)
 				if getErr != nil || !found || ref == nil || !profileInputMatches(profile.InputPatterns, ref.Filename, ref.MimeType) {
 					return tasks.TaskHandle{}, "", fmt.Errorf("%w: %q", ErrArtifactRefNotFound, id)

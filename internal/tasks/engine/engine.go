@@ -581,8 +581,8 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 		}
 		cp.AgentReachAdmission = &admission
 	}
-	if t.LatestProgress != nil {
-		cp.LatestProgress = tasks.CloneProgress(t.LatestProgress)
+	if t.Progress != nil {
+		cp.Progress = tasks.CloneProgress(t.Progress)
 	}
 	if t.VirtualAgent != nil {
 		binding := cloneVirtualAgent(t.VirtualAgent)
@@ -1465,7 +1465,14 @@ func virtualAgentEqual(a, b *tasks.VirtualAgent) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	return *a == *b
+	if a.AgentID != b.AgentID || a.Key != b.Key || a.Label != b.Label ||
+		a.Parent != b.Parent || a.ConfigRevisionID != b.ConfigRevisionID ||
+		a.ConfigDigest != b.ConfigDigest || a.ProfileHash != b.ProfileHash {
+		return false
+	}
+	ah, aerr := a.Profile.Hash()
+	bh, berr := b.Profile.Hash()
+	return aerr == nil && berr == nil && ah == bh
 }
 
 // spawnRequestContentHash returns a SHA-256 of the pre-redaction
