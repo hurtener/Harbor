@@ -125,6 +125,17 @@ type Importer interface {
 	// (the round-trip invariant).
 	Export(ctx context.Context, skill skills.Skill, attachments ImportArtifacts) ([]byte, error)
 
+	// ImportPackage validates a complete skill package archive (zip)
+	// and parses its root SKILL.md into the canonical package DTO
+	// plus the stored-skill form, computing the versioned
+	// PackageHash and the resolver-neutral `skillpkg:` URI. PURE:
+	// no storage writes, no artifact uploads — the archive and
+	// SKILL.md validation primitives (traversal, collisions,
+	// links/devices, nested archives, MIME, decompression and
+	// count/size/ratio bounds, one-root-case-exact-SKILL.md) live in
+	// the canonical semantic core.
+	ImportPackage(ctx context.Context, src PackageSource) (PackageIngest, error)
+
 	// Close releases resources. Idempotent. Currently a no-op
 	// (the importer holds no long-lived resources), but included
 	// for symmetry with SkillStore / ArtifactStore.
