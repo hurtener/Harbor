@@ -2,6 +2,7 @@ package packproposer
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -18,10 +19,18 @@ func (c proposalClient) Complete(context.Context, llm.CompleteRequest) (llm.Comp
 func (proposalClient) Close(context.Context) error { return nil }
 
 func TestProposer_DraftRejectsAuthorityAndUnknownFields(t *testing.T) {
-	const base = `{"name":"n","trigger":"t","steps":["s"]}`
 	for _, field := range []string{"origin", "origin_ref", "content_hash", "membership", "capabilities", "policy", "policy_hash", "provenance", "permissions", "unknown"} {
 		t.Run(field, func(t *testing.T) {
-			content := strings.TrimSuffix(base, "}") + `,"` + field + `":null}`
+			contentBytes, err := json.Marshal(map[string]any{
+				"name":    "n",
+				"trigger": "t",
+				"steps":   []string{"s"},
+				field:     nil,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := string(contentBytes)
 			p, err := New(proposalClient{content: content})
 			if err != nil {
 				t.Fatal(err)
@@ -35,7 +44,15 @@ func TestProposer_DraftRejectsAuthorityAndUnknownFields(t *testing.T) {
 }
 
 func TestProposer_DraftRejectsTrailingJSON(t *testing.T) {
-	const trailingJSON = `{"name":"n","trigger":"t","steps":["s"]}{}`
+	baseBytes, err := json.Marshal(map[string]any{
+		"name":    "n",
+		"trigger": "t",
+		"steps":   []string{"s"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trailingJSON := string(baseBytes) + "{}"
 	p, err := New(proposalClient{content: trailingJSON})
 	if err != nil {
 		t.Fatal(err)
