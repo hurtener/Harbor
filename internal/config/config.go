@@ -21,7 +21,10 @@
 //     whose YAML name matches the canonical secret list.
 package config
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Config is the root configuration. It is immutable after Load.
 type Config struct {

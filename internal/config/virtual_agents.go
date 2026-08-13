@@ -38,9 +38,13 @@ func (p VirtualAgentProfileConfig) ToProfile(owner string) (virtualagent.Profile
 		parent = owner
 	}
 	prof := virtualagent.Profile{
-		Key:    virtualagent.Key(strings.TrimSpace(p.Key)),
-		Label:  strings.TrimSpace(p.Label),
-		Parent: parent,
+		Key:              virtualagent.Key(strings.TrimSpace(p.Key)),
+		Label:            strings.TrimSpace(p.Label),
+		Parent:           parent,
+		InputPatterns:    p.InputPatterns,
+		InputCount:       p.InputCount,
+		InputDisposition: p.InputDisposition,
+		OutputSchema:     append([]byte(nil), p.OutputSchema...),
 	}
 	if p.LLM != nil {
 		if m := strings.TrimSpace(p.LLM.Model); m != "" {

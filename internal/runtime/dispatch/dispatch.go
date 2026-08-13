@@ -698,6 +698,12 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		NotifyOnComplete:  true,
 	}
 	if len(d.Spec.InputArtifactIDs) > 0 {
+		// Input IDs are private selectors, not an alternate child contract.
+		// A child carrying them must already have a frozen, selected virtual
+		// profile; fail before even the scoped existence checks or persistence.
+		if d.Spec.VirtualAgent == "" || virtualagent.FrozenMapFrom(taskCtx) == nil {
+			return tasks.TaskHandle{}, "", virtualagent.ErrNoMap
+		}
 		if e.artifacts == nil {
 			return tasks.TaskHandle{}, "", ErrArtifactStoreUnavailable
 		}
@@ -713,7 +719,9 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 			}
 		}
 		req.InputArtifactIDs = append([]string(nil), d.Spec.InputArtifactIDs...)
-		req.InputArtifactDispositions = cloneStringMap(d.Spec.InputArtifactDispositions)
+		// Planner/model-authored dispositions are never authority. The selected
+		// frozen profile below is the only source for a child disposition.
+		req.InputArtifactDispositions = nil
 	}
 	if key := d.Spec.VirtualAgent; key != "" {
 		if virtualagent.RunBindingFrom(taskCtx) != nil {

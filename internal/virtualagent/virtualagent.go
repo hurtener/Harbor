@@ -49,15 +49,19 @@
 package virtualagent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // Sentinel errors. Callers compare via errors.Is.
@@ -356,6 +360,9 @@ func ValidateProfile(p Profile) error {
 		if strings.TrimSpace(pattern) == "" || len(pattern) > 256 {
 			return fmt.Errorf("%w: input pattern must be 1..256 bytes", ErrInvalidProfile)
 		}
+		if _, err := path.Match(pattern, ""); err != nil {
+			return fmt.Errorf("%w: invalid input pattern %q: %v", ErrInvalidProfile, pattern, err)
+		}
 	}
 	if p.InputCount < 0 || p.InputCount > 32 {
 		return fmt.Errorf("%w: input_count must be in [0,32]", ErrInvalidProfile)
@@ -371,6 +378,18 @@ func ValidateProfile(p Profile) error {
 	if len(p.OutputSchema) > 0 {
 		if !json.Valid(p.OutputSchema) {
 			return fmt.Errorf("%w: output_schema is not valid JSON", ErrInvalidProfile)
+		}
+		compiler := jsonschema.NewCompiler()
+		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(p.OutputSchema))
+		if err != nil {
+			return fmt.Errorf("%w: output_schema cannot be decoded: %v", ErrInvalidProfile, err)
+		}
+		const schemaURL = "mem://harbor/virtual-profile-output-schema.json"
+		if err := compiler.AddResource(schemaURL, doc); err != nil {
+			return fmt.Errorf("%w: output_schema cannot be registered: %v", ErrInvalidProfile, err)
+		}
+		if _, err := compiler.Compile(schemaURL); err != nil {
+			return fmt.Errorf("%w: output_schema is not a valid JSON Schema: %v", ErrInvalidProfile, err)
 		}
 		sum := sha256.Sum256(p.OutputSchema)
 		if p.OutputSchemaHash != hex.EncodeToString(sum[:]) {
