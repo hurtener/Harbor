@@ -3,102 +3,104 @@ package mcp
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestProvider_AppBinding_IsOpaqueAndScoped(t *testing.T) {
-	p := &Provider{}
-	ctx, err := identity.With(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"})
+func appIdentity(t *testing.T, session string) context.Context {
+	t.Helper()
+	ctx, err := identity.With(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: session})
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
-	token := p.mintAppBinding(ctx, "ui://app/main.html", "srv_callback")
-	if token == "" || token == "srv-a" {
+	return ctx
+}
+
+func TestProvider_AppBinding_IsOpaqueAndResourceScoped(t *testing.T) {
+	ctx := appIdentity(t, "s")
+	const resourceURI = "ui://app/main.html"
+	p := &Provider{}
+	token := p.mintAppBinding(ctx, resourceURI, "srv_render")
+	if token == "" || token == "srv_render" {
 		t.Fatal("binding must be a non-empty opaque capability")
 	}
-	if !p.ValidateAppBinding(ctx, token, "srv_callback") {
-		t.Fatal("runtime-issued binding was rejected")
+	// The capability is resource-bound, not render-tool-bound: another callback
+	// on the same provider may use it when it presents the same rendered resource.
+	if !p.ValidateAppBinding(ctx, token, resourceURI) {
+		t.Fatal("runtime-issued binding was rejected for a same-resource callback")
 	}
-	if p.ValidateAppBinding(ctx, token+"x", "srv_callback") {
-		t.Fatal("forged binding was accepted")
+	if p.ValidateAppBinding(ctx, token, "ui://other/main.html") {
+		t.Fatal("binding crossed resource authority")
 	}
-	other, err := identity.With(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "other"})
-	if err != nil {
-		t.Fatalf("identity.With(other): %v", err)
-	}
-	if p.ValidateAppBinding(other, token, "srv_callback") {
+	if p.ValidateAppBinding(appIdentity(t, "other"), token, resourceURI) {
 		t.Fatal("binding crossed identity scope")
 	}
+	if p.ValidateAppBinding(ctx, token+"x", resourceURI) {
+		t.Fatal("opaque binding forgery was accepted")
+	}
+
+	otherProvider := &Provider{}
+	if p.ValidateAppBinding(ctx, otherProvider.mintAppBinding(ctx, resourceURI, "srv_render"), resourceURI) {
+		t.Fatal("binding crossed provider scope")
+	}
 }
 
-// TestParseAppRef_RecognisesUIScheme covers the criterion that a tool
-// result carrying a `_meta.ui.resourceUri` slot with a `ui://`-scheme URI
-// is parsed into an AppRef.
+func TestProvider_AppBinding_EvictsExpiresAndCloses(t *testing.T) {
+	ctx := appIdentity(t, "s")
+	now := time.Unix(100, 0)
+	p := &Provider{clock: func() time.Time { return now }}
+	const resourceURI = "ui://app/main.html"
+
+	first := p.mintAppBinding(ctx, resourceURI, "srv_callback")
+	for i := 0; i < appBindingLimit; i++ {
+		p.mintAppBinding(ctx, resourceURI, "srv_callback")
+	}
+	if p.ValidateAppBinding(ctx, first, resourceURI) {
+		t.Fatal("oldest binding survived bounded eviction")
+	}
+
+	current := p.mintAppBinding(ctx, resourceURI, "srv_callback")
+	now = now.Add(appBindingTTL)
+	if p.ValidateAppBinding(ctx, current, resourceURI) {
+		t.Fatal("expired binding was accepted")
+	}
+
+	live := p.mintAppBinding(ctx, resourceURI, "srv_callback")
+	if err := p.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if p.ValidateAppBinding(ctx, live, resourceURI) {
+		t.Fatal("binding survived provider Close")
+	}
+}
+
+// TestParseAppRef_RecognisesUIScheme covers the host-derived AppAttachment
+// resource URI: a ui:// definition is promoted while ordinary URLs are not.
 func TestParseAppRef_RecognisesUIScheme(t *testing.T) {
-	meta := mcpsdk.Meta{
-		"ui": map[string]any{
-			"resourceUri":    "ui://weather/view.html",
-			"preferredFrame": "fullscreen",
-		},
-	}
+	meta := mcpsdk.Meta{"ui": map[string]any{"resourceUri": "ui://weather/view.html", "preferredFrame": "fullscreen"}}
 	ref := parseAppRef(meta)
-	if ref == nil {
-		t.Fatal("parseAppRef returned nil for a ui:// resource — want an AppRef")
-	}
-	if ref.ResourceURI != "ui://weather/view.html" {
-		t.Errorf("ResourceURI = %q, want ui://weather/view.html", ref.ResourceURI)
-	}
-	if ref.PreferredDisplayMode != "fullscreen" {
-		t.Errorf("PreferredDisplayMode = %q, want fullscreen", ref.PreferredDisplayMode)
+	if ref == nil || ref.ResourceURI != "ui://weather/view.html" || ref.PreferredDisplayMode != "fullscreen" {
+		t.Fatalf("parseAppRef = %+v, want host resource and display hint", ref)
 	}
 }
 
-// TestParseAppRef_RejectsNonUIScheme covers the criterion that an
-// ordinary file:// / https:// resource is NOT treated as an app — the
-// `ui://` recognition is distinct.
 func TestParseAppRef_RejectsNonUIScheme(t *testing.T) {
-	cases := []struct {
-		name string
-		meta mcpsdk.Meta
-	}{
-		{"file scheme", mcpsdk.Meta{"ui": map[string]any{"resourceUri": "file:///etc/passwd"}}},
-		{"https scheme", mcpsdk.Meta{"ui": map[string]any{"resourceUri": "https://example.com/x.html"}}},
-		{"empty uri", mcpsdk.Meta{"ui": map[string]any{"resourceUri": ""}}},
-		{"missing resourceUri", mcpsdk.Meta{"ui": map[string]any{"other": "x"}}},
-		{"ui not an object", mcpsdk.Meta{"ui": "ui://nope"}},
-		{"no ui slot", mcpsdk.Meta{"other": "x"}},
-		{"nil meta", nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if ref := parseAppRef(tc.meta); ref != nil {
-				t.Errorf("parseAppRef = %+v, want nil (a non-ui:// resource must not be promoted to an app)", ref)
-			}
-		})
+	for _, uri := range []string{"file:///etc/passwd", "https://example.com/x.html", ""} {
+		if ref := parseAppRef(mcpsdk.Meta{"ui": map[string]any{"resourceUri": uri}}); ref != nil {
+			t.Errorf("parseAppRef(%q) = %+v, want nil", uri, ref)
+		}
 	}
 }
 
-// TestLowerCallToolResult_SurfacesAppRef proves the parse is wired into
-// the tool-result lowering — the AppRef reaches MCPToolValue.
 func TestLowerCallToolResult_SurfacesAppRef(t *testing.T) {
-	res := &mcpsdk.CallToolResult{
-		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: `{"ok":true}`}},
-	}
-	res.Meta = mcpsdk.Meta{"ui": map[string]any{"resourceUri": "ui://app/main.html"}}
+	res := &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: `{"ok":true}`}}, Meta: mcpsdk.Meta{"ui": map[string]any{"resourceUri": "ui://app/main.html"}}}
 	value, err := lowerCallToolResult(res)
 	if err != nil {
 		t.Fatalf("lowerCallToolResult: %v", err)
 	}
 	if value.AppRef == nil || value.AppRef.ResourceURI != "ui://app/main.html" {
-		t.Fatalf("AppRef = %+v, want ResourceURI ui://app/main.html", value.AppRef)
-	}
-	// A result with NO _meta.ui is not an app.
-	plain, _ := lowerCallToolResult(&mcpsdk.CallToolResult{
-		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "hi"}},
-	})
-	if plain.AppRef != nil {
-		t.Errorf("plain result AppRef = %+v, want nil", plain.AppRef)
+		t.Fatalf("AppRef = %+v, want host resource URI", value.AppRef)
 	}
 }

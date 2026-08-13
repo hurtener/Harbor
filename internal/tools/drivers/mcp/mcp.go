@@ -521,6 +521,7 @@ type Provider struct {
 	bindingsMu   sync.Mutex
 	bindings     map[string]appBinding
 	bindingOrder []string
+	clock        func() time.Time
 }
 
 type appBinding struct {
@@ -534,7 +535,14 @@ const (
 	appBindingTTL   = 15 * time.Minute
 )
 
-func (p *Provider) mintAppBinding(ctx context.Context, resourceURI, tool string) string {
+func (p *Provider) appBindingNow() time.Time {
+	if p.clock != nil {
+		return p.clock()
+	}
+	return time.Now()
+}
+
+func (p *Provider) mintAppBinding(ctx context.Context, resourceURI, _ string) string {
 	id, ok := identity.From(ctx)
 	if !ok {
 		return ""
@@ -548,7 +556,7 @@ func (p *Provider) mintAppBinding(ctx context.Context, resourceURI, tool string)
 	if p.bindings == nil {
 		p.bindings = make(map[string]appBinding)
 	}
-	now := time.Now()
+	now := p.appBindingNow()
 	for len(p.bindingOrder) >= appBindingLimit {
 		old := p.bindingOrder[0]
 		p.bindingOrder = p.bindingOrder[1:]
@@ -570,7 +578,7 @@ func (p *Provider) ValidateAppBinding(ctx context.Context, token, resourceURI st
 	}
 	p.bindingsMu.Lock()
 	b, found := p.bindings[token]
-	if found && !time.Now().Before(b.expiresAt) {
+	if found && !p.appBindingNow().Before(b.expiresAt) {
 		delete(p.bindings, token)
 		found = false
 	}

@@ -76,11 +76,14 @@ describe('makeMCPAppHostClient', () => {
     expect(res.mimeType).toBe('text/html');
   });
 
-  it('callTool routes to mcp.apps.call_tool and maps is_error', async () => {
+  it('callTool forwards host binding and resource authority, not sandbox-authored values', async () => {
     const { client, callTool } = fakeProtocolClient();
     const host = makeMCPAppHostClient(client);
-    const res = await host.callTool('srv', 'srv_echo', { q: 1 }, 'agent-weather');
-    expect(callTool).toHaveBeenCalledWith('srv', 'srv_echo', { q: 1 }, 'agent-weather');
+    const hostBinding = 'opaque-host-binding';
+    const hostResourceURI = 'ui://app/main.html';
+    const sandboxArgs = { q: 1, binding: 'forged', resource_uri: 'ui://forged.html' };
+    const res = await host.callTool('srv', 'srv_echo', sandboxArgs, 'agent-weather', hostBinding, hostResourceURI);
+    expect(callTool).toHaveBeenCalledWith('srv', 'srv_echo', sandboxArgs, 'agent-weather', hostBinding, hostResourceURI);
     expect(res.isError).toBe(false);
     expect(res.content).toEqual({ ok: true });
   });
