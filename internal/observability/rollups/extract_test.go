@@ -288,8 +288,8 @@ func TestExtract_NilPayloadFailsLoud(t *testing.T) {
 
 func TestMeasureSet_Add_Get(t *testing.T) {
 	var m MeasureSet
-	m.Add(MeasureSet{LLMCostMicros: 2_500_000, LLMTokensPrompt: 10, LLMTokensCompletion: 20, LLMTokensTotal: 30, LLMCompletions: 2, LLMLatencySumMS: 500, TasksCompleted: 1, TasksFailed: 2, TasksCancelled: 3})
-	m.Add(MeasureSet{LLMCostMicros: 500_000, LLMTokensPrompt: 1})
+	mustAdd(t, &m, MeasureSet{LLMCostMicros: 2_500_000, LLMTokensPrompt: 10, LLMTokensCompletion: 20, LLMTokensTotal: 30, LLMCompletions: 2, LLMLatencySumMS: 500, TasksCompleted: 1, TasksFailed: 2, TasksCancelled: 3})
+	mustAdd(t, &m, MeasureSet{LLMCostMicros: 500_000, LLMTokensPrompt: 1})
 	if got := m.Get(MeasureLLMCostMicros).N; got != 3_000_000 {
 		t.Fatalf("cost = %d micros; want 3_000_000", got)
 	}
@@ -325,10 +325,10 @@ func TestMeasureSet_Add_Get(t *testing.T) {
 // zero-latency record.
 func TestMeasureSet_LatencyMinMaxFold(t *testing.T) {
 	var m MeasureSet
-	m.Add(MeasureSet{LLMLatencyCount: 1, LLMLatencySumMS: 100, LLMLatencyMinMS: 100, LLMLatencyMaxMS: 100, hasLatency: true})
-	m.Add(MeasureSet{LLMLatencyCount: 1, LLMLatencySumMS: 50, LLMLatencyMinMS: 50, LLMLatencyMaxMS: 50, hasLatency: true})
-	m.Add(MeasureSet{LLMLatencyCount: 1, LLMLatencySumMS: 200, LLMLatencyMinMS: 200, LLMLatencyMaxMS: 200, hasLatency: true})
-	m.Add(MeasureSet{TasksCompleted: 1}) // no latency contribution
+	mustAdd(t, &m, MeasureSet{LLMLatencyCount: 1, LLMLatencySumMS: 100, LLMLatencyMinMS: 100, LLMLatencyMaxMS: 100, hasLatency: true})
+	mustAdd(t, &m, MeasureSet{LLMLatencyCount: 1, LLMLatencySumMS: 50, LLMLatencyMinMS: 50, LLMLatencyMaxMS: 50, hasLatency: true})
+	mustAdd(t, &m, MeasureSet{LLMLatencyCount: 1, LLMLatencySumMS: 200, LLMLatencyMinMS: 200, LLMLatencyMaxMS: 200, hasLatency: true})
+	mustAdd(t, &m, MeasureSet{TasksCompleted: 1}) // no latency contribution
 	if got := m.Get(MeasureLLMLatencyCount).N; got != 3 {
 		t.Fatalf("latency count = %d; want 3", got)
 	}
@@ -343,15 +343,96 @@ func TestMeasureSet_LatencyMinMaxFold(t *testing.T) {
 	}
 	// A zero-latency record folds min down to 0 without the identity
 	// colliding (hasLatency gate).
-	m.Add(MeasureSet{LLMLatencyCount: 1, LLMLatencySumMS: 0, LLMLatencyMinMS: 0, LLMLatencyMaxMS: 0, hasLatency: true})
+	mustAdd(t, &m, MeasureSet{LLMLatencyCount: 1, LLMLatencySumMS: 0, LLMLatencyMinMS: 0, LLMLatencyMaxMS: 0, hasLatency: true})
 	if got := m.Get(MeasureLLMLatencyMinMS).N; got != 0 {
 		t.Fatalf("latency min after zero-latency record = %d; want 0", got)
 	}
 	// A task-only set (no latency) must NOT report min/max garbage.
 	var tOnly MeasureSet
-	tOnly.Add(MeasureSet{TasksCompleted: 2})
+	mustAdd(t, &tOnly, MeasureSet{TasksCompleted: 2})
 	if got := tOnly.Get(MeasureLLMLatencyMinMS).N; got != 0 {
 		t.Fatalf("task-only latency min = %d; want 0 (undefined)", got)
+	}
+}
+
+// TestMeasureSet_Add_MaxBoundaryAndOverflow pins the fail-loud checked
+// accumulation: a sum that exactly reaches the int64 bounds is accepted, a
+// sum that would overflow is refused with ErrMeasureOverflow, and the folds
+// stay exact at the boundary (they are comparisons, not sums).
+func TestMeasureSet_Add_MaxBoundaryAndOverflow(t *testing.T) {
+	// The exact upper boundary: MaxInt64-5 + 5 = MaxInt64 is representable
+	// and accepted; one more would wrap.
+	m := MeasureSet{LLMCompletions: math.MaxInt64 - 5, LLMTokensTotal: 10}
+	mustAdd(t, &m, MeasureSet{LLMCompletions: 5})
+	if got := m.Get(MeasureLLMCompletions).N; got != math.MaxInt64 {
+		t.Fatalf("completions = %d; want %d (exact upper boundary)", got, int64(math.MaxInt64))
+	}
+	// The latency folds remain exact at the boundary: merging a fold into
+	// a set whose sums sit at MaxInt64 succeeds.
+	mustAdd(t, &m, MeasureSet{LLMLatencyCount: 1, LLMLatencySumMS: 10, LLMLatencyMinMS: 10, LLMLatencyMaxMS: 10, hasLatency: true})
+	if got := m.Get(MeasureLLMLatencyMinMS).N; got != 10 {
+		t.Fatalf("latency min = %d; want 10", got)
+	}
+	// One past the boundary is refused loudly, and the set stays intact.
+	if err := m.Add(MeasureSet{LLMCompletions: 1}); !errors.Is(err, ErrMeasureOverflow) {
+		t.Fatalf("overflow add err = %v; want ErrMeasureOverflow", err)
+	}
+	if got := m.Get(MeasureLLMCompletions).N; got != math.MaxInt64 {
+		t.Fatalf("completions after refused add = %d; want %d (receiver untouched)", got, int64(math.MaxInt64))
+	}
+
+	// The lower boundary (a negative delta) is refused the same way.
+	m = MeasureSet{LLMCompletions: math.MinInt64 + 5}
+	mustAdd(t, &m, MeasureSet{LLMCompletions: -5})
+	if err := m.Add(MeasureSet{LLMCompletions: -1}); !errors.Is(err, ErrMeasureOverflow) {
+		t.Fatalf("underflow add err = %v; want ErrMeasureOverflow", err)
+	}
+}
+
+// TestMeasureSet_Add_NoPartialMutation pins the atomicity contract: when ANY
+// additive field would overflow, the receiver is untouched in EVERY field —
+// the sums that would fit are not applied, and the latency folds are not
+// merged — so a rejected accumulation can never leave a half-updated row.
+func TestMeasureSet_Add_NoPartialMutation(t *testing.T) {
+	m := MeasureSet{
+		LLMCompletions:  7,
+		LLMTokensPrompt: 100,
+		LLMTokensTotal:  math.MaxInt64, // would overflow when +1
+		LLMCostMicros:   1_000_000,
+		LLMLatencyCount: 3,
+		LLMLatencySumMS: 900,
+		LLMLatencyMinMS: 100,
+		LLMLatencyMaxMS: 500,
+		hasLatency:      true,
+		TasksCompleted:  2,
+		TasksFailed:     1,
+	}
+	before := m
+	delta := MeasureSet{
+		LLMCompletions:  1, // would fit
+		LLMTokensPrompt: 1, // would fit
+		LLMTokensTotal:  1, // would OVERFLOW (MaxInt64 + 1)
+		LLMLatencyCount: 1,
+		LLMLatencySumMS: 10,
+		LLMLatencyMinMS: 1,   // would fold min down
+		LLMLatencyMaxMS: 999, // would fold max up
+		hasLatency:      true,
+		TasksFailed:     1, // would fit
+	}
+	if err := m.Add(delta); !errors.Is(err, ErrMeasureOverflow) {
+		t.Fatalf("Add err = %v; want ErrMeasureOverflow", err)
+	}
+	if m != before {
+		t.Fatalf("rejected Add mutated the receiver:\n before: %+v\n after:  %+v", before, m)
+	}
+}
+
+// mustAdd applies a checked merge that is expected to succeed, failing the
+// test on any error.
+func mustAdd(t *testing.T, m *MeasureSet, other MeasureSet) {
+	t.Helper()
+	if err := m.Add(other); err != nil {
+		t.Fatalf("Add(%+v): %v", other, err)
 	}
 }
 

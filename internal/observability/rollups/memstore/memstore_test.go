@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -184,5 +185,107 @@ func TestStore_ConcurrentReuse(t *testing.T) {
 	}
 	if got := runtime.NumGoroutine(); got > baseline+2 {
 		t.Fatalf("goroutine leak: baseline=%d now=%d", baseline, got)
+	}
+}
+
+// TestStore_ApplyBatchOverflowFailsLoudly pins the checked-accumulation
+// contract on the write path: a delta whose merge would overflow a measure's
+// exact int64 representation rejects the WHOLE batch with
+// rollups.ErrMeasureOverflow — nothing is applied, no partial row exists, and
+// the checkpoint does not advance.
+func TestStore_ApplyBatchOverflowFailsLoudly(t *testing.T) {
+	s := memstore.New()
+	defer func() { _ = s.Close(context.Background()) }()
+	ctx := context.Background()
+	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.StoreGranularity)
+	k := rollups.Key{BucketStart: h, TenantID: "tenant-a", UserID: "user-1", SessionID: "session-1", Model: "model-a"}
+
+	// A valid first batch establishes a row near the int64 boundary.
+	if err := s.ApplyBatch(ctx, rollups.Batch{
+		Checkpoint: 1,
+		Deltas:     []rollups.Delta{{Key: k, Add: rollups.MeasureSet{LLMTokensTotal: math.MaxInt64 - 5}}},
+	}); err != nil {
+		t.Fatalf("seed ApplyBatch: %v", err)
+	}
+
+	// The overflow batch carries BOTH a fitting delta and the overflow
+	// delta. The whole batch must be refused: the fitting delta is NOT
+	// applied, the seed row is untouched, and the checkpoint stays at 1.
+	other := rollups.Key{BucketStart: h, TenantID: "tenant-b", UserID: "user-2", SessionID: "session-2", Model: "model-b"}
+	err := s.ApplyBatch(ctx, rollups.Batch{
+		Checkpoint: 2,
+		Deltas: []rollups.Delta{
+			{Key: other, Add: rollups.MeasureSet{LLMCompletions: 1}}, // would fit
+			{Key: k, Add: rollups.MeasureSet{LLMTokensTotal: 6}},     // MaxInt64-5 + 6 overflows
+		},
+	})
+	if !errors.Is(err, rollups.ErrMeasureOverflow) {
+		t.Fatalf("overflow ApplyBatch err = %v; want ErrMeasureOverflow", err)
+	}
+	if ck, err := s.Checkpoint(ctx); err != nil || ck != 1 {
+		t.Fatalf("checkpoint after refused batch = %d, %v; want 1 (no advance)", ck, err)
+	}
+	// The fitting delta's row must NOT exist — no partial application.
+	res, err := s.Query(ctx, rollups.Query{
+		From:     h,
+		To:       h.Add(time.Hour),
+		Bucket:   rollups.BucketHour,
+		Filter:   rollups.Filter{TenantIDs: []string{"tenant-b"}},
+		Measures: []rollups.Measure{rollups.MeasureLLMCompletions},
+		Sort:     rollups.SortKeyBucketAsc,
+		Limit:    100,
+	})
+	if err != nil {
+		t.Fatalf("post-refusal query: %v", err)
+	}
+	if len(res.Rows) != 0 {
+		t.Fatalf("rows after refused batch = %d; want 0 (no partial application)", len(res.Rows))
+	}
+	// The seed row must be untouched.
+	res, err = s.Query(ctx, rollups.Query{
+		From:     h,
+		To:       h.Add(time.Hour),
+		Bucket:   rollups.BucketHour,
+		Measures: []rollups.Measure{rollups.MeasureLLMTokensTotal},
+		Sort:     rollups.SortKeyBucketAsc,
+		Limit:    100,
+	})
+	if err != nil {
+		t.Fatalf("seed query: %v", err)
+	}
+	if len(res.Rows) != 1 || res.Rows[0].Measures[rollups.MeasureLLMTokensTotal].N != math.MaxInt64-5 {
+		t.Fatalf("seed row after refused batch = %+v; want 1 row with %d tokens", res.Rows, int64(math.MaxInt64-5))
+	}
+}
+
+// TestStore_QueryAggregationOverflowFailsLoudly pins the checked accumulation
+// on the read path: when grouping two boundary rows would overflow a measure,
+// Query fails loudly with rollups.ErrMeasureOverflow rather than returning a
+// wrapped-negative or silently-clamped sum.
+func TestStore_QueryAggregationOverflowFailsLoudly(t *testing.T) {
+	s := memstore.New()
+	defer func() { _ = s.Close(context.Background()) }()
+	ctx := context.Background()
+	h := rollups.BucketStart(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), rollups.StoreGranularity)
+
+	// Two rows in the same hour bucket (one group when GroupBy is empty),
+	// each carrying MaxInt64 tokens — each fits alone; their sum would wrap.
+	deltas := []rollups.Delta{
+		{Key: rollups.Key{BucketStart: h, TenantID: "tenant-a", UserID: "user-1", SessionID: "session-1", Model: "model-a"}, Add: rollups.MeasureSet{LLMTokensTotal: math.MaxInt64}},
+		{Key: rollups.Key{BucketStart: h, TenantID: "tenant-a", UserID: "user-2", SessionID: "session-2", Model: "model-b"}, Add: rollups.MeasureSet{LLMTokensTotal: 1}},
+	}
+	if err := s.ApplyBatch(ctx, rollups.Batch{Checkpoint: 2, Deltas: deltas}); err != nil {
+		t.Fatalf("seed ApplyBatch: %v", err)
+	}
+	_, err := s.Query(ctx, rollups.Query{
+		From:     h,
+		To:       h.Add(time.Hour),
+		Bucket:   rollups.BucketHour,
+		Measures: []rollups.Measure{rollups.MeasureLLMTokensTotal},
+		Sort:     rollups.SortKeyBucketAsc,
+		Limit:    100,
+	})
+	if !errors.Is(err, rollups.ErrMeasureOverflow) {
+		t.Fatalf("aggregation overflow err = %v; want ErrMeasureOverflow", err)
 	}
 }

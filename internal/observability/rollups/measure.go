@@ -1,6 +1,7 @@
 package rollups
 
 import (
+	"errors"
 	"fmt"
 	"math"
 )
@@ -27,7 +28,8 @@ const CostScaleMicros uint32 = 1_000_000
 //
 // Most measures are sums; the latency min/max measures are folds (the
 // per-group minimum / maximum of the per-event latencies), merged by
-// MeasureSet.Add.
+// MeasureSet.Add — which range-checks every additive field and fails loudly
+// (ErrMeasureOverflow) rather than letting a sum wrap.
 type Measure string
 
 const (
@@ -135,6 +137,11 @@ func ValidateMeasures(measures []Measure) error {
 // group-wise minimum / maximum. LLMLatencyMinMS / LLMLatencyMaxMS are defined
 // exactly when LLMLatencyCount > 0 (the hasLatency flag tracks whether any
 // latency-bearing record has been folded in).
+//
+// Accumulation is CHECKED: every additive field is range-verified against
+// the exact int64 bounds before any write, and a merge that would overflow
+// fails loudly with ErrMeasureOverflow instead of wrapping into negative or
+// corrupt data. The receiver is never partially mutated by a refused merge.
 type MeasureSet struct {
 	LLMCompletions      int64
 	LLMTokensPrompt     int64
@@ -160,31 +167,125 @@ type MeasureSet struct {
 	hasLatency bool
 }
 
+// ErrMeasureOverflow reports that an accumulation would overflow the exact
+// int64 measure representation. The merge is REFUSED before any field is
+// mutated: a row is never left partially updated, and an overflowing sum
+// never wraps into negative or corrupt data. ApplyBatch rejects the whole
+// batch and Query aggregation fails loudly with this sentinel.
+var ErrMeasureOverflow = errors.New("rollups: measure accumulation overflow")
+
 // Add accumulates other into m in place. Sum measures add; the latency
-// min/max fold as the group-wise minimum / maximum.
-func (m *MeasureSet) Add(other MeasureSet) {
-	m.LLMCompletions += other.LLMCompletions
-	m.LLMTokensPrompt += other.LLMTokensPrompt
-	m.LLMTokensCompletion += other.LLMTokensCompletion
-	m.LLMTokensReasoning += other.LLMTokensReasoning
-	m.LLMTokensCacheRead += other.LLMTokensCacheRead
-	m.LLMTokensCacheWrite += other.LLMTokensCacheWrite
-	m.LLMTokensTotal += other.LLMTokensTotal
-	m.LLMCostMicros += other.LLMCostMicros
-	m.LLMLatencyCount += other.LLMLatencyCount
-	m.LLMLatencySumMS += other.LLMLatencySumMS
-	if other.hasLatency {
-		if !m.hasLatency || other.LLMLatencyMinMS < m.LLMLatencyMinMS {
-			m.LLMLatencyMinMS = other.LLMLatencyMinMS
-		}
-		if !m.hasLatency || other.LLMLatencyMaxMS > m.LLMLatencyMaxMS {
-			m.LLMLatencyMaxMS = other.LLMLatencyMaxMS
-		}
-		m.hasLatency = true
+// min/max fold as the group-wise minimum / maximum. Every additive field
+// (counts, tokens, cost micro-units, latency sums) is range-checked against
+// the exact int64 bounds BEFORE the first write: when any sum would
+// overflow, Add fails loudly with ErrMeasureOverflow and m is left EXACTLY
+// as it was — no partial merge, no wrapped-negative counter. The latency
+// folds never overflow (they are comparisons, not sums) and remain exact.
+// All measure values are non-negative in this domain; the check covers both
+// directions so a negative delta is equally refused rather than silently
+// corrupting a counter.
+func (m *MeasureSet) Add(other MeasureSet) error {
+	var (
+		completions      int64
+		tokensPrompt     int64
+		tokensCompletion int64
+		tokensReasoning  int64
+		tokensCacheRead  int64
+		tokensCacheWrite int64
+		tokensTotal      int64
+		costMicros       int64
+		latencyCount     int64
+		latencySumMS     int64
+		tasksCompleted   int64
+		tasksFailed      int64
+		tasksCancelled   int64
+	)
+	var err error
+	if completions, err = checkedSum(m.LLMCompletions, other.LLMCompletions, MeasureLLMCompletions); err != nil {
+		return err
 	}
-	m.TasksCompleted += other.TasksCompleted
-	m.TasksFailed += other.TasksFailed
-	m.TasksCancelled += other.TasksCancelled
+	if tokensPrompt, err = checkedSum(m.LLMTokensPrompt, other.LLMTokensPrompt, MeasureLLMTokensPrompt); err != nil {
+		return err
+	}
+	if tokensCompletion, err = checkedSum(m.LLMTokensCompletion, other.LLMTokensCompletion, MeasureLLMTokensCompletion); err != nil {
+		return err
+	}
+	if tokensReasoning, err = checkedSum(m.LLMTokensReasoning, other.LLMTokensReasoning, MeasureLLMTokensReasoning); err != nil {
+		return err
+	}
+	if tokensCacheRead, err = checkedSum(m.LLMTokensCacheRead, other.LLMTokensCacheRead, MeasureLLMTokensCacheRead); err != nil {
+		return err
+	}
+	if tokensCacheWrite, err = checkedSum(m.LLMTokensCacheWrite, other.LLMTokensCacheWrite, MeasureLLMTokensCacheWrite); err != nil {
+		return err
+	}
+	if tokensTotal, err = checkedSum(m.LLMTokensTotal, other.LLMTokensTotal, MeasureLLMTokensTotal); err != nil {
+		return err
+	}
+	if costMicros, err = checkedSum(m.LLMCostMicros, other.LLMCostMicros, MeasureLLMCostMicros); err != nil {
+		return err
+	}
+	if latencyCount, err = checkedSum(m.LLMLatencyCount, other.LLMLatencyCount, MeasureLLMLatencyCount); err != nil {
+		return err
+	}
+	if latencySumMS, err = checkedSum(m.LLMLatencySumMS, other.LLMLatencySumMS, MeasureLLMLatencySumMS); err != nil {
+		return err
+	}
+	if tasksCompleted, err = checkedSum(m.TasksCompleted, other.TasksCompleted, MeasureTasksCompleted); err != nil {
+		return err
+	}
+	if tasksFailed, err = checkedSum(m.TasksFailed, other.TasksFailed, MeasureTasksFailed); err != nil {
+		return err
+	}
+	if tasksCancelled, err = checkedSum(m.TasksCancelled, other.TasksCancelled, MeasureTasksCancelled); err != nil {
+		return err
+	}
+
+	// Latency min/max are folds — exact comparisons, never sums, so they
+	// cannot overflow. Merge them into locals and commit with the sums.
+	minMS, maxMS, hasLatency := m.LLMLatencyMinMS, m.LLMLatencyMaxMS, m.hasLatency
+	if other.hasLatency {
+		if !hasLatency || other.LLMLatencyMinMS < minMS {
+			minMS = other.LLMLatencyMinMS
+		}
+		if !hasLatency || other.LLMLatencyMaxMS > maxMS {
+			maxMS = other.LLMLatencyMaxMS
+		}
+		hasLatency = true
+	}
+
+	// Commit — reached only when every additive field fit the int64 range.
+	m.LLMCompletions = completions
+	m.LLMTokensPrompt = tokensPrompt
+	m.LLMTokensCompletion = tokensCompletion
+	m.LLMTokensReasoning = tokensReasoning
+	m.LLMTokensCacheRead = tokensCacheRead
+	m.LLMTokensCacheWrite = tokensCacheWrite
+	m.LLMTokensTotal = tokensTotal
+	m.LLMCostMicros = costMicros
+	m.LLMLatencyCount = latencyCount
+	m.LLMLatencySumMS = latencySumMS
+	m.LLMLatencyMinMS = minMS
+	m.LLMLatencyMaxMS = maxMS
+	m.hasLatency = hasLatency
+	m.TasksCompleted = tasksCompleted
+	m.TasksFailed = tasksFailed
+	m.TasksCancelled = tasksCancelled
+	return nil
+}
+
+// checkedSum returns a+b when the exact int64 sum is representable, failing
+// loudly (wrapped ErrMeasureOverflow naming the measure) when it would
+// overflow — the additive counterpart of the exact-cost range check in
+// microsFromUSD.
+func checkedSum(a, b int64, measure Measure) (int64, error) {
+	if b > 0 && a > math.MaxInt64-b {
+		return 0, fmt.Errorf("%w: %s sum would overflow the int64 range", ErrMeasureOverflow, measure)
+	}
+	if b < 0 && a < math.MinInt64-b {
+		return 0, fmt.Errorf("%w: %s sum would overflow the int64 range", ErrMeasureOverflow, measure)
+	}
+	return a + b, nil
 }
 
 // Get returns the exact value of measure m. m MUST be a closed measure —

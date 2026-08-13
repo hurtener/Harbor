@@ -7,10 +7,12 @@
 // Indexing: the Store maintains a bucket index (populated fixed-UTC minute
 // bucket starts → row keys, kept sorted for range scans) and a per-dimension
 // index (dimension → value → row keys). A Query resolves its candidate rows
-// from these indexes — the bounded window plus the filter axes — and never
-// snapshots or full-scans the row table, matching the indexed access SQLite /
-// Postgres drivers will use (WHERE bucket_start BETWEEN … AND … AND tenant =
-// …). The scan is therefore proportional to the query, not to the store size.
+// from these indexes — seeding on whichever of the bounded window and the
+// filter axes is the cheaper index scan, then verifying the window and the
+// remaining axes per row — and never snapshots or full-scans the row table,
+// matching the indexed access SQLite / Postgres drivers will use (WHERE
+// bucket_start BETWEEN … AND … AND tenant = …). The scan is therefore
+// proportional to the query, not to the store size.
 //
 // Concurrency: a *Store is a compiled artifact — immutable after
 // construction — and safe for concurrent use by N goroutines against a
@@ -50,8 +52,11 @@ type Store struct {
 	newest       time.Time
 	closed       bool
 
-	// scannedKeys counts the candidate rows a Query resolved through the
-	// indexes (test instrumentation for the index-proportionality pin).
+	// scannedKeys counts the row index entries a Query ACTUALLY visited
+	// while resolving candidates — every entry examined, kept or rejected
+	// (test instrumentation for the index-proportionality pin). The
+	// bucket-start range navigation is index metadata, not a row entry,
+	// and is not counted.
 	scannedKeys atomic.Int64
 }
 
@@ -70,7 +75,12 @@ func New() *Store {
 // does not advance the stored checkpoint is a no-op (idempotent replay —
 // every event at or below the stored checkpoint is already applied). A
 // delta for a fenced triple rejects the WHOLE batch with
-// rollups.ErrSessionFenced.
+// rollups.ErrSessionFenced. A delta whose accumulation would overflow a
+// measure's exact int64 representation also rejects the WHOLE batch with
+// rollups.ErrMeasureOverflow: every delta's merge is verified against a
+// working copy BEFORE any row is touched, so a refused batch never leaves
+// partial rows or wrapped-negative counters and the checkpoint does not
+// advance.
 func (s *Store) ApplyBatch(ctx context.Context, batch rollups.Batch) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -91,10 +101,24 @@ func (s *Store) ApplyBatch(ctx context.Context, batch rollups.Batch) error {
 			return rollups.ErrSessionFenced
 		}
 	}
+	// Pre-check pass: accumulate every delta into a working copy of its
+	// row (folding same-key deltas within the batch together) and verify
+	// every measure fits the exact int64 range BEFORE any write. A batch
+	// whose accumulation would overflow fails loudly with
+	// rollups.ErrMeasureOverflow and applies NOTHING.
+	pending := make(map[rollups.Key]rollups.MeasureSet, len(batch.Deltas))
 	for _, d := range batch.Deltas {
 		r := s.rows[d.Key]
-		r.Add(d.Add)
-		s.rows[d.Key] = r
+		if prev, ok := pending[d.Key]; ok {
+			r = prev
+		}
+		if err := r.Add(d.Add); err != nil {
+			return fmt.Errorf("rollups: ApplyBatch checkpoint=%d: %w", batch.Checkpoint, err)
+		}
+		pending[d.Key] = r
+	}
+	for _, d := range batch.Deltas {
+		s.rows[d.Key] = pending[d.Key]
 		s.indexAddLocked(d.Key)
 		s.floorRetentionLocked(d.Key.BucketStart)
 	}
@@ -105,11 +129,13 @@ func (s *Store) ApplyBatch(ctx context.Context, batch rollups.Batch) error {
 // Query implements rollups.Store. The query is re-validated (the wrapped
 // ErrQueryInvalid / ErrQueryBudget / ErrBadCursor sentinels flow through),
 // the candidate rows are resolved through the bucket + dimension indexes
-// under the read lock (proportional to the bounded window and filter — never
-// a full-table scan), and the grouping, sort, and pagination run outside it
+// under the read lock (seeding on the cheapest index scan among the bounded
+// window and the filter axes, then verifying the rest per row — never a
+// full-table scan), and the grouping, sort, and pagination run outside it
 // so readers never block writers. The response is deterministic for a stable
 // store: same query + same cursor ⇒ same rows, and pages never skip or
-// repeat a row (see rollups.Query).
+// repeat a row (see rollups.Query). A group whose measure sums would
+// overflow fails loudly with rollups.ErrMeasureOverflow.
 func (s *Store) Query(ctx context.Context, q rollups.Query) (rollups.Result, error) {
 	if err := q.Validate(); err != nil {
 		return rollups.Result{}, err
@@ -126,17 +152,18 @@ func (s *Store) Query(ctx context.Context, q rollups.Query) (rollups.Result, err
 	// Candidate resolution via the indexes. Fenced rows cannot be
 	// candidates by construction: FenceSession deletes them from rows AND
 	// the indexes under one lock hold, and ApplyBatch refuses fenced
-	// deltas, so no fenced row ever lives in the index.
-	candidates := s.candidatesLocked(q)
+	// deltas, so no fenced row ever lives in the index. The visited count
+	// is every index entry the resolution examined (kept or rejected) —
+	// the honest scan cost, recorded on scannedKeys.
+	candidates, visited := s.candidatesLocked(q)
 	rows := make(map[rollups.Key]rollups.MeasureSet, len(candidates))
 	for k := range candidates {
 		if v, ok := s.rows[k]; ok {
 			rows[k] = v
 		}
 	}
-	scanned := int64(len(candidates))
 	s.mu.RUnlock()
-	s.scannedKeys.Add(scanned)
+	s.scannedKeys.Add(visited)
 
 	if err := ctx.Err(); err != nil {
 		return rollups.Result{}, err
@@ -147,52 +174,139 @@ func (s *Store) Query(ctx context.Context, q rollups.Query) (rollups.Result, err
 	return s.aggregate(ctx, q, rows)
 }
 
-// candidatesLocked resolves the query's candidate rows from the bucket index
-// (populated minute buckets whose start falls in the half-open [From, To)
-// window) intersected with every non-empty filter axis via the dimension
-// index. Caller holds at least a read lock.
-func (s *Store) candidatesLocked(q rollups.Query) map[rollups.Key]struct{} {
+// candidatesLocked resolves the query's candidate rows from the CHEAPEST
+// applicable index seed and then verifies the remaining constraints as
+// direct per-row checks. The seed is either the bounded bucket range
+// (every populated minute bucket whose start falls in the half-open
+// [From, To) window) or one exact filter axis (every row in that axis'
+// index entries for the filter's distinct values), whichever the populated
+// indexes make cheaper. The verification pass applies the time window and
+// every remaining exact filter axis as a direct equality check on each
+// visited row — it never builds a full-retention allowed set, and it never
+// scans canonical events. The returned count is the number of row index
+// entries ACTUALLY visited (including entries the direct checks reject),
+// which is what the scannedKeys instrumentation records — the honest cost
+// of the scan, not the size of the result. Caller holds at least a read
+// lock.
+func (s *Store) candidatesLocked(q rollups.Query) (map[rollups.Key]struct{}, int64) {
 	fromNano := q.From.UnixNano()
 	toNano := q.To.UnixNano()
 
-	start := sort.Search(len(s.bucketStarts), func(i int) bool { return s.bucketStarts[i] >= fromNano })
-	cand := make(map[rollups.Key]struct{})
-	for i := start; i < len(s.bucketStarts); i++ {
-		b := s.bucketStarts[i]
-		if b >= toNano {
+	// Distinct filter values per non-empty axis (set semantics: a
+	// duplicate value is visited once, so the scan cost and the result
+	// are identical to the deduplicated filter).
+	type axisValues struct {
+		dim    rollups.Dimension
+		values []string
+	}
+	var axes []axisValues
+	for _, d := range rollups.AllDimensions {
+		if vals := distinctStrings(filterValues(q.Filter, d)); len(vals) > 0 {
+			axes = append(axes, axisValues{dim: d, values: vals})
+		}
+	}
+
+	// Seed cost of the bounded bucket range: the rows in the populated
+	// minute buckets inside [From, To). The bucket-start range scan is
+	// index navigation (like a SQL range scan), not a row visit; only the
+	// row entries themselves are counted.
+	bucketStart := sort.Search(len(s.bucketStarts), func(i int) bool { return s.bucketStarts[i] >= fromNano })
+	bucketCost := int64(0)
+	for i := bucketStart; i < len(s.bucketStarts); i++ {
+		if s.bucketStarts[i] >= toNano {
 			break
 		}
-		for k := range s.byBucket[b] {
-			cand[k] = struct{}{}
+		bucketCost += int64(len(s.byBucket[s.bucketStarts[i]]))
+	}
+
+	// Seed cost of each non-empty filter axis: the rows in that axis'
+	// index entries for the filter's distinct values. len() on the index
+	// maps is O(1), so choosing the seed never scans the entries.
+	bestAxis := -1
+	bestCost := bucketCost
+	for ai, a := range axes {
+		idx := s.byDim[a.dim]
+		cost := int64(0)
+		for _, v := range a.values {
+			cost += int64(len(idx[v]))
+		}
+		if cost < bestCost {
+			bestAxis = ai
+			bestCost = cost
 		}
 	}
 
-	s.intersectFilterLocked(cand, rollups.DimensionTenant, q.Filter.TenantIDs)
-	s.intersectFilterLocked(cand, rollups.DimensionUser, q.Filter.UserIDs)
-	s.intersectFilterLocked(cand, rollups.DimensionSession, q.Filter.SessionIDs)
-	s.intersectFilterLocked(cand, rollups.DimensionModel, q.Filter.Models)
-	return cand
+	cand := make(map[rollups.Key]struct{})
+	var visited int64
+	if bestAxis < 0 {
+		// Bucket-window seed: every row in the bounded window; each
+		// filter axis is a direct equality check on the row.
+		for i := bucketStart; i < len(s.bucketStarts); i++ {
+			b := s.bucketStarts[i]
+			if b >= toNano {
+				break
+			}
+			for k := range s.byBucket[b] {
+				visited++
+				if q.Filter.Matches(k) {
+					cand[k] = struct{}{}
+				}
+			}
+		}
+		return cand, visited
+	}
+
+	// Exact-axis seed: every row in the chosen axis' index entries for
+	// the filter's distinct values (the axis index spans the full
+	// retention horizon); the time window and every other axis are direct
+	// per-row checks.
+	a := axes[bestAxis]
+	idx := s.byDim[a.dim]
+	for _, v := range a.values {
+		for k := range idx[v] {
+			visited++
+			b := k.BucketStart.UnixNano()
+			if b >= fromNano && b < toNano && q.Filter.Matches(k) {
+				cand[k] = struct{}{}
+			}
+		}
+	}
+	return cand, visited
 }
 
-// intersectFilterLocked narrows cand to the rows matching one filter axis
-// (set semantics: the union of the axis' listed values). An empty values
-// slice matches everything and is a no-op. Caller holds at least a read lock.
-func (s *Store) intersectFilterLocked(cand map[rollups.Key]struct{}, d rollups.Dimension, values []string) {
-	if len(values) == 0 {
-		return
+// filterValues returns the filter's values for one closed dimension (the
+// axis' set semantics; an empty slice matches every value on the axis).
+func filterValues(f rollups.Filter, d rollups.Dimension) []string {
+	switch d {
+	case rollups.DimensionTenant:
+		return f.TenantIDs
+	case rollups.DimensionUser:
+		return f.UserIDs
+	case rollups.DimensionSession:
+		return f.SessionIDs
+	case rollups.DimensionModel:
+		return f.Models
+	default:
+		return nil
 	}
-	allowed := make(map[rollups.Key]struct{})
-	idx := s.byDim[d]
-	for _, v := range values {
-		for k := range idx[v] {
-			allowed[k] = struct{}{}
+}
+
+// distinctStrings returns vals with adjacent-preserving deduplication (set
+// semantics: order is preserved, duplicates collapse to one occurrence).
+func distinctStrings(vals []string) []string {
+	if len(vals) < 2 {
+		return vals
+	}
+	seen := make(map[string]struct{}, len(vals))
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		if _, dup := seen[v]; dup {
+			continue
 		}
+		seen[v] = struct{}{}
+		out = append(out, v)
 	}
-	for k := range cand {
-		if _, ok := allowed[k]; !ok {
-			delete(cand, k)
-		}
-	}
+	return out
 }
 
 // aggregate groups, sorts, and pages the filtered candidate rows. Runs
@@ -230,7 +344,13 @@ func (s *Store) aggregate(ctx context.Context, q rollups.Query, rows map[rollups
 			g = &group{bucketStart: b, values: values}
 			groups[gk] = g
 		}
-		g.sum.Add(v)
+		// Group aggregation is the same checked accumulation as writes: a
+		// group whose sum would overflow fails loudly with
+		// rollups.ErrMeasureOverflow instead of returning a wrapped or
+		// clamped total.
+		if err := g.sum.Add(v); err != nil {
+			return rollups.Result{}, fmt.Errorf("rollups: aggregate: %w", err)
+		}
 	}
 
 	if len(groups) == 0 {
