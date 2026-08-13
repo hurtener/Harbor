@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:ef0ebc94ea68517437a1011045e82a7fe7305354684fdb6a5d409fa59f84d2e7";
+export const WIRE_SURFACE_DIGEST = "sha256:9343fc61734bb159bdd5004d79a7b03171148383f484e8d08281114d2216477c";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -434,6 +434,8 @@ export interface AgentConfigAgentPacksProposeRequest {
 }
 
 export interface AgentConfigAgentPacksProposeResponse {
+  policy_id: string;
+  policy_hash: string;
   skill: AgentConfigAgentPackItem;
   hash: string;
   warnings?: string[];
@@ -957,7 +959,7 @@ export interface AgentConfigSetRevisionRequest {
   identity: IdentityScope;
   agent_id: string;
   payload: AgentConfigPayload;
-  expected_content_hash: string;
+  expected_content_hash?: string;
 }
 
 export interface AgentConfigSetRevisionResponse {
@@ -1790,6 +1792,8 @@ export interface MCPAppCallToolRequest {
   identity: IdentityScope;
   agent_id?: string;
   server_id?: string;
+  binding?: string;
+  resource_uri?: string;
   tool: string;
   arguments?: unknown;
 }
@@ -1810,6 +1814,7 @@ export interface MCPAppRef {
   resource_uri: string;
   display_mode?: string;
   raw_html_trusted: boolean;
+  binding?: string;
 }
 
 export interface MCPAuthorizationServerView {
@@ -2682,6 +2687,14 @@ export interface TaskPlannerSnapshotRef {
   summary: string;
 }
 
+export interface TaskProgressSnapshot {
+  fraction?: number;
+  phase?: string;
+  message?: string;
+  tags?: string[];
+  updated_at: string;
+}
+
 export interface TaskRow {
   id: string;
   kind: string;
@@ -2705,7 +2718,7 @@ export interface TaskRow {
   is_background: boolean;
   has_pending_approval: boolean;
   agent_id?: string;
-  progress_snapshot?: Record<string, unknown>;
+  progress_snapshot?: TaskProgressSnapshot;
   virtual_key?: string;
   virtual_label?: string;
 }

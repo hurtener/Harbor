@@ -784,7 +784,7 @@ type AgentConfigSetRevisionRequest struct {
 	//
 	// The refusal is exact within one Runtime process; it is not a
 	// cross-process compare-and-swap.
-	ExpectedContentHash string `json:"expected_content_hash"`
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
 }
 
 // AgentConfigSetRevisionResponse is the `agent_config.set_revision`

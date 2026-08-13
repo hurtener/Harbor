@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 363 canonical Harbor Protocol wire types, generated from the single-source
+The 364 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -983,7 +983,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` |  |
 | `payload` | `types.AgentConfigPayload` — see [`AgentConfigPayload`](./types.md#agentconfigpayload) |  |
-| `expected_content_hash` | `string` |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigSetRevisionResponse
 
@@ -3698,6 +3698,18 @@ Declared in `internal/protocol/types`.
 | `checkpoint_id` | `string` |  |
 | `summary` | `string` |  |
 
+## TaskProgressSnapshot
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `fraction` | `*float64` | optional (`omitempty`) |
+| `phase` | `string` | optional (`omitempty`) |
+| `message` | `string` | optional (`omitempty`) |
+| `tags` | `[]string` | optional (`omitempty`) |
+| `updated_at` | `time.Time` |  |
+
 ## TaskRow
 
 Declared in `internal/protocol/types`.
@@ -3726,7 +3738,7 @@ Declared in `internal/protocol/types`.
 | `is_background` | `bool` |  |
 | `has_pending_approval` | `bool` |  |
 | `agent_id` | `string` | optional (`omitempty`) |
-| `progress_snapshot` | `*types.TaskProgressSnapshot` | optional (`omitempty`) |
+| `progress_snapshot` | `*types.TaskProgressSnapshot` — see [`TaskProgressSnapshot`](./types.md#taskprogresssnapshot) | optional (`omitempty`) |
 | `virtual_key` | `string` | optional (`omitempty`) |
 | `virtual_label` | `string` | optional (`omitempty`) |
 

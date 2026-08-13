@@ -140,6 +140,7 @@ task.paused
 task.prioritised
 task.resumed
 task.spawned
+task.progress
 task.started
 tool.approval_requested
 tool.approved

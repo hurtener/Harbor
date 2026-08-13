@@ -32,7 +32,7 @@ func TestMCPAppCallToolRequest_ServerIDIsHostDerived(t *testing.T) {
 	// the already-qualified tool name + arguments. AgentID is resource
 	// authority, not a server namespace; ServerID is the host-derived
 	// server namespace, verified at dispatch, never trusted as supplied.
-	want := map[string]bool{"Identity": true, "AgentID": true, "ServerID": true, "Tool": true, "Arguments": true}
+	want := map[string]bool{"Identity": true, "AgentID": true, "ServerID": true, "Binding": true, "ResourceURI": true, "Tool": true, "Arguments": true}
 	got := make(map[string]bool, rt.NumField())
 	for i := range rt.NumField() {
 		got[rt.Field(i).Name] = true

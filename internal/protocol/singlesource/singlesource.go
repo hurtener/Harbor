@@ -602,7 +602,8 @@ var CanonicalWireTypes = map[string]string{
 	"TaskTrajectoryRef":  "types",
 	"TaskTrajectoryStep": "types",
 	// per-attachment disposition on tasks.get.
-	"TaskInputArtifact": "types",
+	"TaskInputArtifact":    "types",
+	"TaskProgressSnapshot": "types",
 	// Console Flows-page wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"Flow":                   "types",
