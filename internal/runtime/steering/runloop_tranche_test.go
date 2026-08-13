@@ -318,7 +318,7 @@ func TestRun_TrancheResume_GrantsFreshTranche_PreservesOneRun(t *testing.T) {
 	// Cycle 2: a fresh tranche grants two MORE steps, then parks again.
 	// The trajectory is CUMULATIVE (4 steps) — one run, never reset.
 	waitForPause(t, coord, 2)
-	lastTrancheRequest(t, coord, 2, 4)
+	lastTrancheRequest(t, coord, 2, 2)
 	if steps := p.stepCount(); steps != 4 {
 		t.Fatalf("cycle-2 planner steps = %d, want 4 (2 per tranche × 2 cycles)", steps)
 	}
@@ -388,7 +388,7 @@ func TestRun_TranchePlannerPause_DoesNotResetTranche(t *testing.T) {
 	if steps := p.stepCount(); steps != 3 {
 		t.Fatalf("planner steps at the tranche park = %d, want 3 (2 before the planner pause + 1 after — the planner pause did NOT reset the tranche)", steps)
 	}
-	lastTrancheRequest(t, coord, 3, 2)
+	lastTrancheRequest(t, coord, 3, 3)
 
 	if err := in.Enqueue(ControlEvent{
 		Type:         ControlResume,

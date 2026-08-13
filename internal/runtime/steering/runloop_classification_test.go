@@ -96,6 +96,14 @@ func runOneStep(t *testing.T, exec steering.ToolExecutor, decision planner.Decis
 			Quadruple:  q,
 			Goal:       "classify",
 			Trajectory: traj,
+			Catalog: tools.NewPlannerView(func() tools.ToolCatalog {
+				cat := tools.NewCatalog()
+				_ = artifactstats.Register(cat)
+				_ = cat.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "explodes"}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+					return tools.ToolResult{}, errors.New("upstream 503")
+				}})
+				return cat
+			}(), tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID}),
 		},
 		MaxSteps:     4,
 		ToolExecutor: exec,

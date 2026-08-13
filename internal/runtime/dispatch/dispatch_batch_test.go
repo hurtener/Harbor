@@ -621,6 +621,9 @@ func TestExecutor_SpawnTask_VirtualProfileOwnsArtifactDisposition(t *testing.T) 
 	}
 	ctx := virtualagent.WithFrozenMap(dispatchTestCtx(t, dispatchTestQuad("r-virtual")), frozen)
 	q := dispatchTestQuad("r-virtual")
+	if _, err := reg.Spawn(dispatchTestCtx(t, q), tasks.SpawnRequest{Identity: q, Query: "parent"}); err != nil {
+		t.Fatal(err)
+	}
 	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
 	raw, _, err := exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q, DispositionPolicy: planner.DispositionPolicy{Default: planner.DispositionInline}}, planner.SpawnTask{Spec: planner.SpawnSpec{Query: "virtual", VirtualAgent: "reviewer", InputArtifactIDs: []string{ref.ID}, InputArtifactDispositions: map[string]string{ref.ID: "inline"}}})
 	if err != nil {
