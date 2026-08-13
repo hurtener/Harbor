@@ -2499,6 +2499,14 @@ type VirtualAgentProfileConfig struct {
 	// rendered verbatim in the trusted additive prompt position,
 	// bounded to 16 KiB.
 	Instructions string `yaml:"instructions,omitempty"`
+	// InputPatterns limits inherited artifact references by filename and MIME type.
+	InputPatterns []string `yaml:"input_patterns,omitempty"`
+	// InputCount limits the number of inherited artifact references.
+	InputCount int `yaml:"input_count,omitempty"`
+	// InputDisposition selects the disposition applied to accepted inputs.
+	InputDisposition string `yaml:"input_disposition,omitempty"`
+	// OutputSchema is the profile's terminal JSON Schema contract.
+	OutputSchema json.RawMessage `yaml:"output_schema,omitempty"`
 }
 
 // VirtualAgentLLMConfig is the sampling-parameter narrowing section of
