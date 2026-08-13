@@ -37,7 +37,7 @@ func (s *Service) SkillsList(ctx context.Context, req prototypes.AgentConfigSkil
 	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
 		return prototypes.AgentConfigSkillsListResponse{}, err
 	}
-	list, err := s.skills.List(ctx, q, skills.ListFilter{})
+	list, err := s.skills.List(ctx, q, skills.ListFilter{AgentID: req.AgentID})
 	if err != nil {
 		return prototypes.AgentConfigSkillsListResponse{}, err
 	}
@@ -77,7 +77,8 @@ func (s *Service) SkillsUpsert(ctx context.Context, req prototypes.AgentConfigSk
 		return prototypes.AgentConfigSkillsUpsertResponse{}, err
 	}
 	skill := skillFromInput(req.Skill)
-	prior, hadPrior, err := s.skillAtScope(ctx, q, skill.Name, skill.Scope)
+	skill.AgentID = req.AgentID
+	prior, hadPrior, err := s.skillAtScope(ctx, q, req.AgentID, skill.Name, skill.Scope)
 	if err != nil {
 		return prototypes.AgentConfigSkillsUpsertResponse{}, err
 	}
@@ -88,7 +89,8 @@ func (s *Service) SkillsUpsert(ctx context.Context, req prototypes.AgentConfigSk
 	}
 	// Read the stored skill back so the response summary carries the
 	// store-computed content hash + timestamps.
-	stored, err := s.skills.Get(ctx, q, skill.Name)
+	selected := s.skills
+	stored, err := selected.GetScopeAgent(ctx, q, req.AgentID, skill.Name, skill.Scope)
 	if err != nil {
 		return prototypes.AgentConfigSkillsUpsertResponse{}, s.compensateSkillUpsert(ctx, q, skill, prior, hadPrior, err)
 	}
@@ -129,14 +131,16 @@ func (s *Service) SkillsDelete(ctx context.Context, req prototypes.AgentConfigSk
 	if err := s.precheckExpectedRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, opts); err != nil {
 		return prototypes.AgentConfigSkillsDeleteResponse{}, err
 	}
-	prior, hadPrior, err := s.skillAtScope(ctx, q, req.Name, skills.ScopeSession)
+	prior, hadPrior, err := s.skillAtScope(ctx, q, req.AgentID, req.Name, skills.ScopeSession)
 	if err != nil {
 		return prototypes.AgentConfigSkillsDeleteResponse{}, err
 	}
 	// Admin manages agent-level (session-local, non-durable) skills — it never
 	// deletes a user's durable personal skill. A non-user target scope keeps
 	// this a session-local delete.
-	if err := s.skills.Delete(ctx, q, req.Name, skills.ScopeSession); err != nil {
+	selected := s.skills
+	err = selected.DeleteAgent(ctx, q, req.AgentID, req.Name, skills.ScopeSession)
+	if err != nil {
 		return prototypes.AgentConfigSkillsDeleteResponse{}, err
 	}
 	rev, err := s.recordSkillsMembership(ctx, q, req.AgentID, removeName, req.Name, opts)
@@ -201,12 +205,14 @@ func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadrup
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
+		payload.AgentPacks = copyAgentPackItems(active.Payload.AgentPacks)
 		// The ordered additive prompt blocks are a sibling section like any
 		// other: this verb replaces only its own, so the blocks survive.
 		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		payload.OAuthProviders = active.Payload.OAuthProviders
 		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
 		payload.SignedOAuthMCPPairs = active.Payload.SignedOAuthMCPPairs
+		payload.VirtualAgents = active.Payload.VirtualAgents
 	}
 	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload, opts)
 }
@@ -221,15 +227,16 @@ func (s *Service) precheckExpectedRevision(ctx context.Context, q identity.Quadr
 	return agentcfg.CheckExpectedRevision(opts, active, hasActive)
 }
 
-func (s *Service) skillAtScope(ctx context.Context, q identity.Quadruple, name string, scope skills.Scope) (skills.Skill, bool, error) {
+func (s *Service) skillAtScope(ctx context.Context, q identity.Quadruple, agentID, name string, scope skills.Scope) (skills.Skill, bool, error) {
 	if scope == skills.ScopeUser {
-		sk, err := s.userScopeSkillByName(ctx, q, name)
+		sk, err := s.userScopeSkillByName(ctx, q, agentID, name)
 		if errors.Is(err, skills.ErrSkillNotFound) {
 			return skills.Skill{}, false, nil
 		}
 		return sk, err == nil, err
 	}
-	sk, err := s.skills.Get(ctx, q, name)
+	selected := s.skills
+	sk, err := selected.GetScopeAgent(ctx, q, agentID, name, scope)
 	if errors.Is(err, skills.ErrSkillNotFound) {
 		return skills.Skill{}, false, nil
 	}
@@ -249,7 +256,7 @@ func (s *Service) compensateSkillUpsert(ctx context.Context, q identity.Quadrupl
 	if hadPrior {
 		err = s.skills.Upsert(cctx, q, prior)
 	} else {
-		err = s.skills.Delete(cctx, q, written.Name, written.Scope)
+		err = s.skills.DeleteAgent(cctx, q, written.AgentID, written.Name, written.Scope)
 	}
 	if err != nil {
 		s.logger.ErrorContext(ctx, "agent-config: failed to compensate skill body after membership revision failure", "skill", written.Name, "error", err.Error(), "cause", cause.Error())

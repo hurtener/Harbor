@@ -78,6 +78,9 @@ type stubCoordinator struct {
 	issueToken         pauseresume.Token
 	requestErr         error
 	resumeErr          error
+	cancelTrancheCalls int
+	cancelTrancheErr   error
+	cancelledTokens    map[pauseresume.Token]bool
 	resumedTokens      []pauseresume.Token
 	lastRequest        pauseresume.PauseRequest // captured verbatim — trajectory-threading assertions (Phase 111c)
 	// statusAfterResume, when non-nil, is returned by Status once a
@@ -118,6 +121,26 @@ func (c *stubCoordinator) Resume(_ context.Context, token pauseresume.Token, dec
 	c.lastResumeDecision = decision
 	c.resumedTokens = append(c.resumedTokens, token)
 	return c.resumeErr
+}
+
+func (c *stubCoordinator) CancelTranche(_ context.Context, token pauseresume.Token) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cancelTrancheCalls++
+	if c.cancelledTokens == nil {
+		c.cancelledTokens = make(map[pauseresume.Token]bool)
+	}
+	var cleanupErr *pauseresume.TrancheCancellationError
+	if c.cancelTrancheErr == nil || errors.As(c.cancelTrancheErr, &cleanupErr) {
+		c.cancelledTokens[token] = true
+	}
+	return c.cancelTrancheErr
+}
+
+func (c *stubCoordinator) trancheSnapshot(token pauseresume.Token) (calls int, cancelled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cancelTrancheCalls, c.cancelledTokens[token]
 }
 
 func (c *stubCoordinator) Status(_ context.Context, _ pauseresume.Token) (pauseresume.Status, error) {
@@ -380,13 +403,13 @@ func TestRun_ContextCancelledAtBoundary(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Drain-between-steps: the planner sees the drained Control on the NEXT step.
+// Drain-between-steps: terminal CANCEL consumes the continuation without
+// another planner turn.
 // ---------------------------------------------------------------------------
 
-func TestRun_DrainProjectsControlOntoNextStep(t *testing.T) {
+func TestRun_DrainTerminalCancelStopsBeforeNextStep(t *testing.T) {
 	rl, reg, _ := newTestRunLoop(t)
-	// Step 0: planner emits CallTool (so the loop continues to step 1).
-	// Step 1: planner emits Finish.
+	// The stale continuation script remains in place to prove it is not used.
 	p := &scriptedPlanner{
 		script: []scriptStep{
 			{dec: planner.CallTool{Tool: "noop"}},
@@ -415,13 +438,11 @@ func TestRun_DrainProjectsControlOntoNextStep(t *testing.T) {
 	if fin.Reason != planner.FinishCancelled {
 		t.Errorf("Finish.Reason = %q, want %q", fin.Reason, planner.FinishCancelled)
 	}
-	// Step 0's RunContext.Control must be empty — the CANCEL was
-	// enqueued AFTER step 0's Next. Step 1's Control must show Cancelled.
-	if p.controlAt(0).Cancelled {
-		t.Error("step 0 saw Cancelled=true — a control enqueued after step 0 leaked into step 0 (drain-between-steps violated)")
+	if p.stepCount() != 1 {
+		t.Fatalf("planner steps = %d, want 1 (terminal CANCEL must not grant another planner turn)", p.stepCount())
 	}
-	if !p.controlAt(1).Cancelled {
-		t.Error("step 1 did not see Cancelled=true — the drained CANCEL was not projected onto the next step")
+	if p.controlAt(0).Cancelled {
+		t.Error("step 0 saw Cancelled=true — a control enqueued after step 0 leaked into the current step")
 	}
 }
 

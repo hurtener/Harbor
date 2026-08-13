@@ -29,6 +29,7 @@ STATUS_GO='internal/protocol/transports/control/status.go'
 AGENTCFG_GO='internal/agentcfg/agentcfg.go'
 DRIVER_GO='internal/agentcfg/drivers/statestore/statestore.go'
 CONFORMANCE_GO='internal/agentcfg/conformance/conformance.go'
+REMOVE_OAUTH_GO='internal/runtime/agentcfg/protocol/remove_signed_oauth_mcp_capability.go'
 VERSION_GO='internal/protocol/types/version.go'
 TS_WIRE='web/console/src/lib/protocol/agentconfig.ts'
 ERRORS_MD='docs/site/protocol/errors.md'
@@ -39,19 +40,19 @@ ERRORS_MD='docs/site/protocol/errors.md'
 # silently never fires on Linux CI).
 # ---------------------------------------------------------------------------
 
-# (1) EXACT count, not ">= 1": dropping one of the twenty doors FAILS here.
+# (1) EXACT count, not ">= 1": dropping one of the twenty-five doors FAILS here.
 # Phase 233b adds the signed OAuth MCP pair's creation and removal requests.
-# Creation is one of the eighteen ordinary optional CAS writes; removal names
-# the immutable pair revision and therefore requires its hash. Phase 234's
-# retirement also requires the active revision hash before it can create a
-# terminal tombstone. The three named assertions below keep those semantically
+# Creation and removal are additive wire fields; removal is optional for
+# additive decoding but the service still requires it semantically. Phase
+# 234's retirement also requires the active revision hash before it can create
+# a terminal tombstone. The named assertions below keep those semantically
 # different additions from being satisfied by fields on unrelated request
-# types.
+# types. The census is 25 total = 21 optional + 4 mandatory.
 #     Mutation 3 (drop the field from one request type) turns this OK -> FAIL.
-assert_grep_count 'ExpectedContentHash string' "${TYPES_GO}" 20 \
-    'phase 221: all twenty spine request types carry expected_content_hash'
-assert_grep_count 'expected_content_hash,omitempty' "${TYPES_GO}" 18 \
-    'phase 221: eighteen ordinary spine writes keep expected_content_hash optional'
+assert_grep_count 'ExpectedContentHash string' "${TYPES_GO}" 25 \
+    'phase 221: all twenty-five Go ExpectedContentHash carriers are present (25 total = 21 optional + 4 mandatory)'
+assert_grep_count 'expected_content_hash,omitempty' "${TYPES_GO}" 21 \
+    'phase 221: twenty-one Go ExpectedContentHash carriers remain optional (25 total = 21 optional + 4 mandatory)'
 if awk '
     $0 == "type AgentConfigRegisterOAuthMCPCapabilityRequest struct {" { inside = 1; next }
     inside && /^}/ { exit }
@@ -65,12 +66,12 @@ fi
 if awk '
     $0 == "type AgentConfigRemoveOAuthMCPCapabilityRequest struct {" { inside = 1; next }
     inside && /^}/ { exit }
-    inside && /ExpectedContentHash string/ && /json:"expected_content_hash"/ && !/omitempty/ { found = 1 }
+    inside && /ExpectedContentHash string/ && /json:"expected_content_hash,omitempty"/ { found = 1 }
     END { exit !found }
 ' "${TYPES_GO}"; then
-    ok 'phase 221: signed OAuth MCP pair removal requires the exact CAS token'
+    ok 'phase 221: signed OAuth MCP pair removal keeps an optional wire CAS token for additive decoding'
 else
-    fail 'phase 221: signed OAuth MCP pair removal must require expected_content_hash'
+    fail 'phase 221: signed OAuth MCP pair removal wire CAS token must remain optional for additive decoding'
 fi
 if awk '
     $0 == "type AgentConfigRetireRequest struct {" { inside = 1; next }
@@ -169,10 +170,10 @@ assert_grep_present 'StateStore\.SaveIf' "${ERRORS_GO}" \
 assert_grep_present 'StateStore\.SaveIf' "${ERRORS_MD}" \
     'phase 221: generated Protocol reference carries the durable predicate (D-209)'
 
-# (8) The Console mirror — eighteen optional fields plus HA-50's required
-#     paired-removal token, hand-mirrored and lockstep-gated (D-223).
-assert_grep_count 'expected_content_hash\?: string;' "${TS_WIRE}" 18 \
-    'phase 221: the Console wire module mirrors all eighteen optional CAS fields'
+# (8) The Console mirror — twenty optional fields plus four mandatory fields,
+#     hand-mirrored and lockstep-gated (D-223).
+assert_grep_count 'expected_content_hash\?: string;' "${TS_WIRE}" 20 \
+    'phase 221: the Console wire module mirrors all twenty optional CAS fields (25 total = 21 Go optional + 4 mandatory; 20 TS optional)'
 if awk '
     $0 == "export interface AgentConfigRegisterOAuthMCPCapabilityRequest {" { inside = 1; next }
     inside && /^}/ { exit }
@@ -189,9 +190,26 @@ if awk '
     inside && /expected_content_hash: string;/ { found = 1 }
     END { exit !found }
 ' "${TS_WIRE}"; then
-    ok 'phase 221: Console requires the signed OAuth MCP pair removal CAS token'
+    ok 'phase 221: Console mirrors the mandatory signed OAuth MCP pair removal CAS token'
 else
     fail 'phase 221: Console must require the signed OAuth MCP pair removal CAS token'
+fi
+
+# The Go wire field remains optional for additive decoding, while the Console
+# interface requires it. The service must still fail closed when no usable hash
+# arrives; this source guard pins that semantic requirement to the real removal
+# implementation and its sentinel.
+if awk '
+    /^func \(s \*Service\) RemoveOAuthMCPCapability\(/ { inside = 1 }
+    inside && /^func / && !/RemoveOAuthMCPCapability\(/ { exit }
+    inside && /expectedContentHash := strings\.TrimSpace\(req\.ExpectedContentHash\)/ { trimmed = 1 }
+    inside && /expectedContentHash == ""/ { empty = 1 }
+    inside && /agentcfg\.ErrRevisionConflict/ { conflict = 1 }
+    END { exit !(trimmed && empty && conflict) }
+' "${REMOVE_OAUTH_GO}"; then
+    ok 'phase 221: signed OAuth MCP removal rejects an empty trimmed hash with ErrRevisionConflict (wire field remains optional for additive decoding)'
+else
+    fail 'phase 221: signed OAuth MCP removal must trim and reject an empty hash with ErrRevisionConflict'
 fi
 
 # ---------------------------------------------------------------------------

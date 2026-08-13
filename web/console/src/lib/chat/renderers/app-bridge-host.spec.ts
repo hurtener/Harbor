@@ -33,7 +33,7 @@ import {
 
 interface FakeCalls {
   readResource: Array<[string, string, string | undefined]>;
-  callTool: Array<[string, unknown, string | undefined]>;
+  callTool: Array<[string, string, unknown, string | undefined]>;
   listResources: Array<[string, string | undefined]>;
   listTools: string[];
 }
@@ -48,8 +48,8 @@ function makeFakeClient(overrides: Partial<MCPAppHostClient> = {}): {
       calls.readResource.push([serverID, uri, agentID]);
       return { resourceUri: uri, mimeType: 'text/html', content: '<p>hi</p>' };
     },
-    async callTool(tool, args, agentID): Promise<MCPAppToolResult> {
-      calls.callTool.push([tool, args, agentID]);
+    async callTool(serverID, tool, args, agentID): Promise<MCPAppToolResult> {
+      calls.callTool.push([serverID, tool, args, agentID]);
       return { tool, content: { ok: true }, isError: false };
     },
     async listResources(serverID, agentID) {
@@ -167,7 +167,7 @@ describe('manual handlers dispatch to the injected client', () => {
     const { client, calls } = makeFakeClient();
     const handlers = createAppHandlers({ client, serverID: 'srv', agentID: 'agent-app' });
     const result = await handlers.oncalltool({ name: 'echo', arguments: { q: 1 } });
-    expect(calls.callTool).toEqual([['srv_echo', { q: 1 }, 'agent-app']]);
+    expect(calls.callTool).toEqual([['srv', 'srv_echo', { q: 1 }, 'agent-app']]);
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toEqual({ ok: true });
   });
@@ -182,11 +182,11 @@ describe('manual handlers dispatch to the injected client', () => {
     const handlers = createAppHandlers({ client, serverID: 'srv' });
     await handlers.oncalltool({ name: 'otherserver_drop_table' });
     await handlers.oncalltool({ name: 'harbor_spawn_task' });
-    expect(calls.callTool.map(([t]) => t)).toEqual([
+    expect(calls.callTool.map(([, t]) => t)).toEqual([
       'srv_otherserver_drop_table',
       'srv_harbor_spawn_task',
     ]);
-    for (const [dispatched] of calls.callTool) {
+    for (const [, dispatched] of calls.callTool) {
       expect(String(dispatched).startsWith('srv_')).toBe(true);
     }
   });
@@ -202,7 +202,7 @@ describe('manual handlers dispatch to the injected client', () => {
     const { client, calls } = makeFakeClient();
     const handlers = createAppHandlers({ client, serverID: 'srv' });
     await handlers.oncalltool({ name: 'srv_echo' });
-    expect(calls.callTool).toEqual([['srv_srv_echo', undefined, undefined]]);
+    expect(calls.callTool).toEqual([['srv', 'srv_srv_echo', undefined, undefined]]);
   });
 
   it('qualifyAppToolName is unconditional — every name lands inside the server namespace', () => {
@@ -220,7 +220,7 @@ describe('manual handlers dispatch to the injected client', () => {
     // "there is no such tool here" from "the transport broke", and must see the
     // name IT asked for, not Harbor's internal catalog key.
     const { client } = makeFakeClient({
-      async callTool(tool) {
+      async callTool(_serverID, tool) {
         throw new MCPAppToolNotFoundError(tool);
       },
     });
@@ -278,7 +278,7 @@ describe('manual handlers dispatch to the injected client', () => {
     // inline-sized result is, so SIZE no longer decides the shape.
     const reads: string[] = [];
     const { client } = makeFakeClient({
-      async callTool(tool) {
+      async callTool(_serverID, tool) {
         return { tool, isError: false, artifactRef: { id: 'art_abc', sizeBytes: 9_000_000 } };
       },
       async fetchArtifactText(id) {
@@ -298,7 +298,7 @@ describe('manual handlers dispatch to the injected client', () => {
     // be read, and `structuredContent` stays absent so its absence keeps
     // meaning "there is no data here".
     const { client } = makeFakeClient({
-      async callTool(tool) {
+      async callTool(_serverID, tool) {
         return { tool, isError: false, artifactRef: { id: 'art_abc', sizeBytes: 9_000_000 } };
       },
       async fetchArtifactText() {
@@ -448,7 +448,7 @@ describe('D-173 — the host opens NO direct MCP transport', () => {
     // would be invisible to a test that never takes this branch.
     let read = 0;
     const { client } = makeFakeClient({
-      async callTool(tool) {
+      async callTool(_serverID, tool) {
         return { tool, isError: false, artifactRef: { id: 'art_heavy', sizeBytes: 90_000 } };
       },
       async fetchArtifactText() {

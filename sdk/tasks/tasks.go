@@ -34,6 +34,19 @@ type (
 	TaskResult = internal.TaskResult
 	// TaskError is the typed terminal error.
 	TaskError = internal.TaskError
+	// TaskProgressSnapshot is the canonical durable progress record.
+	TaskProgressSnapshot = internal.TaskProgressSnapshot
+	// ReportProgressRequest is the ReportProgress input shape.
+	ReportProgressRequest = internal.ReportProgressRequest
+	// ProgressReportResult reports what one ReportProgress call did.
+	ProgressReportResult = internal.ProgressReportResult
+	// ProgressPolicy bounds the ReportProgress coalescing/rate policy.
+	ProgressPolicy = internal.ProgressPolicy
+	// ProgressReporter is permanently bound to one task; it has no target
+	// argument and is the normal SDK progress surface.
+	ProgressReporter = internal.ProgressReporter
+	// ProgressReporterRegistry issues reporters bound to a task identity.
+	ProgressReporterRegistry = internal.ProgressReporterRegistry
 	// TaskFilter scopes a List call.
 	TaskFilter = internal.TaskFilter
 	// TaskSummary is the compact list projection.
@@ -100,6 +113,23 @@ const (
 	PropagateIsolate = internal.PropagateIsolate
 )
 
+// ReportProgress field bounds — the registry validates the raw caller
+// input against these before any state is touched.
+const (
+	// ProgressFractionMin is the inclusive lower bound of Fraction.
+	ProgressFractionMin = internal.ProgressFractionMin
+	// ProgressFractionMax is the inclusive upper bound of Fraction.
+	ProgressFractionMax = internal.ProgressFractionMax
+	// ProgressPhaseMaxLen bounds one Phase label in bytes.
+	ProgressPhaseMaxLen = internal.ProgressPhaseMaxLen
+	// ProgressMessageMaxLen bounds one Message in bytes.
+	ProgressMessageMaxLen = internal.ProgressMessageMaxLen
+	// ProgressMaxTags bounds the number of Tags entries.
+	ProgressMaxTags = internal.ProgressMaxTags
+	// ProgressTagMaxLen bounds one Tag entry in bytes.
+	ProgressTagMaxLen = internal.ProgressTagMaxLen
+)
+
 // Re-exported sentinel errors callers compare via errors.Is.
 var (
 	// ErrNotFound — no task under that ID.
@@ -132,6 +162,14 @@ var OpenDriver = internal.OpenDriver
 
 // ValidateRequest validates a SpawnRequest.
 var ValidateRequest = internal.ValidateRequest
+
+// ValidateProgressRequest validates a ReportProgressRequest (fraction
+// bounds + phase/message/tag bounds) before any state is touched.
+var ValidateProgressRequest = internal.ValidateProgressRequest
+
+// DefaultProgressPolicy returns the bounded default coalescing/rate
+// policy every registry applies unless overridden at construction.
+var DefaultProgressPolicy = internal.DefaultProgressPolicy
 
 // RegisteredDrivers lists the seated task driver names (blank-import
 // sdk/drivers/prod to seat the production set).

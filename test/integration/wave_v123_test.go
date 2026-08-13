@@ -145,6 +145,7 @@ type v123Stack struct {
 	store    artifacts.ArtifactStore
 	bus      events.EventBus
 	registry *mcpdrv.Registry
+	catalog  tools.ToolCatalog
 	exec     steering.ToolExecutor
 	srv      *httptest.Server
 	// logs captures everything the executor logs during a dispatch. The
@@ -313,6 +314,7 @@ func newV123Stack(t *testing.T) *v123Stack {
 		store:    store,
 		bus:      bus,
 		registry: registry,
+		catalog:  cat,
 		exec:     dispatch.NewToolExecutor(cat, store, nil, dispatch.WithLogger(logger)),
 		srv:      srv,
 		logs:     logs,
@@ -373,7 +375,7 @@ func v123Dispatch(t *testing.T, st *v123Stack, q identity.Quadruple, refID strin
 	if err != nil {
 		t.Fatalf("identity.WithRun: %v", err)
 	}
-	rc := planner.RunContext{Quadruple: q, Trajectory: &trajectory.Trajectory{}}
+	rc := planner.RunContext{Quadruple: q, Trajectory: &trajectory.Trajectory{}, Catalog: tools.NewPlannerView(st.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})}
 	return st.exec.ExecuteDecision(ctx, rc, planner.CallTool{
 		CallID: "call_v123_1",
 		Tool:   artifactstats.ToolName,
@@ -733,7 +735,7 @@ func TestE2E_WaveV123_SubstitutionInvariantHoldsWhileTheProtocolServesTheBytes(t
 	if err != nil {
 		t.Fatalf("identity.WithRun: %v", err)
 	}
-	rc := planner.RunContext{Quadruple: consumer, Trajectory: &trajectory.Trajectory{}}
+	rc := planner.RunContext{Quadruple: consumer, Trajectory: &trajectory.Trajectory{}, Catalog: tools.NewPlannerView(st.catalog, tools.CatalogFilter{TenantID: consumer.TenantID, UserID: consumer.UserID, SessionID: consumer.SessionID})}
 	raw, llmObs, err := st.exec.ExecuteDecision(ctx, rc, call)
 	if err != nil {
 		t.Fatalf("ExecuteDecision: %v", err)

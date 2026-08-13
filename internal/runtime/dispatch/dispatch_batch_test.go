@@ -27,11 +27,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // countingRegistry embeds a REAL TaskRegistry and counts the two calls
@@ -42,6 +44,26 @@ type countingRegistry struct {
 	mu           sync.Mutex
 	resolveCalls int
 	spawnCalls   int
+}
+
+type countingProgressRegistry struct {
+	*countingRegistry
+	progressLookups atomic.Int64
+	progressReports atomic.Int64
+}
+
+func (c *countingProgressRegistry) ProgressReporter(context.Context, tasks.TaskID) (tasks.ProgressReporter, error) {
+	c.progressLookups.Add(1)
+	return progressReporterFunc(func(context.Context, tasks.ReportProgressRequest) (tasks.ProgressReportResult, error) {
+		c.progressReports.Add(1)
+		return tasks.ProgressReportResult{Recorded: true}, nil
+	}), nil
+}
+
+type progressReporterFunc func(context.Context, tasks.ReportProgressRequest) (tasks.ProgressReportResult, error)
+
+func (f progressReporterFunc) ReportProgress(ctx context.Context, req tasks.ReportProgressRequest) (tasks.ProgressReportResult, error) {
+	return f(ctx, req)
 }
 
 func (c *countingRegistry) ResolveOrCreateGroup(ctx context.Context, req tasks.GroupRequest) (*tasks.TaskGroup, error) {
@@ -98,7 +120,7 @@ func TestExecutor_Batch_DispatchTable(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "sub-b"}, CallID: "s1"},
 		},
 	}
-	rawAny, llmAny, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	rawAny, llmAny, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err != nil {
 		t.Fatalf("ExecuteDecision(Batch): %v", err)
 	}
@@ -170,7 +192,7 @@ func TestExecutor_Batch_AutoGroup_ExplicitGroupNeverOverwritten(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "ungrouped"}, CallID: "s1"},
 		},
 	}
-	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err != nil {
 		t.Fatalf("ExecuteDecision(Batch): %v", err)
 	}
@@ -214,7 +236,7 @@ func TestExecutor_Batch_BreadthCap_RejectsWholeBatch(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "c"}, CallID: "s2"},
 		},
 	}
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err == nil {
 		t.Fatal("Batch with 3 spawns under cap=2 returned nil error, want whole-batch rejection")
 	}
@@ -256,7 +278,7 @@ func TestExecutor_Batch_FailFastDisagreement_Rejects(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "b", FailFast: false}, CallID: "s1"},
 		},
 	}
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err == nil {
 		t.Fatal("Batch with FailFast disagreement returned nil error, want rejection")
 	}
@@ -290,7 +312,7 @@ func TestExecutor_Batch_RetainTurn_DefensiveReject(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "b", RetainTurn: true}, CallID: "s1"},
 		},
 	}
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err == nil {
 		t.Fatal("Batch with a RetainTurn spawn returned nil error, want defensive rejection")
 	}
@@ -330,7 +352,7 @@ func TestExecutor_Batch_ToolCapExceeded_StructuralReject(t *testing.T) {
 		Tools:  toolBranches,
 		Spawns: []planner.SpawnTask{{Spec: planner.SpawnSpec{Query: "a"}, CallID: "s0"}},
 	}
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err == nil {
 		t.Fatal("over-parallel-cap Batch returned nil error, want structural rejection")
 	}
@@ -342,6 +364,38 @@ func TestExecutor_Batch_ToolCapExceeded_StructuralReject(t *testing.T) {
 	}
 	if resolve, spawn := reg.counts(); resolve != 0 || spawn != 0 {
 		t.Errorf("registry calls resolve=%d spawn=%d, want 0/0", resolve, spawn)
+	}
+}
+
+// TestExecutor_Batch_Invalid_DoesNotPersistProgress — structural rejection
+// must happen before the durable progress reporter is even bound. The
+// progress observation still uses the native CallID/Index shape on valid
+// batches; this regression only guards the invalid-batch side effect.
+func TestExecutor_Batch_Invalid_DoesNotPersistProgress(t *testing.T) {
+	cat := tools.NewCatalog()
+	registerEcho(t, cat, "counted")
+	base := &countingRegistry{TaskRegistry: mkSpawnAwaitTestTaskRegistry(t, mkSpawnAwaitTestBus(t))}
+	reg := &countingProgressRegistry{countingRegistry: base}
+	exec := NewToolExecutor(cat, newTestArtifactStore(t), reg, WithMaxBatchSpawns(1))
+
+	q := dispatchTestQuad("r-batch")
+	d := planner.Batch{
+		Tools: []planner.CallTool{{Tool: "counted", Args: json.RawMessage(`{}`), CallID: "t0"}},
+		Spawns: []planner.SpawnTask{
+			{Spec: planner.SpawnSpec{Query: "a"}, CallID: "s0"},
+			{Spec: planner.SpawnSpec{Query: "b"}, CallID: "s1"},
+		},
+		Progress: []planner.TaskProgress{{CallID: "p0", Phase: "halfway"}},
+	}
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
+	if err == nil || !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Fatalf("invalid batch error = %v, want wrapped planner.ErrInvalidDecision", err)
+	}
+	if got := reg.progressLookups.Load(); got != 0 {
+		t.Fatalf("progress reporter lookups = %d, want 0 for invalid batch", got)
+	}
+	if got := reg.progressReports.Load(); got != 0 {
+		t.Fatalf("durable progress reports = %d, want 0 for invalid batch", got)
 	}
 }
 
@@ -361,7 +415,7 @@ func TestExecutor_Batch_DegenerateCombinedCount_Rejects(t *testing.T) {
 		{Spawns: []planner.SpawnTask{{Spec: planner.SpawnSpec{Query: "a"}, CallID: "s0"}}},     // one spawn
 	}
 	for i, d := range cases {
-		_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+		_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 		if err == nil {
 			t.Errorf("case %d: degenerate Batch returned nil error, want rejection", i)
 			continue
@@ -397,7 +451,7 @@ func TestExecutor_Batch_ToolHalfError_NoOrphanGroup(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "b"}, CallID: "s1"},
 		},
 	}
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err == nil {
 		t.Fatal("malformed-Join Batch returned nil error, want the tool-half error surfaced")
 	}
@@ -443,7 +497,7 @@ func TestExecutor_Batch_PerBranchErrorAsValue(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "sealed"}, GroupID: grp.ID, CallID: "s1"}, // registry reject
 		},
 	}
-	rawAny, _, err := exec.ExecuteDecision(idCtx, planner.RunContext{Quadruple: q}, d)
+	rawAny, _, err := exec.ExecuteDecision(idCtx, dispatchRunContext(cat, q), d)
 	if err != nil {
 		t.Fatalf("ExecuteDecision(Batch): unexpected whole-batch err: %v", err)
 	}
@@ -491,7 +545,8 @@ func TestExecutor_Batch_ToolCountAccounting(t *testing.T) {
 // Tools) dispatches its spawns with an empty Tools observation (the
 // parallel executor is never invoked with an empty branch set).
 func TestExecutor_Batch_SpawnsOnly_NoTools(t *testing.T) {
-	exec, _ := newBatchTestExecutor(t, tools.NewCatalog(), 5)
+	cat := tools.NewCatalog()
+	exec, _ := newBatchTestExecutor(t, cat, 5)
 	q := dispatchTestQuad("r-batch")
 	d := planner.Batch{
 		Spawns: []planner.SpawnTask{
@@ -499,7 +554,7 @@ func TestExecutor_Batch_SpawnsOnly_NoTools(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "b"}, CallID: "s1"},
 		},
 	}
-	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err != nil {
 		t.Fatalf("ExecuteDecision(spawns-only Batch): %v", err)
 	}
@@ -509,6 +564,87 @@ func TestExecutor_Batch_SpawnsOnly_NoTools(t *testing.T) {
 	}
 	if len(raw.Spawns) != 2 {
 		t.Errorf("Spawns observation = %d entries, want 2", len(raw.Spawns))
+	}
+}
+
+func TestExecutor_Batch_OrdinaryArtifactsPreserveOrderAndPairing(t *testing.T) {
+	store := newTestArtifactStore(t)
+	refs := make([]artifacts.ArtifactRef, 2)
+	for i, mime := range []string{"image/png", "image/jpeg"} {
+		ref, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}, []byte{byte(i)}, artifacts.PutOpts{MimeType: mime})
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs[i] = ref
+	}
+	bus := mkSpawnAwaitTestBus(t)
+	reg := &countingRegistry{TaskRegistry: mkSpawnAwaitTestTaskRegistry(t, bus)}
+	exec := NewToolExecutor(tools.NewCatalog(), store, reg, WithMaxBatchSpawns(5))
+	q := dispatchTestQuad("r-artifact-batch")
+	idCtx, err := identity.With(t.Context(), q.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc := planner.RunContext{Quadruple: q, DispositionPolicy: planner.DispositionPolicy{ByMIME: map[string]planner.AttachmentDisposition{"image/*": planner.DispositionRef}}}
+	d := planner.Batch{Spawns: []planner.SpawnTask{
+		{CallID: "first", Spec: planner.SpawnSpec{Query: "first", InputArtifactIDs: []string{refs[0].ID}, InputArtifactDispositions: map[string]string{refs[0].ID: "inline"}}},
+		{CallID: "second", Spec: planner.SpawnSpec{Query: "second", InputArtifactIDs: []string{refs[1].ID}}},
+	}}
+	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), rc, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := rawAny.(planner.BatchObservation)
+	if len(raw.Spawns) != 2 || raw.Spawns[0].CallID != "first" || raw.Spawns[1].CallID != "second" {
+		t.Fatalf("spawn order = %+v", raw.Spawns)
+	}
+	for i, want := range []struct{ id, disposition string }{{refs[0].ID, "inline"}, {refs[1].ID, "ref"}} {
+		task, err := reg.Get(idCtx, tasks.TaskID(raw.Spawns[i].TaskID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(task.InputArtifactIDs) != 1 || task.InputArtifactIDs[0] != want.id || task.InputArtifactDispositions[want.id] != want.disposition {
+			t.Fatalf("sibling %d leaked pairing: %+v", i, task)
+		}
+	}
+}
+
+func TestExecutor_SpawnTask_VirtualProfileOwnsArtifactDisposition(t *testing.T) {
+	bus := mkSpawnAwaitTestBus(t)
+	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	store := newTestArtifactStore(t)
+	ref, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID}, []byte("png"), artifacts.PutOpts{MimeType: "image/png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := virtualagent.Profile{Key: "reviewer", Label: "Reviewer", Parent: "top-agent", InputCount: 1, InputDisposition: "ref", OutputSchema: json.RawMessage(`{"type":"object"}`)}
+	profile = virtualagent.NormalizeProfile(profile)
+	frozen, err := virtualagent.NewFrozenMap(virtualagent.Map{Owner: "top-agent", Profiles: []virtualagent.Profile{profile}}, "rev-1", strings.Repeat("a", 64), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := dispatchTestQuad("r-virtual")
+	parent, err := reg.Spawn(dispatchTestCtx(t, q), tasks.SpawnRequest{Identity: q, Kind: tasks.KindForeground, Query: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.RunID = string(parent.ID)
+	ctx := virtualagent.WithFrozenMap(dispatchTestCtx(t, q), frozen)
+	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
+	raw, _, err := exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q, DispositionPolicy: planner.DispositionPolicy{Default: planner.DispositionInline}}, planner.SpawnTask{Spec: planner.SpawnSpec{Query: "virtual", VirtualAgent: "reviewer", InputArtifactIDs: []string{ref.ID}, InputArtifactDispositions: map[string]string{ref.ID: "inline"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerCtx, err := identity.With(t.Context(), q.Identity)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	task, err := reg.Get(ownerCtx, tasks.TaskID(raw.(map[string]any)["task_id"].(string)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.InputArtifactDispositions[ref.ID] != "ref" || task.VirtualAgent == nil || task.VirtualAgent.Profile.InputCount != 1 || string(task.VirtualAgent.Profile.OutputSchema) != `{"type":"object"}` {
+		t.Fatalf("virtual profile authority drifted: %+v", task)
 	}
 }
 
@@ -553,7 +689,7 @@ func TestExecutor_Batch_PreservesDeclarationOrder(t *testing.T) {
 	}
 	d := planner.Batch{Tools: toolBranches, Spawns: spawns}
 
-	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
 	if err != nil {
 		t.Fatalf("ExecuteDecision(Batch): %v", err)
 	}
@@ -612,7 +748,8 @@ func TestExecutor_Batch_ConcurrentReuse(t *testing.T) {
 				SessionID: "session-" + strconv.Itoa(idx),
 			}
 			runID := "r-" + strconv.Itoa(idx)
-			rc := planner.RunContext{Quadruple: identity.Quadruple{Identity: id, RunID: runID}}
+			q := identity.Quadruple{Identity: id, RunID: runID}
+			rc := dispatchRunContext(cat, q)
 			ctx, wErr := identity.WithRun(context.Background(), id, runID)
 			if wErr != nil {
 				errCh <- wErr

@@ -531,6 +531,38 @@ func TestNext_MaxStepsBreakerWithoutEmitClosure(t *testing.T) {
 	}
 }
 
+// TestNext_MaxStepsBreaker_CountsSuccessfulToolsNotControls ensures the real
+// ReAct planner does not terminalize a tranche because of planner controls or
+// a failed tool dispatch.
+func TestNext_MaxStepsBreaker_CountsSuccessfulToolsNotControls(t *testing.T) {
+	t.Parallel()
+	client := &scriptedClient{responses: []llm.CompleteResponse{
+		nativeToolCallResp("call_1", "followup", `{}`),
+	}}
+	p := react.New(client, react.WithMaxSteps(2))
+	q := fixedQuadruple(t, "r-maxsteps-controls")
+	rc := withDeclaredTools(rcWith(q, "g", nil), "followup")
+	rc.Trajectory = &planner.Trajectory{Steps: []planner.Step{
+		{Action: planner.SpawnTask{}},
+		{Action: planner.CallTool{Tool: "failed"}, Error: "tool execution failed"},
+		{Action: planner.CallParallel{Branches: []planner.CallTool{{Tool: "a"}, {Tool: "b"}}}},
+	}}
+	dec, err := p.Next(ctxWith(t, q), rc)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	call, ok := dec.(planner.CallTool)
+	if !ok {
+		t.Fatalf("decision = %T, want planner.CallTool after one successful parallel decision", dec)
+	}
+	if call.Tool != "followup" {
+		t.Errorf("decision tool = %q, want followup", call.Tool)
+	}
+	if got := client.callCount(); got != 1 {
+		t.Errorf("client.calls = %d, want 1", got)
+	}
+}
+
 // TestNext_EmptyResponseMapsToFinishNoPath asserts the Phase 107c
 // (D-167) projector contract for an LLM response with neither
 // ToolCalls nor Content: the planner emits Finish{NoPath} with

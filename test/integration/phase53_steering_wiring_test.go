@@ -35,6 +35,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -54,11 +55,13 @@ import (
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // phase53Deps bundles the real drivers the Phase 53 wiring tests
 // consume. All production drivers — no mocks at the seam.
 type phase53Deps struct {
+	catalog  tools.ToolCatalog
 	registry *steering.Registry
 	coord    pauseresume.Coordinator
 	bus      events.EventBus
@@ -116,7 +119,17 @@ func newPhase53Deps(t *testing.T, rlOpts ...steering.RunLoopOption) *phase53Deps
 		_ = bus.Close(context.Background())
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
+	cat := tools.NewCatalog()
+	if err := cat.Register(tools.ToolDescriptor{
+		Tool: tools.Tool{Name: "noop"},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{Value: map[string]any{"ok": true}}, nil
+		},
+	}); err != nil {
+		t.Fatalf("catalog.Register(noop): %v", err)
+	}
 	return &phase53Deps{
+		catalog:  cat,
 		registry: reg,
 		coord:    coord,
 		bus:      bus,
@@ -255,7 +268,7 @@ func TestE2E_Phase53_PauseRoundTrip_ThroughCoordinator(t *testing.T) {
 	go func() {
 		fin, err := deps.runLoop.Run(ctx, steering.RunSpec{
 			Planner:  p,
-			Base:     planner.RunContext{Quadruple: q, Goal: "do a HITL-gated thing"},
+			Base:     planner.RunContext{Quadruple: q, Goal: "do a HITL-gated thing", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 			MaxSteps: 16,
 		})
 		done <- result{fin, err}
@@ -364,7 +377,7 @@ func TestE2E_Phase53_NineEventMatrix(t *testing.T) {
 		}
 	})
 
-	// CANCEL (soft) — sets Control.Cancelled.
+	// CANCEL (soft) — terminalizes immediately without another planner turn.
 	t.Run("CANCEL_soft", func(t *testing.T) {
 		deps := newPhase53Deps(t)
 		defer deps.cleanup()
@@ -373,8 +386,8 @@ func TestE2E_Phase53_NineEventMatrix(t *testing.T) {
 		runWithPreEnqueue(t, deps, q, seen, func() {
 			enqueue(t, deps.registry, q, steering.ControlCancel, steering.ScopeOwnerUser, map[string]any{"hard": false})
 		})
-		if !seen.lastControl().Cancelled {
-			t.Error("planner did not see Control.Cancelled after a soft CANCEL")
+		if seen.stepCount() != 1 {
+			t.Errorf("planner steps = %d, want 1 (soft CANCEL is terminal after the initial turn)", seen.stepCount())
 		}
 	})
 
@@ -397,8 +410,8 @@ func TestE2E_Phase53_NineEventMatrix(t *testing.T) {
 		runWithPreEnqueue(t, deps, q, seen, func() {
 			enqueue(t, deps.registry, q, steering.ControlCancel, steering.ScopeOwnerUser, map[string]any{"hard": true})
 		})
-		if !seen.lastControl().Cancelled {
-			t.Error("planner did not see Control.Cancelled after a hard CANCEL")
+		if seen.stepCount() != 1 {
+			t.Errorf("planner steps = %d, want 1 (hard CANCEL is terminal after the initial turn)", seen.stepCount())
 		}
 		hookMu.Lock()
 		defer hookMu.Unlock()
@@ -430,7 +443,7 @@ func TestE2E_Phase53_NineEventMatrix(t *testing.T) {
 		seen := newControlObserverPlanner(t, planner.FinishGoal)
 		runWithPreEnqueueSpec(t, deps, q, steering.RunSpec{
 			Planner:  seen,
-			Base:     planner.RunContext{Quadruple: q, Goal: "g"},
+			Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 			TaskID:   handle.ID,
 			MaxSteps: 16,
 		}, func() {
@@ -480,7 +493,7 @@ func TestE2E_Phase53_NineEventMatrix(t *testing.T) {
 		go func() {
 			fin, err := deps.runLoop.Run(ctx, steering.RunSpec{
 				Planner:  p,
-				Base:     planner.RunContext{Quadruple: q, Goal: "g"},
+				Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 				MaxSteps: 16,
 			})
 			done <- struct {
@@ -526,7 +539,7 @@ func TestE2E_Phase53_NineEventMatrix(t *testing.T) {
 		go func() {
 			fin, err := deps.runLoop.Run(ctx, steering.RunSpec{
 				Planner:  p,
-				Base:     planner.RunContext{Quadruple: q, Goal: "g"},
+				Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 				MaxSteps: 16,
 			})
 			if err == nil && fin.Reason != planner.FinishGoal {
@@ -568,7 +581,8 @@ func TestE2E_Phase53_NoEventAppliedMidToolCall(t *testing.T) {
 
 	// A planner whose step 0 takes "a while" (a slow decision
 	// execution) and, mid-execution, a control event is enqueued. The
-	// planner records the Control it saw at step 0 and step 1.
+	// planner records the Control it saw at step 0; terminal CANCEL must
+	// prevent a subsequent planner turn.
 	enqueued := make(chan struct{})
 	slow := &slowMidStepPlanner{
 		reg:        deps.registry,
@@ -578,28 +592,25 @@ func TestE2E_Phase53_NoEventAppliedMidToolCall(t *testing.T) {
 	ctx := ctxFor(t, q)
 	fin, err := deps.runLoop.Run(ctx, steering.RunSpec{
 		Planner:  slow,
-		Base:     planner.RunContext{Quadruple: q, Goal: "g"},
+		Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 		MaxSteps: 16,
 	})
 	if err != nil {
 		t.Fatalf("RunLoop.Run: %v", err)
 	}
 	if fin.Reason != planner.FinishCancelled {
-		t.Fatalf("Finish.Reason = %q, want cancelled (the mid-step CANCEL must terminate the run on the NEXT step)", fin.Reason)
+		t.Fatalf("Finish.Reason = %q, want cancelled (the mid-step CANCEL terminalizes at the next boundary without another planner turn)", fin.Reason)
 	}
-	// The drain-between-steps invariant: step 0 saw an EMPTY Control
-	// (the CANCEL was enqueued AFTER step 0's Next was already
-	// running), step 1 saw Cancelled=true.
+	// The no-mid-call invariant: step 0 saw an EMPTY Control (the CANCEL
+	// was enqueued AFTER step 0's Next was already running), and the
+	// terminal CANCEL prevented a second planner turn.
 	slow.mu.Lock()
 	defer slow.mu.Unlock()
-	if len(slow.seen) < 2 {
-		t.Fatalf("planner ran %d steps, want ≥2", len(slow.seen))
+	if len(slow.seen) != 1 {
+		t.Fatalf("planner ran %d steps, want 1", len(slow.seen))
 	}
 	if slow.seen[0].Cancelled {
 		t.Error("step 0 saw Cancelled=true — a control enqueued mid-step-0 leaked into step 0 (drain-between-steps VIOLATED)")
-	}
-	if !slow.seen[1].Cancelled {
-		t.Error("step 1 did not see Cancelled=true — the mid-step CANCEL was not applied at the next step boundary")
 	}
 }
 
@@ -680,7 +691,7 @@ func TestE2E_Phase53_ConcurrencyMidStep(t *testing.T) {
 			ctx := ctxFor(t, q)
 			fin, err := deps.runLoop.Run(ctx, steering.RunSpec{
 				Planner:  cp,
-				Base:     planner.RunContext{Quadruple: q, Goal: "g"},
+				Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 				MaxSteps: 16,
 			})
 			mu.Lock()
@@ -805,6 +816,12 @@ func (p *controlObserverPlanner) lastControl() planner.ControlSignals {
 	return p.seenCtrl[len(p.seenCtrl)-1]
 }
 
+func (p *controlObserverPlanner) stepCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.seenCtrl)
+}
+
 func (p *controlObserverPlanner) lastGoal() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -844,7 +861,7 @@ func runWithPreEnqueue(t *testing.T, deps *phase53Deps, q identity.Quadruple, p 
 	t.Helper()
 	runWithPreEnqueueSpec(t, deps, q, steering.RunSpec{
 		Planner:  p,
-		Base:     planner.RunContext{Quadruple: q, Goal: "g"},
+		Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 		MaxSteps: 32,
 	}, enqueueFn)
 }

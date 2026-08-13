@@ -348,6 +348,12 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
+	if fence := opts.PublicationFence; fence != nil {
+		if fence.Identity.TenantID == "" || fence.Identity.UserID == "" || fence.Identity.SessionID == "" || fence.Kind == "" || fence.EventID == "" {
+			return agentcfg.Revision{}, fmt.Errorf("%w: invalid publication fence", agentcfg.ErrInvalidConfig)
+		}
+		expectations = append(expectations, state.SlotExpectation{Identity: fence.Identity, Kind: fence.Kind, ExpectedEventID: state.EventID(fence.EventID)})
+	}
 
 	// ONE read serves both the precondition and the idempotence check. The
 	// expected pointer generation captured above is rechecked by SaveIf at
@@ -387,13 +393,18 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	parentID := ""
 	if hasActive {
 		parentID = active.RevisionID
-		if active.ContentHash == hash {
+		// A fenced publication must reach SaveIf so the receipt generation is
+		// checked even when a retry's payload is already active.
+		if active.ContentHash == hash && opts.PublicationFence == nil {
 			return active, nil
 		}
 	}
 
 	now := r.clock().UTC()
-	revID := string(state.NewEventID())
+	revID := opts.TargetRevisionID
+	if revID == "" {
+		revID = string(state.NewEventID())
+	}
 	rec := revisionRecord{
 		Schema:           recordSchema,
 		RevisionID:       revID,
@@ -403,11 +414,29 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 		CreatedAt:        now,
 		Payload:          norm,
 	}
-	if err := r.saveRevision(ctx, q, keys.revPfx, rec); err != nil {
-		return agentcfg.Revision{}, r.compensateFailedRevisionSave(ctx, q, keys.revPfx, rec, err)
+	prepared := false
+	if opts.TargetRevisionID != "" {
+		existing, loadErr := r.loadRevision(ctx, q, keys.revPfx, opts.TargetRevisionID)
+		if loadErr == nil {
+			if existing.ContentHash != rec.ContentHash || existing.ParentRevisionID != rec.ParentRevisionID || existing.Author != rec.Author || !reflect.DeepEqual(existing.Payload, rec.Payload) {
+				return agentcfg.Revision{}, fmt.Errorf("%w: prepared target revision %q does not match requested publication", agentcfg.ErrRevisionConflict, opts.TargetRevisionID)
+			}
+			rec = existing
+			prepared = true
+		} else if !errors.Is(loadErr, agentcfg.ErrRevisionNotFound) {
+			return agentcfg.Revision{}, loadErr
+		}
+	}
+	if !prepared {
+		if err := r.saveRevision(ctx, q, keys.revPfx, rec); err != nil {
+			return agentcfg.Revision{}, r.compensateFailedRevisionSave(ctx, q, keys.revPfx, rec, err)
+		}
 	}
 	if err := r.saveActiveIf(ctx, expectations, q, keys.activeKind, revID, now); err != nil {
 		if errors.Is(err, state.ErrConditionFailed) {
+			if prepared {
+				return agentcfg.Revision{}, fmt.Errorf("%w: active pointer changed during prepared publication", agentcfg.ErrRevisionConflict)
+			}
 			if retiredErr := r.ensureNotRetired(ctx, id, agentID); retiredErr != nil {
 				if !errors.Is(retiredErr, errLifecycleMalformed) {
 					return agentcfg.Revision{}, retiredErr
@@ -425,6 +454,9 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 		// otherwise. Compensate — see [registry.compensateOrphanRevision] for
 		// why a bare return here left a revision in history that no reader can
 		// reach, and why the cleanup must not be unconditional.
+		if prepared {
+			return agentcfg.Revision{}, fmt.Errorf("%w: prepared revision retained after active-pointer failure: %w", agentcfg.ErrStateUnavailable, err)
+		}
 		landed, cerr := r.compensateOrphanRevision(ctx, q, keys.revPfx, revID, err)
 		if landed {
 			// The pointer is durably on disk naming this revision: the config
@@ -808,6 +840,8 @@ func (r *registry) Diff(ctx context.Context, id identity.Quadruple, agentID, fro
 		// Order is render order for the additive prompt blocks, so a pure
 		// re-ordering is a real change and the diff reports it.
 		ExtraSystemBlocks: agentcfg.DiffExtraSystemBlocks(from.Payload, to.Payload),
+		// The versioned virtual-agent profile map diff.
+		VirtualAgents: agentcfg.DiffVirtualAgents(from.Payload, to.Payload),
 	}, nil
 }
 

@@ -193,6 +193,12 @@ type RunContext struct {
 	// LLM edge.
 	Artifacts artifacts.ArtifactStore
 
+	// DispositionPolicy is the immutable per-run attachment policy snapshot.
+	// The runtime uses it when an ordinary planner-spawned child forwards
+	// artifact references; virtual-agent profiles remain authoritative for
+	// virtual children.
+	DispositionPolicy DispositionPolicy
+
 	// InputArtifacts carry the operator-uploaded
 	// multimodal inputs the run consumes on its FIRST planner turn —
 	// pre-resolved by the run loop (no async I/O inside the planner).

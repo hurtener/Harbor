@@ -333,6 +333,36 @@ const (
 	// revision. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
 	// The wire-transport route is `POST /v1/agent_config/skills/delete`.
 	MethodAgentConfigSkillsDelete Method = "agent_config.skills.delete"
+	// MethodAgentConfigAgentPacksList — admin verb: reads the agent's
+	// operator-managed per-agent skill pack (full items, canonical order).
+	// Identity-mandatory; requires the `auth.ScopeAdmin` claim. The
+	// wire-transport route is `POST /v1/agent_config/agent_packs/list`.
+	MethodAgentConfigAgentPacksList Method = "agent_config.agent_packs.list"
+	// MethodAgentConfigAgentPacksUpsert — admin verb: DETERMINISTICALLY adds
+	// or replaces ONE operator-managed pack item (body + membership atomically
+	// in one content-addressed revision). Identity-mandatory; requires the
+	// `auth.ScopeAdmin` claim. The wire-transport route is
+	// `POST /v1/agent_config/agent_packs/upsert`.
+	MethodAgentConfigAgentPacksUpsert Method = "agent_config.agent_packs.upsert"
+	// MethodAgentConfigAgentPacksRemove — admin verb: DETERMINISTICALLY drops
+	// ONE operator-managed pack item by name. Identity-mandatory; requires
+	// the `auth.ScopeAdmin` claim. The wire-transport route is
+	// `POST /v1/agent_config/agent_packs/remove`.
+	MethodAgentConfigAgentPacksRemove Method = "agent_config.agent_packs.remove"
+	// MethodAgentConfigAgentPacksPropose — admin verb: the GOVERNED first
+	// phase of pack authoring — drafts a bounded skill body from an operator
+	// intent via the agent's configured model under the versioned revision
+	// policy, returning the canonical draft + content hash + warnings +
+	// provenance stamp. NEVER writes. Identity-mandatory; requires the
+	// `auth.ScopeAdmin` claim. The wire-transport route is
+	// `POST /v1/agent_config/agent_packs/propose`.
+	MethodAgentConfigAgentPacksPropose Method = "agent_config.agent_packs.propose"
+	// MethodAgentConfigAgentPacksCommit — admin verb: the GOVERNED second
+	// phase — CAS-binds the exact reviewed hash + proposal provenance +
+	// expected-revision token, then atomically persists body + membership in
+	// one revision. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
+	// The wire-transport route is `POST /v1/agent_config/agent_packs/commit`.
+	MethodAgentConfigAgentPacksCommit Method = "agent_config.agent_packs.commit"
 	// MethodAgentConfigSetToolExposure — admin verb: sets the agent's
 	// MCP-exposure / per-tool policy (paused servers + disabled tools) as a
 	// desired-state replace of the tool-exposure section and records the
@@ -1122,6 +1152,11 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsList:                 {},
 	MethodAgentConfigSkillsUpsert:               {},
 	MethodAgentConfigSkillsDelete:               {},
+	MethodAgentConfigAgentPacksList:             {},
+	MethodAgentConfigAgentPacksUpsert:           {},
+	MethodAgentConfigAgentPacksRemove:           {},
+	MethodAgentConfigAgentPacksPropose:          {},
+	MethodAgentConfigAgentPacksCommit:           {},
 	MethodAgentConfigSetToolExposure:            {},
 	MethodAgentConfigSetPromptLayers:            {},
 	MethodAgentConfigSetExtraSystemBlocks:       {},
@@ -1410,6 +1445,11 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsList:                 {},
 	MethodAgentConfigSkillsUpsert:               {},
 	MethodAgentConfigSkillsDelete:               {},
+	MethodAgentConfigAgentPacksList:             {},
+	MethodAgentConfigAgentPacksUpsert:           {},
+	MethodAgentConfigAgentPacksRemove:           {},
+	MethodAgentConfigAgentPacksPropose:          {},
+	MethodAgentConfigAgentPacksCommit:           {},
 	MethodAgentConfigSetToolExposure:            {},
 	MethodAgentConfigSetPromptLayers:            {},
 	MethodAgentConfigSetExtraSystemBlocks:       {},
@@ -1496,6 +1536,10 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigRetire:                     {},
 	MethodAgentConfigSkillsUpsert:               {},
 	MethodAgentConfigSkillsDelete:               {},
+	MethodAgentConfigAgentPacksUpsert:           {},
+	MethodAgentConfigAgentPacksRemove:           {},
+	MethodAgentConfigAgentPacksPropose:          {},
+	MethodAgentConfigAgentPacksCommit:           {},
 	MethodAgentConfigSetToolExposure:            {},
 	MethodAgentConfigSetPromptLayers:            {},
 	MethodAgentConfigSetExtraSystemBlocks:       {},

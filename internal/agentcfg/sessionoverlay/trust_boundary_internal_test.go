@@ -362,6 +362,10 @@ func (s resolverBoundarySkillStore) GetScope(ctx context.Context, id identity.Qu
 	return s.getScope(ctx, id, name, scope)
 }
 
+func (s resolverBoundarySkillStore) GetScopeAgent(ctx context.Context, id identity.Quadruple, _ string, name string, scope skills.Scope) (skills.Skill, error) {
+	return s.GetScope(ctx, id, name, scope)
+}
+
 type resolverBoundaryStateStore struct {
 	state.StateStore
 	load        func(context.Context, identity.Quadruple, string) (state.StateRecord, error)

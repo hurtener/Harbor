@@ -187,6 +187,7 @@ func NewRunContext(
 	for _, o := range opts {
 		o(&cfg)
 	}
+	cfg.dispositionPolicy = cfg.dispositionPolicy.Clone()
 
 	// Run-level output schema — compiled ONCE here (the runtime edge) so
 	// the same compiled validator serves both the planner's per-turn
@@ -290,20 +291,21 @@ func NewRunContext(
 	})
 
 	return planner.RunContext{
-		Quadruple:      q,
-		Query:          goal,
-		Goal:           goal, // initial goal = the request; runtime REDIRECT may mutate
-		LLMOverrides:   src.LLMOverrides,
-		MemoryBlocks:   memBlocks,
-		SkillsContext:  skillsCtx,
-		RepairCounters: &planner.RepairCounters{},
-		PlanningHints:  src.PlanningHints,
-		Catalog:        catalogView,
-		Trajectory:     &planner.Trajectory{Query: goal},
-		Emit:           emit,
-		OnChunk:        onChunk,
-		InputArtifacts: inputArtifacts,
-		Budget:         src.Budget,
-		OutputSchema:   outputSchema,
+		Quadruple:         q,
+		Query:             goal,
+		Goal:              goal, // initial goal = the request; runtime REDIRECT may mutate
+		LLMOverrides:      src.LLMOverrides,
+		MemoryBlocks:      memBlocks,
+		SkillsContext:     skillsCtx,
+		RepairCounters:    &planner.RepairCounters{},
+		PlanningHints:     src.PlanningHints,
+		Catalog:           catalogView,
+		Trajectory:        &planner.Trajectory{Query: goal},
+		Emit:              emit,
+		OnChunk:           onChunk,
+		InputArtifacts:    inputArtifacts,
+		DispositionPolicy: cfg.dispositionPolicy,
+		Budget:            src.Budget,
+		OutputSchema:      outputSchema,
 	}, nil
 }

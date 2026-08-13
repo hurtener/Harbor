@@ -26,16 +26,24 @@ var (
 	// shared checkpoint store.
 	ErrPauseNotFound = errors.New("pauseresume: pause token not found")
 
+	// ErrRestartUnavailable reports a durable tranche checkpoint whose
+	// original in-process run loop is gone. A trajectory checkpoint alone is
+	// not an exact redrive implementation, so resume fails closed rather than
+	// pretending to continue the run as a new task.
+	ErrRestartUnavailable = errors.New("pauseresume: exact restart redrive unavailable")
+
 	// ErrAlreadyResumed — Resume was called for a Token whose pause
 	// record is already in StatusResumed. Resume is idempotent: the
 	// second call is rejected loud rather than re-applying side
 	// effects.
-	ErrAlreadyResumed = errors.New("pauseresume: pause already resumed")
+	ErrAlreadyResumed           = errors.New("pauseresume: pause already resumed")
+	ErrTrancheCancellerRequired = errors.New("pauseresume: coordinator cannot cancel live tranche pauses")
 
-	// ErrScopeMismatch — Resume was called with an identity triple
-	// whose (tenant, user, session) does not match the triple the
-	// pause was Requested under. Authentication on resume is checked
-	// against the original pause's identity scope (RFC §3.3).
+	ErrNotTranchePause = errors.New("pauseresume: pause is not a step-tranche pause")
+
+	// ErrScopeMismatch is retained for source compatibility. Resume never
+	// returns it: a foreign token is indistinguishable from a missing token
+	// and returns ErrPauseNotFound.
 	ErrScopeMismatch = errors.New("pauseresume: resume identity scope does not match pause")
 
 	// ErrInvalidReason — Request was called with a Reason that is not

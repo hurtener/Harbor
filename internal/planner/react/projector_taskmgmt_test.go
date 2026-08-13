@@ -172,6 +172,73 @@ func TestProjectResponse_Spawn_PropagateOnCancel_OutOfEnumFailsLoud(t *testing.T
 	}
 }
 
+func TestProjectResponse_Spawn_VirtualAgentAndArtifactIDs(t *testing.T) {
+	t.Parallel()
+	dec, err := projectResponse(llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{
+		{ID: "s1", Name: SpawnTaskToolName, Args: json.RawMessage(`{"spec":{"query":"go","virtual_agent":"reviewer","input_artifact_ids":["art-1","art-2"]}}`)},
+	}}, &planner.RunContext{}, true)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	sp, ok := dec.(planner.SpawnTask)
+	if !ok {
+		t.Fatalf("expected SpawnTask, got %T", dec)
+	}
+	if sp.Spec.VirtualAgent != "reviewer" || len(sp.Spec.InputArtifactIDs) != 2 || sp.Spec.InputArtifactIDs[1] != "art-2" {
+		t.Fatalf("projection = %+v, want virtual profile and two artifact IDs", sp.Spec)
+	}
+	if sp.Spec.InputArtifactDispositions != nil {
+		t.Fatal("model disposition hints must not be projected")
+	}
+}
+
+func TestProjectResponse_Spawn_RejectsContentAndDispositionFields(t *testing.T) {
+	t.Parallel()
+	for _, args := range []string{
+		`{"spec":{"virtual_agent":"reviewer","input_artifact_ids":["art-1"],"input_artifact_bytes":"raw"}}`,
+		`{"spec":{"virtual_agent":"reviewer","input_artifact_ids":["art-1"],"input_artifact_dispositions":{"art-1":"inline"}}}`,
+	} {
+		_, err := projectResponse(llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{
+			{ID: "s1", Name: SpawnTaskToolName, Args: json.RawMessage(args)},
+		}}, &planner.RunContext{}, true)
+		if !errors.Is(err, planner.ErrInvalidDecision) {
+			t.Fatalf("args %q: expected ErrInvalidDecision, got %v", args, err)
+		}
+	}
+}
+
+func TestProjectResponse_Spawn_BatchProjectsVirtualInputs(t *testing.T) {
+	t.Parallel()
+	dec, err := projectResponse(llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{
+		{ID: "s1", Name: SpawnTaskToolName, Args: json.RawMessage(`{"spec":{"virtual_agent":"one","input_artifact_ids":["a"]}}`)},
+		{ID: "s2", Name: SpawnTaskToolName, Args: json.RawMessage(`{"spec":{"virtual_agent":"two","input_artifact_ids":["b","c"]}}`)},
+	}}, &planner.RunContext{}, true)
+	if err != nil {
+		t.Fatalf("batch spawn: %v", err)
+	}
+	b, ok := dec.(planner.Batch)
+	if !ok || len(b.Spawns) != 2 {
+		t.Fatalf("expected two-spawn Batch, got %T %+v", dec, dec)
+	}
+	if b.Spawns[0].Spec.VirtualAgent != "one" || b.Spawns[0].CallID != "s1" || len(b.Spawns[0].Spec.InputArtifactIDs) != 1 ||
+		b.Spawns[1].Spec.VirtualAgent != "two" || b.Spawns[1].CallID != "s2" || len(b.Spawns[1].Spec.InputArtifactIDs) != 2 {
+		t.Fatalf("batch spawns = %+v", b.Spawns)
+	}
+}
+
+func TestSpawnTaskReplayArgs_VirtualInputs(t *testing.T) {
+	t.Parallel()
+	args := string(spawnTaskReplayArgs(planner.SpawnTask{Spec: planner.SpawnSpec{
+		VirtualAgent:     "reviewer",
+		InputArtifactIDs: []string{"art-1", "art-2"},
+	}}))
+	for _, want := range []string{`"virtual_agent":"reviewer"`, `"input_artifact_ids":["art-1","art-2"]`} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("replay args %s missing %s", args, want)
+		}
+	}
+}
+
 // TestProjectResponse_TaskMgmt_StandaloneRejected — _task_status and
 // _cancel_task reject co-occurrence with ANY other tool-call (head or
 // tail, spawn or catalog), on both parallel settings.
@@ -265,14 +332,14 @@ func TestProjectResponse_TaskMgmt_SingleStillTranslates(t *testing.T) {
 }
 
 // TestReservedDecl_TaskMgmt_DeclaredWithSchemas — AC-3: the reserved
-// declaration set now carries seven entries; the task-management
+// declaration set now carries eight entries; the task-management
 // controls are present with their schemas, and the _spawn_task schema
 // carries propagate_on_cancel.
 func TestReservedDecl_TaskMgmt_DeclaredWithSchemas(t *testing.T) {
 	t.Parallel()
 	decls := reservedPlannerControlDeclarations()
-	if len(decls) != 7 {
-		t.Fatalf("reserved declarations = %d, want 7", len(decls))
+	if len(decls) != 8 {
+		t.Fatalf("reserved declarations = %d, want 8", len(decls))
 	}
 	byName := map[string]llm.ToolDeclaration{}
 	for _, d := range decls {
@@ -281,6 +348,7 @@ func TestReservedDecl_TaskMgmt_DeclaredWithSchemas(t *testing.T) {
 	for _, name := range []string{
 		SpawnTaskToolName, AwaitTaskToolName, TaskStatusToolName, CancelTaskToolName,
 		SteerTaskToolName, PauseTaskToolName, ResumeTaskToolName,
+		TaskProgressToolName,
 	} {
 		if _, ok := byName[name]; !ok {
 			t.Fatalf("reserved declaration %q missing", name)
@@ -294,9 +362,11 @@ func TestReservedDecl_TaskMgmt_DeclaredWithSchemas(t *testing.T) {
 	if s := string(byName[CancelTaskToolName].Schema); !strings.Contains(s, `"required": ["task_id"]`) {
 		t.Fatalf("_cancel_task schema must require task_id: %s", s)
 	}
-	// spawn_task schema carries propagate_on_cancel with the enum.
-	if s := string(byName[SpawnTaskToolName].Schema); !strings.Contains(s, "propagate_on_cancel") || !strings.Contains(s, `"isolate"`) {
-		t.Fatalf("_spawn_task schema missing propagate_on_cancel enum: %s", s)
+	// spawn_task schema carries the strict virtual-agent and artifact-ID
+	// projection surface, but no content or disposition carrier.
+	if s := string(byName[SpawnTaskToolName].Schema); !strings.Contains(s, "propagate_on_cancel") || !strings.Contains(s, `"isolate"`) ||
+		!strings.Contains(s, "virtual_agent") || !strings.Contains(s, "input_artifact_ids") || strings.Contains(s, "input_artifact_bytes") || strings.Contains(s, "input_artifact_dispositions") {
+		t.Fatalf("_spawn_task schema has incorrect strict input surface: %s", s)
 	}
 	// The task-management descriptions state the descendant-only scope and
 	// the isolate-detaches-from-YOU (not the operator) semantics honestly.

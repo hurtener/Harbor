@@ -68,6 +68,10 @@ import type {
  * chat module stays free of any `$lib/protocol` import.
  */
 export interface MCPAppRefView {
+	/** Opaque host/render-issued callback capability; never sandbox-authored. */
+  binding?: string;
+  /** Trusted resource URI paired with the render binding. */
+  resourceURI?: string;
   /**
    * Runtime-authored effective agent configuration. The host echoes this
    * value; it never accepts an agent id from the sandboxed App.
@@ -276,7 +280,8 @@ export interface MCPAppHostClient {
    * not-found, so the confinement rejection is distinguishable from a transport
    * failure.
    */
-  callTool(tool: string, args?: unknown, agentID?: string): Promise<MCPAppToolResult>;
+  /** Route an app callback with the host-derived server identity. */
+  callTool(serverID: string, tool: string, args?: unknown, agentID?: string, binding?: string, resourceURI?: string): Promise<MCPAppToolResult>;
   /** Route `resources/list` → `mcp.servers.resources`. */
   listResources(serverID: string, agentID?: string): Promise<MCPAppResourceListing[]>;
   /**
@@ -391,6 +396,10 @@ export interface AppBridgeHostOptions {
    * configured default and still applies signed reach.
    */
   agentID?: string;
+  /** Runtime-issued opaque callback binding for this render. */
+	binding?: string;
+  /** Trusted resource URI paired with the render binding. */
+  resourceURI?: string;
   /**
    * Called when the app requests a display mode. The request is recorded and
    * acked with the GRANTED mode (see {@link availableDisplayModes}). The
@@ -584,7 +593,7 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
       const qualified = qualifyAppToolName(serverID, name);
       let result: MCPAppToolResult;
       try {
-        result = await client.callTool(qualified, args, agentID);
+        result = await client.callTool(serverID, qualified, args, agentID, opts.binding, opts.resourceURI);
       } catch (err) {
         if (err instanceof MCPAppToolNotFoundError) {
           // Re-raise naming what the APP asked for (the bare name) and the

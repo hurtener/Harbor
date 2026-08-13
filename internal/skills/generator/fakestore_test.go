@@ -45,12 +45,20 @@ func (f *failingUpsertStore) GetScope(ctx context.Context, id identity.Quadruple
 	return f.inner.GetScope(ctx, id, name, scope)
 }
 
+func (f *failingUpsertStore) GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) (skills.Skill, error) {
+	return f.inner.GetScopeAgent(ctx, id, agentID, name, scope)
+}
+
 func (f *failingUpsertStore) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	return f.inner.List(ctx, id, filter)
 }
 
 func (f *failingUpsertStore) Search(ctx context.Context, id identity.Quadruple, q string, limit int) ([]skills.RankedSkill, error) {
 	return f.inner.Search(ctx, id, q, limit)
+}
+
+func (f *failingUpsertStore) SearchAgent(ctx context.Context, id identity.Quadruple, agentID, q string, limit int) ([]skills.RankedSkill, error) {
+	return f.inner.SearchAgent(ctx, id, agentID, q, limit)
 }
 
 func (f *failingUpsertStore) SearchSnapshot(ctx context.Context, id identity.Quadruple, q string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
@@ -63,6 +71,10 @@ func (f *failingUpsertStore) Delete(ctx context.Context, id identity.Quadruple, 
 		return f.deleteErr
 	}
 	return f.inner.Delete(ctx, id, name, scope)
+}
+
+func (f *failingUpsertStore) DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) error {
+	return f.inner.DeleteAgent(ctx, id, agentID, name, scope)
 }
 
 func (f *failingUpsertStore) DeleteSessionScope(ctx context.Context, id identity.Quadruple) error {

@@ -107,7 +107,10 @@ const (
 //   - `Origin` ∈ {OriginPack, OriginGenerated}
 //   - `Scope` ∈ {ScopeSession, ScopeUser, ScopeProject, ScopeTenant, ScopeGlobal}
 type Skill struct {
-	Name           string
+	Name string
+	// AgentID is selection metadata for an agent-owned skill. It is not an
+	// isolation principal; tenant/user/session remain the security boundary.
+	AgentID        string
 	Title          string
 	Description    string
 	Trigger        string
@@ -163,7 +166,9 @@ func (s Skill) Validate() error {
 // matched as "any". Drivers cap `Limit` at 1000; `Limit == 0` falls
 // back to the driver default (100).
 type ListFilter struct {
-	Scope    Scope
+	Scope Scope
+	// AgentID selects an agent-owned namespace without widening identity.
+	AgentID  string
 	TaskType string
 	Tags     []string // any-of match against the skill's `Tags`
 	Limit    int
@@ -300,8 +305,18 @@ type SkillStore interface {
 	SkillReader
 	SnapshotCandidateSearcher
 
+	// GetScopeAgent selects the requested agent-bound row, falling back to the
+	// legacy unbound row at the same scope. A bound row always wins a same-name
+	// collision; rows bound to another agent are never visible.
+	GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope Scope) (Skill, error)
+
+	// SearchAgent searches rows bound to agentID plus legacy unbound rows,
+	// giving bound rows precedence for duplicate names.
+	SearchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]RankedSkill, error)
+
 	// Upsert inserts or updates `skill` under the identity-scoped
-	// `(tenant, user, session, scope, name)` key. Conflict policy
+	// `(tenant, user, session, scope, agent_id, name)` key. AgentID is
+	// selection metadata, not an isolation principal. Conflict policy
 	// (RFC §6.7):
 	//
 	//   - existing.Origin == "pack" && skill.Origin != "pack" →
@@ -333,6 +348,9 @@ type SkillStore interface {
 	// Missing → `ErrSkillNotFound`. Emits `skill.deleted` on success.
 	Delete(ctx context.Context, id identity.Quadruple, name string, scope Scope) error
 
+	// DeleteAgent deletes only the requested agent binding at the exact rung.
+	DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope Scope) error
+
 	// DeleteSessionScope removes every legacy ScopeSession row under exactly
 	// `id`'s (tenant, user, session) triple. It is idempotent: a completed
 	// sweep, including one that found no rows, returns nil. It never lists or
@@ -345,6 +363,10 @@ type SkillStore interface {
 	// calls return `ErrStoreClosed`. Close is idempotent.
 	Close(ctx context.Context) error
 }
+
+// AgentSelectableSkillStore is retained as a source-compatible alias. Agent
+// selection is mandatory on SkillStore; it is not an optional capability.
+type AgentSelectableSkillStore = SkillStore
 
 // Sentinel errors. Compare via `errors.Is`.
 var (

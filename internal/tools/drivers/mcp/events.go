@@ -164,6 +164,8 @@ type AppAvailablePayload struct {
 	// produced the app. It is server-derived execution authority which clients
 	// echo on Apps data-plane calls; it is never caller or MCP content.
 	AgentID string
+	// Binding is the opaque runtime-issued callback capability for this render.
+	Binding string
 	// ServerID is the MCP server (source id) hosting the app — the value a
 	// client passes to mcp.servers.read_resource to fetch the document.
 	ServerID tools.ToolSourceID

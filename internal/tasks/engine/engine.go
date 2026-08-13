@@ -44,6 +44,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -55,6 +56,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // New constructs an Engine over the given event bus, redactor, and
@@ -62,12 +64,21 @@ import (
 // backend. Bus, redactor, and backend are all mandatory; a nil
 // argument fails loudly (CLAUDE.md §5).
 //
+// Options (variadic — existing callers pass none and get the
+// defaults):
+//
+//   - [WithProgressPolicy] replaces the default ReportProgress
+//     coalescing/rate policy (see [tasks.DefaultProgressPolicy]).
+//   - [WithClock] replaces the wall-clock source the progress path
+//     stamps ReportedAt with and evaluates the rate window against
+//     (tests inject a controllable clock; production uses time.Now).
+//
 // Hydration uses context.Background(): New runs at boot, before the
 // engine is handed to any caller, so there is no request context to
 // thread and no concurrent access to race. A backend whose Hydrate
 // returns an error fails New loudly rather than booting with partial
 // state.
-func New(bus events.EventBus, redactor audit.Redactor, backend Backend) (*Engine, error) {
+func New(bus events.EventBus, redactor audit.Redactor, backend Backend, opts ...Option) (*Engine, error) {
 	if bus == nil {
 		return nil, fmt.Errorf("tasks/engine: New requires a non-nil EventBus")
 	}
@@ -92,11 +103,76 @@ func New(bus events.EventBus, redactor audit.Redactor, backend Backend) (*Engine
 		patches:          map[patchKey]*tasks.Patch{},
 		acknowledged:     map[tasks.TaskID]struct{}{},
 		ulidEntropy:      ulid.Monotonic(rand.Reader, 0),
+		progressPolicy:   tasks.DefaultProgressPolicy(),
+		clock:            time.Now,
+		lastProgressEmit: map[tasks.TaskID]int64{},
+	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	if e.progressPolicy == (tasks.ProgressPolicy{}) {
+		e.progressPolicy = tasks.DefaultProgressPolicy()
+	}
+	if e.progressPolicy.MinInterval < 0 || e.progressPolicy.FractionEpsilon < 0 || math.IsNaN(e.progressPolicy.FractionEpsilon) || math.IsInf(e.progressPolicy.FractionEpsilon, 0) {
+		return nil, fmt.Errorf("tasks/engine: invalid progress policy")
 	}
 	if err := e.hydrate(context.Background()); err != nil {
 		return nil, err
 	}
 	return e, nil
+}
+
+// Option configures an Engine at construction. Options are applied
+// before hydration, so a backend can observe their effects (e.g. a
+// progress snapshot hydrated into lastProgressEmit uses the injected
+// clock's epoch consistently with the reports that will follow).
+type Option func(*Engine)
+
+// WithProgressPolicy replaces the default ReportProgress
+// coalescing/rate policy. A zero-valued policy is treated as "use
+// [tasks.DefaultProgressPolicy]" — an operator explicitly disabling
+// the window sets MinInterval to zero, not the whole policy.
+func WithProgressPolicy(p tasks.ProgressPolicy) Option {
+	return func(e *Engine) {
+		e.progressPolicy = p
+	}
+}
+
+// ProgressReporter returns a reporter permanently bound to id.
+func (e *Engine) ProgressReporter(ctx context.Context, id tasks.TaskID) (tasks.ProgressReporter, error) {
+	q, ok := identity.QuadrupleFrom(ctx)
+	if !ok || q.RunID == "" || tasks.TaskID(q.RunID) != id {
+		return nil, fmt.Errorf("%w: progress reporter is restricted to the current task", tasks.ErrNotFound)
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if _, err := e.lookupLocked(ctx, id); err != nil {
+		return nil, err
+	}
+	return boundProgressReporter{engine: e, id: id}, nil
+}
+
+type boundProgressReporter struct {
+	engine *Engine
+	id     tasks.TaskID
+}
+
+func (r boundProgressReporter) ReportProgress(ctx context.Context, req tasks.ReportProgressRequest) (tasks.ProgressReportResult, error) {
+	return r.engine.reportProgress(ctx, r.id, req)
+}
+
+// WithClock replaces the wall-clock source the progress path uses for
+// ReportedAt stamping and rate-window evaluation. Tests inject a
+// controllable clock so the coalescing policy is deterministic
+// without time.Sleep (AGENTS.md §11); production uses time.Now. The
+// returned instant must be a UTC wall-clock time (its UnixNano is
+// what is stored).
+func WithClock(now func() time.Time) Option {
+	return func(e *Engine) {
+		if now != nil {
+			e.clock = now
+		}
+	}
 }
 
 // idempotencyKey scopes IdempotencyKey by the FULL identity triple.
@@ -171,6 +247,25 @@ type Engine struct {
 	patches          map[patchKey]*tasks.Patch
 	acknowledged     map[tasks.TaskID]struct{}
 
+	// progressPolicy is the ReportProgress coalescing/rate policy
+	// (defaults to tasks.DefaultProgressPolicy; WithProgressPolicy
+	// overrides). clock is the wall-clock source the progress path
+	// stamps ReportedAt with (defaults to time.Now; WithClock
+	// overrides for tests).
+	progressPolicy tasks.ProgressPolicy
+	clock          func() time.Time
+	// lastProgressEmit records, per task, the unix-nanosecond instant
+	// of the task's last PUBLISHED task.progress event. It exists so
+	// the rate window is measured from the last emission, not the last
+	// (possibly coalesced) record — a rapidly-reported task whose
+	// records were all coalesced must not starve its own publication
+	// forever. All access is under `mu`. Rebuilt from each hydrated
+	// task's snapshot ReportedAt (best-effort: a coalesced-but-
+	// unemitted snapshot right before a restart is treated as emitted,
+	// which can only suppress the first post-restart message-only
+	// update — a real phase/fraction change always publishes).
+	lastProgressEmit map[tasks.TaskID]int64
+
 	closed      atomic.Bool
 	ulidEntropy *ulid.MonotonicEntropy
 }
@@ -191,6 +286,17 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if req.VirtualAgent != nil {
+		parentID := *req.ParentTaskID
+		parent, ok := e.tasks[parentID]
+		if !ok || !identitiesEqual(parent.Identity.Identity, req.Identity.Identity) {
+			return tasks.TaskHandle{}, fmt.Errorf("%w: virtual profile parent task %q is unavailable", tasks.ErrInvalidRequest, parentID)
+		}
+		parentAgent := parent.AgentID
+		if parentAgent != "" && parentAgent != req.AgentID {
+			return tasks.TaskHandle{}, fmt.Errorf("%w: virtual profile parent agent %q != child agent %q", tasks.ErrInvalidRequest, parentAgent, req.AgentID)
+		}
+	}
 
 	// Idempotency check: same (tenant, user, session, IdempotencyKey)
 	// seen? Empty IdempotencyKey disables dedup (every Spawn yields a
@@ -304,6 +410,9 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		// the caller-supplied memory block (edge-validated; nil = none).
 		CallerMemory:          callerMemory,
 		CallerMemoryWireBytes: len(req.CallerMemory),
+		// the virtual-agent profile binding (executor-constructed from the
+		// parent's frozen profile map; nil = not a virtual-profile task).
+		VirtualAgent: cloneVirtualAgent(req.VirtualAgent),
 	}
 	// Validate the requested group BEFORE persisting anything. A
 	// missing / cross-session / sealed group must fail the spawn
@@ -457,12 +566,27 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 		p := *t.ParentTaskID
 		cp.ParentTaskID = &p
 	}
+	if t.Progress != nil {
+		p := *t.Progress
+		if t.Progress.Fraction != nil {
+			f := *t.Progress.Fraction
+			p.Fraction = &f
+		}
+		cp.Progress = &p
+	}
 	if t.AgentReachAdmission != nil {
 		admission := tasks.AgentReachAdmission{
 			Envelope:      append([]byte(nil), t.AgentReachAdmission.Envelope...),
 			BindingDigest: append([]byte(nil), t.AgentReachAdmission.BindingDigest...),
 		}
 		cp.AgentReachAdmission = &admission
+	}
+	if t.Progress != nil {
+		cp.Progress = tasks.CloneProgress(t.Progress)
+	}
+	if t.VirtualAgent != nil {
+		binding := cloneVirtualAgent(t.VirtualAgent)
+		cp.VirtualAgent = binding
 	}
 	return &cp, nil
 }
@@ -619,12 +743,23 @@ func copyTask(t *tasks.Task) *tasks.Task {
 		p := *t.ParentTaskID
 		cp.ParentTaskID = &p
 	}
+	if t.Progress != nil {
+		p := *t.Progress
+		if t.Progress.Fraction != nil {
+			f := *t.Progress.Fraction
+			p.Fraction = &f
+		}
+		cp.Progress = &p
+	}
 	if t.AgentReachAdmission != nil {
 		admission := tasks.AgentReachAdmission{
 			Envelope:      append([]byte(nil), t.AgentReachAdmission.Envelope...),
 			BindingDigest: append([]byte(nil), t.AgentReachAdmission.BindingDigest...),
 		}
 		cp.AgentReachAdmission = &admission
+	}
+	if t.VirtualAgent != nil {
+		cp.VirtualAgent = cloneVirtualAgent(t.VirtualAgent)
 	}
 	return &cp
 }
@@ -1013,6 +1148,11 @@ func (e *Engine) transitionLocked(ctx context.Context, t *tasks.Task, to tasks.T
 	if !isValidTransition(t.Status, to) {
 		return fmt.Errorf("%w: from=%q to=%q", tasks.ErrInvalidTransition, t.Status, to)
 	}
+	if isTerminal(to) && t.PendingProgress != nil {
+		if err := e.publishPendingProgressLocked(ctx, t); err != nil {
+			return err
+		}
+	}
 	// Snapshot the fields we are about to mutate so a persist failure
 	// leaves the in-memory record in agreement with the store. Without
 	// this, a failed Save would advance in-memory status while the
@@ -1257,6 +1397,14 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if existing.AgentID != req.AgentID {
 		return false
 	}
+	// The virtual-agent profile binding is part of the task's content
+	// identity: a reused idempotency key selecting a DIFFERENT profile
+	// must surface as a loud conflict, never silently run the original
+	// profile. Two nil bindings compare equal (the non-profile retry
+	// path stays byte-identical).
+	if !virtualAgentEqual(existing.VirtualAgent, req.VirtualAgent) {
+		return false
+	}
 	if !tasks.AgentReachAdmissionsEqual(existing.AgentReachAdmission, admission) {
 		return false
 	}
@@ -1296,6 +1444,35 @@ func stringSliceEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// cloneVirtualAgent returns a defensive copy of a task's virtual-agent
+// binding (nil for nil) so the stored task never aliases the caller's
+// request value.
+func cloneVirtualAgent(b *tasks.VirtualAgent) *tasks.VirtualAgent {
+	if b == nil {
+		return nil
+	}
+	c := virtualagent.CloneBinding(*b)
+	return &c
+}
+
+// virtualAgentEqual reports whether two virtual-agent bindings agree on
+// every field — the content-identity comparison for the idempotency
+// conflict check. Two nil bindings are equal; a nil vs non-nil pair is
+// not (a reused key must not silently drop or adopt a profile).
+func virtualAgentEqual(a, b *tasks.VirtualAgent) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.AgentID != b.AgentID || a.Key != b.Key || a.Label != b.Label ||
+		a.Parent != b.Parent || a.ConfigRevisionID != b.ConfigRevisionID ||
+		a.ConfigDigest != b.ConfigDigest || a.ProfileHash != b.ProfileHash {
+		return false
+	}
+	ah, aerr := a.Profile.Hash()
+	bh, berr := b.Profile.Hash()
+	return aerr == nil && berr == nil && ah == bh
 }
 
 // spawnRequestContentHash returns a SHA-256 of the pre-redaction

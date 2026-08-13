@@ -92,10 +92,10 @@ func TestInternal_ErrorCodeMatrix_AllCanonical(t *testing.T) {
 	// CodeSessionRunning (D-262) + the sessions CodeSessionErased (D-312) +
 	// the agent-config CodeRevisionConflict (the expected-revision token) +
 	// session-skill cutover-pending and unstable-read codes + terminal agent
-	// retirement and retirement-replay conflict = 18 canonical codes at
+	// retirement and retirement-replay conflict + restart-unavailable = 19 canonical codes at
 	// Protocol 0.1.0.
-	if len(errorCodeMatrix) != 18 {
-		t.Errorf("errorCodeMatrix size = %d, want 18 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
+	if len(errorCodeMatrix) != 19 {
+		t.Errorf("errorCodeMatrix size = %d, want 19 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
 	}
 }
 

@@ -2,40 +2,37 @@ package types
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 )
 
-// TestMCPAppCallToolRequest_CarriesNoServerScope pins the confinement design
-// (D-227 item 3, re-affirmed by D-351): the MCP server an App is confined to is
-// HOST-DERIVED, and the app→host tool-call wire request therefore carries no
-// server-scope field at all.
-//
-// The property this protects is not "the field is missing" for its own sake. If
-// the request grew a `server_id`, the Console would have to populate it, and a
-// populated field is a field some future caller can be talked into taking from
-// the App — which is exactly the influence the confinement forbids. The
-// namespace arrives with the App reference (the backend-minted `server_id` on
-// `mcp.app_available`) and is applied host-side; the App chooses only the
-// suffix. Adding a server scope here is a design change that belongs in an RFC
-// PR and a new decision, not a field.
-func TestMCPAppCallToolRequest_CarriesNoServerScope(t *testing.T) {
+// TestMCPAppCallToolRequest_ServerIDIsHostDerived pins the HA-56 amendment
+// of the D-227 item 3 / D-351 confinement design: the app→host tool-call
+// request MAY carry a `server_id`, and that field is authoritative
+// HOST-DERIVED context — never a value an App supplies about itself. The
+// dispatch check (mcpconsole.AppsAccessor.CallTool) verifies it against
+// the resolved tool's actual source and resolves an app-only callback
+// (`_meta.ui.visibility: ["app"]`) ONLY through the named server's App
+// dispatch catalog, so a server_id a caller "took from the App" cannot
+// select another server's callback: a mismatched or missing identity is
+// refused before execution. The field is OPTIONAL (`omitempty`) — an
+// absent value keeps the pre-catalog behavior for ordinary tools and
+// legacy clients, and an app-only callback without its own server answers
+// not-found.
+func TestMCPAppCallToolRequest_ServerIDIsHostDerived(t *testing.T) {
 	rt := reflect.TypeOf(MCPAppCallToolRequest{})
-	for i := range rt.NumField() {
-		f := rt.Field(i)
-		tag := f.Tag.Get("json")
-		if strings.Contains(strings.ToLower(f.Name), "server") ||
-			strings.Contains(strings.ToLower(tag), "server") {
-			t.Fatalf("MCPAppCallToolRequest gained a server-scope field %q (json %q): "+
-				"an app→host tool call's server namespace is host-derived and must never "+
-				"travel on the wire where a caller could supply it", f.Name, tag)
-		}
+	f, ok := rt.FieldByName("ServerID")
+	if !ok {
+		t.Fatal("MCPAppCallToolRequest lost its host-derived ServerID field (HA-56): the dispatch check cannot verify an App call's server identity without it")
 	}
-	// Guard the guard: the fields the request DOES carry are identity + the
-	// runtime-authored agent binding + the already-qualified tool name +
-	// arguments. AgentID is resource authority, not a server namespace. A
-	// rename that dodged the scan above would also drop one of these.
-	want := map[string]bool{"Identity": true, "AgentID": true, "Tool": true, "Arguments": true}
+	if tag := f.Tag.Get("json"); tag != "server_id,omitempty" {
+		t.Fatalf("ServerID json tag = %q, want %q (optional, additive — an absent value keeps legacy behavior)", tag, "server_id,omitempty")
+	}
+	// Guard the guard: the fields the request carries are identity + the
+	// runtime-authored agent binding + the host-derived server identity +
+	// the already-qualified tool name + arguments. AgentID is resource
+	// authority, not a server namespace; ServerID is the host-derived
+	// server namespace, verified at dispatch, never trusted as supplied.
+	want := map[string]bool{"Identity": true, "AgentID": true, "ServerID": true, "Binding": true, "ResourceURI": true, "Tool": true, "Arguments": true}
 	got := make(map[string]bool, rt.NumField())
 	for i := range rt.NumField() {
 		got[rt.Field(i).Name] = true

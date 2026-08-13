@@ -382,6 +382,11 @@ func reservedPlannerControlDeclarations() []llm.ToolDeclaration {
 			Schema:      jsonSchemaRawSpawnTask,
 		},
 		{
+			Name:        TaskProgressToolName,
+			Description: "Planner control — report the current task's progress. Only fraction, phase, message, and tags are accepted; the runtime supplies task identity and timestamp.",
+			Schema:      jsonSchemaRawTaskProgress,
+		},
+		{
 			Name:        AwaitTaskToolName,
 			Description: "Planner control — block the foreground turn on a previously-spawned task's completion. Send it ALONE (never alongside any other tool call in the same response): pass the task_id returned by an earlier _spawn_task. The runtime resumes the planner with the task's resolved outcome.",
 			Schema:      jsonSchemaRawAwaitTask,
@@ -431,7 +436,8 @@ func reservedPlannerControlDeclarations() []llm.ToolDeclaration {
 // the inproc-driver deriver's output shape (which also emits raw
 // JSON-Schema bytes via `json.Marshal(schema)`).
 var (
-	jsonSchemaRawSpawnTask = []byte(`{
+	jsonSchemaRawTaskProgress = []byte(`{"type":"object","additionalProperties":false,"properties":{"fraction":{"type":"number","minimum":0,"maximum":1},"phase":{"type":"string"},"message":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}}}`)
+	jsonSchemaRawSpawnTask    = []byte(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -453,11 +459,20 @@ var (
         "priority": {"type": "integer"},
         "retain_turn": {"type": "boolean"},
         "fail_fast": {"type": "boolean"},
-        "propagate_on_cancel": {
-          "type": "string",
-          "enum": ["cascade", "isolate"],
-          "description": "cascade (default; omit for this): cancelling a parent task sweeps this task too. isolate: this task survives YOUR cancellation of an ancestor, but never a direct cancel by the operator."
-        }
+         "propagate_on_cancel": {
+           "type": "string",
+           "enum": ["cascade", "isolate"],
+           "description": "cascade (default; omit for this): cancelling a parent task sweeps this task too. isolate: this task survives YOUR cancellation of an ancestor, but never a direct cancel by the operator."
+         },
+         "virtual_agent": {
+           "type": "string",
+           "description": "Optional frozen virtual-agent profile key. The child inherits only the selected profile's trusted configuration overlay."
+         },
+         "input_artifact_ids": {
+           "type": "array",
+           "items": {"type": "string"},
+           "description": "Optional artifact IDs inherited by the child. Pass IDs only; bytes, URLs, schemas, and disposition hints are not accepted."
+         }
       }
     }
   },

@@ -110,6 +110,8 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, t
 		return
 	}
 	dur := time.Since(started).Milliseconds()
+	var policyErr *PolicyError
+	_ = errors.As(err, &policyErr)
 	if err == nil {
 		_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort observability emit; the tool result is the source of truth.
 			Type:       EventTypeToolCompleted,
@@ -144,12 +146,13 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, t
 			Identity:   q,
 			OccurredAt: time.Now(),
 			Payload: ToolPolicyExhaustedPayload{
-				Identity:  q,
-				ToolName:  name,
-				Transport: transport,
-				Attempts:  0,
-				LastClass: ErrClassPermanent,
-				LastError: err.Error(),
+				Identity:         q,
+				ToolName:         name,
+				Transport:        transport,
+				Attempts:         policyAttempts(policyErr, 0),
+				LastClass:        policyClass(policyErr, ErrClassPermanent),
+				ConfiguredBudget: policyBudget(policyErr, 0),
+				LastError:        err.Error(),
 			},
 		})
 	default:
@@ -168,14 +171,34 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, t
 			Identity:   q,
 			OccurredAt: time.Now(),
 			Payload: ToolFailedPayload{
-				Identity:       q,
-				ToolName:       name,
-				Transport:      transport,
-				Attempts:       1,
-				ErrorClass:     ErrClassPermanent,
-				ErrorMessage:   err.Error(),
-				ScopeShortfall: shortfall,
+				Identity:         q,
+				ToolName:         name,
+				Transport:        transport,
+				Attempts:         policyAttempts(policyErr, 1),
+				ErrorClass:       policyClass(policyErr, ErrClassPermanent),
+				ConfiguredBudget: policyBudget(policyErr, 0),
+				ErrorMessage:     err.Error(),
+				ScopeShortfall:   shortfall,
 			},
 		})
 	}
+}
+
+func policyAttempts(err *PolicyError, fallback int) int {
+	if err == nil {
+		return fallback
+	}
+	return err.Attempts
+}
+func policyBudget(err *PolicyError, fallback int) int {
+	if err == nil {
+		return fallback
+	}
+	return err.Budget
+}
+func policyClass(err *PolicyError, fallback ErrorClass) ErrorClass {
+	if err == nil {
+		return fallback
+	}
+	return err.Class
 }

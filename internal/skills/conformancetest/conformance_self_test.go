@@ -39,6 +39,18 @@ type adversarialSkillStore struct {
 	close              func(context.Context) error
 }
 
+func (s *adversarialSkillStore) GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) (skills.Skill, error) {
+	return s.GetScope(ctx, id, name, scope)
+}
+
+func (s *adversarialSkillStore) SearchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
+	return s.Search(ctx, id, query, limit)
+}
+
+func (s *adversarialSkillStore) DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) error {
+	return s.Delete(ctx, id, name, scope)
+}
+
 func (s *adversarialSkillStore) Upsert(ctx context.Context, id identity.Quadruple, skill skills.Skill) error {
 	if s.upsert != nil {
 		return s.upsert(ctx, id, skill)

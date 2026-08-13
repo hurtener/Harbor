@@ -10,6 +10,16 @@ metadata:
 
 # Use the Harbor Protocol
 
+## Operator-managed agent packs
+
+The admin-scoped `agent_config.agent_packs.list|upsert|remove|propose|commit`
+methods manage a per-agent skill pack. Direct writes use the dedicated verbs;
+`agent_config.set_revision` rejects the pack section. Governed authoring requires
+`expected_content_hash` on both `propose` and `commit`; commit must send the
+opaque single-use `proposal_id`, exact `reviewed_hash`, and unchanged body. The
+server-bound proposal receipt is not forgeable from the returned hash or
+provenance string.
+
 The Harbor Protocol is the canonical event/state contract between Runtime and any client. The bundled Console is one consumer; this skill walks the path for building your own. A working chatbot UI is achievable in a day on top of the Protocol — the wire is small, typed, and stable.
 
 Three properties make this practical:

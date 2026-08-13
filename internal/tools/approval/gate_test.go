@@ -565,7 +565,7 @@ func TestResolveApproval_RejectsPendingDecision(t *testing.T) {
 
 // --- ResolveApproval cross-identity rejection -----------------------------
 
-func TestResolveApproval_CrossIdentity_Rejected(t *testing.T) {
+func TestResolveApproval_CrossIdentity_NotFound(t *testing.T) {
 	idA := identity.Identity{TenantID: "tA", UserID: "uA", SessionID: "sA"}
 	idB := identity.Identity{TenantID: "tB", UserID: "uB", SessionID: "sB"}
 
@@ -605,11 +605,11 @@ func TestResolveApproval_CrossIdentity_Rejected(t *testing.T) {
 	payload, _ := ev.Payload.(ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
-	// Tenant B admin tries to resolve — Coordinator scope check
-	// rejects via ErrScopeMismatch.
+	// Tenant B admin tries to resolve — the private token is intentionally
+	// indistinguishable from an unknown token at the coordinator boundary.
 	err = g.ResolveApproval(mkControlScopeCtx(t, idB), token, DecisionApprove, "")
-	if !errors.Is(err, pauseresume.ErrScopeMismatch) {
-		t.Fatalf("cross-identity Resolve: got %v want ErrScopeMismatch", err)
+	if !errors.Is(err, pauseresume.ErrPauseNotFound) {
+		t.Fatalf("cross-identity Resolve: got %v want pauseresume.ErrPauseNotFound", err)
 	}
 
 	// Clean up by resolving from the correct identity.

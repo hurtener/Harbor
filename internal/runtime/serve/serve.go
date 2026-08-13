@@ -64,6 +64,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	agentregistry "github.com/hurtener/Harbor/internal/runtime/registry"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/server"
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/skills"
@@ -649,6 +650,11 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		return nil, fmt.Errorf("llm.credential_source is \"remote\" but no LLM driver is wired to source the brokered key — set llm.driver or use llm.credential_source: local")
 	}
 
+	virtualProfiles, virtualProfilesErr := cfg.VirtualAgents.ToMap()
+	if virtualProfilesErr != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("virtual profiles: %w", virtualProfilesErr)
+	}
 	runLoopDriver, err := NewRunLoopDriver(RunLoopDriverOptions{
 		Logger:                   opts.Logger,
 		Bus:                      bus,
@@ -667,6 +673,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		Catalog:                  toolCat,
 		Executor:                 stack.Executor,
 		MaxStepsRunLoop:          cfg.Planner.MaxSteps,
+		TrancheSteps:             steering.EffectiveTrancheSteps(cfg.Planner.MaxSteps),
 		GrantedScopes:            append([]string(nil), cfg.Tools.GrantedScopes...),
 		ArtifactStore:            artStore,
 		TokenBudget:              cfg.Planner.TokenBudget,
@@ -676,6 +683,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		SessionOverrides:         runsStore,
 		AgentConfig:              agentConfigRegistry,
 		AgentConfigID:            devAgentConfigID,
+		VirtualProfiles:          virtualProfiles,
 		EnsureBootAgentLifecycle: bootLifecycleEnsurer,
 		RunSnapshots:             runSnapshots,
 		AgentReachAdmissions:     agentReachAdmissions,
@@ -745,6 +753,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		MCPToolContext:                 mcpToolContext,
 		State:                          stack.State,
 		Skills:                         skillStore,
+		AgentPackLLM:                   stack.LLM,
 		AgentConfig:                    agentConfigRegistry,
 		AgentConfigID:                  devAgentConfigID,
 		AgentResolver:                  agentResolver,

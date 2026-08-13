@@ -63,6 +63,23 @@ type serverProvider interface {
 	Close(ctx context.Context) error
 }
 
+type appBindingProvider interface {
+	ValidateAppBinding(context.Context, string, string) bool
+}
+
+// ValidateAppBinding verifies a runtime-issued callback capability against the
+// named server. The token, rather than server_id, is the callback authority.
+func (r *Registry) ValidateAppBinding(ctx context.Context, serverID, token, resourceURI string) bool {
+	r.mu.RLock()
+	entry := r.servers[serverID]
+	r.mu.RUnlock()
+	if entry == nil {
+		return false
+	}
+	p, ok := entry.provider.(appBindingProvider)
+	return ok && p.ValidateAppBinding(ctx, token, resourceURI)
+}
+
 // compile-time assertion: the MCP *Provider satisfies serverProvider.
 var _ serverProvider = (*Provider)(nil)
 
@@ -229,7 +246,20 @@ var (
 	// already-registered id. See CheckServerIDUnambiguous for why that
 	// matters and what the rule is.
 	ErrAmbiguousServerID = fmt.Errorf("mcp: ambiguous server id (separator collision with a registered server)")
+	// ErrDiscoveryStale means a refresh completed for a server generation that
+	// is no longer current. Callers may retry against the replacement.
+	ErrDiscoveryStale = errors.New("mcp: discovery result is stale")
 )
+
+// DiscoveryStaleError is the bounded, retryable outcome for a refresh whose
+// captured server entry was replaced while discovery was in flight.
+type DiscoveryStaleError struct {
+	Retry bool
+}
+
+func (e *DiscoveryStaleError) Error() string { return ErrDiscoveryStale.Error() }
+
+func (e *DiscoveryStaleError) Is(target error) bool { return target == ErrDiscoveryStale }
 
 // maxListPageSize / defaultListPageSize bound the ListServers page.
 const (
@@ -263,6 +293,26 @@ type serverEntry struct {
 	// runtime-added descriptor that produced this registration. Empty for
 	// boot-declared registrations. Read-only after registration.
 	descriptorFingerprint string
+	// appOnly is the per-server App dispatch catalog: the app-only callbacks
+	// (provider-authored `_meta.ui.visibility: ["app"]`) discovered on THIS
+	// server, keyed by their full Harbor catalog name (`<source>_<tool>`).
+	// It is deliberately a SEPARATE view from the ordinary planner/model
+	// projection (the tool catalog): the attach path publishes only the
+	// non-app-only descriptors to the catalog, so an app-only callback is
+	// absent from planner context / tools/list / search / resolve / ordinary
+	// invocation by construction, while a rendered App of this SAME server
+	// resolves it here, still under the identity / reach / OAuth / approval
+	// / current-state gates. Guarded by the Registry's mu (RWMutex) exactly
+	// like stats: written only while mu is held for writing, read only
+	// while held for reading. Populated from the SAME discovered descriptor
+	// snapshot that seeds the catalog publication, so attach / reconnect /
+	// refresh / replacement / detach move both views together.
+	appOnly map[string]tools.ToolDescriptor
+	// catalog is the ordinary planner/model projection paired with appOnly.
+	// Refreshes reconcile both views from one filtered discovery snapshot.
+	catalog       tools.ToolCatalog
+	toolAllowlist []string
+	toolDenylist  []string
 
 	// stats is the mutable per-server runtime state. Guarded by the
 	// Registry's mu (RWMutex). Documented invariants: every field is
@@ -390,6 +440,15 @@ type ServerRegistration struct {
 	// DescriptorFingerprint is the canonical digest of the complete
 	// NON-SECRET runtime-added descriptor. Empty for boot registrations.
 	DescriptorFingerprint string
+	// Catalog is the ordinary planner/model projection paired with this
+	// registration, allowing refresh to reconcile both views together.
+	Catalog tools.ToolCatalog
+	// ToolAllowlist is the signed restrictive tool-name policy applied to
+	// discovery snapshots before either projection is rebuilt.
+	ToolAllowlist []string
+	// ToolDenylist is the signed restrictive tool-name policy applied to
+	// discovery snapshots before either projection is rebuilt.
+	ToolDenylist []string
 }
 
 // CheckServerIDUnambiguous reports whether registering `name` would leave the
@@ -540,6 +599,9 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 		oauthAllowedOrigins:   append([]string(nil), reg.OAuthDiscoveryAllowedOrigins...),
 		owner:                 reg.Owner,
 		descriptorFingerprint: reg.DescriptorFingerprint,
+		catalog:               reg.Catalog,
+		toolAllowlist:         append([]string(nil), reg.ToolAllowlist...),
+		toolDenylist:          append([]string(nil), reg.ToolDenylist...),
 		stats: serverStats{
 			state:             st,
 			oauthBindingCount: reg.OAuthBindingCount,
@@ -548,11 +610,69 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 			promptCount:       pc,
 		},
 	}
+	// Partition the SAME discovered snapshot into the two views: the
+	// app-only callbacks stay HERE on the per-server App dispatch catalog
+	// (read via ResolveAppTool), while the attach path publishes only the
+	// remaining descriptors to the ordinary planner/model catalog. Both
+	// views therefore always derive from one discovered set — a refresh /
+	// replacement swaps the appOnly set exactly when it swaps the catalog
+	// publication, so no stale callback can survive either direction.
+	entry.appOnly = partitionAppOnly(descs)
 	if descs != nil {
 		entry.stats.lastDiscoveryAt = now
 	}
 	return entry, name, nil
 
+}
+
+// partitionAppOnly splits a discovered descriptor snapshot into the
+// per-server App dispatch catalog — every descriptor whose Tool carries
+// the provider-authored app-only classification (`_meta.ui.visibility:
+// ["app"]`), keyed by full catalog name. A duplicate name within the set
+// is impossible for a single provider's discovery (the MCP server's own
+// tool names are unique), so a collision is skipped defensively rather
+// than panicking; the ordinary catalog's StageSource enforces the real
+// uniqueness gate for the other view.
+func partitionAppOnly(descs []tools.ToolDescriptor) map[string]tools.ToolDescriptor {
+	var out map[string]tools.ToolDescriptor
+	for _, d := range descs {
+		if !d.Tool.AppOnly {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]tools.ToolDescriptor, 1)
+		}
+		if _, dup := out[d.Tool.Name]; dup {
+			continue
+		}
+		out[d.Tool.Name] = d
+	}
+	return out
+}
+
+// ResolveAppTool resolves an app-only callback from the named server's App
+// dispatch catalog — the ONLY authority a rendered App may invoke an
+// app-only callback through. The server identity is the host-derived key:
+// a callback name is NEVER resolvable here without its own server, and a
+// name that lives on a DIFFERENT server answers not-found, so no string
+// prefix or remembered global tool name can select another server's
+// callback. Identity is mandatory (every other read path — AGENTS.md §6
+// rule 9); the App dispatch surface has already reconciled a verified
+// triple before this is reachable.
+//
+// The returned descriptor is the SAME wrapped descriptor the ordinary
+// catalog would hold for a non-app-only tool, so invoking it re-enters the
+// existing approval / OAuth / identity / current-state path — the App
+// dispatch surface applies those gates exactly as a planner call does.
+func (r *Registry) ResolveAppTool(serverID, toolName string) (tools.ToolDescriptor, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.servers[serverID]
+	if !ok {
+		return tools.ToolDescriptor{}, false
+	}
+	d, ok := e.appOnly[toolName]
+	return d, ok
 }
 
 // RegistrationSwap is a reversible live-registry publication. Commit makes
@@ -1622,6 +1742,13 @@ func (r *Registry) ListPrompts(ctx context.Context, name string) ([]PromptView, 
 // caller-chosen policy or remove the registration itself — are the scoped ones
 // (see [Registry.SetRawHTMLTrust], [Registry.SetOAuthDiscoveryOrigins],
 // [Registry.Deregister]).
+//
+// # The App dispatch view rebuilds with the snapshot
+//
+// The fresh descriptor set rebuilds BOTH projections under the registry write
+// lock: the ordinary planner/model catalog and the server's App dispatch
+// catalog (entry.appOnly). A refresh therefore picks up and removes callbacks
+// in either visibility direction without leaving a stale projection behind.
 func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*DiscoveryResult, error) {
 	if err := requireIdentity(ctx); err != nil {
 		return nil, err
@@ -1633,13 +1760,22 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 	start := r.clock()
 	descs, derr := e.provider.Discover(ctx)
 	latency := r.clock().Sub(start).Milliseconds()
+	r.mu.Lock()
+	if r.servers[name] != e {
+		r.mu.Unlock()
+		return nil, &DiscoveryStaleError{Retry: true}
+	}
 	if derr != nil {
-		r.recordError(name)
+		e.stats.errorRatePerMin++
+		e.stats.state = ServerStateError
+		r.mu.Unlock()
 		return nil, fmt.Errorf("mcp: RefreshDiscovery %q: %w", name, derr)
 	}
+	// Reapply the registration policy to every fresh snapshot before either
+	// catalog view is derived. A refresh must never resurrect a denied tool.
+	descs = filterDiscoveredTools(descs, name, e.toolAllowlist, e.toolDenylist)
 	tc, rc, pc := classifyDescriptors(descs, name)
 
-	r.mu.Lock()
 	e.stats.discoveryCounter++
 	discoveryID := fmt.Sprintf("%s-disc-%d", name, e.stats.discoveryCounter)
 	e.stats.toolCount = tc
@@ -1652,6 +1788,17 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 		StartMs:   start.UnixMilli(),
 		LatencyMs: latency,
 	})
+	if e.catalog != nil {
+		catalogSwap, cerr := e.catalog.StageSource(tools.ToolSourceID(name), ordinaryDescriptors(descs), true)
+		if cerr != nil {
+			r.mu.Unlock()
+			return nil, fmt.Errorf("mcp: refresh catalog %q: %w", name, cerr)
+		}
+		catalogSwap.Commit()
+	}
+	// Rebuild the App dispatch view from the SAME fresh snapshot that just
+	// re-derived the counts — one discovered set, two views.
+	e.appOnly = partitionAppOnly(descs)
 	r.mu.Unlock()
 
 	return &DiscoveryResult{

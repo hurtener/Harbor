@@ -194,6 +194,26 @@ type Status struct {
 	// (restart-survival) Status never carries a Decision because a
 	// resumed checkpoint is deleted, not kept.
 	Decision Decision
+	// Available reports whether this pause can be resumed by this runtime.
+	// A tranche checkpoint rehydrated after restart is retained for truthful
+	// inspection but is unavailable because exact run-loop redrive is absent.
+	Available bool
+}
+
+// Continuable reports whether the pause record can be continued by an
+// authorised Resume — the truthful "Continue" projection of a paused
+// run. A pause is continuable only while it is still parked and available;
+// a resumed record is terminal, and a record
+// that no longer exists surfaces ErrPauseNotFound instead of a Status.
+//
+// The projection never depends on planner state: a pause's checkpointed
+// trajectory is re-attached by Resume from the record itself, so a
+// client (the pause-list projection, the Console interventions queue)
+// renders Continue from the record alone — including a
+// step-tranche pause, whose Resume grants a fresh step tranche through
+// the RunLoop without the client supplying any planner data.
+func (s Status) Continuable() bool {
+	return s.State == StatusPaused && s.Available
 }
 
 // Coordinator is Harbor's unified pause/resume primitive. One
@@ -207,7 +227,7 @@ type Status struct {
 //     and trajectory.ErrToolContextLost verbatim out of Resume — no
 //     silent-degradation path;
 //   - validate the resuming identity scope against the pause's scope
-//     (ErrScopeMismatch);
+//     (ErrPauseNotFound);
 //   - treat Resume as idempotent — a second Resume of the same Token
 //     returns ErrAlreadyResumed, never a double-apply.
 type Coordinator interface {
@@ -259,6 +279,46 @@ type Coordinator interface {
 	// `auth.ScopeAdmin` claim and setting AdminScoped (separation of
 	// concerns).
 	List(ctx context.Context, req ListRequest) (ListResponse, error)
+}
+
+// TrancheCanceller is the live-run extension for atomically consuming a
+// step-tranche pause during cancellation.
+type TrancheCanceller interface {
+	CancelTranche(context.Context, Token) error
+}
+
+// TrancheCancellationError reports cleanup failure after cancellation won the
+// token. The run is terminally cancelled; callers must retain the error for
+// cleanup/retry observability rather than treating it as a resumable failure.
+type TrancheCancellationError struct{ Err error }
+
+func (e *TrancheCancellationError) Error() string {
+	return "pauseresume: tranche cancellation cleanup: " + e.Err.Error()
+}
+func (e *TrancheCancellationError) Unwrap() error { return e.Err }
+
+// CancelTranche consumes a live step-tranche token, failing closed when the
+// Coordinator does not support live-run cancellation.
+func CancelTranche(ctx context.Context, c Coordinator, token Token) error {
+	ext, ok := c.(TrancheCanceller)
+	if !ok {
+		return ErrRestartUnavailable
+	}
+	return ext.CancelTranche(ctx, token)
+}
+
+// StatusForIdentity reads a private token selector without exposing whether a
+// foreign identity exists. The runID argument is descriptive metadata and does
+// not restrict access within the owning identity scope. Implementations that
+// do not provide the scoped extension are treated as not found.
+func StatusForIdentity(ctx context.Context, c Coordinator, token Token, id identity.Identity, runID string) (Status, error) {
+	scoped, ok := c.(interface {
+		StatusForIdentity(context.Context, Token, identity.Identity, string) (Status, error)
+	})
+	if !ok {
+		return Status{}, ErrPauseNotFound
+	}
+	return scoped.StatusForIdentity(ctx, token, id, runID)
 }
 
 // ListRequest is the input to Coordinator.List — the runtime-internal

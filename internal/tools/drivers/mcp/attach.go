@@ -501,6 +501,27 @@ func filterDiscoveredTools(descriptors []tools.ToolDescriptor, source string, al
 	return out
 }
 
+// ordinaryDescriptors returns the subset of a discovered descriptor
+// snapshot that the ordinary planner/model catalog publishes — every
+// non-app-only descriptor. App-only callbacks (provider-authored
+// `_meta.ui.visibility: ["app"]`) are partitioned OUT here so they never
+// enter the ordinary catalog; they ride the registry's per-server App
+// dispatch catalog instead (partitioned from the SAME snapshot by
+// registrationEntry). This is the single place the two views diverge, and
+// it runs at the attach publication linearization point, so a callback is
+// either absent from BOTH views or present in exactly one (the App
+// dispatch catalog) — never in planner context.
+func ordinaryDescriptors(descs []tools.ToolDescriptor) []tools.ToolDescriptor {
+	out := make([]tools.ToolDescriptor, 0, len(descs))
+	for _, d := range descs {
+		if d.Tool.AppOnly {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
 // Activate privately reserves the reversible registry replacement first, then
 // swaps the catalog source as the dispatch linearization point. The old
 // same-owner provider remains callable through both the old catalog descriptors
@@ -561,6 +582,9 @@ func (p *PreparedAttachment) ActivateUnder(ctx context.Context, admit func(conte
 			OAuthDiscoveryAllowedOrigins: append([]string(nil), p.ms.OAuthDiscoveryAllowedOrigins...),
 			Owner:                        p.deps.Owner,
 			DescriptorFingerprint:        p.deps.DescriptorFingerprint,
+			Catalog:                      p.deps.Catalog,
+			ToolAllowlist:                append([]string(nil), p.deps.ToolAllowlist...),
+			ToolDenylist:                 append([]string(nil), p.deps.ToolDenylist...),
 		}, p.descriptors)
 		if err != nil {
 			return fmt.Errorf("registry.StageRegistration: %w", err)
@@ -575,8 +599,20 @@ func (p *PreparedAttachment) ActivateUnder(ctx context.Context, admit func(conte
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		published, publishErr = p.registrySwap.Publish(cleanupCtx, func() error {
+			// Publish ONLY the ordinary (non-app-only) descriptors to the
+			// planner/model catalog. The app-only callbacks — provider-
+			// authored `_meta.ui.visibility: ["app"]` — ride the registry's
+			// per-server App dispatch catalog instead (partitioned from the
+			// SAME discovered snapshot by registrationEntry, staged above).
+			// Both views therefore always derive from ONE discovered set and
+			// publish inside this single registry-locked critical section,
+			// so attach / reconnect / replacement move them together: an
+			// app-only callback is absent from planner context / tools/list
+			// / search / resolve / ordinary invocation by construction while
+			// the App of this same server resolves it through
+			// Registry.ResolveAppTool.
 			var err error
-			catalogSwap, err = p.deps.Catalog.StageSource(tools.ToolSourceID(p.ms.Name), p.descriptors, priorExists)
+			catalogSwap, err = p.deps.Catalog.StageSource(tools.ToolSourceID(p.ms.Name), ordinaryDescriptors(p.descriptors), priorExists)
 			if err != nil {
 				return fmt.Errorf("catalog.Register source %q: %w", p.ms.Name, err)
 			}

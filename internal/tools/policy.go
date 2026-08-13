@@ -33,6 +33,18 @@ const (
 // classifier maps Go errors to a class on each failed attempt.
 type ErrorClass string
 
+// PolicyError preserves terminal policy accounting while retaining the
+// underlying error chain for callers and lifecycle projection.
+type PolicyError struct {
+	Err      error
+	Attempts int
+	Budget   int
+	Class    ErrorClass
+}
+
+func (e *PolicyError) Error() string { return e.Err.Error() }
+func (e *PolicyError) Unwrap() error { return e.Err }
+
 const (
 	// ErrClassTransient covers retryable infrastructure issues —
 	// network blips, "connection reset", "EOF", etc. The shell's
@@ -349,13 +361,17 @@ func runWithPolicy(
 	hooks *invokeHooks,
 ) (ToolResult, error) {
 	resolved := policy.resolved()
+	totalAttempts := resolved.MaxRetries + 1
+	if totalAttempts <= 0 {
+		totalAttempts = 1
+	}
 
 	// 1. Input validation ONCE, BEFORE the retry loop. Invalid args
 	// are a typed failure the planner is expected to fix via
 	// reformulation — retrying with the same args never converges.
 	if resolved.shouldValidateIn() && validateIn != nil {
 		if err := validateIn(args); err != nil {
-			return ToolResult{}, wrap(ErrToolInvalidArgs, "%v", err)
+			return ToolResult{}, terminalPolicyError(wrap(ErrToolInvalidArgs, "%v", err), 0, totalAttempts, ErrClassPermanent)
 		}
 	}
 
@@ -363,18 +379,14 @@ func runWithPolicy(
 		jitter = rand.Float64
 	}
 
-	totalAttempts := resolved.MaxRetries + 1
-	if totalAttempts <= 0 {
-		totalAttempts = 1
-	}
-
 	var lastErr error
 	var lastClass ErrorClass
+	var lastResult ToolResult
 
 	for attempt := range totalAttempts {
 		// Honor ctx cancellation between attempts.
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ToolResult{}, ctxErr
+			return lastResult, terminalPolicyError(policyCancellationError(ctxErr, lastErr), attempt, totalAttempts, ErrClassPermanent)
 		}
 
 		// Sleep before retries (attempt > 0).
@@ -385,7 +397,7 @@ func runWithPolicy(
 				select {
 				case <-ctx.Done():
 					timer.Stop()
-					return ToolResult{}, ctx.Err()
+					return lastResult, terminalPolicyError(policyCancellationError(ctx.Err(), lastErr), attempt, totalAttempts, ErrClassPermanent)
 				case <-timer.C:
 				}
 			}
@@ -399,6 +411,7 @@ func runWithPolicy(
 		}
 
 		result, invokeErr := safeInvoke(attemptCtx, invoke, args)
+		lastResult = result
 		if cancel != nil {
 			cancel()
 		}
@@ -426,22 +439,45 @@ func runWithPolicy(
 
 		// Permanent + ctx-cancellation classes terminate the loop.
 		if lastClass == ErrClassPermanent {
-			return ToolResult{}, invokeErr
+			return result, terminalPolicyError(invokeErr, attempt+1, totalAttempts, lastClass)
 		}
 		// If the parent ctx died (not just the per-attempt one),
 		// terminate.
 		if parentErr := ctx.Err(); parentErr != nil {
-			return ToolResult{}, parentErr
+			return result, terminalPolicyError(policyCancellationError(parentErr, invokeErr), attempt+1, totalAttempts, ClassifyError(parentErr, false))
 		}
 		// If the class isn't in RetryOn, terminate.
 		if !resolved.retryAllowed(lastClass) {
-			return ToolResult{}, invokeErr
+			return result, terminalPolicyError(invokeErr, attempt+1, totalAttempts, lastClass)
 		}
 	}
 
 	// Terminal failure: wrap with ErrToolPolicyExhausted.
-	return ToolResult{}, fmt.Errorf("%w: %d attempts, last class=%s: %w",
-		ErrToolPolicyExhausted, totalAttempts, lastClass, lastErr)
+	return lastResult, &PolicyError{
+		Err:      fmt.Errorf("%w: %d attempts, last class=%s: %w", ErrToolPolicyExhausted, totalAttempts, lastClass, lastErr),
+		Attempts: totalAttempts,
+		Budget:   totalAttempts,
+		Class:    policyProjectionClass(lastErr, lastClass),
+	}
+}
+
+func terminalPolicyError(err error, attempts, budget int, class ErrorClass) error {
+	return &PolicyError{Err: err, Attempts: attempts, Budget: budget, Class: policyProjectionClass(err, class)}
+}
+
+func policyCancellationError(ctxErr, lastErr error) error {
+	if lastErr == nil {
+		return ctxErr
+	}
+	return errors.Join(ctxErr, lastErr)
+}
+
+func policyProjectionClass(err error, fallback ErrorClass) ErrorClass {
+	var mcpErr *MCPToolResultError
+	if errors.As(err, &mcpErr) && !mcpErr.Recognized {
+		return ErrorClass("unclassified")
+	}
+	return fallback
 }
 
 // safeInvoke calls invoke under a panic recovery so a misbehaving
@@ -525,6 +561,17 @@ func ClassifyError(err error, perAttemptTimeout bool) ErrorClass {
 	}
 	if errors.Is(err, ErrToolInvalidArgs) || errors.Is(err, ErrToolNotFound) {
 		return ErrClassPermanent
+	}
+	var mcpErr *MCPToolResultError
+	if errors.As(err, &mcpErr) {
+		switch mcpErr.Class {
+		case MCPToolErrorInvalidArgument, MCPToolErrorValidation,
+			MCPToolErrorAuthorization, MCPToolErrorNotFound, MCPToolErrorConflict,
+			MCPToolErrorToolDomain:
+			return ErrClassPermanent
+		case MCPToolErrorTransient, MCPToolErrorProviderUnavailable:
+			return ErrClassTransient
+		}
 	}
 	// A downstream insufficient-scope step-up is permanent: retrying the same
 	// call with the same (shortfall) scopes can never converge. Without this

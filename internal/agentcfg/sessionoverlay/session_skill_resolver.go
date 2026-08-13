@@ -34,11 +34,20 @@ type CutoverModeReader interface {
 // active admin and user config revisions at run start. AdminMembershipSet
 // distinguishes an absent admin selection (all non-session base rows remain
 // eligible) from an explicitly empty selection. UserPersonalNames are added
-// back from the exact ScopeUser rung; neither list selects an agent.
+// back from the exact ScopeUser rung; neither list selects an agent. Packs
+// are the converted operator-managed per-agent skill bodies from the agent's
+// active `agent_packs` section (HA-55); they compose LAST, so a pack body
+// wins a name collision against a base row, a durable user personal skill,
+// or a session personal skill — a user's personal skill can never replace
+// the operator-pack body.
 type SessionSkillMembership struct {
 	AdminMembershipSet bool
 	AdminNames         []string
 	UserPersonalNames  []string
+	// Packs are the fully-validated operator pack skills for the selected
+	// agent. Each carries Origin=pack and Scope=tenant (the pack rung is
+	// fixed by construction; see agentcfg.AgentPackItem.Skill).
+	Packs []skills.Skill
 }
 
 // SessionSkillResolverConfig contains the complete authority inputs for one
@@ -66,6 +75,7 @@ type SessionSkillResolver struct {
 	all      map[string]skills.Skill
 	byScope  map[skills.Scope]map[string]skills.Skill
 	session  map[string]skills.Skill
+	pack     map[string]skills.Skill
 }
 
 // NewSessionSkillResolver captures a fence-stable composed skill view for one
@@ -148,7 +158,7 @@ func canonicalMembership(names []string) (map[string]struct{}, error) {
 }
 
 func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, user map[string]struct{}) (*SessionSkillResolver, error) {
-	base, err := cfg.Base.List(ctx, cfg.Run, skills.ListFilter{Limit: maxSessionSkillResolverBaseRows})
+	base, err := cfg.Base.List(ctx, cfg.Run, skills.ListFilter{AgentID: cfg.AgentID, Limit: maxSessionSkillResolverBaseRows})
 	if err != nil {
 		return nil, fmt.Errorf("agentcfg/sessionoverlay: list base skills: %w", err)
 	}
@@ -156,7 +166,7 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 		return nil, fmt.Errorf("%w: base enumeration exceeded %d rows", ErrInvalidSessionSkillResolver, maxSessionSkillResolverBaseRows)
 	}
 	if len(base) == maxSessionSkillResolverBaseRows {
-		probe, err := cfg.Base.List(ctx, cfg.Run, skills.ListFilter{Limit: 1, Offset: maxSessionSkillResolverBaseRows})
+		probe, err := cfg.Base.List(ctx, cfg.Run, skills.ListFilter{AgentID: cfg.AgentID, Limit: 1, Offset: maxSessionSkillResolverBaseRows})
 		if err != nil {
 			return nil, fmt.Errorf("agentcfg/sessionoverlay: probe base enumeration bound: %w", err)
 		}
@@ -173,6 +183,19 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 			return nil, err
 		}
 		if skill.Scope == skills.ScopeSession {
+			continue
+		}
+		// Agent-aware personal-skill semantics (HA-55): a durable
+		// ScopeUser row is resolved ONLY through the per-agent user-scope
+		// membership (`UserPersonalNames`, added back below) — never from
+		// the base enumeration. Without this, every ScopeUser row of the
+		// (tenant, user) would leak into every agent's run snapshot, so a
+		// personal skill authored under agent A would surface under agent
+		// B. The one carve-out is the admin-pinned membership: when the
+		// admin pins an explicit set, the base ScopeUser rows still
+		// participate so an admin-pinned personal name resolves (the
+		// filterScoped step below narrows them to the pinned set).
+		if skill.Scope == skills.ScopeUser && !cfg.Membership.AdminMembershipSet {
 			continue
 		}
 		if err := putScoped(baseByScope, skill); err != nil {
@@ -194,7 +217,8 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		skill, err := cfg.Base.GetScope(ctx, cfg.Run, name, skills.ScopeUser)
+		selected := cfg.Base
+		skill, err := selected.GetScopeAgent(ctx, cfg.Run, cfg.AgentID, name, skills.ScopeUser)
 		if err != nil {
 			// User-scope membership is only a selection hint for an independently
 			// durable body. A deleted or not-yet-written ScopeUser body is
@@ -238,7 +262,32 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 	if len(session) > 0 {
 		byScope[skills.ScopeSession] = cloneSkillMap(session)
 	}
-	return &SessionSkillResolver{run: cfg.Run, agentID: cfg.AgentID, searcher: cfg.Base, all: all, byScope: byScope, session: cloneSkillMap(session)}, nil
+	// Operator-managed pack: compose LAST with pack-wins precedence. A pack
+	// body never enters byScope — the pack is not a storage rung, so a
+	// rung-precise GetScope/delete can never touch it — and it overrides
+	// any same-named base / user / session row in `all` (HA-55 acceptance:
+	// a user's personal skill cannot replace the operator-pack body). Pack
+	// skills are already validated by the projection (conversion fails
+	// loudly), but the resolver re-validates + re-hashes so a tampered
+	// membership input cannot smuggle a malformed body into the composed
+	// view.
+	pack := make(map[string]skills.Skill, len(cfg.Membership.Packs))
+	for _, skill := range cfg.Membership.Packs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		normalized, err := normalizeResolverSkill(skill)
+		if err != nil {
+			return nil, err
+		}
+		canonical := canonicalNameFor(normalized.Name)
+		if canonical == "" {
+			return nil, fmt.Errorf("%w: pack skill name is empty", ErrInvalidSessionSkillResolver)
+		}
+		all[canonical] = cloneSkill(normalized)
+		pack[canonical] = cloneSkill(normalized)
+	}
+	return &SessionSkillResolver{run: cfg.Run, agentID: cfg.AgentID, searcher: cfg.Base, all: all, byScope: byScope, session: cloneSkillMap(session), pack: pack}, nil
 }
 
 func loadLegacySessionTier(ctx context.Context, cfg SessionSkillResolverConfig) (map[string]skills.Skill, error) {
@@ -408,6 +457,15 @@ func (r *SessionSkillResolver) GetScope(ctx context.Context, id identity.Quadrup
 	return cloneSkill(skill), nil
 }
 
+// GetScopeAgent implements the agent-aware reader contract for this run-bound
+// projection. The resolver contains only its bound agent's composed rows.
+func (r *SessionSkillResolver) GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) (skills.Skill, error) {
+	if agentID != r.agentID {
+		return skills.Skill{}, skills.ErrSkillNotFound
+	}
+	return r.GetScope(ctx, id, name, scope)
+}
+
 // List returns the composed view in deterministic canonical-name order.
 func (r *SessionSkillResolver) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if err := r.validateCall(ctx, id); err != nil {
@@ -488,6 +546,15 @@ func (r *SessionSkillResolver) Search(ctx context.Context, id identity.Quadruple
 		result[i].Skill = cloneSkill(expected)
 	}
 	return result, nil
+}
+
+// SearchAgent implements the agent-aware reader contract for this run-bound
+// projection.
+func (r *SessionSkillResolver) SearchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
+	if agentID != r.agentID {
+		return nil, skills.ErrSkillNotFound
+	}
+	return r.Search(ctx, id, query, limit)
 }
 
 func (r *SessionSkillResolver) validateCall(ctx context.Context, id identity.Quadruple) error {

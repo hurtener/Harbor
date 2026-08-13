@@ -21,7 +21,10 @@
 //     whose YAML name matches the canonical secret list.
 package config
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Config is the root configuration. It is immutable after Load.
 type Config struct {
@@ -60,6 +63,13 @@ type Config struct {
 	Embeddings EmbeddingsConfig `yaml:"embeddings,omitempty"`
 
 	PauseResume PauseResumeConfig `yaml:"pauseresume,omitempty"` // owned by the pause/resume subsystem
+
+	// VirtualAgents is the boot YAML declaration of the configured
+	// top-level agent's optional virtual-agent profiles
+	// (`virtual_agents:`). Absent (the zero value) means no profiles —
+	// omission is byte-compatible with a runtime that predates the
+	// feature. Optional; validated at boot.
+	VirtualAgents VirtualAgentsConfig `yaml:"virtual_agents,omitempty"`
 
 	// source records the originating filename for error messages.
 	// Empty when LoadFromBytes is called without a name. Unexported so
@@ -2104,10 +2114,11 @@ const (
 // Graph, Deterministic, Supervisor, MultiAgent, HumanApproval per
 // RFC §6.2).
 //
-// `MaxSteps` overrides the driver-side circuit-breaker step cap. Zero
-// (the default) means "use the driver's internal default" — e.g. the
-// react driver's `react.DefaultMaxSteps` (12). The validator rejects
-// negative values pre-boot.
+// `MaxSteps` configures the planner step tranche and the runtime's
+// continuation authority. Zero (the default) means "use the driver's
+// internal default" — e.g. the react driver's `react.DefaultMaxSteps`
+// (12); it never selects the legacy terminal-only run loop. The validator
+// rejects negative values pre-boot.
 //
 // `ExtraGuidance` is operator-supplied domain-specific guidance
 // injected into the rendered ReAct system prompt's
@@ -2416,4 +2427,121 @@ type PlannerPlanningHintsCfg struct {
 // `RunContext.PlanningHints` (nil) or to allocate a populated struct.
 func (p PlannerPlanningHintsCfg) IsZero() bool {
 	return p.Constraints == "" && len(p.PreferredTools) == 0
+}
+
+// VirtualAgentsConfig is the boot YAML declaration of the configured
+// top-level agent's optional virtual-agent profiles (`virtual_agents:`).
+//
+// Virtual agents are NOT registered agents: they never appear in
+// `agents.list`, are never `control.start` targets, and never join the
+// isolation tuple. A profile is a per-run CONFIGURATION projection —
+// the effective child run is the parent's frozen config plus the
+// profile's bounded, non-recursive narrow-only overlay. The overlay may
+// narrow model parameters / skills / tools / limits and add trusted
+// specialist instructions; it can never widen resources or guardrails,
+// attach capabilities, own providers / hooks / memory, recurse into
+// another profile, or target A2A (those dimensions have no fields).
+//
+// The owner MUST equal the runtime's configured top-level agent
+// (validated at boot against the same agent id the run-loop driver
+// resolves as its default). Profiles declared here share the ONE
+// canonical representation with the durable agent-config `virtual_agents`
+// section (internal/virtualagent); at run start the revision section
+// replaces this YAML map (agent-config over yaml precedence).
+type VirtualAgentsConfig struct {
+	// Owner is the top-level agent that owns these profiles. Required
+	// when the block is present; must equal the runtime's configured
+	// default agent id.
+	Owner string `yaml:"owner,omitempty"`
+	// MaxProfiles is the operator cap for this map. Zero uses the canonical
+	// virtualagent default.
+	MaxProfiles int `yaml:"max_profiles,omitempty"`
+	// Profiles is the ordered profile declaration list. A duplicate key
+	// is rejected at boot; order is not semantic (the canonical map is
+	// key-sorted).
+	Profiles []VirtualAgentProfileConfig `yaml:"profiles,omitempty"`
+}
+
+// IsZero reports whether the block is entirely absent — the
+// backward-compatible no-profiles path.
+func (v VirtualAgentsConfig) IsZero() bool {
+	return v.Owner == "" && len(v.Profiles) == 0
+}
+
+// VirtualAgentProfileConfig is the YAML declaration of ONE virtual-agent
+// profile. Strict decoding (the loader's yaml.Strict) rejects any
+// unknown field, so a widening dimension that has no canonical home
+// (providers, hooks, memory, capabilities, a parent-profile reference,
+// an A2A target) fails boot loud by construction.
+type VirtualAgentProfileConfig struct {
+	// Key is the profile identifier the planner's `_spawn_task`
+	// `virtual_agent` argument selects. Restricted charset
+	// `[a-z0-9][a-z0-9._-]*`, ≤ 128 bytes.
+	Key string `yaml:"key"`
+	// Label is the human-readable profile name (audit / observability).
+	Label string `yaml:"label,omitempty"`
+	// Parent is the owning top-level agent. Empty defaults to the block
+	// owner; a non-empty value must equal it.
+	Parent string `yaml:"parent,omitempty"`
+	// LLM narrows the child's sampling parameters.
+	LLM *VirtualAgentLLMConfig `yaml:"llm,omitempty"`
+	// Skills narrows the child's skills to the intersection with the
+	// parent's effective set. Omitted (nil) = no narrowing; an explicit
+	// empty list narrows to no skills.
+	Skills *[]string `yaml:"skills,omitempty"`
+	// Tools narrows the child's tool exposure by UNIONING extra
+	// exclusions onto the parent's effective exclusion set — it can
+	// only hide tools, never re-expose one.
+	Tools *VirtualAgentToolsConfig `yaml:"tools,omitempty"`
+	// Limits narrows the child's run limits (max steps / token budget).
+	Limits *VirtualAgentLimitsConfig `yaml:"limits,omitempty"`
+	// Instructions adds trusted, operator-authored specialist guidance
+	// rendered verbatim in the trusted additive prompt position,
+	// bounded to 16 KiB.
+	Instructions string `yaml:"instructions,omitempty"`
+	// InputPatterns limits inherited artifact references by filename and MIME type.
+	InputPatterns []string `yaml:"input_patterns,omitempty"`
+	// InputCount limits the number of inherited artifact references.
+	InputCount int `yaml:"input_count,omitempty"`
+	// InputDisposition selects the disposition applied to accepted inputs.
+	InputDisposition string `yaml:"input_disposition,omitempty"`
+	// OutputSchema is the profile's terminal JSON Schema contract.
+	OutputSchema json.RawMessage `yaml:"output_schema,omitempty"`
+}
+
+// VirtualAgentLLMConfig is the sampling-parameter narrowing section of
+// a virtual-agent profile.
+type VirtualAgentLLMConfig struct {
+	// Model is the model the child's next run requests. Validated for
+	// bounds at boot; the runtime's LLM surface serves it.
+	Model string `yaml:"model,omitempty"`
+	// Temperature is the sampling temperature in [0,2].
+	Temperature *float64 `yaml:"temperature,omitempty"`
+	// MaxTokens is the per-message output-token ceiling, clamped to the
+	// parent's resolved ceiling at run start (never widened).
+	MaxTokens *int `yaml:"max_tokens,omitempty"`
+	// ReasoningEffort is one of off | low | medium | high.
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty"`
+}
+
+// VirtualAgentToolsConfig is the tool-narrowing section of a
+// virtual-agent profile (exclusions only — there is no enable field).
+type VirtualAgentToolsConfig struct {
+	// DisabledTools names tools additionally excluded from the child's
+	// catalog view.
+	DisabledTools []string `yaml:"disabled_tools,omitempty"`
+	// PausedServers names MCP servers additionally paused for the
+	// child's catalog view.
+	PausedServers []string `yaml:"paused_servers,omitempty"`
+}
+
+// VirtualAgentLimitsConfig is the run-limit narrowing section of a
+// virtual-agent profile (caps only — the child can never run longer or
+// spend a larger budget than its parent allows).
+type VirtualAgentLimitsConfig struct {
+	// MaxSteps caps the child's run-loop step count, clamped to the
+	// driver's run-loop cap.
+	MaxSteps *int `yaml:"max_steps,omitempty"`
+	// TokenBudget caps the child's trajectory-compression token budget.
+	TokenBudget *int `yaml:"token_budget,omitempty"`
 }

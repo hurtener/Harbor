@@ -17,6 +17,7 @@ const minModelToolNameDigestBudget = modelToolNameDigestBytes + 1
 var reservedModelToolNames = [...]string{
 	"_finish",
 	"_spawn_task",
+	"_task_progress",
 	"_await_task",
 	"_task_status",
 	"_cancel_task",

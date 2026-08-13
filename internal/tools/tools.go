@@ -185,6 +185,20 @@ type Tool struct {
 	// for its resource/prompt wrappers; every other driver leaves it
 	// zero-valued. See ToolForm.
 	Form ToolForm
+	// AppOnly marks a tool its provider declared for a rendered MCP App
+	// ONLY — `_meta.ui.visibility: ["app"]`, a callback, not an operation
+	// for the model to select. Classification-only, like Form: never a
+	// dispatch or isolation input in itself. The MCP attach path reads it
+	// once, at publication, to partition one discovered snapshot into two
+	// deliberately different views: the ordinary planner/model projection
+	// (which excludes the callback by construction — it is absent from
+	// planner context, tools/list, search, resolve, and ordinary
+	// invocation) and the per-server App dispatch catalog (through which
+	// a rendered App of the SAME server can still invoke it, still under
+	// the identity / reach / OAuth / approval / current-state gates).
+	// Stamped by the MCP driver at discovery; every other driver leaves it
+	// zero-valued. See AppOnly on the MCP driver's app-visibility parsing.
+	AppOnly bool
 }
 
 // MatchesMIME reports whether the tool's HandlesMIME declaration

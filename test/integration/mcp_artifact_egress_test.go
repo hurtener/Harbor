@@ -295,6 +295,10 @@ func egCall(refID string) planner.CallTool {
 	}
 }
 
+func egRC(st *egStack, q identity.Quadruple) planner.RunContext {
+	return planner.RunContext{Quadruple: q, Trajectory: &trajectory.Trajectory{}, Catalog: tools.NewPlannerView(st.cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})}
+}
+
 func egJSON(t *testing.T, label string, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)
@@ -320,7 +324,7 @@ func TestE2E_MCPEgress_BytesReachTheServerAndNoSinkCarriesThem(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	rc := planner.RunContext{Quadruple: q, Trajectory: &trajectory.Trajectory{}}
+	rc := egRC(st, q)
 	call := egCall(refID)
 	raw, llmObs, err := st.exec.ExecuteDecision(ctx, rc, call)
 	if err != nil {
@@ -511,7 +515,7 @@ func TestE2E_MCPEgress_CrossIdentityReferencesDoNotResolve(t *testing.T) {
 
 	// Non-vacuity: the OWNER can reach it.
 	ownerCtx := egCtx(t, owner)
-	ownerRC := planner.RunContext{Quadruple: owner, Trajectory: &trajectory.Trajectory{}}
+	ownerRC := egRC(st, owner)
 	if _, _, err := st.exec.ExecuteDecision(ownerCtx, ownerRC, egCall(refID)); err != nil {
 		t.Fatalf("the owning run could not reach its own artifact: %v — every refusal below would then be vacuous", err)
 	}
@@ -531,7 +535,7 @@ func TestE2E_MCPEgress_CrossIdentityReferencesDoNotResolve(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			before := st.received.frames.Load()
 			ctx := egCtx(t, tc.q)
-			rc := planner.RunContext{Quadruple: tc.q, Trajectory: &trajectory.Trajectory{}}
+			rc := egRC(st, tc.q)
 			_, _, err := st.exec.ExecuteDecision(ctx, rc, egCall(refID))
 			if err == nil {
 				t.Fatalf("a run under %s resolved another identity's artifact", tc.name)
@@ -563,7 +567,7 @@ func TestE2E_MCPEgress_OversizeValueIsRefusedNotTruncated(t *testing.T) {
 	refID := egPut(t, st.store, q, egBody)
 	before := st.received.frames.Load()
 
-	rc := planner.RunContext{Quadruple: q, Trajectory: &trajectory.Trajectory{}}
+	rc := egRC(st, q)
 	_, _, err := st.exec.ExecuteDecision(ctx, rc, egCall(refID))
 	if !errors.Is(err, artifactegress.ErrEgressTooLarge) {
 		t.Fatalf("err = %v, want ErrEgressTooLarge", err)
@@ -590,7 +594,7 @@ func TestE2E_MCPEgress_UnresolvableIDIsRecoverableNotStepTerminating(t *testing.
 	ctx := egCtx(t, q)
 	before := st.received.frames.Load()
 
-	rc := planner.RunContext{Quadruple: q, Trajectory: &trajectory.Trajectory{}}
+	rc := egRC(st, q)
 	_, _, err := st.exec.ExecuteDecision(ctx, rc, egCall("art_doesnotexist"))
 	if err == nil {
 		t.Fatalf("an invented artifact id succeeded")
@@ -682,7 +686,7 @@ func TestE2E_MCPEgress_ConcurrentAcrossTenantsAndSessions(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			ctx := egCtx(t, quads[i])
-			rc := planner.RunContext{Quadruple: quads[i], Trajectory: &trajectory.Trajectory{}}
+			rc := egRC(st, quads[i])
 			raw, _, err := st.exec.ExecuteDecision(ctx, rc, planner.CallTool{
 				CallID: fmt.Sprintf("call_%d", i),
 				Tool:   egHarborTool,

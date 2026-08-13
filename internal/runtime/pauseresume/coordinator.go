@@ -86,7 +86,8 @@ type pauseEntry struct {
 	// zero value while State == StatusPaused. Recorded so Status (and
 	// the RunLoop's out-of-band timeout detection) can distinguish a
 	// timeout-reaped pause from an approve / reject / generic resume.
-	decision Decision
+	decision  Decision
+	available bool
 	// deletePending marks a RESUMED entry whose checkpoint delete
 	// failed: Resume flips the state before
 	// the store delete, so a delete failure would otherwise orphan the
@@ -272,6 +273,7 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 		token:        token,
 		reason:       req.Reason,
 		state:        StatusPaused,
+		available:    true,
 		identity:     req.Identity,
 		runID:        runIDFromContext(ctx),
 		payload:      cloneStringMap(req.Payload),
@@ -365,6 +367,15 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		if rerr != nil {
 			return rerr
 		}
+		if !sameScope(rehydrated.identity, resumingID) {
+			return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
+		}
+		if rehydrated.reason == ReasonConstraintsConflict {
+			if _, tranche := TrancheExceededFromMap(rehydrated.payload); tranche {
+				rehydrated.available = false
+				return fmt.Errorf("%w: token %q", ErrRestartUnavailable, token)
+			}
+		}
 		c.mu.Lock()
 		// Another goroutine may have rehydrated/installed the same
 		// token while we did store I/O — prefer the already-installed
@@ -377,13 +388,15 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		}
 	}
 
+	if !sameScope(entry.identity, resumingID) {
+		c.mu.Unlock()
+		// Tokens are private selectors. Do not let a caller distinguish a
+		// foreign receipt from a missing one.
+		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
+	}
 	if entry.state == StatusResumed {
 		c.mu.Unlock()
 		return fmt.Errorf("%w: token %q", ErrAlreadyResumed, token)
-	}
-	if !sameScope(entry.identity, resumingID) {
-		c.mu.Unlock()
-		return fmt.Errorf("%w: token %q", ErrScopeMismatch, token)
 	}
 	// An accepted decision may be running durable continuation work outside
 	// c.mu. Its claim wins against every later decision, including terminal
@@ -507,6 +520,63 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 	return nil
 }
 
+// CancelTranche atomically consumes a live step-tranche pause. Cancellation
+// and Resume share the coordinator mutex, so exactly one terminal decision
+// wins and the token is never continuable afterward.
+func (c *coordinator) CancelTranche(ctx context.Context, token Token) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("pauseresume: tranche cancellation cancelled: %w", err)
+	}
+	id, err := identityFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	entry, ok := c.pauses[token]
+	if !ok {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
+	}
+	if !sameScope(entry.identity, id) {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
+	}
+	if entry.state == StatusResumed {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrAlreadyResumed, token)
+	}
+	if entry.resuming {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrResumeInProgress, token)
+	}
+	if entry.reason != ReasonConstraintsConflict {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrNotTranchePause, token)
+	}
+	if _, ok := TrancheExceededFromMap(entry.payload); !ok {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrNotTranchePause, token)
+	}
+	entry.state, entry.available, entry.resumedAt, entry.decision = StatusResumed, false, c.now(), DecisionCancelled
+	terminal := *entry
+	c.mu.Unlock()
+	// Project cancellation before cleanup. Cleanup remains a loud, observable
+	// retry obligation, but must not delay the terminal cancellation event.
+	c.emit(ctx, EventTypePauseResumed, &terminal, PauseResumedPayload{Token: string(token), Reason: string(terminal.reason), Decision: DecisionCancelled})
+	if c.store != nil {
+		rec, rerr := terminal.toCheckpoint()
+		if rerr != nil {
+			c.markDeletePending(token)
+			return &TrancheCancellationError{Err: rerr}
+		}
+		if derr := deleteCheckpoint(ctx, c.store, rec); derr != nil {
+			c.markDeletePending(token)
+			return &TrancheCancellationError{Err: derr}
+		}
+	}
+	return nil
+}
+
 // Status returns a read-only snapshot of a pause record. See the
 // Coordinator interface godoc for the full contract.
 func (c *coordinator) Status(ctx context.Context, token Token) (Status, error) {
@@ -523,6 +593,7 @@ func (c *coordinator) Status(ctx context.Context, token Token) (Status, error) {
 			PausedAt:  entry.pausedAt,
 			ResumedAt: entry.resumedAt,
 			Decision:  entry.decision,
+			Available: entry.available,
 		}
 		c.mu.Unlock()
 		return st, nil
@@ -542,7 +613,34 @@ func (c *coordinator) Status(ctx context.Context, token Token) (Status, error) {
 		Reason:    rehydrated.reason,
 		PausedAt:  rehydrated.pausedAt,
 		ResumedAt: rehydrated.resumedAt,
+		Available: rehydrated.available,
 	}, nil
+}
+
+// StatusForIdentity returns a token status only for its owning identity
+// scope. RunID is descriptive metadata, not an authority boundary. A
+// foreign token is indistinguishable from an absent token.
+func (c *coordinator) StatusForIdentity(ctx context.Context, token Token, id identity.Identity, runID string) (Status, error) {
+	if err := ctx.Err(); err != nil {
+		return Status{}, fmt.Errorf("pauseresume: scoped status cancelled: %w", err)
+	}
+	if err := identity.Validate(id); err != nil {
+		return Status{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
+	}
+	c.mu.Lock()
+	entry, ok := c.pauses[token]
+	c.mu.Unlock()
+	if !ok {
+		var err error
+		entry, err = c.rehydrate(ctx, token)
+		if err != nil {
+			return Status{}, err
+		}
+	}
+	if !sameScope(entry.identity, id) {
+		return Status{}, fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
+	}
+	return Status{State: entry.state, Reason: entry.reason, PausedAt: entry.pausedAt, ResumedAt: entry.resumedAt, Decision: entry.decision, Available: entry.available}, nil
 }
 
 // markDeletePending flags a resumed entry whose checkpoint cleanup
@@ -636,6 +734,7 @@ func (e *pauseEntry) toCheckpoint() (checkpointRecord, error) {
 		Continuation:  e.continuation,
 		PausedAt:      e.pausedAt,
 		ResumedAt:     e.resumedAt,
+		Available:     e.available,
 	}
 	if e.trajectory != nil {
 		b, err := e.trajectory.Serialize()
@@ -669,7 +768,13 @@ func entryFromCheckpoint(rec checkpointRecord) (*pauseEntry, error) {
 		payload:      rec.Payload,
 		pausedAt:     rec.PausedAt,
 		resumedAt:    rec.ResumedAt,
+		available:    rec.Available,
 		continuation: continuation,
+	}
+	if rec.Reason == ReasonConstraintsConflict {
+		if _, tranche := TrancheExceededFromMap(rec.Payload); tranche {
+			entry.available = false
+		}
 	}
 	if len(rec.TrajectoryBytes) > 0 {
 		tr, err := trajectory.Deserialize(rec.TrajectoryBytes)

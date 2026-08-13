@@ -61,6 +61,21 @@ type Trajectory struct {
 	// Steps is the append-only list of trajectory steps.
 	Steps []Step `json:"steps,omitempty"`
 
+	// TrancheBaseline is the index into Steps where the CURRENT bounded
+	// tranche began. A bounded tranche is the slice of tool-bearing
+	// planner iterations the runtime runs between two max_steps-pause
+	// checkpoints (the same-process exact-run continuation surface):
+	// the RunLoop sets it to len(Steps) at run start and again at each
+	// tranche resume, and planner-side MaxSteps circuit breakers count
+	// `len(Steps) - TrancheBaseline` instead of the cumulative length —
+	// so historical steps that predate the current tranche (already
+	// checkpointed and resumed) do not immediately trip the breaker on
+	// the first resumed step. The zero value (0) is correct for the
+	// first tranche and for any trajectory that has never been
+	// tranche-parked; a stale value greater than len(Steps) simply
+	// never trips the breaker.
+	TrancheBaseline int `json:"tranche_baseline,omitempty"`
+
 	// Summary is the compaction artefact produced by the trajectory
 	// summariser. Non-nil when the runtime compressed the
 	// trajectory; the planner sees only the compacted view.

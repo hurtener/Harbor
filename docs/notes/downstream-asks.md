@@ -28,16 +28,26 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-41 | App→host `tools/call` server-namespace confinement | web/console (MCP Apps host) | High (security) | Small | Shipped — phase 207 / D-351 (items 1–2); item 3 (`_meta.ui.visibility`) still Filed |
 | HA-42 | Progressive `tool-input-partial` streaming into a rendered App | internal/llm + internal/protocol + web/console | Low | Large | Deferred — reserved as D-343 |
 | HA-51 | Bifrost reasoning byte fidelity | internal/llm + planner + tasks + Console | Release blocker | Contained | Shipped (v1.26) — phase 233c / D-402 |
-| HA-54 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Filed |
-| HA-55 | Operator-managed per-agent skill packs across authenticated users | internal/skills + runtime/agentcfg + runtime/serve | High | Medium | Filed |
-| HA-56 | Per-server MCP App callback catalog outside planner projection | internal/tools/drivers/mcp + internal/tools + internal/mcpconsole + protocol | High | Medium | Filed |
+| HA-54 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Planned — phase 236 / D-410 |
+| HA-55 | Operator-managed per-agent skill packs across authenticated users | internal/skills + runtime/agentcfg + runtime/serve | High | Medium | Planned — phase 237 / D-411 |
+| HA-56 | Per-server MCP App callback catalog outside planner projection | internal/tools/drivers/mcp + internal/tools + internal/mcpconsole + protocol | High | Medium | Planned — phase 238 / D-412 |
+| HA-57 | Finite same-run step-tranche receipts/resume of the original live run | runtime + tasks + protocol | High | Contained | Shipped — phase 239 / D-418 |
+| HA-58 | Governed read-only virtual child profiles derived from a parent | runtime + agentcfg + protocol | High | Medium | Shipped — phase 240 / D-419 |
+| HA-59 | Virtual-child execution artifacts and bounded output forwarding by reference | artifacts + tasks + runtime + protocol | Medium | Medium | Shipped — phase 241 / D-420 |
+| HA-60 | Durable identity-scoped task-progress projection | tasks + state + protocol | Medium | Contained | Shipped — phase 242 / D-421 |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
 is a separate MCP transport/reliability report; HA-55 is a separate runtime
 skills projection report; and HA-56 is a separate MCP App host/catalog
 report. HA-52 and HA-53 are already allocated in the shared register and are
-not available for Harbor-local filings. The entries are
+not available for Harbor-local filings. HA-54, HA-55, and HA-56 are now
+**Planned** in the v1.27 wave — phase 236 / D-410, phase 237 / D-411, and
+phase 238 / D-412 respectively (master-plan index rows and detail blocks
+carry the mapping). **HA-57 through HA-60 are Harbor-internal filings**,
+raised by the wave's own reliability/verification review rather than by an
+outside consumer, and are shipped in the same wave (phase 239 / D-418,
+phase 240 / D-419, phase 241 / D-420, phase 242 / D-421). The entries are
 **framework-framed** — each names a Harbor-side capability that is absent,
 inert, or narrower than its documentation claims.
 
@@ -445,6 +455,119 @@ The contract must express, at minimum:
 one server, redefine MCP's `isError` boolean, or add a Workbench-specific
 exception. It asks Harbor to provide a reusable typed reliability seam for a
 second consumer and every future MCP server.
+
+---
+
+## HA-57 — same-run step-tranche receipts resume the original live run
+
+**Priority:** High (run integrity). **Size:** contained. **State:**
+Shipped — phase 239 / D-418 (Harbor-internal filing).
+
+**What the consumer sees.** A paused or interrupted run can continue from a
+finite committed step-tranche receipt while the original run loop remains
+live. The continuation preserves the identity quadruple and does not replay
+completed work or create a replacement run. D-417 makes the fresh-process,
+restart-unavailable boundary explicit.
+
+**Requested shape.** Persist a bounded receipt for each same-run step tranche
+and resume only the original live run at the last committed boundary. Verify
+`(tenant,user,session,run)` and fail loudly for stale or unauthorized receipts.
+If the original run is unavailable after process restart, return the typed
+restart-unavailable result rather than relaunching from mutable configuration.
+This ask does not add tool-failure events or a classifier surface.
+
+**Required acceptance.**
+
+1. Resume continues from the last committed tranche without replaying steps.
+2. Repeated resume is idempotent; stale receipts fail loudly.
+3. Resume verifies the identity quadruple and never accepts caller-selected
+   replacement identity.
+4. A fresh process returns typed restart-unavailable rather than relaunching a
+   frozen run.
+5. Concurrent same-run receipts under `-race` show no cross-run bleed and
+   include a failure mode.
+
+---
+
+## HA-58 — governed virtual child profiles need one authoritative resolver
+
+**Priority:** High (authority integrity). **Size:** medium. **State:** Shipped —
+phase 240 / D-419 (Harbor-internal filing).
+
+**What the consumer sees.** A governed virtual child profile is a read-only
+view derived from a parent profile. It is not an isolation principal and cannot
+mutate the parent, advance an independent revision, or widen capabilities.
+
+**Requested shape.** Resolve the child from the parent through one resolver at
+run-start and inspection. Admission uses verified `(tenant,user,session)`
+authority and agent reach; `agent_id` and virtual-profile keys are not
+identity axes. Bounded overrides are server-governed and read-only.
+
+**Required acceptance.**
+
+1. Run-start and inspection use the same resolver and real durable parent.
+2. Ordinary callers cannot cross the verified identity triple; denied calls
+   disclose no names.
+3. Bounded overrides cannot widen capability, mutate the parent, or advance an
+   independent revision.
+4. The virtual child is never used as an isolation principal.
+5. Concurrent mixed-tenant/user/session resolutions under `-race` show no
+   authority bleed and include a failure mode.
+
+---
+
+## HA-59 — virtual-child execution needs bounded artifact forwarding
+
+**Priority:** Medium (execution integrity). **Size:** medium.
+**State:** Shipped — phase 241 / D-420, depends on 240 (Harbor-internal
+filing).
+
+**What the consumer sees.** Virtual-child execution can forward an authorized
+artifact reference and bounded output to a same-run consumer while preserving
+provenance, without exposing raw content or crossing session boundaries.
+
+**Requested shape.** Create a virtual-child execution artifact and forward
+declared outputs through authorized artifact references with preserved
+provenance. Unauthorized, erased, cross-session, and cross-tenant references
+fail closed before bytes are exposed. There is no CLI or Console
+composition-preview consumer feature in this ask.
+
+**Required acceptance.**
+
+1. Authorized same-run consumers receive only declared references and bounded
+   output with provenance.
+2. Forbidden references fail closed before bytes are exposed.
+3. Raw content is not duplicated into task rows, model context, or unrelated
+   sessions.
+4. An end-to-end integration test with real drivers covers identity
+   propagation, at least one failure mode, and an N≥10 concurrent stress run.
+
+---
+
+## HA-60 — task progress needs a durable bounded projection
+
+**Priority:** Medium (two halves disagree). **Size:** contained. **State:**
+Shipped — phase 242 / D-421 (Harbor-internal filing).
+
+**What the consumer sees.** Task progress is available as a durable, bounded
+projection rather than a raw stream or second source of truth. It is scoped to
+the verified identity triple and fenced by session lifecycle and erasure.
+
+**Requested shape.** Add additive optional `progress_snapshot`, `virtual_key`,
+and `virtual_label` fields to `TaskRow`, derived from the task source of
+truth. Keep the snapshot bounded, enforce identity-scoped reads, and remove
+the projection at session erasure. This phase is limited to the task-progress
+projection.
+**Required acceptance.**
+
+1. `TaskRow` exposes the three additive optional fields without a protocol
+   version bump.
+2. Progress remains bounded and derived rather than becoming a second task
+   state source.
+3. Unknown and cross-identity reads return typed not-found without leakage.
+4. Session lifecycle and erasure fences remove stale projections.
+5. Real durable StateStore integration proves identity propagation, a failure
+   mode, and cross-session isolation.
 
 ---
 

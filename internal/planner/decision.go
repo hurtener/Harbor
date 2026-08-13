@@ -151,10 +151,26 @@ type Batch struct {
 	// Spawns are the task spawns; every entry's Spec.RetainTurn is
 	// false.
 	Spawns []SpawnTask
+	// Progress contains runtime-owned task progress reports. Reports retain
+	// their native CallID and source order but never carry a task id or
+	// coordinates; the executor binds them to the current RunContext task.
+	Progress []TaskProgress
 	// Join governs ONLY Tools. It is nil (JoinAll) when Tools is
 	// empty — a spawns-only Batch carries no join.
 	Join *JoinSpec
 }
+
+// TaskProgress is the reserved ReAct progress producer schema. Its fields
+// are deliberately limited to the public progress snapshot.
+type TaskProgress struct {
+	Fraction *float64
+	Phase    string
+	Message  string
+	Tags     []string
+	CallID   string
+}
+
+func (TaskProgress) isDecision() {}
 
 func (Batch) isDecision() {}
 
@@ -169,11 +185,15 @@ func (Batch) isDecision() {}
 // need projection context (e.g. FailFast disagreement across
 // auto-grouped spawns) live at the producing projector, and the
 // operator-configured breadth cap lives at the dispatch edge.
-func NewBatch(tools []CallTool, spawns []SpawnTask, join *JoinSpec) (Batch, error) {
-	if len(tools)+len(spawns) < 2 {
+func NewBatch(tools []CallTool, spawns []SpawnTask, join *JoinSpec, progress ...[]TaskProgress) (Batch, error) {
+	progressCount := 0
+	if len(progress) > 0 {
+		progressCount = len(progress[0])
+	}
+	if len(tools)+len(spawns)+progressCount < 2 {
 		return Batch{}, fmt.Errorf(
 			"%w: Batch requires at least 2 combined branches, got %d tools + %d spawns (construct the plain CallTool / SpawnTask / CallParallel shape for a single branch)",
-			ErrInvalidDecision, len(tools), len(spawns),
+			ErrInvalidDecision, len(tools), len(spawns)+progressCount,
 		)
 	}
 	for i, sp := range spawns {
@@ -184,7 +204,11 @@ func NewBatch(tools []CallTool, spawns []SpawnTask, join *JoinSpec) (Batch, erro
 			)
 		}
 	}
-	return Batch{Tools: tools, Spawns: spawns, Join: join}, nil
+	batch := Batch{Tools: tools, Spawns: spawns, Join: join}
+	if len(progress) > 0 {
+		batch.Progress = progress[0]
+	}
+	return batch, nil
 }
 
 // SpawnTask spawns a background task. When `Spec.RetainTurn` is true
@@ -254,6 +278,26 @@ type SpawnSpec struct {
 	// it spawns — paired with the observation/cancel meta-tools so
 	// detached work is never unobservable or unstoppable.
 	PropagateOnCancel string
+	// VirtualAgent is the OPTIONAL selector naming a virtual-agent
+	// profile the spawned child runs under. Empty (the default) is the
+	// pre-field behaviour: the child runs under the parent's effective
+	// agent configuration byte-for-byte. A non-empty value selects a
+	// profile owned by the configured top-level agent from the parent's
+	// FROZEN profile map; the child's effective configuration is the
+	// frozen parent config plus the profile's bounded non-recursive
+	// narrow-only overlay. The selector is the ONLY virtual-agent
+	// addition to the spawn surface: the child's Task.AgentID stays the
+	// top-level agent, profiles are never registered agents, and an
+	// unknown / invalid / stale selector fails at the dispatch edge
+	// BEFORE the task is persisted. A run that is itself a
+	// virtual-profile run cannot select another profile (non-recursive).
+	VirtualAgent string
+	// InputArtifactIDs are references inherited by the child. The runtime
+	// resolves each through the parent's identity-scoped artifact facade
+	// before persistence; bytes and URLs are not accepted.
+	InputArtifactIDs []string
+	// InputArtifactDispositions carries reference-only disposition hints.
+	InputArtifactDispositions map[string]string
 }
 
 // AwaitTask blocks the planner until the named task reaches a

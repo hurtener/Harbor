@@ -76,15 +76,14 @@ func buildPhase31Env(t *testing.T, policy approval.ApprovalPolicy) *phase31Env {
 	// Per D-094, the per-test stack assembly is centralised in
 	// harbortest/devstack.Assemble. Phase 31 only exercises the
 	// approval gate against real bus + redactor + coordinator +
-	// steering — every higher layer (catalog, auth, transports) is
-	// skipped. The gate itself is constructed locally because it
+	// steering — the catalog is assembled for the mandatory sealed
+	// views, while auth and transports are skipped. The gate itself is constructed locally because it
 	// is the artifact-under-test; the helper's role is to provide
 	// the production-shaped collaborators.
 	cfg := phase31TestConfig(t)
 	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
 		SkipAuth:       true,
 		SkipTransports: true,
-		SkipCatalog:    true,
 		// Steering stays ON — the env exposes a steering.Registry
 		// even though phase31 doesn't drive it through the inbox
 		// today (the field is kept for the §17.6 future-proofing
@@ -478,8 +477,8 @@ func TestE2E_Phase31_ScopeGating_RejectsUnauthorized(t *testing.T) {
 }
 
 // TestE2E_Phase31_CrossIdentity_Rejected — a tenant-B admin cannot
-// resolve a tenant-A pause. The Coordinator's scope check fires
-// (ErrScopeMismatch propagates through ResolveApproval).
+// resolve a tenant-A pause. The Coordinator hides token existence by
+// returning ErrPauseNotFound for a cross-identity lookup.
 func TestE2E_Phase31_CrossIdentity_Rejected(t *testing.T) {
 	env := buildPhase31Env(t, approval.AlwaysDenyPolicy{})
 
@@ -509,12 +508,12 @@ func TestE2E_Phase31_CrossIdentity_Rejected(t *testing.T) {
 	payload, _ := ev.Payload.(approval.ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
-	// Tenant-B admin tries to resolve — Coordinator scope check
-	// rejects via ErrScopeMismatch.
+	// Tenant-B admin tries to resolve — the privacy-preserving token
+	// lookup rejects via ErrPauseNotFound.
 	err = env.gate.ResolveApproval(phase31AdminCtx(t, idB), token,
 		approval.DecisionApprove, "")
-	if !errors.Is(err, pauseresume.ErrScopeMismatch) {
-		t.Fatalf("cross-identity Resolve: got %v want ErrScopeMismatch", err)
+	if !errors.Is(err, pauseresume.ErrPauseNotFound) {
+		t.Fatalf("cross-identity Resolve: got %v want ErrPauseNotFound", err)
 	}
 
 	// Clean up with correct-identity admin.

@@ -58,16 +58,172 @@ fi
 # --- RULING A TRIP-WIRE. A signed pair's immutable registrar remains its
 #     assertion/removal/audit identity, but normal data-plane use MUST carry
 #     the exact effective agent restored from durable authenticated reach
-#     admission. Keep the two channels distinct. ---
-if grep -q 'admissionCtx, admittedAgentID, agentReachAdmitted := d.agentReachAdmissions.Restore(d.subCtx, task)' internal/runtime/serve/runloop.go 2>/dev/null \
-    && grep -q 'runCtx = tools.WithEffectiveAgentConfig(runCtx, effectiveAgentID)' internal/runtime/serve/runloop.go 2>/dev/null \
-    && grep -q 'agentID, ok = tools.EffectiveAgentConfigFrom(ctx)' internal/tools/auth/drivers/tokenexchange/tokenexchange.go 2>/dev/null; then
+#     admission. Keep the two channels distinct. The embedded parser below
+#     checks the two ordered reach-admitted blocks and their containment
+#     relationships, not merely that each symbol exists: a moved assignment or
+#     a control-plane lookup must fail closed. ---
+# The parser owns the fail-closed relationships between receipt restoration,
+# effective-agent selection, and signed-capability data-plane authorization.
+if python3 <<'PY'
+import re
+import sys
+
+
+def fail(message):
+    print("phase 215 static: " + message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def masked_go(source):
+    """Mask comments and literals while preserving positions and newlines."""
+    out = list(source)
+    i = 0
+    n = len(source)
+    while i < n:
+        if source.startswith("//", i):
+            out[i] = out[i + 1] = " "
+            i += 2
+            while i < n and source[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        if source.startswith("/*", i):
+            start = i
+            i += 2
+            while i + 1 < n and source[i:i + 2] != "*/":
+                if source[i] != "\n":
+                    out[i] = " "
+                i += 1
+            if i + 1 >= n:
+                fail("unterminated block comment in structural source")
+            if source[i] != "\n":
+                out[i] = out[i + 1] = " "
+            i += 2
+            for j in range(start, i):
+                if source[j] != "\n":
+                    out[j] = " "
+            continue
+        if source[i] in ('"', "'", "`"):
+            quote = source[i]
+            i += 1
+            while i < n:
+                if quote != '`' and source[i] == '\\':
+                    out[i] = " "
+                    if i + 1 >= n:
+                        fail("unterminated escaped literal in structural source")
+                    if source[i + 1] != "\n":
+                        out[i + 1] = " "
+                    i += 2
+                    continue
+                if source[i] == quote:
+                    out[i] = " "
+                    i += 1
+                    break
+                if source[i] != "\n":
+                    out[i] = " "
+                i += 1
+            else:
+                fail("unterminated literal in structural source")
+            continue
+        i += 1
+    return "".join(out)
+
+
+def matching_brace(masked, opening):
+    depth = 0
+    for pos in range(opening, len(masked)):
+        if masked[pos] == '{':
+            depth += 1
+        elif masked[pos] == '}':
+            depth -= 1
+            if depth == 0:
+                return pos
+            if depth < 0:
+                break
+    fail("unmatched opening brace in exact structural slice")
+
+
+def exact_function(source, anchor, label):
+    masked = masked_go(source)
+    starts = [m.start() for m in re.finditer(re.escape(anchor), masked)]
+    if len(starts) != 1:
+        fail("%s function anchor is missing or ambiguous" % label)
+    start = starts[0]
+    opening = start + len(anchor) - 1
+    end = matching_brace(masked, opening)
+    return masked[start:end + 1]
+
+
+try:
+    with open("internal/runtime/serve/runloop.go", encoding="utf-8") as handle:
+        runloop = handle.read()
+    run_fn = exact_function(
+        runloop,
+        "func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {",
+        "runOne",
+    )
+    reach_blocks = []
+    for match in re.finditer(r"\bif\s+agentReachAdmitted\s*\{", run_fn):
+        reach_blocks.append((match.start(), matching_brace(run_fn, match.end() - 1)))
+    restores = list(re.finditer(
+        r"\badmissionCtx\s*,\s*admittedAgentID\s*,\s*agentReachAdmitted\s*=\s*d\.agentReachAdmissions\.Restore\s*\(\s*taskCtx\s*,\s*task\s*\)",
+        run_fn,
+    ))
+    assignments = list(re.finditer(r"\beffectiveAgentID\s*=\s*admittedAgentID\b", run_fn))
+    calls = list(re.finditer(
+        r"\brunCtx\s*=\s*tools\.WithEffectiveAgentConfig\s*\(\s*runCtx\s*,\s*effectiveAgentID\s*\)",
+        run_fn,
+    ))
+    if len(restores) != 1 or len(assignments) != 1 or len(calls) != 1:
+        fail("runOne restore, effective-agent assignment, or stamp is missing or ambiguous")
+    if len(reach_blocks) != 2:
+        fail("runOne must contain exactly two ordered admitted blocks")
+    first_start, first_end = reach_blocks[0]
+    second_start, second_end = reach_blocks[1]
+    if first_end >= second_start:
+        fail("runOne admitted blocks are overlapping, nested, or out of order")
+    if not (restores[0].start() < first_start):
+        fail("runOne reach receipt restore is missing or follows the first admitted block")
+    if not (first_start < assignments[0].start() < first_end):
+        fail("runOne effective-agent assignment is missing from the first admitted block")
+    if not (second_start < calls[0].start() < second_end):
+        fail("runOne effective-agent stamp is missing from the second admitted block")
+    if not (restores[0].start() < assignments[0].start() < calls[0].start()):
+        fail("runOne restore, effective-agent assignment, and stamp are out of order")
+
+    with open("internal/tools/auth/drivers/tokenexchange/tokenexchange.go", encoding="utf-8") as handle:
+        tokenexchange = handle.read()
+    validate_fn = exact_function(
+        tokenexchange,
+        "func (p *provider) validateSignedCapabilityCaller(ctx context.Context, id identity.Identity) error {",
+        "validateSignedCapabilityCaller",
+    )
+    prep = list(re.finditer(r"\bif\s+auth\.IsSignedCapabilityPreparation\s*\(\s*ctx\s*\)\s*\{", validate_fn))
+    if len(prep) != 1:
+        fail("signed-capability preparation guard is missing or ambiguous")
+    prep_start = prep[0].start()
+    prep_end = matching_brace(validate_fn, prep[0].end() - 1)
+    after = prep_end + 1
+    while after < len(validate_fn) and validate_fn[after].isspace():
+        after += 1
+    else_match = re.match(r"else\s*\{", validate_fn[after:])
+    if else_match is None:
+        fail("signed-capability preparation guard has no adjacent else data-plane block")
+    else_start = after + else_match.start()
+    else_end = matching_brace(validate_fn, after + else_match.end() - 1)
+    effective = list(re.finditer(
+        r"\bagentID\s*,\s*ok\s*=\s*tools\.EffectiveAgentConfigFrom\s*\(\s*ctx\s*\)",
+        validate_fn,
+    ))
+    if len(effective) != 1 or not (else_start < effective[0].start() < else_end) or prep_start < effective[0].start() < prep_end:
+        fail("effective-agent lookup is missing, duplicated, or outside the data-plane else block")
+except OSError as error:
+    fail("cannot read structural source: %s" % error)
+PY
+then
     ok "phase 215 static: signed-capability use is bound to restored reach admission, not boot provenance"
-elif grep -q 'tools.WithEffectiveAgentConfig' internal/runtime/serve/runloop.go 2>/dev/null \
-    || grep -q 'EffectiveAgentConfigFrom' internal/tools/auth/drivers/tokenexchange/tokenexchange.go 2>/dev/null; then
-    fail "phase 215 static: signed-capability admission is incomplete — restore reach receipt, stamp effective agent, and require it at token exchange"
 else
-    fail "phase 215 static: signed-capability admission seams absent — this shipped phase must restore reach admission, stamp the effective agent, and enforce it at token exchange"
+    fail "phase 215 static: signed-capability structural admission parser rejected the source shape"
 fi
 
 # --- The run-start ORDERING guard: tasks.Get must precede

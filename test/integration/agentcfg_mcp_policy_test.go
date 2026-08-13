@@ -383,7 +383,7 @@ func TestE2E_AgentConfig_MCPPolicy_Concurrency(t *testing.T) {
 					return
 				}
 			}
-			if _, cErr := h.apps.CallTool(idCtx, "srvA_x", json.RawMessage(`{}`)); !errors.Is(cErr, mcpconsole.ErrAppToolExposureDenied) {
+			if _, cErr := h.apps.CallTool(idCtx, "srvA", "srvA_x", json.RawMessage(`{}`)); !errors.Is(cErr, mcpconsole.ErrAppToolExposureDenied) {
 				errCh <- errors.New("concurrent app call to paused server was not rejected")
 			}
 		}()

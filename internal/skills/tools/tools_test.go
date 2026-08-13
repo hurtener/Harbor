@@ -24,6 +24,16 @@ type fakeStore struct {
 	skills map[string]skills.Skill
 }
 
+func (s *fakeStore) GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) (skills.Skill, error) {
+	return s.GetScope(ctx, id, name, scope)
+}
+func (s *fakeStore) SearchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
+	return s.Search(ctx, id, query, limit)
+}
+func (s *fakeStore) DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) error {
+	return s.Delete(ctx, id, name, scope)
+}
+
 func newFakeStore(bus events.EventBus, items ...skills.Skill) *fakeStore {
 	s := &fakeStore{bus: bus, skills: make(map[string]skills.Skill, len(items))}
 	for _, it := range items {

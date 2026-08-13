@@ -34,9 +34,9 @@ import (
 
 // newSteerExecutor builds an executor wired with a steering Registry so
 // the steer/pause/resume verbs can resolve a descendant's inbox.
-func newSteerExecutor(t *testing.T, reg tasks.TaskRegistry, sreg *steering.Registry) steering.ToolExecutor {
+func newSteerExecutor(t *testing.T, reg tasks.TaskRegistry, cat tools.ToolCatalog, sreg *steering.Registry) steering.ToolExecutor {
 	t.Helper()
-	return NewToolExecutor(tools.NewCatalog(), newTestArtifactStore(t), reg,
+	return NewToolExecutor(cat, newTestArtifactStore(t), reg,
 		WithHeavyThreshold(32*1024),
 		WithMaxSpawnDepth(4),
 		WithSteeringRegistry(sreg))
@@ -63,8 +63,9 @@ func openDescendantInbox(t *testing.T, sreg *steering.Registry, child tasks.Task
 func TestExecutor_SteerTask_NilSteeringRegistry_Unsupported(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4) // no steering registry
-	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.SteerTask{TaskID: "x", Directive: "go"})
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat) // no steering registry
+	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.SteerTask{TaskID: "x", Directive: "go"})
 	if !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
 		t.Fatalf("nil-steering SteerTask err = %v, want ErrDecisionShapeUnsupported", err)
 	}
@@ -75,11 +76,12 @@ func TestExecutor_SteerTask_NilSteeringRegistry_Unsupported(t *testing.T) {
 func TestExecutor_PauseResume_NilSteeringRegistry_Unsupported(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
-	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.PauseTask{TaskID: "x"}); !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
+	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.PauseTask{TaskID: "x"}); !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
 		t.Fatalf("nil-steering PauseTask err = %v, want ErrDecisionShapeUnsupported", err)
 	}
-	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.ResumeTask{TaskID: "x"}); !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
+	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.ResumeTask{TaskID: "x"}); !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
 		t.Fatalf("nil-steering ResumeTask err = %v, want ErrDecisionShapeUnsupported", err)
 	}
 }
@@ -91,12 +93,13 @@ func TestExecutor_SteerTask_OwnDescendant_EnqueuesDirective(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg)
+	cat := tools.NewCatalog()
+	exec := newSteerExecutor(t, reg, cat, sreg)
 
-	child := spawnChildUnder(t, exec, "runA", "child")
+	child := spawnChildUnder(t, exec, cat, "runA", "child")
 	inbox := openDescendantInbox(t, sreg, child)
 
-	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.SteerTask{TaskID: child, Directive: "focus on auth"})
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.SteerTask{TaskID: child, Directive: "focus on auth"})
 	if err != nil {
 		t.Fatalf("SteerTask: %v", err)
 	}
@@ -134,12 +137,13 @@ func TestExecutor_SteerTask_TerminalDescendant_Idempotent(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg)
+	cat := tools.NewCatalog()
+	exec := newSteerExecutor(t, reg, cat, sreg)
 
-	child := spawnChildUnder(t, exec, "runA", "child")
+	child := spawnChildUnder(t, exec, cat, "runA", "child")
 	// Deliberately do NOT open an inbox — the descendant's run has ended,
 	// its inbox is retired / never live.
-	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.SteerTask{TaskID: child, Directive: "too late"})
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.SteerTask{TaskID: child, Directive: "too late"})
 	if err != nil {
 		t.Fatalf("SteerTask(terminal) err = %v, want nil (idempotent-on-terminal)", err)
 	}
@@ -156,12 +160,13 @@ func TestExecutor_PauseResume_OwnDescendant_RoundTrips(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg)
+	cat := tools.NewCatalog()
+	exec := newSteerExecutor(t, reg, cat, sreg)
 
-	child := spawnChildUnder(t, exec, "runA", "child")
+	child := spawnChildUnder(t, exec, cat, "runA", "child")
 	inbox := openDescendantInbox(t, sreg, child)
 
-	praw, _, pErr := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.PauseTask{TaskID: child, Reason: "hold"})
+	praw, _, pErr := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.PauseTask{TaskID: child, Reason: "hold"})
 	if pErr != nil {
 		t.Fatalf("PauseTask: %v", pErr)
 	}
@@ -169,7 +174,7 @@ func TestExecutor_PauseResume_OwnDescendant_RoundTrips(t *testing.T) {
 		t.Fatalf("paused = %v, want true", praw.(map[string]any)["paused"])
 	}
 
-	rraw, _, rErr := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.ResumeTask{TaskID: child, Directive: "carry on"})
+	rraw, _, rErr := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.ResumeTask{TaskID: child, Directive: "carry on"})
 	if rErr != nil {
 		t.Fatalf("ResumeTask: %v", rErr)
 	}
@@ -205,7 +210,8 @@ func TestExecutor_PauseTask_DoesNotPauseParentRun(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg)
+	cat := tools.NewCatalog()
+	exec := newSteerExecutor(t, reg, cat, sreg)
 
 	// Open the PARENT run's own inbox so we can assert nothing lands on it.
 	parentInbox, err := sreg.Open(identity.Quadruple{Identity: dispatchTestID, RunID: "runA"})
@@ -214,10 +220,10 @@ func TestExecutor_PauseTask_DoesNotPauseParentRun(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sreg.Retire(identity.Quadruple{Identity: dispatchTestID, RunID: "runA"}) })
 
-	child := spawnChildUnder(t, exec, "runA", "child")
+	child := spawnChildUnder(t, exec, cat, "runA", "child")
 	childInbox := openDescendantInbox(t, sreg, child)
 
-	if _, _, pErr := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.PauseTask{TaskID: child, Reason: "hold"}); pErr != nil {
+	if _, _, pErr := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.PauseTask{TaskID: child, Reason: "hold"}); pErr != nil {
 		t.Fatalf("PauseTask: %v", pErr)
 	}
 	if parentInbox.Len() != 0 {
@@ -234,15 +240,16 @@ func TestExecutor_SteerPauseResume_EmptyTaskID_FailsLoud(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg)
+	cat := tools.NewCatalog()
+	exec := newSteerExecutor(t, reg, cat, sreg)
 
-	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.SteerTask{Directive: "d"}); err == nil {
+	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.SteerTask{Directive: "d"}); err == nil {
 		t.Error("SteerTask with empty TaskID must fail loud")
 	}
-	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.PauseTask{}); err == nil {
+	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.PauseTask{}); err == nil {
 		t.Error("PauseTask with empty TaskID must fail loud")
 	}
-	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.ResumeTask{}); err == nil {
+	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.ResumeTask{}); err == nil {
 		t.Error("ResumeTask with empty TaskID must fail loud")
 	}
 }
@@ -253,9 +260,10 @@ func TestExecutor_SteerTask_Self_NotDescendant(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg)
+	cat := tools.NewCatalog()
+	exec := newSteerExecutor(t, reg, cat, sreg)
 
-	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.SteerTask{TaskID: "runA", Directive: "d"}); !errors.Is(err, ErrTaskNotOwnDescendant) {
+	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.SteerTask{TaskID: "runA", Directive: "d"}); !errors.Is(err, ErrTaskNotOwnDescendant) {
 		t.Fatalf("self-steer err = %v, want ErrTaskNotOwnDescendant", err)
 	}
 }
@@ -321,15 +329,16 @@ func TestExecutor_ResumeTask_NotPausedDescendant_ParentSuccessDecoupled(t *testi
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg)
+	cat := tools.NewCatalog()
+	exec := newSteerExecutor(t, reg, cat, sreg)
 
-	child := spawnChildUnder(t, exec, "runA", "child")
+	child := spawnChildUnder(t, exec, cat, "runA", "child")
 	inbox := openDescendantInbox(t, sreg, child)
 
 	// The descendant was never paused. A resume still reports resumed:true
 	// (control delivered to a live inbox) — the parent cannot tell whether a
 	// valid pause was released.
-	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.ResumeTask{TaskID: child, Directive: "carry on"})
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.ResumeTask{TaskID: child, Directive: "carry on"})
 	if err != nil {
 		t.Fatalf("ResumeTask(not-paused): %v", err)
 	}
@@ -362,21 +371,22 @@ func TestExecutor_SteerPauseResume_HumanSupremacy_CrossRunIsolation(t *testing.T
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg)
+	cat := tools.NewCatalog()
+	exec := newSteerExecutor(t, reg, cat, sreg)
 
 	// Run A spawns a descendant under its own run (same session identity).
-	aChild := spawnChildUnder(t, exec, "runA", "run-A-work")
+	aChild := spawnChildUnder(t, exec, cat, "runA", "run-A-work")
 	inbox := openDescendantInbox(t, sreg, aChild)
 
 	// Run B (same session, different run) cannot steer / pause / resume
 	// run A's descendant.
-	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runB"), planner.SteerTask{TaskID: aChild, Directive: "not mine"}); !errors.Is(err, ErrTaskNotOwnDescendant) {
+	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runB", cat), planner.SteerTask{TaskID: aChild, Directive: "not mine"}); !errors.Is(err, ErrTaskNotOwnDescendant) {
 		t.Fatalf("run B steer of run A's descendant err = %v, want ErrTaskNotOwnDescendant", err)
 	}
-	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runB"), planner.PauseTask{TaskID: aChild}); !errors.Is(err, ErrTaskNotOwnDescendant) {
+	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runB", cat), planner.PauseTask{TaskID: aChild}); !errors.Is(err, ErrTaskNotOwnDescendant) {
 		t.Fatalf("run B pause of run A's descendant err = %v, want ErrTaskNotOwnDescendant", err)
 	}
-	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runB"), planner.ResumeTask{TaskID: aChild}); !errors.Is(err, ErrTaskNotOwnDescendant) {
+	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runB", cat), planner.ResumeTask{TaskID: aChild}); !errors.Is(err, ErrTaskNotOwnDescendant) {
 		t.Fatalf("run B resume of run A's descendant err = %v, want ErrTaskNotOwnDescendant", err)
 	}
 
@@ -400,10 +410,10 @@ func TestExecutor_SteerPauseResume_HumanSupremacy_CrossRunIsolation(t *testing.T
 	}
 
 	// Run A's OWN pause→resume of its own descendant round-trips.
-	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.PauseTask{TaskID: aChild, Reason: "mine"}); err != nil {
+	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.PauseTask{TaskID: aChild, Reason: "mine"}); err != nil {
 		t.Fatalf("run A pause of its own descendant: %v", err)
 	}
-	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.ResumeTask{TaskID: aChild, Directive: "go"}); err != nil {
+	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.ResumeTask{TaskID: aChild, Directive: "go"}); err != nil {
 		t.Fatalf("run A resume of its own descendant: %v", err)
 	}
 	// The operator PAUSE + run A's own PAUSE + RESUME all landed.
@@ -428,7 +438,8 @@ func TestExecutor_SteerPauseResume_ConcurrentReuse(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg)
+	cat := tools.NewCatalog()
+	exec := newSteerExecutor(t, reg, cat, sreg)
 
 	baseline := runtime.NumGoroutine()
 
@@ -444,7 +455,14 @@ func TestExecutor_SteerPauseResume_ConcurrentReuse(t *testing.T) {
 				SessionID: "session-" + strconv.Itoa(i),
 			}
 			runID := tasks.TaskID("run-" + strconv.Itoa(i))
-			rc := planner.RunContext{Quadruple: identity.Quadruple{Identity: id, RunID: string(runID)}}
+			rc := planner.RunContext{
+				Quadruple: identity.Quadruple{Identity: id, RunID: string(runID)},
+				Catalog: tools.NewPlannerView(cat, tools.CatalogFilter{
+					TenantID:  id.TenantID,
+					UserID:    id.UserID,
+					SessionID: id.SessionID,
+				}),
+			}
 
 			// Spawn a child under this goroutine's own run.
 			raw, _, sErr := exec.ExecuteDecision(context.Background(), rc, planner.SpawnTask{

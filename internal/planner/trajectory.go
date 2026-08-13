@@ -165,3 +165,47 @@ func DecisionInvocationCount(action any) int {
 		return 0
 	}
 }
+
+// DecisionToolCount returns the canonical tranche unit for one planner
+// decision: a tool-bearing CallTool, CallParallel, or Batch is one decision;
+// controls and task-management decisions are zero. CallParallel deliberately
+// counts once even though its branches are dispatched independently.
+func DecisionToolCount(action any) int {
+	switch d := action.(type) {
+	case CallTool, *CallTool, CallParallel, *CallParallel:
+		return 1
+	case Batch:
+		if len(d.Tools) > 0 {
+			return 1
+		}
+	case *Batch:
+		if d != nil && len(d.Tools) > 0 {
+			return 1
+		}
+	default:
+	}
+	return 0
+}
+
+// CountSuccessfulToolInvocationsSince counts successful tool-bearing planner
+// decisions after baseline. A step with a non-empty Error is an attempted but
+// failed dispatch and does not consume a runtime tranche. CallParallel counts
+// as one decision, not one decision per branch.
+func CountSuccessfulToolInvocationsSince(t *Trajectory, baseline int) int {
+	if t == nil {
+		return 0
+	}
+	if baseline < 0 {
+		baseline = 0
+	}
+	if baseline > len(t.Steps) {
+		baseline = len(t.Steps)
+	}
+	n := 0
+	for _, step := range t.Steps[baseline:] {
+		if step.Error == "" {
+			n += DecisionToolCount(step.Action)
+		}
+	}
+	return n
+}

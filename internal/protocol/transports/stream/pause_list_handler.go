@@ -269,6 +269,7 @@ func (h *PauseListHandler) projectResponse(ctx context.Context, resp pauseresume
 			},
 			PausedAt:  p.PausedAt,
 			ResumedAt: st.ResumedAt,
+			Available: st.Available,
 		}
 		if len(p.Payload) > 0 {
 			ref, perr := h.maybeRouteHeavyPayload(ctx, p)

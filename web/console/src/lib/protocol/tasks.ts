@@ -88,6 +88,18 @@ export interface TaskRow {
    * construction, including every row written before the field existed.
    */
   agent_id?: string;
+  progress_snapshot?: TaskProgressSnapshot;
+  virtual_key?: string;
+  virtual_label?: string;
+}
+
+/** The latest bounded task-progress projection. */
+export interface TaskProgressSnapshot {
+  fraction?: number;
+  phase?: string;
+  message?: string;
+  tags?: string[];
+  updated_at: string;
 }
 
 /** The server-enforced facet filter on `tasks.list`. */

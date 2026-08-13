@@ -387,6 +387,7 @@ func TestResolveDeclaredToolName_ReservedControlNeverResolvesToCatalogTool(t *te
 	for _, name := range []string{
 		SpawnTaskToolName, AwaitTaskToolName, FinishToolName, TaskStatusToolName,
 		CancelTaskToolName, SteerTaskToolName, PauseTaskToolName, ResumeTaskToolName,
+		TaskProgressToolName,
 	} {
 		if got, ok := resolveDeclaredToolName(rc, name); ok {
 			t.Errorf("resolveDeclaredToolName(%q) = %q, true — a reserved planner control resolved to a catalog tool", name, got)

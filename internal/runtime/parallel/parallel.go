@@ -114,6 +114,7 @@ type executeOptions struct {
 	// branch's Result.Err instead of aborting the whole call. Default
 	// false = the atomic posture.
 	nonAtomicSetup bool
+	resolver       Resolver
 }
 
 // WithNonAtomicSetup selects non-atomic setup validation.
@@ -139,13 +140,21 @@ func WithNonAtomicSetup() ExecuteOption {
 	return func(o *executeOptions) { o.nonAtomicSetup = true }
 }
 
+// WithResolver applies a per-call descriptor view. It is used by the runtime
+// dispatch edge to enforce the run's sealed planner catalog without mutating a
+// shared Executor.
+func WithResolver(resolver Resolver) ExecuteOption {
+	return func(o *executeOptions) { o.resolver = resolver }
+}
+
 // Result is the per-branch outcome the executor produces. Each entry
 // carries the branch's input index + tool name (the deterministic
 // merge key), the [tools.ToolResult] on success, and the error on
 // failure.
 //
-// Either Result is populated (success) or Err is populated (failure)
-// — never both. Cancelled branches surface Err = context.Canceled.
+// Result is populated whenever the invocation returned a bounded result,
+// including an MCP result error; Err is populated on failure. Cancelled
+// branches have no result and surface Err = context.Canceled.
 type Result struct {
 	// Index is the branch's position in the input [planner.CallParallel.Branches]
 	// slice. Stable for the lifetime of the call.
@@ -205,6 +214,10 @@ func (e *Executor) Execute(ctx context.Context, call planner.CallParallel, opts 
 	for _, opt := range opts {
 		opt(&eo)
 	}
+	resolver := e.resolver
+	if eo.resolver != nil {
+		resolver = eo.resolver
+	}
 
 	// Identity (§6 rule 9). The executor reads ctx for the run's
 	// identity quadruple; missing identity rejects fail-closed
@@ -255,7 +268,7 @@ func (e *Executor) Execute(ctx context.Context, call planner.CallParallel, opts 
 		setupErrs = make([]error, len(branches))
 	}
 	for i, b := range branches {
-		desc, ok := e.resolver.Resolve(b.Tool)
+		desc, ok := resolver.Resolve(b.Tool)
 		if !ok {
 			err := fmt.Errorf(
 				"%w: parallel branch[%d] tool %q not registered",
@@ -537,7 +550,7 @@ func invokeBranch(
 	}
 	res, err := desc.Invoke(ctx, branch.Args)
 	if err != nil {
-		return Result{Index: idx, Tool: branch.Tool, Err: err}
+		return Result{Index: idx, Tool: branch.Tool, Result: &res, Err: err}
 	}
 	return Result{Index: idx, Tool: branch.Tool, Result: &res}
 }

@@ -34,6 +34,13 @@ func (s *observedSkillStore) Delete(ctx context.Context, id identity.Quadruple, 
 	return s.SkillStore.Delete(ctx, id, name, scope)
 }
 
+func (s *observedSkillStore) DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) error {
+	s.mu.Lock()
+	s.deletes++
+	s.mu.Unlock()
+	return s.SkillStore.DeleteAgent(ctx, id, agentID, name, scope)
+}
+
 func (s *observedSkillStore) counts() (int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -157,7 +164,11 @@ func TestSkillMutationDoors_RevisionFailureCompensatesBody(t *testing.T) {
 			if upserts, deletes := store.counts(); upserts != 1 || deletes != 1 {
 				t.Fatalf("compensation calls: upserts=%d deletes=%d, want 1/1", upserts, deletes)
 			}
-			if _, err := store.Get(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, "restore"); err != nil {
+			scope := skills.ScopeSession
+			if user {
+				scope = skills.ScopeUser
+			}
+			if _, err := store.GetScopeAgent(ctx, identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}, testAgentID, "restore", scope); err != nil {
 				t.Fatalf("deleted body was not restored: %v", err)
 			}
 		})

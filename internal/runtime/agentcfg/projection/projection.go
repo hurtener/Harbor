@@ -595,7 +595,10 @@ func ActiveSkillViews(ctx context.Context, reg agentcfg.Registry, ov sessionover
 // run-start skill-membership authority. The AGENT scope is read exactly once;
 // a present Skills section (including an explicitly empty Names slice) sets
 // AdminMembershipSet, while an absent revision/section leaves the base view
-// ungated. The exact USER scope is then read exactly once and contributes only
+// ungated. A present AgentPacks section contributes the fully-converted
+// operator pack skills (HA-55) — the pack rides the same immutable revision
+// as the membership, so body + membership can never dangle apart. The exact
+// USER scope is then read exactly once and contributes only
 // its durable personal-skill names. Returned slices are fresh copies suitable
 // for binding into an immutable per-run resolver.
 func ActiveSessionSkillMembership(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) (sessionoverlay.SessionSkillMembership, error) {
@@ -611,6 +614,17 @@ func ActiveSessionSkillMembership(ctx context.Context, reg agentcfg.Registry, ag
 	if found && agentRevision.Payload.Skills != nil {
 		membership.AdminMembershipSet = true
 		membership.AdminNames = append([]string(nil), agentRevision.Payload.Skills.Names...)
+	}
+	if found && agentRevision.Payload.AgentPacks != nil {
+		packs, perr := skills.PackItemsToSkills(agentRevision.Payload.AgentPacks)
+		if perr != nil {
+			// A malformed pack body in an active revision is a loud
+			// run-start failure (CLAUDE.md §13): the pack is operator
+			// authority and must never be silently dropped or partially
+			// composed.
+			return sessionoverlay.SessionSkillMembership{}, fmt.Errorf("agent %q: %w", agentID, perr)
+		}
+		membership.Packs = packs
 	}
 
 	userRevision, found, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeUser)

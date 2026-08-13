@@ -51,6 +51,12 @@ func dispatchTestCtx(t *testing.T, q identity.Quadruple) context.Context {
 	return ctx
 }
 
+func dispatchRunContext(cat tools.ToolCatalog, q identity.Quadruple) planner.RunContext {
+	return planner.RunContext{Quadruple: q, Catalog: tools.NewPlannerView(cat, tools.CatalogFilter{
+		TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID,
+	})}
+}
+
 func newTestArtifactStore(t *testing.T) artifacts.ArtifactStore {
 	t.Helper()
 	store, err := artinmem.New(config.ArtifactsConfig{})
@@ -118,7 +124,7 @@ func TestExecutor_CallTool_DisabledInProjection_HookTargetStillDispatches(t *tes
 
 	// The executor edge (the hook's dispatch path) resolves against the full
 	// catalog, so the disabled tool still dispatches.
-	raw, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q},
+	raw, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q),
 		planner.CallTool{Tool: "run_transcript_sink", Args: json.RawMessage(`{"format_version":1}`)})
 	if err != nil {
 		t.Fatalf("a disabled tool named as a hook target must still dispatch through the full-catalog executor: %v", err)
@@ -140,7 +146,7 @@ func TestExecutor_CallTool_LightResult_PassesThrough(t *testing.T) {
 	exec := NewToolExecutor(cat, store, nil)
 
 	q := dispatchTestQuad("r-light")
-	raw, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q},
+	raw, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q),
 		planner.CallTool{Tool: "light", Args: json.RawMessage(`{"x":1}`)})
 	if err != nil {
 		t.Fatalf("ExecuteDecision: %v", err)
@@ -184,7 +190,7 @@ func TestExecutor_CallTool_HeavyResult_PromotedToArtifact(t *testing.T) {
 	exec := NewToolExecutor(cat, store, nil, WithHeavyThreshold(threshold))
 
 	q := dispatchTestQuad("r-heavy-calltool")
-	raw, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q},
+	raw, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q),
 		planner.CallTool{Tool: "heavy", Args: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatalf("ExecuteDecision: %v", err)
@@ -249,7 +255,7 @@ func TestExecutor_CallTool_HeavyResult_StoreFailure_TruncatesLoudly(t *testing.T
 		WithHeavyThreshold(threshold))
 
 	q := dispatchTestQuad("r-heavy-storefail")
-	_, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q},
+	_, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q),
 		planner.CallTool{Tool: "heavy", Args: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatalf("ExecuteDecision should degrade, not fail: %v", err)
@@ -285,7 +291,7 @@ func TestExecutor_CallTool_NilStore_TruncatesLoudly(t *testing.T) {
 	exec := NewToolExecutor(cat, nil, nil, WithHeavyThreshold(threshold))
 
 	q := dispatchTestQuad("r-heavy-nilstore")
-	_, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q},
+	_, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q),
 		planner.CallTool{Tool: "heavy", Args: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatalf("ExecuteDecision should degrade, not fail: %v", err)
@@ -316,7 +322,7 @@ func TestExecutor_CallTool_ErrorShapes(t *testing.T) {
 	exec := NewToolExecutor(cat, newTestArtifactStore(t), nil)
 	q := dispatchTestQuad("r-errors")
 	ctx := dispatchTestCtx(t, q)
-	rc := planner.RunContext{Quadruple: q}
+	rc := dispatchRunContext(cat, q)
 
 	if _, _, err := exec.ExecuteDecision(ctx, rc, planner.CallTool{Tool: ""}); err == nil {
 		t.Error("empty tool name accepted, want error")
@@ -335,9 +341,10 @@ func TestExecutor_CallTool_ErrorShapes(t *testing.T) {
 // fails loud with steering.ErrDecisionShapeUnsupported.
 func TestExecutor_UnsupportedDecisionShape(t *testing.T) {
 	t.Parallel()
-	exec := NewToolExecutor(tools.NewCatalog(), newTestArtifactStore(t), nil)
+	cat := tools.NewCatalog()
+	exec := NewToolExecutor(cat, newTestArtifactStore(t), nil)
 	q := dispatchTestQuad("r-unsupported")
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, planner.Finish{})
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), planner.Finish{})
 	if !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
 		t.Fatalf("err = %v, want ErrDecisionShapeUnsupported", err)
 	}
@@ -421,7 +428,7 @@ func TestExecutor_ConcurrentReuse_CallTool(t *testing.T) {
 				return
 			}
 			q := identity.Quadruple{Identity: id, RunID: runID}
-			raw, _, err := exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q},
+			raw, _, err := exec.ExecuteDecision(ctx, dispatchRunContext(cat, q),
 				planner.CallTool{Tool: "whoami", Args: json.RawMessage(`{}`)})
 			if err != nil {
 				errCh <- fmt.Errorf("run %d: %w", idx, err)
@@ -478,7 +485,7 @@ func TestExecutor_ParallelCancel_NoCrossTalk(t *testing.T) {
 	var aErr error
 	go func() {
 		defer close(aDone)
-		aRaw, _, aErr = exec.ExecuteDecision(ctxA, planner.RunContext{Quadruple: qa},
+		aRaw, _, aErr = exec.ExecuteDecision(ctxA, dispatchRunContext(cat, qa),
 			planner.CallParallel{Branches: []planner.CallTool{
 				{Tool: "block", Args: json.RawMessage(`{}`), CallID: "a0"},
 			}})
@@ -493,7 +500,7 @@ func TestExecutor_ParallelCancel_NoCrossTalk(t *testing.T) {
 
 	// Run B on the SAME executor while A is parked — must complete.
 	qb := dispatchTestQuad("r-cancel-b")
-	bRaw, _, bErr := exec.ExecuteDecision(dispatchTestCtx(t, qb), planner.RunContext{Quadruple: qb},
+	bRaw, _, bErr := exec.ExecuteDecision(dispatchTestCtx(t, qb), dispatchRunContext(cat, qb),
 		planner.CallParallel{Branches: []planner.CallTool{
 			{Tool: "fast", Args: json.RawMessage(`{}`), CallID: "b0"},
 		}})
@@ -582,7 +589,7 @@ func TestExecutor_DefaultThreshold_InlinedBand_NoArtifactWritten(t *testing.T) {
 
 			q := dispatchTestQuad("r-band-" + strconv.Itoa(size))
 			_, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q),
-				planner.RunContext{Quadruple: q},
+				dispatchRunContext(cat, q),
 				planner.CallTool{Tool: "banded", Args: json.RawMessage(`{}`)})
 			if err != nil {
 				t.Fatalf("ExecuteDecision: %v", err)
@@ -632,7 +639,7 @@ func TestExecutor_DefaultThreshold_AboveBand_StillPromoted(t *testing.T) {
 
 			q := dispatchTestQuad("r-above-" + strconv.Itoa(size))
 			_, llmObs, err := exec.ExecuteDecision(dispatchTestCtx(t, q),
-				planner.RunContext{Quadruple: q},
+				dispatchRunContext(cat, q),
 				planner.CallTool{Tool: "above", Args: json.RawMessage(`{}`)})
 			if err != nil {
 				t.Fatalf("ExecuteDecision: %v", err)

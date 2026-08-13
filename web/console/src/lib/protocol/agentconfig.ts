@@ -302,7 +302,31 @@ export interface AgentConfigPayload {
 	/** Read-only additional signed capability pairs keyed by provider_name. The
 	 * first pair remains in signed_oauth_mcp_pair for wire compatibility. */
 	signed_oauth_mcp_pairs?: Record<string, AgentConfigSignedOAuthMCPPair>;
+	agent_packs?: AgentConfigAgentPackItem[];
 }
+
+export interface AgentConfigAgentPackItem {
+	name: string; title?: string; description?: string; trigger: string;
+	task_type?: string; tags?: string[]; steps: string[];
+	preconditions?: string[]; failure_modes?: string[]; required_tools?: string[];
+	required_ns?: string[]; required_tags?: string[]; origin?: string; scope?: string;
+	origin_ref?: string; extra?: Record<string, string>;
+}
+
+export interface AgentConfigAgentPacksListRequest { identity: IdentityScope; agent_id: string; }
+export interface AgentConfigAgentPacksUpsertRequest { identity: IdentityScope; agent_id: string; scope?: string; skill: AgentConfigAgentPackItem; expected_content_hash?: string; }
+export interface AgentConfigAgentPacksRemoveRequest { identity: IdentityScope; agent_id: string; name: string; expected_content_hash?: string; }
+export interface AgentConfigAgentPacksProposeRequest { identity: IdentityScope; agent_id: string; scope?: string; intent: string; expected_content_hash: string; dry_run?: boolean; }
+export interface AgentConfigAgentPacksCommitRequest { identity: IdentityScope; agent_id: string; scope?: string; skill: AgentConfigAgentPackItem; reviewed_hash: string; provenance: string; proposal_id: string; expected_content_hash: string; }
+export interface AgentConfigAgentPacksListResponse { items?: AgentConfigAgentPackItem[]; protocol_version: string; }
+export interface AgentConfigAgentPacksUpsertResponse { revision: AgentConfigRevisionView; skill: AgentConfigSkillSummary; hash: string; protocol_version: string; }
+export interface AgentConfigAgentPacksRemoveResponse { revision: AgentConfigRevisionView; protocol_version: string; }
+export interface AgentConfigAgentPacksProposeResponse {
+	skill: AgentConfigAgentPackItem; hash: string; warnings?: string[]; provenance: string;
+	proposal_id: string; expected_content_hash: string; dry_run: boolean; protocol_version: string;
+	policy_id: string; policy_hash: string;
+}
+export interface AgentConfigAgentPacksCommitResponse { revision: AgentConfigRevisionView; skill: AgentConfigSkillSummary; hash: string; protocol_version: string; }
 
 /** One immutable config revision. Mirrors `types.AgentConfigRevisionView`. */
 export interface AgentConfigRevisionView {

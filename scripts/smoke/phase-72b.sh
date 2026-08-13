@@ -96,9 +96,12 @@ assert_grep_present 'auth\.HasScope\(r\.Context\(\), auth\.ScopeAdmin\)' "${CONT
 # Phase 221 / D-366), and Phase 233a's two typed session-skill outcomes
 # (CodeSessionSkillCutoverPending / CodeSessionSkillReadUnstable), and Phase
 # 234's two terminal retirement outcomes (CodeAgentRetired /
-# CodeAgentRetirementConflict). Pin the EXACT closed set by identifier, not a
-# raw declaration count: a count alone accepts a missing old code paired with
-# an unrelated replacement.
+# CodeAgentRetirementConflict), and the HA-57 same-run step-tranche surface's
+# CodeRestartUnavailable (a persisted tranche pause with no live in-process run
+# loop capable of exact restart redrive — the run fails closed rather than
+# pretending to continue as a new task, D-417). Pin the EXACT closed set by
+# identifier, not a raw declaration count: a count alone accepts a missing old
+# code paired with an unrelated replacement.
 CANONICAL_ERROR_CODES=(
     CodeInvalidRequest
     CodeIdentityRequired
@@ -106,6 +109,7 @@ CANONICAL_ERROR_CODES=(
     CodePayloadInvalid
     CodeUnknownMethod
     CodeNotFound
+    CodeRestartUnavailable
     CodeRuntimeError
     CodeAuthRejected
     CodeIdentityScopeRequired

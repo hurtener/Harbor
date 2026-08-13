@@ -218,6 +218,16 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveSkillsUpsert(w, r, body, wireID)
 	case "skills/delete":
 		h.serveSkillsDelete(w, r, body, wireID)
+	case "agent_packs/list":
+		h.serveAgentPacksList(w, r, body, wireID)
+	case "agent_packs/upsert":
+		h.serveAgentPacksUpsert(w, r, body, wireID)
+	case "agent_packs/remove":
+		h.serveAgentPacksRemove(w, r, body, wireID)
+	case "agent_packs/propose":
+		h.serveAgentPacksPropose(w, r, body, wireID)
+	case "agent_packs/commit":
+		h.serveAgentPacksCommit(w, r, body, wireID)
 	case "session/set_user_prompt":
 		h.serveSessionSetUserPrompt(w, r, body, wireID)
 	case "session/set_source_disables":
@@ -643,6 +653,98 @@ func (h *AgentConfigHandler) serveSkillsDelete(w http.ResponseWriter, r *http.Re
 	resp, err := h.service.SkillsDelete(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigSkillsDelete, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+// --- operator-managed per-agent skill packs (admin tier; HA-55) ---
+//
+// The `agent_config.agent_packs.*` family is admin-scoped (the default tier
+// in the dispatch switch), identity-mandatory, and — like the `skills.*`
+// verbs — NOT agent-reach gated: an admin claim is the authority for the
+// control-plane pack surface.
+
+func (h *AgentConfigHandler) serveAgentPacksList(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigAgentPacksListRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigAgentPacksList) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.AgentPacksList(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigAgentPacksList, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveAgentPacksUpsert(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigAgentPacksUpsertRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigAgentPacksUpsert) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.AgentPacksUpsert(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigAgentPacksUpsert, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveAgentPacksRemove(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigAgentPacksRemoveRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigAgentPacksRemove) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.AgentPacksRemove(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigAgentPacksRemove, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveAgentPacksPropose(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigAgentPacksProposeRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigAgentPacksPropose) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.AgentPacksPropose(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigAgentPacksPropose, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveAgentPacksCommit(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigAgentPacksCommitRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigAgentPacksCommit) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.AgentPacksCommit(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigAgentPacksCommit, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)
@@ -1109,6 +1211,17 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// rejected BEFORE any registry write (no revision, no event).
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrAgentPacksInvalid),
+		errors.Is(err, agentcfgprotocol.ErrAgentPacksReadOnly),
+		errors.Is(err, agentcfgprotocol.ErrAgentPackHashMismatch),
+		errors.Is(err, agentcfgprotocol.ErrAgentPackProvenanceMismatch),
+		errors.Is(err, agentcfgprotocol.ErrAgentPackProposalInvalid):
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest, m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrAgentPackProposalUnavailable),
+		errors.Is(err, agentcfgprotocol.ErrAgentPackProposeUnavailable):
+		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented, m + ": agent pack proposal service is not wired"
+	case errors.Is(err, agentcfgprotocol.ErrAgentPackNotFound):
+		return protoerrors.CodeNotFound, http.StatusNotFound, m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrCoordinatorUnavailable):
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
 			m + ": " + err.Error()

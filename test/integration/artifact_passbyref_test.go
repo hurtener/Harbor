@@ -126,6 +126,10 @@ func pbrCtx(t *testing.T, q identity.Quadruple) context.Context {
 	return ctx
 }
 
+func pbrRC(cat tools.ToolCatalog, q identity.Quadruple) planner.RunContext {
+	return planner.RunContext{Quadruple: q, Trajectory: &trajectory.Trajectory{}, Catalog: tools.NewPlannerView(cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})}
+}
+
 // pbrPut stores the marker-bearing body under the quadruple's triple and
 // returns the ref id the model would be told to author.
 func pbrPut(t *testing.T, store artifacts.ArtifactStore, q identity.Quadruple, body []byte) string {
@@ -182,7 +186,7 @@ func TestE2E_PassByRef_ResolvedValueNeverReachesTheObservableRecord(t *testing.T
 	}
 	defer sub.Cancel()
 
-	rc := planner.RunContext{Quadruple: q, Trajectory: &trajectory.Trajectory{}}
+	rc := pbrRC(st.cat, q)
 	call := pbrCall(refID)
 	raw, llmObs, err := st.exec.ExecuteDecision(ctx, rc, call)
 	if err != nil {
@@ -316,7 +320,7 @@ func TestE2E_PassByRef_CrossTenantReferenceDoesNotResolve(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := pbrCtx(t, tc.q)
-			rc := planner.RunContext{Quadruple: tc.q, Trajectory: &trajectory.Trajectory{}}
+			rc := pbrRC(st.cat, tc.q)
 			raw, llmObs, err := st.exec.ExecuteDecision(ctx, rc, pbrCall(refID))
 			if err == nil {
 				t.Fatalf("an out-of-scope reference resolved: raw=%v llm=%v", raw, llmObs)
@@ -346,7 +350,7 @@ func TestE2E_PassByRef_CrossTenantReferenceDoesNotResolve(t *testing.T) {
 	// The owner still reads it — the refusals above are a boundary, not
 	// a broken store.
 	ctx := pbrCtx(t, owner)
-	rc := planner.RunContext{Quadruple: owner, Trajectory: &trajectory.Trajectory{}}
+	rc := pbrRC(st.cat, owner)
 	raw, _, err := st.exec.ExecuteDecision(ctx, rc, pbrCall(refID))
 	if err != nil {
 		t.Fatalf("the owning run could not read its own artifact: %v", err)
@@ -364,7 +368,7 @@ func TestE2E_PassByRef_UnknownReferenceFailsLoudly(t *testing.T) {
 	st := newPBRStack(t)
 	q := pbrQuad("pbr-tenant-a", "pbr-user-a", "pbr-session-a", "pbr-run-x")
 	ctx := pbrCtx(t, q)
-	rc := planner.RunContext{Quadruple: q, Trajectory: &trajectory.Trajectory{}}
+	rc := pbrRC(st.cat, q)
 
 	_, _, err := st.exec.ExecuteDecision(ctx, rc, pbrCall("tool_doesnotexist"))
 	if err == nil {
@@ -387,7 +391,7 @@ func TestE2E_PassByRef_NoArtifactStoreWiredFailsLoudly(t *testing.T) {
 
 	q := pbrQuad("pbr-tenant-a", "pbr-user-a", "pbr-session-a", "pbr-run-y")
 	ctx := pbrCtx(t, q)
-	rc := planner.RunContext{Quadruple: q, Trajectory: &trajectory.Trajectory{}}
+	rc := pbrRC(cat, q)
 
 	_, _, err := exec.ExecuteDecision(ctx, rc, pbrCall("tool_anything"))
 	if err == nil {
@@ -444,7 +448,7 @@ func TestE2E_PassByRef_ConcurrentRunsDoNotCrossTalk(t *testing.T) {
 				errs[i] = err
 				return
 			}
-			rc := planner.RunContext{Quadruple: p.q, Trajectory: &trajectory.Trajectory{}}
+			rc := pbrRC(st.cat, p.q)
 			raw, _, err := st.exec.ExecuteDecision(ctx, rc, pbrCall(p.refID))
 			if err != nil {
 				errs[i] = err

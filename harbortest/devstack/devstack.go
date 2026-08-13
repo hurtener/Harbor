@@ -771,6 +771,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		// existing session materialises its registry row.
 		surfaceOpts = append(surfaceOpts,
 			protocol.WithSessionEnsurer(serve.NewSessionEnsurerAdapter(core.Sessions)))
+		surfaceOpts = append(surfaceOpts, protocol.WithPauseCoordinator(core.Coordinator))
 		// Caller-named-agent validation — mirrors production
 		// `internal/runtime/serve`. The SAME registry + boot agent id the
 		// kit's run-loop driver projects from, so the twin cannot drift
@@ -896,6 +897,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				Catalog:                  stack.Catalog,
 				Executor:                 core.Executor,
 				MaxStepsRunLoop:          cfg.Planner.MaxSteps,
+				TrancheSteps:             steering.EffectiveTrancheSteps(cfg.Planner.MaxSteps),
 				GrantedScopes:            append([]string(nil), cfg.Tools.GrantedScopes...),
 				ArtifactStore:            stack.Artifacts,
 				TokenBudget:              cfg.Planner.TokenBudget,
@@ -1071,6 +1073,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			MCPToolContext:                 stack.MCPToolContext,
 			State:                          stack.State,
 			Skills:                         stack.Skills,
+			AgentPackLLM:                   stack.LLMClient,
 			AgentConfig:                    stack.AgentConfig,
 			AgentConfigID:                  stack.AgentConfigID,
 			AgentResolver:                  agentResolver,

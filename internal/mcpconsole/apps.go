@@ -251,25 +251,80 @@ func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI s
 }
 
 // CallTool implements protocol.AppToolInvoker. It resolves the named tool
-// from the SAME catalog a planner resolves against and invokes the SAME
-// wrapped descriptor — so the approval gate (the unified pause primitive)
-// + tool-side OAuth fire exactly as on a planner call. The result is
+// and invokes the SAME wrapped descriptor the planner resolves — so the
+// approval gate (the unified pause primitive) + tool-side OAuth fire
+// exactly as on a planner call. The result is
 // heavy-content-disciplined (the context-window safety net); a `ui://`
 // MCP App the invoked tool declared (on its tool-definition `_meta.ui`,
 // reconciled by the driver onto the result's app reference) is projected
 // onto the App field.
-func (a *AppsAccessor) CallTool(ctx context.Context, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+//
+// # Two deliberately different resolution views
+//
+// The tool is resolved against the ordinary planner/model catalog FIRST
+// (the pre-existing path — ordinary tools, including ones that declare a
+// `ui://` app for a rendered App to re-invoke). When the name does NOT
+// resolve there, the only remaining authority is the serverID-named
+// server's App dispatch catalog — the app-only callbacks the provider
+// declared with `_meta.ui.visibility: ["app"]` and the attach path kept
+// OUT of the ordinary catalog. That catalog is keyed by the host-derived
+// server identity, not by any string prefix or remembered global name:
+//
+//   - an app-only callback is NOT resolvable without its own serverID
+//     (missing server identity → typed not-found before invocation);
+//   - a serverID that does not hold the name answers not-found, so one
+//     server's rendered App can never invoke another server's callback;
+//   - an ordinary tool called with a serverID that disagrees with its
+//     actual Source is refused as a scope mismatch BEFORE invocation (the
+//     App claims an identity it does not hold). An ordinary tool called
+//     with NO serverID keeps the pre-catalog behavior (legacy clients).
+//
+// Whatever view the tool resolved through, the invocation path is the
+// SAME: the identity / agent-reach / current-state exposure gate below and
+// the wrapped descriptor's approval / OAuth / identity path.
+func (a *AppsAccessor) CallTool(ctx context.Context, serverID, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	return a.callTool(ctx, serverID, "", "", tool, args)
+}
+
+// CallToolWithBinding dispatches an app callback using its opaque render
+// capability while preserving the ordinary invoker compatibility seam.
+func (a *AppsAccessor) CallToolWithBinding(ctx context.Context, serverID, binding, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	return a.callTool(ctx, serverID, binding, resourceURI, tool, args)
+}
+
+func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	desc, ok := a.cat.Resolve(tool)
 	if !ok {
-		// Wrap the Protocol's not-found SENTINEL alongside the catalog's, so
-		// the wire edge classifies this as CodeNotFound on an assertion THIS
-		// accessor makes ("I resolved it and it is absent") rather than on the
-		// wording of an error chain a southbound server can contribute to. The
-		// App renders a not-found as a permanent verdict, so it must not be
-		// reachable by a transient transport failure that happens to phrase
-		// itself the same way.
-		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %w: %q",
-			protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool)
+		// Not in the ordinary planner/model catalog. The only authority
+		// left is the named server's App dispatch catalog — an app-only
+		// callback. Without a host-derived server identity there is
+		// deliberately NO way to reach it (no string prefix or remembered
+		// global name may select another server's callback).
+		if serverID == "" {
+			return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %w: %q",
+				protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool)
+		}
+		appDesc, appOK := a.reg.ResolveAppTool(serverID, tool)
+		if appOK && !a.reg.ValidateAppBinding(ctx, serverID, binding, resourceURI) {
+			appOK = false
+		}
+		if !appOK {
+			// The server is absent, or does not hold an app-only callback
+			// under this name. Same typed not-found — the App renders it as
+			// a permanent "there is no such action on this server".
+			return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %w: %q (server %q)",
+				protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool, serverID)
+		}
+		desc = appDesc
+	} else if serverID != "" && string(desc.Tool.Source) != serverID {
+		// The ordinary catalog resolved the tool, but the App claims a
+		// server identity that disagrees with the tool's actual source —
+		// another server's rendered App (or an App claiming a server that
+		// does not own this tool at all). Refused BEFORE invocation, as a
+		// typed scope-denied authorization verdict (the App's host-derived
+		// identity is not the identity of the server that owns the tool).
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: app call to tool %q names server %q, but the tool belongs to server %q",
+			protocol.ErrAccessorScopeDenied, tool, serverID, desc.Tool.Source)
 	}
 	if desc.Invoke == nil {
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("mcpconsole: tool %q registered without an Invoke function", tool)
@@ -469,6 +524,7 @@ func appRefFromValue(value any, serverID string) *protocol.MCPAppRefRow {
 	}
 	return &protocol.MCPAppRefRow{
 		ServerID:    serverID,
+		Binding:     v.AppRef.Binding,
 		ToolCallID:  v.AppRef.ToolCallID,
 		ResourceURI: v.AppRef.ResourceURI,
 		DisplayMode: v.AppRef.PreferredDisplayMode,

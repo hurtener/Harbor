@@ -42,6 +42,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/packproposer"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
@@ -102,6 +103,9 @@ type MuxInput struct {
 	MCPToolContext *mcpconsole.ToolContextStore
 	State          state.StateStore
 	Skills         skills.SkillStore
+	// AgentPackLLM is the configured model client used by governed pack
+	// authoring. BuildMux wraps it in the production proposer seam.
+	AgentPackLLM llm.LLMClient
 
 	// Control-plane handles.
 	AgentConfig          agentcfg.Registry
@@ -693,6 +697,16 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithAllowWireInjection(in.AllowWireInjection),
 			agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(in.SignedOAuthMCPCapabilityAuthorities),
 			agentcfgprotocol.WithSignedOAuthMCPOperationState(in.State),
+			agentcfgprotocol.WithAgentPackProposalState(in.State),
+			agentcfgprotocol.WithAgentPackCatalog(in.Catalog),
+			agentcfgprotocol.WithAgentPackGrantedScopes(append([]string(nil), cfg.Tools.GrantedScopes...)),
+		}
+		if in.AgentPackLLM != nil {
+			proposer, proposerErr := packproposer.New(in.AgentPackLLM)
+			if proposerErr != nil {
+				return nil, wrapErr("agent-config/pack proposer", proposerErr)
+			}
+			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithAgentPackProposer(proposer))
 		}
 		if in.MCPAttacher != nil {
 			if preparer, ok := in.MCPAttacher.(agentcfgprotocol.ConnectionPreparer); ok {

@@ -75,12 +75,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/state"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // LifecycleKind is the StateStore Kind constant for task-lifecycle
@@ -145,6 +150,21 @@ const (
 	PropagateIsolate = "isolate"
 )
 
+// VirtualAgent is the immutable per-task metadata that pins a
+// virtual-agent profile (internal/virtualagent.Binding): the owning
+// TOP-LEVEL agent, the profile key / label / parent, the parent config
+// revision id + digest the profile was frozen against, and the profile
+// content hash. It is carried on a planner-spawned task so the child's
+// run start reproduces the EXACT profile — or fails loud.
+//
+// `AgentID` stays the top-level agent on `Task.AgentID`; a virtual-agent
+// task is NEVER a different registered agent, never appears in
+// `agents.list`, and is never a `control.start` target. The binding is
+// constructed by the dispatch executor from the parent's frozen profile
+// map; the registry does not re-resolve it (the executor validates
+// unknown / invalid / stale BEFORE the task is persisted).
+type VirtualAgent = virtualagent.Binding
+
 // Task is the persisted lifecycle record for one task. The Identity
 // quadruple is captured immutably on Spawn; the runtime engine drives
 // state transitions via the registry's Mark* methods.
@@ -153,16 +173,40 @@ const (
 // intentionally narrow at so the PR adds those
 // fields against a stable shape.
 type Task struct {
-	ID                TaskID
-	Identity          identity.Quadruple
-	Kind              TaskKind
-	Status            TaskStatus
-	Priority          int
-	ParentTaskID      *TaskID
-	Description       string
-	Query             string
-	Result            *TaskResult
-	Error             *TaskError
+	ID           TaskID
+	Identity     identity.Quadruple
+	Kind         TaskKind
+	Status       TaskStatus
+	Priority     int
+	ParentTaskID *TaskID
+	Description  string
+	Query        string
+	Result       *TaskResult
+	Error        *TaskError
+	// Progress is the task's LATEST durable progress snapshot, replaced
+	// wholesale by every accepted ReportProgress call (last-write-wins;
+	// no history is retained). Nil means the caller has reported no
+	// progress — the pre-field behaviour and the value on every
+	// historical row, so an old-format task hydrates with nil Progress
+	// (the `omitempty` tag keeps the whole-record marshal byte-identical
+	// to a pre-field record).
+	//
+	// The snapshot is stored REDACTED: ReportProgress runs the
+	// caller-controlled Phase / Message / Tags through the same audit
+	// redactor Description and Query take, and the redacted form is what
+	// is persisted AND published (the `task.progress` payload is
+	// SafePayload by construction only because the engine never emits
+	// unredacted caller content).
+	//
+	// ReportProgress is orthogonal to the lifecycle FSM: it advances
+	// `UpdatedAt` (progress is observable task activity — the wire
+	// `LastActivityAt` derives from it) but never changes `Status`.
+	// A report on a terminal task is rejected with
+	// `ErrInvalidTransition`, so a progress event can never land after
+	// the task's terminal event (terminal ordering is preserved under
+	// the engine's FSM lock).
+	Progress          *TaskProgressSnapshot `json:",omitempty"`
+	PendingProgress   *TaskProgressPayload  `json:",omitempty"`
 	PropagateOnCancel string
 	NotifyOnComplete  bool
 	IdempotencyKey    string
@@ -282,6 +326,18 @@ type Task struct {
 	// wire resource cost, not the post-redaction representation. Zero means no
 	// caller memory and is omitted from historical rows.
 	CallerMemoryWireBytes int `json:",omitempty"`
+	// VirtualAgent is the immutable virtual-agent profile binding carried
+	// by a planner-spawned child when the parent selected a profile. Nil
+	// (the value on every non-profile task) is the pre-field behaviour —
+	// omission is byte-compatible. Constructed by the dispatch executor
+	// from the parent's frozen profile map; persisted verbatim via the
+	// whole-record marshal (no migration). It pins agent / key / label /
+	// parent / config-revision / digest / profile-hash so the child's run
+	// start reproduces the exact profile or fails loud. `Task.AgentID`
+	// stays the owning TOP-LEVEL agent; the binding never re-keys the
+	// task to a different registered agent and never joins the isolation
+	// tuple.
+	VirtualAgent *VirtualAgent `json:",omitempty"`
 }
 
 // SpawnRequest is the input shape for `Spawn`. Identity is mandatory.
@@ -365,6 +421,17 @@ type SpawnRequest struct {
 	// `caller_memory` still has a data-leakage path no prompt wrapper and
 	// no pattern redactor closes.
 	CallerMemory json.RawMessage
+	// VirtualAgent is the optional virtual-agent profile binding for a
+	// planner-spawned child. Nil (the default on every non-profile
+	// request) preserves the pre-field behaviour byte-for-byte. When
+	// non-nil the registry does NOT re-resolve the profile: the dispatch
+	// executor constructed the binding from the parent's FROZEN profile
+	// map and validated unknown / invalid / stale BEFORE calling Spawn —
+	// the registry persists it verbatim. Folded into the task's content
+	// identity so a reused idempotency key with a DIFFERENT binding is a
+	// loud conflict rather than a silent adoption of the original
+	// profile.
+	VirtualAgent *VirtualAgent
 }
 
 // SpawnToolRequest is the input shape for `SpawnTool`. The shape
@@ -462,6 +529,240 @@ type TaskResult struct {
 type TaskError struct {
 	Code    string
 	Message string
+}
+
+// Progress content bounds. The caller-controlled fields of a
+// `TaskProgressSnapshot` are bounded at the registry edge so one
+// runaway reporter cannot bloat the durable record or the
+// `task.progress` event payload beyond a fixed ceiling. String bounds
+// are rune counts (not byte counts), mirroring the token-oriented
+// posture of the rest of the runtime.
+const (
+	// MaxProgressPhaseLen bounds the Phase stage label (in runes).
+	MaxProgressPhaseLen = 64
+	// MaxProgressMessageLen bounds the Message note (in runes).
+	MaxProgressMessageLen = 2048
+	// MaxProgressTags bounds the number of Tags entries.
+	MaxProgressTags = 16
+	// MaxProgressTagLen bounds each Tags entry (in runes).
+	MaxProgressTagLen = 64
+)
+
+// TaskProgressSnapshot is a durable, runtime-owned progress checkpoint
+// for one task — the value written by `ReportProgress` and re-read by
+// `Get` / `List` projection as the canonical "what has this task
+// reported so far" record.
+//
+// `Fraction` is nil OR in [0,1]. Nil means "the reporter emitted no
+// numeric hint" (a consumer renders an indeterminate bar); 0.0 and 1.0
+// are meaningful values (0% and 100%), so the pointer exists to
+// distinguish "no hint" from "hint 0". `Phase` is a short bounded
+// stage label ("planning", "tool_loop", "verifying"); `Message` is a
+// bounded human-readable note; `Tags` are bounded short labels,
+// normalized (whitespace-trimmed, empties dropped) and de-duplicated
+// (first occurrence wins). All three are caller-controlled content and
+// are run through the audit redactor before persistence — the same
+// contract Description and Query hold.
+//
+// `UpdatedAt` is set by the RUNTIME at report time, never by the
+// caller: a caller-supplied value is overwritten so the persisted
+// timestamp always reflects when the registry accepted the update.
+//
+// The zero value is a VALID, honest snapshot: nil Fraction (no hint),
+// empty Phase / Message / Tags. Backward-compatible zero behaviour
+// lives one level up — a task that never reported progress carries a
+// nil `Task.LatestProgress`, never a fabricated zero snapshot.
+type TaskProgressSnapshot struct {
+	// Fraction is the numeric progress hint in [0,1], or nil when the
+	// reporter emits no hint.
+	Fraction *float64
+	// Phase is a short bounded stage label (≤ MaxProgressPhaseLen).
+	Phase string
+	// Message is a bounded human-readable note
+	// (≤ MaxProgressMessageLen).
+	Message string
+	// Tags are bounded short labels (≤ MaxProgressTags entries, each
+	// ≤ MaxProgressTagLen). Normalized + duplicate-free.
+	Tags []string
+	// ReportedAt is the runtime-assigned unix-nanosecond timestamp at
+	// which the registry accepted the report. ReportProgress
+	// overwrites any caller-supplied value.
+	ReportedAt int64
+}
+
+// ValidateProgress checks the structural invariants ReportProgress
+// needs before touching driver storage and NORMALIZES the snapshot in
+// place:
+//
+//   - nil snapshot is invalid (nil is the record-level "no progress
+//     reported" marker, never a reportable value);
+//   - Fraction nil-or-[0,1] (outside the range is invalid);
+//   - Phase ≤ MaxProgressPhaseLen, Message ≤ MaxProgressMessageLen;
+//   - Tags ≤ MaxProgressTags entries, each ≤ MaxProgressTagLen after
+//     normalization;
+//   - Tags are normalized (whitespace trimmed, empties dropped) and
+//     duplicates REJECTED after normalization (first occurrence wins).
+//
+// Returns wrapped ErrInvalidProgress on any failure. A caller that
+// wants the accepted form persists the (normalized) snapshot it passed
+// in — the function mutates the input, it never returns a copy.
+func ValidateProgress(snap *TaskProgressSnapshot) error {
+	if snap == nil {
+		return fmt.Errorf("%w: snapshot is nil", ErrInvalidProgress)
+	}
+	if snap.Fraction != nil && (*snap.Fraction < 0 || *snap.Fraction > 1) {
+		return fmt.Errorf("%w: fraction %v outside [0,1]", ErrInvalidProgress, *snap.Fraction)
+	}
+	if r := utf8.RuneCountInString(snap.Phase); r > MaxProgressPhaseLen {
+		return fmt.Errorf("%w: phase %d runes exceeds %d", ErrInvalidProgress, r, MaxProgressPhaseLen)
+	}
+	if r := utf8.RuneCountInString(snap.Message); r > MaxProgressMessageLen {
+		return fmt.Errorf("%w: message %d runes exceeds %d", ErrInvalidProgress, r, MaxProgressMessageLen)
+	}
+	if len(snap.Tags) > MaxProgressTags {
+		return fmt.Errorf("%w: %d tags exceeds %d", ErrInvalidProgress, len(snap.Tags), MaxProgressTags)
+	}
+	// Normalize + reject duplicates. Trimming happens first so
+	// "planning " and "planning" collapse to one tag, then exact
+	// (post-trim) duplicates are dropped keeping the first occurrence.
+	seen := make(map[string]struct{}, len(snap.Tags))
+	norm := make([]string, 0, len(snap.Tags))
+	for _, tag := range snap.Tags {
+		t := strings.TrimSpace(tag)
+		if t == "" {
+			continue
+		}
+		if r := utf8.RuneCountInString(t); r > MaxProgressTagLen {
+			return fmt.Errorf("%w: tag %d runes exceeds %d", ErrInvalidProgress, r, MaxProgressTagLen)
+		}
+		if _, dup := seen[t]; dup {
+			continue
+		}
+		seen[t] = struct{}{}
+		norm = append(norm, t)
+	}
+	snap.Tags = norm
+	return nil
+}
+
+// CloneProgress returns a deep copy of snap so a caller cannot mutate
+// the engine's live record (mirrors Get's copy discipline). A nil
+// snapshot clones to nil — the honest "no progress reported" marker.
+func CloneProgress(snap *TaskProgressSnapshot) *TaskProgressSnapshot {
+	if snap == nil {
+		return nil
+	}
+	cp := *snap
+	if snap.Fraction != nil {
+		f := *snap.Fraction
+		cp.Fraction = &f
+	}
+	if snap.Tags != nil {
+		cp.Tags = append([]string(nil), snap.Tags...)
+	}
+	return &cp
+}
+
+// Progress field bounds. The registry validates the RAW caller input
+// against these before any state is touched; the engine normalizes
+// after validation.
+const (
+	// ProgressFractionMin is the inclusive lower bound of Fraction.
+	ProgressFractionMin = 0.0
+	// ProgressFractionMax is the inclusive upper bound of Fraction.
+	ProgressFractionMax = 1.0
+	// ProgressPhaseMaxLen bounds one Phase label in bytes.
+	ProgressPhaseMaxLen = 64
+	// ProgressMessageMaxLen bounds one Message in bytes.
+	ProgressMessageMaxLen = 512
+	// ProgressMaxTags bounds the number of Tags entries.
+	ProgressMaxTags = 16
+	// ProgressTagMaxLen bounds one Tag entry in bytes.
+	ProgressTagMaxLen = 64
+)
+
+// ReportProgressRequest is the input shape for
+// `TaskRegistry.ReportProgress`. Identity is NOT carried here — it is
+// read from the request context (the same contract Cancel / Mark*
+// use), and the engine verifies it matches the target task's triple.
+//
+// The fields are caller-controlled content and are therefore bounded
+// and redacted: an empty request is legal and means "clear the
+// numeric hint / phase / message but keep reporting activity" — the
+// engine still records + emits it as the latest snapshot (it differs
+// from whatever preceded it).
+type ReportProgressRequest struct {
+	// Fraction is the bounded [0,1] completion hint; nil = no
+	// numeric hint. NaN / ±Inf is rejected.
+	Fraction *float64
+	// Phase is a short bounded label for the current work phase.
+	Phase string
+	// Message is a bounded human-readable update.
+	Message string
+	// Tags are bounded short labels; normalized (trim + dedupe) by
+	// the engine before comparison.
+	Tags []string
+}
+
+// ProgressReportResult reports what one ReportProgress call did.
+//
+//	Recorded  — the engine durably replaced the task's latest
+//	            snapshot (the accepted report changed at least one
+//	            observable field post-redaction).
+//	Emitted   — a `task.progress` event was published for this
+//	            report. False when the report was coalesced by the
+//	            rate policy (Recorded=true) or when the report was a
+//	            no-op (Recorded=false).
+//
+// A failed report returns an error and the zero result — a
+// persistence or publication failure never claims success.
+type ProgressReportResult struct {
+	Recorded bool
+	Emitted  bool
+}
+
+// ProgressPolicy bounds the ReportProgress coalescing/rate policy.
+// The registry applies it per task: a report that carries a real
+// phase or fraction change always persists AND emits; a
+// message/tags-only update is persisted immediately but only
+// published once MinInterval has elapsed since the task's last
+// published `task.progress` event.
+type ProgressPolicy struct {
+	// MinInterval is the minimum wall-clock gap between two
+	// `task.progress` publications for the SAME task. Message /
+	// tags-only updates arriving inside the window are coalesced
+	// (recorded, not published). Zero means "no window" — every
+	// non-real update publishes.
+	MinInterval time.Duration
+	// FractionEpsilon is the minimum |ΔFraction| that counts as a
+	// real fraction change (always published, bypassing the window).
+	// A fraction-presence change (nil → non-nil or vice versa) is
+	// always real regardless of the epsilon.
+	FractionEpsilon float64
+}
+
+// ProgressReporter is permanently scoped to one task.
+type ProgressReporter interface {
+	ReportProgress(context.Context, ReportProgressRequest) (ProgressReportResult, error)
+}
+
+// ProgressReporterRegistry is implemented by runtime registries that can
+// issue a reporter bound to a task identity.
+type ProgressReporterRegistry interface {
+	ProgressReporter(context.Context, TaskID) (ProgressReporter, error)
+}
+
+// DefaultProgressPolicy is the bounded default coalescing/rate policy
+// every engine instance applies unless overridden at construction.
+// The 250 ms window bounds chatty message-only updates to ≤ 4
+// publications per second per task while real phase/fraction changes
+// publish immediately; the 0.01 epsilon treats sub-1% fraction
+// wobble as noise.
+func DefaultProgressPolicy() ProgressPolicy {
+	return ProgressPolicy{
+		MinInterval:     250 * time.Millisecond,
+		FractionEpsilon: 0.01,
+	}
 }
 
 // TaskRegistry is the orchestration surface for the task subsystem.
@@ -722,6 +1023,16 @@ var (
 	// payload surfaces at the call site instead of vanishing from the
 	// durable log (CLAUDE.md §5 fail-loud).
 	ErrUnserializable = errors.New("tasks: record is not serializable")
+	// ErrInvalidProgress — ReportProgress (or the task_progress
+	// builtin) called with a snapshot that fails structural
+	// validation: nil snapshot, fraction outside [0,1], overlong
+	// phase/message/tags, or a tag overlong after normalization.
+	ErrInvalidProgress = errors.New("tasks: invalid progress snapshot")
+	// ErrTaskTerminal — ReportProgress targeting a task that is
+	// already terminal (Complete / Failed / Cancelled). Progress after
+	// the terminal transition is rejected; the terminal record is
+	// final.
+	ErrTaskTerminal = errors.New("tasks: task is terminal; progress rejected")
 )
 
 // ValidateRequest checks structural invariants Spawn needs before
@@ -741,6 +1052,18 @@ func ValidateRequest(req SpawnRequest) error {
 	}
 	if err := validatePropagate(req.PropagateOnCancel); err != nil {
 		return err
+	}
+	if req.VirtualAgent != nil {
+		if err := virtualagent.ValidateBinding(*req.VirtualAgent); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
+		}
+		if req.AgentID == "" || req.AgentID != req.VirtualAgent.AgentID ||
+			req.VirtualAgent.Parent != req.AgentID {
+			return fmt.Errorf("%w: virtual profile must bind to the request's top-level agent", ErrInvalidRequest)
+		}
+		if req.ParentTaskID == nil || *req.ParentTaskID == "" {
+			return fmt.Errorf("%w: virtual profile child requires a parent task", ErrInvalidRequest)
+		}
 	}
 	return nil
 }
@@ -779,6 +1102,44 @@ func validatePropagate(p string) error {
 	default:
 		return fmt.Errorf("%w: propagate_on_cancel %q not in {cascade,isolate}", ErrInvalidRequest, p)
 	}
+}
+
+// ValidateProgressRequest checks the structural invariants
+// ReportProgress needs before touching driver storage: the fraction
+// (when present) is a finite number in [0,1], and Phase / Message /
+// Tags respect their byte / count bounds. Bounds are checked on the
+// RAW caller input (before normalization / redaction), so an
+// over-long tag or an out-of-range fraction fails loud with
+// `ErrInvalidRequest` and records nothing.
+//
+// An all-empty request is valid — it is a legal "still alive" report
+// whose snapshot differs from any prior one and is therefore
+// recorded + published per the rate policy.
+func ValidateProgressRequest(req ReportProgressRequest) error {
+	if f := req.Fraction; f != nil {
+		if math.IsNaN(*f) || math.IsInf(*f, 0) {
+			return fmt.Errorf("%w: progress fraction %v is not a finite number", ErrInvalidRequest, *f)
+		}
+		if *f < ProgressFractionMin || *f > ProgressFractionMax {
+			return fmt.Errorf("%w: progress fraction %v outside [%v,%v]",
+				ErrInvalidRequest, *f, ProgressFractionMin, ProgressFractionMax)
+		}
+	}
+	if len(req.Phase) > ProgressPhaseMaxLen {
+		return fmt.Errorf("%w: progress phase exceeds %d bytes", ErrInvalidRequest, ProgressPhaseMaxLen)
+	}
+	if len(req.Message) > ProgressMessageMaxLen {
+		return fmt.Errorf("%w: progress message exceeds %d bytes", ErrInvalidRequest, ProgressMessageMaxLen)
+	}
+	if len(req.Tags) > ProgressMaxTags {
+		return fmt.Errorf("%w: progress tags exceed %d entries", ErrInvalidRequest, ProgressMaxTags)
+	}
+	for _, tag := range req.Tags {
+		if len(tag) > ProgressTagMaxLen {
+			return fmt.Errorf("%w: progress tag exceeds %d bytes", ErrInvalidRequest, ProgressTagMaxLen)
+		}
+	}
+	return nil
 }
 
 // Factory builds a TaskRegistry from a Dependencies struct. Drivers

@@ -101,6 +101,12 @@ import type {
 	AgentConfigUserSkillsListResponse,
 	AgentConfigUserSkillsUpsertResponse,
 	AgentConfigUserSkillsDeleteResponse,
+	AgentConfigAgentPackItem,
+	AgentConfigAgentPacksListResponse,
+	AgentConfigAgentPacksUpsertResponse,
+	AgentConfigAgentPacksRemoveResponse,
+	AgentConfigAgentPacksProposeResponse,
+	AgentConfigAgentPacksCommitResponse,
 } from './agentconfig.js';
 
 /* ------------------------------------------------------------------ */
@@ -511,7 +517,7 @@ export class MCPServersNamespace {
 		return this.#t.request<R>('/v1/control/mcp.servers.read_resource', {
 			server_id: serverID,
 			resource_uri: resourceURI,
-			...(agentID ? { agent_id: agentID } : {})
+      ...(agentID ? { agent_id: agentID } : {}),
 		});
 	}
 }
@@ -534,11 +540,14 @@ export class MCPAppsNamespace {
 	 * the Harbor catalog tool name (`<source>_<tool>`); `args` is the raw JSON
 	 * argument object the tool's schema validates on the wire.
 	 */
-	callTool<R = unknown>(tool: string, args?: unknown, agentID?: string): Promise<R> {
+  callTool<R = unknown>(serverID: string, tool: string, args?: unknown, agentID?: string, binding?: string, resourceURI?: string): Promise<R> {
 		return this.#t.request<R>('/v1/control/mcp.apps.call_tool', {
+			server_id: serverID,
 			tool,
 			arguments: args,
-			...(agentID ? { agent_id: agentID } : {})
+			...(agentID ? { agent_id: agentID } : {}),
+          ...(binding ? { binding } : {}),
+          ...(resourceURI ? { resource_uri: resourceURI } : {})
 		});
 	}
 	/**
@@ -1272,6 +1281,21 @@ export class AgentConfigNamespace {
 			agent_id: agentId,
 			revision_id: revisionId,
 		});
+	}
+	agentPacksList(agentId: string): Promise<AgentConfigAgentPacksListResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/list', { agent_id: agentId });
+	}
+	agentPacksUpsert(agentId: string, skill: AgentConfigAgentPackItem, expectedContentHash?: string, scope = 'agent'): Promise<AgentConfigAgentPacksUpsertResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/upsert', { agent_id: agentId, skill, scope, expected_content_hash: expectedContentHash });
+	}
+	agentPacksRemove(agentId: string, name: string, expectedContentHash?: string): Promise<AgentConfigAgentPacksRemoveResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/remove', { agent_id: agentId, name, expected_content_hash: expectedContentHash });
+	}
+	agentPacksPropose(agentId: string, intent: string, expectedContentHash: string, dryRun = false, scope = 'agent'): Promise<AgentConfigAgentPacksProposeResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/propose', { agent_id: agentId, intent, scope, expected_content_hash: expectedContentHash, dry_run: dryRun });
+	}
+	agentPacksCommit(agentId: string, proposalId: string, skill: AgentConfigAgentPackItem, reviewedHash: string, provenance: string, expectedContentHash: string, scope = 'agent'): Promise<AgentConfigAgentPacksCommitResponse> {
+		return this.#t.request('/v1/agent_config/agent_packs/commit', { agent_id: agentId, proposal_id: proposalId, skill, scope, reviewed_hash: reviewedHash, provenance, expected_content_hash: expectedContentHash });
 	}
 	/** `agent_config.set_tool_exposure` — set MCP pause/resume + per-tool
 	 * policy (desired-state replace of the tool-exposure section); records a

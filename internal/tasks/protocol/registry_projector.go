@@ -350,7 +350,37 @@ func projectRow(t *tasks.Task) prototypes.TaskRow {
 	if t.Status == tasks.StatusFailed && t.Error != nil {
 		row.ErrorClass = t.Error.Code
 	}
+	// The task's LATEST durable progress snapshot projects onto the
+	// row's `progress` + `tags` wire fields. Nil snapshot → both stay
+	// absent (the honest "no progress reported" — the Console renders
+	// an indeterminate bar instead of a fabricated 0.0). The projector
+	// never fabricates a progress value: only what ReportProgress
+	// durably recorded appears on the wire.
+	if t.Progress != nil {
+		row.ProgressSnapshot = &prototypes.TaskProgressSnapshot{
+			Fraction:  cloneProgressFraction(t.Progress.Fraction),
+			Phase:     t.Progress.Phase,
+			Message:   t.Progress.Message,
+			Tags:      append([]string(nil), t.Progress.Tags...),
+			UpdatedAt: time.Unix(0, t.Progress.ReportedAt).UTC(),
+		}
+		if t.Progress.Fraction != nil {
+			f := *t.Progress.Fraction
+			row.Progress = &f
+		}
+		if len(t.Progress.Tags) > 0 {
+			row.Tags = append([]string(nil), t.Progress.Tags...)
+		}
+	}
 	return row
+}
+
+func cloneProgressFraction(f *float64) *float64 {
+	if f == nil {
+		return nil
+	}
+	v := *f
+	return &v
 }
 
 // projectKind maps the runtime-internal task kind onto the wire enum.

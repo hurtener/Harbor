@@ -51,6 +51,13 @@ const (
 	// EventTypeTaskPrioritised — emitted by Prioritize when the
 	// task's priority value changes.
 	EventTypeTaskPrioritised events.EventType = "task.prioritised"
+	// EventTypeTaskProgress — emitted by ReportProgress when an
+	// accepted report passes the coalescing/rate policy. Carries the
+	// task + parent-task ids and the REDACTED snapshot fields; the
+	// event is ordered after the snapshot's durable record and — by
+	// construction of the engine's non-terminal check — always before
+	// the task's terminal event.
+	EventTypeTaskProgress events.EventType = "task.progress"
 
 	// EventTypeTaskGroupCreated — emitted by ResolveOrCreateGroup on
 	// the first creation (NOT emitted on idempotent-return).
@@ -90,6 +97,7 @@ func init() {
 	events.RegisterEventType(EventTypeTaskFailed)
 	events.RegisterEventType(EventTypeTaskCancelled)
 	events.RegisterEventType(EventTypeTaskPrioritised)
+	events.RegisterEventType(EventTypeTaskProgress)
 
 	events.RegisterEventType(EventTypeTaskGroupCreated)
 	events.RegisterEventType(EventTypeTaskGroupSealed)
@@ -190,6 +198,32 @@ type TaskPrioritisedPayload struct {
 	TaskID        TaskID
 	PriorPriority int
 	NewPriority   int
+}
+
+// TaskProgressPayload reports a durable progress-snapshot replacement
+// that passed the coalescing/rate policy — the `task.progress` event.
+// It carries the task and (when present) its parent-task id plus the
+// REDACTED snapshot fields. The runtime-owned Event envelope metadata
+// (the identity quadruple, OccurredAt, and the bus Sequence) rides on
+// the Event itself.
+//
+// SafePayload by construction — but ONLY because the engine is the
+// sole emitter and redacts Phase / Message / Tags through the audit
+// redactor before persisting the snapshot and building this payload;
+// a caller that hand-builds this payload must apply the same
+// redaction. `Fraction` is a bounded [0,1] number (nil = no hint);
+// `ReportedAt` is the runtime-stamped record time in unix
+// nanoseconds.
+type TaskProgressPayload struct {
+	UpdateID string `json:"update_id"`
+	events.SafeSealed
+	TaskID       TaskID
+	ParentTaskID TaskID // empty when the task has no parent
+	Fraction     *float64
+	Phase        string
+	Message      string
+	Tags         []string
+	ReportedAt   int64
 }
 
 // TaskGroupCreatedPayload reports a successful

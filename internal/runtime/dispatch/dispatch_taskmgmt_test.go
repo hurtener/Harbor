@@ -24,14 +24,15 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // spawnChildUnder spawns a background task whose ParentTaskID is
 // callerID (the run's own task), returning the child's id. This is how a
 // run's own descendant tree is built at the dispatch layer.
-func spawnChildUnder(t *testing.T, exec steering.ToolExecutor, callerID tasks.TaskID, query string) tasks.TaskID {
+func spawnChildUnder(t *testing.T, exec steering.ToolExecutor, cat tools.ToolCatalog, callerID tasks.TaskID, query string) tasks.TaskID {
 	t.Helper()
-	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor(callerID), planner.SpawnTask{
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor(callerID, cat), planner.SpawnTask{
 		Kind: tasks.KindBackground,
 		Spec: planner.SpawnSpec{Query: query, Description: query},
 	})
@@ -44,8 +45,9 @@ func spawnChildUnder(t *testing.T, exec steering.ToolExecutor, callerID tasks.Ta
 // TestExecutor_TaskStatus_NilRegistry_Unsupported — with no registry
 // wired, TaskStatusQuery fails loud (never panic / silent no-op).
 func TestExecutor_TaskStatus_NilRegistry_Unsupported(t *testing.T) {
-	exec := newSpawnAwaitExecutor(t, nil, 32*1024, 4)
-	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.TaskStatusQuery{})
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, nil, 32*1024, 4, cat)
+	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.TaskStatusQuery{})
 	if !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
 		t.Fatalf("nil-registry TaskStatusQuery err = %v, want ErrDecisionShapeUnsupported", err)
 	}
@@ -53,8 +55,9 @@ func TestExecutor_TaskStatus_NilRegistry_Unsupported(t *testing.T) {
 
 // TestExecutor_CancelTask_NilRegistry_Unsupported — same for CancelTask.
 func TestExecutor_CancelTask_NilRegistry_Unsupported(t *testing.T) {
-	exec := newSpawnAwaitExecutor(t, nil, 32*1024, 4)
-	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.CancelTask{TaskID: "x"})
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, nil, 32*1024, 4, cat)
+	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.CancelTask{TaskID: "x"})
 	if !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
 		t.Fatalf("nil-registry CancelTask err = %v, want ErrDecisionShapeUnsupported", err)
 	}
@@ -66,14 +69,15 @@ func TestExecutor_CancelTask_NilRegistry_Unsupported(t *testing.T) {
 func TestExecutor_TaskStatus_ListAll_ReturnsOwnDescendants(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
 	// runA spawns two direct children; one of them spawns a grandchild.
-	c1 := spawnChildUnder(t, exec, "runA", "child-1")
-	c2 := spawnChildUnder(t, exec, "runA", "child-2")
-	gc := spawnChildUnder(t, exec, c1, "grandchild")
+	c1 := spawnChildUnder(t, exec, cat, "runA", "child-1")
+	c2 := spawnChildUnder(t, exec, cat, "runA", "child-2")
+	gc := spawnChildUnder(t, exec, cat, c1, "grandchild")
 
-	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.TaskStatusQuery{})
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.TaskStatusQuery{})
 	if err != nil {
 		t.Fatalf("TaskStatusQuery(list-all): %v", err)
 	}
@@ -103,10 +107,11 @@ func TestExecutor_TaskStatus_ListAll_ReturnsOwnDescendants(t *testing.T) {
 func TestExecutor_TaskStatus_ExplicitIDs_Descendant(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
-	c1 := spawnChildUnder(t, exec, "runA", "child-1")
-	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.TaskStatusQuery{TaskIDs: []tasks.TaskID{c1}})
+	c1 := spawnChildUnder(t, exec, cat, "runA", "child-1")
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.TaskStatusQuery{TaskIDs: []tasks.TaskID{c1}})
 	if err != nil {
 		t.Fatalf("TaskStatusQuery(explicit): %v", err)
 	}
@@ -125,13 +130,14 @@ func TestExecutor_TaskStatus_ExplicitIDs_Descendant(t *testing.T) {
 func TestExecutor_TaskStatus_OutOfScopeID_AtomicReject(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
-	own := spawnChildUnder(t, exec, "runA", "own")
+	own := spawnChildUnder(t, exec, cat, "runA", "own")
 	// A task owned by a DIFFERENT run in the same session.
-	sibling := spawnChildUnder(t, exec, "runB", "sibling")
+	sibling := spawnChildUnder(t, exec, cat, "runB", "sibling")
 
-	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.TaskStatusQuery{
+	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.TaskStatusQuery{
 		TaskIDs: []tasks.TaskID{own, sibling},
 	})
 	if !errors.Is(err, ErrTaskNotOwnDescendant) {
@@ -144,10 +150,11 @@ func TestExecutor_TaskStatus_OutOfScopeID_AtomicReject(t *testing.T) {
 func TestExecutor_CancelTask_OwnDescendant(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
-	c1 := spawnChildUnder(t, exec, "runA", "doomed")
-	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.CancelTask{TaskID: c1, Reason: "abandon"})
+	c1 := spawnChildUnder(t, exec, cat, "runA", "doomed")
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.CancelTask{TaskID: c1, Reason: "abandon"})
 	if err != nil {
 		t.Fatalf("CancelTask: %v", err)
 	}
@@ -172,9 +179,10 @@ func TestExecutor_CancelTask_OwnDescendant(t *testing.T) {
 func TestExecutor_CancelTask_IsolateDescendant_Succeeds(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
-	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.SpawnTask{
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.SpawnTask{
 		Kind: tasks.KindBackground,
 		Spec: planner.SpawnSpec{Query: "detached", PropagateOnCancel: tasks.PropagateIsolate},
 	})
@@ -192,7 +200,7 @@ func TestExecutor_CancelTask_IsolateDescendant_Succeeds(t *testing.T) {
 		t.Fatalf("spawned task PropagateOnCancel = %q, want isolate", task.PropagateOnCancel)
 	}
 
-	craw, _, cErr := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.CancelTask{TaskID: child, Reason: "own direct cancel"})
+	craw, _, cErr := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.CancelTask{TaskID: child, Reason: "own direct cancel"})
 	if cErr != nil {
 		t.Fatalf("CancelTask isolate descendant: %v", cErr)
 	}
@@ -206,9 +214,10 @@ func TestExecutor_CancelTask_IsolateDescendant_Succeeds(t *testing.T) {
 func TestExecutor_CancelTask_AlreadyTerminal_Idempotent(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
-	c1 := spawnChildUnder(t, exec, "runA", "child")
+	c1 := spawnChildUnder(t, exec, cat, "runA", "child")
 	ctx := spawnAwaitIDCtx(t)
 	if err := reg.MarkRunning(ctx, c1); err != nil {
 		t.Fatal(err)
@@ -216,7 +225,7 @@ func TestExecutor_CancelTask_AlreadyTerminal_Idempotent(t *testing.T) {
 	if err := reg.MarkComplete(ctx, c1, tasks.TaskResult{Value: []byte(`"x"`)}); err != nil {
 		t.Fatal(err)
 	}
-	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.CancelTask{TaskID: c1})
+	raw, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.CancelTask{TaskID: c1})
 	if err != nil {
 		t.Fatalf("CancelTask(terminal): %v", err)
 	}
@@ -230,9 +239,10 @@ func TestExecutor_CancelTask_AlreadyTerminal_Idempotent(t *testing.T) {
 func TestExecutor_CancelTask_Self_NotDescendant(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
-	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.CancelTask{TaskID: "runA"})
+	_, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA", cat), planner.CancelTask{TaskID: "runA"})
 	if !errors.Is(err, ErrTaskNotOwnDescendant) {
 		t.Fatalf("self-cancel err = %v, want ErrTaskNotOwnDescendant", err)
 	}
@@ -248,13 +258,14 @@ func TestExecutor_CancelTask_Self_NotDescendant(t *testing.T) {
 func TestExecutor_TaskMgmt_CrossRunIsolation(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
 	// Run A spawns a task under its own run (same session identity).
-	aTask := spawnChildUnder(t, exec, "runA", "run-A-work")
+	aTask := spawnChildUnder(t, exec, cat, "runA", "run-A-work")
 
 	// Run B (same session, different run) cannot status run A's task.
-	_, _, statusErr := exec.ExecuteDecision(context.Background(), rcFor("runB"), planner.TaskStatusQuery{
+	_, _, statusErr := exec.ExecuteDecision(context.Background(), rcFor("runB", cat), planner.TaskStatusQuery{
 		TaskIDs: []tasks.TaskID{aTask},
 	})
 	if !errors.Is(statusErr, ErrTaskNotOwnDescendant) {
@@ -262,7 +273,7 @@ func TestExecutor_TaskMgmt_CrossRunIsolation(t *testing.T) {
 	}
 
 	// Run B cannot cancel run A's task.
-	_, _, cancelErr := exec.ExecuteDecision(context.Background(), rcFor("runB"), planner.CancelTask{TaskID: aTask, Reason: "not mine"})
+	_, _, cancelErr := exec.ExecuteDecision(context.Background(), rcFor("runB", cat), planner.CancelTask{TaskID: aTask, Reason: "not mine"})
 	if !errors.Is(cancelErr, ErrTaskNotOwnDescendant) {
 		t.Fatalf("run B cancel of run A's task err = %v, want ErrTaskNotOwnDescendant", cancelErr)
 	}
@@ -308,7 +319,8 @@ func TestExecutor_TaskMgmt_ConcurrentReuse(t *testing.T) {
 
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
-	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4)
+	cat := tools.NewCatalog()
+	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 
 	baseline := runtime.NumGoroutine()
 
@@ -324,7 +336,14 @@ func TestExecutor_TaskMgmt_ConcurrentReuse(t *testing.T) {
 				SessionID: "session-" + strconv.Itoa(i),
 			}
 			runID := tasks.TaskID("run-" + strconv.Itoa(i))
-			rc := planner.RunContext{Quadruple: identity.Quadruple{Identity: id, RunID: string(runID)}}
+			rc := planner.RunContext{
+				Quadruple: identity.Quadruple{Identity: id, RunID: string(runID)},
+				Catalog: tools.NewPlannerView(cat, tools.CatalogFilter{
+					TenantID:  id.TenantID,
+					UserID:    id.UserID,
+					SessionID: id.SessionID,
+				}),
+			}
 
 			// Spawn a child under this goroutine's own run.
 			raw, _, sErr := exec.ExecuteDecision(context.Background(), rc, planner.SpawnTask{

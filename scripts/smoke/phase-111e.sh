@@ -51,12 +51,24 @@ assert_grep_present 'Two interfaces' "internal/llm/summarizer/summarizer.go" \
 
 # 3. Budget.TokenBudget gains its production writers: both run-loop
 #    driver shells project the budget + the runner (D-094 both-sides).
-assert_grep_present 'Budget: planner\.Budget{TokenBudget: d\.tokenBudget}' "internal/runtime/serve/runloop.go" \
-    "cmd run-loop driver projects planner.token_budget onto RunSpec.Base.Budget"
+#    The projection now flows through a helper: the driver reads
+#    planner.token_budget into a per-run local, clamps it through the
+#    virtual-profile overlay (OverlayClampTokenBudget), and projects it
+#    onto RunSpec.Base.Budget. Pin source, helper, AND projection — a
+#    refactor that stops the configured budget from reaching the spec
+#    breaks one of the three.
+assert_grep_present 'tokenBudget := d\.tokenBudget' "internal/runtime/serve/runloop.go" \
+    "cmd run-loop driver reads planner.token_budget into the per-run budget"
+assert_grep_present 'virtualagent\.OverlayClampTokenBudget' "internal/runtime/serve/runloop.go" \
+    "cmd run-loop driver provides the budget through the virtual-profile overlay helper"
+assert_grep_present 'Budget: planner\.Budget\{TokenBudget: tokenBudget\}' "internal/runtime/serve/runloop.go" \
+    "cmd run-loop driver projects the budget onto RunSpec.Base.Budget"
 assert_grep_present 'Compression:      d\.compression' "internal/runtime/serve/runloop.go" \
     "cmd run-loop driver wires RunSpec.Compression"
-assert_grep_present 'Budget: planner\.Budget{TokenBudget: d\.tokenBudget}' "internal/runtime/serve/runloop.go" \
+assert_grep_present 'Budget: planner\.Budget\{TokenBudget: tokenBudget\}' "internal/runtime/serve/runloop.go" \
     "devstack run-loop driver projects the budget (D-094 mirror)"
+assert_grep_present 'virtualagent\.OverlayClampTokenBudget' "internal/runtime/serve/runloop.go" \
+    "devstack run-loop driver provides the budget through the helper (D-094 mirror)"
 assert_grep_present 'Compression:      d\.compression' "internal/runtime/serve/runloop.go" \
     "devstack run-loop driver wires RunSpec.Compression (D-094 mirror)"
 

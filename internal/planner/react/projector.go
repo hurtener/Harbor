@@ -1,6 +1,7 @@
 package react
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -114,7 +115,7 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 	// ≥ 2, so the projector never constructs a degenerate one-branch
 	// Batch (a lone `_spawn_task` falls through to the plain SpawnTask
 	// head switch below).
-	if len(resp.ToolCalls) > 1 && responseHasSpawn(resp.ToolCalls) {
+	if len(resp.ToolCalls) > 1 && (responseHasSpawn(resp.ToolCalls) || responseHasProgress(resp.ToolCalls)) {
 		return projectBatch(resp, resolve)
 	}
 
@@ -124,6 +125,8 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 		return translateNativeFinish(first), nil
 	case SpawnTaskToolName:
 		return translateNativeSpawn(first)
+	case TaskProgressToolName:
+		return translateNativeProgress(first)
 	case AwaitTaskToolName:
 		return translateNativeAwait(first)
 	case TaskStatusToolName:
@@ -204,6 +207,19 @@ func undeclaredModelToolNameError(name string) error {
 	return fmt.Errorf("%w: model-authored tool name %q was not declared for this run", planner.ErrInvalidDecision, name)
 }
 
+func translateNativeProgress(tc llm.ToolCallStructured) (planner.TaskProgress, error) {
+	var in struct {
+		Fraction *float64 `json:"fraction"`
+		Phase    string   `json:"phase"`
+		Message  string   `json:"message"`
+		Tags     []string `json:"tags"`
+	}
+	if err := json.Unmarshal(tc.Args, &in); err != nil {
+		return planner.TaskProgress{}, fmt.Errorf("%w: invalid %s arguments: %w", planner.ErrInvalidDecision, TaskProgressToolName, err)
+	}
+	return planner.TaskProgress{Fraction: in.Fraction, Phase: in.Phase, Message: in.Message, Tags: in.Tags, CallID: tc.ID}, nil
+}
+
 // isStandaloneControlName reports whether name is a reserved
 // planner-control meta-tool that must be sent alone: the terminal
 // `_finish`, the single-target block `_await_task`, and the five
@@ -239,6 +255,15 @@ func responseHasSpawn(calls []llm.ToolCallStructured) bool {
 	return false
 }
 
+func responseHasProgress(calls []llm.ToolCallStructured) bool {
+	for _, tc := range calls {
+		if tc.Name == TaskProgressToolName {
+			return true
+		}
+	}
+	return false
+}
+
 // projectBatch partitions a native multi-call response into a
 // planner.Batch: `_spawn_task` calls become Batch.Spawns (each stamped
 // with its native call id), every other call becomes a Batch.Tool
@@ -262,6 +287,7 @@ func responseHasSpawn(calls []llm.ToolCallStructured) bool {
 func projectBatch(resp llm.CompleteResponse, resolve func(string) (string, bool)) (planner.Decision, error) {
 	var tools []planner.CallTool
 	var spawns []planner.SpawnTask
+	var progress []planner.TaskProgress
 	for _, tc := range resp.ToolCalls {
 		if tc.Name == SpawnTaskToolName {
 			sp, err := translateNativeSpawn(tc)
@@ -270,6 +296,14 @@ func projectBatch(resp llm.CompleteResponse, resolve func(string) (string, bool)
 			}
 			sp.CallID = tc.ID
 			spawns = append(spawns, sp)
+			continue
+		}
+		if tc.Name == TaskProgressToolName {
+			p, err := translateNativeProgress(tc)
+			if err != nil {
+				return nil, err
+			}
+			progress = append(progress, p)
 			continue
 		}
 		catalogName, ok := resolve(tc.Name)
@@ -287,7 +321,7 @@ func projectBatch(resp llm.CompleteResponse, resolve func(string) (string, bool)
 		return nil, err
 	}
 
-	batch, err := planner.NewBatch(tools, spawns, nil)
+	batch, err := planner.NewBatch(tools, spawns, nil, progress)
 	if err != nil {
 		return nil, err
 	}
@@ -362,17 +396,21 @@ func translateNativeSpawn(tc llm.ToolCallStructured) (planner.SpawnTask, error) 
 		Kind    string `json:"kind"`
 		GroupID string `json:"group_id"`
 		Spec    struct {
-			Description       string `json:"description"`
-			Query             string `json:"query"`
-			Priority          int    `json:"priority"`
-			RetainTurn        bool   `json:"retain_turn"`
-			FailFast          bool   `json:"fail_fast"`
-			PropagateOnCancel string `json:"propagate_on_cancel"`
+			Description       string   `json:"description"`
+			Query             string   `json:"query"`
+			Priority          int      `json:"priority"`
+			RetainTurn        bool     `json:"retain_turn"`
+			FailFast          bool     `json:"fail_fast"`
+			PropagateOnCancel string   `json:"propagate_on_cancel"`
+			VirtualAgent      string   `json:"virtual_agent"`
+			InputArtifactIDs  []string `json:"input_artifact_ids"`
 		} `json:"spec"`
 	}
 	var env spawnArgsEnvelope
 	if len(tc.Args) > 0 {
-		if err := json.Unmarshal(tc.Args, &env); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(tc.Args))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&env); err != nil {
 			return planner.SpawnTask{}, fmt.Errorf(
 				"%w: react._spawn_task args malformed JSON: %w (raw=%q)",
 				planner.ErrInvalidDecision, err, string(tc.Args),
@@ -412,6 +450,8 @@ func translateNativeSpawn(tc llm.ToolCallStructured) (planner.SpawnTask, error) 
 			RetainTurn:        env.Spec.RetainTurn,
 			FailFast:          env.Spec.FailFast,
 			PropagateOnCancel: env.Spec.PropagateOnCancel,
+			VirtualAgent:      env.Spec.VirtualAgent,
+			InputArtifactIDs:  append([]string(nil), env.Spec.InputArtifactIDs...),
 		},
 		GroupID: tasks.TaskGroupID(env.GroupID),
 	}, nil

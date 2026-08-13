@@ -435,6 +435,8 @@ export function reduceHistoryTurns(events: readonly StateEvent[]): HistoryTurn[]
 					// (`mcp.apps.tool_context`). Nothing new is stored for the
 					// replay — the runtime already persisted it under this id.
 					toolCallId: readString(p, ['ToolCallID', 'tool_call_id']),
+					// Durable replay is read-only. A persisted discovery must never
+					// rehydrate live callback authority.
 					// The server-side tool name that declared the app — display
 					// metadata the host projects onto the `ui/initialize`
 					// host-context `toolInfo`. Read here for the same reason the

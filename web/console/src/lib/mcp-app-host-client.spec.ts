@@ -76,11 +76,14 @@ describe('makeMCPAppHostClient', () => {
     expect(res.mimeType).toBe('text/html');
   });
 
-  it('callTool routes to mcp.apps.call_tool and maps is_error', async () => {
+  it('callTool forwards host binding and resource authority, not sandbox-authored values', async () => {
     const { client, callTool } = fakeProtocolClient();
     const host = makeMCPAppHostClient(client);
-    const res = await host.callTool('srv_echo', { q: 1 }, 'agent-weather');
-    expect(callTool).toHaveBeenCalledWith('srv_echo', { q: 1 }, 'agent-weather');
+    const hostBinding = 'opaque-host-binding';
+    const hostResourceURI = 'ui://app/main.html';
+    const sandboxArgs = { q: 1, binding: 'forged', resource_uri: 'ui://forged.html' };
+    const res = await host.callTool('srv', 'srv_echo', sandboxArgs, 'agent-weather', hostBinding, hostResourceURI);
+    expect(callTool).toHaveBeenCalledWith('srv', 'srv_echo', sandboxArgs, 'agent-weather', hostBinding, hostResourceURI);
     expect(res.isError).toBe(false);
     expect(res.content).toEqual({ ok: true });
   });
@@ -168,7 +171,7 @@ describe('makeMCPAppHostClient', () => {
     const { client, callTool } = fakeProtocolClient();
     callTool.mockRejectedValueOnce(new ProtocolError('not_found', 'tools: tool not found', 404));
     const host = makeMCPAppHostClient(client);
-    const err = await host.callTool('srv_nope').catch((e: unknown) => e);
+    const err = await host.callTool('srv', 'srv_nope').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(MCPAppToolNotFoundError);
     expect((err as MCPAppToolNotFoundError).tool).toBe('srv_nope');
   });
@@ -177,7 +180,7 @@ describe('makeMCPAppHostClient', () => {
     const { client, callTool } = fakeProtocolClient();
     callTool.mockRejectedValueOnce(new ProtocolError('scope_mismatch', 'server paused', 403));
     const host = makeMCPAppHostClient(client);
-    const err = await host.callTool('srv_echo').catch((e: unknown) => e);
+    const err = await host.callTool('srv', 'srv_echo').catch((e: unknown) => e);
     expect(err).not.toBeInstanceOf(MCPAppToolNotFoundError);
     expect((err as Error).message).toContain('server paused');
   });

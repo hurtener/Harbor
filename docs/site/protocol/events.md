@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 146 canonical event types a Harbor Runtime can publish, read from the live
+The 147 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -666,6 +666,7 @@ Payload `AppAvailablePayload` — safe payload (delivered typed, verbatim).
 |---|---|---|
 | `Identity` | `identity.Quadruple` |  |
 | `AgentID` | `string` |  |
+| `Binding` | `string` |  |
 | `ServerID` | `tools.ToolSourceID` |  |
 | `ToolCallID` | `string` |  |
 | `ToolName` | `string` |  |
@@ -1545,6 +1546,21 @@ Payload `TaskPrioritisedPayload` — safe payload (delivered typed, verbatim).
 | `PriorPriority` | `int` |  |
 | `NewPriority` | `int` |  |
 
+## `task.progress`
+
+Payload `TaskProgressPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `update_id` | `string` |  |
+| `TaskID` | `tasks.TaskID` |  |
+| `ParentTaskID` | `tasks.TaskID` |  |
+| `Fraction` | `*float64` |  |
+| `Phase` | `string` |  |
+| `Message` | `string` |  |
+| `Tags` | `[]string` |  |
+| `ReportedAt` | `int64` |  |
+
 ## `task.resumed`
 
 Registry-driver scope: emitted by the task registry's MarkResumed transition, which no V1 production caller drives on the live pause path — subscribe to `pause.resumed` for live resume signals (see the [pause model](./pause-model.md)).
@@ -1661,6 +1677,7 @@ Payload `ToolFailedPayload` — safe payload (delivered typed, verbatim).
 | `Transport` | `tools.TransportKind` |  |
 | `Attempts` | `int` |  |
 | `ErrorClass` | `tools.ErrorClass` |  |
+| `ConfiguredBudget` | `int` | optional (`omitempty`) |
 | `ErrorMessage` | `string` |  |
 | `ScopeShortfall` | `*tools.ScopeShortfallDetail` | optional (`omitempty`) |
 
@@ -1697,6 +1714,7 @@ Payload `ToolPolicyExhaustedPayload` — safe payload (delivered typed, verbatim
 | `Transport` | `tools.TransportKind` |  |
 | `Attempts` | `int` |  |
 | `LastClass` | `tools.ErrorClass` |  |
+| `ConfiguredBudget` | `int` | optional (`omitempty`) |
 | `LastError` | `string` |  |
 
 ## `tool.provider_credential_fetch_failed`

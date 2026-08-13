@@ -81,7 +81,7 @@ func TestAppsAccessor_EveryNotFoundPathTranslatesToTheProtocolSentinel(t *testin
 		{
 			name: "CallTool",
 			why:  "an app-initiated tools/call that does not resolve inside the app's own server namespace IS the confinement rejection — the Console maps not_found onto the typed MCPAppToolNotFoundError an App branches on",
-			call: func() error { _, err := acc.CallTool(ctx, "no-such-server_nope", nil); return err },
+			call: func() error { _, err := acc.CallTool(ctx, "no-such-server", "no-such-server_nope", nil); return err },
 		},
 		{
 			name: "ToolContext",

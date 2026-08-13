@@ -51,10 +51,12 @@ const (
 	// (the REJECT posture applied to deadlines), never a silent
 	// unpark-and-continue.
 	DecisionTimeout Decision = "timeout"
+	// DecisionCancelled is status-only and is set exclusively by CancelTranche.
+	DecisionCancelled Decision = "cancelled"
 )
 
-// IsValidDecision reports whether d is one of the four canonical
-// pause-resume Decision values. An empty Decision is rejected loud — a
+// IsValidDecision reports whether d is one of the four resumable canonical
+// Decision values. An empty or status-only Decision is rejected loud — a
 // `pause.resumed` event without a Decision is the bug shape this enum
 // closes.
 func IsValidDecision(d Decision) bool {

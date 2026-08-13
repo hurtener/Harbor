@@ -42,6 +42,16 @@ func (stubBus) Close(context.Context) error { return nil }
 // stubStore is a minimal SkillStore a test factory can hand back.
 type stubStore struct{}
 
+func (stubStore) GetScopeAgent(context.Context, identity.Quadruple, string, string, skills.Scope) (skills.Skill, error) {
+	return skills.Skill{}, skills.ErrSkillNotFound
+}
+func (stubStore) SearchAgent(context.Context, identity.Quadruple, string, string, int) ([]skills.RankedSkill, error) {
+	return nil, nil
+}
+func (stubStore) DeleteAgent(context.Context, identity.Quadruple, string, string, skills.Scope) error {
+	return nil
+}
+
 func (stubStore) Upsert(context.Context, identity.Quadruple, skills.Skill) error { return nil }
 func (stubStore) Get(context.Context, identity.Quadruple, string) (skills.Skill, error) {
 	return skills.Skill{}, nil

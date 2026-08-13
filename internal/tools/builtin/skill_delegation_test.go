@@ -46,6 +46,16 @@ type fakeSkillStore struct {
 	limit int
 }
 
+func (f *fakeSkillStore) GetScopeAgent(ctx context.Context, q identity.Quadruple, agentID, name string, scope skills.Scope) (skills.Skill, error) {
+	return f.GetScope(ctx, q, name, scope)
+}
+func (f *fakeSkillStore) SearchAgent(ctx context.Context, q identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
+	return f.Search(ctx, q, query, limit)
+}
+func (f *fakeSkillStore) DeleteAgent(ctx context.Context, q identity.Quadruple, agentID, name string, scope skills.Scope) error {
+	return f.Delete(ctx, q, name, scope)
+}
+
 func newFakeSkillStore(bus events.EventBus) *fakeSkillStore {
 	return &fakeSkillStore{rows: map[string]skills.Skill{}, bus: bus, limit: 20}
 }

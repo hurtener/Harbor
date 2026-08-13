@@ -58,6 +58,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // Sentinel errors the Service returns. The wire handler maps each onto a
@@ -202,10 +203,20 @@ type Service struct {
 	ensureBootLifecycle   agentcfg.BootLifecycleEnsurer
 	skills                skills.SkillStore // optional — nil ⇒ shared/durable skills methods return ErrSkillsUnavailable
 	sessionPersonalSkills SessionPersonalSkillController
-	bus                   events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
-	logger                *slog.Logger
-	now                   Clock
-	runSnapshots          *runsnapshot.Gate
+	// agentPackProposer drafts a bounded pack skill body from an operator
+	// intent for `agent_config.agent_packs.propose`. Optional — nil ⇒ propose
+	// returns ErrAgentPackProposeUnavailable (→ 501 at the wire edge). The
+	// concrete (which owns the LLM call under the agent's configured model)
+	// is injected at the cmd/harbor + devstack boundary; this package depends
+	// only on the interface.
+	agentPackProposer      AgentPackProposer
+	agentPackProposals     state.StateStore
+	agentPackCatalog       tools.ToolCatalog
+	agentPackGrantedScopes []string
+	bus                    events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
+	logger                 *slog.Logger
+	now                    Clock
+	runSnapshots           *runsnapshot.Gate
 
 	// preparer drives the unpublished MCP prepare/persist/activate lifecycle.
 	// Optional — nil ⇒ add_mcp_connection returns ErrConnectionAttachUnavailable
@@ -539,6 +550,42 @@ func WithSessionPersonalSkillController(controller SessionPersonalSkillControlle
 	return func(s *Service) {
 		if controller != nil {
 			s.sessionPersonalSkills = controller
+		}
+	}
+}
+
+// WithAgentPackProposer wires the governed two-phase authoring seam:
+// `agent_config.agent_packs.propose` drafts a bounded pack skill body from an
+// operator intent. A nil proposer leaves propose returning
+// ErrAgentPackProposeUnavailable (→ 501 at the wire edge) — the deterministic
+// pack verbs (upsert / remove / list) and the governed commit stay live
+// regardless.
+func WithAgentPackProposer(p AgentPackProposer) Option {
+	return func(s *Service) {
+		if p != nil {
+			s.agentPackProposer = p
+		}
+	}
+}
+
+// WithAgentPackCatalog supplies the server-owned visible capability snapshot
+// used by governed authoring. A missing catalog is fail-closed.
+func WithAgentPackCatalog(c tools.ToolCatalog) Option {
+	return func(s *Service) { s.agentPackCatalog = c }
+}
+
+// WithAgentPackGrantedScopes supplies the boot operator authorization scopes
+// used by the same run-start catalog projection as the planner.
+func WithAgentPackGrantedScopes(scopes []string) Option {
+	return func(s *Service) { s.agentPackGrantedScopes = append([]string(nil), scopes...) }
+}
+
+// WithAgentPackProposalState wires the durable, identity-scoped single-use
+// proposal ledger. Without it, governed pack authoring fails closed.
+func WithAgentPackProposalState(store state.StateStore) Option {
+	return func(s *Service) {
+		if store != nil {
+			s.agentPackProposals = store
 		}
 	}
 }
@@ -999,6 +1046,9 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
+	if req.Payload.AgentPacks != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, ErrAgentPacksReadOnly
+	}
 	// Signed pair state is server-owned. An omitted value is carried forward by
 	// the registry. A supplied read-only projection must equal the active pair;
 	// it is never trusted as an authoring input.
@@ -1077,6 +1127,18 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
 	payload := payloadToDomain(req.Payload)
+	// AgentPacks is server-managed by the dedicated pack verbs.  An omitted
+	// section on the generic whole-payload door therefore means "carry the
+	// current pack forward", never "clear the current pack".
+	if req.Payload.AgentPacks == nil {
+		active, set, activeErr := s.registry.Active(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent)
+		if activeErr != nil {
+			return prototypes.AgentConfigSetRevisionResponse{}, activeErr
+		}
+		if set {
+			payload.AgentPacks = copyAgentPackItems(active.Payload.AgentPacks)
+		}
+	}
 	// Persist the validator's NORMALISED descriptors rather than the raw wire
 	// values connectionsToDomain projects. The nil-vs-present distinction on the
 	// section itself is preserved — only the server list is replaced, so a
@@ -1377,6 +1439,14 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 			Model:          p.Naming.Model,
 		}
 	}
+	if p.AgentPacks != nil {
+		// Defensive copy in canonical (sorted) order — the stored form is
+		// already normalized, so this is an order-preserving projection.
+		out.AgentPacks = make([]prototypes.AgentConfigAgentPackItem, 0, len(p.AgentPacks))
+		for _, item := range p.AgentPacks {
+			out.AgentPacks = append(out.AgentPacks, agentPackItemToWire(item))
+		}
+	}
 	return out
 }
 
@@ -1606,6 +1676,12 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 			MaxRepetitions: p.Naming.MaxRepetitions,
 			MaxTitleLen:    p.Naming.MaxTitleLen,
 			Model:          p.Naming.Model,
+		}
+	}
+	if p.AgentPacks != nil {
+		out.AgentPacks = make([]skills.AgentPackItem, 0, len(p.AgentPacks))
+		for _, item := range p.AgentPacks {
+			out.AgentPacks = append(out.AgentPacks, agentPackItemToDomain(item))
 		}
 	}
 	return out

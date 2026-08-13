@@ -124,10 +124,10 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
       };
     },
 
-    async callTool(tool, args, agentID): Promise<MCPAppToolResult> {
+	async callTool(serverID, tool, args, agentID, binding, resourceURI): Promise<MCPAppToolResult> {
       let res: MCPAppCallToolResponse;
       try {
-        res = await client.mcp.apps.callTool<MCPAppCallToolResponse>(tool, args, agentID);
+		res = await client.mcp.apps.callTool<MCPAppCallToolResponse>(serverID, tool, args, agentID, binding, resourceURI);
       } catch (err) {
         // `tool` is already server-qualified by the caller (the confinement
         // control), so a `not_found` means the name does not exist WITHIN the

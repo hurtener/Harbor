@@ -120,12 +120,14 @@ func (s *Service) RemoveMCPConnection(ctx context.Context, req prototypes.AgentC
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
+		payload.AgentPacks = copyAgentPackItems(active.Payload.AgentPacks)
 		// The ordered additive prompt blocks are a sibling section like any
 		// other: this verb replaces only its own, so the blocks survive.
 		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
 		payload.OAuthProviders = active.Payload.OAuthProviders
 		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
 		payload.SignedOAuthMCPPairs = active.Payload.SignedOAuthMCPPairs
+		payload.VirtualAgents = active.Payload.VirtualAgents
 		payload.ToolExposure = pruneExposureResidue(active.Payload.ToolExposure, name, remaining)
 	}
 	if len(remaining) > 0 {

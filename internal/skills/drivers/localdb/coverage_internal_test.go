@@ -275,7 +275,7 @@ func TestSearchExact_ScoreIsExactlyOne(t *testing.T) {
 
 	// Call the exact path directly — it is the ladder's terminal tier
 	// and always scores a matched row at exactly 1.0 (brief 04 §4.4).
-	out, err := d.searchExact(ctx, covID, "the-exact-trigger", 5)
+	out, err := d.searchExact(ctx, covID, "", "the-exact-trigger", 5)
 	if err != nil {
 		t.Fatalf("searchExact: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestSearchExact_ScoreIsExactlyOne(t *testing.T) {
 	}
 
 	// A query that matches nothing returns no rows, no error.
-	none, err := d.searchExact(ctx, covID, "nothing-matches-this", 5)
+	none, err := d.searchExact(ctx, covID, "", "nothing-matches-this", 5)
 	if err != nil {
 		t.Fatalf("searchExact(miss): %v", err)
 	}

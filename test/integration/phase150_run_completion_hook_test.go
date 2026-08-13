@@ -72,6 +72,7 @@ func (s *p150SinkCapture) identityFor(runID string) identity.Quadruple {
 
 // p150Env is the shared real-driver harness.
 type p150Env struct {
+	cat      tools.ToolCatalog
 	bus      events.EventBus
 	steerReg *steering.Registry
 	runLoop  *steering.RunLoop
@@ -178,6 +179,7 @@ func newP150Env(t *testing.T) *p150Env {
 	t.Cleanup(func() { _ = taskReg.Close(context.Background()) })
 
 	return &p150Env{
+		cat:      cat,
 		bus:      bus,
 		steerReg: steerReg,
 		runLoop:  rl,
@@ -230,7 +232,7 @@ func TestE2E_Phase150_HookReceivesOrderedTranscript(t *testing.T) {
 
 	spec := steering.RunSpec{
 		Planner:        p150WorkThenFinishPlanner(t),
-		Base:           planner.RunContext{Quadruple: q, Goal: "summarise the input", Trajectory: &planner.Trajectory{Query: "summarise the input"}},
+		Base:           planner.RunContext{Quadruple: q, Goal: "summarise the input", Trajectory: &planner.Trajectory{Query: "summarise the input"}, Catalog: tools.NewPlannerView(env.cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 		MaxSteps:       8,
 		ToolExecutor:   env.executor,
 		CompletionHook: &steering.CompletionHookSpec{Tool: p150SinkTool, AgentID: "agent-e2e", Timeout: 5 * time.Second},
@@ -293,7 +295,7 @@ func TestE2E_Phase150_HookErrorLeavesOutcomeUnchanged(t *testing.T) {
 
 	spec := steering.RunSpec{
 		Planner:        p150WorkThenFinishPlanner(t),
-		Base:           planner.RunContext{Quadruple: q, Goal: "do the thing", Trajectory: &planner.Trajectory{Query: "do the thing"}},
+		Base:           planner.RunContext{Quadruple: q, Goal: "do the thing", Trajectory: &planner.Trajectory{Query: "do the thing"}, Catalog: tools.NewPlannerView(env.cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 		MaxSteps:       8,
 		ToolExecutor:   env.executor,
 		CompletionHook: &steering.CompletionHookSpec{Tool: p150SinkTool, Timeout: 5 * time.Second},
@@ -323,7 +325,7 @@ func TestE2E_Phase150_CancelledRunFiresWithCancelledOutcome(t *testing.T) {
 
 	spec := steering.RunSpec{
 		Planner:        p150WorkThenFinishPlanner(t),
-		Base:           planner.RunContext{Quadruple: q, Goal: "will be cancelled", Trajectory: &planner.Trajectory{Query: "will be cancelled"}},
+		Base:           planner.RunContext{Quadruple: q, Goal: "will be cancelled", Trajectory: &planner.Trajectory{Query: "will be cancelled"}, Catalog: tools.NewPlannerView(env.cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 		MaxSteps:       8,
 		ToolExecutor:   env.executor,
 		CompletionHook: &steering.CompletionHookSpec{Tool: p150SinkTool, Timeout: 5 * time.Second},
@@ -362,7 +364,7 @@ func TestE2E_Phase150_ConcurrentNoBleed(t *testing.T) {
 			goal := fmt.Sprintf("sentinel-goal-%d", i)
 			spec := steering.RunSpec{
 				Planner:        p150WorkThenFinishPlanner(t),
-				Base:           planner.RunContext{Quadruple: q, Goal: goal, Trajectory: &planner.Trajectory{Query: goal}},
+				Base:           planner.RunContext{Quadruple: q, Goal: goal, Trajectory: &planner.Trajectory{Query: goal}, Catalog: tools.NewPlannerView(env.cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 				MaxSteps:       8,
 				ToolExecutor:   env.executor,
 				CompletionHook: &steering.CompletionHookSpec{Tool: p150SinkTool, Timeout: 5 * time.Second},

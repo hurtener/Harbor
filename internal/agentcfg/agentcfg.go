@@ -42,6 +42,8 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // Sentinel errors. Callers compare via errors.Is.
@@ -82,6 +84,14 @@ var (
 	// ErrRetirementConflict marks a replay whose operation identity or exact
 	// active-content precondition does not match the durable tombstone.
 	ErrRetirementConflict = errors.New("agentcfg: retirement conflict")
+	// ErrInvalidVirtualAgent — the supplied ConfigPayload carried a
+	// virtual-agents section that failed canonical validation
+	// (ValidateVirtualAgents): a duplicate or malformed profile key, an
+	// overbound, unsafe label/description/instruction text, a model-profile
+	// reference outside the configured set, a skill reference outside the
+	// agent's own membership, or an out-of-range child limit. Fails closed
+	// (CLAUDE.md §13) — nothing is persisted, diffed or hashed.
+	ErrInvalidVirtualAgent = errors.New("agentcfg: invalid virtual-agents section")
 )
 
 // ExpectNoActiveRevision is the reserved [SetOptions.ExpectedContentHash]
@@ -127,6 +137,15 @@ const ExpectNoActiveRevision = "-"
 // unconditional write — byte-for-byte the behaviour that shipped before
 // this option existed, on every door.
 type SetOptions struct {
+	// PublicationFence adds an exact durable receipt generation to the
+	// publication predicate for a resumable mutation.
+	PublicationFence *PublicationFence
+	// TargetRevisionID, when non-empty, makes the new revision identity
+	// deterministic. It is used by durable resumable publications: the
+	// committing receipt records this id before the registry write, so a
+	// retry can prove that the exact same revision landed rather than create
+	// a second mutation.
+	TargetRevisionID string
 	// ExpectedContentHash, when non-empty, requires the agent's ACTIVE
 	// revision to carry exactly this content hash at write time. A
 	// mismatch — or no active revision at all — fails with
@@ -162,6 +181,14 @@ type SetOptions struct {
 	// not something the runtime enforces — making the token mandatory
 	// would break every caller that does not send one.
 	ExpectedContentHash string
+}
+
+// PublicationFence identifies the durable receipt generation authorizing one
+// resumable publication.
+type PublicationFence struct {
+	Identity identity.Quadruple
+	Kind     string
+	EventID  string
 }
 
 // BootLifecycleEnsurer materialises the configured default agent's tenant
@@ -795,6 +822,45 @@ type ConfigPayload struct {
 	// named additive prompt blocks. Absent (nil) contributes nothing and
 	// leaves the system prompt byte-identical.
 	ExtraSystemBlocks *ExtraSystemBlocks `json:"extra_system_blocks,omitempty"`
+	// VirtualAgents, when non-nil, pins the versioned virtual-agent
+	// profile map owned by the configured top-level agent. It shares the
+	// ONE canonical representation with the boot `virtual_agents:` YAML
+	// block (internal/virtualagent); at run start the active revision's
+	// section REPLACES the YAML map (agent-config over yaml precedence).
+	// Section PRESENCE is authoritative: a present section with no
+	// profiles is the explicit "no profiles" state that overrides a YAML
+	// map. Written through the direct SetRevision door (the Protocol wire
+	// envelope carries no virtual-agent fields in the bounded change that
+	// introduced the section); deep validation happens at the run-start
+	// freeze, matching every other section's validation boundary.
+	VirtualAgents *VirtualAgentsSection `json:"virtual_agents,omitempty"`
+	// AgentPacks, when non-nil, pins the operator-managed per-agent skill
+	// pack: the bounded, sorted set of FULL skill bodies selected for this
+	// agent. It is addressed by `(tenant, agent, name)` at
+	// configuration-selection time, durable and versioned WITH this
+	// revision (body + membership are one atomic write — a pinned name can
+	// never dangle without its body). The pack is resolved at run start for
+	// every authorised user of the agent plus only that caller's
+	// personal/session skills, and its metadata never widens the run's
+	// visible tool set. A nil section pins no pack; an empty non-nil section
+	// is the explicit empty pack.
+	AgentPacks []skills.AgentPackItem `json:"agent_packs,omitempty"`
+}
+
+// VirtualAgentsSection is the versioned virtual-agent profile section of
+// the config envelope: the canonical profile map (internal/virtualagent)
+// owned by the configured top-level agent. Section PRESENCE is
+// authoritative — a present section (even with no profiles) REPLACES the
+// boot YAML map at run start, so a revision can also express "clear the
+// YAML profiles". Absent (nil) falls through to the YAML map.
+type VirtualAgentsSection struct {
+	// Owner is the top-level agent owning these profiles. Must equal the
+	// runtime's configured default agent id at freeze time.
+	Owner string `json:"owner,omitempty"`
+	// MaxProfiles is the operator cap carried by the canonical section.
+	MaxProfiles int `json:"max_profiles,omitempty"`
+	// Profiles is the canonical profile list (key-sorted, key-unique).
+	Profiles []virtualagent.Profile `json:"profiles,omitempty"`
 }
 
 // Revision is an immutable, content-addressed agent-config record with a
@@ -911,6 +977,10 @@ type Diff struct {
 	// prompt blocks (added / removed / body-changed by name, plus the
 	// order-only reorder flag).
 	ExtraSystemBlocks ExtraSystemBlocksDiff
+	// VirtualAgents is the structured delta of the versioned
+	// virtual-agent profile map (added / removed / changed by key, plus
+	// the owner-change flag).
+	VirtualAgents VirtualAgentsDiff
 }
 
 // Registry is the durable, identity-scoped, versioned desired-state
@@ -1083,7 +1153,44 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 			Model:          strings.TrimSpace(p.Naming.Model),
 		}
 	}
+	if p.VirtualAgents != nil {
+		// A non-nil virtual-agents section is ALWAYS preserved (profiles
+		// canonicalized via the shared internal/virtualagent normalizer, so
+		// the revision door and the YAML door produce byte-identical
+		// canonical forms) — section PRESENCE is the operator's signal: a
+		// present section (even with no profiles) REPLACES the YAML map at
+		// run start, so dropping it as "inert" would silently re-apply YAML
+		// profiles an admin revision meant to clear.
+		out.VirtualAgents = normalizeVirtualAgentsSection(p.VirtualAgents)
+	}
+	if p.AgentPacks != nil {
+		// Sorted-by-name, last-wins per name, empty entries dropped — the
+		// same canonical convention the connections section uses, so a
+		// re-ordering or a re-add of the same name does not perturb the
+		// content hash. An all-empty section drops out of the canonical form
+		// (nil), so an absent pack and an empty pack hash identically unless
+		// the caller explicitly pins the empty non-nil form — which the
+		// protocol edge refuses as a no-op (an operator that wants an empty
+		// pack removes the section, never pins an empty one).
+		normalized := skills.NormalizeAgentPackItems(p.AgentPacks)
+		if len(normalized) > 0 {
+			out.AgentPacks = normalized
+		}
+	}
 	return out
+}
+
+// normalizeVirtualAgentsSection canonicalizes a virtual-agents section:
+// profiles are key-sorted / de-duplicated through the shared
+// internal/virtualagent normalizer (the SAME canonical form the boot
+// YAML map decodes to), the owner is trimmed, and section presence is
+// preserved even when the canonical profile list is empty.
+func normalizeVirtualAgentsSection(s *VirtualAgentsSection) *VirtualAgentsSection {
+	if s == nil {
+		return nil
+	}
+	m := virtualagent.NormalizeMap(virtualagent.Map{Owner: s.Owner, MaxProfiles: s.MaxProfiles, Profiles: s.Profiles})
+	return &VirtualAgentsSection{Owner: m.Owner, MaxProfiles: m.MaxProfiles, Profiles: m.Profiles}
 }
 
 // normalizeConnections returns a name-unique, sorted-by-name copy of the
@@ -1479,6 +1586,47 @@ func (p ConfigPayload) ExtraSystemBlockList() []NamedBlock {
 	return p.ExtraSystemBlocks.Blocks
 }
 
+// VirtualAgentsSectionView returns the payload's versioned
+// virtual-agent profile section and whether a PRESENT section pins one
+// (presence is authoritative — a present-empty section is the explicit
+// "no profiles" state). A convenience for the run-start projection and
+// the diff.
+func (p ConfigPayload) VirtualAgentsSectionView() (*VirtualAgentsSection, bool) {
+	if p.VirtualAgents == nil {
+		return nil, false
+	}
+	return p.VirtualAgents, true
+}
+
+// profileKeys returns the keyed canonical profile map for a section
+// (empty for an absent section), keyed by profile key string.
+func profileKeys(s *VirtualAgentsSection, set bool) map[string]virtualagent.Profile {
+	if !set || s == nil {
+		return map[string]virtualagent.Profile{}
+	}
+	out := make(map[string]virtualagent.Profile, len(s.Profiles))
+	for _, p := range s.Profiles {
+		out[string(p.Key)] = p
+	}
+	return out
+}
+
+// profileHashEqual reports whether two canonical profiles have identical
+// content by comparing their canonical hashes. Hash errors are
+// impossible for JSON-native values; a failure reports inequality (a
+// changed profile) rather than panicking.
+func profileHashEqual(a, b virtualagent.Profile) bool {
+	ha, err := a.Hash()
+	if err != nil {
+		return false
+	}
+	hb, err := b.Hash()
+	if err != nil {
+		return false
+	}
+	return ha == hb
+}
+
 // ExtraSystemBlocksDiff is the structured delta of the additive prompt
 // blocks across two revisions. Added / Removed / Changed are sorted so the
 // diff is deterministic; Reordered is the ORDER-only signal that has no
@@ -1554,6 +1702,70 @@ func DiffExtraSystemBlocks(from, to ConfigPayload) ExtraSystemBlocksDiff {
 			}
 		}
 	}
+	return d
+}
+
+// VirtualAgentsDiff is the structured delta of the versioned
+// virtual-agent profile map across two revisions. Added / Removed /
+// Changed are sorted so the diff is deterministic. A profile "changed"
+// when its canonical content hash differs (any overlay / label /
+// parent / key edit). An absent section compares as an empty map; a
+// present-empty section is a real state (the explicit "no profiles"
+// override) and diffs against a populated map as removals.
+type VirtualAgentsDiff struct {
+	// Added are the profile keys present only in the to-revision.
+	Added []string
+	// Removed are the profile keys present only in the from-revision.
+	Removed []string
+	// Changed are the keys present in both whose canonical profile hash
+	// differs.
+	Changed []string
+	// OwnerChanged reports that the two revisions name a different
+	// owning top-level agent.
+	OwnerChanged bool
+}
+
+// HasChanges reports whether the virtual-agent map differs between the
+// two revisions.
+func (d VirtualAgentsDiff) HasChanges() bool {
+	return len(d.Added) > 0 || len(d.Removed) > 0 || len(d.Changed) > 0 || d.OwnerChanged
+}
+
+// DiffVirtualAgents computes the structured delta of two
+// virtual-agents sections. Exported so the diff is one canonical
+// implementation shared by the driver and tests. Absent sections compare
+// as the empty map.
+func DiffVirtualAgents(from, to ConfigPayload) VirtualAgentsDiff {
+	var d VirtualAgentsDiff
+	fromSec, fromSet := from.VirtualAgentsSectionView()
+	toSec, toSet := to.VirtualAgentsSectionView()
+	if fromSet != toSet {
+		d.OwnerChanged = true
+	} else if fromSet && fromSec.Owner != toSec.Owner {
+		d.OwnerChanged = true
+	}
+
+	fromByKey := profileKeys(fromSec, fromSet)
+	toByKey := profileKeys(toSec, toSet)
+	for k := range toByKey {
+		fp, fok := fromByKey[k]
+		if !fok {
+			d.Added = append(d.Added, k)
+			continue
+		}
+		if profileHashEqual(fp, toByKey[k]) {
+			continue
+		}
+		d.Changed = append(d.Changed, k)
+	}
+	for k := range fromByKey {
+		if _, ok := toByKey[k]; !ok {
+			d.Removed = append(d.Removed, k)
+		}
+	}
+	sort.Strings(d.Added)
+	sort.Strings(d.Removed)
+	sort.Strings(d.Changed)
 	return d
 }
 

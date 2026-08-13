@@ -44,7 +44,7 @@ function fakeHostClient(): MCPAppHostClient & { reads: Array<[string, string]> }
       reads.push([serverID, resourceURI]);
       return { resourceUri: resourceURI, mimeType: 'text/html', content: '<p>app body</p>' };
     },
-    async callTool(tool) {
+    async callTool(_serverID, tool) {
       return { tool, content: { ok: true }, isError: false };
     },
     async listResources() {
@@ -261,7 +261,7 @@ function heavyHostClient(): MCPAppHostClient & { resolved: string[] } {
         artifactRef: { id: 'art_studio_abc', mimeType: 'text/html', sizeBytes: 88_500 }
       };
     },
-    async callTool(tool) {
+    async callTool(_serverID, tool) {
       return { tool, content: { ok: true }, isError: false };
     },
     async listResources() {

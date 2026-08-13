@@ -103,6 +103,7 @@ import (
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // RunLoopDriverOptions bundles the dependencies the driver
@@ -159,6 +160,15 @@ type RunLoopDriverOptions struct {
 	Catalog         tools.ToolCatalog
 	Executor        steering.ToolExecutor
 	MaxStepsRunLoop int
+
+	// TrancheSteps grants each run a continuable step tranche: when
+	// > 0, the runloop parks the run (a typed constraints_conflict
+	// pause) once a tranche of planner steps is consumed without a
+	// terminal Finish; an authorised RESUME grants a fresh tranche and
+	// the run continues as ONE run with its cumulative trajectory.
+	// Zero (the default) disables tranche pausing — the run terminates
+	// loud at the MaxStepsRunLoop ceiling exactly as before.
+	TrancheSteps int
 
 	// operator-declared GrantedScopes
 	// threaded into the per-run catalog view's CatalogFilter. Tools
@@ -219,6 +229,10 @@ type RunLoopDriverOptions struct {
 	// the NEXT run (next-turn-only), never mid-flight.
 	AgentConfig   agentcfg.Registry
 	AgentConfigID string
+	// VirtualProfiles is the boot fallback for the canonical virtual profile
+	// map. A present active revision section replaces it, including an empty
+	// section (the explicit tombstone).
+	VirtualProfiles virtualagent.Map
 	// EnsureBootAgentLifecycle materialises only the configured default agent
 	// after trusted direct task construction selected it for this run.
 	EnsureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
@@ -344,6 +358,7 @@ type RunLoopDriver struct {
 	catalog         tools.ToolCatalog
 	executor        steering.ToolExecutor
 	maxStepsRunLoop int
+	trancheSteps    int
 
 	// operator-declared GrantedScopes.
 	grantedScopes []string
@@ -369,6 +384,7 @@ type RunLoopDriver struct {
 	// run start to project the agent's active skills-set (nil = none).
 	agentConfig              agentcfg.Registry
 	agentConfigID            string
+	virtualProfiles          virtualagent.Map
 	ensureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
 	runSnapshots             *runsnapshot.Gate
 	agentReachAdmissions     *tasks.AgentReachAdmissionAuthority
@@ -481,14 +497,16 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		catalog:               opts.Catalog,
 		executor:              opts.Executor,
 		maxStepsRunLoop:       opts.MaxStepsRunLoop,
+		trancheSteps:          opts.TrancheSteps,
 		grantedScopes:         append([]string(nil), opts.GrantedScopes...),
 		artifactStore:         opts.ArtifactStore,
 		// disposition policy passthrough.
-		dispositionPolicy:        opts.DispositionPolicy,
+		dispositionPolicy:        opts.DispositionPolicy.Clone(),
 		tenantOverrides:          opts.TenantOverrides,
 		sessionOverrides:         opts.SessionOverrides,
 		agentConfig:              opts.AgentConfig,
 		agentConfigID:            opts.AgentConfigID,
+		virtualProfiles:          opts.VirtualProfiles,
 		ensureBootAgentLifecycle: opts.EnsureBootAgentLifecycle,
 		runSnapshots:             opts.RunSnapshots,
 		agentReachAdmissions:     opts.AgentReachAdmissions,
@@ -752,7 +770,7 @@ func (d *RunLoopDriver) projectAgentConfigSkills(ctx context.Context, agentID st
 // to the exact run quadruple. A driver with no skill snapshot dependencies is
 // the valid no-skills subsystem shape; partial wiring is rejected by
 // NewRunLoopDriver.
-func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAgentID string, q identity.Quadruple) (skills.RunSkillReaderSnapshot, bool, error) {
+func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAgentID string, q identity.Quadruple, profile *virtualagent.Profile) (skills.RunSkillReaderSnapshot, bool, error) {
 	if d.skillStore == nil {
 		return skills.RunSkillReaderSnapshot{}, false, nil
 	}
@@ -760,7 +778,8 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 	if err != nil {
 		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("capture membership: %w", err)
 	}
-	resolver, err := sessionoverlay.NewSessionSkillResolver(ctx, sessionoverlay.SessionSkillResolverConfig{
+	var resolver skills.SkillReader
+	resolver, err = sessionoverlay.NewSessionSkillResolver(ctx, sessionoverlay.SessionSkillResolverConfig{
 		Run:        q,
 		AgentID:    effectiveAgentID,
 		Base:       d.skillStore,
@@ -770,6 +789,12 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 	})
 	if err != nil {
 		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("build resolver: %w", err)
+	}
+	if profile != nil && profile.Overlay.Skills != nil {
+		resolver, err = skills.NewAllowlistReader(resolver, *profile.Overlay.Skills)
+		if err != nil {
+			return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("bind virtual skill allowlist: %w", err)
+		}
 	}
 	snapshot, err := skills.NewRunSkillReaderSnapshot(q, effectiveAgentID, resolver)
 	if err != nil {
@@ -1087,9 +1112,73 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// credential authority. A valid child receipt also supplies the parent's
 	// exact admitted effective agent when the child intentionally omits the raw
 	// caller-selection field.
-	admissionCtx, admittedAgentID, agentReachAdmitted := d.agentReachAdmissions.Restore(d.subCtx, task)
+	admissionCtx := taskCtx
+	var admittedAgentID string
+	var agentReachAdmitted bool
+	if d.agentReachAdmissions != nil {
+		admissionCtx, admittedAgentID, agentReachAdmitted = d.agentReachAdmissions.Restore(taskCtx, task)
+	}
 	if agentReachAdmitted {
 		effectiveAgentID = admittedAgentID
+	}
+	// A virtual child is admitted only through the verified reach receipt and
+	// only against the currently active, identity-scoped revision. Resolve the
+	// section once, freeze it, and validate every receipt pin before the run can
+	// reach a planner or a tool. The active revision remains the parent
+	// lifecycle/tombstone authority, but its profile contents do not replace
+	// the sealed receipt below.
+	var frozenProfiles *virtualagent.FrozenMap
+	var virtualProfile *virtualagent.Profile
+	if task.VirtualAgent != nil {
+		if !agentReachAdmitted || admittedAgentID != task.VirtualAgent.AgentID {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_unavailable", Message: "virtual profile requires verified agent reach"}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		if err := virtualagent.ValidateBinding(*task.VirtualAgent); err != nil {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_tampered", Message: err.Error()}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		// The active revision is consulted only as the parent lifecycle /
+		// tombstone authority. Its profile contents are deliberately not used:
+		// the binding is the sealed run receipt, so an edit after admission
+		// cannot stale a delayed or restarted child.
+		if d.agentConfig == nil {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_unavailable", Message: "agent config registry unavailable"}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		_, ok, rErr := d.agentConfig.Active(taskCtx, identity.Quadruple{Identity: q.Identity}, effectiveAgentID, agentcfg.ConfigScopeAgent)
+		if rErr != nil || !ok {
+			msg := "active parent lifecycle unavailable"
+			if rErr != nil {
+				msg += ": " + rErr.Error()
+			}
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_unavailable", Message: msg}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist virtual profile rejection", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		profile := virtualagent.NormalizeProfile(task.VirtualAgent.Profile)
+		virtualProfile = &profile
+	} else if d.agentConfig != nil && effectiveAgentID != "" {
+		if rev, ok, rErr := d.agentConfig.Active(taskCtx, identity.Quadruple{Identity: q.Identity}, effectiveAgentID, agentcfg.ConfigScopeAgent); rErr == nil && ok {
+			section, present := rev.Payload.VirtualAgentsSectionView()
+			profileMap := d.virtualProfiles
+			if present && section != nil {
+				profileMap = virtualagent.Map{Owner: section.Owner, MaxProfiles: section.MaxProfiles, Profiles: section.Profiles}
+			}
+			if len(profileMap.Profiles) > 0 {
+				frozenProfiles, rErr = virtualagent.NewFrozenMap(profileMap, rev.RevisionID, rev.ContentHash, nil)
+				if rErr != nil {
+					d.logger.Warn("RunLoopDriver: virtual profile freeze unavailable", slog.String("err", rErr.Error()))
+				}
+			}
+		}
 	}
 	if d.runSnapshots != nil {
 		lease, admissionErr := d.runSnapshots.Acquire(taskCtx, q.TenantID, effectiveAgentID)
@@ -1124,7 +1213,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// this snapshot rather than its boot-time fallback. A resolver/membership
 	// failure is terminal: running with a wider or divergent skill view would be
 	// an authority bypass.
-	skillSnapshot, hasSkillSnapshot, snapshotErr := d.captureRunSkillSnapshot(taskCtx, effectiveAgentID, q)
+	skillSnapshot, hasSkillSnapshot, snapshotErr := d.captureRunSkillSnapshot(taskCtx, effectiveAgentID, q, virtualProfile)
 	if snapshotErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: skill snapshot failed; failing run",
 			slog.String("task_id", string(taskID)),
@@ -1172,8 +1261,21 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// edge, so a failure here means corruption or version skew, never a
 	// silent skip). Nil for the common schemaless task.
 	var compiledSchema *planner.OutputSchemaValidator
-	if len(task.OutputSchema) > 0 {
-		cs, cErr := planner.CompileOutputSchema(task.OutputSchema)
+	outputSchema := task.OutputSchema
+	if virtualProfile != nil && len(virtualProfile.OutputSchema) > 0 {
+		if len(outputSchema) > 0 && string(outputSchema) != string(virtualProfile.OutputSchema) {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    planner.TaskErrorCodeOutputInvalid,
+				Message: "profile-owned output schema conflicts with task schema",
+			}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist profile schema conflict", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		outputSchema = append(json.RawMessage(nil), virtualProfile.OutputSchema...)
+	}
+	if len(outputSchema) > 0 {
+		cs, cErr := planner.CompileOutputSchema(outputSchema)
 		if cErr != nil {
 			d.logger.ErrorContext(taskCtx, "RunLoopDriver: output-schema compile failed; failing run",
 				slog.String("task_id", string(taskID)),
@@ -1228,7 +1330,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	}
 
 	var skillsCtx []any
-	if d.skillsDirectory != nil {
+	if d.catalog == nil && d.skillsDirectory != nil {
 		// the skills Directory is the
 		// `<skills_context>` producer — a bounded, STABLE
 		// pinned-then-recent browse window (identity-scoped via
@@ -1260,6 +1362,14 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			}
 			return
 		}
+		views, sErr = d.projectAgentConfigSkills(taskCtx, effectiveAgentID, q, views)
+		if sErr != nil {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: "agent-config skills projection: " + sErr.Error()}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		views = applyVirtualSkills(views, virtualProfile)
 		skillsCtx = runctx.ProjectSkillsDirectory(views)
 	}
 
@@ -1323,6 +1433,24 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			return
 		}
 		catalogView = view
+		if virtualProfile != nil {
+			catalogView = tools.NewExclusionView(catalogView, virtualProfile.Overlay.PausedServers, virtualProfile.Overlay.DisabledTools)
+		}
+	}
+	if d.catalog != nil && d.skillsDirectory != nil {
+		allowed := make([]string, 0)
+		for _, tool := range catalogView.List() {
+			allowed = append(allowed, tool.Name)
+		}
+		views, sErr := d.skillsDirectory.View(taskCtx, skills.DirectoryCapability{AllowedTools: allowed})
+		if sErr != nil {
+			d.logger.ErrorContext(taskCtx, "RunLoopDriver: skills Directory.View failed; failing run", slog.String("err", sErr.Error()))
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: fmt.Sprintf("skills Directory.View: %v", sErr)}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		skillsCtx = runctx.ProjectSkillsDirectory(views)
 	}
 
 	// wire the planner's event-emit closure so
@@ -1519,6 +1647,24 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		return
 	}
+	if virtualProfile != nil {
+		profile := *virtualProfile
+		if profile.Key == "" {
+			d.logger.ErrorContext(taskCtx, "RunLoopDriver: virtual profile disappeared after pin verification")
+			if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "virtual_profile_stale", Message: "verified virtual profile is unavailable"}); mErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed after virtual profile failure failed", slog.String("err", mErr.Error()))
+			}
+			return
+		}
+		llmOverrides = applyVirtualOverlay(llmOverrides, profile)
+	}
+	maxSteps := d.maxStepsRunLoop
+	tokenBudget := d.tokenBudget
+	if virtualProfile != nil {
+		profile := *virtualProfile
+		maxSteps = virtualagent.OverlayClampMaxSteps(maxSteps, profile.Overlay.MaxSteps)
+		tokenBudget = virtualagent.OverlayClampTokenBudget(tokenBudget, profile.Overlay.TokenBudget)
+	}
 
 	// Resolve the effective run-completion hook once at run start (agent-config
 	// over yaml over none) via the shared projection. A read error fails the run
@@ -1565,23 +1711,24 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
-			Quadruple:        q,
-			Query:            task.Query,
-			Goal:             task.Query,   // initial goal = user query; runtime REDIRECT may mutate
-			LLMOverrides:     llmOverrides, // admin-set tenant default, pinned at run start
-			MemoryBlocks:     memBlocks,
-			SkillsContext:    skillsCtx,
-			RepairCounters:   counters,
-			PlanningHints:    d.planningHints,  // nil when operator left the config block empty
-			Catalog:          catalogView,      // populates <available_tools>
-			Trajectory:       traj,             // runloop appends per step
-			Emit:             emit,             // planner-side telemetry
-			OnChunk:          onChunk,          // per-token streaming to bus
-			InputArtifacts:   inputArtifacts,   // first-turn multimodal inputs
-			SessionArtifacts: sessionArtifacts, // read-only cross-turn manifest
+			Quadruple:         q,
+			Query:             task.Query,
+			Goal:              task.Query,   // initial goal = user query; runtime REDIRECT may mutate
+			LLMOverrides:      llmOverrides, // admin-set tenant default, pinned at run start
+			MemoryBlocks:      memBlocks,
+			SkillsContext:     skillsCtx,
+			RepairCounters:    counters,
+			PlanningHints:     d.planningHints, // nil when operator left the config block empty
+			Catalog:           catalogView,     // populates <available_tools>
+			Trajectory:        traj,            // runloop appends per step
+			Emit:              emit,            // planner-side telemetry
+			OnChunk:           onChunk,         // per-token streaming to bus
+			InputArtifacts:    inputArtifacts,  // first-turn multimodal inputs
+			DispositionPolicy: d.dispositionPolicy,
+			SessionArtifacts:  sessionArtifacts, // read-only cross-turn manifest
 			// the per-run token budget the runloop's
 			// compression gate reads. Zero = compression off.
-			Budget: planner.Budget{TokenBudget: d.tokenBudget},
+			Budget: planner.Budget{TokenBudget: tokenBudget},
 			// the per-task output schema compiled at run start; setting it
 			// engages the React driver's existing per-turn steering
 			// (ResponseFormat + tool-call-aware Validator + retry) with
@@ -1591,7 +1738,8 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		TaskID:           taskID,
 		ToolExecutor:     d.executor,   // dispatch CallTool decisions
 		OnToolDispatched: dispatchHook, // item 7 — advance Task.ToolCount on dispatch
-		MaxSteps:         d.maxStepsRunLoop,
+		MaxSteps:         maxSteps,
+		TrancheSteps:     d.trancheSteps, // 0 = tranche pausing disabled (legacy terminal ceiling)
 		Compression:      d.compression,  // trajectory compression runner
 		CompletionHook:   completionHook, // run-completion transcript egress (nil = no hook)
 		Naming:           namingSpec,     // session auto-naming (nil = off)
@@ -1622,6 +1770,13 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// selects CONFIGURATION only — the two agent-id carriers on a run have
 	// different provenance and MUST NOT be unified by a tidying refactor.
 	runCtx := tools.WithInvokingAgent(admissionCtx, d.agentConfigID)
+	if frozenProfiles != nil {
+		runCtx = virtualagent.WithFrozenMap(runCtx, frozenProfiles)
+	}
+	if virtualProfile != nil {
+		binding := virtualagent.CloneBinding(*task.VirtualAgent)
+		runCtx = virtualagent.WithRunBinding(runCtx, &binding)
+	}
 	// Keep the reach-admitted configuration selection separate from the
 	// boot-derived southbound actor provenance above. Pair-owned credentials use
 	// this internal capability to prove the exact selected agent without making
@@ -1782,6 +1937,72 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		slog.String("task_id", string(taskID)),
 		slog.String("run_id", q.RunID),
 		slog.String("reason", string(fin.Reason)))
+}
+
+// applyVirtualOverlay applies only the sealed, narrow-only dimensions of a
+// verified profile. It deliberately has no path for capabilities, providers,
+// memory, hooks, or another profile.
+func applyVirtualOverlay(base *planner.LLMOverrides, profile virtualagent.Profile) *planner.LLMOverrides {
+	out := base
+	if out == nil {
+		out = &planner.LLMOverrides{}
+	} else {
+		copy := *out
+		out = &copy
+	}
+	o := profile.Overlay
+	if o.Model != nil {
+		out.Model = cloneString(o.Model)
+	}
+	if o.Temperature != nil {
+		v := *o.Temperature
+		out.Temperature = &v
+	}
+	if o.MaxTokens != nil {
+		out.MaxTokens = virtualagent.OverlayClampMaxTokens(out.MaxTokens, o.MaxTokens)
+	}
+	if o.ReasoningEffort != nil {
+		out.ReasoningEffort = cloneString(o.ReasoningEffort)
+	}
+	if o.Instructions != "" {
+		v := o.Instructions
+		if out.ExtraInstructions != nil && *out.ExtraInstructions != "" {
+			v = *out.ExtraInstructions + "\n" + v
+		}
+		out.ExtraInstructions = &v
+	}
+	if o.IsZero() {
+		return base
+	}
+	if o.Instructions != "" {
+		out.ExtraSystemBlocks = append(append([]planner.NamedBlock(nil), out.ExtraSystemBlocks...), planner.NamedBlock{Name: virtualagent.BlockName(profile.Key), Body: o.Instructions})
+	}
+	return out
+}
+
+func applyVirtualSkills(views []skills.SkillView, profile *virtualagent.Profile) []skills.SkillView {
+	if profile == nil || profile.Overlay.Skills == nil {
+		return views
+	}
+	allowed := make(map[string]struct{}, len(*profile.Overlay.Skills))
+	for _, name := range *profile.Overlay.Skills {
+		allowed[name] = struct{}{}
+	}
+	out := make([]skills.SkillView, 0, len(views))
+	for _, view := range views {
+		if _, ok := allowed[view.Name]; ok {
+			out = append(out, view)
+		}
+	}
+	return out
+}
+
+func cloneString(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
 }
 
 // resolveSessionArtifacts builds the session-artifact manifest the

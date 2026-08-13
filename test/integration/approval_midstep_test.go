@@ -253,6 +253,7 @@ func d192RunSpec(env *d192Env, t *testing.T, q identity.Quadruple) steering.RunS
 			Quadruple:  q,
 			Goal:       "exercise the D-192 gated dispatch",
 			Trajectory: &planner.Trajectory{},
+			Catalog:    tools.NewPlannerView(env.cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID}),
 		},
 		MaxSteps:     8,
 		ToolExecutor: env.executor,

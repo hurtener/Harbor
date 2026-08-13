@@ -64,6 +64,16 @@ type memStore struct {
 	skillsByIdent map[identity.Identity][]skills.Skill
 }
 
+func (m *memStore) GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) (skills.Skill, error) {
+	return m.GetScope(ctx, id, name, scope)
+}
+func (m *memStore) SearchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
+	return m.Search(ctx, id, query, limit)
+}
+func (m *memStore) DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) error {
+	return m.Delete(ctx, id, name, scope)
+}
+
 func newMemStore(bus events.EventBus) *memStore {
 	return &memStore{
 		bus:           bus,

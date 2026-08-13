@@ -488,6 +488,7 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodeSessionSkillReadUnstable:   http.StatusConflict,
 	protoerrors.CodeAgentRetired:               http.StatusConflict,
 	protoerrors.CodeAgentRetirementConflict:    http.StatusConflict,
+	protoerrors.CodeRestartUnavailable:         http.StatusConflict,
 }
 
 // errorCodeMatrix is the closed set of canonical Protocol error codes
@@ -546,6 +547,7 @@ var errorCodeMatrix = []protoerrors.Code{
 	protoerrors.CodeSessionSkillReadUnstable,
 	protoerrors.CodeAgentRetired,
 	protoerrors.CodeAgentRetirementConflict,
+	protoerrors.CodeRestartUnavailable,
 }
 
 // methodScopeFor returns the steering scope the suite uses when
@@ -686,18 +688,10 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// task-control ten + streaming-events two +
-	// search cluster five + posture cluster five +
-	// posture pair two + pause-snapshot one +
-	// topology.snapshot one + artifacts cluster four (list/put/get/get_ref)
-	// + artifacts.delete one +
-	// memory cluster three + mcp.servers.* twelve +
-	// tools cluster seven + flows-page six +
-	// tasks-page two + agents-page eight +
-	// sessions-page two + Harbor runs-page one +
-	// auth.rotate_token one = 71.
-	if len(got) != 126 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 126 (including signed OAuth MCP capability registration, paired removal, and terminal retirement)", len(got))
+	// The canonical list currently contains 131 methods; keep the explicit
+	// wantSet below in lockstep with it.
+	if len(got) != 131 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 131 (including signed OAuth MCP capability registration, paired removal, and terminal retirement)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -813,6 +807,11 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodAgentConfigSkillsList:                 {},
 		methods.MethodAgentConfigSkillsUpsert:               {},
 		methods.MethodAgentConfigSkillsDelete:               {},
+		methods.MethodAgentConfigAgentPacksList:             {},
+		methods.MethodAgentConfigAgentPacksUpsert:           {},
+		methods.MethodAgentConfigAgentPacksPropose:          {},
+		methods.MethodAgentConfigAgentPacksCommit:           {},
+		methods.MethodAgentConfigAgentPacksRemove:           {},
 		methods.MethodAgentConfigSetToolExposure:            {},
 		methods.MethodAgentConfigSetPromptLayers:            {},
 		methods.MethodAgentConfigSetExtraSystemBlocks:       {},

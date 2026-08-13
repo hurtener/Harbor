@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // allowedJWTAlgorithms is the asymmetric-only allowlist enforced by
@@ -100,6 +102,7 @@ func (c *Config) runValidators(includeIdentity bool) error {
 		c.validatePlanner,
 		c.validateMultimodal,
 		c.validateCLI,
+		c.validateVirtualAgents,
 	)
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -3233,6 +3236,48 @@ func ValidateDiscoveryOrigin(o string) error {
 	// destinations anyway; catching it at config load fails faster).
 	if net.ParseIP(u.Hostname()) != nil {
 		return errors.New("origin must be a hostname, not an IP literal (an allowance names a public origin; bare IPs are refused)")
+	}
+	return nil
+}
+
+// validateVirtualAgents validates the `virtual_agents:` boot block: a
+// present block must name the owning top-level agent (the block is
+// inert without one — there is no implicit owner), every profile must
+// decode to a canonical profile whose parent equals the owner, and a
+// duplicate key / invalid overlay fails boot LOUD (never a silent
+// drop). The owner-vs-runtime-default-agent equality is checked at the
+// run-loop boundary (the config package does not know the runtime's
+// configured agent id); the canonical shape + bounds are enforced here.
+func (c *Config) validateVirtualAgents() error {
+	if c.VirtualAgents.IsZero() {
+		return nil
+	}
+	if strings.TrimSpace(c.VirtualAgents.Owner) == "" {
+		return fieldError("virtual_agents.owner", "must name the configured top-level agent that owns these profiles")
+	}
+	cap := c.VirtualAgents.MaxProfiles
+	if cap <= 0 {
+		cap = virtualagent.DefaultMaxProfiles
+	}
+	if len(c.VirtualAgents.Profiles) > cap {
+		return fieldError("virtual_agents.profiles", fmt.Sprintf("profile count %d exceeds max_profiles %d", len(c.VirtualAgents.Profiles), cap))
+	}
+	if len(c.VirtualAgents.Profiles) == 0 {
+		return fieldError("virtual_agents.profiles", "a virtual_agents block with no profiles is a misconfiguration (omit the block instead)")
+	}
+	seen := make(map[string]struct{}, len(c.VirtualAgents.Profiles))
+	for i, p := range c.VirtualAgents.Profiles {
+		key := strings.TrimSpace(p.Key)
+		if key == "" {
+			return fieldError(fmt.Sprintf("virtual_agents.profiles[%d].key", i), "profile key is required")
+		}
+		if _, dup := seen[key]; dup {
+			return fieldError(fmt.Sprintf("virtual_agents.profiles[%d].key", i), fmt.Sprintf("duplicate profile key %q", key))
+		}
+		seen[key] = struct{}{}
+		if _, err := p.ToProfile(c.VirtualAgents.Owner); err != nil {
+			return fieldError(fmt.Sprintf("virtual_agents.profiles[%d]", i), err.Error())
+		}
 	}
 	return nil
 }

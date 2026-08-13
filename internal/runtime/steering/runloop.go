@@ -271,6 +271,20 @@ func NewRunLoop(reg *Registry, coord pauseresume.Coordinator, opts ...RunLoopOpt
 // unbounded planner loop is a misconfiguration, never a silent spin.
 const DefaultMaxSteps = 64
 
+// DefaultTrancheSteps is the configured planner default used when the
+// operator leaves planner.max_steps at zero. Zero selects a continuable
+// tranche; it never selects the legacy terminal-only loop.
+const DefaultTrancheSteps = 12
+
+// EffectiveTrancheSteps resolves the shared planner.max_steps setting into
+// the runtime tranche authority.
+func EffectiveTrancheSteps(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return DefaultTrancheSteps
+}
+
 // DefaultMaxConsecutiveInvalidDecisions bounds native-path structural
 // repair: how many CONSECUTIVE planner steps may return a repairable
 // invalid-decision error (a [planner.ErrInvalidDecision] — the planner
@@ -348,6 +362,32 @@ type RunSpec struct {
 	TaskID tasks.TaskID
 	// MaxSteps caps the planner-step count. ≤ 0 ⇒ DefaultMaxSteps.
 	MaxSteps int
+
+	// TrancheSteps grants the run a continuable step tranche: when
+	// > 0, the loop parks the run (a typed constraints_conflict pause
+	// carrying the TrancheExceededPayload) once a tranche of planner
+	// steps is consumed without a terminal Finish, instead of
+	// terminating. An authorised RESUME grants a fresh configured
+	// tranche — the tranche counter resets, the CUMULATIVE trajectory
+	// is untouched — so long-running work continues across repeated
+	// cycles as ONE run. ≤ 0 (the default) disables tranche pausing
+	// and the loop is byte-identical to the legacy terminal behaviour
+	// (ErrMaxStepsExceeded at MaxSteps remains the absolute breaker in
+	// both modes; the planner-side absolute breaker is subordinate to
+	// this runtime counter).
+	//
+	// The park is a first-class pause through the ONE Coordinator: the
+	// same REJECT / timeout / CANCEL terminal behaviours apply
+	// unchanged, wrong / stale / duplicate resumes fail closed, and a
+	// checkpoint-store-backed Coordinator persists the cumulative
+	// trajectory for inspection. A trajectory checkpoint is not an exact
+	// planner/run-loop redrive, so a fresh process rejects resume with the
+	// typed pauseresume.ErrRestartUnavailable rather than creating a new task.
+	//
+	// Parked iterations consume loop-budget iterations exactly like a
+	// planner-emitted RequestPause (one iteration per park boundary),
+	// so MaxSteps remains the bounded runaway guard across cycles.
+	TrancheSteps int
 
 	// MaxConsecutiveInvalidDecisions bounds native-path structural
 	// repair: the number of CONSECUTIVE planner steps that may return a
@@ -479,6 +519,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	if err := validateQuadruple(q); err != nil {
 		return planner.Finish{}, err
 	}
+	if spec.TrancheSteps > 0 {
+		if _, ok := rl.coord.(pauseresume.TrancheCanceller); !ok {
+			return planner.Finish{}, fmt.Errorf("%w: step-tranche pauses require a live cancellation capability", pauseresume.ErrTrancheCancellerRequired)
+		}
+	}
 
 	inbox, err := rl.registry.Open(q)
 	if err != nil {
@@ -502,6 +547,15 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	maxConsecutiveInvalid := spec.MaxConsecutiveInvalidDecisions
 	if maxConsecutiveInvalid <= 0 {
 		maxConsecutiveInvalid = DefaultMaxConsecutiveInvalidDecisions
+	}
+	if spec.TrancheSteps > 0 && spec.Base.Trajectory != nil {
+		if spec.TrajectoryMu != nil {
+			spec.TrajectoryMu.Lock()
+		}
+		spec.Base.Trajectory.TrancheBaseline = len(spec.Base.Trajectory.Steps)
+		if spec.TrajectoryMu != nil {
+			spec.TrajectoryMu.Unlock()
+		}
 	}
 	// consecutiveInvalid tracks native-path structural repair across steps:
 	// it climbs on each repairable planner rejection fed back as an
@@ -558,6 +612,21 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	// goroutine's stack, never on the RunLoop struct.
 	var outstandingToken pauseresume.Token
 
+	// trancheUsed counts planner steps consumed in the CURRENT step
+	// tranche (RunSpec.TrancheSteps > 0 only). It is per-run loop state
+	// on this goroutine's stack: the step-tranche counter is
+	// authoritative per run, never a compiled-artifact field. An
+	// authorised RESUME of a tranche pause resets it (a fresh tranche);
+	// a planner-emitted RequestPause resume does NOT — the tranche
+	// continues where it was interrupted.
+	trancheUsed := 0
+	// outstandingTranche is true while the outstanding pause is a
+	// step-tranche park (as opposed to a planner-emitted RequestPause).
+	// It lets the resume path reset ONLY the tranche counter — the
+	// "resets only tranche counter" contract — and leave a
+	// mid-tranche planner pause's budget intact.
+	outstandingTranche := false
+
 	// carryEvents holds control events drained mid-step (while a
 	// decision execution was in flight) that were NOT
 	// approval-bridge-eligible. They keep their step-boundary
@@ -567,9 +636,17 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	// never on the RunLoop struct.
 	var carryEvents []ControlEvent
 
-	for step := range maxSteps {
+	// A configured tranche is the sole authority for bounded continuation.
+	// Do not retain a second outer cap: it would terminalize a run at N
+	// before the tranche pause can be observed and resumed.
+	step := 0
+	for {
+		step++
 		if err := ctx.Err(); err != nil {
 			return planner.Finish{}, fmt.Errorf("steering: run cancelled at step boundary: %w", err)
+		}
+		if spec.TrancheSteps <= 0 && step > maxSteps {
+			return planner.Finish{}, fmt.Errorf("%w: %d steps", ErrMaxStepsExceeded, maxSteps)
 		}
 
 		// While a pause is outstanding the planner must NOT be
@@ -613,6 +690,12 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// --- APPLY: each drained control event's side effect. ---
 		sc := &stepControl{}
 		for _, ev := range drained {
+			if ev.Type == ControlCancel {
+				sc.cancellationBatch = true
+				break
+			}
+		}
+		for _, ev := range drained {
 			rl.emitLifecycle(runCtx, q, ev.Type, EventTypeControlReceived, "")
 			applyErr := rl.applier.applyEvent(runCtx, sc, ev, outstandingToken)
 			rl.history.record(q.SessionID, AppliedControl{
@@ -638,6 +721,19 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				}
 			}
 			if applyErr != nil {
+				var cancelledCleanup *pauseresume.TrancheCancellationError
+				if errors.As(applyErr, &cancelledCleanup) {
+					rl.logger.WarnContext(runCtx, "steering: tranche cancellation cleanup pending after terminal cancellation",
+						slog.String("tenant_id", q.TenantID),
+						slog.String("user_id", q.UserID),
+						slog.String("session_id", q.SessionID),
+						slog.String("run_id", q.RunID),
+						slog.String("pause_token", string(outstandingToken)),
+						slog.Any("error", applyErr))
+					return planner.Finish{Reason: planner.FinishCancelled, Metadata: map[string]any{
+						"run_id": q.RunID, "steering_reason": "cancel_while_paused",
+					}}, nil
+				}
 				// Race carve-out: a legitimate
 				// RESUME / APPROVE / REJECT control can lose the race
 				// against the max-park sweeper — the sweeper's
@@ -674,10 +770,22 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			}
 		}
 
+		// Cancellation wins the whole drained batch, including when RESUME,
+		// APPROVE, or REJECT appeared first. Keep an outstanding tranche
+		// token live until the cancellation cleanup below consumes it.
+		if sc.cancellationBatch && sc.signals.Cancelled && outstandingToken == "" {
+			return planner.Finish{
+				Reason: planner.FinishCancelled,
+				Metadata: map[string]any{
+					"run_id":          q.RunID,
+					"steering_reason": "cancel_in_control_batch",
+				},
+			}, nil
+		}
 		// A REJECT that advanced a pause terminates the run: a rejected
 		// HITL gate is a constraint conflict the planner cannot resolve.
 		// The Coordinator.Resume already happened in applyEvent.
-		if sc.resumeRequested && sc.resumeKind == ControlReject {
+		if sc.resumeRequested && sc.resumeKind == ControlReject && !sc.cancellationBatch {
 			return planner.Finish{
 				Reason: planner.FinishConstraintsConflict,
 				Metadata: map[string]any{
@@ -689,8 +797,24 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		}
 		// A RESUME / APPROVE that advanced a pause clears the outstanding
 		// Token; the loop falls through to Planner.Next and the planner
-		// re-enters.
-		if sc.resumeRequested && (sc.resumeKind == ControlResume || sc.resumeKind == ControlApprove) {
+		// re-enters. When the advanced pause was a step-tranche park,
+		// the authorised resume grants a FRESH configured tranche: the
+		// tranche counter resets and the cumulative trajectory is
+		// untouched ("resets only tranche counter").
+		if sc.resumeRequested && (sc.resumeKind == ControlResume || sc.resumeKind == ControlApprove) && !sc.cancellationBatch {
+			if outstandingTranche {
+				trancheUsed = 0
+				if spec.Base.Trajectory != nil {
+					if spec.TrajectoryMu != nil {
+						spec.TrajectoryMu.Lock()
+					}
+					spec.Base.Trajectory.TrancheBaseline = len(spec.Base.Trajectory.Steps)
+					if spec.TrajectoryMu != nil {
+						spec.TrajectoryMu.Unlock()
+					}
+				}
+			}
+			outstandingTranche = false
 			outstandingToken = ""
 		}
 
@@ -710,6 +834,21 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// Finish{Cancelled}.
 		if outstandingToken != "" {
 			if sc.signals.Cancelled {
+				if outstandingTranche {
+					if cancelErr := pauseresume.CancelTranche(runCtx, rl.coord, outstandingToken); cancelErr != nil {
+						var cleanupErr *pauseresume.TrancheCancellationError
+						if !errors.As(cancelErr, &cleanupErr) {
+							return planner.Finish{}, cancelErr
+						}
+						rl.logger.WarnContext(runCtx, "steering: tranche cancellation cleanup failed after terminal cancellation",
+							slog.String("tenant_id", q.TenantID),
+							slog.String("user_id", q.UserID),
+							slog.String("session_id", q.SessionID),
+							slog.String("run_id", q.RunID),
+							slog.String("pause_token", string(outstandingToken)),
+							slog.Any("error", cancelErr))
+					}
+				}
 				return planner.Finish{
 					Reason: planner.FinishCancelled,
 					Metadata: map[string]any{
@@ -743,6 +882,38 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// Persist the redirected goal into the run's base so a later
 			// step (after a non-REDIRECT drain) still sees it.
 			spec.Base.Goal = sc.goal
+		}
+
+		// --- TRANCHÉ: the authoritative step-tranche counter. ---
+		// When a configured tranche is consumed without a terminal
+		// Finish, park the run — a continuable pause — instead of
+		// re-entering the planner (no further activity, no terminal
+		// failure). The pause is routed through the ONE Coordinator
+		// with Reason=constraints_conflict and the typed
+		// TrancheExceededPayload {cause, max_steps, steps_observed},
+		// checkpointing the run's CUMULATIVE trajectory alongside.
+		// The planner is NOT re-entered while parked (the loop blocks
+		// in awaitResumeSignal on the next iteration), so the counter
+		// never double-fires.
+		//
+		// Honoured-first controls: a CANCEL or an operator PAUSE
+		// drained at this same boundary takes precedence — the run
+		// terminates / the planner emits RequestPause — never a park
+		// that defers an operator's explicit control.
+		if spec.TrancheSteps > 0 && !sc.signals.Cancelled && !sc.pauseRequested && trancheUsed >= spec.TrancheSteps {
+			// Preserve any accumulating controls drained at this
+			// boundary (REDIRECT / INJECT_CONTEXT / USER_MESSAGE) onto
+			// the run's base so they reach the planner after the
+			// eventual resume — the same carry-over the paused path
+			// uses (mergeAccumulatedSignals).
+			mergeAccumulatedSignals(&spec.Base, sc)
+			tok, terr := rl.requestTranchePause(runCtx, q, spec.TrancheSteps, trancheUsed, spec.Base.Trajectory)
+			if terr != nil {
+				return planner.Finish{}, terr
+			}
+			outstandingToken = tok
+			outstandingTranche = true
+			continue
 		}
 
 		// item 8: per-step closure that captures the planner's
@@ -843,6 +1014,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				// prompt builder renders Step.Error as an "Observation
 				// (error)" turn) and re-plans. Same trajectory-feedback
 				// posture the dispatch-error path uses below.
+				trancheUsed++
 				rl.appendInvalidDecisionStep(spec, nerr)
 				// Log the recovery WITHOUT the error text: a projector
 				// malformed-args rejection embeds the raw tool-call args in
@@ -865,7 +1037,6 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// (nil, nil) is the silent-degradation shape §13 forbids.
 			return planner.Finish{}, fmt.Errorf("steering: planner step %d returned a nil Decision (silent degradation forbidden — CLAUDE.md §13)", step)
 		}
-
 		// Write the post-step pending queue into spec.Base so the
 		// next iteration's `rc := spec.Base` value-copy sees it.
 		// stepPending is nil when the planner did not invoke the
@@ -880,6 +1051,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			return d, nil
 
 		case planner.RequestPause:
+			// Every completed nonterminal decision consumes one tranche unit,
+			// including control decisions. Tool invocation accounting is
+			// separate and never drives this counter.
+			trancheUsed++
 			// Route the planner's RequestPause through the ONE
 			// Coordinator (CLAUDE.md §7 rule 4). This is the §13
 			// end-to-end consumer path: RequestPause -> Coordinator.Request
@@ -893,6 +1068,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				return planner.Finish{}, perr
 			}
 			outstandingToken = tok
+			// A planner-emitted RequestPause is NOT a step-tranche park:
+			// its resume must not reset the tranche counter (the tranche
+			// continues where it was interrupted).
+			outstandingTranche = false
 			// The loop continues: the next iteration drains the inbox
 			// and, when a RESUME / APPROVE has arrived, applyEvent calls
 			// Coordinator.Resume and outstandingToken is cleared. Until
@@ -905,6 +1084,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// Token — the existing pause stands.
 
 		default:
+			// Every completed nonterminal decision consumes one tranche unit,
+			// including task decisions and executor failures. Tool invocation
+			// accounting is separate and never drives this counter.
+			trancheUsed++
 			// CallTool / CallParallel / SpawnTask / AwaitTask. Note:
 			// dispatch via spec.ToolExecutor when present, then
 			// append a trajectory.Step the planner sees on its next step.
@@ -920,6 +1103,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// silently disappear (audit lesson: silent execution gaps
 			// are §13-forbidden silent degradation).
 			var observation, llmObservation any
+			var execErr error
 			if spec.ToolExecutor != nil {
 				// dispatch on a per-step goroutine and keep
 				// draining the inbox while the execution is in flight,
@@ -943,7 +1127,8 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					// failure — surface it verbatim.
 					return planner.Finish{}, bridgeErr
 				}
-				obs, llmObs, execErr := out.observation, out.llmObservation, out.err
+				obs, llmObs := out.observation, out.llmObservation
+				execErr = out.err
 				if execErr != nil {
 					// Fail-loud per CLAUDE.md §5 / §13: the executor's
 					// own error path (catalog lookup failed, tool Invoke
@@ -960,11 +1145,25 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					// failure is the tool's own, which keeps the
 					// unclassified payload byte-identical to what every
 					// prior turn produced.
+					if obs != nil {
+						// MCP result errors carry a bounded result alongside the
+						// classified error. Keep both reachable to the planner and
+						// LLM consumer; ordinary errors have no fabricated result.
+						errPayload["result"] = obs
+					}
 					if class := planner.ObservationClassOf(execErr); class != "" {
 						errPayload[planner.ObservationClassKey] = string(class)
 					}
 					observation = errPayload
-					llmObservation = errPayload
+					if llmObs != nil {
+						llmPayload := map[string]any{"error": execErr.Error(), "result": llmObs}
+						if class := planner.ObservationClassOf(execErr); class != "" {
+							llmPayload[planner.ObservationClassKey] = string(class)
+						}
+						llmObservation = llmPayload
+					} else {
+						llmObservation = errPayload
+					}
 				} else {
 					observation = obs
 					llmObservation = llmObs
@@ -1008,13 +1207,17 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				if spec.TrajectoryMu != nil {
 					spec.TrajectoryMu.Lock()
 				}
-				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, planner.Step{
+				stepRecord := planner.Step{
 					Action:            decision,
 					Observation:       observation,
 					LLMObservation:    llmObservation,
 					ReasoningTrace:    stepReasoning,
 					AssistantPreamble: stepAssistantContent,
-				})
+				}
+				if execErr != nil {
+					stepRecord.Error = "tool execution failed"
+				}
+				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, stepRecord)
 				if spec.TrajectoryMu != nil {
 					spec.TrajectoryMu.Unlock()
 				}
@@ -1022,7 +1225,6 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		}
 	}
 
-	return planner.Finish{}, fmt.Errorf("%w: %d steps", ErrMaxStepsExceeded, maxSteps)
 }
 
 // requestPause routes a planner's RequestPause decision through the
@@ -1046,6 +1248,39 @@ func (rl *RunLoop) requestPause(ctx context.Context, q identity.Quadruple, d pla
 	pause, err := rl.coord.Request(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("steering: routing RequestPause through Coordinator.Request: %w", err)
+	}
+	return pause.Token, nil
+}
+
+// requestTranchePause parks the run for step-tranche exhaustion through
+// the ONE Coordinator. It records Reason = constraints_conflict with the
+// typed TrancheExceededPayload {cause: max_steps_exceeded, max_steps,
+// steps_observed} — the typed emission of the authoritative step-tranche
+// counter — and hands the run's LIVE CUMULATIVE trajectory through so a
+// checkpoint-store-backed Coordinator persists the planner state for
+// inspection with the pause record. A fresh process cannot exactly redrive
+// this in-process planner/run-loop state and rejects resume with the typed
+// ErrRestartUnavailable. `steps_observed` in the payload mirrors the
+// authoritative tranche counter at firing.
+//
+// A pauseresume error (trajectory.ErrUnserializable from a
+// non-serialisable trajectory leaf, ErrInvalidReason) propagates
+// verbatim — no silent degradation, no half-persisted checkpoint, no
+// park issued for a run whose trajectory cannot be checkpointed.
+func (rl *RunLoop) requestTranchePause(ctx context.Context, q identity.Quadruple, trancheSteps, stepsObserved int, tr *planner.Trajectory) (pauseresume.Token, error) {
+	if _, ok := rl.coord.(pauseresume.TrancheCanceller); !ok {
+		return "", fmt.Errorf("%w: step-tranche pauses require a live cancellation capability", pauseresume.ErrTrancheCancellerRequired)
+	}
+	req := pauseresume.PauseRequest{
+		Identity: q.Identity,
+		Reason:   pauseresume.ReasonConstraintsConflict,
+		Payload:  pauseresume.NewTrancheExceededPayload(trancheSteps, stepsObserved).Map(),
+		// planner.Trajectory is `= trajectory.Trajectory` — same type.
+		Trajectory: tr,
+	}
+	pause, err := rl.coord.Request(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("steering: routing step-tranche exhaustion through Coordinator.Request: %w", err)
 	}
 	return pause.Token, nil
 }

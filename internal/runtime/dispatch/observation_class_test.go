@@ -55,7 +55,7 @@ func TestExecutor_CallTool_UnresolvableRef_CarriesTheClass(t *testing.T) {
 	exec := NewToolExecutor(cat, newTestArtifactStore(t), nil)
 
 	q := dispatchTestQuad("r-class-notfound")
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q},
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q),
 		artifactCall("id_the_model_invented"))
 	if err == nil {
 		t.Fatal("an unresolvable reference dispatched successfully")
@@ -83,7 +83,7 @@ func TestExecutor_CallTool_NoStoreWired_CarriesTheResolverClass(t *testing.T) {
 	exec := NewToolExecutor(cat, nil, nil)
 
 	q := dispatchTestQuad("r-class-nostore")
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q},
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q),
 		artifactCall("anything"))
 	if err == nil {
 		t.Fatal("a reference resolved with no artifact store wired")
@@ -158,7 +158,7 @@ func TestExecutor_CallTool_ToolsOwnError_ObservationIsUnchanged(t *testing.T) {
 	exec := NewToolExecutor(cat, newTestArtifactStore(t), nil)
 
 	q := dispatchTestQuad("r-class-toolerr")
-	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q},
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q),
 		planner.CallTool{Tool: "explodes", Args: json.RawMessage(`{}`)})
 	if err == nil {
 		t.Fatal("a failing tool dispatched successfully")
@@ -199,7 +199,7 @@ func TestExecutor_CallParallel_BranchCarriesTheClass(t *testing.T) {
 	bad := artifactCall("id_the_model_invented")
 	bad.CallID = "call_bad"
 
-	raw, llm, execErr := exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q},
+	raw, llm, execErr := exec.ExecuteDecision(ctx, dispatchRunContext(cat, q),
 		planner.CallParallel{Branches: []planner.CallTool{good, bad}})
 	if execErr != nil {
 		t.Fatalf("non-atomic parallel dispatch aborted the whole call: %v", execErr)
@@ -242,7 +242,7 @@ func TestExecutor_CallParallel_ToolsOwnBranchError_IsUnclassified(t *testing.T) 
 	exec := NewToolExecutor(cat, newTestArtifactStore(t), nil)
 
 	q := dispatchTestQuad("r-class-parallel-toolerr")
-	raw, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q},
+	raw, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q),
 		planner.CallParallel{Branches: []planner.CallTool{
 			{CallID: "c0", Tool: "explodes", Args: json.RawMessage(`{}`)},
 		}})

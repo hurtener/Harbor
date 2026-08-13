@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -36,10 +37,9 @@ var (
 	// ErrNotConnected — Discover / Invoke / SubscribeResource called
 	// before Connect (or after Close).
 	ErrNotConnected = errors.New("mcp: provider not connected")
-	// ErrMCPToolError — the server returned a CallToolResult with
-	// IsError == true. The wrapped message carries the rendered
-	// text body.
-	ErrMCPToolError = errors.New("mcp: server returned tool error")
+	// ErrMCPToolError is retained as a package-level compatibility alias for
+	// callers of the old driver-local sentinel.
+	ErrMCPToolError = tools.ErrMCPToolError
 	// ErrSchemaInvalid — the server-advertised InputSchema failed to
 	// compile; the descriptor is rejected at Discover time so the
 	// catalog never holds a Tool whose Validate is broken.
@@ -518,6 +518,72 @@ type Provider struct {
 	// selectedMode is the actual transport mode chosen by
 	// selectTransport — useful for tests and observability.
 	selectedMode MCPTransportMode
+	bindingsMu   sync.Mutex
+	bindings     map[string]appBinding
+	bindingOrder []string
+	clock        func() time.Time
+}
+
+type appBinding struct {
+	identity    identity.Identity
+	resourceURI string
+	expiresAt   time.Time
+}
+
+const (
+	appBindingLimit = 256
+	appBindingTTL   = 15 * time.Minute
+)
+
+func (p *Provider) appBindingNow() time.Time {
+	if p.clock != nil {
+		return p.clock()
+	}
+	return time.Now()
+}
+
+func (p *Provider) mintAppBinding(ctx context.Context, resourceURI, _ string) string {
+	id, ok := identity.From(ctx)
+	if !ok {
+		return ""
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	token := base64.RawURLEncoding.EncodeToString(b)
+	p.bindingsMu.Lock()
+	if p.bindings == nil {
+		p.bindings = make(map[string]appBinding)
+	}
+	now := p.appBindingNow()
+	for len(p.bindingOrder) >= appBindingLimit {
+		old := p.bindingOrder[0]
+		p.bindingOrder = p.bindingOrder[1:]
+		delete(p.bindings, old)
+	}
+	p.bindings[token] = appBinding{identity: id, resourceURI: resourceURI, expiresAt: now.Add(appBindingTTL)}
+	p.bindingOrder = append(p.bindingOrder, token)
+	p.bindingsMu.Unlock()
+	return token
+}
+
+// ValidateAppBinding accepts only a capability minted by this provider for the
+// same provider, identity, and rendered resource. The capability authorizes
+// callbacks on that provider; it is deliberately not bound to the render tool.
+func (p *Provider) ValidateAppBinding(ctx context.Context, token, resourceURI string) bool {
+	id, ok := identity.From(ctx)
+	if !ok || token == "" {
+		return false
+	}
+	p.bindingsMu.Lock()
+	b, found := p.bindings[token]
+	if found && !p.appBindingNow().Before(b.expiresAt) {
+		delete(p.bindings, token)
+		found = false
+	}
+	p.bindingsMu.Unlock()
+	return found && b.identity == id && b.resourceURI == resourceURI
 }
 
 // New constructs a Provider. The Provider is NOT connected; the
@@ -1004,6 +1070,17 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 		Transport:   tools.TransportMCP,
 		Policy:      policy,
 		Loading:     tools.LoadingAlways,
+		// AppOnly preserves the provider-authored
+		// `_meta.ui.visibility: ["app"]` classification (a callback for the
+		// tool's rendered App, not an operation for the model to select).
+		// It is stamped at discovery so the attach path can partition ONE
+		// discovered snapshot into the ordinary planner/model projection
+		// (which excludes the callback by construction) and the per-server
+		// App dispatch catalog (through which the App of the SAME server
+		// still invokes it, under the unchanged identity / reach / OAuth /
+		// approval / current-state gates). Classification-only — never an
+		// authorization shortcut.
+		AppOnly: appVisibilityOnly(t.Meta),
 	}
 
 	mcpName := t.Name
@@ -1200,6 +1277,7 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	// its response, but a planner-initiated call never enters that path.
 	value.AppRef = reconcileAppRef(toolApp, value.AppRef, uiDisplayModeHint(res.Meta))
 	if value.AppRef != nil {
+		value.AppRef.Binding = p.mintAppBinding(ctx, value.AppRef.ResourceURI, name)
 		// Mint the stable per-invocation id (a content hash of run /
 		// server / tool / args — no mutable Provider field) and
 		// stamp it on the reference so BOTH the discovery event and the
@@ -1229,7 +1307,12 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		p.publishAppAvailable(ctx, value.AppRef, name)
 	}
 	if lowerErr != nil {
-		return tools.ToolResult{Value: value}, lowerErr
+		result := tools.ToolResult{Value: value}
+		var typed *tools.MCPToolResultError
+		if errors.As(lowerErr, &typed) {
+			typed.Result = result
+		}
+		return result, lowerErr
 	}
 	return tools.ToolResult{Value: value}, nil
 }
@@ -1263,6 +1346,7 @@ func (p *Provider) publishAppAvailable(ctx context.Context, ref *AppRef, toolNam
 		Payload: AppAvailablePayload{
 			Identity:    q,
 			AgentID:     effectiveAgentID,
+			Binding:     ref.Binding,
 			ServerID:    p.source,
 			ToolCallID:  ref.ToolCallID,
 			ToolName:    toolName,
@@ -1613,6 +1697,10 @@ func (p *Provider) onResourceUpdated(ctx context.Context, req *mcpsdk.ResourceUp
 // retain their receipt while failed legs keep their exact handle for the next
 // call. Safe to call multiple times.
 func (p *Provider) Close(ctx context.Context) error {
+	p.bindingsMu.Lock()
+	p.bindings = nil
+	p.bindingOrder = nil
+	p.bindingsMu.Unlock()
 	p.closeMu.Lock()
 	defer p.closeMu.Unlock()
 

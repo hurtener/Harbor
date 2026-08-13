@@ -142,6 +142,16 @@ func TestDecisionInvocationCount_Batch_CountsToolsOnly(t *testing.T) {
 	}
 }
 
+func TestDecisionToolCount_Batch_ToolsOnly(t *testing.T) {
+	t.Parallel()
+	if got := DecisionToolCount(Batch{Spawns: []SpawnTask{{}}}); got != 0 {
+		t.Fatalf("DecisionToolCount(spawns-only Batch) = %d, want 0", got)
+	}
+	if got := DecisionToolCount(Batch{Tools: []CallTool{{}}, Spawns: []SpawnTask{{}}}); got != 1 {
+		t.Fatalf("DecisionToolCount(mixed Batch) = %d, want 1", got)
+	}
+}
+
 // TestCountToolInvocations_BatchStep_CountsTools — a Batch step in a
 // trajectory contributes len(Tools) to the aggregate count, alongside
 // the other shapes.
@@ -156,6 +166,22 @@ func TestCountToolInvocations_BatchStep_CountsTools(t *testing.T) {
 	}}
 	if got := CountToolInvocations(tr); got != 3 {
 		t.Errorf("CountToolInvocations = %d, want 3 (1 CallTool + 2 Batch tools)", got)
+	}
+}
+
+// TestCountSuccessfulToolInvocationsSince_ExcludesControlsAndFailures pins
+// the tranche accounting rule: only successful tool-bearing decisions count,
+// with one count per parallel branch.
+func TestCountSuccessfulToolInvocationsSince_ExcludesControlsAndFailures(t *testing.T) {
+	t.Parallel()
+	tr := &Trajectory{Steps: []Step{
+		{Action: SpawnTask{}},
+		{Action: CallTool{Tool: "failed"}, Error: "tool execution failed"},
+		{Action: CallParallel{Branches: []CallTool{{Tool: "a"}, {Tool: "b"}}}},
+		{Action: RequestPause{Reason: PauseAwaitInput}},
+	}}
+	if got := CountSuccessfulToolInvocationsSince(tr, 0); got != 1 {
+		t.Errorf("CountSuccessfulToolInvocationsSince = %d, want 1 decision", got)
 	}
 }
 

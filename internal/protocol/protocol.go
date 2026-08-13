@@ -68,6 +68,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
@@ -109,15 +110,16 @@ type ScopeChecker func(ctx context.Context, s auth.Scope) bool
 // Construct a ControlSurface via NewControlSurface; do not construct one
 // directly.
 type ControlSurface struct {
-	tasks           tasks.TaskRegistry
-	steering        *steering.Registry
-	topology        TopologyAccessor          // may be nil (Runtime hosts no engine)
-	adminScope      ScopeChecker              // the admin-cross-tenant gate; defaults to auth.HasScope
-	bus             events.EventBus           // optional; the audit.admin_scope_used emit on a cross-tenant topology read
-	sessions        SessionEnsurer            // optional; create-on-first-use on `start`
-	agents          AgentResolver             // optional to CONSTRUCT; a named agent without it is REFUSED
-	reach           auth.AgentReachAuthorizer // always fail-closed; assembly may replace the default shared gate
-	reachAdmissions *tasks.AgentReachAdmissionAuthority
+	tasks            tasks.TaskRegistry
+	steering         *steering.Registry
+	topology         TopologyAccessor          // may be nil (Runtime hosts no engine)
+	adminScope       ScopeChecker              // the admin-cross-tenant gate; defaults to auth.HasScope
+	bus              events.EventBus           // optional; the audit.admin_scope_used emit on a cross-tenant topology read
+	sessions         SessionEnsurer            // optional; create-on-first-use on `start`
+	agents           AgentResolver             // optional to CONSTRUCT; a named agent without it is REFUSED
+	reach            auth.AgentReachAuthorizer // always fail-closed; assembly may replace the default shared gate
+	reachAdmissions  *tasks.AgentReachAdmissionAuthority
+	pauseCoordinator pauseresume.Coordinator
 }
 
 // SessionEnsurer is the create-on-first-use seam the `start` method
@@ -210,6 +212,16 @@ func WithScopeChecker(c ScopeChecker) Option {
 	return func(s *ControlSurface) {
 		if c != nil {
 			s.adminScope = c
+		}
+	}
+}
+
+// WithPauseCoordinator wires the pause coordinator so resume can distinguish
+// an unavailable persisted tranche from an absent live inbox.
+func WithPauseCoordinator(c pauseresume.Coordinator) Option {
+	return func(s *ControlSurface) {
+		if c != nil {
+			s.pauseCoordinator = c
 		}
 	}
 }

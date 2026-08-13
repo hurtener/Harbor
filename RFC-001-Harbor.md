@@ -504,6 +504,28 @@ type Trajectory struct {
 
 ### 6.3 Steering and the unified pause/resume primitive
 
+**Same-run step tranches.** A configured finite tranche charges each
+completed nonterminal planner decision exactly once, including control and
+task decisions, tool-dispatch failures, and unavailable executor paths.
+Terminal completion is not charged; tool-call accounting remains a separate
+metric. A durable receipt is a private selector scoped to the verified
+`(tenant,user,session,run)` identity and resumes the same live run without
+replay. A foreign selector is indistinguishable from a missing selector.
+Across process restart, the current Runtime retains the receipt for
+inspection but reports typed restart unavailability: the checkpoint has no
+trusted relaunch boundary and must not reconstruct a run from mutable current
+planner or catalog state. A future explicit relaunch seam may extend this
+contract without widening identity or creating a new run.
+
+The v1.27 continuation surface is completed by governed virtual-child run
+views, reference-only artifact/output forwarding, and a durable task-progress
+projection. Child profiles remain derived configuration views rather than
+identity principals; forwarded content remains behind authorized artifact
+references; and `TaskRow` may carry the additive bounded
+`progress_snapshot`, `virtual_key`, and `virtual_label` fields. The Console
+mirror is hand-maintained while the generated wire manifest remains owned by
+the Go canonical wire source.
+
 Steering is a Runtime capability, surfaced over the Protocol. Planners observe `Control` signals; the Runtime owns the inbox.
 
 **Control event taxonomy (nine types — Settled):**
@@ -683,6 +705,19 @@ Plus two siblings:
 - **`SchemaSanitizer`** (`internal/llm/correction/`) lives **between** the runtime and the LLM client, NOT inside the client. Per-provider `response_format` adjustments live here; the single LLM client is dumb.
 
 Synthetic call ID scope keys are the full `(session_id, run_id, action_seq, branch_index)`. The flatter scoping the source uses is a sharp edge Harbor closes.
+
+**Typed MCP reliability classification (settled).** An MCP server may add
+typed control metadata to an `IsError: true` result without changing the
+standard result contract. `invalid_argument`, validation, and deterministic
+tool-domain failures are permanent for the unchanged invocation; transport
+and provider failures remain retryable under `ToolPolicy`. Missing, malformed,
+unknown, or legacy metadata follows an explicit compatibility fallback and is
+never inferred from text. Bounded content and structured content remain
+available to planner/model and App consumers. The same classification is
+projected as optional, non-secret metadata on `tool.failed` and
+`tool.policy_exhausted`: class, reason, attempt, and configured budget. An
+absent class is represented as `unclassified`; raw arguments and results never
+enter the event.
 
 ### 6.5 LLM client layer
 
@@ -912,6 +947,23 @@ type Store interface {
 
 ### 6.7 Skills subsystem
 
+**Operator-managed agent packs and composition preview (settled).** A skill
+pack may be selected by `(tenant_id, agent_id, skill_name)` in the agent
+configuration, but `agent_id` is never an isolation principal. Reads begin
+with the verified caller triple and signed reach to the effective agent. The
+pack body is durable, content-addressed, revisioned, and composed with the
+caller's permitted personal/session skills into one immutable next-run
+snapshot. Required-tool metadata filters and redacts; it never grants a
+tool. The same resolver serves directory injection, `skill_search`,
+`skill_get`, and `skill_list`.
+
+That resolver also provides a read-only composition preview addressed by
+`(tenant, user, agent)`. Operators with verified reach may preview a user's
+composition within the tenant; ordinary callers may preview only their own.
+The preview returns names and bounded verdicts, bodies only for the addressed
+caller, and typed `not_found`, `denied`, or `unavailable` states. It never
+writes a run, revision, skill row, or audit record.
+
 Skills are a Runtime subsystem distinct from any external skill-distribution role. They are token-savvy, DB-backed, identity-scoped, and bring two Harbor-defining features:
 
 1. **Skills.md importer** — first-class. Drop a Skills.md file/pack, get an indexed Harbor skill out the other side. The predecessor's per-skill-manual-adaptation gap is closed.
@@ -1078,6 +1130,22 @@ erasure event remains content-free and reports only safe aggregate telemetry.
 **Session auto-naming — Settled (D-289).** Opt-in and default OFF: with no `naming` configuration the runtime's behavior is unchanged — no counters, no LLM calls, no events. When enabled (a versioned `naming` agent-config section riding `set_revision`, over a yaml `runtime.naming` fleet default, resolved once at run start with next-turn projection), the runtime titles the session itself: an additive sibling of the run-completion hook (§6.17's reserved additive-hook-point clause) fires at the run loop's terminal boundary and makes ONE governed `Complete` call on the run's wrapped LLM client — identity-carried, budget-enforced, input bounded far below the context-safety threshold — then writes through an internal auto-path that refuses manual titles. Policy knobs: `after_turns`, `repeat_every`, `max_repetitions` (required at the config/wire edges whenever repeating, default 5 for programmatically built policies — no unlimited value exists on any path), `model` (empty = the run's effective model), `max_title_len` (auto output is deterministically clamped; the manual verb, by contrast, rejects — the trusted-internal vs untrusted-boundary asymmetry is intentional). A naming failure never alters the settled run outcome and is never silent: `session.naming_failed` carries a stable error class, never content; a failure does not burn the cap (a still-due title retries until one succeeds), and a manual clear re-arms naming by zeroing the counters, so `max_repetitions` is a per-cycle cap — each clear opens a fresh arming cycle.
 
 ### 6.10 Artifacts
+
+**MCP App callback and tool-context contracts (settled).** MCP discovery
+preserves provider-authored `_meta.ui.visibility: ["app"]` as an internal
+per-server callback catalog separate from the planner projection. App-only
+entries are not planner-visible or generically callable; a rendered App may
+dispatch only through its host-derived server identity and remains subject
+to identity, agent reach, capability, approval, OAuth, state, redaction, and
+audit gates. Refresh, reconnect, replacement, and detach rebuild both views
+from one server snapshot.
+
+MCP App tool-context records have an explicit session-lifetime contract by
+default: they survive session reopen and are removed by session erasure.
+`not_found` therefore means unknown or cross-identity unless a separately
+measured, bounded, identity-scoped eviction policy is adopted. The Console
+renders the existing honest placeholder for a typed miss; no silent blank or
+implicit TTL is claimed.
 
 ```go
 type ArtifactScope struct {

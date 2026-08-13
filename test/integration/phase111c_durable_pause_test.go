@@ -53,6 +53,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // phase111cID is a documented dummy identity triple — no secrets.
@@ -177,6 +178,7 @@ func TestE2E_Phase111c_RunLoopPause_CheckpointsTrajectory_RunContinues(t *testin
 	}
 
 	q := phase111cQuad("run-durable")
+	cat := tools.NewCatalog()
 	sub, err := bus.Subscribe(context.Background(), events.Filter{
 		Tenant: phase111cID.TenantID, User: phase111cID.UserID, Session: phase111cID.SessionID,
 		Types: []events.EventType{pauseresume.EventTypePauseRequested},
@@ -201,7 +203,7 @@ func TestE2E_Phase111c_RunLoopPause_CheckpointsTrajectory_RunContinues(t *testin
 	p := &phase111cPlanner{}
 	spec := steering.RunSpec{
 		Planner:  p,
-		Base:     planner.RunContext{Quadruple: q, Goal: "durable pause", Trajectory: tr},
+		Base:     planner.RunContext{Quadruple: q, Goal: "durable pause", Trajectory: tr, Catalog: tools.NewPlannerView(cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 		MaxSteps: 4,
 	}
 	done := make(chan struct {

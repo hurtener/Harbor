@@ -379,6 +379,13 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |233c | Bifrost reasoning fidelity (HA-51, D-402): raw observed reasoning is byte-exact and authoritative; details-only blocks coalesce by stable identity without whitespace rewriting, with live/planner/task/durable-history/Console parity | Bifrost LLM driver + planner/task/history + Console | §6.2, §6.5, §6.8, §6.13 | 33, 83e, 83m, 165 | 85–90% | Shipped (v1.26) |
 |234 | Agent-config retirement (D-399/D-400/D-401): terminal CAS tombstone, immutable history, exact pre-retirement hash and operation identity, deterministic paged owner-scoped cleanup after tombstone, four-slot session-write freeze, signed OAuth pair cleanup, and explicit/default new-run refusal; `agents.deregister` remains fleet-only | agentcfg + runtime projection/serve + Protocol/Console lockstep | §5.5, §6.11, §6.13, §6.16 | 232, 233, 233a, 233b | 85–90% | Shipped (v1.26) |
 |235 | Agent authority/lifecycle wave E2E + v1.26 checkpoint: real SQLite/Postgres composition of signed OAuth capability registration, session records, erasure, retirement, and byte-exact reasoning durability; two-runtime write races, N≥10 mixed-identity stress, read-only §17.5 audit and corrective gate before release | test/integration + scripts/smoke + release docs | §4, §5.5, §6.2, §6.4, §6.5, §6.8, §6.9, §6.11, §6.13, §6.16, §9 | 232, 233, 233a, 233b, 233c, 234 | inherited floors | Shipped (v1.26) |
+|236 | Typed MCP errors (HA-54) | tools/mcp + tools/policy | §6.4, §6.5, §6.13 | 26b, 28 | measured floors | Shipped (v1.27) |
+|237 | Agent-owned skills and governed authoring (HA-55) | skills + agentcfg + serve | §6.7, §6.16, §6.11, §5.2 | 201, 221, 233, 233a | measured floors | Shipped (v1.27) |
+|238 | App-only callback catalog (HA-56) | tools/mcp + mcpconsole + protocol | §6.4, §7.3, §5.2, §7 | 207, 204, 109k, 109l | measured floors | Shipped (v1.27) |
+|239 | Same-run step-tranche resume (HA-57) | runtime + tasks + protocol | §3.3, §6.8, §6.11, §7 | 176, 193, 233 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
+|240 | Governed virtual child profiles (HA-58) | runtime + agentcfg + protocol | §5.5, §6.16, §7 | 237, 239 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
+|241 | Virtual-child artifact/output forwarding (HA-59) | artifacts + tasks + runtime + protocol | §6.8, §6.10, §6.11, §7 | 17, 146, 239, 240 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
+|242 | Durable task-progress projection (HA-60) | tasks + state + protocol | §6.8, §6.10, §6.11, §7 | 239, 241 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -487,6 +494,133 @@ the `state-postgres` Postgres-16 job supplies `HARBOR_PG_DSN` and executes the
 real two-client race under `-race`.
 
 - **Decision:** D-398. **Status:** Shipped (v1.26).
+
+### Phase 236 — Typed MCP errors (HA-54)
+
+- **Subsystem:** MCP southbound driver lowering, tool-policy classifier, and
+  transport fixtures (`internal/tools/drivers/mcp`, `internal/tools/policy`).
+- **RFC:** §6.4 (the `ToolPolicy.RetryOn` reliability shell), §6.5, §6.13.
+  **Deps:** 26b, 28.
+- **What it delivers:** D-410 — a transport-safe, typed MCP
+  error-classification contract that an MCP server may attach to an
+  `IsError: true` `CallToolResult` while remaining a normal result for clients
+  that ignore it. `invalid_argument`/validation and deterministic
+  `tool_domain` failures are permanent for the unchanged invocation (exactly
+  one attempt; the original error result reaches the model); genuine
+  transport/provider failures retry per the configured policy; a documented,
+  tested compatibility fallback covers unclassified/malformed/unknown classes
+  with no text parsing and no foreign-extension coercion; the classified
+  result's bounded message/content and structured content are preserved for
+  the planner/model and App paths. Classification metadata is control
+  information — never a route to raw tool arguments or results. Non-goals: no
+  per-server policy override, no redefinition of MCP `isError`, no
+  consumer-specific exception. §17.8 fixtures derive from the real spec.
+- **Ordering:** 236 gates 239 (its classification-observability consumer).
+  Independent of 237/238/240/241/242.
+- **Decision:** D-410. **Status:** Shipped (v1.27).
+
+### Phase 237 — Agent-owned skills and governed authoring (HA-55)
+
+- **Subsystem:** skills store and drivers, agent-config revision registry,
+  run-start composite resolver, and Protocol/Console lockstep.
+- **RFC:** §6.7, §6.16, §6.11, §5.2. **Deps:** 201, 221, 233, 233a.
+- **What it delivers:** D-411 — a first-class, operator-managed per-agent
+  skill pack source, durable and versioned with the agent-config revision.
+  Addressable by `(tenant_id, agent_id, skill_name)` for configuration
+  selection while `agent_id` stays a runtime/config entity, never an identity
+  principal (D-059): every read starts from the caller's verified
+  `(tenant, user, session)` and signed reach. The composed run snapshot
+  contains only the selected operator pack for the effective agent and tenant
+  plus that caller's permitted personal/session skills — never a broad
+  cross-user search. An elevated operator mutation path stores the pack body
+  and advances the agent's content-addressed revision atomically (or
+  compensates), with existing diff/rollback and audit semantics. `RequiredTools`
+  metadata is never a grant: the run-visible-tool capability filter and
+  redactor stay in front of the injected directory and all three `skill_*`
+  tools. The same immutable composed snapshot feeds directory injection,
+  `skill_search`, `skill_get`, and `skill_list`; changes apply next run only.
+- **Ordering:** 237 gates 240 (the composition-preview verification surface).
+  Independent of 236/238/239/242.
+- **Decision:** D-411. **Status:** Shipped (v1.27).
+
+### Phase 238 — App-only callback catalog (HA-56)
+
+- **Subsystem:** MCP discovery metadata, tool catalog/planner projection,
+  `internal/mcpconsole` App dispatch, and Protocol/Console lockstep.
+- **RFC:** §6.4, §7.3, §5.2, §7. **Deps:** 207, 204, 109k, 109l.
+- **What it delivers:** D-412 — at MCP discovery, preserve the provider's
+  `_meta.ui.visibility: ["app"]` classification and construct an internal,
+  per-MCP-server App dispatch catalog alongside the ordinary planner/model
+  projection. App-only entries are absent from planner context, generic
+  `tools/list`, search/resolve, and ordinary invocation, and remain callable
+  only by the rendered App of the same host-derived server identity through a
+  host/App dispatch surface — no string prefix or remembered global name
+  selects another server's callback. The dispatch path keeps the exact
+  identity triple, effective-agent capability filtering, OAuth/approval
+  wrappers, current-state checks, redaction, and audit; visibility is not a
+  grant, and cross-server/cross-identity calls fail typed before execution.
+  Dynamic attach/reconnect/refresh rebuild both views atomically from one
+  discovered snapshot for HTTP and stdio, with no stale callback surviving
+  replacement or detach. Non-goals: no authorization shortcut, no
+  ordinary-caller exposure, no provider-specific exceptions.
+- **Ordering:** 238 is independent of 236/237/239/240/241/242 (its App-host
+  fixtures compose with 242's durable task-progress projection at wave E2E).
+- **Decision:** D-412. **Status:** Shipped (v1.27).
+
+### Phase 239 — Same-run step-tranche resume (HA-57)
+
+- **Subsystem:** runtime same-run continuation, task receipts, and Protocol
+  control surface.
+- **RFC:** §3.3, §6.8, §6.11, §7. **Deps:** 176, 193, 233.
+- **What it delivers:** D-418 — finite same-run step-tranche receipts and
+  resume of the original live run. Resume verifies the identity quadruple
+  `(tenant,user,session,run)`, continues from the last committed boundary,
+  never replays completed steps, and never creates a replacement run. D-417
+  remains the typed restart-unavailable boundary when the original run is not
+  live. This phase does not add a tool-failure event or classifier surface.
+- **Ordering:** 239 is independent of 236, 237, 238, 240, 241, and 242.
+- **Decision:** D-418. **Status:** Shipped (v1.27). D-413 remains settled history.
+
+### Phase 240 — Governed virtual child profiles (HA-58)
+
+- **Subsystem:** skills composition resolver, agent-config projection, and
+  Protocol surface.
+- **RFC:** §6.7, §6.16, §5.2, §7. **Deps:** 237, 239.
+- **What it delivers:** D-419 — a governed, read-only virtual child profile
+   derived from a parent. Bounded overrides cannot widen capability, mutate the
+   parent, or create an independent revision; the virtual profile is never an
+   isolation principal. Verified identity-triple authority is required, and
+   run-start and inspection use one resolver.
+- **Ordering:** 240 depends on 237 and 239; independent of 236, 238, 241, and
+  242.
+- **Decision:** D-419. **Status:** Shipped (v1.27). D-414 remains settled history.
+
+### Phase 241 — Virtual-child artifact/output forwarding (HA-59)
+
+- **Subsystem:** artifacts, tasks, runtime virtual-child execution, and
+  Protocol.
+- **RFC:** §6.8, §6.10, §6.11, §7. **Deps:** 17, 146, 239, 240.
+- **What it delivers:** D-420 — a virtual-child execution artifact and bounded
+   output-forwarding path using authorized artifact references with preserved
+   provenance. Raw content is not forwarded or exposed across sessions; denied
+   references fail closed before bytes are exposed. No CLI or Console
+   composition-preview consumer is part of this phase.
+- **Ordering:** 241 depends on 239 and 240; independent of 236, 237, 238, and
+  242.
+- **Decision:** D-420. **Status:** Shipped (v1.27). D-415 remains settled history.
+
+### Phase 242 — Durable task-progress projection (HA-60)
+
+- **Subsystem:** tasks, StateStore lifecycle/erasure fences, and Protocol.
+- **RFC:** §6.8, §6.10, §6.11, §7. **Deps:** 239, 241.
+- **What it delivers:** D-421 — a durable, bounded, identity-scoped task
+   progress projection. `TaskRow` gains additive optional
+   `progress_snapshot`, `virtual_key`, and `virtual_label` fields. The
+   projection is fenced by session lifecycle and erasure, and is never a raw
+   stream or second source of truth. It does not add an MCP App tool-context
+   retention policy.
+- **Ordering:** 242 depends on 239 and 241; independent of 236–238.
+- **Decision:** D-421. **Status:** Shipped (v1.27). D-416 remains settled history.
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 

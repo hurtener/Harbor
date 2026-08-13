@@ -155,6 +155,12 @@ func TestResume_SecondResumeReturnsAlreadyResumed(t *testing.T) {
 	if err := c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil); err != nil {
 		t.Fatalf("Resume #1: %v", err)
 	}
+	foreignID := identity.Identity{TenantID: "t2", UserID: "u1", SessionID: "s1"}
+	foreignCtx := runCtx(t, foreignID, "run-foreign")
+	err = c.Resume(foreignCtx, p.Token, pauseresume.DecisionResume, nil)
+	if !errors.Is(err, pauseresume.ErrPauseNotFound) {
+		t.Fatalf("foreign Resume after owner resume: err=%v, want ErrPauseNotFound", err)
+	}
 	err = c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil)
 	if !errors.Is(err, pauseresume.ErrAlreadyResumed) {
 		t.Fatalf("Resume #2: err=%v, want ErrAlreadyResumed", err)
@@ -220,8 +226,8 @@ func TestResume_ScopeMismatchRejected(t *testing.T) {
 	otherID := identity.Identity{TenantID: "t2", UserID: "u1", SessionID: "s1"}
 	resumeCtx := runCtx(t, otherID, "run-1")
 	err = c.Resume(resumeCtx, p.Token, pauseresume.DecisionResume, nil)
-	if !errors.Is(err, pauseresume.ErrScopeMismatch) {
-		t.Fatalf("Resume: err=%v, want ErrScopeMismatch", err)
+	if !errors.Is(err, pauseresume.ErrPauseNotFound) {
+		t.Fatalf("Resume: err=%v, want ErrPauseNotFound", err)
 	}
 }
 
@@ -243,6 +249,34 @@ func TestResume_DifferentRunSameTripleAccepted(t *testing.T) {
 	resumeCtx := runCtx(t, testID, "run-2-resume")
 	if err := c.Resume(resumeCtx, p.Token, pauseresume.DecisionResume, nil); err != nil {
 		t.Fatalf("Resume (different run, same triple): %v", err)
+	}
+}
+
+func TestStatusForIdentity_DifferentRunSameTripleAcceptedForeignTripleHidden(t *testing.T) {
+	t.Parallel()
+	c := pauseresume.New()
+	pauseCtx := runCtx(t, testID, "run-1")
+
+	p, err := c.Request(pauseCtx, pauseresume.PauseRequest{
+		Identity: testID,
+		Reason:   pauseresume.ReasonAwaitInput,
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+
+	status, err := pauseresume.StatusForIdentity(runCtx(t, testID, "run-2"), c, p.Token, testID, "run-2")
+	if err != nil {
+		t.Fatalf("StatusForIdentity (different run, same triple): %v", err)
+	}
+	if status.State != pauseresume.StatusPaused {
+		t.Fatalf("StatusForIdentity.State = %q, want %q", status.State, pauseresume.StatusPaused)
+	}
+
+	foreignID := identity.Identity{TenantID: "t2", UserID: "u1", SessionID: "s1"}
+	_, err = pauseresume.StatusForIdentity(runCtx(t, foreignID, "run-1"), c, p.Token, foreignID, "run-1")
+	if !errors.Is(err, pauseresume.ErrPauseNotFound) {
+		t.Fatalf("StatusForIdentity (foreign triple): err=%v, want ErrPauseNotFound", err)
 	}
 }
 

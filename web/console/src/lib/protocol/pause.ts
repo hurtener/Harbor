@@ -65,6 +65,8 @@ export interface PauseSnapshot {
 	paused_at: string;
 	/** The wall-clock time Resume was called — omitted unless `state === 'resumed'`. */
 	resumed_at?: string;
+	/** Whether this pause can currently be resumed. */
+	available: boolean;
 	/** The inline sanitised payload, when below the heavy-content threshold. */
 	payload?: Record<string, unknown>;
 	/** The by-reference payload, when it exceeded the heavy-content threshold. */

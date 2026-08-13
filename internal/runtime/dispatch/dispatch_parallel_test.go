@@ -59,7 +59,7 @@ func TestExecutor_CallParallel_MixedSuccessFailure(t *testing.T) {
 	}
 
 	q := dispatchTestQuad("r-mixed")
-	rc := planner.RunContext{Quadruple: q}
+	rc := dispatchRunContext(cat, q)
 	decision := planner.CallParallel{
 		Branches: []planner.CallTool{
 			{Tool: "good", Args: json.RawMessage(`{"x":1}`), CallID: "c0"},
@@ -128,7 +128,7 @@ func TestExecutor_CallParallel_HeavyBranchesProjected(t *testing.T) {
 	}
 
 	q := dispatchTestQuad("r-heavy")
-	rc := planner.RunContext{Quadruple: q}
+	rc := dispatchRunContext(cat, q)
 	decision := planner.CallParallel{
 		Branches: []planner.CallTool{
 			{Tool: "heavy", Args: json.RawMessage(`{}`), CallID: "h0"},
@@ -206,7 +206,7 @@ func TestExecutor_CallParallel_ConcurrentReuse(t *testing.T) {
 			defer wg.Done()
 			runID := fmt.Sprintf("r-reuse-%d", idx)
 			q := dispatchTestQuad(runID)
-			rc := planner.RunContext{Quadruple: q}
+			rc := dispatchRunContext(cat, q)
 			decision := planner.CallParallel{
 				Branches: []planner.CallTool{
 					{Tool: "whoami", Args: json.RawMessage(`{}`), CallID: fmt.Sprintf("%d-a", idx)},

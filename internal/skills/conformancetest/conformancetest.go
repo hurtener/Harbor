@@ -144,6 +144,77 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 		defer h.Cleanup()
 		testGetScopeAfterClose(t, h)
 	})
+	t.Run("agent_binding_is_selector_metadata", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testAgentBinding(t, h)
+	})
+	t.Run("agent_binding_compatibility", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testAgentCompatibility(t, h)
+	})
+}
+
+func testAgentBinding(t failureReporter, h Harness) {
+	ctx := context.Background()
+	first := newSkill("same-name")
+	first.AgentID = "agent-a"
+	second := newSkill("same-name")
+	second.AgentID = "agent-b"
+	if err := h.Store.Upsert(ctx, fixtureID, first); err != nil {
+		t.Fatalf("upsert agent-a: %v", err)
+	}
+	if err := h.Store.Upsert(ctx, fixtureID, second); err != nil {
+		t.Fatalf("upsert agent-b: %v", err)
+	}
+	for _, want := range []string{"agent-a", "agent-b"} {
+		rows, err := h.Store.List(ctx, fixtureID, skills.ListFilter{AgentID: want})
+		if err != nil || len(rows) != 1 || rows[0].AgentID != want {
+			t.Fatalf("agent %q selection = %#v, err=%v", want, rows, err)
+		}
+	}
+	foreign := fixtureID
+	foreign.TenantID = "other-tenant"
+	rows, err := h.Store.List(ctx, foreign, skills.ListFilter{AgentID: "agent-a"})
+	if err != nil {
+		t.Fatalf("foreign list: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("cross-tenant agent rows leaked: %#v", rows)
+	}
+}
+
+func testAgentCompatibility(t failureReporter, h Harness) {
+	ctx := context.Background()
+	legacy := newSkill("compatible")
+	bound := newSkill("compatible")
+	bound.AgentID = "agent-a"
+	if err := h.Store.Upsert(ctx, fixtureID, legacy); err != nil {
+		t.Fatalf("upsert legacy: %v", err)
+	}
+	if err := h.Store.Upsert(ctx, fixtureID, bound); err != nil {
+		t.Fatalf("upsert bound: %v", err)
+	}
+	got, err := h.Store.GetScopeAgent(ctx, fixtureID, "agent-a", "compatible", skills.ScopeProject)
+	if err != nil || got.AgentID != "agent-a" {
+		t.Fatalf("bound precedence = %#v, err=%v", got, err)
+	}
+	rows, err := h.Store.SearchAgent(ctx, fixtureID, "agent-a", "compatible", 20)
+	if err != nil || len(rows) != 1 || rows[0].Skill.AgentID != "agent-a" {
+		t.Fatalf("agent search compatibility = %#v, err=%v", rows, err)
+	}
+	if err := h.Store.DeleteAgent(ctx, fixtureID, "agent-a", "compatible", skills.ScopeProject); err != nil {
+		t.Fatalf("delete bound: %v", err)
+	}
+	if _, err := h.Store.GetScopeAgent(ctx, fixtureID, "agent-a", "compatible", skills.ScopeProject); err != nil {
+		t.Fatalf("legacy fallback after bound delete: %v", err)
+	}
+	foreign := fixtureID
+	foreign.TenantID = "other-tenant"
+	if _, err := h.Store.GetScopeAgent(ctx, foreign, "agent-a", "compatible", skills.ScopeProject); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("cross-tenant bound lookup err=%v", err)
+	}
 }
 
 // fixtureID is the identity quadruple every subtest uses by default;

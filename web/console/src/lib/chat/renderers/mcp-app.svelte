@@ -380,6 +380,8 @@
       client: s.client,
       serverID: s.serverID,
       agentID: s.app.agentId,
+      binding: s.app.binding,
+      resourceURI: s.app.resourceUri,
       availableDisplayModes: s.availableDisplayModes,
       onDisplayModeRequest: s.onDisplayModeRequest,
       // Host identity is injected through the seam (not baked into the module).

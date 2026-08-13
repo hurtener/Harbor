@@ -494,6 +494,36 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigSkillsDeleteRequest", Response: "AgentConfigSkillsDeleteResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigAgentPacksList: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigAgentPacksList),
+			Mutates: false,
+			Request: "AgentConfigAgentPacksListRequest", Response: "AgentConfigAgentPacksListResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigAgentPacksUpsert: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigAgentPacksUpsert),
+			Mutates: true,
+			Request: "AgentConfigAgentPacksUpsertRequest", Response: "AgentConfigAgentPacksUpsertResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigAgentPacksRemove: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigAgentPacksRemove),
+			Mutates: true,
+			Request: "AgentConfigAgentPacksRemoveRequest", Response: "AgentConfigAgentPacksRemoveResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigAgentPacksPropose: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigAgentPacksPropose),
+			Mutates: true,
+			Request: "AgentConfigAgentPacksProposeRequest", Response: "AgentConfigAgentPacksProposeResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigAgentPacksCommit: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigAgentPacksCommit),
+			Mutates: true,
+			Request: "AgentConfigAgentPacksCommitRequest", Response: "AgentConfigAgentPacksCommitResponse",
+			Auth: adminNote,
+		},
 		methods.MethodAgentConfigSetToolExposure: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSetToolExposure),
 			Mutates: true,

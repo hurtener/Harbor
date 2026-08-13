@@ -429,8 +429,8 @@ func TestE2E_WaveC_ComposedStack_AllFeaturesOn(t *testing.T) {
 					errCh <- ferr
 					return
 				}
-				if rerr := stack.Coordinator.Resume(fctx, p.Token, pauseresume.DecisionResume, nil); !errors.Is(rerr, pauseresume.ErrScopeMismatch) {
-					errCh <- fmt.Errorf("stress %d cross-scope Resume: got %w, want ErrScopeMismatch", i, rerr)
+				if rerr := stack.Coordinator.Resume(fctx, p.Token, pauseresume.DecisionResume, nil); !errors.Is(rerr, pauseresume.ErrPauseNotFound) {
+					errCh <- fmt.Errorf("stress %d cross-scope Resume: got %w, want ErrPauseNotFound", i, rerr)
 					return
 				}
 				if rerr := stack.Coordinator.Resume(ctx, p.Token, pauseresume.DecisionResume, nil); rerr != nil &&

@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path"
 	"sort"
 	"time"
 
@@ -53,6 +54,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/artifactref"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 // ErrArtifactRefNotFound is returned to a tool whose artifact-reference
@@ -375,11 +377,32 @@ func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContex
 		return e.pauseTask(ctx, rc, d)
 	case planner.ResumeTask:
 		return e.resumeTask(ctx, rc, d)
+	case planner.TaskProgress:
+		return e.taskProgress(ctx, rc, d)
 	case planner.Batch:
 		return e.batch(ctx, rc, d)
 	default:
 		return nil, nil, fmt.Errorf("%w: %T", steering.ErrDecisionShapeUnsupported, decision)
 	}
+}
+
+func (e *toolExecutor) taskProgress(ctx context.Context, rc planner.RunContext, d planner.TaskProgress) (any, any, error) {
+	rr, ok := e.tasks.(tasks.ProgressReporterRegistry)
+	if !ok {
+		return nil, nil, fmt.Errorf("%w: TaskProgress reporter unavailable", steering.ErrDecisionShapeUnsupported)
+	}
+	reporter, err := rr.ProgressReporter(ctx, tasks.TaskID(rc.Quadruple.RunID))
+	if err != nil {
+		return nil, nil, fmt.Errorf("TaskProgress: bind reporter: %w", err)
+	}
+	res, err := reporter.ReportProgress(ctx, tasks.ReportProgressRequest{
+		Fraction: d.Fraction, Phase: d.Phase, Message: d.Message, Tags: d.Tags,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("TaskProgress: report: %w", err)
+	}
+	obs := map[string]any{"recorded": res.Recorded, "emitted": res.Emitted}
+	return obs, obs, nil
 }
 
 // withArtifactResolver seats the resolver an artifact-reference tool
@@ -433,7 +456,10 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 	if d.Tool == "" {
 		return nil, nil, errors.New("CallTool.Tool is empty")
 	}
-	desc, ok := e.cat.Resolve(d.Tool)
+	desc, ok, err := e.resolveForRun(ctx, rc, d.Tool)
+	if err != nil {
+		return nil, nil, err
+	}
 	if !ok {
 		return nil, nil, fmt.Errorf("%w: %q", tools.ErrToolNotFound, d.Tool)
 	}
@@ -448,7 +474,18 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 		// Classified so the run loop's error observation names the KIND
 		// of failure. The message is unchanged either way — classify
 		// returns the error untouched when the failure is the tool's own.
-		return nil, nil, classify(fmt.Errorf("tool %q invoke: %w", d.Tool, err))
+		classified := classify(fmt.Errorf("tool %q invoke: %w", d.Tool, err))
+		if mcpResult, ok := mcpResultFromError(err); ok {
+			if mcpResult.Value == nil {
+				mcpResult = result
+			}
+			raw := mcpResult.Value
+			if raw == nil && len(result.Meta) > 0 {
+				raw = map[string]any{"meta": result.Meta}
+			}
+			return raw, e.projectForLLM(ctx, rc, d.Tool, raw), classified
+		}
+		return nil, nil, classified
 	}
 	raw := result.Value
 	if raw == nil && len(result.Meta) > 0 {
@@ -456,6 +493,49 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 	}
 	llmObs := e.projectForLLM(ctx, rc, d.Tool, raw)
 	return raw, llmObs, nil
+}
+
+func mcpResultFromError(err error) (tools.ToolResult, bool) {
+	var mcpErr *tools.MCPToolResultError
+	if !errors.As(err, &mcpErr) {
+		return tools.ToolResult{}, false
+	}
+	return mcpErr.Result, true
+}
+
+func (e *toolExecutor) resolveForRun(ctx context.Context, rc planner.RunContext, name string) (tools.ToolDescriptor, bool, error) {
+	if !steering.IsTrustedCompletionHook(ctx) && rc.Catalog == nil {
+		return tools.ToolDescriptor{}, false, fmt.Errorf("dispatch: sealed planner catalog is required")
+	}
+	if rc.Catalog != nil {
+		if _, ok := rc.Catalog.Resolve(name); !ok {
+			return tools.ToolDescriptor{}, false, nil
+		}
+	}
+	desc, ok := e.cat.Resolve(name)
+	return desc, ok, nil
+}
+
+type runResolver struct {
+	base  parallel.Resolver
+	view  planner.ToolCatalogView
+	trust bool
+}
+
+func (e *toolExecutor) resolverForRun(ctx context.Context, rc planner.RunContext) parallel.Resolver {
+	return runResolver{base: e.cat, view: rc.Catalog, trust: steering.IsTrustedCompletionHook(ctx)}
+}
+
+func (r runResolver) Resolve(name string) (tools.ToolDescriptor, bool) {
+	if !r.trust {
+		if r.view == nil {
+			return tools.ToolDescriptor{}, false
+		}
+		if _, ok := r.view.Resolve(name); !ok {
+			return tools.ToolDescriptor{}, false
+		}
+	}
+	return r.base.Resolve(name)
 }
 
 // callParallel dispatches a CallParallel decision (/
@@ -480,7 +560,7 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 // §13); the runloop wraps them as the step's error observation and the
 // planner re-plans.
 func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, d planner.CallParallel) (any, any, error) {
-	results, err := e.parallel.Execute(ctx, d, parallel.WithNonAtomicSetup())
+	results, err := e.parallel.Execute(ctx, d, parallel.WithNonAtomicSetup(), parallel.WithResolver(e.resolverForRun(ctx, rc)))
 	if err != nil {
 		return nil, nil, fmt.Errorf("parallel dispatch: %w", err)
 	}
@@ -520,8 +600,16 @@ func (e *toolExecutor) branchObservations(ctx context.Context, rc planner.RunCon
 				Error:      r.Err.Error(),
 				ErrorClass: observationClassOf(r.Err),
 			}
+			if mcpResult, ok := mcpResultFromError(r.Err); ok {
+				if mcpResult.Value == nil && r.Result != nil {
+					mcpResult = *r.Result
+				}
+				branchErr.Value = mcpResult.Value
+			}
 			raw = append(raw, branchErr)
-			llm = append(llm, branchErr)
+			llmBranch := branchErr
+			llmBranch.Value = e.projectForLLM(ctx, rc, r.Tool, branchErr.Value)
+			llm = append(llm, llmBranch)
 			continue
 		}
 		var rawVal any
@@ -636,6 +724,97 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		PropagateOnCancel: d.Spec.PropagateOnCancel,
 		NotifyOnComplete:  true,
 	}
+	seen := make(map[string]struct{}, len(d.Spec.InputArtifactIDs))
+	for _, id := range d.Spec.InputArtifactIDs {
+		if _, ok := seen[id]; ok {
+			return tasks.TaskHandle{}, "", fmt.Errorf("SpawnTask: duplicate artifact reference %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+	if d.Spec.VirtualAgent == "" {
+		if err := validateArtifactHints(d.Spec.InputArtifactIDs, d.Spec.InputArtifactDispositions); err != nil {
+			return tasks.TaskHandle{}, "", err
+		}
+	}
+	var refs map[string]*artifacts.ArtifactRef
+	if len(d.Spec.InputArtifactIDs) > 0 {
+		if e.artifacts == nil {
+			return tasks.TaskHandle{}, "", ErrArtifactStoreUnavailable
+		}
+		scoped := artifacts.NewScoped(e.artifacts, artifacts.ArtifactScope{
+			TenantID: rc.Quadruple.TenantID, UserID: rc.Quadruple.UserID, SessionID: rc.Quadruple.SessionID,
+		})
+		refs = make(map[string]*artifacts.ArtifactRef, len(d.Spec.InputArtifactIDs))
+		for _, id := range d.Spec.InputArtifactIDs {
+			ref, found, getErr := scoped.GetRef(taskCtx, id)
+			if getErr != nil || !found || ref == nil {
+				// Do not distinguish a missing id from a foreign id. The
+				// scoped read key intentionally makes both not-found.
+				return tasks.TaskHandle{}, "", fmt.Errorf("%w: %q", ErrArtifactRefNotFound, id)
+			}
+			refs[id] = ref
+		}
+		req.InputArtifactIDs = append([]string(nil), d.Spec.InputArtifactIDs...)
+		// Ordinary children inherit references, while the runtime computes the
+		// persisted disposition from the verified reference MIME and the
+		// immutable per-run policy. Virtual children replace this map below.
+		if d.Spec.VirtualAgent == "" {
+			resolved, err := resolveChildDispositions(rc, d.Spec.InputArtifactIDs, d.Spec.InputArtifactDispositions, refs)
+			if err != nil {
+				return tasks.TaskHandle{}, "", err
+			}
+			req.InputArtifactDispositions = resolved
+		}
+	}
+	if key := d.Spec.VirtualAgent; key != "" {
+		if virtualagent.RunBindingFrom(taskCtx) != nil {
+			return tasks.TaskHandle{}, "", virtualagent.ErrRecursion
+		}
+		frozen := virtualagent.FrozenMapFrom(taskCtx)
+		if frozen == nil {
+			return tasks.TaskHandle{}, "", virtualagent.ErrNoMap
+		}
+		if err := frozen.VerifyCurrent(taskCtx); err != nil {
+			return tasks.TaskHandle{}, "", err
+		}
+		profile, ok := frozen.Profile(virtualagent.Key(key))
+		if !ok {
+			return tasks.TaskHandle{}, "", fmt.Errorf("%w: %q", virtualagent.ErrUnknown, key)
+		}
+		if err := virtualagent.ValidateProfile(profile); err != nil {
+			return tasks.TaskHandle{}, "", fmt.Errorf("%w: %w", virtualagent.ErrInvalid, err)
+		}
+		binding, err := frozen.Bind(profile)
+		if err != nil {
+			return tasks.TaskHandle{}, "", err
+		}
+		req.AgentID = frozen.Owner
+		req.VirtualAgent = &binding
+		if len(req.InputArtifactIDs) > profile.InputCount {
+			return tasks.TaskHandle{}, "", fmt.Errorf("%w: profile input_count=%d", ErrArtifactRefNotFound, profile.InputCount)
+		}
+		if len(profile.InputPatterns) > 0 {
+			for _, id := range req.InputArtifactIDs {
+				ref := refs[id]
+				if ref == nil || !profileInputMatches(profile.InputPatterns, ref.Filename, ref.MimeType) {
+					return tasks.TaskHandle{}, "", fmt.Errorf("%w: %q", ErrArtifactRefNotFound, id)
+				}
+			}
+		}
+		// Virtual-agent profiles own child input disposition. Never carry
+		// planner/model hints into a virtual child; an empty profile value
+		// deliberately leaves resolution to the validated runtime default.
+		req.InputArtifactDispositions = nil
+		if profile.InputDisposition != "" {
+			req.InputArtifactDispositions = make(map[string]string, len(req.InputArtifactIDs))
+			for _, id := range req.InputArtifactIDs {
+				req.InputArtifactDispositions[id] = profile.InputDisposition
+			}
+		}
+		if len(profile.OutputSchema) > 0 {
+			req.OutputSchema = append(json.RawMessage(nil), profile.OutputSchema...)
+		}
+	}
 	if parentID != "" {
 		req.ParentTaskID = &parentID
 	}
@@ -644,6 +823,57 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		return tasks.TaskHandle{}, "", fmt.Errorf("SpawnTask: registry spawn: %w", err)
 	}
 	return handle, kind, nil
+}
+
+func validateArtifactHints(ids []string, hints map[string]string) error {
+	allowed := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		allowed[id] = struct{}{}
+	}
+	for id, raw := range hints {
+		if _, ok := allowed[id]; !ok {
+			return fmt.Errorf("SpawnTask: artifact disposition hint names an unforwarded artifact %q", id)
+		}
+		if _, err := planner.ParseDisposition(raw); err != nil {
+			return fmt.Errorf("SpawnTask: artifact disposition hint %q: %w", id, err)
+		}
+	}
+	return nil
+}
+
+func resolveChildDispositions(rc planner.RunContext, ids []string, hints map[string]string, refs map[string]*artifacts.ArtifactRef) (map[string]string, error) {
+	out := make(map[string]string, len(ids))
+	for _, id := range ids {
+		ref := refs[id]
+		if ref == nil {
+			return nil, fmt.Errorf("%w: %q", ErrArtifactRefNotFound, id)
+		}
+		hint, err := planner.ParseDisposition(hints[id])
+		if hints[id] == "" {
+			hint = ""
+		} else if err != nil {
+			return nil, fmt.Errorf("SpawnTask: artifact disposition hint %q: %w", id, err)
+		}
+		resolved, _ := planner.ResolveDisposition(hint, rc.DispositionPolicy, ref.MimeType)
+		effective, degradation := planner.EffectiveDisposition(resolved, ref.MimeType, rc.Catalog)
+		if degradation != nil {
+			return nil, fmt.Errorf("SpawnTask: artifact disposition %q degraded from %q to %q: %s", id, degradation.From, degradation.To, degradation.Reason)
+		}
+		out[id] = string(effective)
+	}
+	return out, nil
+}
+
+func profileInputMatches(patterns []string, filename, mime string) bool {
+	for _, pattern := range patterns {
+		if ok, err := path.Match(pattern, filename); err == nil && ok {
+			return true
+		}
+		if ok, err := path.Match(pattern, mime); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // batch dispatches a heterogeneous Batch decision — a native
@@ -692,12 +922,11 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 	// any concrete planner can build against, and this executor is the one
 	// shared dispatch boundary for all of them — a degenerate empty/one-
 	// branch Batch reaching dispatch must fail loud, never a silent no-op.
-	if len(d.Tools)+len(d.Spawns) < 2 {
+	if len(d.Tools)+len(d.Spawns)+len(d.Progress) < 2 {
 		return nil, nil, fmt.Errorf(
 			"%w: Batch requires at least 2 combined branches, got %d tools + %d spawns",
-			planner.ErrInvalidDecision, len(d.Tools), len(d.Spawns))
+			planner.ErrInvalidDecision, len(d.Tools), len(d.Spawns)+len(d.Progress))
 	}
-
 	// Tool-count breadth vs the shared parallel cap. A structural pre-check
 	// here keeps an over-cap tool set a decision-level reject rather than a
 	// mid-dispatch parallel abort surfaced from Execute — the whole-batch
@@ -763,6 +992,18 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 			return nil, nil, fmt.Errorf("batch: attach identity: %w", idErr)
 		}
 	}
+	var progressReporter tasks.ProgressReporter
+	if len(d.Progress) > 0 {
+		rr, ok := e.tasks.(tasks.ProgressReporterRegistry)
+		if !ok {
+			return nil, nil, fmt.Errorf("%w: task progress reporter unavailable", planner.ErrInvalidDecision)
+		}
+		var err error
+		progressReporter, err = rr.ProgressReporter(ctx, tasks.TaskID(rc.Quadruple.RunID))
+		if err != nil {
+			return nil, nil, fmt.Errorf("dispatch task progress: %w", err)
+		}
+	}
 
 	var raw, llm planner.BatchObservation
 
@@ -777,11 +1018,31 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 	if len(d.Tools) > 0 {
 		results, err := e.parallel.Execute(ctx,
 			planner.CallParallel{Branches: d.Tools, Join: d.Join},
-			parallel.WithNonAtomicSetup())
+			parallel.WithNonAtomicSetup(),
+			parallel.WithResolver(e.resolverForRun(ctx, rc)))
 		if err != nil {
 			return nil, nil, fmt.Errorf("batch tool dispatch: %w", err)
 		}
 		raw.Tools, llm.Tools = e.branchObservations(ctx, rc, d.Tools, results)
+	}
+
+	// Persist progress only after every structural validation has passed and
+	// the tool half's setup/dispatch has succeeded. An invalid batch must not
+	// leave durable progress behind, while observations retain the native
+	// call-ID/index pairing for replay.
+	if len(d.Progress) > 0 {
+		progressObs := make([]planner.BatchProgressObservation, 0, len(d.Progress))
+		for i, p := range d.Progress {
+			o := planner.BatchProgressObservation{CallID: p.CallID, Index: i}
+			res, err := progressReporter.ReportProgress(ctx, tasks.ReportProgressRequest{Fraction: p.Fraction, Phase: p.Phase, Message: p.Message, Tags: p.Tags})
+			if err != nil {
+				o.Error = err.Error()
+			} else {
+				o.Recorded, o.Emitted = res.Recorded, res.Emitted
+			}
+			progressObs = append(progressObs, o)
+		}
+		raw.Progress, llm.Progress = progressObs, progressObs
 	}
 
 	// === Auto-group creation: ONE ResolveOrCreateGroup for the ungrouped

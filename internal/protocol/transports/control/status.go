@@ -49,6 +49,8 @@ func HTTPStatus(code protoerrors.Code) int {
 		// The request's target (a run with no live inbox, a missing
 		// parent task) does not exist.
 		return http.StatusNotFound // 404
+	case protoerrors.CodeRestartUnavailable:
+		return http.StatusConflict // 409
 	case protoerrors.CodeRuntimeError:
 		// An unclassified runtime-side failure — the catch-all.
 		return http.StatusInternalServerError // 500

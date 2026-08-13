@@ -138,6 +138,7 @@ task.patch_applied
 task.patch_rejected
 task.paused
 task.prioritised
+task.progress
 task.resumed
 task.spawned
 task.started

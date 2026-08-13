@@ -1876,3 +1876,30 @@ walkthroughs, and PTY tests; functional-but-unpolished is not shippable. Phase
 **Inert smoke** — a phase smoke script that completes with `OK: 0` and `FAIL: 0`: it ran, and it asserted nothing. On a SHIPPED phase this is a defect (CLAUDE.md §4.2 item 5 — a shipped phase's surface exists, so its smoke must assert something against it) and `scripts/preflight.sh` FAILs on it. On an UNSHIPPED phase it is the expected skeleton state (§4.2 item 4, the 404/405/501 → SKIP convention) and preflight reports it as `INERT_PENDING`, not as a failure. Which of the two a script is depends entirely on `phase_is_shipped` reading the phase's master-plan Status row correctly — a classifier fault therefore manufactures phantom debt rather than merely mislabelling it. Phase 223, D-368.
 
 **Inert baseline** — `scripts/smoke/inert-baseline.txt`, the declared-debt list of inert SHIPPED-phase smokes that predate the inert gate. It is not an exemption list: an unlisted inert script FAILs preflight, and a listed script that starts asserting is reported as a stale line to delete in the same PR. Its steady state is EMPTY — it was drained from 24 entries to 0 (thirteen classifier false positives, eleven real repairs), and `scripts/smoke/phase-223.sh` asserts the drained state plus two properties the preflight sweep cannot see: every remaining line names a file that exists, and names a phase that is actually `Shipped`. Phase 223, D-368.
+**MCP error classification** — typed control metadata on an `IsError` result
+that distinguishes a permanent unchanged-call failure from a retryable service
+failure without parsing prose. D-410.
+
+**Operator skill pack** — a durable, revisioned, per-agent skill source
+selected by agent configuration and composed with caller-owned skills at run
+start. The agent is not an isolation principal. D-411.
+
+**App dispatch catalog** — a per-MCP-server callback lookup retained beside,
+but not merged into, the planner's tool projection. App visibility is not a
+grant. D-412.
+
+**Reliability classification metadata** — server-derived, non-secret event
+fields describing a tool failure's resolved class and retry accounting.
+D-413.
+
+**Composition preview** — a read-only, identity-addressed projection of the
+next-run skill snapshot, including bounded visibility and required-tool
+verdicts. D-414.
+
+**Composition-preview consumer** — a CLI or Console client that renders the
+composition-preview Protocol surface without reimplementing composition.
+D-415.
+
+**Session-lifetime tool context** — an MCP App tool-context record retained
+until the owning session is erased, rather than governed by an implicit TTL.
+D-416.

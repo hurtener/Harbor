@@ -36,10 +36,7 @@ func render(m Module) []byte {
 		writeIface(&b, iface)
 	}
 
-	out := b.String()
-	if !strings.HasSuffix(out, "\n") {
-		out += "\n"
-	}
+	out := strings.TrimRight(b.String(), "\n") + "\n"
 	return []byte(out)
 }
 
