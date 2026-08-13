@@ -697,13 +697,10 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		PropagateOnCancel: d.Spec.PropagateOnCancel,
 		NotifyOnComplete:  true,
 	}
+	if err := validateArtifactHints(d.Spec.InputArtifactIDs, d.Spec.InputArtifactDispositions); err != nil {
+		return tasks.TaskHandle{}, "", err
+	}
 	if len(d.Spec.InputArtifactIDs) > 0 {
-		// Input IDs are private selectors, not an alternate child contract.
-		// A child carrying them must already have a frozen, selected virtual
-		// profile; fail before even the scoped existence checks or persistence.
-		if d.Spec.VirtualAgent == "" || virtualagent.FrozenMapFrom(taskCtx) == nil {
-			return tasks.TaskHandle{}, "", virtualagent.ErrNoMap
-		}
 		if e.artifacts == nil {
 			return tasks.TaskHandle{}, "", ErrArtifactStoreUnavailable
 		}
@@ -719,9 +716,16 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 			}
 		}
 		req.InputArtifactIDs = append([]string(nil), d.Spec.InputArtifactIDs...)
-		// Planner/model-authored dispositions are never authority. The selected
-		// frozen profile below is the only source for a child disposition.
-		req.InputArtifactDispositions = nil
+		// Ordinary children inherit references, while the runtime computes the
+		// persisted disposition from the verified reference MIME and the
+		// immutable per-run policy. Virtual children replace this map below.
+		if d.Spec.VirtualAgent == "" {
+			resolved, err := e.resolveChildDispositions(taskCtx, rc, d.Spec.InputArtifactIDs, d.Spec.InputArtifactDispositions)
+			if err != nil {
+				return tasks.TaskHandle{}, "", err
+			}
+			req.InputArtifactDispositions = resolved
+		}
 	}
 	if key := d.Spec.VirtualAgent; key != "" {
 		if virtualagent.RunBindingFrom(taskCtx) != nil {
@@ -782,6 +786,48 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		return tasks.TaskHandle{}, "", fmt.Errorf("SpawnTask: registry spawn: %w", err)
 	}
 	return handle, kind, nil
+}
+
+func validateArtifactHints(ids []string, hints map[string]string) error {
+	allowed := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		allowed[id] = struct{}{}
+	}
+	for id, raw := range hints {
+		if _, ok := allowed[id]; !ok {
+			return fmt.Errorf("SpawnTask: artifact disposition hint names an unforwarded artifact %q", id)
+		}
+		if _, err := planner.ParseDisposition(raw); err != nil {
+			return fmt.Errorf("SpawnTask: artifact disposition hint %q: %w", id, err)
+		}
+	}
+	return nil
+}
+
+func (e *toolExecutor) resolveChildDispositions(ctx context.Context, rc planner.RunContext, ids []string, hints map[string]string) (map[string]string, error) {
+	if e.artifacts == nil {
+		return nil, ErrArtifactStoreUnavailable
+	}
+	scoped := artifacts.NewScoped(e.artifacts, artifacts.ArtifactScope{
+		TenantID: rc.Quadruple.TenantID, UserID: rc.Quadruple.UserID, SessionID: rc.Quadruple.SessionID,
+	})
+	out := make(map[string]string, len(ids))
+	for _, id := range ids {
+		ref, found, err := scoped.GetRef(ctx, id)
+		if err != nil || !found || ref == nil {
+			return nil, fmt.Errorf("%w: %q", ErrArtifactRefNotFound, id)
+		}
+		hint, err := planner.ParseDisposition(hints[id])
+		if hints[id] == "" {
+			hint = ""
+		} else if err != nil {
+			return nil, fmt.Errorf("SpawnTask: artifact disposition hint %q: %w", id, err)
+		}
+		resolved, _ := planner.ResolveDisposition(hint, rc.DispositionPolicy, ref.MimeType)
+		effective, _ := planner.EffectiveDisposition(resolved, ref.MimeType, rc.Catalog)
+		out[id] = string(effective)
+	}
+	return out, nil
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

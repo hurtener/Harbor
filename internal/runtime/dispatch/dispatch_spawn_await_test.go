@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
@@ -101,6 +102,51 @@ func spawnAwaitIDCtx(t *testing.T) context.Context {
 func rcFor(runID tasks.TaskID) planner.RunContext {
 	return planner.RunContext{
 		Quadruple: identity.Quadruple{Identity: dispatchTestID, RunID: string(runID)},
+	}
+}
+
+// TestExecutor_SpawnTask_OrdinaryArtifactResolutionAndDisposition verifies
+// that an ordinary child forwards only scoped references and that the runtime
+// owns disposition precedence after resolving each reference's MIME.
+func TestExecutor_SpawnTask_OrdinaryArtifactResolutionAndDisposition(t *testing.T) {
+	bus := mkSpawnAwaitTestBus(t)
+	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	store := newTestArtifactStore(t)
+	ref, err := store.PutBytes(context.Background(), artifacts.ArtifactScope{
+		TenantID: dispatchTestID.TenantID, UserID: dispatchTestID.UserID, SessionID: dispatchTestID.SessionID,
+	}, []byte("png"), artifacts.PutOpts{MimeType: "image/png", Filename: "image.png"})
+	if err != nil {
+		t.Fatalf("PutBytes: %v", err)
+	}
+	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
+	rc := rcFor("")
+	rc.DispositionPolicy = planner.DispositionPolicy{ByMIME: map[string]planner.AttachmentDisposition{"image/*": planner.DispositionRef}}
+	raw, _, err := exec.ExecuteDecision(context.Background(), rc, planner.SpawnTask{Spec: planner.SpawnSpec{
+		Query: "ordinary", InputArtifactIDs: []string{ref.ID}, InputArtifactDispositions: map[string]string{ref.ID: "inline"},
+	}})
+	if err != nil {
+		t.Fatalf("ExecuteDecision: %v", err)
+	}
+	id := tasks.TaskID(raw.(map[string]any)["task_id"].(string))
+	task, err := reg.Get(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if task.InputArtifactDispositions[ref.ID] != "inline" {
+		t.Fatalf("disposition = %q, want inline hint", task.InputArtifactDispositions[ref.ID])
+	}
+}
+
+func TestExecutor_SpawnTask_ArtifactHintValidationPrecedesPersistence(t *testing.T) {
+	bus := mkSpawnAwaitTestBus(t)
+	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
+	store := newTestArtifactStore(t)
+	exec := NewToolExecutor(tools.NewCatalog(), store, reg)
+	_, _, err := exec.ExecuteDecision(context.Background(), rcFor(""), planner.SpawnTask{Spec: planner.SpawnSpec{
+		Query: "invalid", InputArtifactIDs: []string{"one"}, InputArtifactDispositions: map[string]string{"other": "inline"},
+	}})
+	if err == nil {
+		t.Fatal("expected unforwarded hint rejection")
 	}
 }
 

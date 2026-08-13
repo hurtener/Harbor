@@ -290,20 +290,21 @@ func NewRunContext(
 	})
 
 	return planner.RunContext{
-		Quadruple:      q,
-		Query:          goal,
-		Goal:           goal, // initial goal = the request; runtime REDIRECT may mutate
-		LLMOverrides:   src.LLMOverrides,
-		MemoryBlocks:   memBlocks,
-		SkillsContext:  skillsCtx,
-		RepairCounters: &planner.RepairCounters{},
-		PlanningHints:  src.PlanningHints,
-		Catalog:        catalogView,
-		Trajectory:     &planner.Trajectory{Query: goal},
-		Emit:           emit,
-		OnChunk:        onChunk,
-		InputArtifacts: inputArtifacts,
-		Budget:         src.Budget,
-		OutputSchema:   outputSchema,
+		Quadruple:         q,
+		Query:             goal,
+		Goal:              goal, // initial goal = the request; runtime REDIRECT may mutate
+		LLMOverrides:      src.LLMOverrides,
+		MemoryBlocks:      memBlocks,
+		SkillsContext:     skillsCtx,
+		RepairCounters:    &planner.RepairCounters{},
+		PlanningHints:     src.PlanningHints,
+		Catalog:           catalogView,
+		Trajectory:        &planner.Trajectory{Query: goal},
+		Emit:              emit,
+		OnChunk:           onChunk,
+		InputArtifacts:    inputArtifacts,
+		DispositionPolicy: cfg.dispositionPolicy,
+		Budget:            src.Budget,
+		OutputSchema:      outputSchema,
 	}, nil
 }
