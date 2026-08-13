@@ -211,8 +211,8 @@ func TestE2E_PauseResume_ScopeIsolationAcrossDrivers(t *testing.T) {
 				t.Fatalf("identity.WithRun(intruder): %v", err)
 			}
 			c2 := pauseresume.New(pauseresume.WithCheckpointStore(store))
-			if err := c2.Resume(intruderCtx, p.Token, pauseresume.DecisionResume, nil); !errors.Is(err, pauseresume.ErrScopeMismatch) {
-				t.Fatalf("cross-tenant Resume: err=%v, want ErrScopeMismatch", err)
+			if err := c2.Resume(intruderCtx, p.Token, pauseresume.DecisionResume, nil); !errors.Is(err, pauseresume.ErrPauseNotFound) {
+				t.Fatalf("cross-tenant Resume: err=%v, want ErrPauseNotFound", err)
 			}
 
 			// The legitimate owner can still resume.

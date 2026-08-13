@@ -477,8 +477,8 @@ func TestE2E_Phase31_ScopeGating_RejectsUnauthorized(t *testing.T) {
 }
 
 // TestE2E_Phase31_CrossIdentity_Rejected — a tenant-B admin cannot
-// resolve a tenant-A pause. The Coordinator's scope check fires
-// (ErrScopeMismatch propagates through ResolveApproval).
+// resolve a tenant-A pause. The Coordinator hides token existence by
+// returning ErrPauseNotFound for a cross-identity lookup.
 func TestE2E_Phase31_CrossIdentity_Rejected(t *testing.T) {
 	env := buildPhase31Env(t, approval.AlwaysDenyPolicy{})
 
@@ -508,12 +508,12 @@ func TestE2E_Phase31_CrossIdentity_Rejected(t *testing.T) {
 	payload, _ := ev.Payload.(approval.ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
-	// Tenant-B admin tries to resolve — Coordinator scope check
-	// rejects via ErrScopeMismatch.
+	// Tenant-B admin tries to resolve — the privacy-preserving token
+	// lookup rejects via ErrPauseNotFound.
 	err = env.gate.ResolveApproval(phase31AdminCtx(t, idB), token,
 		approval.DecisionApprove, "")
-	if !errors.Is(err, pauseresume.ErrScopeMismatch) {
-		t.Fatalf("cross-identity Resolve: got %v want ErrScopeMismatch", err)
+	if !errors.Is(err, pauseresume.ErrPauseNotFound) {
+		t.Fatalf("cross-identity Resolve: got %v want ErrPauseNotFound", err)
 	}
 
 	// Clean up with correct-identity admin.
