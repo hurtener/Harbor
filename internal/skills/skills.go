@@ -352,6 +352,16 @@ type SkillStore interface {
 	Close(ctx context.Context) error
 }
 
+// AgentSelectableSkillStore exposes the same storage operations with an
+// explicit agent selector. AgentID is metadata only; implementations must
+// retain every tenant/user/session predicate.
+type AgentSelectableSkillStore interface {
+	SkillStore
+	GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope Scope) (Skill, error)
+	DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope Scope) error
+	SearchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]RankedSkill, error)
+}
+
 // Sentinel errors. Compare via `errors.Is`.
 var (
 	// ErrSkillNotFound — `Get` / `Delete` against a non-existent

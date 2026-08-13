@@ -158,7 +158,7 @@ func canonicalMembership(names []string) (map[string]struct{}, error) {
 }
 
 func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, user map[string]struct{}) (*SessionSkillResolver, error) {
-	base, err := cfg.Base.List(ctx, cfg.Run, skills.ListFilter{Limit: maxSessionSkillResolverBaseRows})
+	base, err := cfg.Base.List(ctx, cfg.Run, skills.ListFilter{AgentID: cfg.AgentID, Limit: maxSessionSkillResolverBaseRows})
 	if err != nil {
 		return nil, fmt.Errorf("agentcfg/sessionoverlay: list base skills: %w", err)
 	}
@@ -166,7 +166,7 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 		return nil, fmt.Errorf("%w: base enumeration exceeded %d rows", ErrInvalidSessionSkillResolver, maxSessionSkillResolverBaseRows)
 	}
 	if len(base) == maxSessionSkillResolverBaseRows {
-		probe, err := cfg.Base.List(ctx, cfg.Run, skills.ListFilter{Limit: 1, Offset: maxSessionSkillResolverBaseRows})
+		probe, err := cfg.Base.List(ctx, cfg.Run, skills.ListFilter{AgentID: cfg.AgentID, Limit: 1, Offset: maxSessionSkillResolverBaseRows})
 		if err != nil {
 			return nil, fmt.Errorf("agentcfg/sessionoverlay: probe base enumeration bound: %w", err)
 		}
@@ -217,7 +217,11 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		skill, err := cfg.Base.GetScope(ctx, cfg.Run, name, skills.ScopeUser)
+		selected, ok := cfg.Base.(skills.AgentSelectableSkillStore)
+		if !ok {
+			return nil, fmt.Errorf("%w: agent-selectable skill store required", ErrInvalidSessionSkillResolver)
+		}
+		skill, err := selected.GetScopeAgent(ctx, cfg.Run, cfg.AgentID, name, skills.ScopeUser)
 		if err != nil {
 			// User-scope membership is only a selection hint for an independently
 			// durable body. A deleted or not-yet-written ScopeUser body is

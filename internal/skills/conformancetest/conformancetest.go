@@ -144,6 +144,40 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 		defer h.Cleanup()
 		testGetScopeAfterClose(t, h)
 	})
+	t.Run("agent_binding_is_selector_metadata", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testAgentBinding(t, h)
+	})
+}
+
+func testAgentBinding(t failureReporter, h Harness) {
+	ctx := context.Background()
+	first := newSkill("same-name")
+	first.AgentID = "agent-a"
+	second := newSkill("same-name")
+	second.AgentID = "agent-b"
+	if err := h.Store.Upsert(ctx, fixtureID, first); err != nil {
+		t.Fatalf("upsert agent-a: %v", err)
+	}
+	if err := h.Store.Upsert(ctx, fixtureID, second); err != nil {
+		t.Fatalf("upsert agent-b: %v", err)
+	}
+	for _, want := range []string{"agent-a", "agent-b"} {
+		rows, err := h.Store.List(ctx, fixtureID, skills.ListFilter{AgentID: want})
+		if err != nil || len(rows) != 1 || rows[0].AgentID != want {
+			t.Fatalf("agent %q selection = %#v, err=%v", want, rows, err)
+		}
+	}
+	foreign := fixtureID
+	foreign.TenantID = "other-tenant"
+	rows, err := h.Store.List(ctx, foreign, skills.ListFilter{AgentID: "agent-a"})
+	if err != nil {
+		t.Fatalf("foreign list: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("cross-tenant agent rows leaked: %#v", rows)
+	}
 }
 
 // fixtureID is the identity quadruple every subtest uses by default;

@@ -406,6 +406,24 @@ func (d *driver) GetScope(ctx context.Context, id identity.Quadruple, name strin
 	return got, nil
 }
 
+func (d *driver) GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) (skills.Skill, error) {
+	if d.closed.Load() {
+		return skills.Skill{}, skills.ErrStoreClosed
+	}
+	if err := skills.ValidateIdentity(id); err != nil {
+		return skills.Skill{}, skills.EmitIdentityRejected(ctx, d.bus, id, "GetScopeAgent")
+	}
+	row := d.db.QueryRowContext(ctx, selectSkillsSQL+` WHERE tenant = ? AND user = ? AND session = ? AND scope = ? AND agent_id = ? AND name = ? LIMIT 1`, id.TenantID, id.UserID, skills.StorageSessionID(id, scope), string(scope), agentID, name)
+	got, err := scanSkill(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return skills.Skill{}, fmt.Errorf("%w: name=%q scope=%q agent_id=%q", skills.ErrSkillNotFound, name, scope, agentID)
+	}
+	if err != nil {
+		return skills.Skill{}, fmt.Errorf("skills/localdb: GetScopeAgent scan: %w", err)
+	}
+	return got, nil
+}
+
 // List implements skills.SkillStore.
 func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if d.closed.Load() {
@@ -473,6 +491,14 @@ func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.
 
 // Search implements skills.SkillStore.
 func (d *driver) Search(ctx context.Context, id identity.Quadruple, query string, limit int) ([]skills.RankedSkill, error) {
+	return d.searchAgent(ctx, id, "", query, limit)
+}
+
+func (d *driver) SearchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
+	return d.searchAgent(ctx, id, agentID, query, limit)
+}
+
+func (d *driver) searchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
 	if d.closed.Load() {
 		return nil, skills.ErrStoreClosed
 	}
@@ -495,10 +521,10 @@ func (d *driver) Search(ctx context.Context, id identity.Quadruple, query string
 		// Opt-in semantic ranking. An embedding failure fails the
 		// search loudly — the driver NEVER silently degrades to the
 		// lexical ladder (AGENTS.md §13).
-		results, err = d.searchSemantic(ctx, id, query, limit)
+		results, err = d.searchSemantic(ctx, id, agentID, query, limit)
 		path = skills.PathSemantic
 	} else {
-		results, path, err = d.search(ctx, id, query, limit)
+		results, path, err = d.search(ctx, id, agentID, query, limit)
 	}
 	if err != nil {
 		return nil, err
@@ -525,6 +551,14 @@ func (d *driver) Search(ctx context.Context, id identity.Quadruple, query string
 
 // Delete implements skills.SkillStore.
 func (d *driver) Delete(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
+	return d.deleteAgent(ctx, id, "", name, scope)
+}
+
+func (d *driver) DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) error {
+	return d.deleteAgent(ctx, id, agentID, name, scope)
+}
+
+func (d *driver) deleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) error {
 	if d.closed.Load() {
 		return skills.ErrStoreClosed
 	}
@@ -543,10 +577,10 @@ func (d *driver) Delete(ctx context.Context, id identity.Quadruple, name string,
 	)
 	if scope == skills.ScopeUser {
 		query = `DELETE FROM skills WHERE tenant = ? AND user = ? AND scope = ? AND agent_id = ? AND name = ?`
-		args = []any{id.TenantID, id.UserID, string(skills.ScopeUser), "", name}
+		args = []any{id.TenantID, id.UserID, string(skills.ScopeUser), agentID, name}
 	} else {
-		query = `DELETE FROM skills WHERE tenant = ? AND user = ? AND session = ? AND scope != ? AND agent_id = '' AND name = ?`
-		args = []any{id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), name}
+		query = `DELETE FROM skills WHERE tenant = ? AND user = ? AND session = ? AND scope != ? AND agent_id = ? AND name = ?`
+		args = []any{id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, name}
 	}
 	res, err := d.db.ExecContext(ctx, query, args...)
 	if err != nil {

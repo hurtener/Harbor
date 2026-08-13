@@ -29,17 +29,17 @@ const semanticCandidateCap = 256
 // and the embedder sees a ctx stamped with the store-validated
 // identity so the billable embedding traffic is attributed to the
 // identity the rows are scoped under.
-func (d *driver) searchSemantic(ctx context.Context, id identity.Quadruple, query string, limit int) ([]skills.RankedSkill, error) {
+func (d *driver) searchSemantic(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, nil
 	}
 
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-        WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?)
+        WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND agent_id = ?
         ORDER BY updated_at DESC, name ASC
         LIMIT ?`,
-		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), semanticCandidateCap)
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, semanticCandidateCap)
 	if err != nil {
 		return nil, fmt.Errorf("skills/localdb: semantic candidates: %w", err)
 	}

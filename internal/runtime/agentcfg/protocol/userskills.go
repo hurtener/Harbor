@@ -66,7 +66,7 @@ func (s *Service) UserSkillsList(ctx context.Context, req prototypes.AgentConfig
 	if err := s.ensureNotRetired(ctx, q, req.AgentID); err != nil {
 		return prototypes.AgentConfigUserSkillsListResponse{}, err
 	}
-	list, err := s.skills.List(ctx, q, skills.ListFilter{Scope: skills.ScopeUser})
+	list, err := s.skills.List(ctx, q, skills.ListFilter{Scope: skills.ScopeUser, AgentID: req.AgentID})
 	if err != nil {
 		return prototypes.AgentConfigUserSkillsListResponse{}, err
 	}
@@ -106,19 +106,20 @@ func (s *Service) UserSkillsUpsert(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
 	}
 	skill := skillFromInput(req.Skill)
+	skill.AgentID = req.AgentID
 	// Force user scope: a durable personal skill is keyed (tenant, user) and
 	// stored session-zeroed. It never carries a project/tenant scope id.
 	skill.Scope = skills.ScopeUser
 	skill.ScopeTenantID = ""
 	skill.ScopeProjectID = ""
-	prior, hadPrior, err := s.skillAtScope(ctx, q, skill.Name, skills.ScopeUser)
+	prior, hadPrior, err := s.skillAtScope(ctx, q, req.AgentID, skill.Name, skills.ScopeUser)
 	if err != nil {
 		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
 	}
 	if err := s.skills.Upsert(ctx, q, skill); err != nil {
 		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
 	}
-	stored, err := s.userScopeSkillByName(ctx, q, skill.Name)
+	stored, err := s.userScopeSkillByName(ctx, q, req.AgentID, skill.Name)
 	if err != nil {
 		return prototypes.AgentConfigUserSkillsUpsertResponse{}, s.compensateSkillUpsert(ctx, q, skill, prior, hadPrior, err)
 	}
@@ -159,14 +160,18 @@ func (s *Service) UserSkillsDelete(ctx context.Context, req prototypes.AgentConf
 	if err := s.precheckExpectedRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeUser, opts); err != nil {
 		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err
 	}
-	prior, hadPrior, err := s.skillAtScope(ctx, q, req.Name, skills.ScopeUser)
+	prior, hadPrior, err := s.skillAtScope(ctx, q, req.AgentID, req.Name, skills.ScopeUser)
 	if err != nil {
 		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err
 	}
 	// RUNG-PRECISE: the durable user verb deletes ONLY the ScopeUser row
 	// (keyed (tenant, user), session-independent — the intended cross-session
 	// durable delete). It must never touch a same-named session-scoped row.
-	if err := s.skills.Delete(ctx, q, req.Name, skills.ScopeUser); err != nil {
+	selected, ok := s.skills.(skills.AgentSelectableSkillStore)
+	if !ok {
+		return prototypes.AgentConfigUserSkillsDeleteResponse{}, fmt.Errorf("%w: agent-selectable skill store required", ErrSkillsUnavailable)
+	}
+	if err := selected.DeleteAgent(ctx, q, req.AgentID, req.Name, skills.ScopeUser); err != nil {
 		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err
 	}
 	// Remove the name from the durable ConfigScopeUser membership so the
@@ -186,8 +191,8 @@ func (s *Service) UserSkillsDelete(ctx context.Context, req prototypes.AgentConf
 // row preferentially on a name collision, so it is the wrong path for the
 // durable rung; a Scope=user List is unambiguous and returns the store-computed
 // content hash + timestamps for the response summary.
-func (s *Service) userScopeSkillByName(ctx context.Context, q identity.Quadruple, name string) (skills.Skill, error) {
-	list, err := s.skills.List(ctx, q, skills.ListFilter{Scope: skills.ScopeUser})
+func (s *Service) userScopeSkillByName(ctx context.Context, q identity.Quadruple, agentID, name string) (skills.Skill, error) {
+	list, err := s.skills.List(ctx, q, skills.ListFilter{Scope: skills.ScopeUser, AgentID: agentID})
 	if err != nil {
 		return skills.Skill{}, err
 	}

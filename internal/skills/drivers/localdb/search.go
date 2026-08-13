@@ -29,14 +29,14 @@ import (
 // The first path that returns rows wins; subsequent paths run only
 // when earlier ones produced nothing. Ties are broken by
 // `(updated_at DESC, name ASC)`.
-func (d *driver) search(ctx context.Context, id identity.Quadruple, query string, limit int) ([]skills.RankedSkill, string, error) {
+func (d *driver) search(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, string, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, skills.PathFTS5, nil
 	}
 
 	if d.ftsAvailable {
-		results, err := d.searchFTS5(ctx, id, query, limit)
+		results, err := d.searchFTS5(ctx, id, agentID, query, limit)
 		if err != nil {
 			return nil, "", err
 		}
@@ -45,7 +45,7 @@ func (d *driver) search(ctx context.Context, id identity.Quadruple, query string
 		}
 	}
 
-	results, err := d.searchRegex(ctx, id, query, limit)
+	results, err := d.searchRegex(ctx, id, agentID, query, limit)
 	if err != nil {
 		return nil, "", err
 	}
@@ -53,7 +53,7 @@ func (d *driver) search(ctx context.Context, id identity.Quadruple, query string
 		return results, skills.PathRegex, nil
 	}
 
-	results, err = d.searchExact(ctx, id, query, limit)
+	results, err = d.searchExact(ctx, id, agentID, query, limit)
 	if err != nil {
 		return nil, "", err
 	}
@@ -68,7 +68,7 @@ var ftsTokenRE = regexp.MustCompile(`[A-Za-z0-9]+`)
 // searchFTS5 runs the FTS5 path. Strict-AND first, then OR fallback.
 // The MATCH query is built from tokenised input only — caller bytes
 // never reach the FTS5 parser uncontrolled.
-func (d *driver) searchFTS5(ctx context.Context, id identity.Quadruple, query string, limit int) ([]skills.RankedSkill, error) {
+func (d *driver) searchFTS5(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
 	tokens := ftsTokenRE.FindAllString(strings.ToLower(query), -1)
 	if len(tokens) == 0 {
 		return nil, nil
@@ -80,11 +80,11 @@ func (d *driver) searchFTS5(ctx context.Context, id identity.Quadruple, query st
             FROM skills_fts
             JOIN skills s ON s.rowid = skills_fts.rowid
             WHERE skills_fts MATCH ?
-              AND s.tenant = ? AND s.user = ? AND (s.session = ? OR s.scope = ?)
+               AND s.tenant = ? AND s.user = ? AND (s.session = ? OR s.scope = ?) AND s.agent_id = ?
             ORDER BY bm25(skills_fts) ASC, s.updated_at DESC, s.name ASC
             LIMIT ?`
 		rows, err := d.db.QueryContext(ctx, sel,
-			matchExpr, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), limit)
+			matchExpr, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, limit)
 		if err != nil {
 			return nil, fmt.Errorf("skills/localdb: fts5 query: %w", err)
 		}
@@ -163,7 +163,7 @@ func (d *driver) materializeFTSHits(ctx context.Context, hits []ftsHit) ([]skill
 		var tagsJSON, stepsJSON, preJSON, failJSON, rtJSON, rnsJSON, rtgJSON string
 		var origin, scope, extraJSON string
 		if err := rows.Scan(
-			&s.Name, &s.Title, &s.Description, &s.Trigger, &s.TaskType,
+			&s.AgentID, &s.Name, &s.Title, &s.Description, &s.Trigger, &s.TaskType,
 			&tagsJSON, &stepsJSON, &preJSON, &failJSON,
 			&rtJSON, &rnsJSON, &rtgJSON,
 			&origin, &s.OriginRef, &scope, &s.ScopeTenantID, &s.ScopeProjectID,
@@ -259,16 +259,16 @@ func buildORExpr(tokens []string) string {
 // somewhere in `name` from start; "search" = re finds the pattern
 // anywhere in the field. We rank using the highest of those for
 // each candidate row.
-func (d *driver) searchRegex(ctx context.Context, id identity.Quadruple, query string, limit int) ([]skills.RankedSkill, error) {
+func (d *driver) searchRegex(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
 	re, err := buildRegex(query)
 	if err != nil {
 		return nil, nil // unparseable regex → empty, ladder falls through to exact
 	}
 
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-        WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?)
+         WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND agent_id = ?
         ORDER BY updated_at DESC, name ASC`,
-		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser))
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID)
 	if err != nil {
 		return nil, fmt.Errorf("skills/localdb: regex query: %w", err)
 	}
@@ -355,13 +355,13 @@ func regexScore(re *regexp.Regexp, s skills.Skill) float64 {
 
 // searchExact runs the lowercase-equality fallback. Score=1.0 on
 // every row that matches.
-func (d *driver) searchExact(ctx context.Context, id identity.Quadruple, query string, limit int) ([]skills.RankedSkill, error) {
+func (d *driver) searchExact(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
 		return nil, nil
 	}
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-        WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?)
+         WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND agent_id = ?
           AND (
               lower(name) = ?
               OR lower(title) = ?
@@ -370,7 +370,7 @@ func (d *driver) searchExact(ctx context.Context, id identity.Quadruple, query s
           )
         ORDER BY updated_at DESC, name ASC
         LIMIT ?`,
-		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser),
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID,
 		q, q, q, "%"+q+"%", limit)
 	if err != nil {
 		return nil, fmt.Errorf("skills/localdb: exact query: %w", err)

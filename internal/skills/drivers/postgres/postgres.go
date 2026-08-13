@@ -412,6 +412,24 @@ func (d *driver) GetScope(ctx context.Context, id identity.Quadruple, name strin
 	return got, nil
 }
 
+func (d *driver) GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) (skills.Skill, error) {
+	if d.closed.Load() {
+		return skills.Skill{}, skills.ErrStoreClosed
+	}
+	if err := skills.ValidateIdentity(id); err != nil {
+		return skills.Skill{}, skills.EmitIdentityRejected(ctx, d.bus, id, "GetScopeAgent")
+	}
+	row := d.db.QueryRowContext(ctx, selectSkillsSQL+` WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND scope = $4 AND agent_id = $5 AND name = $6 LIMIT 1`, id.TenantID, id.UserID, skills.StorageSessionID(id, scope), string(scope), agentID, name)
+	got, err := scanSkill(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return skills.Skill{}, fmt.Errorf("%w: name=%q scope=%q agent_id=%q", skills.ErrSkillNotFound, name, scope, agentID)
+	}
+	if err != nil {
+		return skills.Skill{}, fmt.Errorf("skills/postgres: GetScopeAgent scan: %w", err)
+	}
+	return got, nil
+}
+
 // List implements skills.SkillStore.
 func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if d.closed.Load() {
@@ -482,6 +500,14 @@ func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.
 
 // Delete implements skills.SkillStore.
 func (d *driver) Delete(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
+	return d.deleteAgent(ctx, id, "", name, scope)
+}
+
+func (d *driver) DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) error {
+	return d.deleteAgent(ctx, id, agentID, name, scope)
+}
+
+func (d *driver) deleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) error {
 	if d.closed.Load() {
 		return skills.ErrStoreClosed
 	}
@@ -500,10 +526,10 @@ func (d *driver) Delete(ctx context.Context, id identity.Quadruple, name string,
 	)
 	if scope == skills.ScopeUser {
 		query = `DELETE FROM skills WHERE tenant_id = $1 AND user_id = $2 AND scope = $3 AND agent_id = $4 AND name = $5`
-		args = []any{id.TenantID, id.UserID, string(skills.ScopeUser), "", name}
+		args = []any{id.TenantID, id.UserID, string(skills.ScopeUser), agentID, name}
 	} else {
-		query = `DELETE FROM skills WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND scope != $4 AND agent_id = '' AND name = $5`
-		args = []any{id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), name}
+		query = `DELETE FROM skills WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND scope != $4 AND agent_id = $5 AND name = $6`
+		args = []any{id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, name}
 	}
 	res, err := d.db.ExecContext(ctx, query, args...)
 	if err != nil {
