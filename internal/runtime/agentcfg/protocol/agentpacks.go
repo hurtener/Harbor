@@ -145,6 +145,18 @@ func packProposedProvenance(agentID, hash string) string {
 	return "pack.proposed." + agentID + "." + hashPrefix(hash)
 }
 
+// normalizePackProposalProvenance upgrades the pre-provenance receipt shape
+// while keeping every non-empty provenance value strictly bound to the
+// deterministic proposal stamp.
+func normalizePackProposalProvenance(r *agentPackProposalRecord) error {
+	want := packProposedProvenance(r.AgentID, r.ReviewedHash)
+	if r.Provenance != "" && r.Provenance != want {
+		return ErrAgentPackProposalInvalid
+	}
+	r.Provenance = want
+	return nil
+}
+
 func packCommittedOriginRef(agentID, hash string) string {
 	return "pack.committed." + agentID + "." + hashPrefix(hash)
 }
@@ -567,8 +579,11 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
 	}
 	proposal, err := unmarshalProposal(proposalRecord.Bytes)
-	if err != nil || proposal.AgentID != req.AgentID || proposal.ExpectedContentHash != req.ExpectedContentHash || proposal.ReviewedHash != req.ReviewedHash || proposal.Provenance != packProposedProvenance(req.AgentID, req.ReviewedHash) {
+	if err != nil || proposal.AgentID != req.AgentID || proposal.ExpectedContentHash != req.ExpectedContentHash || proposal.ReviewedHash != req.ReviewedHash {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
+	}
+	if err := normalizePackProposalProvenance(&proposal); err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
 	item := agentPackItemToDomain(req.Skill)
 	if err := item.Validate(); err != nil {
