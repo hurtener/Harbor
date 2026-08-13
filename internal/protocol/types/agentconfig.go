@@ -527,6 +527,10 @@ type AgentConfigPayload struct {
 	// named additive prompt blocks. Absent contributes nothing and leaves
 	// the composed system prompt byte-identical.
 	ExtraSystemBlocks *AgentConfigExtraSystemBlocks `json:"extra_system_blocks,omitempty"`
+	// AgentPacks, when non-nil, pins the operator-managed per-agent skill
+	// pack (full bodies, sorted by canonical name). The pack rides the
+	// revision, so body + membership are one atomic write.
+	AgentPacks []AgentConfigAgentPackItem `json:"agent_packs,omitempty"`
 }
 
 // AgentConfigRevisionView is the wire projection of one immutable config
@@ -1548,6 +1552,203 @@ type AgentConfigSkillsDeleteRequest struct {
 // response — the recorded config revision after the membership change.
 type AgentConfigSkillsDeleteResponse struct {
 	Revision        AgentConfigRevisionView `json:"revision"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// --- Operator-managed per-agent skill packs (HA-55) ---
+//
+// These wire types back the `agent_config.agent_packs.*` family: a
+// first-class, operator-managed per-agent skill PACK whose full bodies ride
+// the agent's content-addressed config revision (the `agent_packs` payload
+// section), so a pack body + its membership are one atomic write and can
+// never dangle apart. The pack is resolved at run start for every authorised
+// user of the agent plus only that caller's personal/session skills, and its
+// required-tool annotations are filter metadata that never widen the run's
+// visible tool set.
+//
+// The family spans two control shapes:
+//
+//   - DETERMINISTIC direct writes: `agent_packs.upsert` (add/replace one
+//     item) and `agent_packs.remove` (drop one item by name) — operator
+//     authored, validated, one revision each. `agent_packs.list` reads the
+//     active pack.
+//   - GOVERNED two-phase authoring: `agent_packs.propose` drafts a bounded
+//     skill body from an intent via the configured model under the versioned
+//     revision policy and returns the canonical draft + content hash +
+//     warnings + provenance; `agent_packs.commit` CAS-binds the EXACT
+//     reviewed hash and atomically persists body + membership in one
+//     revision.
+//
+// Every verb is admin-scoped at the wire handler (the default agent_config
+// tier) and identity-mandatory. `Scope` on the request is a non-widening
+// check: only "" or "agent" is accepted — a pack item can never declare a
+// project/tenant/global/user visibility rung.
+
+// AgentConfigAgentPackItem is the wire shape of ONE operator-managed
+// per-agent skill body. It mirrors the runtime `skills.AgentPackItem` shape
+// plus two read-only provenance/scope fields whose values are validated at
+// the service edge: `Origin` must be "" or "pack" (a generated-origin body
+// cannot be smuggled through the pack door) and `Scope` must be "" or
+// "agent" (visibility cannot be widened through the body).
+type AgentConfigAgentPackItem struct {
+	Name          string   `json:"name"`
+	Title         string   `json:"title,omitempty"`
+	Description   string   `json:"description,omitempty"`
+	Trigger       string   `json:"trigger"`
+	TaskType      string   `json:"task_type,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	Steps         []string `json:"steps"`
+	Preconditions []string `json:"preconditions,omitempty"`
+	FailureModes  []string `json:"failure_modes,omitempty"`
+	RequiredTools []string `json:"required_tools,omitempty"`
+	RequiredNS    []string `json:"required_ns,omitempty"`
+	RequiredTags  []string `json:"required_tags,omitempty"`
+	// Origin is read-only provenance: "" or "pack" only. A non-pack value is
+	// rejected (provenance cannot be authored through the body).
+	Origin string `json:"origin,omitempty"`
+	// Scope is read-only visibility: "" or "agent" only. Any other value is
+	// rejected (the pack rung is fixed; a caller cannot widen visibility).
+	Scope string `json:"scope,omitempty"`
+	// OriginRef is the server-stamped provenance ref. A caller-supplied value
+	// that differs from the deterministic stamp is rejected.
+	OriginRef string `json:"origin_ref,omitempty"`
+	// Extra is bounded string-typed metadata. Never secret material.
+	Extra map[string]string `json:"extra,omitempty"`
+}
+
+// AgentConfigAgentPacksListRequest is the admin-scoped
+// `agent_config.agent_packs.list` request — reads the agent's active pack.
+type AgentConfigAgentPacksListRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+}
+
+// AgentConfigAgentPacksListResponse is the `agent_config.agent_packs.list`
+// response — the active pack's full items in canonical name order.
+type AgentConfigAgentPacksListResponse struct {
+	Items           []AgentConfigAgentPackItem `json:"items,omitempty"`
+	ProtocolVersion string                     `json:"protocol_version"`
+}
+
+// AgentConfigAgentPacksUpsertRequest is the admin-scoped DETERMINISTIC
+// `agent_config.agent_packs.upsert` request: add or replace ONE pack item
+// (body + membership atomically in one revision).
+type AgentConfigAgentPacksUpsertRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// Scope is the non-widening check: "" or "agent" only.
+	Scope string                   `json:"scope,omitempty"`
+	Skill AgentConfigAgentPackItem `json:"skill"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token (the same
+	// semantics as the skills verbs: a moved base is refused with
+	// `revision_conflict` and NOTHING is persisted).
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
+}
+
+// AgentConfigAgentPacksUpsertResponse is the `agent_config.agent_packs.upsert`
+// response — the recorded revision, the committed item's summary, and its
+// canonical content hash.
+type AgentConfigAgentPacksUpsertResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	Skill           AgentConfigSkillSummary `json:"skill"`
+	Hash            string                  `json:"hash"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// AgentConfigAgentPacksRemoveRequest is the admin-scoped DETERMINISTIC
+// `agent_config.agent_packs.remove` request: drop ONE pack item by name.
+type AgentConfigAgentPacksRemoveRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	Name     string        `json:"name"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
+}
+
+// AgentConfigAgentPacksRemoveResponse is the `agent_config.agent_packs.remove`
+// response — the recorded revision after the pack shrank.
+type AgentConfigAgentPacksRemoveResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// AgentConfigAgentPacksProposeRequest is the admin-scoped GOVERNED
+// `agent_config.agent_packs.propose` request: draft a bounded pack skill body
+// from a natural-language intent via the agent's configured model, under the
+// versioned revision policy named by ExpectedContentHash. A stale expected
+// revision is refused (`revision_conflict`) before any drafting — the
+// proposal is bound to the exact policy the operator reviewed.
+type AgentConfigAgentPacksProposeRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// Scope is the non-widening check: "" or "agent" only.
+	Scope string `json:"scope,omitempty"`
+	// Intent is the bounded natural-language brief the proposer drafts from.
+	Intent string `json:"intent"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token binding the
+	// proposal to the versioned policy the operator reviewed.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
+	// DryRun drafts + validates + returns the canonical draft/hash/warnings
+	// WITHOUT persisting anything (no revision is written). The default false
+	// also persists nothing — propose NEVER writes; dry_run only signals the
+	// caller's intent for observability and is echoed back.
+	DryRun bool `json:"dry_run,omitempty"`
+}
+
+// AgentConfigAgentPacksProposeResponse is the `agent_config.agent_packs.propose`
+// response — the canonical draft body, its content hash (the hash the
+// operator reviews), capability warnings, and the deterministic provenance
+// stamp the commit must echo.
+type AgentConfigAgentPacksProposeResponse struct {
+	// Skill is the canonical drafted body (the reviewed artifact).
+	Skill AgentConfigAgentPackItem `json:"skill"`
+	// Hash is the canonical content hash of the drafted body
+	// (`skills.CanonicalContentHash`). The commit CAS-binds exactly this
+	// hash.
+	Hash string `json:"hash"`
+	// Warnings surface non-fatal review notes (e.g. a required tool that is
+	// not currently run-visible — never a grant, the injection filter
+	// enforces; always filtered/redacted).
+	Warnings []string `json:"warnings,omitempty"`
+	// Provenance is the deterministic stamp `pack.proposed.<agent>.<hash[:16]>`
+	// the commit must echo; a changed provenance is refused.
+	Provenance string `json:"provenance"`
+	// DryRun echoes the request's dry_run flag.
+	DryRun          bool   `json:"dry_run"`
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// AgentConfigAgentPacksCommitRequest is the admin-scoped GOVERNED
+// `agent_config.agent_packs.commit` request: CAS-bind the EXACT reviewed hash
+// and atomically persist body + membership in ONE revision. A changed hash,
+// a non-agent scope, a smuggled origin, or a mismatched provenance is
+// refused and NOTHING is persisted.
+type AgentConfigAgentPacksCommitRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// Scope is the non-widening check: "" or "agent" only.
+	Scope string `json:"scope,omitempty"`
+	// Skill is the reviewed body. Its canonical hash MUST equal ReviewedHash.
+	Skill AgentConfigAgentPackItem `json:"skill"`
+	// ReviewedHash is the hash the operator reviewed (from propose). The
+	// commit verifies `CanonicalContentHash(skill) == ReviewedHash` — a
+	// changed body is refused (`hash_mismatch`).
+	ReviewedHash string `json:"reviewed_hash"`
+	// Provenance is the deterministic stamp returned by propose; a changed
+	// provenance is refused.
+	Provenance string `json:"provenance"`
+	// ExpectedContentHash is the OPTIONAL expected-revision token — the CAS
+	// that refuses a moved policy base with `revision_conflict`.
+	ExpectedContentHash string `json:"expected_content_hash,omitempty"`
+}
+
+// AgentConfigAgentPacksCommitResponse is the `agent_config.agent_packs.commit`
+// response — the recorded revision (body + membership persisted atomically),
+// the committed item's summary, and its canonical content hash.
+type AgentConfigAgentPacksCommitResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	Skill           AgentConfigSkillSummary `json:"skill"`
+	Hash            string                  `json:"hash"`
 	ProtocolVersion string                  `json:"protocol_version"`
 }
 

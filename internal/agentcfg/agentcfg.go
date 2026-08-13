@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
@@ -832,6 +833,19 @@ type VirtualAgentsSection struct {
 	MaxProfiles int `json:"max_profiles,omitempty"`
 	// Profiles is the canonical profile list (key-sorted, key-unique).
 	Profiles []virtualagent.Profile `json:"profiles,omitempty"`
+
+	// AgentPacks, when non-nil, pins the operator-managed per-agent skill
+	// pack: the bounded, sorted set of FULL skill bodies selected for this
+	// agent (HA-55). It is addressed by `(tenant, agent, name)` at
+	// configuration-selection time, durable and versioned WITH this
+	// revision (body + membership are one atomic write — a pinned name can
+	// never dangle without its body). The pack is resolved at run start for
+	// every authorised user of the agent plus only that caller's
+	// personal/session skills, and its `RequiredTools`/`RequiredNS`/
+	// `RequiredTags` are filter metadata that never widen the run's visible
+	// tool set. A nil section pins no pack; an empty non-nil section is the
+	// explicit empty pack.
+	AgentPacks []skills.AgentPackItem `json:"agent_packs,omitempty"`
 }
 
 // Revision is an immutable, content-addressed agent-config record with a
@@ -1133,6 +1147,20 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 		// run start, so dropping it as "inert" would silently re-apply YAML
 		// profiles an admin revision meant to clear.
 		out.VirtualAgents = normalizeVirtualAgentsSection(p.VirtualAgents)
+	}
+	if p.AgentPacks != nil {
+		// Sorted-by-name, last-wins per name, empty entries dropped — the
+		// same canonical convention the connections section uses, so a
+		// re-ordering or a re-add of the same name does not perturb the
+		// content hash. An all-empty section drops out of the canonical form
+		// (nil), so an absent pack and an empty pack hash identically unless
+		// the caller explicitly pins the empty non-nil form — which the
+		// protocol edge refuses as a no-op (an operator that wants an empty
+		// pack removes the section, never pins an empty one).
+		normalized := skills.NormalizeAgentPackItems(p.AgentPacks)
+		if len(normalized) > 0 {
+			out.AgentPacks = normalized
+		}
 	}
 	return out
 }

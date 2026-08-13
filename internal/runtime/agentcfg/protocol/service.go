@@ -202,10 +202,17 @@ type Service struct {
 	ensureBootLifecycle   agentcfg.BootLifecycleEnsurer
 	skills                skills.SkillStore // optional — nil ⇒ shared/durable skills methods return ErrSkillsUnavailable
 	sessionPersonalSkills SessionPersonalSkillController
-	bus                   events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
-	logger                *slog.Logger
-	now                   Clock
-	runSnapshots          *runsnapshot.Gate
+	// agentPackProposer drafts a bounded pack skill body from an operator
+	// intent for `agent_config.agent_packs.propose`. Optional — nil ⇒ propose
+	// returns ErrAgentPackProposeUnavailable (→ 501 at the wire edge). The
+	// concrete (which owns the LLM call under the agent's configured model)
+	// is injected at the cmd/harbor + devstack boundary; this package depends
+	// only on the interface.
+	agentPackProposer AgentPackProposer
+	bus               events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
+	logger            *slog.Logger
+	now               Clock
+	runSnapshots      *runsnapshot.Gate
 
 	// preparer drives the unpublished MCP prepare/persist/activate lifecycle.
 	// Optional — nil ⇒ add_mcp_connection returns ErrConnectionAttachUnavailable
@@ -539,6 +546,20 @@ func WithSessionPersonalSkillController(controller SessionPersonalSkillControlle
 	return func(s *Service) {
 		if controller != nil {
 			s.sessionPersonalSkills = controller
+		}
+	}
+}
+
+// WithAgentPackProposer wires the governed two-phase authoring seam:
+// `agent_config.agent_packs.propose` drafts a bounded pack skill body from an
+// operator intent. A nil proposer leaves propose returning
+// ErrAgentPackProposeUnavailable (→ 501 at the wire edge) — the deterministic
+// pack verbs (upsert / remove / list) and the governed commit stay live
+// regardless.
+func WithAgentPackProposer(p AgentPackProposer) Option {
+	return func(s *Service) {
+		if p != nil {
+			s.agentPackProposer = p
 		}
 	}
 }
@@ -1377,6 +1398,14 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 			Model:          p.Naming.Model,
 		}
 	}
+	if p.AgentPacks != nil {
+		// Defensive copy in canonical (sorted) order — the stored form is
+		// already normalized, so this is an order-preserving projection.
+		out.AgentPacks = make([]prototypes.AgentConfigAgentPackItem, 0, len(p.AgentPacks))
+		for _, item := range p.AgentPacks {
+			out.AgentPacks = append(out.AgentPacks, agentPackItemToWire(item))
+		}
+	}
 	return out
 }
 
@@ -1606,6 +1635,12 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 			MaxRepetitions: p.Naming.MaxRepetitions,
 			MaxTitleLen:    p.Naming.MaxTitleLen,
 			Model:          p.Naming.Model,
+		}
+	}
+	if p.AgentPacks != nil {
+		out.AgentPacks = make([]skills.AgentPackItem, 0, len(p.AgentPacks))
+		for _, item := range p.AgentPacks {
+			out.AgentPacks = append(out.AgentPacks, agentPackItemToDomain(item))
 		}
 	}
 	return out
