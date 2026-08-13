@@ -11,8 +11,9 @@ import (
 
 func TestLowerCallToolResult_TypedErrorPreservesLoweredResult(t *testing.T) {
 	res := &mcpsdk.CallToolResult{
-		IsError: true,
-		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "provider says no"}},
+		IsError:           true,
+		Content:           []mcpsdk.Content{&mcpsdk.TextContent{Text: "provider says no"}},
+		StructuredContent: map[string]any{"answer": "structured"},
 		Meta: mcpsdk.Meta{tools.MCPResultErrorNamespace: map[string]any{
 			"error": map[string]any{"class": string(tools.MCPToolErrorConflict), "message": "already exists"},
 		}},
@@ -23,6 +24,9 @@ func TestLowerCallToolResult_TypedErrorPreservesLoweredResult(t *testing.T) {
 	}
 	if value.Text != "provider says no" {
 		t.Fatalf("lowered text = %q", value.Text)
+	}
+	if value.StructuredContent.(map[string]any)["answer"] != "structured" {
+		t.Fatalf("structured content = %#v", value.StructuredContent)
 	}
 	var typed *tools.MCPToolResultError
 	if !errors.As(err, &typed) || typed.Class != tools.MCPToolErrorConflict {

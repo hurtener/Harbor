@@ -1094,11 +1094,25 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					// failure is the tool's own, which keeps the
 					// unclassified payload byte-identical to what every
 					// prior turn produced.
+					if obs != nil {
+						// MCP result errors carry a bounded result alongside the
+						// classified error. Keep both reachable to the planner and
+						// LLM consumer; ordinary errors have no fabricated result.
+						errPayload["result"] = obs
+					}
 					if class := planner.ObservationClassOf(execErr); class != "" {
 						errPayload[planner.ObservationClassKey] = string(class)
 					}
 					observation = errPayload
-					llmObservation = errPayload
+					if llmObs != nil {
+						llmPayload := map[string]any{"error": execErr.Error(), "result": llmObs}
+						if class := planner.ObservationClassOf(execErr); class != "" {
+							llmPayload[planner.ObservationClassKey] = string(class)
+						}
+						llmObservation = llmPayload
+					} else {
+						llmObservation = errPayload
+					}
 				} else {
 					observation = obs
 					llmObservation = llmObs

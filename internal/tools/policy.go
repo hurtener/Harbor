@@ -40,7 +40,6 @@ type PolicyError struct {
 	Attempts int
 	Budget   int
 	Class    ErrorClass
-	Source   string
 }
 
 func (e *PolicyError) Error() string { return e.Err.Error() }
@@ -362,23 +361,22 @@ func runWithPolicy(
 	hooks *invokeHooks,
 ) (ToolResult, error) {
 	resolved := policy.resolved()
+	totalAttempts := resolved.MaxRetries + 1
+	if totalAttempts <= 0 {
+		totalAttempts = 1
+	}
 
 	// 1. Input validation ONCE, BEFORE the retry loop. Invalid args
 	// are a typed failure the planner is expected to fix via
 	// reformulation — retrying with the same args never converges.
 	if resolved.shouldValidateIn() && validateIn != nil {
 		if err := validateIn(args); err != nil {
-			return ToolResult{}, wrap(ErrToolInvalidArgs, "%v", err)
+			return ToolResult{}, terminalPolicyError(wrap(ErrToolInvalidArgs, "%v", err), 0, totalAttempts, ErrClassPermanent)
 		}
 	}
 
 	if jitter == nil {
 		jitter = rand.Float64
-	}
-
-	totalAttempts := resolved.MaxRetries + 1
-	if totalAttempts <= 0 {
-		totalAttempts = 1
 	}
 
 	var lastErr error
@@ -388,7 +386,7 @@ func runWithPolicy(
 	for attempt := range totalAttempts {
 		// Honor ctx cancellation between attempts.
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ToolResult{}, ctxErr
+			return lastResult, terminalPolicyError(policyCancellationError(ctxErr, lastErr), attempt, totalAttempts, ErrClassPermanent)
 		}
 
 		// Sleep before retries (attempt > 0).
@@ -399,7 +397,7 @@ func runWithPolicy(
 				select {
 				case <-ctx.Done():
 					timer.Stop()
-					return ToolResult{}, ctx.Err()
+					return lastResult, terminalPolicyError(policyCancellationError(ctx.Err(), lastErr), attempt, totalAttempts, ErrClassPermanent)
 				case <-timer.C:
 				}
 			}
@@ -430,7 +428,7 @@ func runWithPolicy(
 					// (a permanent class). Return the result-shape
 					// error wrapped against the original sentinel
 					// so callers can compare with errors.Is.
-					return result, wrap(ErrToolInvalidArgs, "output: %v", vErr)
+					return ToolResult{}, wrap(ErrToolInvalidArgs, "output: %v", vErr)
 				}
 			}
 			return result, nil
@@ -459,21 +457,27 @@ func runWithPolicy(
 		Err:      fmt.Errorf("%w: %d attempts, last class=%s: %w", ErrToolPolicyExhausted, totalAttempts, lastClass, lastErr),
 		Attempts: totalAttempts,
 		Budget:   totalAttempts,
-		Class:    lastClass,
-		Source:   errorSource(lastErr),
+		Class:    policyProjectionClass(lastErr, lastClass),
 	}
 }
 
 func terminalPolicyError(err error, attempts, budget int, class ErrorClass) error {
-	return &PolicyError{Err: err, Attempts: attempts, Budget: budget, Class: class, Source: errorSource(err)}
+	return &PolicyError{Err: err, Attempts: attempts, Budget: budget, Class: policyProjectionClass(err, class)}
 }
 
-func errorSource(err error) string {
-	var mcpErr *MCPToolResultError
-	if errors.As(err, &mcpErr) {
-		return "mcp"
+func policyCancellationError(ctxErr, lastErr error) error {
+	if lastErr == nil {
+		return ctxErr
 	}
-	return "classifier"
+	return errors.Join(ctxErr, lastErr)
+}
+
+func policyProjectionClass(err error, fallback ErrorClass) ErrorClass {
+	var mcpErr *MCPToolResultError
+	if errors.As(err, &mcpErr) && !mcpErr.Recognized {
+		return ErrorClass("unclassified")
+	}
+	return fallback
 }
 
 // safeInvoke calls invoke under a panic recovery so a misbehaving

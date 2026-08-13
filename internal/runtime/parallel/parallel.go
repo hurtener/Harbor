@@ -152,8 +152,9 @@ func WithResolver(resolver Resolver) ExecuteOption {
 // merge key), the [tools.ToolResult] on success, and the error on
 // failure.
 //
-// Either Result is populated (success) or Err is populated (failure)
-// — never both. Cancelled branches surface Err = context.Canceled.
+// Result is populated whenever the invocation returned a bounded result,
+// including an MCP result error; Err is populated on failure. Cancelled
+// branches have no result and surface Err = context.Canceled.
 type Result struct {
 	// Index is the branch's position in the input [planner.CallParallel.Branches]
 	// slice. Stable for the lifetime of the call.
@@ -549,7 +550,7 @@ func invokeBranch(
 	}
 	res, err := desc.Invoke(ctx, branch.Args)
 	if err != nil {
-		return Result{Index: idx, Tool: branch.Tool, Err: err}
+		return Result{Index: idx, Tool: branch.Tool, Result: &res, Err: err}
 	}
 	return Result{Index: idx, Tool: branch.Tool, Result: &res}
 }

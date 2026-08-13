@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -497,7 +498,12 @@ func lowerCallToolResult(res *mcpsdk.CallToolResult) (MCPToolValue, error) {
 			// by parsing its text.
 			message = value.Text
 		}
-		return value, tools.NewMCPToolResultError(class, message)
+		err := tools.NewMCPToolResultErrorClassification(class, message, ok)
+		var typed *tools.MCPToolResultError
+		if errors.As(err, &typed) {
+			typed.Result = tools.ToolResult{Value: value}
+		}
+		return value, err
 	}
 	return value, nil
 }

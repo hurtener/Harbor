@@ -59,6 +59,10 @@ type MCPToolResultError struct {
 	// lowering. It lets callers retain planner/App projections while the
 	// policy consumes the error.
 	Result ToolResult
+	// Recognized records whether the provider supplied a valid namespaced
+	// classification. Policy may still retry an unrecognized result as the
+	// legacy transient case, but lifecycle projection reports it honestly.
+	Recognized bool
 }
 
 func (e *MCPToolResultError) Error() string {
@@ -74,10 +78,18 @@ func (e *MCPToolResultError) Unwrap() error { return ErrMCPToolError }
 // NewMCPToolResultError constructs a safe error. Invalid or absent provider
 // classifications deliberately become the legacy transient class.
 func NewMCPToolResultError(class MCPToolErrorClass, message string) error {
-	if !isMCPToolErrorClass(class) {
+	return NewMCPToolResultErrorClassification(class, message, isMCPToolErrorClass(class))
+}
+
+// NewMCPToolResultErrorClassification constructs a result error while
+// retaining whether its provider classification was structurally recognized.
+// Unrecognized classes remain transient for retry compatibility.
+func NewMCPToolResultErrorClassification(class MCPToolErrorClass, message string, recognized bool) error {
+	if !recognized || !isMCPToolErrorClass(class) {
 		class = MCPToolErrorTransient
+		recognized = false
 	}
-	return &MCPToolResultError{Class: class, Message: boundMCPErrorMessage(message)}
+	return &MCPToolResultError{Class: class, Message: boundMCPErrorMessage(message), Recognized: recognized}
 }
 
 func isMCPToolErrorClass(class MCPToolErrorClass) bool {

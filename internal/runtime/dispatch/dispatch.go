@@ -474,7 +474,18 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 		// Classified so the run loop's error observation names the KIND
 		// of failure. The message is unchanged either way — classify
 		// returns the error untouched when the failure is the tool's own.
-		return nil, nil, classify(fmt.Errorf("tool %q invoke: %w", d.Tool, err))
+		classified := classify(fmt.Errorf("tool %q invoke: %w", d.Tool, err))
+		if mcpResult, ok := mcpResultFromError(err); ok {
+			if mcpResult.Value == nil {
+				mcpResult = result
+			}
+			raw := mcpResult.Value
+			if raw == nil && len(result.Meta) > 0 {
+				raw = map[string]any{"meta": result.Meta}
+			}
+			return raw, e.projectForLLM(ctx, rc, d.Tool, raw), classified
+		}
+		return nil, nil, classified
 	}
 	raw := result.Value
 	if raw == nil && len(result.Meta) > 0 {
@@ -482,6 +493,14 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 	}
 	llmObs := e.projectForLLM(ctx, rc, d.Tool, raw)
 	return raw, llmObs, nil
+}
+
+func mcpResultFromError(err error) (tools.ToolResult, bool) {
+	var mcpErr *tools.MCPToolResultError
+	if !errors.As(err, &mcpErr) {
+		return tools.ToolResult{}, false
+	}
+	return mcpErr.Result, true
 }
 
 func (e *toolExecutor) resolveForRun(ctx context.Context, rc planner.RunContext, name string) (tools.ToolDescriptor, bool, error) {
@@ -581,8 +600,16 @@ func (e *toolExecutor) branchObservations(ctx context.Context, rc planner.RunCon
 				Error:      r.Err.Error(),
 				ErrorClass: observationClassOf(r.Err),
 			}
+			if mcpResult, ok := mcpResultFromError(r.Err); ok {
+				if mcpResult.Value == nil && r.Result != nil {
+					mcpResult = *r.Result
+				}
+				branchErr.Value = mcpResult.Value
+			}
 			raw = append(raw, branchErr)
-			llm = append(llm, branchErr)
+			llmBranch := branchErr
+			llmBranch.Value = e.projectForLLM(ctx, rc, r.Tool, branchErr.Value)
+			llm = append(llm, llmBranch)
 			continue
 		}
 		var rawVal any

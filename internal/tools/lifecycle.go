@@ -151,9 +151,7 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, t
 				Transport:        transport,
 				Attempts:         policyAttempts(policyErr, 0),
 				LastClass:        policyClass(policyErr, ErrClassPermanent),
-				AttemptOrdinal:   policyAttempts(policyErr, 0),
 				ConfiguredBudget: policyBudget(policyErr, 0),
-				ErrorSource:      policySource(policyErr),
 				LastError:        err.Error(),
 			},
 		})
@@ -178,9 +176,7 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, t
 				Transport:        transport,
 				Attempts:         policyAttempts(policyErr, 1),
 				ErrorClass:       policyClass(policyErr, ErrClassPermanent),
-				AttemptOrdinal:   policyAttempts(policyErr, 1),
 				ConfiguredBudget: policyBudget(policyErr, 1),
-				ErrorSource:      policySource(policyErr),
 				ErrorMessage:     err.Error(),
 				ScopeShortfall:   shortfall,
 			},
@@ -205,10 +201,4 @@ func policyClass(err *PolicyError, fallback ErrorClass) ErrorClass {
 		return fallback
 	}
 	return err.Class
-}
-func policySource(err *PolicyError) string {
-	if err == nil {
-		return "unclassified"
-	}
-	return err.Source
 }
