@@ -178,7 +178,7 @@ func resolveDeclaredToolName(rc *planner.RunContext, name string) (string, bool)
 // declared by the planner itself and intercepted by name in the projector.
 func isReservedControlName(name string) bool {
 	switch name {
-	case FinishToolName, SpawnTaskToolName, AwaitTaskToolName, TaskStatusToolName,
+	case FinishToolName, SpawnTaskToolName, TaskProgressToolName, AwaitTaskToolName, TaskStatusToolName,
 		CancelTaskToolName, SteerTaskToolName, PauseTaskToolName, ResumeTaskToolName:
 		return true
 	default:

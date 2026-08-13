@@ -382,6 +382,11 @@ func reservedPlannerControlDeclarations() []llm.ToolDeclaration {
 			Schema:      jsonSchemaRawSpawnTask,
 		},
 		{
+			Name:        TaskProgressToolName,
+			Description: "Planner control — report the current task's progress. Only fraction, phase, message, and tags are accepted; the runtime supplies task identity and timestamp.",
+			Schema:      jsonSchemaRawTaskProgress,
+		},
+		{
 			Name:        AwaitTaskToolName,
 			Description: "Planner control — block the foreground turn on a previously-spawned task's completion. Send it ALONE (never alongside any other tool call in the same response): pass the task_id returned by an earlier _spawn_task. The runtime resumes the planner with the task's resolved outcome.",
 			Schema:      jsonSchemaRawAwaitTask,
@@ -431,7 +436,8 @@ func reservedPlannerControlDeclarations() []llm.ToolDeclaration {
 // the inproc-driver deriver's output shape (which also emits raw
 // JSON-Schema bytes via `json.Marshal(schema)`).
 var (
-	jsonSchemaRawSpawnTask = []byte(`{
+	jsonSchemaRawTaskProgress = []byte(`{"type":"object","additionalProperties":false,"properties":{"fraction":{"type":"number","minimum":0,"maximum":1},"phase":{"type":"string"},"message":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}}}`)
+	jsonSchemaRawSpawnTask    = []byte(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {

@@ -188,6 +188,7 @@ type Task struct {
 	// the task's terminal event (terminal ordering is preserved under
 	// the engine's FSM lock).
 	Progress          *TaskProgressSnapshot `json:",omitempty"`
+	PendingProgress   *TaskProgressPayload  `json:",omitempty"`
 	PropagateOnCancel string
 	NotifyOnComplete  bool
 	IdempotencyKey    string
@@ -872,6 +873,17 @@ type ProgressPolicy struct {
 	// A fraction-presence change (nil → non-nil or vice versa) is
 	// always real regardless of the epsilon.
 	FractionEpsilon float64
+}
+
+// ProgressReporter is permanently scoped to one task.
+type ProgressReporter interface {
+	ReportProgress(context.Context, ReportProgressRequest) (ProgressReportResult, error)
+}
+
+// ProgressReporterRegistry is implemented by runtime registries that can
+// issue a reporter bound to a task identity.
+type ProgressReporterRegistry interface {
+	ProgressReporter(context.Context, TaskID) (ProgressReporter, error)
 }
 
 // DefaultProgressPolicy is the bounded default coalescing/rate policy

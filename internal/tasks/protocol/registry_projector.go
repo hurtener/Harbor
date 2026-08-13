@@ -342,7 +342,9 @@ func projectRow(t *tasks.Task) prototypes.TaskRow {
 		// bound the runtime's configured default — "defaulted", not
 		// "unknown", since every row without it bound the default by
 		// construction.
-		AgentID: t.AgentID,
+		AgentID:      t.AgentID,
+		VirtualKey:   string(t.ID),
+		VirtualLabel: t.Description,
 	}
 	if t.ParentTaskID != nil {
 		row.ParentTaskID = string(*t.ParentTaskID)
@@ -357,6 +359,13 @@ func projectRow(t *tasks.Task) prototypes.TaskRow {
 	// never fabricates a progress value: only what ReportProgress
 	// durably recorded appears on the wire.
 	if t.Progress != nil {
+		row.ProgressSnapshot = &prototypes.TaskProgressSnapshot{
+			Fraction:  cloneProgressFraction(t.Progress.Fraction),
+			Phase:     t.Progress.Phase,
+			Message:   t.Progress.Message,
+			Tags:      append([]string(nil), t.Progress.Tags...),
+			UpdatedAt: time.Unix(0, t.Progress.ReportedAt).UTC(),
+		}
 		if t.Progress.Fraction != nil {
 			f := *t.Progress.Fraction
 			row.Progress = &f
@@ -366,6 +375,14 @@ func projectRow(t *tasks.Task) prototypes.TaskRow {
 		}
 	}
 	return row
+}
+
+func cloneProgressFraction(f *float64) *float64 {
+	if f == nil {
+		return nil
+	}
+	v := *f
+	return &v
 }
 
 // projectKind maps the runtime-internal task kind onto the wire enum.

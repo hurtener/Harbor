@@ -142,6 +142,9 @@ const FinishToolName = "_finish"
 // — the runtime never sees `"_spawn_task"` as a real tool call.
 const SpawnTaskToolName = "_spawn_task"
 
+// TaskProgressToolName is the runtime-owned progress producer.
+const TaskProgressToolName = "_task_progress"
+
 // AwaitTaskToolName is the reserved tool name the LLM emits to block
 // the foreground turn on a previously-spawned task. The projector
 // translates the native ToolCall directly to a typed [planner.AwaitTask]

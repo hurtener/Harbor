@@ -215,6 +215,7 @@ type TaskPrioritisedPayload struct {
 // `ReportedAt` is the runtime-stamped record time in unix
 // nanoseconds.
 type TaskProgressPayload struct {
+	UpdateID string `json:"update_id"`
 	events.SafeSealed
 	TaskID       TaskID
 	ParentTaskID TaskID // empty when the task has no parent

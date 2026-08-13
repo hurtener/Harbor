@@ -692,10 +692,25 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 	// any concrete planner can build against, and this executor is the one
 	// shared dispatch boundary for all of them — a degenerate empty/one-
 	// branch Batch reaching dispatch must fail loud, never a silent no-op.
-	if len(d.Tools)+len(d.Spawns) < 2 {
+	if len(d.Tools)+len(d.Spawns)+len(d.Progress) < 2 {
 		return nil, nil, fmt.Errorf(
 			"%w: Batch requires at least 2 combined branches, got %d tools + %d spawns",
-			planner.ErrInvalidDecision, len(d.Tools), len(d.Spawns))
+			planner.ErrInvalidDecision, len(d.Tools), len(d.Spawns)+len(d.Progress))
+	}
+	if len(d.Progress) > 0 {
+		rr, ok := e.tasks.(tasks.ProgressReporterRegistry)
+		if !ok {
+			return nil, nil, fmt.Errorf("%w: task progress reporter unavailable", planner.ErrInvalidDecision)
+		}
+		reporter, err := rr.ProgressReporter(ctx, tasks.TaskID(rc.Quadruple.RunID))
+		if err != nil {
+			return nil, nil, fmt.Errorf("dispatch task progress: %w", err)
+		}
+		for _, p := range d.Progress {
+			if _, err := reporter.ReportProgress(ctx, tasks.ReportProgressRequest{Fraction: p.Fraction, Phase: p.Phase, Message: p.Message, Tags: p.Tags}); err != nil {
+				return nil, nil, fmt.Errorf("dispatch task progress: %w", err)
+			}
+		}
 	}
 
 	// Tool-count breadth vs the shared parallel cap. A structural pre-check

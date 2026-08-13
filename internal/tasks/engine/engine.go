@@ -44,6 +44,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -108,6 +109,12 @@ func New(bus events.EventBus, redactor audit.Redactor, backend Backend, opts ...
 	for _, opt := range opts {
 		opt(e)
 	}
+	if e.progressPolicy == (tasks.ProgressPolicy{}) {
+		e.progressPolicy = tasks.DefaultProgressPolicy()
+	}
+	if e.progressPolicy.MinInterval < 0 || e.progressPolicy.FractionEpsilon < 0 || math.IsNaN(e.progressPolicy.FractionEpsilon) || math.IsInf(e.progressPolicy.FractionEpsilon, 0) {
+		return nil, fmt.Errorf("tasks/engine: invalid progress policy")
+	}
 	if err := e.hydrate(context.Background()); err != nil {
 		return nil, err
 	}
@@ -128,6 +135,29 @@ func WithProgressPolicy(p tasks.ProgressPolicy) Option {
 	return func(e *Engine) {
 		e.progressPolicy = p
 	}
+}
+
+// ProgressReporter returns a reporter permanently bound to id.
+func (e *Engine) ProgressReporter(ctx context.Context, id tasks.TaskID) (tasks.ProgressReporter, error) {
+	q, ok := identity.QuadrupleFrom(ctx)
+	if !ok || q.RunID == "" || tasks.TaskID(q.RunID) != id {
+		return nil, fmt.Errorf("%w: progress reporter is restricted to the current task", tasks.ErrNotFound)
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if _, err := e.lookupLocked(ctx, id); err != nil {
+		return nil, err
+	}
+	return boundProgressReporter{engine: e, id: id}, nil
+}
+
+type boundProgressReporter struct {
+	engine *Engine
+	id     tasks.TaskID
+}
+
+func (r boundProgressReporter) ReportProgress(ctx context.Context, req tasks.ReportProgressRequest) (tasks.ProgressReportResult, error) {
+	return r.engine.reportProgress(ctx, r.id, req)
 }
 
 // WithClock replaces the wall-clock source the progress path uses for
@@ -1095,6 +1125,11 @@ func (e *Engine) lookupLocked(ctx context.Context, id tasks.TaskID) (*tasks.Task
 func (e *Engine) transitionLocked(ctx context.Context, t *tasks.Task, to tasks.TaskStatus) error {
 	if !isValidTransition(t.Status, to) {
 		return fmt.Errorf("%w: from=%q to=%q", tasks.ErrInvalidTransition, t.Status, to)
+	}
+	if isTerminal(to) && t.PendingProgress != nil {
+		if err := e.publishPendingProgressLocked(ctx, t); err != nil {
+			return err
+		}
 	}
 	// Snapshot the fields we are about to mutate so a persist failure
 	// leaves the in-memory record in agreement with the store. Without

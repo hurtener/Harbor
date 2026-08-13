@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
 
@@ -151,6 +152,29 @@ func (e *Engine) hydrate(ctx context.Context) error {
 			continue
 		}
 		e.patches[patchKey{SessionID: p.SessionID.SessionID, PatchID: p.ID}] = p
+	}
+
+	// Replay progress publications that were durably staged before a publish
+	// failure. The exact update id is retained in the payload, so recovery never
+	// substitutes a newer snapshot or silently treats the event as acknowledged.
+	for _, rec := range snap.Tasks {
+		if rec.Task == nil || rec.Task.PendingProgress == nil {
+			continue
+		}
+		idctx, err := identity.With(ctx, rec.Task.Identity.Identity)
+		if err != nil {
+			return fmt.Errorf("tasks/engine: progress replay identity: %w", err)
+		}
+		if err := e.publish(idctx, rec.Task, tasks.EventTypeTaskProgress, *rec.Task.PendingProgress); err != nil {
+			return fmt.Errorf("tasks/engine: replay progress %q: %w", rec.Task.ID, err)
+		}
+		rec.Task.PendingProgress = nil
+		if err := e.backend.SaveTask(idctx, rec); err != nil {
+			return fmt.Errorf("tasks/engine: acknowledge progress %q: %w", rec.Task.ID, err)
+		}
+		if rec.Task.Progress != nil {
+			e.lastProgressEmit[rec.Task.ID] = rec.Task.Progress.ReportedAt
+		}
 	}
 
 	return nil

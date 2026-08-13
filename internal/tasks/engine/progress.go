@@ -31,6 +31,10 @@ import (
 //     the durable snapshot standing (at-most-once, same contract as
 //     Mark* publish failures).
 func (e *Engine) ReportProgress(ctx context.Context, id tasks.TaskID, req tasks.ReportProgressRequest) (tasks.ProgressReportResult, error) {
+	return e.reportProgress(ctx, id, req)
+}
+
+func (e *Engine) reportProgress(ctx context.Context, id tasks.TaskID, req tasks.ReportProgressRequest) (tasks.ProgressReportResult, error) {
 	if e.closed.Load() {
 		return tasks.ProgressReportResult{}, tasks.ErrRegistryClosed
 	}
@@ -49,6 +53,11 @@ func (e *Engine) ReportProgress(ctx context.Context, id tasks.TaskID, req tasks.
 	if isTerminal(t.Status) {
 		return tasks.ProgressReportResult{}, fmt.Errorf(
 			"%w: progress on terminal task (status=%q)", tasks.ErrInvalidTransition, t.Status)
+	}
+	if t.PendingProgress != nil {
+		if err := e.publishPendingProgressLocked(ctx, t); err != nil {
+			return tasks.ProgressReportResult{}, err
+		}
 	}
 
 	now := e.clock().UnixNano()
@@ -87,24 +96,53 @@ func (e *Engine) ReportProgress(ctx context.Context, id tasks.TaskID, req tasks.
 	priorUpdated := t.UpdatedAt
 	t.Progress = redacted
 	t.UpdatedAt = redacted.ReportedAt // progress is observable activity
+	payload := progressPayload(t, redacted)
+	payload.UpdateID = fmt.Sprintf("%s/%d", t.ID, redacted.ReportedAt)
+	if emit {
+		t.PendingProgress = &payload
+	} else {
+		t.PendingProgress = nil
+	}
 	if err := e.persistTaskLocked(ctx, t, e.contentHashLocked(t)); err != nil {
 		t.Progress = prior
 		t.UpdatedAt = priorUpdated
+		t.PendingProgress = nil
 		return tasks.ProgressReportResult{}, err
 	}
 
 	result := tasks.ProgressReportResult{Recorded: true, Emitted: false}
 	if emit {
-		if err := e.publish(ctx, t, tasks.EventTypeTaskProgress, progressPayload(t, redacted)); err != nil {
-			// The snapshot is durably recorded; the event is dropped
-			// at-most-once. Surface the failure — the caller cannot
-			// claim success — exactly as Mark* publish failures do.
+		if err := e.publish(ctx, t, tasks.EventTypeTaskProgress, payload); err != nil {
+			return tasks.ProgressReportResult{}, err
+		}
+		t.PendingProgress = nil
+		if err := e.persistTaskLocked(ctx, t, e.contentHashLocked(t)); err != nil {
+			t.PendingProgress = &payload
 			return tasks.ProgressReportResult{}, err
 		}
 		e.lastProgressEmit[id] = redacted.ReportedAt
 		result.Emitted = true
 	}
 	return result, nil
+}
+
+// publishPendingProgressLocked drains the durable progress outbox before a
+// newer snapshot or terminal transition can advance the task. Delivery is
+// at-least-once: a failed acknowledgement remains pending and is retried on
+// the next mutation or engine hydration, while UpdateID lets consumers
+// de-duplicate a replay.
+func (e *Engine) publishPendingProgressLocked(ctx context.Context, t *tasks.Task) error {
+	payload := *t.PendingProgress
+	if err := e.publish(ctx, t, tasks.EventTypeTaskProgress, payload); err != nil {
+		return err
+	}
+	t.PendingProgress = nil
+	if err := e.persistTaskLocked(ctx, t, e.contentHashLocked(t)); err != nil {
+		t.PendingProgress = &payload
+		return err
+	}
+	e.lastProgressEmit[t.ID] = payload.ReportedAt
+	return nil
 }
 
 // progressPayload builds the SafePayload task.progress event body for

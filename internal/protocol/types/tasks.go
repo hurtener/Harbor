@@ -190,7 +190,19 @@ type TaskRow struct {
 	// historical row predates the field and every such run bound the
 	// default by construction, so a consumer renders an absent value as
 	// the runtime default rather than as missing data.
-	AgentID string `json:"agent_id,omitempty"`
+	AgentID          string                `json:"agent_id,omitempty"`
+	ProgressSnapshot *TaskProgressSnapshot `json:"progress_snapshot,omitempty"`
+	VirtualKey       string                `json:"virtual_key,omitempty"`
+	VirtualLabel     string                `json:"virtual_label,omitempty"`
+}
+
+// TaskProgressSnapshot is the complete latest progress record.
+type TaskProgressSnapshot struct {
+	Fraction  *float64  `json:"fraction,omitempty"`
+	Phase     string    `json:"phase,omitempty"`
+	Message   string    `json:"message,omitempty"`
+	Tags      []string  `json:"tags,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // TaskFilter is the server-enforced facet filter on `tasks.list`. An
