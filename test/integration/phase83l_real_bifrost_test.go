@@ -79,8 +79,9 @@ type openAIRequestEnvelope struct {
 }
 
 type openAIChatMessageJSON struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string          `json:"role"`
+	Content   string          `json:"content"`
+	ToolCalls json.RawMessage `json:"tool_calls"`
 }
 
 // newScriptedLLMServer constructs a fake server primed with the given
@@ -550,6 +551,10 @@ func flattenMessages(msgs []openAIChatMessageJSON) string {
 		// that wire field so assertions cover both the catalog and rendered
 		// failed call rather than mistaking a parser omission for lost
 		// planner history.
+		if len(m.ToolCalls) > 0 {
+			b.Write(m.ToolCalls)
+			b.WriteByte('\n')
+		}
 		b.WriteString("\n---\n")
 	}
 	return b.String()

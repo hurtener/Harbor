@@ -419,6 +419,7 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 			Quadruple:  q,
 			Goal:       "exercise the phase 111b OAuth completion choreography",
 			Trajectory: &planner.Trajectory{},
+			Catalog:    tools.NewPlannerView(env.cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID}),
 		},
 		MaxSteps:     10,
 		ToolExecutor: env.executor,
@@ -587,9 +588,10 @@ func TestE2E_Phase111b_FullOAuthChoreography(t *testing.T) {
 	}
 }
 
-// TestE2E_Phase111b_ReplayedCallback_NotFound verifies that a consumed
-// callback cannot be replayed after the signed completion is consumed.
-func TestE2E_Phase111b_ReplayedCallback_NotFound(t *testing.T) {
+// TestE2E_Phase111b_ReplayedCallback_IdempotentSuccess verifies that an
+// ambiguous browser retry receives success from the bounded completion
+// tombstone without re-exchanging the one-time authorization code.
+func TestE2E_Phase111b_ReplayedCallback_IdempotentSuccess(t *testing.T) {
 	env := buildPhase111bEnv(t)
 	ctx := phase111bCtx(t, phase111bID)
 
@@ -602,10 +604,16 @@ func TestE2E_Phase111b_ReplayedCallback_NotFound(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("first callback status = %d, want 200", status)
 	}
+	if got := env.authSrv.TokenExchangeCount(); got != 1 {
+		t.Fatalf("token exchanges after first callback = %d, want 1", got)
+	}
 	// Replay the EXACT redirect target the browser landed on.
 	replayStatus, _ := phase111bBrowse(t, landedOn.String())
-	if replayStatus != http.StatusNotFound {
-		t.Fatalf("replayed callback status = %d, want 404", replayStatus)
+	if replayStatus != http.StatusOK {
+		t.Fatalf("replayed callback status = %d, want 200", replayStatus)
+	}
+	if got := env.authSrv.TokenExchangeCount(); got != 1 {
+		t.Fatalf("token exchanges after replay = %d, want 1", got)
 	}
 }
 
@@ -727,7 +735,8 @@ type phase111bAuthServer struct {
 		state     string
 		challenge string
 	}
-	lastAccess string
+	lastAccess     string
+	tokenExchanges int
 }
 
 func newPhase111bAuthServer(t *testing.T) *phase111bAuthServer {
@@ -756,6 +765,15 @@ func (f *phase111bAuthServer) LastIssuedAccessToken() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastAccess
+}
+
+// TokenExchangeCount returns the number of calls that reached the token
+// endpoint, including rejected calls. A replay handled by Harbor's completion
+// tombstone must leave this unchanged.
+func (f *phase111bAuthServer) TokenExchangeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tokenExchanges
 }
 
 func (f *phase111bAuthServer) discovery(w http.ResponseWriter, _ *http.Request) {
@@ -800,6 +818,9 @@ func (f *phase111bAuthServer) authorize(w http.ResponseWriter, r *http.Request) 
 }
 
 func (f *phase111bAuthServer) token(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.tokenExchanges++
+	f.mu.Unlock()
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "parse", http.StatusBadRequest)
 		return
