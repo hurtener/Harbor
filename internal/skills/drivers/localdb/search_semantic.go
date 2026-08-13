@@ -36,7 +36,7 @@ func (d *driver) searchSemantic(ctx context.Context, id identity.Quadruple, agen
 	}
 
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-        WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND agent_id = ?
+        WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND (agent_id = ? OR agent_id = '')
         ORDER BY updated_at DESC, name ASC
         LIMIT ?`,
 		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, semanticCandidateCap)

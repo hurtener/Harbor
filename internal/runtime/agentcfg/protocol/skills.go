@@ -263,7 +263,7 @@ func (s *Service) compensateSkillUpsert(ctx context.Context, q identity.Quadrupl
 	if hadPrior {
 		err = s.skills.Upsert(cctx, q, prior)
 	} else {
-		err = s.skills.Delete(cctx, q, written.Name, written.Scope)
+		err = s.skills.DeleteAgent(cctx, q, written.AgentID, written.Name, written.Scope)
 	}
 	if err != nil {
 		s.logger.ErrorContext(ctx, "agent-config: failed to compensate skill body after membership revision failure", "skill", written.Name, "error", err.Error(), "cause", cause.Error())

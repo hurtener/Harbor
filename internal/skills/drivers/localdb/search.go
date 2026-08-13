@@ -13,6 +13,28 @@ import (
 	"github.com/hurtener/Harbor/internal/skills"
 )
 
+func preferAgentRows(results []skills.RankedSkill, agentID string) []skills.RankedSkill {
+	if agentID == "" {
+		return results
+	}
+	out := make([]skills.RankedSkill, 0, len(results))
+	seen := make(map[string]struct{}, len(results))
+	for _, result := range results {
+		if result.Skill.AgentID == agentID {
+			out = append(out, result)
+			seen[result.Skill.Name] = struct{}{}
+		}
+	}
+	for _, result := range results {
+		if _, ok := seen[result.Skill.Name]; ok {
+			continue
+		}
+		seen[result.Skill.Name] = struct{}{}
+		out = append(out, result)
+	}
+	return out
+}
+
 // search executes the three-tier ranking ladder
 //
 // Ladder:
@@ -80,11 +102,11 @@ func (d *driver) searchFTS5(ctx context.Context, id identity.Quadruple, agentID,
             FROM skills_fts
             JOIN skills s ON s.rowid = skills_fts.rowid
             WHERE skills_fts MATCH ?
-               AND s.tenant = ? AND s.user = ? AND (s.session = ? OR s.scope = ?) AND s.agent_id = ?
-            ORDER BY bm25(skills_fts) ASC, s.updated_at DESC, s.name ASC
+			   AND s.tenant = ? AND s.user = ? AND (s.session = ? OR s.scope = ?) AND (s.agent_id = ? OR s.agent_id = '')
+               ORDER BY (s.agent_id = ?) DESC, bm25(skills_fts) ASC, s.updated_at DESC, s.name ASC
             LIMIT ?`
 		rows, err := d.db.QueryContext(ctx, sel,
-			matchExpr, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, limit)
+			matchExpr, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, agentID, limit)
 		if err != nil {
 			return nil, fmt.Errorf("skills/localdb: fts5 query: %w", err)
 		}
@@ -266,9 +288,9 @@ func (d *driver) searchRegex(ctx context.Context, id identity.Quadruple, agentID
 	}
 
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-         WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND agent_id = ?
-        ORDER BY updated_at DESC, name ASC`,
-		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID)
+		 WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND (agent_id = ? OR agent_id = '')
+        ORDER BY (agent_id = ?) DESC, updated_at DESC, name ASC`,
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("skills/localdb: regex query: %w", err)
 	}
@@ -361,16 +383,16 @@ func (d *driver) searchExact(ctx context.Context, id identity.Quadruple, agentID
 		return nil, nil
 	}
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-         WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND agent_id = ?
+		 WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND (agent_id = ? OR agent_id = '')
           AND (
               lower(name) = ?
               OR lower(title) = ?
               OR lower(trigger) = ?
               OR lower(tags_text) LIKE ?
           )
-        ORDER BY updated_at DESC, name ASC
+        ORDER BY (agent_id = ?) DESC, updated_at DESC, name ASC
         LIMIT ?`,
-		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID,
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, agentID,
 		q, q, q, "%"+q+"%", limit)
 	if err != nil {
 		return nil, fmt.Errorf("skills/localdb: exact query: %w", err)

@@ -460,6 +460,15 @@ func (r *SessionSkillResolver) GetScope(ctx context.Context, id identity.Quadrup
 	return cloneSkill(skill), nil
 }
 
+// GetScopeAgent implements the agent-aware reader contract for this run-bound
+// projection. The resolver contains only its bound agent's composed rows.
+func (r *SessionSkillResolver) GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) (skills.Skill, error) {
+	if agentID != r.agentID {
+		return skills.Skill{}, skills.ErrSkillNotFound
+	}
+	return r.GetScope(ctx, id, name, scope)
+}
+
 // List returns the composed view in deterministic canonical-name order.
 func (r *SessionSkillResolver) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if err := r.validateCall(ctx, id); err != nil {
@@ -540,6 +549,15 @@ func (r *SessionSkillResolver) Search(ctx context.Context, id identity.Quadruple
 		result[i].Skill = cloneSkill(expected)
 	}
 	return result, nil
+}
+
+// SearchAgent implements the agent-aware reader contract for this run-bound
+// projection.
+func (r *SessionSkillResolver) SearchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
+	if agentID != r.agentID {
+		return nil, skills.ErrSkillNotFound
+	}
+	return r.Search(ctx, id, query, limit)
 }
 
 func (r *SessionSkillResolver) validateCall(ctx context.Context, id identity.Quadruple) error {

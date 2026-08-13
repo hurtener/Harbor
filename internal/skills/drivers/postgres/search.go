@@ -32,6 +32,15 @@ const semanticCandidateCap = 256
 // similarity — and emits `skill.search_executed` with the path that
 // produced the result. Behaviour matches the SQLite driver.
 func (d *driver) Search(ctx context.Context, id identity.Quadruple, query string, limit int) ([]skills.RankedSkill, error) {
+	return d.searchAgent(ctx, id, "", query, limit)
+}
+
+// SearchAgent searches the requested agent's rows and legacy unbound rows.
+func (d *driver) SearchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
+	return d.searchAgent(ctx, id, agentID, query, limit)
+}
+
+func (d *driver) searchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
 	if d.closed.Load() {
 		return nil, skills.ErrStoreClosed
 	}
@@ -62,6 +71,7 @@ func (d *driver) Search(ctx context.Context, id identity.Quadruple, query string
 	if err != nil {
 		return nil, err
 	}
+	results = preferAgentRows(results, agentID)
 	// QueryHash hides the raw text from the audit pipeline; the search
 	// input is hashed to keep correlation possible without leaking.
 	if emitErr := d.bus.Publish(ctx, events.Event{
@@ -78,6 +88,31 @@ func (d *driver) Search(ctx context.Context, id identity.Quadruple, query string
 		return nil, fmt.Errorf("skills/postgres: emit skill.search_executed: %w", emitErr)
 	}
 	return results, nil
+}
+
+func preferAgentRows(results []skills.RankedSkill, agentID string) []skills.RankedSkill {
+	if agentID == "" {
+		return results
+	}
+	out := make([]skills.RankedSkill, 0, len(results))
+	seen := make(map[string]struct{}, len(results))
+	for _, result := range results {
+		if result.Skill.AgentID == agentID {
+			out = append(out, result)
+			seen[result.Skill.Name] = struct{}{}
+		}
+	}
+	for _, result := range results {
+		if _, ok := seen[result.Skill.Name]; ok {
+			continue
+		}
+		seen[result.Skill.Name] = struct{}{}
+		out = append(out, result)
+	}
+	if len(out) > 0 {
+		return out
+	}
+	return results
 }
 
 // search executes the three-tier ranking ladder, matching the SQLite
@@ -141,12 +176,12 @@ func (d *driver) searchFTS(ctx context.Context, id identity.Quadruple, agentID, 
 		return nil, nil
 	}
 
-	hits, err := d.runFTS(ctx, id, strings.Join(tokens, " & "), limit)
+	hits, err := d.runFTS(ctx, id, agentID, strings.Join(tokens, " & "), limit)
 	if err != nil {
 		return nil, err
 	}
 	if len(hits) == 0 && len(tokens) > 1 {
-		hits, err = d.runFTS(ctx, id, strings.Join(tokens, " | "), limit)
+		hits, err = d.runFTS(ctx, id, agentID, strings.Join(tokens, " | "), limit)
 		if err != nil {
 			return nil, err
 		}
@@ -201,14 +236,15 @@ type ftsHit struct {
 // runFTS executes one tsquery against the identity-scoped rows. The
 // query expression is a bound parameter, never concatenated into the
 // SQL text.
-func (d *driver) runFTS(ctx context.Context, id identity.Quadruple, tsqueryExpr string, limit int) ([]ftsHit, error) {
+func (d *driver) runFTS(ctx context.Context, id identity.Quadruple, agentID, tsqueryExpr string, limit int) ([]ftsHit, error) {
 	// skillCols is a compile-time column constant; the tsquery +
 	// identity + limit all flow in as bound $N params.
 	sel := `SELECT ` + skillCols + `, ts_rank(search_tsv, q) AS rank
         FROM skills, to_tsquery('english', $1) q
         WHERE search_tsv @@ q
-          AND tenant_id = $2 AND user_id = $3 AND (session_id = $4 OR scope = $5) AND agent_id = $6
-        ORDER BY rank DESC, updated_at DESC, name ASC
+          AND tenant_id = $2 AND user_id = $3 AND (session_id = $4 OR scope = $5)
+          AND (agent_id = $6 OR agent_id = '')
+        ORDER BY (agent_id = $6) DESC, rank DESC, updated_at DESC, name ASC
         LIMIT $7`
 	rows, err := d.db.QueryContext(ctx, sel,
 		tsqueryExpr, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, limit)
@@ -217,11 +253,16 @@ func (d *driver) runFTS(ctx context.Context, id identity.Quadruple, tsqueryExpr 
 	}
 	defer func() { _ = rows.Close() }()
 	var hits []ftsHit
+	seen := make(map[string]struct{})
 	for rows.Next() {
 		s, raw, err := scanSkillWithRank(rows)
 		if err != nil {
 			return nil, fmt.Errorf("skills/postgres: fts scan: %w", err)
 		}
+		if _, ok := seen[s.Name]; ok {
+			continue
+		}
+		seen[s.Name] = struct{}{}
 		hits = append(hits, ftsHit{skill: s, raw: raw})
 	}
 	if err := rows.Err(); err != nil {
@@ -283,8 +324,8 @@ func (d *driver) searchRegex(ctx context.Context, id identity.Quadruple, agentID
 	}
 
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-         WHERE tenant_id = $1 AND user_id = $2 AND (session_id = $3 OR scope = $4) AND agent_id = $5
-        ORDER BY updated_at DESC, name ASC`,
+         WHERE tenant_id = $1 AND user_id = $2 AND (session_id = $3 OR scope = $4) AND (agent_id = $5 OR agent_id = '')
+        ORDER BY (agent_id = $5) DESC, updated_at DESC, name ASC`,
 		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID)
 	if err != nil {
 		return nil, fmt.Errorf("skills/postgres: regex query: %w", err)
@@ -292,6 +333,7 @@ func (d *driver) searchRegex(ctx context.Context, id identity.Quadruple, agentID
 	defer func() { _ = rows.Close() }()
 
 	var out []skills.RankedSkill
+	seen := make(map[string]struct{})
 	for rows.Next() {
 		s, err := scanSkill(rows)
 		if err != nil {
@@ -301,6 +343,10 @@ func (d *driver) searchRegex(ctx context.Context, id identity.Quadruple, agentID
 		if score == 0 {
 			continue
 		}
+		if _, ok := seen[s.Name]; ok {
+			continue
+		}
+		seen[s.Name] = struct{}{}
 		out = append(out, skills.RankedSkill{Skill: s, Score: score, Path: skills.PathRegex})
 	}
 	if err := rows.Err(); err != nil {
@@ -378,14 +424,14 @@ func (d *driver) searchExact(ctx context.Context, id identity.Quadruple, agentID
 		return nil, nil
 	}
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-         WHERE tenant_id = $1 AND user_id = $2 AND (session_id = $3 OR scope = $4) AND agent_id = $5
+         WHERE tenant_id = $1 AND user_id = $2 AND (session_id = $3 OR scope = $4) AND (agent_id = $5 OR agent_id = '')
           AND (
                lower(name) = $6
                OR lower(title) = $6
                OR lower(trigger_text) = $6
                OR lower(tags_text) LIKE $7
           )
-        ORDER BY updated_at DESC, name ASC
+        ORDER BY (agent_id = $5) DESC, updated_at DESC, name ASC
         LIMIT $8`,
 		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID,
 		q, "%"+q+"%", limit)
@@ -394,11 +440,16 @@ func (d *driver) searchExact(ctx context.Context, id identity.Quadruple, agentID
 	}
 	defer func() { _ = rows.Close() }()
 	var out []skills.RankedSkill
+	seen := make(map[string]struct{})
 	for rows.Next() {
 		s, err := scanSkill(rows)
 		if err != nil {
 			return nil, fmt.Errorf("skills/postgres: exact scan: %w", err)
 		}
+		if _, ok := seen[s.Name]; ok {
+			continue
+		}
+		seen[s.Name] = struct{}{}
 		out = append(out, skills.RankedSkill{Skill: s, Score: 1.0, Path: skills.PathExact})
 	}
 	if err := rows.Err(); err != nil {
@@ -419,8 +470,8 @@ func (d *driver) searchSemantic(ctx context.Context, id identity.Quadruple, agen
 	}
 
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-        WHERE tenant_id = $1 AND user_id = $2 AND (session_id = $3 OR scope = $4) AND agent_id = $5
-        ORDER BY updated_at DESC, name ASC
+        WHERE tenant_id = $1 AND user_id = $2 AND (session_id = $3 OR scope = $4) AND (agent_id = $5 OR agent_id = '')
+        ORDER BY (agent_id = $5) DESC, updated_at DESC, name ASC
         LIMIT $6`,
 		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, semanticCandidateCap)
 	if err != nil {
@@ -429,11 +480,16 @@ func (d *driver) searchSemantic(ctx context.Context, id identity.Quadruple, agen
 	defer func() { _ = rows.Close() }()
 
 	var candidates []skills.Skill
+	seen := make(map[string]struct{})
 	for rows.Next() {
 		s, err := scanSkill(rows)
 		if err != nil {
 			return nil, fmt.Errorf("skills/postgres: semantic scan: %w", err)
 		}
+		if _, ok := seen[s.Name]; ok {
+			continue
+		}
+		seen[s.Name] = struct{}{}
 		candidates = append(candidates, s)
 	}
 	if err := rows.Err(); err != nil {

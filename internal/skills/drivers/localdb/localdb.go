@@ -413,7 +413,7 @@ func (d *driver) GetScopeAgent(ctx context.Context, id identity.Quadruple, agent
 	if err := skills.ValidateIdentity(id); err != nil {
 		return skills.Skill{}, skills.EmitIdentityRejected(ctx, d.bus, id, "GetScopeAgent")
 	}
-	row := d.db.QueryRowContext(ctx, selectSkillsSQL+` WHERE tenant = ? AND user = ? AND session = ? AND scope = ? AND agent_id = ? AND name = ? LIMIT 1`, id.TenantID, id.UserID, skills.StorageSessionID(id, scope), string(scope), agentID, name)
+	row := d.db.QueryRowContext(ctx, selectSkillsSQL+` WHERE tenant = ? AND user = ? AND session = ? AND scope = ? AND (agent_id = ? OR agent_id = '') AND name = ? ORDER BY (agent_id = ?) DESC LIMIT 1`, id.TenantID, id.UserID, skills.StorageSessionID(id, scope), string(scope), agentID, name, agentID)
 	got, err := scanSkill(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return skills.Skill{}, fmt.Errorf("%w: name=%q scope=%q agent_id=%q", skills.ErrSkillNotFound, name, scope, agentID)
@@ -426,6 +426,12 @@ func (d *driver) GetScopeAgent(ctx context.Context, id identity.Quadruple, agent
 
 // List implements skills.SkillStore.
 func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
+	return d.ListAgent(ctx, id, filter.AgentID, filter)
+}
+
+// ListAgent lists the requested agent's rows and legacy unbound rows, with
+// bound rows taking precedence for a duplicate name.
+func (d *driver) ListAgent(ctx context.Context, id identity.Quadruple, agentID string, filter skills.ListFilter) ([]skills.Skill, error) {
 	if d.closed.Load() {
 		return nil, skills.ErrStoreClosed
 	}
@@ -450,8 +456,8 @@ func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.
 	// narrows this to the user rung alone (the AND scope = ? below); the
 	// default (no scope filter) unions the session rung with the durable
 	// user rung, which is exactly what the run-start directory view needs.
-	sb.WriteString(` WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND agent_id = ?`)
-	args = append(args, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), filter.AgentID)
+	sb.WriteString(` WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND (agent_id = ? OR agent_id = '')`)
+	args = append(args, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID)
 	if filter.Scope != "" {
 		sb.WriteString(` AND scope = ?`)
 		args = append(args, string(filter.Scope))
@@ -467,7 +473,8 @@ func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.
 		sb.WriteString(` AND tags_text LIKE ?`)
 		args = append(args, "%"+tag+"%")
 	}
-	sb.WriteString(` ORDER BY updated_at DESC, name ASC LIMIT ? OFFSET ?`)
+	sb.WriteString(` ORDER BY (agent_id = ?) DESC, updated_at DESC, name ASC LIMIT ? OFFSET ?`)
+	args = append(args, agentID)
 	args = append(args, limit, filter.Offset)
 
 	rows, err := d.db.QueryContext(ctx, sb.String(), args...)
@@ -476,11 +483,16 @@ func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.
 	}
 	defer func() { _ = rows.Close() }()
 	out := make([]skills.Skill, 0, limit)
+	seen := make(map[string]struct{})
 	for rows.Next() {
 		s, err := scanSkill(rows)
 		if err != nil {
 			return nil, fmt.Errorf("skills/localdb: List scan: %w", err)
 		}
+		if _, ok := seen[s.Name]; ok {
+			continue
+		}
+		seen[s.Name] = struct{}{}
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
@@ -546,7 +558,7 @@ func (d *driver) searchAgent(ctx context.Context, id identity.Quadruple, agentID
 	}); emitErr != nil {
 		return nil, fmt.Errorf("skills/localdb: emit skill.search_executed: %w", emitErr)
 	}
-	return results, nil
+	return preferAgentRows(results, agentID), nil
 }
 
 // Delete implements skills.SkillStore.

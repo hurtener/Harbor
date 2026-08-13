@@ -305,6 +305,15 @@ type SkillStore interface {
 	SkillReader
 	SnapshotCandidateSearcher
 
+	// GetScopeAgent selects the requested agent-bound row, falling back to the
+	// legacy unbound row at the same scope. A bound row always wins a same-name
+	// collision; rows bound to another agent are never visible.
+	GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope Scope) (Skill, error)
+
+	// SearchAgent searches rows bound to agentID plus legacy unbound rows,
+	// giving bound rows precedence for duplicate names.
+	SearchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]RankedSkill, error)
+
 	// Upsert inserts or updates `skill` under the identity-scoped
 	// `(tenant, user, session, scope, agent_id, name)` key. AgentID is
 	// selection metadata, not an isolation principal. Conflict policy
@@ -339,6 +348,9 @@ type SkillStore interface {
 	// Missing → `ErrSkillNotFound`. Emits `skill.deleted` on success.
 	Delete(ctx context.Context, id identity.Quadruple, name string, scope Scope) error
 
+	// DeleteAgent deletes only the requested agent binding at the exact rung.
+	DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope Scope) error
+
 	// DeleteSessionScope removes every legacy ScopeSession row under exactly
 	// `id`'s (tenant, user, session) triple. It is idempotent: a completed
 	// sweep, including one that found no rows, returns nil. It never lists or
@@ -352,15 +364,9 @@ type SkillStore interface {
 	Close(ctx context.Context) error
 }
 
-// AgentSelectableSkillStore exposes the same storage operations with an
-// explicit agent selector. AgentID is metadata only; implementations must
-// retain every tenant/user/session predicate.
-type AgentSelectableSkillStore interface {
-	SkillStore
-	GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope Scope) (Skill, error)
-	DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope Scope) error
-	SearchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]RankedSkill, error)
-}
+// AgentSelectableSkillStore is retained as a source-compatible alias. Agent
+// selection is mandatory on SkillStore; it is not an optional capability.
+type AgentSelectableSkillStore = SkillStore
 
 // Sentinel errors. Compare via `errors.Is`.
 var (

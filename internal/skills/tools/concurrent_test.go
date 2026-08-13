@@ -206,6 +206,10 @@ func (s *spyStore) GetScope(ctx context.Context, id identity.Quadruple, name str
 	return got, nil
 }
 
+func (s *spyStore) GetScopeAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) (skills.Skill, error) {
+	return s.GetScope(ctx, id, name, scope)
+}
+
 func (s *spyStore) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if err := identity.Validate(id.Identity); err != nil {
 		return nil, fmt.Errorf("%w: %w", skills.ErrIdentityRequired, err)
@@ -228,6 +232,10 @@ func (s *spyStore) Search(ctx context.Context, id identity.Quadruple, query stri
 	return out, nil
 }
 
+func (s *spyStore) SearchAgent(ctx context.Context, id identity.Quadruple, agentID, query string, limit int) ([]skills.RankedSkill, error) {
+	return s.Search(ctx, id, query, limit)
+}
+
 func (s *spyStore) SearchSnapshot(ctx context.Context, id identity.Quadruple, query string, candidates []skills.Skill, limit int) ([]skills.RankedSkill, error) {
 	if err := identity.Validate(id.Identity); err != nil {
 		return nil, fmt.Errorf("%w: %w", skills.ErrIdentityRequired, err)
@@ -238,6 +246,10 @@ func (s *spyStore) SearchSnapshot(ctx context.Context, id identity.Quadruple, qu
 
 func (s *spyStore) Delete(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
 	return nil
+}
+
+func (s *spyStore) DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) error {
+	return s.Delete(ctx, id, name, scope)
 }
 
 func (s *spyStore) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }
