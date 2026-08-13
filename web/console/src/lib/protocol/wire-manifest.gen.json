@@ -399,6 +399,14 @@
       "home": "types",
       "fields": [
         {
+          "key": "policy_id",
+          "type": "string"
+        },
+        {
+          "key": "policy_hash",
+          "type": "string"
+        },
+        {
           "key": "skill",
           "type": "object",
           "ref": "AgentConfigAgentPackItem"

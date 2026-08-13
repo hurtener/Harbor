@@ -170,6 +170,8 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `policy_id` | `string` |  |
+| `policy_hash` | `string` |  |
 | `skill` | `types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) |  |
 | `hash` | `string` |  |
 | `warnings` | `[]string` | optional (`omitempty`) |
