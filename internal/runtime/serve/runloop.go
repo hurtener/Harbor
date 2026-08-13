@@ -501,7 +501,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		grantedScopes:         append([]string(nil), opts.GrantedScopes...),
 		artifactStore:         opts.ArtifactStore,
 		// disposition policy passthrough.
-		dispositionPolicy:        opts.DispositionPolicy,
+		dispositionPolicy:        opts.DispositionPolicy.Clone(),
 		tenantOverrides:          opts.TenantOverrides,
 		sessionOverrides:         opts.SessionOverrides,
 		agentConfig:              opts.AgentConfig,

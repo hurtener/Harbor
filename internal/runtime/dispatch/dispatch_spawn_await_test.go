@@ -128,7 +128,7 @@ func TestExecutor_SpawnTask_OrdinaryArtifactResolutionAndDisposition(t *testing.
 		t.Fatalf("ExecuteDecision: %v", err)
 	}
 	id := tasks.TaskID(raw.(map[string]any)["task_id"].(string))
-	task, err := reg.Get(context.Background(), id)
+	task, err := reg.Get(spawnAwaitIDCtx(t), id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}

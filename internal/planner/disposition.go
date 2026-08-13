@@ -174,6 +174,19 @@ type DispositionPolicy struct {
 	Default AttachmentDisposition
 }
 
+// Clone returns an independent policy snapshot. The map is copied so a
+// caller may safely mutate its source policy after a run snapshot is made.
+func (p DispositionPolicy) Clone() DispositionPolicy {
+	if len(p.ByMIME) == 0 {
+		return DispositionPolicy{Default: p.Default}
+	}
+	byMIME := make(map[string]AttachmentDisposition, len(p.ByMIME))
+	for mime, disposition := range p.ByMIME {
+		byMIME[mime] = disposition
+	}
+	return DispositionPolicy{ByMIME: byMIME, Default: p.Default}
+}
+
 // IsZero reports whether the policy contributes nothing (no map
 // entries and no default).
 func (p DispositionPolicy) IsZero() bool {

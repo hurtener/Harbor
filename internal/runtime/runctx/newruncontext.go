@@ -187,6 +187,7 @@ func NewRunContext(
 	for _, o := range opts {
 		o(&cfg)
 	}
+	cfg.dispositionPolicy = cfg.dispositionPolicy.Clone()
 
 	// Run-level output schema — compiled ONCE here (the runtime edge) so
 	// the same compiled validator serves both the planner's per-turn

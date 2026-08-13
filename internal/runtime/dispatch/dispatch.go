@@ -697,9 +697,19 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		PropagateOnCancel: d.Spec.PropagateOnCancel,
 		NotifyOnComplete:  true,
 	}
-	if err := validateArtifactHints(d.Spec.InputArtifactIDs, d.Spec.InputArtifactDispositions); err != nil {
-		return tasks.TaskHandle{}, "", err
+	seen := make(map[string]struct{}, len(d.Spec.InputArtifactIDs))
+	for _, id := range d.Spec.InputArtifactIDs {
+		if _, ok := seen[id]; ok {
+			return tasks.TaskHandle{}, "", fmt.Errorf("SpawnTask: duplicate artifact reference %q", id)
+		}
+		seen[id] = struct{}{}
 	}
+	if d.Spec.VirtualAgent == "" {
+		if err := validateArtifactHints(d.Spec.InputArtifactIDs, d.Spec.InputArtifactDispositions); err != nil {
+			return tasks.TaskHandle{}, "", err
+		}
+	}
+	var refs map[string]*artifacts.ArtifactRef
 	if len(d.Spec.InputArtifactIDs) > 0 {
 		if e.artifacts == nil {
 			return tasks.TaskHandle{}, "", ErrArtifactStoreUnavailable
@@ -707,6 +717,7 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		scoped := artifacts.NewScoped(e.artifacts, artifacts.ArtifactScope{
 			TenantID: rc.Quadruple.TenantID, UserID: rc.Quadruple.UserID, SessionID: rc.Quadruple.SessionID,
 		})
+		refs = make(map[string]*artifacts.ArtifactRef, len(d.Spec.InputArtifactIDs))
 		for _, id := range d.Spec.InputArtifactIDs {
 			ref, found, getErr := scoped.GetRef(taskCtx, id)
 			if getErr != nil || !found || ref == nil {
@@ -714,13 +725,14 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 				// scoped read key intentionally makes both not-found.
 				return tasks.TaskHandle{}, "", fmt.Errorf("%w: %q", ErrArtifactRefNotFound, id)
 			}
+			refs[id] = ref
 		}
 		req.InputArtifactIDs = append([]string(nil), d.Spec.InputArtifactIDs...)
 		// Ordinary children inherit references, while the runtime computes the
 		// persisted disposition from the verified reference MIME and the
 		// immutable per-run policy. Virtual children replace this map below.
 		if d.Spec.VirtualAgent == "" {
-			resolved, err := e.resolveChildDispositions(taskCtx, rc, d.Spec.InputArtifactIDs, d.Spec.InputArtifactDispositions)
+			resolved, err := resolveChildDispositions(rc, d.Spec.InputArtifactIDs, d.Spec.InputArtifactDispositions, refs)
 			if err != nil {
 				return tasks.TaskHandle{}, "", err
 			}
@@ -756,10 +768,8 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		}
 		if len(profile.InputPatterns) > 0 {
 			for _, id := range req.InputArtifactIDs {
-				ref, found, getErr := artifacts.NewScoped(e.artifacts, artifacts.ArtifactScope{
-					TenantID: rc.Quadruple.TenantID, UserID: rc.Quadruple.UserID, SessionID: rc.Quadruple.SessionID,
-				}).GetRef(taskCtx, id)
-				if getErr != nil || !found || ref == nil || !profileInputMatches(profile.InputPatterns, ref.Filename, ref.MimeType) {
+				ref := refs[id]
+				if ref == nil || !profileInputMatches(profile.InputPatterns, ref.Filename, ref.MimeType) {
 					return tasks.TaskHandle{}, "", fmt.Errorf("%w: %q", ErrArtifactRefNotFound, id)
 				}
 			}
@@ -804,17 +814,11 @@ func validateArtifactHints(ids []string, hints map[string]string) error {
 	return nil
 }
 
-func (e *toolExecutor) resolveChildDispositions(ctx context.Context, rc planner.RunContext, ids []string, hints map[string]string) (map[string]string, error) {
-	if e.artifacts == nil {
-		return nil, ErrArtifactStoreUnavailable
-	}
-	scoped := artifacts.NewScoped(e.artifacts, artifacts.ArtifactScope{
-		TenantID: rc.Quadruple.TenantID, UserID: rc.Quadruple.UserID, SessionID: rc.Quadruple.SessionID,
-	})
+func resolveChildDispositions(rc planner.RunContext, ids []string, hints map[string]string, refs map[string]*artifacts.ArtifactRef) (map[string]string, error) {
 	out := make(map[string]string, len(ids))
 	for _, id := range ids {
-		ref, found, err := scoped.GetRef(ctx, id)
-		if err != nil || !found || ref == nil {
+		ref := refs[id]
+		if ref == nil {
 			return nil, fmt.Errorf("%w: %q", ErrArtifactRefNotFound, id)
 		}
 		hint, err := planner.ParseDisposition(hints[id])
@@ -824,7 +828,10 @@ func (e *toolExecutor) resolveChildDispositions(ctx context.Context, rc planner.
 			return nil, fmt.Errorf("SpawnTask: artifact disposition hint %q: %w", id, err)
 		}
 		resolved, _ := planner.ResolveDisposition(hint, rc.DispositionPolicy, ref.MimeType)
-		effective, _ := planner.EffectiveDisposition(resolved, ref.MimeType, rc.Catalog)
+		effective, degradation := planner.EffectiveDisposition(resolved, ref.MimeType, rc.Catalog)
+		if degradation != nil {
+			return nil, fmt.Errorf("SpawnTask: artifact disposition %q degraded from %q to %q: %s", id, degradation.From, degradation.To, degradation.Reason)
+		}
 		out[id] = string(effective)
 	}
 	return out, nil
