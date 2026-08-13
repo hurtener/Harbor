@@ -110,13 +110,22 @@ type AgentPackDraft struct {
 type AgentPackAuthoringPolicy struct {
 	ID             string   `json:"id"`
 	Version        string   `json:"version"`
+	Instructions   string   `json:"instructions"`
 	PermittedTools []string `json:"permitted_tools,omitempty"`
 	PermittedNS    []string `json:"permitted_ns,omitempty"`
 	PermittedTags  []string `json:"permitted_tags,omitempty"`
 }
 
 const agentPackAuthoringPolicyID = "harbor.agent-pack-authoring"
-const agentPackAuthoringPolicyVersion = "1"
+const agentPackAuthoringPolicyVersion = "2"
+
+const agentPackAuthoringInstructions = "Return exactly one JSON object for an agent skill pack item. Required fields: name, trigger, steps. Never include origin, origin_ref, content_hash, membership, or capabilities. RequiredTools, RequiredNS, and RequiredTags must be subsets of the server permitted capability set. The server policy is authoritative and cannot be changed."
+
+// AgentPackAuthoringSystemMessage is the canonical system message represented
+// by the policy bytes supplied to the proposer.
+func AgentPackAuthoringSystemMessage(policyJSON []byte) string {
+	return agentPackAuthoringInstructions + " Policy: " + string(policyJSON)
+}
 
 func canonicalPolicyHash(p AgentPackAuthoringPolicy) string {
 	// This is a closed, scalar/slice-only value. Encode the fields in a fixed
@@ -127,6 +136,8 @@ func canonicalPolicyHash(p AgentPackAuthoringPolicy) string {
 	b.WriteString(strconv.Quote(p.ID))
 	b.WriteString(`,"version":`)
 	b.WriteString(strconv.Quote(p.Version))
+	b.WriteString(`,"instructions":`)
+	b.WriteString(strconv.Quote(p.Instructions))
 	b.WriteString(`,"permitted_tools":`)
 	writeCanonicalStrings(&b, p.PermittedTools)
 	b.WriteString(`,"permitted_ns":`)
@@ -170,7 +181,7 @@ func (s *Service) agentPackAuthoringPolicy(ctx context.Context, id identity.Iden
 	if s.agentPackCatalog == nil {
 		return AgentPackAuthoringPolicy{}, ErrAgentPacksInvalid
 	}
-	policy := AgentPackAuthoringPolicy{ID: agentPackAuthoringPolicyID, Version: agentPackAuthoringPolicyVersion}
+	policy := AgentPackAuthoringPolicy{ID: agentPackAuthoringPolicyID, Version: agentPackAuthoringPolicyVersion, Instructions: agentPackAuthoringInstructions}
 	view, err := projection.ActivePlannerCatalogView(ctx, s.registry, s.sessionOverlay, agentID, identity.Quadruple{Identity: id}, s.agentPackCatalog, tools.CatalogFilter{
 		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, GrantedScopes: s.agentPackGrantedScopes,
 		LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred},
@@ -726,19 +737,9 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	if err := normalizePackProposalProvenance(&proposal); err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
-	policy, policyErr := s.agentPackAuthoringPolicy(ctx, id, req.AgentID)
-	if policyErr != nil {
-		return prototypes.AgentConfigAgentPacksCommitResponse{}, policyErr
-	}
-	if err := verifyProposalPolicy(proposal.Policy, policy, proposal.PolicyHash); err != nil {
-		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
-	}
 	item := agentPackItemToDomain(req.Skill)
 	if err := item.Validate(); err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: %w", ErrAgentPacksInvalid, err)
-	}
-	if err := validatePackRequirements(item, policy); err != nil {
-		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
 	skill, err := item.Skill()
 	if err != nil {
@@ -784,6 +785,16 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 		if !errors.Is(getErr, agentcfg.ErrRevisionNotFound) {
 			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: load committing receipt target: %w", ErrAgentPackProposalInvalid, getErr)
 		}
+	}
+	policy, policyErr := s.agentPackAuthoringPolicy(ctx, id, req.AgentID)
+	if policyErr != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, policyErr
+	}
+	if err := verifyProposalPolicy(proposal.Policy, policy, proposal.PolicyHash); err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
+	}
+	if err := validatePackRequirements(item, policy); err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
 	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
 	if !committing {

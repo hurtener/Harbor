@@ -88,6 +88,9 @@ func TestAgentPacksCommit_ResumesPreparedTargetWithoutSecondRevision(t *testing.
 	if err := json.Unmarshal(receipt.Bytes, &receiptFields); err != nil {
 		t.Fatalf("decode committing receipt: %v", err)
 	}
+	if err := catalog.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "newly-visible-tool"}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) { return tools.ToolResult{}, nil }}); err != nil {
+		t.Fatalf("register changed capability tool: %v", err)
+	}
 	if receipt.ID == "" || receiptFields["phase"] != "committing" || receiptFields["target_revision_id"] == "" || receiptFields["target_content_hash"] == "" {
 		t.Fatalf("receipt did not durably capture exact target: %v", receiptFields)
 	}
