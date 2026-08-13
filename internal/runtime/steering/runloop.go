@@ -271,6 +271,20 @@ func NewRunLoop(reg *Registry, coord pauseresume.Coordinator, opts ...RunLoopOpt
 // unbounded planner loop is a misconfiguration, never a silent spin.
 const DefaultMaxSteps = 64
 
+// DefaultTrancheSteps is the configured planner default used when the
+// operator leaves planner.max_steps at zero. Zero selects a continuable
+// tranche; it never selects the legacy terminal-only loop.
+const DefaultTrancheSteps = 12
+
+// EffectiveTrancheSteps resolves the shared planner.max_steps setting into
+// the runtime tranche authority.
+func EffectiveTrancheSteps(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return DefaultTrancheSteps
+}
+
 // DefaultMaxConsecutiveInvalidDecisions bounds native-path structural
 // repair: how many CONSECUTIVE planner steps may return a repairable
 // invalid-decision error (a [planner.ErrInvalidDecision] — the planner
@@ -366,9 +380,9 @@ type RunSpec struct {
 	// same REJECT / timeout / CANCEL terminal behaviours apply
 	// unchanged, wrong / stale / duplicate resumes fail closed, and a
 	// checkpoint-store-backed Coordinator persists the cumulative
-	// trajectory with the pause record so a restart can durably redrive
-	// it (or surface the typed ErrPauseNotFound when no store was
-	// configured — never a new-task masquerade).
+	// trajectory for inspection. A trajectory checkpoint is not an exact
+	// planner/run-loop redrive, so a fresh process rejects resume with the
+	// typed pauseresume.ErrRestartUnavailable rather than creating a new task.
 	//
 	// Parked iterations consume loop-budget iterations exactly like a
 	// planner-emitted RequestPause (one iteration per park boundary),
@@ -529,6 +543,15 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	if maxConsecutiveInvalid <= 0 {
 		maxConsecutiveInvalid = DefaultMaxConsecutiveInvalidDecisions
 	}
+	if spec.TrancheSteps > 0 && spec.Base.Trajectory != nil {
+		if spec.TrajectoryMu != nil {
+			spec.TrajectoryMu.Lock()
+		}
+		spec.Base.Trajectory.TrancheBaseline = len(spec.Base.Trajectory.Steps)
+		if spec.TrajectoryMu != nil {
+			spec.TrajectoryMu.Unlock()
+		}
+	}
 	// consecutiveInvalid tracks native-path structural repair across steps:
 	// it climbs on each repairable planner rejection fed back as an
 	// observation and resets on any valid decision. Stack-local per-run
@@ -608,9 +631,17 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	// never on the RunLoop struct.
 	var carryEvents []ControlEvent
 
-	for step := range maxSteps {
+	// A configured tranche is the sole authority for bounded continuation.
+	// Do not retain a second outer cap: it would terminalize a run at N
+	// before the tranche pause can be observed and resumed.
+	step := 0
+	for {
+		step++
 		if err := ctx.Err(); err != nil {
 			return planner.Finish{}, fmt.Errorf("steering: run cancelled at step boundary: %w", err)
+		}
+		if spec.TrancheSteps <= 0 && step > maxSteps {
+			return planner.Finish{}, fmt.Errorf("%w: %d steps", ErrMaxStepsExceeded, maxSteps)
 		}
 
 		// While a pause is outstanding the planner must NOT be
@@ -737,6 +768,15 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		if sc.resumeRequested && (sc.resumeKind == ControlResume || sc.resumeKind == ControlApprove) {
 			if outstandingTranche {
 				trancheUsed = 0
+				if spec.Base.Trajectory != nil {
+					if spec.TrajectoryMu != nil {
+						spec.TrajectoryMu.Lock()
+					}
+					spec.Base.Trajectory.TrancheBaseline = len(spec.Base.Trajectory.Steps)
+					if spec.TrajectoryMu != nil {
+						spec.TrajectoryMu.Unlock()
+					}
+				}
 			}
 			outstandingTranche = false
 			outstandingToken = ""
@@ -945,12 +985,6 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// (nil, nil) is the silent-degradation shape §13 forbids.
 			return planner.Finish{}, fmt.Errorf("steering: planner step %d returned a nil Decision (silent degradation forbidden — CLAUDE.md §13)", step)
 		}
-		// The planner consumed one step of the current tranche. Counting
-		// happens AFTER the call so a step that errored out (fatal) or
-		// returned nil never increments; the tranche check above fires on
-		// the next boundary when trancheUsed reaches the configured cap.
-		trancheUsed++
-
 		// Write the post-step pending queue into spec.Base so the
 		// next iteration's `rc := spec.Base` value-copy sees it.
 		// stepPending is nil when the planner did not invoke the
@@ -1057,6 +1091,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				} else {
 					observation = obs
 					llmObservation = llmObs
+					// Only successful tool-bearing decisions consume the
+					// tranche. Control decisions, Finish, SpawnTask and
+					// AwaitTask are not tool invocations.
+					trancheUsed += planner.DecisionInvocationCount(decision)
 					// Notify the per-run dispatch hook on a successful
 					// executor return, with the decision's true
 					// tool-invocation count — 1 for CallTool,
@@ -1077,6 +1115,12 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 						}
 					}
 				}
+			} else {
+				// The executor-less harness is an intentional no-op
+				// executor: its tool decisions are treated as successful
+				// dispatches for tranche accounting while preserving the
+				// historical nil observation path.
+				trancheUsed += planner.DecisionInvocationCount(decision)
 			}
 			// Append the step to the run's Trajectory so the planner
 			// sees the prior action + observation on its next step.
@@ -1097,13 +1141,19 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				if spec.TrajectoryMu != nil {
 					spec.TrajectoryMu.Lock()
 				}
-				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, planner.Step{
+				stepRecord := planner.Step{
 					Action:            decision,
 					Observation:       observation,
 					LLMObservation:    llmObservation,
 					ReasoningTrace:    stepReasoning,
 					AssistantPreamble: stepAssistantContent,
-				})
+				}
+				if payload, ok := observation.(map[string]any); spec.ToolExecutor != nil && ok {
+					if _, failed := payload["error"]; failed {
+						stepRecord.Error = "tool execution failed"
+					}
+				}
+				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, stepRecord)
 				if spec.TrajectoryMu != nil {
 					spec.TrajectoryMu.Unlock()
 				}
@@ -1111,7 +1161,6 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		}
 	}
 
-	return planner.Finish{}, fmt.Errorf("%w: %d steps", ErrMaxStepsExceeded, maxSteps)
 }
 
 // requestPause routes a planner's RequestPause decision through the
@@ -1144,10 +1193,11 @@ func (rl *RunLoop) requestPause(ctx context.Context, q identity.Quadruple, d pla
 // typed TrancheExceededPayload {cause: max_steps_exceeded, max_steps,
 // steps_observed} — the typed emission of the authoritative step-tranche
 // counter — and hands the run's LIVE CUMULATIVE trajectory through so a
-// checkpoint-store-backed Coordinator persists the planner state with
-// the pause record (a restart can durably redrive it). `steps_observed`
-// in the payload mirrors the planner breaker's semantics: the cumulative
-// trajectory step count at firing.
+// checkpoint-store-backed Coordinator persists the planner state for
+// inspection with the pause record. A fresh process cannot exactly redrive
+// this in-process planner/run-loop state and rejects resume with the typed
+// ErrRestartUnavailable. `steps_observed` in the payload mirrors the
+// authoritative tranche counter at firing.
 //
 // A pauseresume error (trajectory.ErrUnserializable from a
 // non-serialisable trajectory leaf, ErrInvalidReason) propagates

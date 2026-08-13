@@ -896,6 +896,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				Catalog:                  stack.Catalog,
 				Executor:                 core.Executor,
 				MaxStepsRunLoop:          cfg.Planner.MaxSteps,
+				TrancheSteps:              steering.EffectiveTrancheSteps(cfg.Planner.MaxSteps),
 				GrantedScopes:            append([]string(nil), cfg.Tools.GrantedScopes...),
 				ArtifactStore:            stack.Artifacts,
 				TokenBudget:              cfg.Planner.TokenBudget,

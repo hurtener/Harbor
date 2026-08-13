@@ -159,6 +159,22 @@ func TestCountToolInvocations_BatchStep_CountsTools(t *testing.T) {
 	}
 }
 
+// TestCountSuccessfulToolInvocationsSince_ExcludesControlsAndFailures pins
+// the tranche accounting rule: only successful tool-bearing decisions count,
+// with one count per parallel branch.
+func TestCountSuccessfulToolInvocationsSince_ExcludesControlsAndFailures(t *testing.T) {
+	t.Parallel()
+	tr := &Trajectory{Steps: []Step{
+		{Action: SpawnTask{}},
+		{Action: CallTool{Tool: "failed"}, Error: "tool execution failed"},
+		{Action: CallParallel{Branches: []CallTool{{Tool: "a"}, {Tool: "b"}}}},
+		{Action: RequestPause{Reason: PauseAwaitInput}},
+	}}
+	if got := CountSuccessfulToolInvocationsSince(tr, 0); got != 2 {
+		t.Errorf("CountSuccessfulToolInvocationsSince = %d, want 2", got)
+	}
+}
+
 // TestSerialize_Batch_RoundTripsByteStable — a Batch-carrying step
 // serialises without error and its canonical (rehydrated) form
 // round-trips byte-stable (the D-049 contract). Batch is a plain struct

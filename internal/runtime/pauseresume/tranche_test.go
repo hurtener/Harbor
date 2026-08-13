@@ -72,13 +72,9 @@ func TestStatus_Continuable(t *testing.T) {
 	}
 }
 
-// TestTranchePause_Restart_DurableRedrive proves the step-tranche pause
-// is a durable redrive across a Runtime restart when a checkpoint store
-// is configured: a fresh Coordinator over the same store rehydrates the
-// SAME token with the typed payload and the checkpointed CUMULATIVE
-// trajectory, and an authorised resume drives it forward. Never a
-// new-task masquerade: the rehydrated record is the original pause, not
-// a freshly minted one.
+// TestTranchePause_Restart_TypedUnavailable proves a checkpointed
+// step-tranche pause is inspectable after restart but cannot be resumed
+// without an exact durable run-loop redrive implementation.
 func TestTranchePause_Restart_DurableRedrive(t *testing.T) {
 	t.Parallel()
 	store := newStore(t)
@@ -128,15 +124,8 @@ func TestTranchePause_Restart_DurableRedrive(t *testing.T) {
 		t.Errorf("rehydrated payload = %+v, want max_steps=2 steps_observed=2", got)
 	}
 
-	// An authorised resume drives the durable pause forward; the
-	// checkpoint is cleared (terminal), so a THIRD coordinator sees the
-	// typed ErrPauseNotFound — never a silent new pause.
-	if err := c2.Resume(ctx, p.Token, pauseresume.DecisionResume, nil); err != nil {
-		t.Fatalf("Resume on restarted coordinator: %v", err)
-	}
-	c3 := pauseresume.New(pauseresume.WithCheckpointStore(store))
-	if _, err := c3.Status(ctx, p.Token); !errors.Is(err, pauseresume.ErrPauseNotFound) {
-		t.Fatalf("Status after resumed-cleared checkpoint: err=%v, want ErrPauseNotFound", err)
+	if err := c2.Resume(ctx, p.Token, pauseresume.DecisionResume, nil); !errors.Is(err, pauseresume.ErrRestartUnavailable) {
+		t.Fatalf("Resume on restarted coordinator: err=%v, want ErrRestartUnavailable", err)
 	}
 }
 

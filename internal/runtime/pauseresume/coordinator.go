@@ -365,6 +365,11 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		if rerr != nil {
 			return rerr
 		}
+		if rehydrated.reason == ReasonConstraintsConflict {
+			if _, tranche := TrancheExceededFromMap(rehydrated.payload); tranche {
+				return fmt.Errorf("%w: token %q", ErrRestartUnavailable, token)
+			}
+		}
 		c.mu.Lock()
 		// Another goroutine may have rehydrated/installed the same
 		// token while we did store I/O — prefer the already-installed

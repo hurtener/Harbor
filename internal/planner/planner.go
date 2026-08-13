@@ -927,25 +927,14 @@ const (
 	// conflict (budget vs. tool requirement, identity scope mismatch)
 	// that requires operator resolution.
 	PauseConstraintsConflict PauseReason = "constraints_conflict"
-	// PauseMaxStepsExceeded — the runtime's bounded-tranche cap was
-	// reached: RunLoop parked the run at its per-tranche MaxSteps
-	// boundary, checkpointing the cumulative trajectory, so an
-	// operator can RESUME the SAME run for a fresh tranche of
-	// planner steps. Emitted by the RunLoop (the tranche park), never
-	// by a planner: it is the runtime mechanism's own pause cause —
-	// the same-process exact-run continuation surface — distinct
-	// from the four planner reasoning reasons above. The typed
-	// reason is what lets a RESUME of this pause be told apart from
-	// a human-pause resume (only the former grants a fresh tranche).
-	PauseMaxStepsExceeded PauseReason = "max_steps"
 )
 
-// IsValidPauseReason reports whether r is one of the five canonical
+// IsValidPauseReason reports whether r is one of the four canonical
 // pause reasons. Used by the conformance pack to verify
 // RequestPause.Reason is well-formed.
 func IsValidPauseReason(r PauseReason) bool {
 	switch r {
-	case PauseApprovalRequired, PauseAwaitInput, PauseExternalEvent, PauseConstraintsConflict, PauseMaxStepsExceeded:
+	case PauseApprovalRequired, PauseAwaitInput, PauseExternalEvent, PauseConstraintsConflict:
 		return true
 	default:
 		return false

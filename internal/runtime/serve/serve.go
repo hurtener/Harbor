@@ -62,6 +62,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
 	agentregistry "github.com/hurtener/Harbor/internal/runtime/registry"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/server"
@@ -667,6 +668,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		Catalog:                  toolCat,
 		Executor:                 stack.Executor,
 		MaxStepsRunLoop:          cfg.Planner.MaxSteps,
+		TrancheSteps:              steering.EffectiveTrancheSteps(cfg.Planner.MaxSteps),
 		GrantedScopes:            append([]string(nil), cfg.Tools.GrantedScopes...),
 		ArtifactStore:            artStore,
 		TokenBudget:              cfg.Planner.TokenBudget,

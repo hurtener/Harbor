@@ -26,6 +26,12 @@ var (
 	// shared checkpoint store.
 	ErrPauseNotFound = errors.New("pauseresume: pause token not found")
 
+	// ErrRestartUnavailable reports a durable tranche checkpoint whose
+	// original in-process run loop is gone. A trajectory checkpoint alone is
+	// not an exact redrive implementation, so resume fails closed rather than
+	// pretending to continue the run as a new task.
+	ErrRestartUnavailable = errors.New("pauseresume: exact restart redrive unavailable")
+
 	// ErrAlreadyResumed — Resume was called for a Token whose pause
 	// record is already in StatusResumed. Resume is idempotent: the
 	// second call is rejected loud rather than re-applying side

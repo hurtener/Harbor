@@ -2104,10 +2104,11 @@ const (
 // Graph, Deterministic, Supervisor, MultiAgent, HumanApproval per
 // RFC §6.2).
 //
-// `MaxSteps` overrides the driver-side circuit-breaker step cap. Zero
-// (the default) means "use the driver's internal default" — e.g. the
-// react driver's `react.DefaultMaxSteps` (12). The validator rejects
-// negative values pre-boot.
+// `MaxSteps` configures the planner step tranche and the runtime's
+// continuation authority. Zero (the default) means "use the driver's
+// internal default" — e.g. the react driver's `react.DefaultMaxSteps`
+// (12); it never selects the legacy terminal-only run loop. The validator
+// rejects negative values pre-boot.
 //
 // `ExtraGuidance` is operator-supplied domain-specific guidance
 // injected into the rendered ReAct system prompt's

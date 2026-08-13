@@ -254,11 +254,8 @@ type Option func(*ReActPlanner)
 
 // WithMaxSteps overrides the [DefaultMaxSteps] circuit-breaker cap.
 // Values ≤ 0 fall back to [DefaultMaxSteps]. The breaker fires when
-// `len(rc.Trajectory.Steps) - rc.Trajectory.TrancheBaseline >= MaxSteps`
-// — i.e. when ≥ MaxSteps steps have been recorded since the current
-// bounded tranche began (TrancheBaseline is the zero value on the
-// first tranche, so the first tranche counts cumulatively exactly as
-// before); the planner emits
+// [planner.CountSuccessfulToolInvocationsSince] reaches MaxSteps after
+// the current bounded tranche began; the planner emits
 // [planner.EventTypePlannerMaxStepsExceeded] AND returns
 // `Finish{NoPath, Metadata["max_steps_exceeded"]=true}`.
 func WithMaxSteps(n int) Option {
@@ -574,20 +571,11 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		}, nil
 	}
 
-	// Circuit breaker: the planner-side step cap, SUBORDINATE to the
-	// runloop's bounded-tranche continuation. The breaker counts steps
-	// since the CURRENT tranche began — `len(Steps) - TrancheBaseline`,
-	// where TrancheBaseline is the index into Steps at which the
-	// runloop started the current tranche (zero value on the first
-	// tranche, re-stamped at each max_steps-pause resume). Counting
-	// cumulatively here would be wrong after a resume: the checkpointed
-	// historical steps legitimately push len(Steps) past maxSteps, so a
-	// cumulative breaker would immediately finish a run whose current
-	// tranche has done zero work. Per-tranche counting keeps the
-	// breaker's runaway-loop defence without breaking exact-run
-	// continuation. The breaker fires BEFORE the LLM call so a runaway
-	// never burns an additional completion. The emit is the fail-loudly
-	// surface per §13.
+	// Circuit breaker: the planner-side defence is subordinate to the
+	// runloop's bounded-tranche continuation. Count only successful
+	// tool-bearing invocations in the current tranche. Planner controls,
+	// task management, parallel branches (one per branch), and failed tool
+	// dispatches must not terminalize a run at the configured tool budget.
 	if rc.Trajectory != nil {
 		baseline := rc.Trajectory.TrancheBaseline
 		if baseline < 0 {
@@ -596,7 +584,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 			// the observed count). Clamp to the earliest step.
 			baseline = 0
 		}
-		if len(rc.Trajectory.Steps)-baseline >= p.maxSteps {
+		if planner.CountSuccessfulToolInvocationsSince(rc.Trajectory, baseline) >= p.maxSteps {
 			return p.maxStepsExceeded(ctx, rc), nil
 		}
 	}
@@ -896,7 +884,8 @@ func (p *ReActPlanner) maxStepsExceeded(ctx context.Context, rc planner.RunConte
 	stepsObserved := 0
 	lastTool := ""
 	if rc.Trajectory != nil {
-		stepsObserved = len(rc.Trajectory.Steps)
+		baseline := rc.Trajectory.TrancheBaseline
+		stepsObserved = planner.CountSuccessfulToolInvocationsSince(rc.Trajectory, baseline)
 		// Extract LastTool from the most recent CallTool action.
 		// Steps[].Action is typed as `any` (trajectory package
 		// avoids importing planner — see trajectory.Step godoc), so

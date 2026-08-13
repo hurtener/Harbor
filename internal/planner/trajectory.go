@@ -165,3 +165,27 @@ func DecisionInvocationCount(action any) int {
 		return 0
 	}
 }
+
+// CountSuccessfulToolInvocationsSince counts successful tool-bearing steps
+// after baseline. A step with a non-empty Error is an attempted but failed
+// dispatch and does not consume a runtime tranche. Control decisions and
+// task-management decisions contribute zero; CallParallel contributes one
+// invocation per branch.
+func CountSuccessfulToolInvocationsSince(t *Trajectory, baseline int) int {
+	if t == nil {
+		return 0
+	}
+	if baseline < 0 {
+		baseline = 0
+	}
+	if baseline > len(t.Steps) {
+		baseline = len(t.Steps)
+	}
+	n := 0
+	for _, step := range t.Steps[baseline:] {
+		if step.Error == "" {
+			n += DecisionInvocationCount(step.Action)
+		}
+	}
+	return n
+}
