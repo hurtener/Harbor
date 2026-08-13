@@ -618,22 +618,29 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 			return prototypes.AgentConfigAgentPacksCommitResponse{}, ErrAgentPackProposalInvalid
 		}
 		published, getErr := s.registry.Get(ctx, q, req.AgentID, proposal.TargetRevisionID, agentcfg.ConfigScopeAgent)
-		if getErr != nil || published.ContentHash != proposal.TargetContentHash {
+		if getErr == nil && (published.ContentHash != proposal.TargetContentHash || published.RevisionID != proposal.TargetRevisionID) {
 			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: committing receipt target was not published", ErrAgentPackProposalInvalid)
 		}
-		active, activeSet, activeErr := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
-		if activeErr != nil || !activeSet || active.RevisionID != proposal.TargetRevisionID || active.ContentHash != proposal.TargetContentHash {
-			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: committing receipt target is not active", ErrAgentPackProposalInvalid)
+		if getErr == nil {
+			active, activeSet, activeErr := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
+			if activeErr != nil || !activeSet || active.RevisionID != proposal.TargetRevisionID || active.ContentHash != proposal.TargetContentHash {
+				return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: committing receipt target is not active", ErrAgentPackProposalInvalid)
+			}
+			deleted, deleteErr := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID})
+			if deleteErr != nil || !deleted {
+				return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("finalize pack proposal receipt: %w", ErrAgentPackProposalInvalid)
+			}
+			return prototypes.AgentConfigAgentPacksCommitResponse{Revision: revisionToWire(published), Skill: packSkillSummary(skill), Hash: skill.ContentHash, ProtocolVersion: prototypes.ProtocolVersion}, nil
 		}
-		deleted, deleteErr := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: proposalKind(req.ProposalID), ExpectedEventID: proposalRecord.ID})
-		if deleteErr != nil || !deleted {
-			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("finalize pack proposal receipt: %w", ErrAgentPackProposalInvalid)
+		if !errors.Is(getErr, agentcfg.ErrRevisionNotFound) {
+			return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: load committing receipt target: %v", ErrAgentPackProposalInvalid, getErr)
 		}
-		return prototypes.AgentConfigAgentPacksCommitResponse{Revision: revisionToWire(published), Skill: packSkillSummary(skill), Hash: skill.ContentHash, ProtocolVersion: prototypes.ProtocolVersion}, nil
 	}
 	opts := agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}
-	if err := s.precheckExpectedRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, opts); err != nil {
-		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
+	if !committing {
+		if err := s.precheckExpectedRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, opts); err != nil {
+			return prototypes.AgentConfigAgentPacksCommitResponse{}, err
+		}
 	}
 	// CAS half 2 — the proposal stamp is binding: a commit must echo the
 	// exact proposal it reviewed.
@@ -669,6 +676,9 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	targetHash, err := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("hash pack publication: %w", err)
+	}
+	if committing && targetHash != proposal.TargetContentHash {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: resumed publication payload changed", ErrAgentPackProposalInvalid)
 	}
 	targetRevisionID := string(state.NewEventID())
 	if proposal.Phase == "committing" {
