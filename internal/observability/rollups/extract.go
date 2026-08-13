@@ -34,7 +34,11 @@ const StoreGranularity = BucketMinute
 //     count / sum / min / max (Usage.LatencyMS). The model dimension is the
 //     payload's authoritative model. A cost that is not finite, is negative,
 //     or overflows the micro-unit int64 range FAILS LOUDLY with
-//     ErrInvalidCost — a corrupted log is never silently undercounted.
+//     ErrInvalidCost — a corrupted log is never silently undercounted. The
+//     Usage token counts and latency are closed behind a nonnegative gate:
+//     a negative value is a corrupted payload and FAILS LOUDLY with
+//     ErrNegativeMeasure rather than being cast into a shrinking counter
+//     (exact zero remains valid).
 //   - `task.completed` / `task.failed` / `task.cancelled` — the matching
 //     outcome count. Task events carry no model — their rows are the
 //     un-attributed (model "") aggregate for the triple.
@@ -64,6 +68,9 @@ func Extract(ev events.Event) ([]Delta, error) {
 	case llm.EventTypeCostRecorded:
 		p, err := decodeTypedPayload[llm.CostRecordedPayload](ev.Payload)
 		if err != nil {
+			return nil, fmt.Errorf("rollups: extract seq=%d type=%q: %w", ev.Sequence, ev.Type, err)
+		}
+		if err := validateUsageNonnegative(p.Usage); err != nil {
 			return nil, fmt.Errorf("rollups: extract seq=%d type=%q: %w", ev.Sequence, ev.Type, err)
 		}
 		costMicros, err := microsFromUSD(p.Cost.TotalCost)
@@ -127,6 +134,38 @@ func bumpSet(bump func(*MeasureSet)) MeasureSet {
 	var s MeasureSet
 	bump(&s)
 	return s
+}
+
+// validateUsageNonnegative closes the nonnegative gate on the canonical
+// usage fields Extract converts into additive measures: the six token
+// counts and the latency. Every measure is a non-negative additive
+// aggregate, so a negative source value is a corrupted payload — refused
+// loudly with wrapped ErrNegativeMeasure rather than cast into a shrinking
+// counter. Exact zero remains valid (zero tokens / zero latency are
+// legitimate provider reports).
+func validateUsageNonnegative(u llm.Usage) error {
+	if u.PromptTokens < 0 {
+		return fmt.Errorf("%w: prompt tokens %d are negative", ErrNegativeMeasure, u.PromptTokens)
+	}
+	if u.CompletionTokens < 0 {
+		return fmt.Errorf("%w: completion tokens %d are negative", ErrNegativeMeasure, u.CompletionTokens)
+	}
+	if u.ReasoningTokens < 0 {
+		return fmt.Errorf("%w: reasoning tokens %d are negative", ErrNegativeMeasure, u.ReasoningTokens)
+	}
+	if u.CacheReadTokens < 0 {
+		return fmt.Errorf("%w: cache-read tokens %d are negative", ErrNegativeMeasure, u.CacheReadTokens)
+	}
+	if u.CacheWriteTokens < 0 {
+		return fmt.Errorf("%w: cache-write tokens %d are negative", ErrNegativeMeasure, u.CacheWriteTokens)
+	}
+	if u.TotalTokens < 0 {
+		return fmt.Errorf("%w: total tokens %d are negative", ErrNegativeMeasure, u.TotalTokens)
+	}
+	if u.LatencyMS < 0 {
+		return fmt.Errorf("%w: latency %d ms is negative", ErrNegativeMeasure, u.LatencyMS)
+	}
+	return nil
 }
 
 // decodeTypedPayload recovers a typed payload from either the typed value

@@ -138,10 +138,12 @@ func ValidateMeasures(measures []Measure) error {
 // exactly when LLMLatencyCount > 0 (the hasLatency flag tracks whether any
 // latency-bearing record has been folded in).
 //
-// Accumulation is CHECKED: every additive field is range-verified against
-// the exact int64 bounds before any write, and a merge that would overflow
-// fails loudly with ErrMeasureOverflow instead of wrapping into negative or
-// corrupt data. The receiver is never partially mutated by a refused merge.
+// Accumulation is CHECKED: every additive field is verified against the
+// domain's nonnegative + exact int64 bounds before any write — a negative
+// delta is refused with ErrNegativeMeasure (a counter never shrinks) and a
+// sum that would overflow fails loudly with ErrMeasureOverflow instead of
+// wrapping into negative or corrupt data. The receiver is never partially
+// mutated by a refused merge.
 type MeasureSet struct {
 	LLMCompletions      int64
 	LLMTokensPrompt     int64
@@ -174,16 +176,27 @@ type MeasureSet struct {
 // batch and Query aggregation fails loudly with this sentinel.
 var ErrMeasureOverflow = errors.New("rollups: measure accumulation overflow")
 
+// ErrNegativeMeasure reports a NEGATIVE additive measure value — either a
+// negative delta merged by MeasureSet.Add or a negative source value in a
+// canonical payload (token counts, latency) converted by Extract. Measures
+// are non-negative additive aggregates (counts, tokens, latency ms, cost
+// micro-units), so a negative value can only arrive from a corrupted
+// payload or a hand-built MeasureSet; it is REFUSED before any mutation —
+// a counter never silently shrinks and a corrupted log is never converted
+// into valid-looking data. ApplyBatch rejects the whole batch with this
+// sentinel.
+var ErrNegativeMeasure = errors.New("rollups: negative measure value refused (measures are non-negative additive values)")
+
 // Add accumulates other into m in place. Sum measures add; the latency
 // min/max fold as the group-wise minimum / maximum. Every additive field
-// (counts, tokens, cost micro-units, latency sums) is range-checked against
-// the exact int64 bounds BEFORE the first write: when any sum would
-// overflow, Add fails loudly with ErrMeasureOverflow and m is left EXACTLY
-// as it was — no partial merge, no wrapped-negative counter. The latency
+// (counts, tokens, cost micro-units, latency sums) is checked BEFORE the
+// first write: a negative delta fails loudly with ErrNegativeMeasure and a
+// sum that would overflow the exact int64 bounds fails loudly with
+// ErrMeasureOverflow — in both cases m is left EXACTLY as it was: no
+// partial merge, no shrunk counter, no wrapped-negative sum. The latency
 // folds never overflow (they are comparisons, not sums) and remain exact.
-// All measure values are non-negative in this domain; the check covers both
-// directions so a negative delta is equally refused rather than silently
-// corrupting a counter.
+// All measure values are non-negative in this domain, so a negative delta
+// is refused equally loudly whether or not the result would stay in range.
 func (m *MeasureSet) Add(other MeasureSet) error {
 	var (
 		completions      int64
@@ -275,14 +288,19 @@ func (m *MeasureSet) Add(other MeasureSet) error {
 }
 
 // checkedSum returns a+b when the exact int64 sum is representable, failing
-// loudly (wrapped ErrMeasureOverflow naming the measure) when it would
-// overflow — the additive counterpart of the exact-cost range check in
-// microsFromUSD.
+// loudly when it is not. A NEGATIVE delta is refused up front with wrapped
+// ErrNegativeMeasure — measures are non-negative additive source aggregates,
+// so a negative delta can only arrive from a corrupted payload or a
+// hand-built MeasureSet, and is rejected before any range arithmetic (a
+// counter never shrinks, even when the sum would stay in range). A
+// non-negative delta that would overflow the int64 range fails with wrapped
+// ErrMeasureOverflow naming the measure — the additive counterpart of the
+// exact-cost range check in microsFromUSD.
 func checkedSum(a, b int64, measure Measure) (int64, error) {
-	if b > 0 && a > math.MaxInt64-b {
-		return 0, fmt.Errorf("%w: %s sum would overflow the int64 range", ErrMeasureOverflow, measure)
+	if b < 0 {
+		return 0, fmt.Errorf("%w: %s delta %d is negative", ErrNegativeMeasure, measure, b)
 	}
-	if b < 0 && a < math.MinInt64-b {
+	if b > 0 && a > math.MaxInt64-b {
 		return 0, fmt.Errorf("%w: %s sum would overflow the int64 range", ErrMeasureOverflow, measure)
 	}
 	return a + b, nil

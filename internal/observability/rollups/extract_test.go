@@ -136,6 +136,66 @@ func TestExtract_CostRefusal(t *testing.T) {
 	}
 }
 
+// TestExtract_NegativeUsageRefused pins the closed nonnegative gate on the
+// canonical usage fields Extract converts: a negative token count or a
+// negative latency is a corrupted payload and fails loudly with
+// ErrNegativeMeasure — it is never cast into a shrinking counter. Exact
+// zero remains valid.
+func TestExtract_NegativeUsageRefused(t *testing.T) {
+	at := time.Date(2026, 8, 13, 12, 34, 56, 0, time.UTC)
+	bad := []llm.Usage{
+		{PromptTokens: -1},
+		{CompletionTokens: -1},
+		{ReasoningTokens: -1},
+		{CacheReadTokens: -1},
+		{CacheWriteTokens: -1},
+		{TotalTokens: -1},
+		{LatencyMS: -1},
+	}
+	for _, usage := range bad {
+		ev := events.Event{
+			Type:       llm.EventTypeCostRecorded,
+			Identity:   extractQuad,
+			OccurredAt: at,
+			Sequence:   1,
+			Payload: llm.CostRecordedPayload{
+				Model: "m",
+				Cost:  llm.Cost{TotalCost: 1, Currency: "USD"},
+				Usage: usage,
+			},
+		}
+		if _, err := Extract(ev); !errors.Is(err, ErrNegativeMeasure) {
+			t.Fatalf("Extract(usage=%+v) err = %v; want ErrNegativeMeasure", usage, err)
+		}
+	}
+
+	// Exact zero remains valid: zero tokens and zero latency are
+	// legitimate provider reports, and the row still records the
+	// successful-completion count and the (zero) latency fold.
+	ev := events.Event{
+		Type:       llm.EventTypeCostRecorded,
+		Identity:   extractQuad,
+		OccurredAt: at,
+		Sequence:   2,
+		Payload: llm.CostRecordedPayload{
+			Model: "m",
+			Cost:  llm.Cost{TotalCost: 0, Currency: "USD"},
+			Usage: llm.Usage{},
+		},
+	}
+	deltas, err := Extract(ev)
+	if err != nil {
+		t.Fatalf("Extract(zero usage): %v", err)
+	}
+	if len(deltas) != 1 {
+		t.Fatalf("deltas = %d; want 1", len(deltas))
+	}
+	d := deltas[0].Add
+	if d.LLMCompletions != 1 || d.LLMLatencyCount != 1 || d.LLMTokensTotal != 0 || d.LLMLatencySumMS != 0 || d.LLMLatencyMinMS != 0 || d.LLMLatencyMaxMS != 0 {
+		t.Fatalf("zero-usage measures = %+v; want completions/latency count 1, token and latency sums 0", d)
+	}
+}
+
 // TestExtract_CostConversionExact pins the deterministic rounding: the
 // float64 artifacts of 0.1, 0.2, and 0.1+0.2 all convert to exact integer
 // micro-units whose SUM is exactly 0.60 USD.
@@ -381,11 +441,21 @@ func TestMeasureSet_Add_MaxBoundaryAndOverflow(t *testing.T) {
 		t.Fatalf("completions after refused add = %d; want %d (receiver untouched)", got, int64(math.MaxInt64))
 	}
 
-	// The lower boundary (a negative delta) is refused the same way.
-	m = MeasureSet{LLMCompletions: math.MinInt64 + 5}
-	mustAdd(t, &m, MeasureSet{LLMCompletions: -5})
-	if err := m.Add(MeasureSet{LLMCompletions: -1}); !errors.Is(err, ErrMeasureOverflow) {
-		t.Fatalf("underflow add err = %v; want ErrMeasureOverflow", err)
+	// A NEGATIVE delta is refused with ErrNegativeMeasure even when the
+	// result would stay in range — a counter never shrinks, and the int64
+	// underflow branch is unreachable because any negative delta is
+	// rejected before range arithmetic. The receiver is untouched.
+	m = MeasureSet{LLMCompletions: 10, LLMTokensTotal: 7}
+	if err := m.Add(MeasureSet{LLMCompletions: -5}); !errors.Is(err, ErrNegativeMeasure) {
+		t.Fatalf("negative delta err = %v; want ErrNegativeMeasure", err)
+	}
+	if got := m.Get(MeasureLLMCompletions).N; got != 10 {
+		t.Fatalf("completions after refused negative delta = %d; want 10 (receiver untouched)", got)
+	}
+	// A zero delta is valid and a no-op.
+	mustAdd(t, &m, MeasureSet{LLMCompletions: 0})
+	if got := m.Get(MeasureLLMCompletions).N; got != 10 {
+		t.Fatalf("completions after zero delta = %d; want 10", got)
 	}
 }
 
@@ -424,6 +494,61 @@ func TestMeasureSet_Add_NoPartialMutation(t *testing.T) {
 	}
 	if m != before {
 		t.Fatalf("rejected Add mutated the receiver:\n before: %+v\n after:  %+v", before, m)
+	}
+}
+
+// TestMeasureSet_Add_NegativeRejectionAtomic pins the fail-loud
+// nonnegative gate: ANY negative additive field — even one whose sum would
+// stay in range — refuses the whole merge with ErrNegativeMeasure, and the
+// receiver is left EXACTLY as it was (the fields that would fit are not
+// applied).
+func TestMeasureSet_Add_NegativeRejectionAtomic(t *testing.T) {
+	negatives := []struct {
+		name  string
+		delta MeasureSet
+	}{
+		{"llm_completions", MeasureSet{LLMCompletions: -1}},
+		{"llm_tokens_prompt", MeasureSet{LLMTokensPrompt: -1}},
+		{"llm_tokens_completion", MeasureSet{LLMTokensCompletion: -1}},
+		{"llm_tokens_reasoning", MeasureSet{LLMTokensReasoning: -1}},
+		{"llm_tokens_cache_read", MeasureSet{LLMTokensCacheRead: -1}},
+		{"llm_tokens_cache_write", MeasureSet{LLMTokensCacheWrite: -1}},
+		{"llm_tokens_total", MeasureSet{LLMTokensTotal: -1}},
+		{"llm_cost_micros", MeasureSet{LLMCostMicros: -1}},
+		{"llm_latency_count", MeasureSet{LLMLatencyCount: -1}},
+		{"llm_latency_sum_ms", MeasureSet{LLMLatencySumMS: -1}},
+		{"tasks_completed", MeasureSet{TasksCompleted: -1}},
+		{"tasks_failed", MeasureSet{TasksFailed: -1}},
+		{"tasks_cancelled", MeasureSet{TasksCancelled: -1}},
+	}
+	for _, tc := range negatives {
+		t.Run(tc.name, func(t *testing.T) {
+			m := MeasureSet{LLMCompletions: 3, LLMTokensPrompt: 40, LLMCostMicros: 5_000_000}
+			before := m
+			if err := m.Add(tc.delta); !errors.Is(err, ErrNegativeMeasure) {
+				t.Fatalf("Add(negative %s) err = %v; want ErrNegativeMeasure", tc.name, err)
+			}
+			if m != before {
+				t.Fatalf("rejected negative delta mutated the receiver:\n before: %+v\n after:  %+v", before, m)
+			}
+		})
+	}
+
+	// Atomicity across fields: a delta that mixes a negative field with
+	// positive fields that would fit is refused WHOLE — nothing applies.
+	m := MeasureSet{LLMTokensTotal: 100, TasksCompleted: 2}
+	before := m
+	delta := MeasureSet{
+		LLMTokensTotal:  10, // would fit
+		LLMTokensPrompt: 1,  // would fit
+		LLMLatencySumMS: -5, // NEGATIVE — refuses the whole merge
+		TasksCompleted:  1,  // would fit
+	}
+	if err := m.Add(delta); !errors.Is(err, ErrNegativeMeasure) {
+		t.Fatalf("mixed negative delta err = %v; want ErrNegativeMeasure", err)
+	}
+	if m != before {
+		t.Fatalf("rejected mixed delta mutated the receiver:\n before: %+v\n after:  %+v", before, m)
 	}
 }
 

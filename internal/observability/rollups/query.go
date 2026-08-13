@@ -67,6 +67,17 @@ func containsString(set []string, v string) bool {
 	return false
 }
 
+// containsMeasure reports whether m is a member of the measure set (the
+// selected-Measures membership gate for SortMeasure).
+func containsMeasure(set []Measure, m Measure) bool {
+	for _, s := range set {
+		if s == m {
+			return true
+		}
+	}
+	return false
+}
+
 // SortKey is the closed set of query sort keys. Every sort is total: the
 // primary key, then (bucket start, then the grouped dimension values in
 // canonical order) as deterministic tie-breakers, so pagination never
@@ -118,8 +129,11 @@ type Query struct {
 	Measures []Measure
 	// Sort is the closed sort key (default: SortKeyBucketAsc when empty).
 	Sort SortKey
-	// SortMeasure names the measure used by SortKeyMeasureAsc/Desc; must
-	// be a closed measure when a measure sort is requested.
+	// SortMeasure names the measure used by SortKeyMeasureAsc/Desc. When a
+	// measure sort is requested it must be a closed measure AND a member of
+	// the selected Measures: sorting by an unselected measure would read a
+	// missing row value as zero and silently degenerate the order and the
+	// pagination cursor, so Validate refuses it loudly.
 	SortMeasure Measure
 	// Limit bounds the page size (1..MaxRowsPerQuery, mandatory).
 	Limit int
@@ -155,8 +169,14 @@ func (q Query) Validate() error {
 	if !isClosedSortKey(q.Sort) {
 		return fmt.Errorf("%w: Sort=%q (allowed: %v)", ErrQueryInvalid, q.Sort, allSortKeys())
 	}
-	if (q.Sort == SortKeyMeasureAsc || q.Sort == SortKeyMeasureDesc) && q.SortMeasure.Validate() != nil {
-		return fmt.Errorf("%w: SortKeyMeasure* requires a closed SortMeasure, got %q", ErrQueryInvalid, q.SortMeasure)
+	if q.Sort == SortKeyMeasureAsc || q.Sort == SortKeyMeasureDesc {
+		if q.SortMeasure.Validate() != nil {
+			return fmt.Errorf("%w: SortKeyMeasure* requires a closed SortMeasure, got %q", ErrQueryInvalid, q.SortMeasure)
+		}
+		if !containsMeasure(q.Measures, q.SortMeasure) {
+			return fmt.Errorf("%w: SortKeyMeasure* requires SortMeasure %q to be among the selected Measures (%v)",
+				ErrQueryInvalid, q.SortMeasure, q.Measures)
+		}
 	}
 	if q.Limit <= 0 {
 		return fmt.Errorf("%w: Limit=%d must be > 0", ErrQueryInvalid, q.Limit)

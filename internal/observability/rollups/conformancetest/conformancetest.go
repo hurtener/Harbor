@@ -63,6 +63,8 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("DimensionIsolation", func(t *testing.T) { dimensionIsolation(t, factory) })
 	t.Run("QueryValidation", func(t *testing.T) { queryValidation(t, factory) })
 	t.Run("AgentAndUnsupportedRejected", func(t *testing.T) { agentAndUnsupportedRejected(t, factory) })
+	t.Run("UsageNonnegativeGate", func(t *testing.T) { usageNonnegativeGate(t, factory) })
+	t.Run("NegativeDeltaRejectedAtomically", func(t *testing.T) { negativeDeltaRejectedAtomically(t, factory) })
 	t.Run("DeterministicPagination", func(t *testing.T) { deterministicPagination(t, factory) })
 	t.Run("CursorShapeBinding", func(t *testing.T) { cursorShapeBinding(t, factory) })
 	t.Run("GroupBy", func(t *testing.T) { groupBy(t, factory) })
@@ -737,6 +739,17 @@ func queryValidation(t *testing.T, factory Factory) {
 		}, rollups.ErrQueryInvalid},
 		{"unknown sort", func(q *rollups.Query) { q.Sort = "cost" }, rollups.ErrQueryInvalid},
 		{"measure sort without measure", func(q *rollups.Query) { q.Sort = rollups.SortKeyMeasureDesc }, rollups.ErrQueryInvalid},
+		{"measure sort outside selected measures", func(q *rollups.Query) {
+			q.Sort = rollups.SortKeyMeasureAsc
+			// Closed, but NOT a member of base.Measures ([llm_cost_micros]):
+			// sorting by it would read a missing row value as zero and
+			// silently degenerate the order/cursor, so it is refused.
+			q.SortMeasure = rollups.MeasureLLMCompletions
+		}, rollups.ErrQueryInvalid},
+		{"measure sort with selected measure", func(q *rollups.Query) {
+			q.Sort = rollups.SortKeyMeasureAsc
+			q.SortMeasure = rollups.MeasureLLMCostMicros // selected: must pass
+		}, nil},
 		{"zero limit", func(q *rollups.Query) { q.Limit = 0 }, rollups.ErrQueryInvalid},
 		{"negative limit", func(q *rollups.Query) { q.Limit = -5 }, rollups.ErrQueryInvalid},
 		{"limit over budget", func(q *rollups.Query) { q.Limit = rollups.MaxRowsPerQuery + 1 }, rollups.ErrQueryBudget},
@@ -804,6 +817,119 @@ func agentAndUnsupportedRejected(t *testing.T, factory Factory) {
 	}
 }
 
+// usageNonnegativeGate pins the Extract-level nonnegative gate on the
+// canonical usage fields: a negative token count or latency is a corrupted
+// payload and is refused loudly with ErrNegativeMeasure — it is never cast
+// into a shrinking counter — while exact zero remains valid.
+func usageNonnegativeGate(t *testing.T, factory Factory) {
+	ctx := context.Background()
+	s, cleanup := factory()
+	defer cleanup()
+
+	at := rollups.BucketStart(anchor, rollups.StoreGranularity)
+	bad := []llm.Usage{
+		{PromptTokens: -1},
+		{CompletionTokens: -1},
+		{ReasoningTokens: -1},
+		{CacheReadTokens: -1},
+		{CacheWriteTokens: -1},
+		{TotalTokens: -1},
+		{LatencyMS: -1},
+	}
+	for i, usage := range bad {
+		ev := costEventUsage(uint64(i+1), at, quadT1U1S1, "m", 1, usage)
+		if _, err := rollups.Extract(ev); !errors.Is(err, rollups.ErrNegativeMeasure) {
+			t.Fatalf("Extract(usage=%+v) err = %v; want ErrNegativeMeasure", usage, err)
+		}
+	}
+	// Exact zero remains valid: zero tokens and zero latency are legitimate
+	// provider reports, and the successful-completion count still lands
+	// through the store seam.
+	ds, err := rollups.Extract(costEventUsage(99, at, quadT1U1S1, "m", 0, llm.Usage{}))
+	if err != nil {
+		t.Fatalf("Extract(zero usage): %v", err)
+	}
+	if len(ds) != 1 || ds[0].Add.LLMCompletions != 1 || ds[0].Add.LLMTokensTotal != 0 || ds[0].Add.LLMLatencySumMS != 0 {
+		t.Fatalf("zero-usage deltas = %+v; want completions 1 with token/latency sums 0", ds)
+	}
+	if err := s.ApplyBatch(ctx, rollups.Batch{Checkpoint: 99, Deltas: ds}); err != nil {
+		t.Fatalf("ApplyBatch(zero usage): %v", err)
+	}
+	from := rollups.BucketStart(at, rollups.BucketHour)
+	res, err := s.Query(ctx, rollups.Query{
+		From:     from,
+		To:       from.Add(time.Hour),
+		Bucket:   rollups.BucketHour,
+		Measures: []rollups.Measure{rollups.MeasureLLMCompletions, rollups.MeasureLLMTokensTotal, rollups.MeasureLLMLatencySumMS},
+		Sort:     rollups.SortKeyBucketAsc,
+		Limit:    100,
+	})
+	if err != nil {
+		t.Fatalf("zero-usage query: %v", err)
+	}
+	if len(res.Rows) != 1 || res.Rows[0].Measures[rollups.MeasureLLMCompletions].N != 1 {
+		t.Fatalf("zero-usage row = %+v; want 1 row with completions 1", res.Rows)
+	}
+}
+
+// negativeDeltaRejectedAtomically pins the domain's nonnegative invariant
+// at the STORE seam: a batch carrying a negative additive delta (which the
+// canonical Extract can no longer produce — it refuses negative usage —
+// but which a hand-built Delta could smuggle in) is refused WHOLE with
+// ErrNegativeMeasure: no row is written, no checkpoint advance, and a
+// pre-existing row is untouched.
+func negativeDeltaRejectedAtomically(t *testing.T, factory Factory) {
+	ctx := context.Background()
+	s, cleanup := factory()
+	defer cleanup()
+
+	h := rollups.BucketStart(anchor, rollups.StoreGranularity)
+	// Seed a row so a refused batch can be proven to leave it untouched.
+	apply(ctx, t, s, costEvent(1, h, quadT1U1S1, "model-a", 1, 10, 10, 10))
+
+	key := rollups.Key{BucketStart: h, TenantID: "tenant-b", UserID: "user-2", SessionID: "session-2", Model: "model-b"}
+	// The negative delta is hand-built (Extract's gate refuses the
+	// canonical path): simulate a corrupted downstream caller.
+	neg := rollups.Delta{Key: key, Add: rollups.MeasureSet{LLMTokensTotal: -5}}
+	// A fitting positive delta rides the same batch: the WHOLE batch must
+	// be refused — the positive delta is not applied.
+	pos := rollups.Delta{Key: key, Add: rollups.MeasureSet{LLMCompletions: 1}}
+	err := s.ApplyBatch(ctx, rollups.Batch{Checkpoint: 2, Deltas: []rollups.Delta{pos, neg}})
+	if !errors.Is(err, rollups.ErrNegativeMeasure) {
+		t.Fatalf("negative-delta ApplyBatch err = %v; want ErrNegativeMeasure", err)
+	}
+	if ck, err := s.Checkpoint(ctx); err != nil || ck != 1 {
+		t.Fatalf("checkpoint after refused batch = %d, %v; want 1 (no advance)", ck, err)
+	}
+	// The positive delta's row must not exist and the seed row must be
+	// untouched — no partial application.
+	from := rollups.BucketStart(h, rollups.BucketHour)
+	res, err := s.Query(ctx, rollups.Query{
+		From:     from,
+		To:       from.Add(time.Hour),
+		Bucket:   rollups.BucketHour,
+		Measures: []rollups.Measure{rollups.MeasureLLMCostMicros, rollups.MeasureLLMCompletions},
+		Sort:     rollups.SortKeyBucketAsc,
+		Limit:    100,
+	})
+	if err != nil {
+		t.Fatalf("post-refusal query: %v", err)
+	}
+	if len(res.Rows) != 1 {
+		t.Fatalf("rows after refused batch = %d; want 1 (only the seed row)", len(res.Rows))
+	}
+	if got := res.Rows[0].Measures[rollups.MeasureLLMCostMicros].N; got != 1_000_000 {
+		t.Fatalf("seed cost after refused batch = %d; want 1_000_000 (untouched)", got)
+	}
+	if got := res.Rows[0].Measures[rollups.MeasureLLMCompletions].N; got != 1 {
+		t.Fatalf("seed completions after refused batch = %d; want 1 (untouched)", got)
+	}
+}
+
+// deterministicPagination pins the total, deterministic page walk: the
+// concatenated pages of a limit-2 walk equal the full query row-for-row,
+// measure sorts paginate, and a cursor from a different query shape is
+// rejected loudly.
 func deterministicPagination(t *testing.T, factory Factory) {
 	ctx := context.Background()
 	s, cleanup := factory()
@@ -1004,7 +1130,10 @@ func cursorShapeBinding(t *testing.T, factory Factory) {
 		{"sort", func(q *rollups.Query) { q.Sort = rollups.SortKeyBucketDesc }},
 		{"sort measure", func(q *rollups.Query) {
 			q.Sort = rollups.SortKeyMeasureAsc
-			q.SortMeasure = rollups.MeasureLLMCompletions
+			// The mutated query must stay VALID so the failure is the
+			// cursor's shape binding, not validation: SortMeasure must be
+			// a member of the selected Measures.
+			q.SortMeasure = rollups.MeasureLLMCostMicros
 		}},
 	}
 	for _, tc := range cases {

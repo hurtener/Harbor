@@ -298,6 +298,41 @@ func TestQueryValidate(t *testing.T) {
 		t.Fatalf("measure sort with SortMeasure must pass: %v", err)
 	}
 
+	// A measure sort whose SortMeasure is CLOSED but NOT among the selected
+	// Measures is refused loudly: the store would otherwise read a missing
+	// row value as zero and silently degenerate the sort and the pagination
+	// cursor.
+	q = valid
+	q.Sort = SortKeyMeasureAsc
+	q.SortMeasure = MeasureLLMCompletions // closed, but not in valid.Measures
+	if err := q.Validate(); !errors.Is(err, ErrQueryInvalid) {
+		t.Fatalf("measure sort with unselected SortMeasure: err=%v; want ErrQueryInvalid", err)
+	}
+	// Selecting the sort measure alongside it makes the query valid again.
+	q.Measures = []Measure{MeasureLLMCostMicros, MeasureLLMCompletions}
+	if err := q.Validate(); err != nil {
+		t.Fatalf("measure sort after selecting SortMeasure must pass: %v", err)
+	}
+	// The fingerprint contract is untouched by the new gate: an identical
+	// valid measure-sort query fingerprints byte-identically (golden
+	// pinned), so cursors produced by such queries stay deterministic
+	// across this change.
+	fpQ := Query{
+		From:        from,
+		To:          from.Add(time.Hour),
+		Bucket:      BucketMinute,
+		Measures:    []Measure{MeasureLLMCostMicros},
+		Sort:        SortKeyMeasureAsc,
+		SortMeasure: MeasureLLMCostMicros,
+		Limit:       100,
+	}
+	if err := fpQ.Validate(); err != nil {
+		t.Fatalf("pinned measure-sort query must validate: %v", err)
+	}
+	if got, want := QueryShapeFingerprint(fpQ), "DljhijpTO4eYBaOv3yeoB_dwOC9iTyI_7Z8-04oChis"; got != want {
+		t.Fatalf("measure-sort fingerprint = %q; want %q (byte-stable across the SortMeasure membership gate)", got, want)
+	}
+
 	// The window budget fails loudly for a window spanning too many
 	// buckets at the requested size.
 	q = valid
