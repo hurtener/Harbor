@@ -324,6 +324,7 @@ export interface AgentConfigAgentPacksRemoveResponse { revision: AgentConfigRevi
 export interface AgentConfigAgentPacksProposeResponse {
 	skill: AgentConfigAgentPackItem; hash: string; warnings?: string[]; provenance: string;
 	proposal_id: string; expected_content_hash: string; dry_run: boolean; protocol_version: string;
+	policy_id: string; policy_hash: string;
 }
 export interface AgentConfigAgentPacksCommitResponse { revision: AgentConfigRevisionView; skill: AgentConfigSkillSummary; hash: string; protocol_version: string; }
 

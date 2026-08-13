@@ -40,11 +40,13 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -106,56 +108,89 @@ type AgentPackDraft struct {
 // AgentPackAuthoringPolicy is server-owned input to the proposer. Its hash
 // binds both the stable policy and the exact visible capability snapshot.
 type AgentPackAuthoringPolicy struct {
-	ID                    string   `json:"id"`
-	Version               string   `json:"version"`
-	PermittedTools        []string `json:"permitted_tools,omitempty"`
-	PermittedNS           []string `json:"permitted_ns,omitempty"`
-	PermittedTags         []string `json:"permitted_tags,omitempty"`
-	PermittedCapabilities []string `json:"permitted_capabilities,omitempty"`
+	ID             string   `json:"id"`
+	Version        string   `json:"version"`
+	PermittedTools []string `json:"permitted_tools,omitempty"`
+	PermittedNS    []string `json:"permitted_ns,omitempty"`
+	PermittedTags  []string `json:"permitted_tags,omitempty"`
 }
 
 const agentPackAuthoringPolicyID = "harbor.agent-pack-authoring"
 const agentPackAuthoringPolicyVersion = "1"
 
 func canonicalPolicyHash(p AgentPackAuthoringPolicy) string {
-	b, _ := json.Marshal(p)
-	sum := sha256.Sum256(b)
+	// This is a closed, scalar/slice-only value. Encode the fields in a fixed
+	// order so the canonical form is deterministic without an ignored error
+	// from a serializer that cannot fail for this shape.
+	var b strings.Builder
+	b.WriteString(`{"id":`)
+	b.WriteString(strconv.Quote(p.ID))
+	b.WriteString(`,"version":`)
+	b.WriteString(strconv.Quote(p.Version))
+	b.WriteString(`,"permitted_tools":`)
+	writeCanonicalStrings(&b, p.PermittedTools)
+	b.WriteString(`,"permitted_ns":`)
+	writeCanonicalStrings(&b, p.PermittedNS)
+	b.WriteString(`,"permitted_tags":`)
+	writeCanonicalStrings(&b, p.PermittedTags)
+	b.WriteByte('}')
+	bBytes := []byte(b.String())
+	sum := sha256.Sum256(bBytes)
 	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func writeCanonicalStrings(b *strings.Builder, values []string) {
+	copyValues := append([]string(nil), values...)
+	sort.Strings(copyValues)
+	b.WriteByte('[')
+	for i, value := range copyValues {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.Quote(value))
+	}
+	b.WriteByte(']')
 }
 
 // verifyProposalPolicy intentionally rejects legacy receipts. There is no
 // deterministic normalization that can prove which server policy produced a
 // receipt lacking its policy binding, so replaying one would be unsafe.
 func verifyProposalPolicy(received, current AgentPackAuthoringPolicy, hash string) error {
+	receivedHash := canonicalPolicyHash(received)
+	currentHash := canonicalPolicyHash(current)
 	if received.ID != agentPackAuthoringPolicyID || received.Version != agentPackAuthoringPolicyVersion ||
 		received.ID != current.ID || received.Version != current.Version ||
-		hash == "" || hash != canonicalPolicyHash(received) || hash != canonicalPolicyHash(current) {
+		hash == "" || hash != receivedHash || hash != currentHash {
 		return ErrAgentPackProposalInvalid
 	}
 	return nil
 }
 
-func (s *Service) agentPackAuthoringPolicy(ctx context.Context, id identity.Identity) (AgentPackAuthoringPolicy, error) {
+func (s *Service) agentPackAuthoringPolicy(ctx context.Context, id identity.Identity, agentID string) (AgentPackAuthoringPolicy, error) {
 	if s.agentPackCatalog == nil {
 		return AgentPackAuthoringPolicy{}, ErrAgentPacksInvalid
 	}
-	items := s.agentPackCatalog.List(tools.CatalogFilter{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}})
-	sets := [4]map[string]struct{}{map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}}
-	for _, item := range items {
-		sets[0][item.Name] = struct{}{}
-		if item.Source != "" {
-			sets[1][string(item.Source)] = struct{}{}
-		}
-		for _, tag := range item.Tags {
-			sets[2][tag] = struct{}{}
-		}
-		for _, capability := range item.AuthScopes {
-			sets[3][capability] = struct{}{}
-		}
-	}
 	policy := AgentPackAuthoringPolicy{ID: agentPackAuthoringPolicyID, Version: agentPackAuthoringPolicyVersion}
-	policy.PermittedTools, policy.PermittedNS, policy.PermittedTags, policy.PermittedCapabilities = sortedSet(sets[0]), sortedSet(sets[1]), sortedSet(sets[2]), sortedSet(sets[3])
+	view, err := projection.ActivePlannerCatalogView(ctx, s.registry, s.sessionOverlay, agentID, identity.Quadruple{Identity: id}, s.agentPackCatalog, tools.CatalogFilter{
+		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, GrantedScopes: s.agentPackGrantedScopes,
+		LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred},
+	})
+	if err != nil {
+		return AgentPackAuthoringPolicy{}, fmt.Errorf("project agent pack capabilities: %w", err)
+	}
+	for _, item := range view.List() {
+		policy.PermittedTools = append(policy.PermittedTools, item.Name)
+	}
+	policy.PermittedTools = sortedSet(toSet(policy.PermittedTools))
 	return policy, nil
+}
+
+func toSet(values []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		set[value] = struct{}{}
+	}
+	return set
 }
 
 func sortedSet(in map[string]struct{}) []string {
@@ -562,7 +597,7 @@ func (s *Service) AgentPacksPropose(ctx context.Context, req prototypes.AgentCon
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, err
 	}
-	policy, err := s.agentPackAuthoringPolicy(ctx, id)
+	policy, err := s.agentPackAuthoringPolicy(ctx, id, req.AgentID)
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, err
 	}
@@ -691,7 +726,7 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	if err := normalizePackProposalProvenance(&proposal); err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
-	policy, policyErr := s.agentPackAuthoringPolicy(ctx, id)
+	policy, policyErr := s.agentPackAuthoringPolicy(ctx, id, req.AgentID)
 	if policyErr != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, policyErr
 	}

@@ -699,6 +699,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithSignedOAuthMCPOperationState(in.State),
 			agentcfgprotocol.WithAgentPackProposalState(in.State),
 			agentcfgprotocol.WithAgentPackCatalog(in.Catalog),
+			agentcfgprotocol.WithAgentPackGrantedScopes(append([]string(nil), cfg.Tools.GrantedScopes...)),
 		}
 		if in.AgentPackLLM != nil {
 			proposer, proposerErr := packproposer.New(in.AgentPackLLM)

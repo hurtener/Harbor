@@ -11,6 +11,7 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 type agentPackTestProposer struct {
@@ -58,7 +59,11 @@ func TestAgentPacksCommit_ResumesPreparedTargetWithoutSecondRevision(t *testing.
 	}
 	item := skills.AgentPackItem{Name: "playbook", Trigger: "trigger", Steps: []string{"step"}}
 	proposer := agentPackTestProposer{item: item}
-	first, err := agentcfgprotocol.NewService(&preparedButUnpublishedRegistry{Registry: reg}, agentcfgprotocol.WithAgentPackProposer(proposer), agentcfgprotocol.WithAgentPackProposalState(proposals))
+	catalog := tools.NewCatalog()
+	if err := catalog.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "playbook_tool"}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) { return tools.ToolResult{}, nil }}); err != nil {
+		t.Fatalf("register catalog tool: %v", err)
+	}
+	first, err := agentcfgprotocol.NewService(&preparedButUnpublishedRegistry{Registry: reg}, agentcfgprotocol.WithAgentPackProposer(proposer), agentcfgprotocol.WithAgentPackProposalState(proposals), agentcfgprotocol.WithAgentPackCatalog(catalog))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -87,7 +92,7 @@ func TestAgentPacksCommit_ResumesPreparedTargetWithoutSecondRevision(t *testing.
 		t.Fatalf("receipt did not durably capture exact target: %v", receiptFields)
 	}
 
-	second, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithAgentPackProposalState(proposals))
+	second, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithAgentPackProposalState(proposals), agentcfgprotocol.WithAgentPackCatalog(catalog))
 	if err != nil {
 		t.Fatalf("NewService retry: %v", err)
 	}

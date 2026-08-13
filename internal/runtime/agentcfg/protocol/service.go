@@ -209,13 +209,14 @@ type Service struct {
 	// concrete (which owns the LLM call under the agent's configured model)
 	// is injected at the cmd/harbor + devstack boundary; this package depends
 	// only on the interface.
-	agentPackProposer  AgentPackProposer
-	agentPackProposals state.StateStore
-	agentPackCatalog   tools.ToolCatalog
-	bus                events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
-	logger             *slog.Logger
-	now                Clock
-	runSnapshots       *runsnapshot.Gate
+	agentPackProposer      AgentPackProposer
+	agentPackProposals     state.StateStore
+	agentPackCatalog       tools.ToolCatalog
+	agentPackGrantedScopes []string
+	bus                    events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
+	logger                 *slog.Logger
+	now                    Clock
+	runSnapshots           *runsnapshot.Gate
 
 	// preparer drives the unpublished MCP prepare/persist/activate lifecycle.
 	// Optional — nil ⇒ add_mcp_connection returns ErrConnectionAttachUnavailable
@@ -571,6 +572,12 @@ func WithAgentPackProposer(p AgentPackProposer) Option {
 // used by governed authoring. A missing catalog is fail-closed.
 func WithAgentPackCatalog(c tools.ToolCatalog) Option {
 	return func(s *Service) { s.agentPackCatalog = c }
+}
+
+// WithAgentPackGrantedScopes supplies the boot operator authorization scopes
+// used by the same run-start catalog projection as the planner.
+func WithAgentPackGrantedScopes(scopes []string) Option {
+	return func(s *Service) { s.agentPackGrantedScopes = append([]string(nil), scopes...) }
 }
 
 // WithAgentPackProposalState wires the durable, identity-scoped single-use
