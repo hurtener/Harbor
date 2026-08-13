@@ -138,7 +138,7 @@ if [ -f "test/integration/wave_v115_tui_test.go" ] \
     && grep -rqE 'TestE2E_WaveV115TUI' test/integration/wave_v115_tui_test.go; then
     ok 'phase 184: wave-end PTY E2E test exists (TestE2E_WaveV115TUI)'
 else
-    skip 'phase 184: wave-end PTY E2E test not yet present'
+    fail 'phase 184: required wave-end PTY E2E test is missing or renamed'
 fi
 
 # ----------------------------------------------------------------------------
@@ -146,7 +146,11 @@ fi
 #     This runs the focused test; a no-match-fails guard ensures the test name
 #     exists (so a rename is caught).
 # ----------------------------------------------------------------------------
-if [ -f "test/integration/wave_v115_tui_test.go" ]; then
+if [ ! -f "test/integration/wave_v115_tui_test.go" ]; then
+    fail 'phase 184: required wave-end PTY E2E test file is missing or renamed'
+elif ! grep -rqE 'TestE2E_WaveV115TUI' test/integration/wave_v115_tui_test.go; then
+    fail 'phase 184: required TestE2E_WaveV115TUI is missing or renamed'
+else
     # Capture the one focused invocation so a dependency-acquisition failure
     # can be classified without rerunning the same network-bound command.
     if focused_output="$(go test -race -count=1 -run 'TestE2E_WaveV115TUI' ./test/integration/... 2>&1)"; then
@@ -161,13 +165,14 @@ if [ -f "test/integration/wave_v115_tui_test.go" ]; then
         fail 'phase 184: TestE2E_WaveV115TUI did not match any test'
     elif [ "${focused_status}" -eq 0 ]; then
         ok 'phase 184: TestE2E_WaveV115TUI passes under -race'
-    elif printf '%s\n' "${focused_output}" | grep -Eiq '(sum\.golang\.org|proxy\.golang\.org).*(HTTP/2 INTERNAL_ERROR|INTERNAL_ERROR|connection (reset|refused|timed out)|i/o timeout|TLS handshake timeout|network is unreachable|no such host|temporary failure in name resolution|502 Bad Gateway|503 Service Unavailable|500 Internal Server Error|EOF)'; then
+    elif printf '%s\n' "${focused_output}" \
+        | grep -Eiq '(go: (downloading|module lookup)|verifying|reading https?://(sum\.golang\.org|proxy\.golang\.org)|Get "https?://(sum\.golang\.org|proxy\.golang\.org)' \
+        && printf '%s\n' "${focused_output}" | grep -Eiq 'https?://(sum\.golang\.org|proxy\.golang\.org)' \
+        && printf '%s\n' "${focused_output}" | grep -Eiq '(HTTP/2 INTERNAL_ERROR|connection (reset|refused|timed out)|i/o timeout|TLS handshake timeout|network is unreachable|no such host|temporary failure in name resolution|502 Bad Gateway|503 Service Unavailable|500 Internal Server Error|EOF)'; then
         skip 'phase 184: TestE2E_WaveV115TUI skipped (module proxy/checksum acquisition network failure)'
     else
         fail 'phase 184: TestE2E_WaveV115TUI fails under -race'
     fi
-else
-    skip 'phase 184: wave-end E2E test file not yet present'
 fi
 
 # ----------------------------------------------------------------------------
