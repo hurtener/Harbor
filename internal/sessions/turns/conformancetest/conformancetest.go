@@ -11,19 +11,18 @@
 //	import "github.com/hurtener/Harbor/internal/sessions/turns/conformancetest"
 //
 //	func TestMyDriver_Conformance(t *testing.T) {
-//	    conformancetest.Run(t, func() (turns.Store, state.StateStore, func()) {
-//	        s, st := mydriver.MustNew(t)
-//	        return s, st, func() { _ = s.Close(context.Background()) }
+//	    conformancetest.Run(t, func() (turns.Store, func()) {
+//	        s := mydriver.MustNew(t)
+//	        return s, func() { _ = s.Close(context.Background()) }
 //	    })
 //	}
 //
-// The factory must return a fresh, empty Store plus the shared
-// state.StateStore the driver fences against, plus a cleanup closure.
-// The StateStore is part of the factory contract because the erasure
-// fence slots (internal/agentcfg/sessionfence) live in StateStore by
-// construction — the suite writes them to pin the fence contract.
-// The suite uses the factory once per top-level subtest; invocations
-// are independent.
+// The factory must return a fresh, empty Store plus a cleanup closure.
+// Erasure fencing is STORE-LOCAL: the suite exercises the driver's own
+// FenceSession / DeleteScope contract, and a driver never inspects
+// external StateStore slots (no cross-runtime authority). The suite
+// uses the factory once per top-level subtest; invocations are
+// independent.
 package conformancetest
 
 import (
@@ -37,12 +36,10 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
-	"github.com/hurtener/Harbor/internal/state"
 )
 
-// Factory builds a fresh turns.Store over a fresh shared
-// state.StateStore and returns a cleanup closure.
-type Factory func() (turns.Store, state.StateStore, func())
+// Factory builds a fresh turns.Store and returns a cleanup closure.
+type Factory func() (turns.Store, func())
 
 // Run executes the canonical correctness suite.
 //
@@ -51,12 +48,11 @@ type Factory func() (turns.Store, state.StateStore, func())
 //   - Identity_Mandatory
 //   - Append_MintsMonotonicPerSessionSequences
 //   - Append_Idempotent_ExistingTurnReturnsExistingRow
-//   - Append_Fenced_PendingErasure
-//   - Append_Fenced_ConvergedErasure
+//   - Append_Fenced_AfterFenceSession
 //   - Update_AdvancesVersion_AndReplacesComponents
 //   - Update_StaleVersion_Rejected
 //   - Update_Sealed_Rejected
-//   - Update_Fenced_PendingErasure
+//   - Update_Fenced_AfterFenceSession
 //   - Seal_Terminal_ImmutableAfter
 //   - Seal_StaleVersion_Rejected
 //   - GetTurn_NotFound_And_CrossSessionIsolation
@@ -64,30 +60,30 @@ type Factory func() (turns.Store, state.StateStore, func())
 //   - ListTurns_EmptySession
 //   - Checkpoint_MonotonicIdempotent
 //   - Checkpoint_ConcurrentAdvances_ConvergeToMax
-//   - DeleteScope_RemovesRowsAndCheckpoint
+//   - FenceSession_FencesAllWrites_AndSurvivesErase
+//   - DeleteScope_RemovesRowsAndCheckpoint_KeepsFence
+//   - Row_HonestFields_RoundTrip
 //   - Concurrent_AppendList_NoRace
 //   - Close_Then_Rejects
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
 
 	t.Run("Identity_Mandatory", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		zero := identity.Identity{}
-		fence, err := turns.FenceFor(zero)
-		if err == nil {
-			t.Fatalf("FenceFor(zero) must fail")
-		}
-		_ = fence
-		if _, err := s.AppendTurnIf(ctx, zero, turns.TurnRow{TurnID: "r"}, turns.Fence{}); !errors.Is(err, turns.ErrIdentityRequired) {
+		if _, err := s.AppendTurnIf(ctx, zero, turns.TurnRow{TurnID: "r"}); !errors.Is(err, turns.ErrIdentityRequired) {
 			t.Errorf("AppendTurnIf zero identity error=%v, want ErrIdentityRequired", err)
 		}
-		if _, err := s.UpdateTurnIf(ctx, zero, "r", 1, turns.TurnRow{}, turns.Fence{}); !errors.Is(err, turns.ErrIdentityRequired) {
+		if _, err := s.UpdateTurnIf(ctx, zero, "r", 1, turns.TurnRow{}); !errors.Is(err, turns.ErrIdentityRequired) {
 			t.Errorf("UpdateTurnIf zero identity error=%v, want ErrIdentityRequired", err)
 		}
-		if _, err := s.SealTurnIf(ctx, zero, "r", 1, turns.TurnRow{}, turns.Fence{}); !errors.Is(err, turns.ErrIdentityRequired) {
+		if _, err := s.SealTurnIf(ctx, zero, "r", 1, turns.TurnRow{}); !errors.Is(err, turns.ErrIdentityRequired) {
 			t.Errorf("SealTurnIf zero identity error=%v, want ErrIdentityRequired", err)
+		}
+		if err := s.FenceSession(ctx, zero); !errors.Is(err, turns.ErrIdentityRequired) {
+			t.Errorf("FenceSession zero identity error=%v, want ErrIdentityRequired", err)
 		}
 		if _, err := s.GetTurn(ctx, zero, "r"); !errors.Is(err, turns.ErrIdentityRequired) {
 			t.Errorf("GetTurn zero identity error=%v, want ErrIdentityRequired", err)
@@ -107,23 +103,21 @@ func Run(t *testing.T, factory Factory) {
 	})
 
 	t.Run("Append_MintsMonotonicPerSessionSequences", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
 		other := triple("tenant-b", "user-b", "session-b")
-		fence := fenceFor(t, id)
-		otherFence := fenceFor(t, other)
 
 		r1 := freshRow("run-1", id)
-		got1, err := s.AppendTurnIf(ctx, id, r1, fence)
+		got1, err := s.AppendTurnIf(ctx, id, r1)
 		if err != nil {
 			t.Fatalf("append 1: %v", err)
 		}
 		if got1.Sequence != 1 {
 			t.Errorf("first sequence=%d, want 1", got1.Sequence)
 		}
-		got2, err := s.AppendTurnIf(ctx, id, freshRow("run-2", id), fence)
+		got2, err := s.AppendTurnIf(ctx, id, freshRow("run-2", id))
 		if err != nil {
 			t.Fatalf("append 2: %v", err)
 		}
@@ -131,7 +125,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Errorf("second sequence=%d, want 2", got2.Sequence)
 		}
 		// A different session restarts the counter.
-		gotOther, err := s.AppendTurnIf(ctx, other, freshRow("run-1", other), otherFence)
+		gotOther, err := s.AppendTurnIf(ctx, other, freshRow("run-1", other))
 		if err != nil {
 			t.Fatalf("append other: %v", err)
 		}
@@ -141,12 +135,11 @@ func Run(t *testing.T, factory Factory) {
 	})
 
 	t.Run("Append_Idempotent_ExistingTurnReturnsExistingRow", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
-		first, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id), fence)
+		first, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id))
 		if err != nil {
 			t.Fatalf("first append: %v", err)
 		}
@@ -155,7 +148,7 @@ func Run(t *testing.T, factory Factory) {
 		// and never an overwrite.
 		dup := freshRow("run-1", id)
 		dup.Query = turns.Query{Text: "MUST NOT OVERWRITE", Complete: turns.CompletenessComplete}
-		second, err := s.AppendTurnIf(ctx, id, dup, fence)
+		second, err := s.AppendTurnIf(ctx, id, dup)
 		if err != nil {
 			t.Fatalf("re-append: %v", err)
 		}
@@ -167,51 +160,39 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	t.Run("Append_Fenced_PendingErasure", func(t *testing.T) {
-		s, st, cleanup := factory()
+	t.Run("Append_Fenced_AfterFenceSession", func(t *testing.T) {
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
-		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id), fence); err != nil {
+		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id)); err != nil {
 			t.Fatalf("pre-fence append: %v", err)
 		}
-		// The erasure cascade writes the pending ledger first.
-		writeFenceSlot(t, st, fence.PendingAbsent)
-		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-2", id), fence); !errors.Is(err, turns.ErrErasureFenced) {
-			t.Errorf("append with pending ledger error=%v, want ErrErasureFenced", err)
+		// The erasure cascade sets the STORE-LOCAL fence first.
+		if err := s.FenceSession(ctx, id); err != nil {
+			t.Fatalf("FenceSession: %v", err)
 		}
-	})
-
-	t.Run("Append_Fenced_ConvergedErasure", func(t *testing.T) {
-		s, st, cleanup := factory()
-		defer cleanup()
-		ctx := context.Background()
-		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
-		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id), fence); err != nil {
-			t.Fatalf("pre-fence append: %v", err)
+		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-2", id)); !errors.Is(err, turns.ErrErasureFenced) {
+			t.Errorf("append after fence error=%v, want ErrErasureFenced", err)
 		}
-		// A converged erasure leaves the terminal tombstone.
-		writeFenceSlot(t, st, fence.TombstoneAbsent)
-		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-2", id), fence); !errors.Is(err, turns.ErrErasureFenced) {
-			t.Errorf("append with tombstone error=%v, want ErrErasureFenced", err)
+		// Fencing again is an idempotent no-op.
+		if err := s.FenceSession(ctx, id); err != nil {
+			t.Errorf("re-fence error=%v, want nil (idempotent)", err)
 		}
 	})
 
 	t.Run("Update_AdvancesVersion_AndReplacesComponents", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
-		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id), fence)
+		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id))
 		if err != nil {
 			t.Fatalf("append: %v", err)
 		}
 		next := row
-		next.Answer = turns.Answer{Inline: "hello", Complete: turns.CompletenessComplete}
-		got, err := s.UpdateTurnIf(ctx, id, "run-1", row.Version, next, fence)
+		next.Answer = turns.Answer{State: turns.AnswerStateInline, Inline: "hello"}
+		got, err := s.UpdateTurnIf(ctx, id, "run-1", row.Version, next)
 		if err != nil {
 			t.Fatalf("update: %v", err)
 		}
@@ -227,70 +208,68 @@ func Run(t *testing.T, factory Factory) {
 	})
 
 	t.Run("Update_StaleVersion_Rejected", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
-		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id), fence)
+		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id))
 		if err != nil {
 			t.Fatalf("append: %v", err)
 		}
-		if _, err := s.UpdateTurnIf(ctx, id, "run-1", row.Version+5, row, fence); !errors.Is(err, turns.ErrStaleVersion) {
+		if _, err := s.UpdateTurnIf(ctx, id, "run-1", row.Version+5, row); !errors.Is(err, turns.ErrStaleVersion) {
 			t.Errorf("stale update error=%v, want ErrStaleVersion", err)
 		}
-		if _, err := s.UpdateTurnIf(ctx, id, "no-such", 1, row, fence); !errors.Is(err, turns.ErrTurnNotFound) {
+		if _, err := s.UpdateTurnIf(ctx, id, "no-such", 1, row); !errors.Is(err, turns.ErrTurnNotFound) {
 			t.Errorf("missing update error=%v, want ErrTurnNotFound", err)
 		}
 	})
 
 	t.Run("Update_Sealed_Rejected", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
-		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id), fence)
+		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id))
 		if err != nil {
 			t.Fatalf("append: %v", err)
 		}
 		sealed := row
 		sealed.Status = turns.StatusComplete
 		sealed.Sealed = true
-		if _, err := s.SealTurnIf(ctx, id, "run-1", row.Version, sealed, fence); err != nil {
+		if _, err := s.SealTurnIf(ctx, id, "run-1", row.Version, sealed); err != nil {
 			t.Fatalf("seal: %v", err)
 		}
-		if _, err := s.UpdateTurnIf(ctx, id, "run-1", row.Version+1, row, fence); !errors.Is(err, turns.ErrTurnSealed) {
+		if _, err := s.UpdateTurnIf(ctx, id, "run-1", row.Version+1, row); !errors.Is(err, turns.ErrTurnSealed) {
 			t.Errorf("update of sealed row error=%v, want ErrTurnSealed", err)
 		}
-		if _, err := s.SealTurnIf(ctx, id, "run-1", row.Version+1, sealed, fence); !errors.Is(err, turns.ErrTurnSealed) {
+		if _, err := s.SealTurnIf(ctx, id, "run-1", row.Version+1, sealed); !errors.Is(err, turns.ErrTurnSealed) {
 			t.Errorf("re-seal error=%v, want ErrTurnSealed", err)
 		}
 	})
 
-	t.Run("Update_Fenced_PendingErasure", func(t *testing.T) {
-		s, st, cleanup := factory()
+	t.Run("Update_Fenced_AfterFenceSession", func(t *testing.T) {
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
-		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id), fence)
+		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id))
 		if err != nil {
 			t.Fatalf("append: %v", err)
 		}
-		writeFenceSlot(t, st, fence.PendingAbsent)
-		if _, err := s.UpdateTurnIf(ctx, id, "run-1", row.Version, row, fence); !errors.Is(err, turns.ErrErasureFenced) {
+		if err := s.FenceSession(ctx, id); err != nil {
+			t.Fatalf("FenceSession: %v", err)
+		}
+		if _, err := s.UpdateTurnIf(ctx, id, "run-1", row.Version, row); !errors.Is(err, turns.ErrErasureFenced) {
 			t.Errorf("fenced update error=%v, want ErrErasureFenced", err)
 		}
 	})
 
 	t.Run("Seal_Terminal_ImmutableAfter", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
-		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id), fence)
+		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id))
 		if err != nil {
 			t.Fatalf("append: %v", err)
 		}
@@ -298,7 +277,7 @@ func Run(t *testing.T, factory Factory) {
 		sealed.Status = turns.StatusFailed
 		sealed.Sealed = true
 		sealed.ErrorClass = "runloop_error"
-		got, err := s.SealTurnIf(ctx, id, "run-1", row.Version, sealed, fence)
+		got, err := s.SealTurnIf(ctx, id, "run-1", row.Version, sealed)
 		if err != nil {
 			t.Fatalf("seal: %v", err)
 		}
@@ -309,41 +288,38 @@ func Run(t *testing.T, factory Factory) {
 			t.Errorf("sealed version=%d, want %d", got.Version, row.Version+1)
 		}
 		// Immutable after: a second seal of the same row fails.
-		if _, err := s.SealTurnIf(ctx, id, "run-1", got.Version, sealed, fence); !errors.Is(err, turns.ErrTurnSealed) {
+		if _, err := s.SealTurnIf(ctx, id, "run-1", got.Version, sealed); !errors.Is(err, turns.ErrTurnSealed) {
 			t.Errorf("second seal error=%v, want ErrTurnSealed", err)
 		}
 	})
 
 	t.Run("Seal_StaleVersion_Rejected", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
-		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id), fence)
+		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id))
 		if err != nil {
 			t.Fatalf("append: %v", err)
 		}
 		sealed := row
 		sealed.Sealed = true
 		sealed.Status = turns.StatusCancelled
-		if _, err := s.SealTurnIf(ctx, id, "run-1", row.Version+3, sealed, fence); !errors.Is(err, turns.ErrStaleVersion) {
+		if _, err := s.SealTurnIf(ctx, id, "run-1", row.Version+3, sealed); !errors.Is(err, turns.ErrStaleVersion) {
 			t.Errorf("stale seal error=%v, want ErrStaleVersion", err)
 		}
 	})
 
 	t.Run("GetTurn_NotFound_And_CrossSessionIsolation", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
 		other := triple("tenant-b", "user-b", "session-b")
-		fence := fenceFor(t, id)
-		otherFence := fenceFor(t, other)
 		if _, err := s.GetTurn(ctx, id, "run-1"); !errors.Is(err, turns.ErrTurnNotFound) {
 			t.Errorf("missing get error=%v, want ErrTurnNotFound", err)
 		}
-		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id), fence); err != nil {
+		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id)); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 		// The same turn id under a different session is NOT addressable.
@@ -351,20 +327,19 @@ func Run(t *testing.T, factory Factory) {
 			t.Errorf("cross-session get error=%v, want ErrTurnNotFound", err)
 		}
 		// And a different session can own the same turn id freely.
-		if _, err := s.AppendTurnIf(ctx, other, freshRow("run-1", other), otherFence); err != nil {
+		if _, err := s.AppendTurnIf(ctx, other, freshRow("run-1", other)); err != nil {
 			t.Errorf("same turn id in another session must be independent: %v", err)
 		}
 	})
 
 	t.Run("ListTurns_NewestFirst_KeysetPaging_NoSkipNoDuplicate", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
 		const n = 25
 		for i := 1; i <= n; i++ {
-			if _, err := s.AppendTurnIf(ctx, id, freshRow(fmt.Sprintf("run-%02d", i), id), fence); err != nil {
+			if _, err := s.AppendTurnIf(ctx, id, freshRow(fmt.Sprintf("run-%02d", i), id)); err != nil {
 				t.Fatalf("append %d: %v", i, err)
 			}
 		}
@@ -397,7 +372,7 @@ func Run(t *testing.T, factory Factory) {
 	})
 
 	t.Run("ListTurns_EmptySession", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
@@ -411,7 +386,7 @@ func Run(t *testing.T, factory Factory) {
 	})
 
 	t.Run("Checkpoint_MonotonicIdempotent", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
@@ -437,7 +412,7 @@ func Run(t *testing.T, factory Factory) {
 	})
 
 	t.Run("Checkpoint_ConcurrentAdvances_ConvergeToMax", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
@@ -465,22 +440,83 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	t.Run("DeleteScope_RemovesRowsAndCheckpoint", func(t *testing.T) {
-		s, _, cleanup := factory()
+	t.Run("FenceSession_FencesAllWrites_AndSurvivesErase", func(t *testing.T) {
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
 		other := triple("tenant-b", "user-b", "session-b")
-		fence := fenceFor(t, id)
-		otherFence := fenceFor(t, other)
-		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id), fence); err != nil {
+		row, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id))
+		if err != nil {
+			t.Fatalf("append: %v", err)
+		}
+		if err := s.SaveCheckpoint(ctx, id, 7); err != nil {
+			t.Fatalf("checkpoint: %v", err)
+		}
+		// Fencing the session refuses EVERY write path.
+		if err := s.FenceSession(ctx, id); err != nil {
+			t.Fatalf("FenceSession: %v", err)
+		}
+		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-2", id)); !errors.Is(err, turns.ErrErasureFenced) {
+			t.Errorf("fenced append error=%v, want ErrErasureFenced", err)
+		}
+		if _, err := s.UpdateTurnIf(ctx, id, "run-1", row.Version, row); !errors.Is(err, turns.ErrErasureFenced) {
+			t.Errorf("fenced update error=%v, want ErrErasureFenced", err)
+		}
+		sealed := row
+		sealed.Sealed = true
+		sealed.Status = turns.StatusCancelled
+		if _, err := s.SealTurnIf(ctx, id, "run-1", row.Version, sealed); !errors.Is(err, turns.ErrErasureFenced) {
+			t.Errorf("fenced seal error=%v, want ErrErasureFenced", err)
+		}
+		if err := s.SaveCheckpoint(ctx, id, 8); !errors.Is(err, turns.ErrErasureFenced) {
+			t.Errorf("fenced checkpoint error=%v, want ErrErasureFenced (rebuild must not advance an erased session)", err)
+		}
+		// A sibling session is untouched by the fence.
+		if _, err := s.AppendTurnIf(ctx, other, freshRow("run-1", other)); err != nil {
+			t.Errorf("sibling session must survive the fence: %v", err)
+		}
+		// The erasure cascade deletes the scope; the FENCE SURVIVES the
+		// erase — an erased session stays fenced (no resurrection after
+		// replay / restart).
+		if _, err := s.DeleteScope(ctx, id); err != nil {
+			t.Fatalf("DeleteScope: %v", err)
+		}
+		if _, err := s.GetTurn(ctx, id, "run-1"); !errors.Is(err, turns.ErrTurnNotFound) {
+			t.Errorf("post-erase get error=%v, want ErrTurnNotFound", err)
+		}
+		if seq, _ := s.LoadCheckpoint(ctx, id); seq != 0 {
+			t.Errorf("post-erase checkpoint=%d, want 0", seq)
+		}
+		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-3", id)); !errors.Is(err, turns.ErrErasureFenced) {
+			t.Errorf("post-erase append error=%v, want ErrErasureFenced (fence survives erase)", err)
+		}
+		if err := s.SaveCheckpoint(ctx, id, 9); !errors.Is(err, turns.ErrErasureFenced) {
+			t.Errorf("post-erase checkpoint error=%v, want ErrErasureFenced", err)
+		}
+		// Re-erase stays idempotent on the fenced session.
+		if n, err := s.DeleteScope(ctx, id); err != nil || n != 0 {
+			t.Errorf("re-erase = (%d, %v), want (0, nil)", n, err)
+		}
+		if err := s.FenceSession(ctx, id); err != nil {
+			t.Errorf("re-fence error=%v, want nil (idempotent)", err)
+		}
+	})
+
+	t.Run("DeleteScope_RemovesRowsAndCheckpoint_KeepsFence", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		id := triple("tenant-a", "user-a", "session-a")
+		other := triple("tenant-b", "user-b", "session-b")
+		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-1", id)); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 		if err := s.SaveCheckpoint(ctx, id, 7); err != nil {
 			t.Fatalf("checkpoint: %v", err)
 		}
 		// A sibling session is untouched by the scope delete.
-		if _, err := s.AppendTurnIf(ctx, other, freshRow("run-1", other), otherFence); err != nil {
+		if _, err := s.AppendTurnIf(ctx, other, freshRow("run-1", other)); err != nil {
 			t.Fatalf("append other: %v", err)
 		}
 		n, err := s.DeleteScope(ctx, id)
@@ -505,12 +541,71 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	t.Run("Concurrent_AppendList_NoRace", func(t *testing.T) {
-		s, _, cleanup := factory()
+	t.Run("Row_HonestFields_RoundTrip", func(t *testing.T) {
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
+		row := freshRow("run-1", id)
+		row.Query.At = time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+		row.Agent = turns.Agent{ID: "agent-1", Name: "Agent One", BindingSource: turns.AgentBindingExplicit, Complete: turns.CompletenessComplete}
+		row.Inputs = []turns.Attachment{{ID: "in_1", Filename: "f.txt", Availability: turns.CompletenessComplete}}
+		row.Outputs = []turns.Attachment{{ID: "out_1", Availability: turns.CompletenessUnavailable}}
+		row.Pause = turns.Pause{Class: turns.PauseClassHitlApproval, Reason: "approval", Lifecycle: turns.PauseLifecycleActive, Availability: turns.CompletenessComplete}
+		row.Answer = turns.Answer{State: turns.AnswerStateArtifactRef, Ref: &turns.AnswerRef{ID: "art_1", SizeBytes: 4096}}
+		row.LastAppliedEventSeq = 42
+		row.Apps = []turns.AppRef{
+			{EffectiveAgentID: "agent-1", ServerID: "srv-1", ResourceURI: "ui://srv/app", DisplayMode: "inline", RawHTMLTrusted: false, ToolCallID: "tc-1", ToolName: "tool-a", Availability: turns.AppAvailable, Complete: turns.CompletenessComplete},
+			{EffectiveAgentID: "", ServerID: "srv-2", ResourceURI: "ui://srv/app2", ToolName: "tool-b", Availability: turns.AppDegraded, Complete: turns.CompletenessComplete},
+		}
+		if _, err := s.AppendTurnIf(ctx, id, row); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+		read, err := s.GetTurn(ctx, id, "run-1")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if !read.Query.At.Equal(row.Query.At) {
+			t.Errorf("Query.At lost: %v, want %v", read.Query.At, row.Query.At)
+		}
+		if read.Agent.BindingSource != turns.AgentBindingExplicit || read.Agent.ID != "agent-1" {
+			t.Errorf("Agent binding source lost: %+v", read.Agent)
+		}
+		if len(read.Inputs) != 1 || read.Inputs[0].Availability != turns.CompletenessComplete {
+			t.Errorf("input attachment availability lost: %+v", read.Inputs)
+		}
+		if len(read.Outputs) != 1 || read.Outputs[0].Availability != turns.CompletenessUnavailable {
+			t.Errorf("output attachment availability lost: %+v", read.Outputs)
+		}
+		if read.Pause.Class != turns.PauseClassHitlApproval || read.Pause.Lifecycle != turns.PauseLifecycleActive || read.Pause.Availability != turns.CompletenessComplete {
+			t.Errorf("pause component lost: %+v", read.Pause)
+		}
+		if read.Answer.State != turns.AnswerStateArtifactRef || read.Answer.Ref == nil || read.Answer.Ref.ID != "art_1" {
+			t.Errorf("answer state lost: %+v", read.Answer)
+		}
+		if read.LastAppliedEventSeq != 42 {
+			t.Errorf("LastAppliedEventSeq lost: %d, want 42", read.LastAppliedEventSeq)
+		}
+		if len(read.Apps) != 2 {
+			t.Fatalf("apps collection lost: %d entries, want 2 (ordered)", len(read.Apps))
+		}
+		if read.Apps[0].ToolCallID != "tc-1" || read.Apps[0].ResourceURI != "ui://srv/app" || read.Apps[0].EffectiveAgentID != "agent-1" {
+			t.Errorf("app ref 0 correlation/render metadata lost: %+v", read.Apps[0])
+		}
+		if read.Apps[1].Availability != turns.AppDegraded || read.Apps[1].ToolName != "tool-b" {
+			t.Errorf("app ref 1 availability lost: %+v", read.Apps[1])
+		}
+		// The ORDER of the collection is preserved (first declaration).
+		if read.Apps[0].ServerID != "srv-1" || read.Apps[1].ServerID != "srv-2" {
+			t.Errorf("apps collection order lost: %+v", read.Apps)
+		}
+	})
+
+	t.Run("Concurrent_AppendList_NoRace", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		id := triple("tenant-a", "user-a", "session-a")
 		const appenders = 8
 		const perAppender = 8
 		start := make(chan struct{})
@@ -522,7 +617,7 @@ func Run(t *testing.T, factory Factory) {
 				defer wg.Done()
 				<-start
 				for i := 0; i < perAppender; i++ {
-					if _, err := s.AppendTurnIf(ctx, id, freshRow(fmt.Sprintf("w%d-%02d", w, i), id), fence); err != nil {
+					if _, err := s.AppendTurnIf(ctx, id, freshRow(fmt.Sprintf("w%d-%02d", w, i), id)); err != nil {
 						errs <- err
 						return
 					}
@@ -562,18 +657,17 @@ func Run(t *testing.T, factory Factory) {
 	})
 
 	t.Run("Close_Then_Rejects", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
 		if err := s.Close(ctx); err != nil {
 			t.Fatalf("close: %v", err)
 		}
 		if err := s.Close(ctx); err != nil {
 			t.Errorf("second close error=%v, want nil (idempotent)", err)
 		}
-		if _, err := s.AppendTurnIf(ctx, id, freshRow("r", id), fence); !errors.Is(err, turns.ErrStoreClosed) {
+		if _, err := s.AppendTurnIf(ctx, id, freshRow("r", id)); !errors.Is(err, turns.ErrStoreClosed) {
 			t.Errorf("post-close append error=%v, want ErrStoreClosed", err)
 		}
 		if _, err := s.GetTurn(ctx, id, "r"); !errors.Is(err, turns.ErrStoreClosed) {
@@ -588,13 +682,12 @@ func Run(t *testing.T, factory Factory) {
 	// no goroutines, but a driver that does must join them before Close
 	// returns. The leak check is a smoke assertion of the contract.
 	t.Run("GoroutineLeak_AfterClose", func(t *testing.T) {
-		s, _, cleanup := factory()
+		s, cleanup := factory()
 		baseline := runtime.NumGoroutine()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		fence := fenceFor(t, id)
 		for i := 0; i < 10; i++ {
-			if _, err := s.AppendTurnIf(ctx, id, freshRow(fmt.Sprintf("r-%d", i), id), fence); err != nil {
+			if _, err := s.AppendTurnIf(ctx, id, freshRow(fmt.Sprintf("r-%d", i), id)); err != nil {
 				t.Fatalf("append: %v", err)
 			}
 		}
@@ -619,15 +712,6 @@ func triple(tenant, user, session string) identity.Identity {
 	return identity.Identity{TenantID: tenant, UserID: user, SessionID: session}
 }
 
-func fenceFor(t *testing.T, id identity.Identity) turns.Fence {
-	t.Helper()
-	fence, err := turns.FenceFor(id)
-	if err != nil {
-		t.Fatalf("FenceFor: %v", err)
-	}
-	return fence
-}
-
 // freshRow builds a minimal valid mutable turn row (the store mints the
 // sequence; the driver must not require a caller-supplied one).
 func freshRow(turnID string, id identity.Identity) turns.TurnRow {
@@ -637,16 +721,5 @@ func freshRow(turnID string, id identity.Identity) turns.TurnRow {
 		TieBreaker: turns.TurnID(turnID),
 		Status:     turns.StatusRunning,
 		Query:      turns.Query{Text: "q", Complete: turns.CompletenessComplete},
-	}
-}
-
-// writeFenceSlot writes a present erasure fence slot into the shared
-// StateStore (the shape the runtime's erasure cascade produces).
-func writeFenceSlot(t *testing.T, st state.StateStore, slot turns.Slot) {
-	t.Helper()
-	if err := st.Save(context.Background(), state.StateRecord{
-		ID: state.NewEventID(), Identity: slot.Identity, Kind: slot.Kind, Bytes: []byte(`{}`),
-	}); err != nil {
-		t.Fatalf("write fence slot %q: %v", slot.Kind, err)
 	}
 }

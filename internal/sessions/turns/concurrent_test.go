@@ -49,7 +49,7 @@ func TestProjector_ConcurrentReuse_D025(t *testing.T) {
 					opErrs <- fmt.Errorf("worker %d append: %w", w, err)
 					return
 				}
-				ans := Answer{Inline: fmt.Sprintf("answer-%d-%d", w, i), Complete: CompletenessComplete}
+				ans := Answer{State: AnswerStateInline, Inline: fmt.Sprintf("answer-%d-%d", w, i)}
 				if _, err := p.Update(context.Background(), id, turnID, row.Version, Update{Answer: &ans}); err != nil {
 					opErrs <- fmt.Errorf("worker %d update: %w", w, err)
 					return
@@ -210,7 +210,7 @@ func TestProjector_ConcurrentReuse_UpdateSealRace(t *testing.T) {
 			// version: exactly one wins, the rest fail with
 			// ErrStaleVersion (a loud, typed loser — never a silent
 			// overwrite).
-			ans := Answer{Inline: fmt.Sprintf("writer-%d", w), Complete: CompletenessComplete}
+			ans := Answer{State: AnswerStateInline, Inline: fmt.Sprintf("writer-%d", w)}
 			if _, err := p.Update(context.Background(), id, "contested", row.Version, Update{Answer: &ans}); err != nil {
 				if !errors.Is(err, ErrStaleVersion) {
 					versionMismatches <- fmt.Errorf("writer %d: %w", w, err)

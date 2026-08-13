@@ -3,14 +3,14 @@ package turns
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/internal/agentcfg/sessionfence"
 	"github.com/hurtener/Harbor/internal/identity"
-	"github.com/hurtener/Harbor/internal/state"
 )
 
 // fakeClock is the controllable clock injected via WithClock so the
@@ -105,8 +105,8 @@ func TestProjector_Append_CreatesMutableRunningRow(t *testing.T) {
 	if row.Reasoning.Complete != CompletenessUnavailable {
 		t.Errorf("Reasoning.Complete=%q, want unavailable", row.Reasoning.Complete)
 	}
-	if row.App != nil {
-		t.Errorf("App=%+v, want nil", row.App)
+	if len(row.Apps) != 0 {
+		t.Errorf("Apps=%+v, want an empty collection", row.Apps)
 	}
 }
 
@@ -194,7 +194,7 @@ func TestProjector_Update_MutatesMutableRowInPlace(t *testing.T) {
 	}
 
 	usage := Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, CostUSD: 0.01, Model: "gpt-x", Complete: CompletenessComplete}
-	answer := Answer{Inline: "It is sunny.", Complete: CompletenessComplete}
+	answer := Answer{State: AnswerStateInline, Inline: "It is sunny."}
 	act := []ActivityRow{{Tool: "search", Status: ActivitySucceeded, Summary: "0.4s"}}
 	upd, err := p.Update(context.Background(), id, "run-1", row.Version, Update{
 		Status:   StatusPaused,
@@ -269,7 +269,7 @@ func sealComplete(p *Projector, id identity.Identity, turnID TurnID, version int
 		return err
 	}
 	if row.Answer.Complete != CompletenessComplete {
-		ans := Answer{Inline: "final answer", Complete: CompletenessComplete}
+		ans := Answer{State: AnswerStateInline, Inline: "final answer"}
 		if _, err := p.Update(context.Background(), id, turnID, row.Version, Update{Answer: &ans}); err != nil {
 			return err
 		}
@@ -291,15 +291,15 @@ func TestProjector_Update_ValidationFailsLoud(t *testing.T) {
 	}
 	v := row.Version
 
-	heavy := Answer{Inline: strings.Repeat("x", MaxInlineAnswerBytes), Complete: CompletenessComplete}
+	heavy := Answer{State: AnswerStateInline, Inline: strings.Repeat("x", MaxInlineAnswerBytes)}
 	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: &heavy}); !errors.Is(err, ErrContextLeak) {
 		t.Errorf("heavy inline answer error=%v, want ErrContextLeak", err)
 	}
-	both := Answer{Inline: "x", Ref: &AnswerRef{ID: "a"}, Complete: CompletenessComplete}
+	both := Answer{State: AnswerStateInline, Inline: "x", Ref: &AnswerRef{ID: "a"}}
 	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: &both}); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("inline+ref answer error=%v, want ErrInvalidInput", err)
 	}
-	contentInUnavailable := Answer{Inline: "x", Complete: CompletenessUnavailable}
+	contentInUnavailable := Answer{State: AnswerStateUnavailable, Inline: "x"}
 	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: &contentInUnavailable}); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("content in unavailable answer error=%v, want ErrInvalidInput", err)
 	}
@@ -308,7 +308,7 @@ func TestProjector_Update_ValidationFailsLoud(t *testing.T) {
 		t.Errorf("negative usage error=%v, want ErrInvalidInput", err)
 	}
 	// The referenced answer is the D-026-safe route for heavy content.
-	refAns := Answer{Ref: &AnswerRef{ID: "art_1", MimeType: "text/plain", SizeBytes: 1 << 20, SHA256: "ab"}, Complete: CompletenessComplete}
+	refAns := Answer{State: AnswerStateArtifactRef, Ref: &AnswerRef{ID: "art_1", MimeType: "text/plain", SizeBytes: 1 << 20, SHA256: "ab"}}
 	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: &refAns}); err != nil {
 		t.Errorf("referenced answer rejected: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestProjector_Seal_CompleteWithReferencedAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	refAns := Answer{Ref: &AnswerRef{ID: "art_1", SizeBytes: 4096}, Complete: CompletenessComplete}
+	refAns := Answer{State: AnswerStateArtifactRef, Ref: &AnswerRef{ID: "art_1", SizeBytes: 4096}}
 	if _, err := p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &refAns}); err != nil {
 		t.Fatalf("update answer: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestProjector_AttachReasoning_OrderedAndBounded(t *testing.T) {
 	}
 }
 
-func TestProjector_AttachAppRef_ValidatesAndLastWins(t *testing.T) {
+func TestProjector_AttachAppRefs_OrderedCollection_ReplaceInPlace(t *testing.T) {
 	p, _ := newTestProjector(t, 0, false)
 	id := tripleA()
 	row, err := appendTurn(p, id, "run-1")
@@ -487,40 +487,97 @@ func TestProjector_AttachAppRef_ValidatesAndLastWins(t *testing.T) {
 	}
 
 	// A ref that could only mount broken fails loud.
-	if _, err := p.AttachAppRef(context.Background(), id, "run-1", row.Version, AppRefInput{Ref: AppRef{ServerID: "srv"}}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := p.AttachAppRefs(context.Background(), id, "run-1", row.Version, AppRefInput{Refs: []AppRef{{ServerID: "srv"}}}); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("missing resource uri error=%v, want ErrInvalidInput", err)
 	}
 
-	ref := AppRefInput{Ref: AppRef{
-		ServerID:    "srv-1",
-		ResourceURI: "ui://srv/app",
-		DisplayMode: "inline",
-		ToolName:    "tool-a",
-	}}
-	got, err := p.AttachAppRef(context.Background(), id, "run-1", row.Version, ref)
+	// First declaration [A, B]: fixes their positions.
+	refA := AppRef{EffectiveAgentID: "agent-1", ServerID: "srv-1", ResourceURI: "ui://srv/app", DisplayMode: "inline", ToolName: "tool-a"}
+	refB := AppRef{EffectiveAgentID: "agent-1", ServerID: "srv-2", ResourceURI: "ui://srv/app2", ToolName: "tool-b"}
+	got, err := p.AttachAppRefs(context.Background(), id, "run-1", row.Version, AppRefInput{Refs: []AppRef{refA, refB}})
 	if err != nil {
-		t.Fatalf("AttachAppRef: %v", err)
+		t.Fatalf("AttachAppRefs: %v", err)
 	}
-	if got.App == nil || got.App.ServerID != "srv-1" || got.App.Availability != AppAvailable {
-		t.Errorf("app ref projection wrong: %+v", got.App)
+	if len(got.Apps) != 2 || got.Apps[0].ServerID != "srv-1" || got.Apps[1].ServerID != "srv-2" {
+		t.Fatalf("first-declaration collection wrong: %+v", got.Apps)
 	}
-	// Structurally no App-correlation token on the ref.
-	if got.App.ResourceURI == "" {
-		t.Errorf("app ref lost the resource uri")
+	if got.Apps[0].Availability != AppAvailable || got.Apps[0].Complete != CompletenessComplete {
+		t.Errorf("defaults not applied: %+v", got.Apps[0])
 	}
 
-	// Last-wins: a second attach replaces the first.
-	ref2 := AppRefInput{Ref: AppRef{
-		ServerID:     "srv-2",
-		ResourceURI:  "ui://srv/app2",
-		Availability: AppUnavailable,
-	}}
-	got2, err := p.AttachAppRef(context.Background(), id, "run-1", got.Version, ref2)
+	// A repeat of B's identity (same effective agent, server, URI)
+	// replaces IN PLACE with the latest correlation metadata — position
+	// stays fixed by the first declaration.
+	refB2 := AppRef{EffectiveAgentID: "agent-1", ServerID: "srv-2", ResourceURI: "ui://srv/app2", ToolName: "tool-b-v2", ToolCallID: "tc-99", Availability: AppUnavailable}
+	got2, err := p.AttachAppRefs(context.Background(), id, "run-1", got.Version, AppRefInput{Refs: []AppRef{refB2}})
 	if err != nil {
-		t.Fatalf("AttachAppRef 2: %v", err)
+		t.Fatalf("AttachAppRefs replace: %v", err)
 	}
-	if got2.App.ServerID != "srv-2" || got2.App.Availability != AppUnavailable {
-		t.Errorf("last-wins app ref wrong: %+v", got2.App)
+	if len(got2.Apps) != 2 {
+		t.Fatalf("repeat must replace in place, got %d entries: %+v", len(got2.Apps), got2.Apps)
+	}
+	if got2.Apps[1].ServerID != "srv-2" || got2.Apps[1].ToolName != "tool-b-v2" || got2.Apps[1].ToolCallID != "tc-99" || got2.Apps[1].Availability != AppUnavailable {
+		t.Errorf("in-place replacement wrong: %+v", got2.Apps[1])
+	}
+	if got2.Apps[0].ServerID != "srv-1" {
+		t.Errorf("unrelated ref moved: %+v", got2.Apps[0])
+	}
+
+	// A new identity appends at the END; a re-declared A stays at its
+	// first-declaration position.
+	refC := AppRef{EffectiveAgentID: "agent-1", ServerID: "srv-3", ResourceURI: "ui://srv/app3", ToolName: "tool-c"}
+	refA2 := AppRef{EffectiveAgentID: "agent-1", ServerID: "srv-1", ResourceURI: "ui://srv/app", ToolName: "tool-a-v2"}
+	got3, err := p.AttachAppRefs(context.Background(), id, "run-1", got2.Version, AppRefInput{Refs: []AppRef{refC, refA2}})
+	if err != nil {
+		t.Fatalf("AttachAppRefs append: %v", err)
+	}
+	if len(got3.Apps) != 3 {
+		t.Fatalf("collection size wrong after append: %d, want 3", len(got3.Apps))
+	}
+	if got3.Apps[0].ServerID != "srv-1" || got3.Apps[0].ToolName != "tool-a-v2" {
+		t.Errorf("first-declaration position not preserved: %+v", got3.Apps[0])
+	}
+	if got3.Apps[1].ServerID != "srv-2" || got3.Apps[2].ServerID != "srv-3" {
+		t.Errorf("collection order wrong: %+v", got3.Apps)
+	}
+
+	// The SAME identity declared twice in ONE feed: the second
+	// declaration replaces the first in place (no duplicate entries).
+	dup1 := AppRef{EffectiveAgentID: "agent-1", ServerID: "srv-9", ResourceURI: "ui://srv/app9", ToolName: "t1"}
+	dup2 := AppRef{EffectiveAgentID: "agent-1", ServerID: "srv-9", ResourceURI: "ui://srv/app9", ToolName: "t2", ToolCallID: "tc-1"}
+	got4, err := p.AttachAppRefs(context.Background(), id, "run-1", got3.Version, AppRefInput{Refs: []AppRef{dup1, dup2}})
+	if err != nil {
+		t.Fatalf("AttachAppRefs dup-in-feed: %v", err)
+	}
+	if len(got4.Apps) != 4 {
+		t.Fatalf("duplicate identity in one feed created %d entries, want 4: %+v", len(got4.Apps), got4.Apps)
+	}
+	last := got4.Apps[len(got4.Apps)-1]
+	if last.ServerID != "srv-9" || last.ToolName != "t2" {
+		t.Errorf("same-feed duplicate did not collapse: %+v", last)
+	}
+}
+
+// TestProjector_AppRefs_IdentityKeySeparatesAgents proves the
+// replacement identity is exactly (effective_agent_id, server_id,
+// resource_uri): the same server + resource under DIFFERENT effective
+// agents are distinct entries.
+func TestProjector_AppRefs_IdentityKeySeparatesAgents(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := appendTurn(p, id, "run-1")
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	got, err := p.AttachAppRefs(context.Background(), id, "run-1", row.Version, AppRefInput{Refs: []AppRef{
+		{EffectiveAgentID: "agent-1", ServerID: "srv", ResourceURI: "ui://srv/app", ToolName: "t1"},
+		{EffectiveAgentID: "agent-2", ServerID: "srv", ResourceURI: "ui://srv/app", ToolName: "t2"},
+	}})
+	if err != nil {
+		t.Fatalf("AttachAppRefs: %v", err)
+	}
+	if len(got.Apps) != 2 {
+		t.Fatalf("distinct effective agents must be distinct entries: %+v", got.Apps)
 	}
 }
 
@@ -531,7 +588,7 @@ func TestProjector_ActivityOverflow_ExplicitLowerBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	fed := make([]ActivityRow, MaxActivityRows+7)
+	fed := make([]ActivityRow, DefaultActivityLimit+7)
 	for i := range fed {
 		fed[i] = ActivityRow{Tool: "t", Status: ActivitySucceeded, Summary: "0.1s"}
 	}
@@ -548,8 +605,8 @@ func TestProjector_ActivityOverflow_ExplicitLowerBound(t *testing.T) {
 	if got.Activity.Dropped != 7 {
 		t.Errorf("Activity.Dropped=%d, want 7", got.Activity.Dropped)
 	}
-	if len(got.Activity.Rows) != MaxActivityRows {
-		t.Errorf("retained %d rows, want %d", len(got.Activity.Rows), MaxActivityRows)
+	if len(got.Activity.Rows) != DefaultActivityLimit {
+		t.Errorf("retained %d rows, want %d", len(got.Activity.Rows), DefaultActivityLimit)
 	}
 }
 
@@ -565,7 +622,7 @@ func TestActivityReader_Contract_CompletesTheLowerBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	fed := make([]ActivityRow, MaxActivityRows+7)
+	fed := make([]ActivityRow, DefaultActivityLimit+7)
 	for i := range fed {
 		fed[i] = ActivityRow{Tool: "t", Status: ActivitySucceeded, Summary: "0.1s"}
 	}
@@ -674,7 +731,7 @@ func TestProjector_Reconcile_ResumesFromCheckpoint(t *testing.T) {
 		if err != nil {
 			return 0, err
 		}
-		ans := Answer{Inline: "reconciled answer", Complete: CompletenessComplete}
+		ans := Answer{State: AnswerStateInline, Inline: "reconciled answer"}
 		if _, err := p.Update(ctx, id, "run-1", row.Version, Update{Answer: &ans}); err != nil {
 			return 0, err
 		}
@@ -725,7 +782,7 @@ func TestProjector_Reconcile_ResumesFromCheckpoint(t *testing.T) {
 		// row — the replay treats it as already applied and skips
 		// (the projector refuses with ErrTurnSealed: immutable wins
 		// over the version check).
-		if _, err := p.Update(ctx, id, "run-1", 1, Update{Answer: &Answer{Inline: "stale", Complete: CompletenessComplete}}); !errors.Is(err, ErrTurnSealed) {
+		if _, err := p.Update(ctx, id, "run-1", 1, Update{Answer: &Answer{State: AnswerStateInline, Inline: "stale"}}); !errors.Is(err, ErrTurnSealed) {
 			return 0, err
 		}
 		// Same-status re-seal is an idempotent replay no-op.
@@ -827,7 +884,15 @@ func TestProjector_Erase_RemovesRowsAndFencesLaterWrites(t *testing.T) {
 	if seq, _ := p.Checkpoint(context.Background(), id); seq != 0 {
 		t.Errorf("post-erase checkpoint=%d, want 0", seq)
 	}
-	// Idempotent.
+	// The STORE-LOCAL fence survives the erase: an erased session
+	// admits no turn write and no checkpoint advance (no resurrection).
+	if _, err := appendTurn(p, id, "run-3"); !errors.Is(err, ErrErasureFenced) {
+		t.Errorf("post-erase append error=%v, want ErrErasureFenced", err)
+	}
+	if err := p.AdvanceCheckpoint(context.Background(), id, 4); !errors.Is(err, ErrErasureFenced) {
+		t.Errorf("post-erase checkpoint advance error=%v, want ErrErasureFenced", err)
+	}
+	// Idempotent: re-erase on the fenced session stays a no-op.
 	if _, err := p.Erase(context.Background(), id); err != nil {
 		t.Errorf("re-erase: %v", err)
 	}
@@ -840,17 +905,10 @@ func TestProjector_ErasureFence_RefusesWritesAfterErasureBegins(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 
-	// The runtime's erasure cascade writes the pending-erasure ledger
-	// slot FIRST. Every later turn write is fenced.
-	q := identity.Quadruple{Identity: id}
-	pendingQ, pendingKind, err := sessionfence.PendingSlot(q)
-	if err != nil {
-		t.Fatalf("pending slot: %v", err)
-	}
-	if err := st.st.Save(context.Background(), state.StateRecord{
-		ID: state.NewEventID(), Identity: pendingQ, Kind: pendingKind, Bytes: []byte(`{}`),
-	}); err != nil {
-		t.Fatalf("write pending ledger: %v", err)
+	// The erasure cascade sets the STORE-LOCAL fence FIRST (the
+	// store-local durable session fence — never an external slot).
+	if err := st.FenceSession(context.Background(), id); err != nil {
+		t.Fatalf("FenceSession: %v", err)
 	}
 
 	if _, err := appendTurn(p, id, "run-2"); !errors.Is(err, ErrErasureFenced) {
@@ -869,8 +927,48 @@ func TestProjector_ErasureFence_RefusesWritesAfterErasureBegins(t *testing.T) {
 	if _, err := p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 0, Trace: "t"}}}); !errors.Is(err, ErrErasureFenced) {
 		t.Errorf("attach reasoning during erasure error=%v, want ErrErasureFenced", err)
 	}
-	if _, err := p.AttachAppRef(context.Background(), id, "run-1", row.Version, AppRefInput{Ref: AppRef{ServerID: "s", ResourceURI: "ui://s/a"}}); !errors.Is(err, ErrErasureFenced) {
-		t.Errorf("attach app ref during erasure error=%v, want ErrErasureFenced", err)
+	if _, err := p.AttachAppRefs(context.Background(), id, "run-1", row.Version, AppRefInput{Refs: []AppRef{{ServerID: "s", ResourceURI: "ui://s/a"}}}); !errors.Is(err, ErrErasureFenced) {
+		t.Errorf("attach app refs during erasure error=%v, want ErrErasureFenced", err)
+	}
+	if err := p.AdvanceCheckpoint(context.Background(), id, 5); !errors.Is(err, ErrErasureFenced) {
+		t.Errorf("checkpoint advance during erasure error=%v, want ErrErasureFenced", err)
+	}
+}
+
+// TestProjector_Erase_NoResurrectionAfterReplay proves the erased
+// session stays fenced across a REPLAY: Reconcile's apply closure
+// cannot re-create rows on an erased session (its writes fail with
+// ErrErasureFenced), so the projection cannot be resurrected.
+func TestProjector_Erase_NoResurrectionAfterReplay(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	if _, err := appendTurn(p, id, "run-1"); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, err := p.Erase(context.Background(), id); err != nil {
+		t.Fatalf("Erase: %v", err)
+	}
+	// A replay of the erased session's observations: the append fails
+	// with ErrErasureFenced — the fence is never removed by the erase —
+	// and even a replay that reports a high-water mark cannot advance
+	// the erased session's checkpoint (SaveCheckpoint refuses fenced
+	// sessions). The replay surfaces loudly; nothing is resurrected.
+	_, err := p.Reconcile(context.Background(), id, func(ctx context.Context, id identity.Identity, from uint64) (uint64, error) {
+		if _, err := appendTurn(p, id, "run-1"); !errors.Is(err, ErrErasureFenced) {
+			return 0, fmt.Errorf("replay append error=%v, want ErrErasureFenced (no resurrection)", err)
+		}
+		return 5, nil
+	})
+	if !errors.Is(err, ErrErasureFenced) {
+		t.Fatalf("Reconcile replay error=%v, want ErrErasureFenced (checkpoint advance refused on erased session)", err)
+	}
+	if _, err := p.Get(context.Background(), id, "run-1"); !errors.Is(err, ErrTurnNotFound) {
+		t.Errorf("post-replay get error=%v, want ErrTurnNotFound (no resurrection)", err)
+	}
+	// And the checkpoint stayed put: the replay's high water never
+	// landed (SaveCheckpoint refuses fenced sessions).
+	if seq, _ := p.Checkpoint(context.Background(), id); seq != 0 {
+		t.Errorf("post-replay checkpoint=%d, want 0", seq)
 	}
 }
 
@@ -938,5 +1036,419 @@ func TestProjector_List_TruncatedFlag_AfterRetentionEviction(t *testing.T) {
 	// does not retain it (the durable event log does).
 	if _, err := p.Get(context.Background(), id, TurnID("r"+string(rune('a')))); !errors.Is(err, ErrTurnNotFound) {
 		t.Errorf("evicted turn error=%v, want ErrTurnNotFound", err)
+	}
+}
+
+func TestProjector_Pause_DataNoTokens(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := appendTurn(p, id, "run-1")
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	// A fresh row honestly reports no pause episode.
+	if row.Pause.Availability != CompletenessUnavailable {
+		t.Errorf("fresh pause=%+v, want Unavailable", row.Pause)
+	}
+
+	// Pausing the run carries the durable pause component: class /
+	// reason / lifecycle / availability — never a token.
+	pause := Pause{Class: PauseClassHitlApproval, Reason: "approval required", Lifecycle: PauseLifecycleActive}
+	got, err := p.Update(context.Background(), id, "run-1", row.Version, Update{Status: StatusPaused, Pause: &pause})
+	if err != nil {
+		t.Fatalf("update paused: %v", err)
+	}
+	if got.Status != StatusPaused {
+		t.Errorf("Status=%q, want paused", got.Status)
+	}
+	if got.Pause.Class != PauseClassHitlApproval || got.Pause.Reason != "approval required" || got.Pause.Lifecycle != PauseLifecycleActive {
+		t.Errorf("pause component wrong: %+v", got.Pause)
+	}
+	if got.Pause.Availability != CompletenessComplete {
+		t.Errorf("pause availability=%q, want complete", got.Pause.Availability)
+	}
+	// The Pause type structurally cannot carry a token — the
+	// ops_safety allowlist pin enforces the field set; here we also
+	// assert the honest absence of any token-ish field via reflection.
+	pt := reflect.TypeOf(Pause{})
+	for i := 0; i < pt.NumField(); i++ {
+		if strings.Contains(strings.ToLower(pt.Field(i).Name), "token") {
+			t.Errorf("Pause.%s must never exist — pause/resume/approval tokens are not stored", pt.Field(i).Name)
+		}
+	}
+
+	// An unavailable pause cannot carry class/reason/lifecycle.
+	bad := Pause{Class: PauseClassOAuth, Availability: CompletenessUnavailable}
+	if _, err := p.Update(context.Background(), id, "run-1", got.Version, Update{Pause: &bad}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("unavailable pause with class error=%v, want ErrInvalidInput", err)
+	}
+	// An unknown pause class fails loud.
+	badClass := Pause{Class: PauseClass("bogus")}
+	if _, err := p.Update(context.Background(), id, "run-1", got.Version, Update{Pause: &badClass}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("bogus pause class error=%v, want ErrInvalidInput", err)
+	}
+	// An over-bound reason fails loud.
+	longReason := Pause{Class: PauseClassSteering, Reason: strings.Repeat("r", MaxPauseReasonRunes+1)}
+	if _, err := p.Update(context.Background(), id, "run-1", got.Version, Update{Pause: &longReason}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("over-bound pause reason error=%v, want ErrInvalidInput", err)
+	}
+	// Resuming clears the episode honestly (Unavailable).
+	resumed, err := p.Update(context.Background(), id, "run-1", got.Version, Update{Status: StatusRunning, Pause: &Pause{Availability: CompletenessUnavailable}})
+	if err != nil {
+		t.Fatalf("update resumed: %v", err)
+	}
+	if resumed.Pause.Availability != CompletenessUnavailable || resumed.Pause.Class != "" {
+		t.Errorf("resumed pause not cleared honestly: %+v", resumed.Pause)
+	}
+}
+
+func TestProjector_AnswerStates_ClosedUnion(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := appendTurn(p, id, "run-1")
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	v := row.Version
+
+	// The closed union accepts exactly the five states, each with its
+	// declared content shape, and the projector derives the uniform
+	// Completeness.
+	cases := []struct {
+		name  string
+		state AnswerState
+		build func() Answer
+		want  Completeness
+	}{
+		{"inline", AnswerStateInline, func() Answer { return Answer{State: AnswerStateInline, Inline: "hi"} }, CompletenessComplete},
+		{"empty inline is legitimate", AnswerStateInline, func() Answer { return Answer{State: AnswerStateInline} }, CompletenessComplete},
+		{"artifact_ref", AnswerStateArtifactRef, func() Answer {
+			return Answer{State: AnswerStateArtifactRef, Ref: &AnswerRef{ID: "art_1", SizeBytes: 8}}
+		}, CompletenessComplete},
+		{"empty", AnswerStateEmpty, func() Answer { return Answer{State: AnswerStateEmpty} }, CompletenessComplete},
+		{"evicted", AnswerStateEvicted, func() Answer { return Answer{State: AnswerStateEvicted} }, CompletenessUnavailable},
+		{"unavailable", AnswerStateUnavailable, func() Answer { return Answer{State: AnswerStateUnavailable} }, CompletenessUnavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: ansPtr(tc.build())})
+			if err != nil {
+				t.Fatalf("update answer: %v", err)
+			}
+			if got.Answer.State != tc.state {
+				t.Errorf("State=%q, want %q", got.Answer.State, tc.state)
+			}
+			if got.Answer.Complete != tc.want {
+				t.Errorf("Complete=%q, want %q (derived from state)", got.Answer.Complete, tc.want)
+			}
+			v = got.Version
+		})
+	}
+
+	// Invalid state fails loud.
+	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: ansPtr(Answer{State: AnswerState("bogus")})}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("bogus answer state error=%v, want ErrInvalidInput", err)
+	}
+	// Inconsistent content fails loud: inline with a ref.
+	both := Answer{State: AnswerStateInline, Inline: "x", Ref: &AnswerRef{ID: "a"}}
+	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: &both}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("inline+ref error=%v, want ErrInvalidInput", err)
+	}
+	// artifact_ref without a ref fails loud.
+	noRef := Answer{State: AnswerStateArtifactRef}
+	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: &noRef}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("artifact_ref without ref error=%v, want ErrInvalidInput", err)
+	}
+	// A failed read NEVER becomes empty: an evicted answer with content
+	// is refused (it must carry none), and a caller cannot mask a read
+	// failure as a definite empty.
+	evictedWithContent := Answer{State: AnswerStateEvicted, Inline: "x"}
+	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: &evictedWithContent}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("evicted with content error=%v, want ErrInvalidInput (failed reads never become empty)", err)
+	}
+	// A caller-supplied Complete inconsistent with State fails loud.
+	lying := Answer{State: AnswerStateUnavailable, Complete: CompletenessComplete}
+	if _, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: &lying}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("inconsistent completeness error=%v, want ErrInvalidInput", err)
+	}
+
+	// An evicted / unavailable answer does NOT satisfy a complete seal
+	// (only inline / artifact_ref / empty do).
+	got, err := p.Update(context.Background(), id, "run-1", v, Update{Answer: ansPtr(Answer{State: AnswerStateInline, Inline: "final"})})
+	if err != nil {
+		t.Fatalf("update final answer: %v", err)
+	}
+	evicted := Answer{State: AnswerStateEvicted}
+	if _, err := p.Update(context.Background(), id, "run-1", got.Version, Update{Answer: &evicted}); err != nil {
+		t.Fatalf("update evicted: %v", err)
+	}
+	if _, err := p.Seal(context.Background(), id, "run-1", got.Version+1, Seal{Status: StatusComplete}); !errors.Is(err, ErrSealIncomplete) {
+		t.Errorf("complete seal with evicted answer error=%v, want ErrSealIncomplete", err)
+	}
+}
+
+func ansPtr(a Answer) *Answer { return &a }
+
+func TestProjector_HonestFields_TimestampBindingAttachmentsEventSeq(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	queryAt := testClockStart.Add(-5 * time.Minute)
+
+	// Append carries the query/input timestamp, the agent binding
+	// source, attachment reference availability, and the event
+	// sequence.
+	row, err := p.Append(context.Background(), id, Append{
+		TurnID:             "run-1",
+		Query:              "weather?",
+		QueryAt:            queryAt,
+		AgentID:            "agent-1",
+		AgentName:          "Agent One",
+		AgentBindingSource: AgentBindingDefaulted,
+		Inputs:             []Attachment{{ID: "in_1", Filename: "f.txt"}},
+		Outputs:            []Attachment{{ID: "out_1", Availability: CompletenessComplete}},
+		EventSeq:           11,
+	})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if !row.Query.At.Equal(queryAt) {
+		t.Errorf("Query.At=%v, want %v", row.Query.At, queryAt)
+	}
+	if row.Agent.BindingSource != AgentBindingDefaulted {
+		t.Errorf("BindingSource=%q, want defaulted", row.Agent.BindingSource)
+	}
+	if len(row.Inputs) != 1 || row.Inputs[0].Availability != CompletenessUnavailable {
+		t.Errorf("unreported attachment availability must normalize to Unavailable: %+v", row.Inputs)
+	}
+	if len(row.Outputs) != 1 || row.Outputs[0].Availability != CompletenessComplete {
+		t.Errorf("attachment availability lost: %+v", row.Outputs)
+	}
+	if row.LastAppliedEventSeq != 11 {
+		t.Errorf("LastAppliedEventSeq=%d, want 11", row.LastAppliedEventSeq)
+	}
+
+	// An update with an event sequence stamps the row AND the replaced
+	// accumulated answer snapshot (component/version consistency).
+	ans := Answer{State: AnswerStateInline, Inline: "sunny"}
+	got, err := p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &ans, EventSeq: 12})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got.LastAppliedEventSeq != 12 {
+		t.Errorf("LastAppliedEventSeq=%d, want 12", got.LastAppliedEventSeq)
+	}
+	if got.Answer.Seq != 12 {
+		t.Errorf("Answer.Seq=%d, want 12 (accumulated snapshot consistency)", got.Answer.Seq)
+	}
+	if got.Answer.Complete != CompletenessComplete {
+		t.Errorf("Answer.Complete=%q, want complete (derived)", got.Answer.Complete)
+	}
+
+	// AttachReasoning stamps the reasoning snapshot's event sequence.
+	got2, err := p.AttachReasoning(context.Background(), id, "run-1", got.Version, ReasoningInput{
+		Steps:    []ReasoningStep{{Index: 0, Trace: "think"}},
+		EventSeq: 13,
+	})
+	if err != nil {
+		t.Fatalf("AttachReasoning: %v", err)
+	}
+	if got2.Reasoning.Seq != 13 {
+		t.Errorf("Reasoning.Seq=%d, want 13", got2.Reasoning.Seq)
+	}
+	if got2.LastAppliedEventSeq != 13 {
+		t.Errorf("LastAppliedEventSeq=%d, want 13", got2.LastAppliedEventSeq)
+	}
+
+	// A seal without an event sequence leaves the row's seq untouched.
+	got3, err := p.Seal(context.Background(), id, "run-1", got2.Version, Seal{Status: StatusComplete})
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if got3.LastAppliedEventSeq != 13 {
+		t.Errorf("seal without EventSeq rewrote LastAppliedEventSeq: %d, want 13", got3.LastAppliedEventSeq)
+	}
+}
+
+func TestProjector_AgentBindingSource_Derivation(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	// A non-empty agent id with no reported source derives explicit.
+	row, err := p.Append(context.Background(), id, Append{TurnID: "run-1", Query: "q", AgentID: "agent-1"})
+	if err != nil {
+		t.Fatalf("append explicit: %v", err)
+	}
+	if row.Agent.BindingSource != AgentBindingExplicit {
+		t.Errorf("BindingSource=%q, want explicit (derived from agent id)", row.Agent.BindingSource)
+	}
+	// An empty agent id with no reported source derives unknown (never
+	// a fabricated defaulted claim).
+	row2, err := p.Append(context.Background(), id, Append{TurnID: "run-2", Query: "q"})
+	if err != nil {
+		t.Fatalf("append unknown: %v", err)
+	}
+	if row2.Agent.BindingSource != AgentBindingUnknown {
+		t.Errorf("BindingSource=%q, want unknown", row2.Agent.BindingSource)
+	}
+	// A bogus source fails loud.
+	if _, err := p.Append(context.Background(), id, Append{TurnID: "run-3", Query: "q", AgentBindingSource: AgentBindingSource("bogus")}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("bogus binding source error=%v, want ErrInvalidInput", err)
+	}
+}
+
+func TestProjector_ActivityBudget_ConfigRequiresCoverage(t *testing.T) {
+	st, err := newTestStore(0, false)
+	if err != nil {
+		t.Fatalf("newTestStore: %v", err)
+	}
+	// The inline activity limit MUST cover the configured per-turn
+	// tool-call budget: a budget above the limit fails loud at
+	// construction.
+	if _, err := New(st, WithToolBudget(DefaultActivityLimit+8)); err == nil {
+		t.Errorf("budget %d above default limit %d must fail loud", DefaultActivityLimit+8, DefaultActivityLimit)
+	}
+	// The limit is capped at the absolute Protocol ceiling.
+	if _, err := New(st, WithActivityLimit(MaxActivityRows+1)); err == nil {
+		t.Errorf("activity limit above the Protocol ceiling %d must fail loud", MaxActivityRows)
+	}
+	if _, err := New(st, WithActivityLimit(0)); err == nil {
+		t.Errorf("zero activity limit must fail loud")
+	}
+	// An explicit matching configuration is accepted.
+	p, err := New(st, WithToolBudget(24), WithActivityLimit(24))
+	if err != nil {
+		t.Fatalf("New with budget 24 / limit 24: %v", err)
+	}
+	id := tripleA()
+	row, err := appendTurn(p, id, "run-1")
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	// A feed within the configured budget is fully covered (no
+	// lower-bound marker).
+	covered := make([]ActivityRow, 24)
+	for i := range covered {
+		covered[i] = ActivityRow{Tool: "t", Status: ActivitySucceeded}
+	}
+	got, err := p.Update(context.Background(), id, "run-1", row.Version, Update{Activity: covered})
+	if err != nil {
+		t.Fatalf("update activity: %v", err)
+	}
+	if got.Activity.Complete != CompletenessComplete || got.Activity.More || got.Activity.Dropped != 0 {
+		t.Errorf("in-budget activity must be fully covered: %+v", got.Activity)
+	}
+	// A feed beyond the configured budget overflows honestly (More +
+	// Dropped + Partial) — the named ActivityReader pages the rest.
+	over := make([]ActivityRow, 24+5)
+	for i := range over {
+		over[i] = ActivityRow{Tool: "t", Status: ActivitySucceeded}
+	}
+	got2, err := p.Update(context.Background(), id, "run-1", got.Version, Update{Activity: over})
+	if err != nil {
+		t.Fatalf("update over-budget activity: %v", err)
+	}
+	if !got2.Activity.More || got2.Activity.Dropped != 5 || got2.Activity.Complete != CompletenessPartial {
+		t.Errorf("over-budget activity must overflow honestly: %+v", got2.Activity)
+	}
+	if len(got2.Activity.Rows) != 24 {
+		t.Errorf("retained %d rows, want 24 (the configured window)", len(got2.Activity.Rows))
+	}
+}
+
+func TestProjector_OpsTurn_StructuralOmissions(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := p.Append(context.Background(), id, Append{
+		TurnID:   "run-1",
+		Query:    "secret query",
+		AgentID:  "agent-1",
+		Inputs:   []Attachment{{ID: "in_1"}},
+		Outputs:  []Attachment{{ID: "out_1"}},
+		EventSeq: 3,
+	})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	ans := Answer{State: AnswerStateInline, Inline: "secret answer"}
+	row, err = p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &ans, Usage: &Usage{PromptTokens: 10, TotalTokens: 10, Model: "m", Complete: CompletenessComplete}, EventSeq: 4})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if _, err := p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{
+		Steps:    []ReasoningStep{{Index: 0, Trace: "secret reasoning"}},
+		EventSeq: 5,
+	}); err != nil {
+		t.Fatalf("AttachReasoning: %v", err)
+	}
+	appRow, err := p.AttachAppRefs(context.Background(), id, "run-1", row.Version+1, AppRefInput{
+		Refs:     []AppRef{{EffectiveAgentID: "agent-1", ServerID: "srv", ResourceURI: "ui://srv/app", ToolName: "tool", ToolCallID: "tc-1", Availability: AppAvailable}},
+		EventSeq: 6,
+	})
+	if err != nil {
+		t.Fatalf("AttachAppRefs: %v", err)
+	}
+
+	ops, err := p.OpsTurn(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("OpsTurn: %v", err)
+	}
+	// The operations READ projection retains lifecycle / agent /
+	// timing / usage / cost / tool-name / status / counts.
+	if ops.TurnID != "run-1" || ops.Status != StatusRunning || ops.Version != appRow.Version {
+		t.Errorf("ops lifecycle wrong: %+v", ops)
+	}
+	if ops.AgentID != "agent-1" || ops.AgentBindingSource != AgentBindingExplicit {
+		t.Errorf("ops agent binding wrong: %+v", ops)
+	}
+	if ops.Usage.TotalTokens != 10 {
+		t.Errorf("ops usage lost: %+v", ops.Usage)
+	}
+	if ops.ReasoningSteps != 1 {
+		t.Errorf("ops reasoning count=%d, want 1", ops.ReasoningSteps)
+	}
+	if ops.Inputs != 1 || ops.Outputs != 1 {
+		t.Errorf("ops attachment counts wrong: %d/%d", ops.Inputs, ops.Outputs)
+	}
+	if len(ops.Apps) != 1 || ops.Apps[0].ServerID != "srv" || ops.Apps[0].ToolName != "tool" || ops.Apps[0].Availability != AppAvailable {
+		t.Errorf("ops app summaries wrong: %+v", ops.Apps)
+	}
+	if ops.LastAppliedEventSeq != 6 {
+		t.Errorf("ops LastAppliedEventSeq=%d, want 6", ops.LastAppliedEventSeq)
+	}
+
+	// Structurally absent from the operations READ row: query, answer,
+	// reasoning traces, resource URI, tool_call_id, App context. The
+	// types have no such fields (asserted reflectively — a compile-time
+	// guarantee enforced by the ops_safety allowlist pin + scan).
+	opsType := reflect.TypeOf(OpsTurnRow{})
+	for _, forbidden := range []string{"Query", "Answer", "Reasoning", "ResourceURI", "ToolCallID", "Inline", "Ref"} {
+		if _, ok := opsType.FieldByName(forbidden); ok {
+			t.Errorf("OpsTurnRow.%s must never exist — consumer-only content is omitted from the operations read projection", forbidden)
+		}
+	}
+	appOpsType := reflect.TypeOf(AppOpsRef{})
+	for _, forbidden := range []string{"ResourceURI", "ToolCallID", "DisplayMode", "RawHTMLTrusted"} {
+		if _, ok := appOpsType.FieldByName(forbidden); ok {
+			t.Errorf("AppOpsRef.%s must never exist — the operations App summary omits it", forbidden)
+		}
+	}
+}
+
+func TestProjector_EventSeq_ZeroNeverErasesRecorded(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := p.Append(context.Background(), id, Append{TurnID: "run-1", Query: "q", EventSeq: 5})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if row.LastAppliedEventSeq != 5 {
+		t.Fatalf("LastAppliedEventSeq=%d, want 5", row.LastAppliedEventSeq)
+	}
+	// An update without an event sequence leaves it untouched.
+	got, err := p.Update(context.Background(), id, "run-1", row.Version, Update{})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got.LastAppliedEventSeq != 5 {
+		t.Errorf("zero EventSeq erased the recorded sequence: %d, want 5", got.LastAppliedEventSeq)
 	}
 }

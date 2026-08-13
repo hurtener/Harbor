@@ -16,37 +16,53 @@
 //
 // A turn row is a DERIVED, consumer-safe view of the run: the
 // renderable user query, the assistant answer (inline text below the
-// heavy-content threshold, or an artifact reference for heavy
-// answers), input/output attachment METADATA (never bytes), the
-// lifecycle state, agent binding, token/cost usage, bounded ordered
-// reasoning steps, bounded content-free activity rows, and MCP App
-// references with component availability. The projection NEVER
-// reconstructs the raw conversation history: reads serve the
-// projection only, and the durable event log (`state.history`)
-// remains the raw-history home.
+// heavy-content threshold, or an artifact reference), input/output
+// attachment METADATA (never bytes), the lifecycle state, agent
+// binding with its honest provenance, token/cost usage, bounded ordered
+// reasoning steps, bounded content-free activity rows, an ordered MCP
+// App reference collection with component availability, and the durable
+// pause component. The projection NEVER reconstructs the raw
+// conversation history: reads serve the projection only, and the
+// durable event log (`state.history`) remains the raw-history home.
 //
-// # DTO families — consumer-safe vs operations-safe (binding)
+// # DTO families — consumer read, operations read, mutation (binding)
 //
-// The package deliberately separates two DTO families:
+// The package deliberately separates THREE DTO families:
 //
-//   - CONSUMER-SAFE DTOs (`TurnRow` and its component types, row.go)
-//     are the read surface `sessions.turns.list/get` will project.
-//     They carry only derived content: rendered query, inline/reference
+//   - CONSUMER-SAFE READ (`TurnRow` and its component types, row.go)
+//     is the read surface `sessions.turns.list/get` will project. It
+//     carries only derived content: rendered query, inline/reference
 //     answer, attachment metadata, lifecycle/agent/usage, bounded
-//     ordered reasoning and activity, and App refs plus availability.
-//     They never carry raw tool arguments/results, raw transcripts,
-//     App-correlation tokens, or pause/resume tokens.
+//     ordered reasoning and activity, an ORDERED collection of MCP App
+//     references with availability, and the durable pause component.
+//     It never carries raw tool arguments/results, raw transcripts, or
+//     pause/resume/approval tokens.
 //
-//   - OPERATIONS-SAFE DTOs (`ops.Append`, `ops.Update`, `ops.Seal`,
-//     ops.go) are the projector's mutation surface. They are
-//     STRUCTURALLY unable to contain transcript, reasoning,
-//     App-correlation, or pause tokens: the types have no fields for
-//     them, and an allowlist pin test (ops_safety_test.go) holds the
-//     field set to the documented allowlist, so a future content field
-//     cannot be added silently. The two components a consumer row does
-//     carry — reasoning steps and App refs — are written ONLY through
-//     their separately named attach channels (`AttachReasoning`,
-//     `AttachAppRef`), never through the generic ops.
+//   - OPERATIONS-SAFE READ (`OpsTurnRow`, row.go) is a pure,
+//     STRUCTURALLY DISTINCT read projection the operations surface
+//     reads when it must not see consumer transcript content. It
+//     retains lifecycle / agent binding / timing / usage / cost /
+//     content-free tool activity / counts / App availability summaries
+//     / pause class-reason-lifecycle, and structurally omits the query,
+//     the answer, reasoning traces, pause tokens, the App resource URI
+//     and tool_call_id, and App context/input/result. `Projector.OpsTurn`
+//     serves it; the future operations Protocol lane consumes it.
+//
+//   - MUTATION DTOs (`ops.Append`, `ops.Update`, `ops.Seal`, ops.go)
+//     are the projector's WRITE surface. They are NOT the operations
+//     read projection and do not satisfy any consumer-vs-operations
+//     authority matrix: the authority matrix is about READ projections
+//     (TurnRow vs OpsTurnRow above). The mutation DTOs are minimal
+//     write shapes — structurally free of transcript, reasoning traces,
+//     App correlation, and pause/resume/approval tokens — because a
+//     write channel that could carry raw content would let the runtime
+//     wiring leak it into the projection, and an allowlist pin test
+//     (ops_safety_test.go) holds their field sets to the documented
+//     allowlist so no content field can be added silently. The two
+//     content-bearing components — reasoning steps and App refs — are
+//     written ONLY through their separately named attach channels
+//     (`AttachReasoning`, `AttachAppRefs`), never through the generic
+//     ops.
 //
 // # Ordering, paging, retention
 //
@@ -83,16 +99,23 @@
 // the turn id, updates/seals fail with a stale version the replay
 // treats as "already applied"). An IN-MEMORY-backed store reports
 // `Durable() == false`: after a process restart its projection is
-// EMPTY (rows AND checkpoint gone — explicit loss, never a silent
-// claim of durability) and the runtime rebuilds it by reconciling
-// from sequence zero against the durable event log.
+// EMPTY (rows, checkpoint, AND erasure fence gone — explicit loss,
+// never a silent claim of durability) and the runtime rebuilds it by
+// reconciling from sequence zero against the durable event log.
 //
 // Every turn write is fenced against session erasure (right to
-// erasure, RFC §7): the write composes expectations that the
-// session's pending-erasure ledger and terminal erasure tombstone
-// slots are ABSENT. Once an erasure has begun or converged, no turn
-// write is admitted (`ErrErasureFenced`); `Erase` / `Store.DeleteScope`
-// remove the projection's rows with the erasure cascade.
+// erasure, RFC §7) by a STORE-LOCAL durable session fence: `Erase`
+// (and the cascade's `Store.FenceSession`) sets the session's fence
+// in the driver's OWN backend BEFORE any row is deleted, and every
+// write — Append / Update / Seal / checkpoint — atomically refuses a
+// fenced session (`ErrErasureFenced`). The fence is never removed by
+// the erasure itself, so an erased session stays fenced across replay
+// and restart (no resurrection), and re-erase is idempotent. The fence
+// is deliberately store-local: a driver cannot transactionally inspect
+// arbitrary external StateStore slots, so the fence lives in the same
+// transaction as the rows it guards. This package invents no
+// cross-runtime authority — the runtime's shared erasure ledger stays
+// the erasure cascade's own coordination surface.
 //
 // # Scope of this package
 //
@@ -237,6 +260,124 @@ func (a AppAvailability) Valid() bool {
 	return false
 }
 
+// AgentBindingSource is the honest provenance of the agent binding a
+// turn executed under. The wire contract requires the source to be one
+// of the three declared values; it is never derived into something
+// stronger than what the runtime reported.
+type AgentBindingSource string
+
+// Agent binding provenance states.
+const (
+	// AgentBindingExplicit — the run was bound to a named registered
+	// agent by an explicit routing decision.
+	AgentBindingExplicit AgentBindingSource = "explicit"
+	// AgentBindingDefaulted — the run executed under the runtime's
+	// default agent binding (no explicit choice).
+	AgentBindingDefaulted AgentBindingSource = "defaulted"
+	// AgentBindingUnknown — no binding provenance was reported (the
+	// honest "we don't know", never a fabricated explicit claim).
+	AgentBindingUnknown AgentBindingSource = "unknown"
+)
+
+// Valid reports whether s is one of the declared binding sources.
+func (s AgentBindingSource) Valid() bool {
+	switch s {
+	case AgentBindingExplicit, AgentBindingDefaulted, AgentBindingUnknown:
+		return true
+	}
+	return false
+}
+
+// AnswerState is the CLOSED UNION describing what the answer component
+// carries. The wire contract reads exactly one of the five states; the
+// projection never invents a state a failed read would mask — a read
+// failure surfaces as Evicted or Unavailable, NEVER as Empty (an Empty
+// answer is a definite "the run produced no text", not a failure
+// artifact).
+type AnswerState string
+
+// Answer component states.
+const (
+	// AnswerStateInline — the answer is inline text (possibly "" when
+	// the model finished with goal and produced no text).
+	AnswerStateInline AnswerState = "inline"
+	// AnswerStateArtifactRef — the answer is heavy and routed through
+	// the artifact store by reference.
+	AnswerStateArtifactRef AnswerState = "artifact_ref"
+	// AnswerStateEmpty — the run produced a definite answer with no
+	// text and no artifact (e.g. a tool-only completion).
+	AnswerStateEmpty AnswerState = "empty"
+	// AnswerStateEvicted — an artifact-referenced answer whose stored
+	// content has been evicted / garbage-collected; the reference is
+	// honestly gone, never shown as Empty.
+	AnswerStateEvicted AnswerState = "evicted"
+	// AnswerStateUnavailable — the run has not produced an answer yet
+	// (a running turn), or no answer source was wired.
+	AnswerStateUnavailable AnswerState = "unavailable"
+)
+
+// Valid reports whether s is one of the declared answer states.
+func (s AnswerState) Valid() bool {
+	switch s {
+	case AnswerStateInline, AnswerStateArtifactRef, AnswerStateEmpty,
+		AnswerStateEvicted, AnswerStateUnavailable:
+		return true
+	}
+	return false
+}
+
+// PauseClass is the class of one durable pause episode on a row, drawn
+// from the producers of the unified pause/resume primitive (HITL
+// approval, tool-side OAuth, A2A AUTH_REQUIRED / INPUT_REQUIRED,
+// steering PAUSE, operator / Console PAUSE).
+type PauseClass string
+
+// Pause episode classes.
+const (
+	PauseClassHitlApproval     PauseClass = "hitl_approval"
+	PauseClassOAuth            PauseClass = "oauth"
+	PauseClassA2AAuthRequired  PauseClass = "a2a_auth_required"
+	PauseClassA2AInputRequired PauseClass = "a2a_input_required"
+	PauseClassSteering         PauseClass = "steering"
+	PauseClassOperator         PauseClass = "operator"
+)
+
+// Valid reports whether c is one of the declared pause classes.
+func (c PauseClass) Valid() bool {
+	switch c {
+	case PauseClassHitlApproval, PauseClassOAuth, PauseClassA2AAuthRequired,
+		PauseClassA2AInputRequired, PauseClassSteering, PauseClassOperator:
+		return true
+	}
+	return false
+}
+
+// PauseLifecycle is the durable lifecycle state of one pause episode.
+type PauseLifecycle string
+
+// Pause episode lifecycle states.
+const (
+	// PauseLifecycleRequested — a pause was requested but the run has
+	// not yet quiesced.
+	PauseLifecycleRequested PauseLifecycle = "requested"
+	// PauseLifecycleActive — the run is paused (the row's Status is
+	// StatusPaused).
+	PauseLifecycleActive PauseLifecycle = "active"
+	// PauseLifecycleResolved — the pause episode ended (the run
+	// resumed or reached a terminal status).
+	PauseLifecycleResolved PauseLifecycle = "resolved"
+)
+
+// Valid reports whether l is one of the declared pause lifecycle
+// states.
+func (l PauseLifecycle) Valid() bool {
+	switch l {
+	case PauseLifecycleRequested, PauseLifecycleActive, PauseLifecycleResolved:
+		return true
+	}
+	return false
+}
+
 // Projection bounds. These are the projection core's choke points:
 // everything the row carries is bounded, and an over-bound input
 // fails loud (ErrInvalidInput) rather than being silently truncated —
@@ -262,11 +403,24 @@ const (
 	// dropped count — reasoning overflow is a partial-state, not a
 	// silent truncation.
 	MaxReasoningSteps = 32
-	// MaxActivityRows bounds the activity rows a turn row carries.
-	// Overflow keeps the LAST MaxActivityRows (the recent window) and
-	// marks the component with the explicit lower-bound More flag plus
-	// the dropped count.
-	MaxActivityRows = 32
+	// MaxActivityRows is the safe absolute PROTOCOL CEILING on one turn
+	// row's inline activity window: no response may carry more activity
+	// rows than this, no matter how the projector is configured. The
+	// projector's own inline limit is configured (WithActivityLimit),
+	// must be >= the runtime's configured per-turn tool-call budget
+	// (WithToolBudget), and is capped at this ceiling. A turn whose
+	// actual tool calls exceed the configured window overflows honestly
+	// (More + Dropped + Partial) and the full activity is read through
+	// the named bounded ActivityReader — never a generic subresource.
+	MaxActivityRows = 128
+	// DefaultActivityLimit is the projector's default inline activity
+	// window (WithActivityLimit when none is configured).
+	DefaultActivityLimit = 32
+	// DefaultToolBudget is the default runtime-configured per-turn
+	// tool-call budget the projector validates its inline limit against
+	// (WithToolBudget when none is configured). Construction fails loud
+	// when the configured limit is below the configured budget.
+	DefaultToolBudget = 16
 	// MaxAttachmentsPerSide bounds the input / output attachment
 	// metadata lists.
 	MaxAttachmentsPerSide = 32
@@ -284,6 +438,10 @@ const (
 	// summary (duration / error class — never raw arguments or
 	// results).
 	MaxActivitySummaryRunes = 512
+	// MaxPauseReasonRunes bounds the pause component's content-free
+	// reason text (a short derived string — never a token, never raw
+	// approval context).
+	MaxPauseReasonRunes = 512
 	// MaxModelRunes bounds the usage model identifier.
 	MaxModelRunes = 256
 	// MaxStepTraceRunes bounds one reasoning step's provider thinking

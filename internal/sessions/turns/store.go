@@ -2,9 +2,7 @@ package turns
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/hurtener/Harbor/internal/agentcfg/sessionfence"
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
@@ -32,9 +30,16 @@ import (
 //     refuse a stale expected version (ErrStaleVersion). Sealed
 //     (terminal) rows are immutable: every mutation of a sealed row
 //     fails with ErrTurnSealed.
-//   - Every write is ERASURE-FENCED: the caller passes the Fence the
-//     write must clear (FenceFor), and the store refuses the write
-//     when either fence slot is present (ErrErasureFenced).
+//   - Every write is ERASURE-FENCED by a STORE-LOCAL durable session
+//     fence: FenceSession marks the session fenced in the driver's OWN
+//     backend, and AppendTurnIf / UpdateTurnIf / SealTurnIf /
+//     SaveCheckpoint atomically refuse a fenced session
+//     (ErrErasureFenced) in the same transaction as their write. A
+//     driver cannot transactionally inspect arbitrary external
+//     StateStore slots, so the fence lives with the rows it guards.
+//     DeleteScope NEVER removes the fence — an erased session stays
+//     fenced (no resurrection after replay / restart), and re-erase
+//     stays idempotent.
 //   - SaveCheckpoint is MONOTONIC and IDEMPOTENT: saving a sequence
 //     at or below the stored checkpoint is a no-op (never a
 //     regression).
@@ -55,35 +60,47 @@ import (
 type Store interface {
 	// Durable reports whether the backing store survives a process
 	// restart. An in-memory driver returns false: after a restart its
-	// projection is EMPTY (rows AND checkpoints gone — explicit loss,
-	// never a silent claim of durability) and the runtime rebuilds it
-	// by reconciling from sequence zero.
+	// projection is EMPTY (rows, checkpoints, AND erasure fences gone
+	// — explicit loss, never a silent claim of durability) and the
+	// runtime rebuilds it by reconciling from sequence zero.
 	Durable() bool
 
 	// AppendTurnIf creates the mutable row for id / TurnID, minting
 	// the next immutable per-session sequence atomically with the
 	// write. Idempotent on the turn id: an existing row is returned
 	// unchanged (no error) — a replay of an already-applied append is
-	// a no-op. Refused with ErrErasureFenced when fence does not
-	// clear, ErrStoreClosed after Close. The driver may evict the
+	// a no-op. Refused with ErrErasureFenced when the session is
+	// fenced, ErrStoreClosed after Close. The driver may evict the
 	// session's oldest rows beyond its retention bound, setting the
 	// session's truncation flag.
-	AppendTurnIf(ctx context.Context, id identity.Identity, row TurnRow, fence Fence) (TurnRow, error)
+	AppendTurnIf(ctx context.Context, id identity.Identity, row TurnRow) (TurnRow, error)
 
 	// UpdateTurnIf atomically replaces a MUTABLE row at an expected
 	// version. Refused with ErrStaleVersion on a version mismatch,
 	// ErrTurnSealed when the stored row is already sealed,
 	// ErrTurnNotFound when the row is not retained, ErrErasureFenced
-	// when fence does not clear. On success the returned row carries
+	// when the session is fenced. On success the returned row carries
 	// Version + 1.
-	UpdateTurnIf(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, row TurnRow, fence Fence) (TurnRow, error)
+	UpdateTurnIf(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, row TurnRow) (TurnRow, error)
 
 	// SealTurnIf atomically replaces a MUTABLE row with its SEALED
 	// terminal form. Same refusals as UpdateTurnIf (ErrStaleVersion /
 	// ErrTurnSealed / ErrTurnNotFound / ErrErasureFenced); a sealed
 	// row is immutable thereafter. On success the returned row
 	// carries Sealed == true and Version + 1.
-	SealTurnIf(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, row TurnRow, fence Fence) (TurnRow, error)
+	SealTurnIf(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, row TurnRow) (TurnRow, error)
+
+	// FenceSession marks id's session as ERASURE-FENCED in the
+	// driver's own durable backend, ATOMICALLY with respect to the
+	// row writes it guards. After FenceSession, AppendTurnIf /
+	// UpdateTurnIf / SealTurnIf / SaveCheckpoint refuse with
+	// ErrErasureFenced, and the fence is NEVER removed by
+	// DeleteScope — the erasure cascade calls FenceSession BEFORE
+	// DeleteScope, so an erased session stays fenced across replay
+	// and restart (no resurrection). Idempotent: fencing an already
+	// fenced session is a no-op. No cross-runtime authority is
+	// invented — this is this store's own fence, not an external slot.
+	FenceSession(ctx context.Context, id identity.Identity) error
 
 	// GetTurn reads one retained row; ErrTurnNotFound when the turn
 	// was never created, was evicted past the retention bound, or was
@@ -101,78 +118,30 @@ type Store interface {
 	ListTurns(ctx context.Context, id identity.Identity, before *Cursor, limit int) (rows []TurnRow, next *Cursor, truncated bool, err error)
 
 	// LoadCheckpoint returns the session's last-applied runtime event
-	// sequence; 0 when none was ever saved (a fresh store, or an
-	// in-memory store after restart).
+	// sequence; 0 when none was ever saved (a fresh store, an erased
+	// session — the erasure cleared it — or an in-memory store after
+	// restart). Reads are not fenced: a fenced session's checkpoint is
+	// still readable (it reads 0 after erasure).
 	LoadCheckpoint(ctx context.Context, id identity.Identity) (uint64, error)
 
 	// SaveCheckpoint records the session's last-applied runtime event
 	// sequence. MONOTONIC and IDEMPOTENT: a sequence at or below the
 	// stored checkpoint is a no-op (never a regression), so a
-	// reconcile retry cannot rewind the checkpoint.
+	// reconcile retry cannot rewind the checkpoint. Refused with
+	// ErrErasureFenced when the session is fenced — a rebuild must not
+	// advance the checkpoint of an erased session (no resurrection).
 	SaveCheckpoint(ctx context.Context, id identity.Identity, seq uint64) error
 
 	// DeleteScope removes every retained turn row and the checkpoint
 	// under id (the erasure cascade's projection leg). Idempotent: an
-	// absent scope returns (0, nil). The erasure FENCE is the
-	// cascade's separate concern (it writes the pending ledger and the
-	// terminal tombstone via the shared sessionfence slots) — this
-	// method only clears this projection's own records.
+	// absent scope returns (0, nil). The erasure FENCE is NOT removed
+	// — the caller (Projector.Erase) sets it via FenceSession before
+	// calling DeleteScope, and this method deliberately never clears
+	// it, so an erased session stays fenced. This method only clears
+	// this projection's own records.
 	DeleteScope(ctx context.Context, id identity.Identity) (int, error)
 
 	// Close releases driver resources; subsequent calls fail with
 	// ErrStoreClosed (wrapped). Idempotent.
 	Close(ctx context.Context) error
-}
-
-// Slot names one durable erasure-fence slot a turn write must clear:
-// the slot must be ABSENT for the write to proceed. The slots are the
-// sessionfence pending-erasure ledger and terminal-erasure tombstone
-// (internal/agentcfg/sessionfence) — they live in the shared
-// StateStore (the erasure cascade writes them), so a driver maps a
-// Slot onto its backend's exact-absence check (StateStore
-// SlotExpectation with an empty expected EventID for StateStore-backed
-// drivers).
-type Slot struct {
-	// Identity is the slot's full identity (the erasure slots ride the
-	// reserved observability scope — see sessionfence).
-	Identity identity.Quadruple
-	// Kind is the slot's StateStore kind (the literal erasure
-	// pending / tombstone kind).
-	Kind string
-}
-
-// Fence is the erasure fence a turn write must clear: both named
-// slots must be ABSENT. A fence with a present pending ledger means an
-// erasure is in flight; a present tombstone means it has converged —
-// in either case no turn write is admitted (ErrErasureFenced).
-type Fence struct {
-	// PendingAbsent is the session's pending-erasure ledger slot; must
-	// be absent.
-	PendingAbsent Slot
-	// TombstoneAbsent is the session's terminal erasure tombstone
-	// slot; must be absent.
-	TombstoneAbsent Slot
-}
-
-// FenceFor builds the erasure fence every turn write for id must
-// clear, from the shared sessionfence slots (the same slots the
-// runtime's session-erasure cascade writes). A session whose erasure
-// has begun or converged therefore admits no turn writes.
-func FenceFor(id identity.Identity) (Fence, error) {
-	if err := identity.Validate(id); err != nil {
-		return Fence{}, fmt.Errorf("turns: fence for %q: %w", id.SessionID, ErrIdentityRequired)
-	}
-	q := identity.Quadruple{Identity: id}
-	pendingQ, pendingKind, err := sessionfence.PendingSlot(q)
-	if err != nil {
-		return Fence{}, fmt.Errorf("turns: pending erasure slot: %w", err)
-	}
-	tombQ, tombKind, err := sessionfence.TombstoneSlot(q)
-	if err != nil {
-		return Fence{}, fmt.Errorf("turns: tombstone erasure slot: %w", err)
-	}
-	return Fence{
-		PendingAbsent:   Slot{Identity: pendingQ, Kind: pendingKind},
-		TombstoneAbsent: Slot{Identity: tombQ, Kind: tombKind},
-	}, nil
 }

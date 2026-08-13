@@ -33,6 +33,7 @@ const (
 	turnSeqKind            = "turn.seq"
 	turnCheckpointKind     = "turn.checkpoint"
 	turnRetentionKind      = "turn.retention"
+	turnFenceKind          = "turn.fence"
 	testStoreRetentionTiny = 5 // for retention/truncation tests
 )
 
@@ -77,15 +78,19 @@ func (s *testStore) closedErr() error {
 	return nil
 }
 
-func (s *testStore) fenceErr(fence Fence) error {
-	for _, slot := range []Slot{fence.PendingAbsent, fence.TombstoneAbsent} {
-		_, err := s.st.Load(context.Background(), slot.Identity, slot.Kind)
-		if err == nil {
-			return ErrErasureFenced
-		}
-		if !errors.Is(err, state.ErrNotFound) {
-			return fmt.Errorf("turns: fence slot load: %w", err)
-		}
+// fencedErr reports ErrErasureFenced when the session's STORE-LOCAL
+// erasure fence record is present. Caller holds s.mu (FenceSession
+// writes the record under the same lock, so the check and any write
+// are serialized — a real driver must do the same check in the same
+// transaction as its write).
+func (s *testStore) fencedErr(ctx context.Context, id identity.Identity) error {
+	q := identity.Quadruple{Identity: id}
+	_, err := s.st.Load(ctx, q, turnFenceKind)
+	if err == nil {
+		return ErrErasureFenced
+	}
+	if !errors.Is(err, state.ErrNotFound) {
+		return fmt.Errorf("turns: fence load: %w", err)
 	}
 	return nil
 }
@@ -124,7 +129,7 @@ func (s *testStore) saveRow(ctx context.Context, id identity.Identity, row TurnR
 	return eid, nil
 }
 
-func (s *testStore) AppendTurnIf(ctx context.Context, id identity.Identity, row TurnRow, fence Fence) (TurnRow, error) {
+func (s *testStore) AppendTurnIf(ctx context.Context, id identity.Identity, row TurnRow) (TurnRow, error) {
 	if err := s.closedErr(); err != nil {
 		return TurnRow{}, err
 	}
@@ -137,8 +142,9 @@ func (s *testStore) AppendTurnIf(ctx context.Context, id identity.Identity, row 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 1. Fence first, always: an erased session admits no turn write.
-	if err := s.fenceErr(fence); err != nil {
+	// 1. Store-local erasure fence first, always: an erased session
+	//    admits no turn write.
+	if err := s.fencedErr(ctx, id); err != nil {
 		return TurnRow{}, err
 	}
 	// 2. Idempotent append: an existing row returns unchanged (a
@@ -158,18 +164,19 @@ func (s *testStore) AppendTurnIf(ctx context.Context, id identity.Identity, row 
 	row.TieBreaker = row.TurnID
 	row.Version = 1
 	// 4. Create the row atomically with the fence (the guard against a
-	//    racing erasure between the fence check and the write).
+	//    racing erasure between the fence check and the write: the row
+	//    slot must be absent AND the local fence slot must be absent).
 	q, kind := rowKey(id, row.TurnID)
 	bytes, err := json.Marshal(row)
 	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: row %q encode: %w", row.TurnID, err)
 	}
+	fq := identity.Quadruple{Identity: id}
 	eid := state.NewEventID()
 	err = s.st.SaveIf(ctx,
 		[]state.SlotExpectation{
-			{Identity: q, Kind: kind, ExpectedEventID: ""}, // row slot absent
-			{Identity: fence.PendingAbsent.Identity, Kind: fence.PendingAbsent.Kind, ExpectedEventID: ""},
-			{Identity: fence.TombstoneAbsent.Identity, Kind: fence.TombstoneAbsent.Kind, ExpectedEventID: ""},
+			{Identity: q, Kind: kind, ExpectedEventID: ""},           // row slot absent
+			{Identity: fq, Kind: turnFenceKind, ExpectedEventID: ""}, // local fence absent
 		},
 		state.StateRecord{ID: eid, Identity: q, Kind: kind, Bytes: bytes},
 	)
@@ -307,12 +314,17 @@ type truncationMarker struct {
 }
 
 // mutate applies the UpdateTurnIf / SealTurnIf conditional-write
-// pattern: fence check, load, guard, conditional save, and a bounded
-// retry that re-evaluates the guard when a concurrent writer wins.
-func (s *testStore) mutate(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, row TurnRow, sealed bool, fence Fence) (TurnRow, error) {
+// pattern: local-fence check, load, guard, conditional save, and a
+// bounded retry that re-evaluates the guard when a concurrent writer
+// wins.
+func (s *testStore) mutate(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, row TurnRow, sealed bool) (TurnRow, error) {
 	q, kind := rowKey(id, turnID)
+	fq := identity.Quadruple{Identity: id}
 	for attempt := 0; attempt < 3; attempt++ {
-		if err := s.fenceErr(fence); err != nil {
+		// The store-local erasure fence is checked in the same
+		// serialized section as the write (a real driver checks it in
+		// the same transaction).
+		if err := s.fencedErr(ctx, id); err != nil {
 			return TurnRow{}, err
 		}
 		current, rec, err := s.loadRow(ctx, id, turnID)
@@ -339,8 +351,7 @@ func (s *testStore) mutate(ctx context.Context, id identity.Identity, turnID Tur
 		err = s.st.SaveIf(ctx,
 			[]state.SlotExpectation{
 				{Identity: q, Kind: kind, ExpectedEventID: rec.ID},
-				{Identity: fence.PendingAbsent.Identity, Kind: fence.PendingAbsent.Kind, ExpectedEventID: ""},
-				{Identity: fence.TombstoneAbsent.Identity, Kind: fence.TombstoneAbsent.Kind, ExpectedEventID: ""},
+				{Identity: fq, Kind: turnFenceKind, ExpectedEventID: ""},
 			},
 			state.StateRecord{ID: eid, Identity: q, Kind: kind, Bytes: bytes},
 		)
@@ -356,19 +367,7 @@ func (s *testStore) mutate(ctx context.Context, id identity.Identity, turnID Tur
 	return TurnRow{}, fmt.Errorf("turns: conditional write did not converge")
 }
 
-// FenceForOrPanic is a test-side convenience: the fence slots are
-// always constructible for a validated triple (the projector's
-// Append/Update/Seal already validate identity before reaching the
-// store).
-func FenceForOrPanic(id identity.Identity) Fence {
-	f, err := FenceFor(id)
-	if err != nil {
-		panic(err)
-	}
-	return f
-}
-
-func (s *testStore) UpdateTurnIf(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, row TurnRow, fence Fence) (TurnRow, error) {
+func (s *testStore) UpdateTurnIf(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, row TurnRow) (TurnRow, error) {
 	if err := s.closedErr(); err != nil {
 		return TurnRow{}, err
 	}
@@ -377,10 +376,10 @@ func (s *testStore) UpdateTurnIf(ctx context.Context, id identity.Identity, turn
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.mutate(ctx, id, turnID, expectedVersion, row, false, fence)
+	return s.mutate(ctx, id, turnID, expectedVersion, row, false)
 }
 
-func (s *testStore) SealTurnIf(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, row TurnRow, fence Fence) (TurnRow, error) {
+func (s *testStore) SealTurnIf(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, row TurnRow) (TurnRow, error) {
 	if err := s.closedErr(); err != nil {
 		return TurnRow{}, err
 	}
@@ -389,7 +388,30 @@ func (s *testStore) SealTurnIf(ctx context.Context, id identity.Identity, turnID
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.mutate(ctx, id, turnID, expectedVersion, row, true, fence)
+	return s.mutate(ctx, id, turnID, expectedVersion, row, true)
+}
+
+// FenceSession marks id's session as erasure-fenced by writing the
+// store-local durable fence record. Idempotent: an already-fenced
+// session stays fenced (a no-op, never an error). DeleteScope never
+// removes this record — an erased session stays fenced.
+func (s *testStore) FenceSession(ctx context.Context, id identity.Identity) error {
+	if err := s.closedErr(); err != nil {
+		return err
+	}
+	if err := identity.Validate(id); err != nil {
+		return ErrIdentityRequired
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	q := identity.Quadruple{Identity: id}
+	if _, err := s.st.Load(ctx, q, turnFenceKind); err == nil {
+		return nil // already fenced: idempotent no-op
+	} else if !errors.Is(err, state.ErrNotFound) {
+		return err
+	}
+	eid := state.NewEventID()
+	return s.st.Save(ctx, state.StateRecord{ID: eid, Identity: q, Kind: turnFenceKind, Bytes: []byte(`{}`)})
 }
 
 func (s *testStore) GetTurn(ctx context.Context, id identity.Identity, turnID TurnID) (TurnRow, error) {
@@ -506,6 +528,11 @@ func (s *testStore) SaveCheckpoint(ctx context.Context, id identity.Identity, se
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A fenced (erased) session must never advance its checkpoint — no
+	// resurrection after replay / restart.
+	if err := s.fencedErr(ctx, id); err != nil {
+		return err
+	}
 	q := identity.Quadruple{Identity: id}
 	for {
 		cur, err := s.loadCheckpointRaw(ctx, id)
@@ -518,7 +545,9 @@ func (s *testStore) SaveCheckpoint(ctx context.Context, id identity.Identity, se
 		bytes := make([]byte, 8)
 		binary.BigEndian.PutUint64(bytes, seq)
 		eid := state.NewEventID()
-		expect := []state.SlotExpectation{}
+		expect := []state.SlotExpectation{
+			{Identity: q, Kind: turnFenceKind, ExpectedEventID: ""},
+		}
 		if cur == 0 {
 			expect = append(expect, state.SlotExpectation{Identity: q, Kind: turnCheckpointKind, ExpectedEventID: ""})
 		} else {
@@ -535,7 +564,8 @@ func (s *testStore) SaveCheckpoint(ctx context.Context, id identity.Identity, se
 		if !errors.Is(err, state.ErrConditionFailed) {
 			return err
 		}
-		// Concurrent save — reload and retry (converges to the max).
+		// Concurrent save or a racing erasure — reload and retry
+		// (converges to the max).
 	}
 }
 
@@ -561,11 +591,40 @@ func (s *testStore) DeleteScope(ctx context.Context, id identity.Identity) (int,
 	if err := identity.Validate(id); err != nil {
 		return 0, ErrIdentityRequired
 	}
-	n, err := s.st.DeleteScope(ctx, id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Delete ONLY this projection's owned records (rows, checkpoint,
+	// sequence, retention marker). The erasure FENCE record
+	// (turnFenceKind) is deliberately NEVER deleted: the erasure
+	// cascade sets it via FenceSession BEFORE calling DeleteScope, and
+	// the fence must survive the erasure so an erased session stays
+	// fenced (no resurrection after replay / restart). A real driver
+	// keeps the fence in its own table for the same reason — this
+	// models exactly that shape instead of delegating to the
+	// kind-agnostic StateStore cascade, which would wipe the fence.
+	q := identity.Quadruple{Identity: id}
+	deleted := 0
+	recs, err := s.st.ListKindForIdentity(ctx, q, turnRowKindPrefix)
 	if err != nil {
 		return 0, err
 	}
-	return n, nil
+	for _, rec := range recs {
+		if err := s.st.Delete(ctx, q, rec.Kind); err != nil {
+			return 0, err
+		}
+		deleted++
+	}
+	for _, kind := range []string{turnCheckpointKind, turnSeqKind, turnRetentionKind} {
+		if _, err := s.st.Load(ctx, q, kind); err == nil {
+			if err := s.st.Delete(ctx, q, kind); err != nil {
+				return 0, err
+			}
+			deleted++
+		} else if !errors.Is(err, state.ErrNotFound) {
+			return 0, err
+		}
+	}
+	return deleted, nil
 }
 
 func (s *testStore) Close(ctx context.Context) error {

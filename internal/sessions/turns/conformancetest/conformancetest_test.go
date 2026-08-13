@@ -2,32 +2,27 @@ package conformancetest
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"sync"
 	"testing"
 
-	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
-	"github.com/hurtener/Harbor/internal/state"
-
-	// Test-scoped driver carve-out (CLAUDE.md §13): the in-memory
-	// StateStore driver backs the fence slots of the smoke driver.
-	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
 
 // smokeDriver is the in-package mini Store that smoke-runs the suite:
-// a mutex-guarded map store (unbounded retention) with fence
-// enforcement against the shared StateStore. It is a TEST-GRADE
-// implementation living in a _test.go file — never a production
-// default — and exists so the suite itself is exercised by CI.
+// a mutex-guarded map store (unbounded retention) with a STORE-LOCAL
+// erasure fence. It is a TEST-GRADE implementation living in a
+// _test.go file — never a production default — and exists so the suite
+// itself is exercised by CI. The fence is store-local on purpose: the
+// suite pins the contract that a driver fences in its own backend and
+// never inspects arbitrary external StateStore slots.
 type smokeDriver struct {
 	mu          sync.Mutex
 	rows        map[smokeKey]turns.TurnRow
 	seqs        map[string]uint64
 	checkpoints map[string]uint64
-	st          state.StateStore
+	fenced      map[string]bool
 	closed      bool
 }
 
@@ -43,18 +38,13 @@ func sessionKeyOf(id identity.Identity) string {
 	return id.TenantID + "|" + id.UserID + "|" + id.SessionID
 }
 
-func newSmokeDriver(t *testing.T) (*smokeDriver, state.StateStore) {
-	t.Helper()
-	st, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("open inmem state: %v", err)
-	}
+func newSmokeDriver() *smokeDriver {
 	return &smokeDriver{
 		rows:        map[smokeKey]turns.TurnRow{},
 		seqs:        map[string]uint64{},
 		checkpoints: map[string]uint64{},
-		st:          st,
-	}, st
+		fenced:      map[string]bool{},
+	}
 }
 
 func (d *smokeDriver) Durable() bool { return false }
@@ -73,20 +63,18 @@ func (d *smokeDriver) identityErr(id identity.Identity) error {
 	return nil
 }
 
-func (d *smokeDriver) fenceErr(fence turns.Fence) error {
-	for _, slot := range []turns.Slot{fence.PendingAbsent, fence.TombstoneAbsent} {
-		_, err := d.st.Load(context.Background(), slot.Identity, slot.Kind)
-		if err == nil {
-			return turns.ErrErasureFenced
-		}
-		if !errors.Is(err, state.ErrNotFound) {
-			return err
-		}
+// fencedErr reports ErrErasureFenced when the session's STORE-LOCAL
+// fence is set. Caller holds d.mu (FenceSession writes under the same
+// lock, so check and write are serialized — a real driver checks in
+// the same transaction).
+func (d *smokeDriver) fencedErr(id identity.Identity) error {
+	if d.fenced[sessionKeyOf(id)] {
+		return turns.ErrErasureFenced
 	}
 	return nil
 }
 
-func (d *smokeDriver) AppendTurnIf(ctx context.Context, id identity.Identity, row turns.TurnRow, fence turns.Fence) (turns.TurnRow, error) {
+func (d *smokeDriver) AppendTurnIf(ctx context.Context, id identity.Identity, row turns.TurnRow) (turns.TurnRow, error) {
 	if err := d.closedErr(); err != nil {
 		return turns.TurnRow{}, err
 	}
@@ -98,7 +86,7 @@ func (d *smokeDriver) AppendTurnIf(ctx context.Context, id identity.Identity, ro
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if err := d.fenceErr(fence); err != nil {
+	if err := d.fencedErr(id); err != nil {
 		return turns.TurnRow{}, err
 	}
 	k := keyOf(id, row.TurnID)
@@ -114,8 +102,8 @@ func (d *smokeDriver) AppendTurnIf(ctx context.Context, id identity.Identity, ro
 	return row, nil
 }
 
-func (d *smokeDriver) mutate(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow, sealed bool, fence turns.Fence) (turns.TurnRow, error) {
-	if err := d.fenceErr(fence); err != nil {
+func (d *smokeDriver) mutate(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow, sealed bool) (turns.TurnRow, error) {
+	if err := d.fencedErr(id); err != nil {
 		return turns.TurnRow{}, err
 	}
 	k := keyOf(id, turnID)
@@ -139,7 +127,7 @@ func (d *smokeDriver) mutate(ctx context.Context, id identity.Identity, turnID t
 	return next, nil
 }
 
-func (d *smokeDriver) UpdateTurnIf(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow, fence turns.Fence) (turns.TurnRow, error) {
+func (d *smokeDriver) UpdateTurnIf(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow) (turns.TurnRow, error) {
 	if err := d.closedErr(); err != nil {
 		return turns.TurnRow{}, err
 	}
@@ -151,10 +139,10 @@ func (d *smokeDriver) UpdateTurnIf(ctx context.Context, id identity.Identity, tu
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.mutate(ctx, id, turnID, expectedVersion, row, false, fence)
+	return d.mutate(ctx, id, turnID, expectedVersion, row, false)
 }
 
-func (d *smokeDriver) SealTurnIf(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow, fence turns.Fence) (turns.TurnRow, error) {
+func (d *smokeDriver) SealTurnIf(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow) (turns.TurnRow, error) {
 	if err := d.closedErr(); err != nil {
 		return turns.TurnRow{}, err
 	}
@@ -166,7 +154,23 @@ func (d *smokeDriver) SealTurnIf(ctx context.Context, id identity.Identity, turn
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.mutate(ctx, id, turnID, expectedVersion, row, true, fence)
+	return d.mutate(ctx, id, turnID, expectedVersion, row, true)
+}
+
+func (d *smokeDriver) FenceSession(ctx context.Context, id identity.Identity) error {
+	if err := d.closedErr(); err != nil {
+		return err
+	}
+	if err := d.identityErr(id); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.fenced[sessionKeyOf(id)] = true // idempotent
+	return nil
 }
 
 func (d *smokeDriver) GetTurn(ctx context.Context, id identity.Identity, turnID turns.TurnID) (turns.TurnRow, error) {
@@ -253,6 +257,11 @@ func (d *smokeDriver) SaveCheckpoint(ctx context.Context, id identity.Identity, 
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// A fenced (erased) session must never advance its checkpoint — no
+	// resurrection after replay / restart.
+	if err := d.fencedErr(id); err != nil {
+		return err
+	}
 	sk := sessionKeyOf(id)
 	if seq > d.checkpoints[sk] {
 		d.checkpoints[sk] = seq // monotonic: never regress
@@ -269,6 +278,10 @@ func (d *smokeDriver) DeleteScope(ctx context.Context, id identity.Identity) (in
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// The STORE-LOCAL FENCE is deliberately NOT removed here: the
+	// erasure cascade sets it via FenceSession before DeleteScope, and
+	// it must survive the erase so an erased session stays fenced (no
+	// resurrection).
 	deleted := 0
 	for k := range d.rows {
 		if k.tenant == id.TenantID && k.user == id.UserID && k.session == id.SessionID {
@@ -302,9 +315,9 @@ func (d *smokeDriver) Close(ctx context.Context) error {
 // mini driver so CI exercises the suite itself; future driver lanes run
 // the same suite against their real drivers.
 func TestConformance_Smoke(t *testing.T) {
-	Run(t, func() (turns.Store, state.StateStore, func()) {
-		d, st := newSmokeDriver(t)
-		return d, st, func() { _ = d.Close(context.Background()) }
+	Run(t, func() (turns.Store, func()) {
+		d := newSmokeDriver()
+		return d, func() { _ = d.Close(context.Background()) }
 	})
 }
 

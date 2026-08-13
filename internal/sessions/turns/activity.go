@@ -10,11 +10,16 @@ import (
 // contract the row's explicit lower-bound points at.
 //
 // A turn row's Activity component retains only the newest
-// MaxActivityRows (Activity.More / Activity.Dropped carry the explicit
-// lower-bound: "at least these rows exist; the full activity is
-// readable elsewhere"). The full activity is read through THIS
-// contract — a single named method the runtime wires over the durable
-// event log (state.history), never through the projection's own store.
+// configured-window rows (Activity.More / Activity.Dropped carry the
+// explicit lower-bound: "at least these rows exist; the full activity
+// is readable elsewhere"). The inline window is configured on the
+// projector (WithActivityLimit) and must cover the runtime's
+// configured per-turn tool-call budget; the reader is kept ONLY for
+// the cases where a turn's actual activity outruns that window — an
+// over-budget turn, or a replay of an over-budget observation. The
+// full activity is read through THIS contract — a single named method
+// the runtime wires over the durable event log (state.history), never
+// through the projection's own store.
 //
 // It is deliberately NOT a generic subresource framework: there is
 // exactly one activity read, named once, and nothing else on a turn is

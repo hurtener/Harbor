@@ -9,11 +9,11 @@ import (
 )
 
 // Projector is the runtime-owned turn-projection core: it validates
-// and applies the operations-safe mutations (Append / Update / Seal),
-// drives the two separately named component channels (AttachReasoning
-// / AttachAppRef), serves the consumer-safe reads (List / Get), and
-// owns the restart / reconcile / erasure-fence contracts over a
-// conformance-ready Store.
+// and applies the mutation DTOs (Append / Update / Seal), drives the
+// two separately named component channels (AttachReasoning /
+// AttachAppRefs), serves the consumer-safe reads (List / Get) and the
+// operations-safe read (OpsTurn), and owns the restart / reconcile /
+// erasure-fence contracts over a conformance-ready Store.
 //
 // Concurrent reuse (D-025): a constructed *Projector is immutable
 // after New — it holds only the Store reference (itself safe for N
@@ -32,6 +32,13 @@ type Projector struct {
 	// (MaxInlineAnswerBytes by default); an inline answer at or above
 	// it is refused with ErrContextLeak.
 	inlineLimit int
+	// activityLimit is the configured inline activity window: it MUST
+	// cover the configured per-turn tool-call budget and is capped at
+	// the absolute Protocol ceiling MaxActivityRows.
+	activityLimit int
+	// toolBudget is the runtime's configured per-turn tool-call
+	// budget; New fails loud when activityLimit < toolBudget.
+	toolBudget int
 }
 
 // ProjectorOption configures New.
@@ -50,26 +57,61 @@ func WithInlineAnswerLimit(n int) ProjectorOption {
 	return func(p *Projector) { p.inlineLimit = n }
 }
 
-// New constructs a Projector over a mandatory Store. A nil store (or a
-// non-positive inline-answer bound from WithInlineAnswerLimit) fails
-// loud at construction — never a nil-panicking or silently-defaulted
-// projector.
+// WithActivityLimit configures the inline activity window of a row
+// (default DefaultActivityLimit). New fails loud when the limit is
+// below the configured per-turn tool-call budget (WithToolBudget) —
+// inline capacity must cover the budget — or above the absolute
+// Protocol ceiling MaxActivityRows. A turn whose actual tool calls
+// exceed the window overflows honestly (More + Dropped + Partial) and
+// the full activity is read through the named bounded ActivityReader.
+func WithActivityLimit(n int) ProjectorOption {
+	return func(p *Projector) { p.activityLimit = n }
+}
+
+// WithToolBudget declares the runtime's configured per-turn tool-call
+// budget (default DefaultToolBudget). New fails loud when the
+// configured inline activity limit (WithActivityLimit) is below it.
+func WithToolBudget(n int) ProjectorOption {
+	return func(p *Projector) { p.toolBudget = n }
+}
+
+// New constructs a Projector over a mandatory Store. A nil store, a
+// non-positive inline-answer bound, an inline activity limit outside
+// [1, MaxActivityRows], or an inline activity limit below the
+// configured tool budget fails loud at construction — never a
+// nil-panicking or silently-defaulted projector.
 func New(store Store, opts ...ProjectorOption) (*Projector, error) {
 	if store == nil {
 		return nil, fmt.Errorf("turns: New requires a non-nil Store")
 	}
-	p := &Projector{store: store, clock: realClock{}, inlineLimit: MaxInlineAnswerBytes}
+	p := &Projector{
+		store:         store,
+		clock:         realClock{},
+		inlineLimit:   MaxInlineAnswerBytes,
+		activityLimit: DefaultActivityLimit,
+		toolBudget:    DefaultToolBudget,
+	}
 	for _, opt := range opts {
 		opt(p)
 	}
 	if p.inlineLimit <= 0 {
 		return nil, fmt.Errorf("turns: New requires a positive inline-answer limit, got %d", p.inlineLimit)
 	}
+	if p.activityLimit < 1 || p.activityLimit > MaxActivityRows {
+		return nil, fmt.Errorf("turns: New requires an inline activity limit in [1, %d], got %d", MaxActivityRows, p.activityLimit)
+	}
+	if p.toolBudget < 0 {
+		return nil, fmt.Errorf("turns: New requires a non-negative tool budget, got %d", p.toolBudget)
+	}
+	if p.activityLimit < p.toolBudget {
+		return nil, fmt.Errorf("turns: inline activity limit %d is below the configured per-turn tool budget %d — inline capacity must cover the budget (ceiling %d)",
+			p.activityLimit, p.toolBudget, MaxActivityRows)
+	}
 	return p, nil
 }
 
-// Append creates the mutable row for a root foreground run (ops
-// Append — structurally free of transcript / reasoning /
+// Append creates the mutable row for a root foreground run (mutation
+// DTO Append — structurally free of transcript / reasoning /
 // App-correlation / pause tokens). The Store mints the immutable
 // per-session sequence atomically; an idempotent re-append of an
 // existing turn id returns the existing row unchanged (a replay
@@ -95,14 +137,24 @@ func (p *Projector) Append(ctx context.Context, id identity.Identity, a Append) 
 	if utf8.RuneCountInString(a.Query) > MaxQueryRunes {
 		return TurnRow{}, fmt.Errorf("%w: query exceeds %d runes", ErrInvalidInput, MaxQueryRunes)
 	}
-	if err := validateActivity(a.Activity); err != nil {
+	if err := validateActivity(a.Activity, p.activityLimit); err != nil {
 		return TurnRow{}, fmt.Errorf("turns: append activity: %w", err)
 	}
-	if err := validateAttachments(a.Inputs); err != nil {
+	inputs, err := normalizeAttachments(a.Inputs)
+	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: append inputs: %w", err)
 	}
-	if err := validateAttachments(a.Outputs); err != nil {
+	outputs, err := normalizeAttachments(a.Outputs)
+	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: append outputs: %w", err)
+	}
+	pause, err := normalizePause(a.Pause)
+	if err != nil {
+		return TurnRow{}, fmt.Errorf("turns: append pause: %w", err)
+	}
+	bindingSource, err := deriveBindingSource(a.AgentID, a.AgentBindingSource)
+	if err != nil {
+		return TurnRow{}, err
 	}
 
 	now := p.clock.Now()
@@ -110,51 +162,56 @@ func (p *Projector) Append(ctx context.Context, id identity.Identity, a Append) 
 	if started.IsZero() {
 		started = now
 	}
+	queryAt := a.QueryAt
+	if queryAt.IsZero() {
+		queryAt = started
+	}
 	row := TurnRow{
-		TurnID:     a.TurnID,
-		SessionID:  id.SessionID,
-		Sequence:   0, // minted by the Store
-		TieBreaker: a.TurnID,
-		Status:     status,
-		Sealed:     false,
-		Version:    1,
-		StartedAt:  started,
-		UpdatedAt:  started,
+		TurnID:              a.TurnID,
+		SessionID:           id.SessionID,
+		Sequence:            0, // minted by the Store
+		TieBreaker:          a.TurnID,
+		Status:              status,
+		Sealed:              false,
+		Version:             1,
+		LastAppliedEventSeq: a.EventSeq,
+		StartedAt:           started,
+		UpdatedAt:           started,
 		Agent: Agent{
-			ID:       a.AgentID,
-			Name:     a.AgentName,
-			Complete: agentCompleteness(a.AgentID, a.AgentName),
+			ID:            a.AgentID,
+			Name:          a.AgentName,
+			BindingSource: bindingSource,
+			Complete:      agentCompleteness(a.AgentID, a.AgentName),
 		},
 		Query: Query{
 			Text:     a.Query,
+			At:       queryAt,
 			Complete: queryCompleteness(a.Query),
 		},
-		Answer:    Answer{Complete: CompletenessUnavailable},
+		Answer:    Answer{State: AnswerStateUnavailable, Complete: CompletenessUnavailable},
+		Pause:     pause,
 		Usage:     Usage{Complete: CompletenessUnavailable},
 		Reasoning: Reasoning{Complete: CompletenessUnavailable},
-		Inputs:    a.Inputs,
-		Outputs:   a.Outputs,
-		App:       nil,
+		Inputs:    inputs,
+		Outputs:   outputs,
+		Apps:      nil,
 	}
-	row.Activity = clampActivity(a.Activity)
-	fence, err := FenceFor(id)
-	if err != nil {
-		return TurnRow{}, err
-	}
-	stored, err := p.store.AppendTurnIf(ctx, id, row, fence)
+	row.Activity = clampActivity(a.Activity, p.activityLimit)
+	stored, err := p.store.AppendTurnIf(ctx, id, row)
 	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: append %q: %w", a.TurnID, err)
 	}
 	return stored, nil
 }
 
-// Update mutates a MUTABLE row in place (ops Update — structurally
-// free of transcript / reasoning / App-correlation / pause tokens).
-// Non-nil components replace the stored component wholesale (usage is
-// cumulative totals; activity is the cumulative feed). expectedVersion
-// must match the stored row's current Version; a concurrent write wins
-// with ErrStaleVersion and the caller reloads and retries (a replay
-// of an already-applied update treats it as "already applied").
+// Update mutates a MUTABLE row in place (mutation DTO Update —
+// structurally free of transcript / reasoning / App-correlation /
+// pause tokens). Non-nil components replace the stored component
+// wholesale (usage is cumulative totals; activity is the cumulative
+// feed). expectedVersion must match the stored row's current Version;
+// a concurrent write wins with ErrStaleVersion and the caller reloads
+// and retries (a replay of an already-applied update treats it as
+// "already applied").
 func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, u Update) (TurnRow, error) {
 	if err := validateIdentity(id); err != nil {
 		return TurnRow{}, err
@@ -180,14 +237,20 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 			return TurnRow{}, fmt.Errorf("turns: update usage: %w", err)
 		}
 	}
-	if err := validateActivity(u.Activity); err != nil {
+	if err := validateActivity(u.Activity, p.activityLimit); err != nil {
 		return TurnRow{}, fmt.Errorf("turns: update activity: %w", err)
 	}
-	if err := validateAttachments(u.Inputs); err != nil {
+	inputs, err := normalizeAttachments(u.Inputs)
+	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: update inputs: %w", err)
 	}
-	if err := validateAttachments(u.Outputs); err != nil {
+	outputs, err := normalizeAttachments(u.Outputs)
+	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: update outputs: %w", err)
+	}
+	pause, err := normalizePause(u.Pause)
+	if err != nil {
+		return TurnRow{}, fmt.Errorf("turns: update pause: %w", err)
 	}
 
 	current, err := p.store.GetTurn(ctx, id, turnID)
@@ -203,25 +266,32 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 		merged.Status = u.Status
 	}
 	if u.Answer != nil {
-		merged.Answer = *u.Answer
+		ans := *u.Answer
+		ans.Complete = answerCompleteness(ans.State) // derive the uniform honesty from the closed union
+		merged.Answer = ans
+		if u.EventSeq != 0 {
+			merged.Answer.Seq = u.EventSeq // component/version consistency anchor
+		}
 	}
 	if u.Usage != nil {
 		merged.Usage = *u.Usage
 	}
 	if u.Activity != nil {
-		merged.Activity = clampActivity(u.Activity)
+		merged.Activity = clampActivity(u.Activity, p.activityLimit)
 	}
 	if u.Inputs != nil {
-		merged.Inputs = u.Inputs
+		merged.Inputs = inputs
 	}
 	if u.Outputs != nil {
-		merged.Outputs = u.Outputs
+		merged.Outputs = outputs
 	}
-	fence, err := FenceFor(id)
-	if err != nil {
-		return TurnRow{}, err
+	if u.Pause != nil {
+		merged.Pause = pause
 	}
-	stored, err := p.store.UpdateTurnIf(ctx, id, turnID, expectedVersion, merged, fence)
+	if u.EventSeq != 0 {
+		merged.LastAppliedEventSeq = u.EventSeq
+	}
+	stored, err := p.store.UpdateTurnIf(ctx, id, turnID, expectedVersion, merged)
 	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: update %q: %w", turnID, err)
 	}
@@ -230,13 +300,14 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 
 // Seal transitions a MUTABLE row to its SEALED terminal form, but
 // only once the terminal status's REQUIRED sources are present on the
-// current row: a complete seal requires the Answer component Complete
-// (ErrSealIncomplete naming "answer" otherwise); a failed seal
-// requires a non-empty ErrorClass ("error_class"). A same-status
-// re-seal of an already-sealed row is an idempotent no-op that
-// returns the sealed row (replay-friendly); a conflicting re-seal
-// fails with ErrTurnSealed. After a successful seal the row is
-// immutable.
+// current row: a complete seal requires the Answer component in a
+// definite state — inline / artifact_ref / empty (ErrSealIncomplete
+// naming "answer" otherwise; an evicted or unavailable answer is NOT a
+// complete seal); a failed seal requires a non-empty ErrorClass
+// ("error_class"). A same-status re-seal of an already-sealed row is
+// an idempotent no-op that returns the sealed row (replay-friendly); a
+// conflicting re-seal fails with ErrTurnSealed. After a successful
+// seal the row is immutable.
 func (p *Projector) Seal(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, s Seal) (TurnRow, error) {
 	if err := validateIdentity(id); err != nil {
 		return TurnRow{}, err
@@ -264,8 +335,8 @@ func (p *Projector) Seal(ctx context.Context, id identity.Identity, turnID TurnI
 	}
 	switch s.Status {
 	case StatusComplete:
-		if current.Answer.Complete != CompletenessComplete {
-			return TurnRow{}, fmt.Errorf("%w: answer is %q", ErrSealIncomplete, current.Answer.Complete)
+		if !definiteAnswer(current.Answer) {
+			return TurnRow{}, fmt.Errorf("%w: answer is %q (state %q)", ErrSealIncomplete, current.Answer.Complete, current.Answer.State)
 		}
 	case StatusFailed:
 		if s.ErrorClass == "" {
@@ -285,11 +356,10 @@ func (p *Projector) Seal(ctx context.Context, id identity.Identity, turnID TurnI
 	sealed.ErrorClass = s.ErrorClass
 	sealed.FinishedAt = finished
 	sealed.UpdatedAt = now
-	fence, err := FenceFor(id)
-	if err != nil {
-		return TurnRow{}, err
+	if s.EventSeq != 0 {
+		sealed.LastAppliedEventSeq = s.EventSeq
 	}
-	stored, err := p.store.SealTurnIf(ctx, id, turnID, expectedVersion, sealed, fence)
+	stored, err := p.store.SealTurnIf(ctx, id, turnID, expectedVersion, sealed)
 	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: seal %q: %w", turnID, err)
 	}
@@ -302,7 +372,9 @@ func (p *Projector) Seal(ctx context.Context, id identity.Identity, turnID TurnI
 // chronological trajectory order with strictly increasing (gap-
 // tolerant) indices; the projector retains the first MaxReasoningSteps
 // and reports the tail drop as Partial + Dropped. An empty feed marks
-// the component Unavailable. Replaces any prior reasoning wholesale.
+// the component Unavailable. Replaces any prior reasoning wholesale
+// and stamps the observation's EventSeq on the accumulated snapshot
+// (Reasoning.Seq).
 func (p *Projector) AttachReasoning(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, r ReasoningInput) (TurnRow, error) {
 	if err := validateIdentity(id); err != nil {
 		return TurnRow{}, err
@@ -323,67 +395,73 @@ func (p *Projector) AttachReasoning(ctx context.Context, id identity.Identity, t
 	}
 	merged := current
 	merged.Reasoning = clampReasoning(r.Steps)
-	merged.UpdatedAt = p.clock.Now()
-	fence, err := FenceFor(id)
-	if err != nil {
-		return TurnRow{}, err
+	if r.EventSeq != 0 {
+		merged.Reasoning.Seq = r.EventSeq // component/version consistency anchor
+		merged.LastAppliedEventSeq = r.EventSeq
 	}
-	stored, err := p.store.UpdateTurnIf(ctx, id, turnID, expectedVersion, merged, fence)
+	merged.UpdatedAt = p.clock.Now()
+	stored, err := p.store.UpdateTurnIf(ctx, id, turnID, expectedVersion, merged)
 	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: attach reasoning %q: %w", turnID, err)
 	}
 	return stored, nil
 }
 
-// AttachAppRef attaches the App reference component through its
-// separately named channel (NOT the generic ops). The ref carries
-// render metadata plus availability and NEVER a correlation token.
-// A ref missing ServerID or ResourceURI fails loud (a ref that could
-// only mount broken is refused, mirroring the console render guard).
-// Replaces any prior ref (last-wins within a turn, mirroring the live
-// discovery reducer).
-func (p *Projector) AttachAppRef(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, a AppRefInput) (TurnRow, error) {
+// AttachAppRefs upserts the turn's ORDERED App reference collection
+// through its separately named channel (NOT the generic ops). The
+// replacement identity is exactly (EffectiveAgentID, ServerID,
+// ResourceURI): a ref whose identity is already on the row replaces it
+// IN PLACE (position fixed by the FIRST declaration) with the latest
+// correlation metadata (ToolCallID / ToolName / DisplayMode /
+// RawHTMLTrusted / Availability); a new identity appends at the end.
+// Each ref carries render metadata plus availability; ToolCallID is
+// optional correlation metadata for the identity-scoped
+// `mcp.apps.tool_context` lazy delivery — never authority. A ref
+// missing ServerID or ResourceURI fails loud (a ref that could only
+// mount broken is refused, mirroring the console render guard).
+func (p *Projector) AttachAppRefs(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, a AppRefInput) (TurnRow, error) {
 	if err := validateIdentity(id); err != nil {
 		return TurnRow{}, err
 	}
 	if turnID == "" {
 		return TurnRow{}, fmt.Errorf("%w: turn id is empty", ErrInvalidInput)
 	}
-	ref := a.Ref
-	if ref.ServerID == "" || ref.ResourceURI == "" {
-		return TurnRow{}, fmt.Errorf("%w: app ref requires ServerID and ResourceURI", ErrInvalidInput)
-	}
-	if ref.Availability == "" {
-		ref.Availability = AppAvailable
-	}
-	if !ref.Availability.Valid() {
-		return TurnRow{}, fmt.Errorf("%w: app availability %q", ErrInvalidInput, ref.Availability)
-	}
-	if ref.Complete == "" {
-		ref.Complete = CompletenessComplete
-	}
-	if !ref.Complete.Valid() {
-		return TurnRow{}, fmt.Errorf("%w: app completeness %q", ErrInvalidInput, ref.Complete)
+	refs := make([]AppRef, len(a.Refs))
+	for i, ref := range a.Refs {
+		if ref.ServerID == "" || ref.ResourceURI == "" {
+			return TurnRow{}, fmt.Errorf("%w: app ref %d requires ServerID and ResourceURI", ErrInvalidInput, i)
+		}
+		if ref.Availability == "" {
+			ref.Availability = AppAvailable
+		}
+		if !ref.Availability.Valid() {
+			return TurnRow{}, fmt.Errorf("%w: app ref %d availability %q", ErrInvalidInput, i, ref.Availability)
+		}
+		if ref.Complete == "" {
+			ref.Complete = CompletenessComplete
+		}
+		if !ref.Complete.Valid() {
+			return TurnRow{}, fmt.Errorf("%w: app ref %d completeness %q", ErrInvalidInput, i, ref.Complete)
+		}
+		refs[i] = ref
 	}
 
 	current, err := p.store.GetTurn(ctx, id, turnID)
 	if err != nil {
-		return TurnRow{}, fmt.Errorf("turns: attach app ref %q: %w", turnID, err)
+		return TurnRow{}, fmt.Errorf("turns: attach app refs %q: %w", turnID, err)
 	}
 	if current.Sealed {
 		return TurnRow{}, fmt.Errorf("%w: %q", ErrTurnSealed, turnID)
 	}
 	merged := current
-	app := ref
-	merged.App = &app
-	merged.UpdatedAt = p.clock.Now()
-	fence, err := FenceFor(id)
-	if err != nil {
-		return TurnRow{}, err
+	merged.Apps = upsertAppRefs(merged.Apps, refs)
+	if a.EventSeq != 0 {
+		merged.LastAppliedEventSeq = a.EventSeq
 	}
-	stored, err := p.store.UpdateTurnIf(ctx, id, turnID, expectedVersion, merged, fence)
+	merged.UpdatedAt = p.clock.Now()
+	stored, err := p.store.UpdateTurnIf(ctx, id, turnID, expectedVersion, merged)
 	if err != nil {
-		return TurnRow{}, fmt.Errorf("turns: attach app ref %q: %w", turnID, err)
+		return TurnRow{}, fmt.Errorf("turns: attach app refs %q: %w", turnID, err)
 	}
 	return stored, nil
 }
@@ -435,10 +513,26 @@ func (p *Projector) Get(ctx context.Context, id identity.Identity, turnID TurnID
 	return row, nil
 }
 
+// OpsTurn serves the OPERATIONS-SAFE READ projection of one turn — a
+// pure, STRUCTURALLY DISTINCT DTO (OpsTurnRow) that omits the consumer
+// fields the operations surface must never see (query, answer,
+// reasoning traces, pause tokens, App resource URI / tool_call_id, App
+// context/input/result) while retaining lifecycle / agent binding /
+// timing / usage / cost / tool-name / status / counts / availability.
+// It is the read shape the future operations Protocol lane consumes;
+// the mutation DTOs are NOT that surface.
+func (p *Projector) OpsTurn(ctx context.Context, id identity.Identity, turnID TurnID) (OpsTurnRow, error) {
+	row, err := p.Get(ctx, id, turnID)
+	if err != nil {
+		return OpsTurnRow{}, err
+	}
+	return projectOps(row), nil
+}
+
 // Checkpoint returns the session's last-applied runtime event
-// sequence (0 when none was ever saved — a fresh session, or an
-// in-memory-backed projection after a restart, which is EXPLICIT
-// restart loss, not silent retention).
+// sequence (0 when none was ever saved — a fresh session, an erased
+// session, or an in-memory-backed projection after a restart, which is
+// EXPLICIT restart loss, not silent retention).
 func (p *Projector) Checkpoint(ctx context.Context, id identity.Identity) (uint64, error) {
 	if err := validateIdentity(id); err != nil {
 		return 0, err
@@ -453,7 +547,8 @@ func (p *Projector) Checkpoint(ctx context.Context, id identity.Identity) (uint6
 // AdvanceCheckpoint records the session's last-applied runtime event
 // sequence. Monotonic and idempotent: a sequence at or below the
 // stored checkpoint is a no-op, so a reconcile retry can never rewind
-// the checkpoint.
+// the checkpoint. Refused with ErrErasureFenced on an erased session —
+// a rebuild must never advance an erased session's checkpoint.
 func (p *Projector) AdvanceCheckpoint(ctx context.Context, id identity.Identity, seq uint64) error {
 	if err := validateIdentity(id); err != nil {
 		return fmt.Errorf("turns: advance checkpoint: %w", err)
@@ -480,7 +575,9 @@ func (p *Projector) AdvanceCheckpoint(ctx context.Context, id identity.Identity,
 // Reconcile with the session's checkpoint as the resume point. For an
 // IN-MEMORY-backed store (Durable() == false) the checkpoint reads 0
 // and the projection is rebuilt from sequence zero — explicit restart
-// loss, never a silent claim of durability.
+// loss, never a silent claim of durability. An ERASED session stays
+// fenced: the replay's writes fail with ErrErasureFenced, so a replay
+// can never resurrect an erased session.
 func (p *Projector) Reconcile(ctx context.Context, id identity.Identity, apply func(ctx context.Context, id identity.Identity, from uint64) (uint64, error)) (uint64, error) {
 	if err := validateIdentity(id); err != nil {
 		return 0, err
@@ -507,12 +604,18 @@ func (p *Projector) Reconcile(ctx context.Context, id identity.Identity, apply f
 
 // Erase removes every retained turn row and the session checkpoint
 // under id — the projection leg of the runtime's session-erasure
-// cascade (the cascade's pending ledger + tombstone fence slots are
-// the separate concern that makes later writes fail with
-// ErrErasureFenced). Idempotent.
+// cascade. The STORE-LOCAL erasure fence is set FIRST (FenceSession)
+// so no write can slip in between the fence and the deletion, and the
+// fence is NEVER removed by the erasure: an erased session stays
+// fenced across replay and restart (no resurrection), and re-erase is
+// idempotent (FenceSession is a no-op on a fenced session;
+// DeleteScope returns (0, nil) on an absent scope).
 func (p *Projector) Erase(ctx context.Context, id identity.Identity) (int, error) {
 	if err := validateIdentity(id); err != nil {
 		return 0, err
+	}
+	if err := p.store.FenceSession(ctx, id); err != nil {
+		return 0, fmt.Errorf("turns: erase fence: %w", err)
 	}
 	n, err := p.store.DeleteScope(ctx, id)
 	if err != nil {
@@ -522,9 +625,10 @@ func (p *Projector) Erase(ctx context.Context, id identity.Identity) (int, error
 }
 
 // Durable reports whether the backing store survives a process
-// restart. An in-memory-backed projector reports false — its rows and
-// checkpoints are GONE after a restart (explicit loss) and the runtime
-// rebuilds via Reconcile against the durable event log.
+// restart. An in-memory-backed projector reports false — its rows,
+// checkpoints, and erasure fences are GONE after a restart (explicit
+// loss) and the runtime rebuilds via Reconcile against the durable
+// event log.
 func (p *Projector) Durable() bool { return p.store.Durable() }
 
 // Close closes the backing store. Subsequent operations fail with
@@ -544,6 +648,46 @@ func validateIdentity(id identity.Identity) error {
 	return nil
 }
 
+// projectOps builds the pure operations-safe READ DTO from a consumer
+// row. It is the ONLY place the consumer row is reduced to the
+// operations shape; the reduction is structural (the DTO has no fields
+// for the omitted content).
+func projectOps(row TurnRow) OpsTurnRow {
+	out := OpsTurnRow{
+		TurnID:              row.TurnID,
+		SessionID:           row.SessionID,
+		Sequence:            row.Sequence,
+		TieBreaker:          row.TieBreaker,
+		Status:              row.Status,
+		Sealed:              row.Sealed,
+		Version:             row.Version,
+		StartedAt:           row.StartedAt,
+		UpdatedAt:           row.UpdatedAt,
+		FinishedAt:          row.FinishedAt,
+		FinishReason:        row.FinishReason,
+		ErrorClass:          row.ErrorClass,
+		AgentID:             row.Agent.ID,
+		AgentName:           row.Agent.Name,
+		AgentBindingSource:  row.Agent.BindingSource,
+		Usage:               row.Usage,
+		Activity:            row.Activity.Rows,
+		ReasoningSteps:      len(row.Reasoning.Steps),
+		Inputs:              len(row.Inputs),
+		Outputs:             len(row.Outputs),
+		Pause:               row.Pause,
+		LastAppliedEventSeq: row.LastAppliedEventSeq,
+	}
+	for _, app := range row.Apps {
+		out.Apps = append(out.Apps, AppOpsRef{
+			EffectiveAgentID: app.EffectiveAgentID,
+			ServerID:         app.ServerID,
+			ToolName:         app.ToolName,
+			Availability:     app.Availability,
+		})
+	}
+	return out
+}
+
 // --- validation helpers -------------------------------------------------
 
 func agentCompleteness(id, name string) Completeness {
@@ -560,14 +704,57 @@ func queryCompleteness(q string) Completeness {
 	return CompletenessComplete
 }
 
+// deriveBindingSource resolves the append's honest binding provenance:
+// an explicitly reported source is validated and kept; an empty source
+// derives explicit from a non-empty agent id and unknown otherwise
+// (defaulted must be reported explicitly — the projector never
+// invents a defaulted claim).
+func deriveBindingSource(agentID string, reported AgentBindingSource) (AgentBindingSource, error) {
+	if reported == "" {
+		if agentID != "" {
+			return AgentBindingExplicit, nil
+		}
+		return AgentBindingUnknown, nil
+	}
+	if !reported.Valid() {
+		return "", fmt.Errorf("%w: agent binding source %q", ErrInvalidInput, reported)
+	}
+	return reported, nil
+}
+
+// answerCompleteness derives the uniform honesty from the closed union
+// answer state: inline / artifact_ref / empty are Complete; evicted /
+// unavailable are Unavailable.
+func answerCompleteness(s AnswerState) Completeness {
+	switch s {
+	case AnswerStateInline, AnswerStateArtifactRef, AnswerStateEmpty:
+		return CompletenessComplete
+	default: // evicted, unavailable
+		return CompletenessUnavailable
+	}
+}
+
+// definiteAnswer reports whether the answer is in a state that
+// satisfies a complete seal: inline / artifact_ref / empty. An
+// evicted or unavailable answer is NOT definite — the answer component
+// is honestly not present.
+func definiteAnswer(a Answer) bool {
+	switch a.State {
+	case AnswerStateInline, AnswerStateArtifactRef, AnswerStateEmpty:
+		return true
+	}
+	return false
+}
+
 // validateActivity validates the per-row shape of a fed activity list
-// (tool non-empty, status valid, summary bounded). The window clamp
-// (overflow → explicit lower-bound) happens separately in clampActivity.
-func validateActivity(fed []ActivityRow) error {
-	if len(fed) > MaxActivityRows*4 {
+// (tool non-empty, status valid, summary bounded) against the
+// configured inline activity window. The window clamp (overflow →
+// explicit lower-bound) happens separately in clampActivity.
+func validateActivity(fed []ActivityRow, limit int) error {
+	if len(fed) > limit*4 {
 		// A feed 4x the window is already absurd; bound the validation
 		// walk without special-casing the overflow path.
-		return fmt.Errorf("%w: activity feed exceeds %d rows", ErrInvalidInput, MaxActivityRows*4)
+		return fmt.Errorf("%w: activity feed exceeds %d rows", ErrInvalidInput, limit*4)
 	}
 	for i, row := range fed {
 		if row.Tool == "" {
@@ -587,24 +774,24 @@ func validateActivity(fed []ActivityRow) error {
 	return nil
 }
 
-// clampActivity retains the LAST MaxActivityRows of the fed sequence
+// clampActivity retains the LAST `limit` rows of the fed sequence
 // (the recent window) and reports the overflow as the explicit
 // lower-bound: More + Dropped, with the component Partial. An empty
 // feed is a complete empty window (the runtime fed the current
 // cumulative list and it has no rows).
-func clampActivity(fed []ActivityRow) Activity {
+func clampActivity(fed []ActivityRow, limit int) Activity {
 	if len(fed) == 0 {
 		return Activity{Complete: CompletenessComplete}
 	}
-	if len(fed) <= MaxActivityRows {
+	if len(fed) <= limit {
 		return Activity{Rows: fed, Complete: CompletenessComplete}
 	}
-	kept := fed[len(fed)-MaxActivityRows:]
+	kept := fed[len(fed)-limit:]
 	return Activity{
 		Rows:     kept,
 		Complete: CompletenessPartial,
 		More:     true,
-		Dropped:  len(fed) - MaxActivityRows,
+		Dropped:  len(fed) - limit,
 	}
 }
 
@@ -650,40 +837,58 @@ func clampReasoning(fed []ReasoningStep) Reasoning {
 	}
 }
 
-// validateAnswer validates the answer component shape: exactly one of
-// Inline / Ref when Complete (an empty inline answer is a legitimate
-// complete answer); no content in a non-complete answer; an inline
-// answer at or above the inline bound is ErrContextLeak (heavy answers
-// MUST route by artifact reference).
+// validateAnswer validates the answer component against the CLOSED
+// UNION state contract: exactly the content the state declares, an
+// inline answer at or above the inline bound is ErrContextLeak (heavy
+// answers MUST route by artifact reference), and the derived Complete
+// must stay consistent with State. A failed read is NEVER expressed as
+// Empty — it is Evicted or Unavailable.
 func validateAnswer(a Answer, inlineLimit int) error {
-	if !a.Complete.Valid() {
-		return fmt.Errorf("%w: answer completeness %q", ErrInvalidInput, a.Complete)
+	if !a.State.Valid() {
+		return fmt.Errorf("%w: answer state %q", ErrInvalidInput, a.State)
 	}
-	switch a.Complete {
-	case CompletenessComplete:
+	switch a.State {
+	case AnswerStateInline:
 		if a.Ref != nil {
-			if a.Inline != "" {
-				return fmt.Errorf("%w: answer carries both Inline and Ref", ErrInvalidInput)
-			}
-			if a.Ref.ID == "" {
-				return fmt.Errorf("%w: answer ref id is empty", ErrInvalidInput)
-			}
-			if a.Ref.SizeBytes < 0 {
-				return fmt.Errorf("%w: answer ref size is negative", ErrInvalidInput)
-			}
-			return nil
+			return fmt.Errorf("%w: inline answer carries a ref", ErrInvalidInput)
 		}
 		if len([]byte(a.Inline)) >= inlineLimit {
 			return fmt.Errorf("%w: inline answer is %d bytes (>= %d) — route by artifact reference",
 				ErrContextLeak, len([]byte(a.Inline)), inlineLimit)
 		}
-		return nil
-	default: // partial / unavailable answers carry no content
-		if a.Inline != "" || a.Ref != nil {
-			return fmt.Errorf("%w: a %q answer cannot carry content", ErrInvalidInput, a.Complete)
+	case AnswerStateArtifactRef:
+		if a.Ref == nil {
+			return fmt.Errorf("%w: artifact_ref answer carries no ref", ErrInvalidInput)
 		}
-		return nil
+		if a.Inline != "" {
+			return fmt.Errorf("%w: artifact_ref answer carries inline text", ErrInvalidInput)
+		}
+		if a.Ref.ID == "" {
+			return fmt.Errorf("%w: answer ref id is empty", ErrInvalidInput)
+		}
+		if a.Ref.SizeBytes < 0 {
+			return fmt.Errorf("%w: answer ref size is negative", ErrInvalidInput)
+		}
+	case AnswerStateEmpty:
+		if a.Inline != "" || a.Ref != nil {
+			return fmt.Errorf("%w: empty answer cannot carry content", ErrInvalidInput)
+		}
+	case AnswerStateEvicted:
+		if a.Inline != "" || a.Ref != nil {
+			return fmt.Errorf("%w: evicted answer cannot carry content (a failed read never becomes empty)", ErrInvalidInput)
+		}
+	case AnswerStateUnavailable:
+		if a.Inline != "" || a.Ref != nil {
+			return fmt.Errorf("%w: unavailable answer cannot carry content", ErrInvalidInput)
+		}
 	}
+	// The derived honesty must stay consistent with the closed union.
+	want := answerCompleteness(a.State)
+	if a.Complete != "" && a.Complete != want {
+		return fmt.Errorf("%w: answer completeness %q is inconsistent with state %q (want %q)",
+			ErrInvalidInput, a.Complete, a.State, want)
+	}
+	return nil
 }
 
 // validateUsage validates the cumulative usage rollup shape.
@@ -703,19 +908,113 @@ func validateUsage(u Usage) error {
 	return nil
 }
 
-// validateAttachments validates one attachment metadata list: every id
-// non-empty, sizes non-negative, count bounded.
-func validateAttachments(atts []Attachment) error {
-	if len(atts) > MaxAttachmentsPerSide {
-		return fmt.Errorf("%w: attachment list exceeds %d entries", ErrInvalidInput, MaxAttachmentsPerSide)
+// normalizeAttachments validates one attachment metadata list (every
+// id non-empty, sizes non-negative, count bounded) and normalizes each
+// entry's honest reference availability: an unset Availability is
+// Unavailable ("no availability was reported"), never a fabricated
+// "available" claim. A nil slice passes through as nil.
+func normalizeAttachments(atts []Attachment) ([]Attachment, error) {
+	if atts == nil {
+		return nil, nil
 	}
+	if len(atts) > MaxAttachmentsPerSide {
+		return nil, fmt.Errorf("%w: attachment list exceeds %d entries", ErrInvalidInput, MaxAttachmentsPerSide)
+	}
+	out := make([]Attachment, len(atts))
 	for i, a := range atts {
 		if a.ID == "" {
-			return fmt.Errorf("%w: attachment %d has an empty id", ErrInvalidInput, i)
+			return nil, fmt.Errorf("%w: attachment %d has an empty id", ErrInvalidInput, i)
 		}
 		if a.SizeBytes < 0 {
-			return fmt.Errorf("%w: attachment %d has a negative size", ErrInvalidInput, i)
+			return nil, fmt.Errorf("%w: attachment %d has a negative size", ErrInvalidInput, i)
+		}
+		if a.Availability == "" {
+			a.Availability = CompletenessUnavailable
+		}
+		if !a.Availability.Valid() {
+			return nil, fmt.Errorf("%w: attachment %d availability %q", ErrInvalidInput, i, a.Availability)
+		}
+		if a.Availability == CompletenessPartial {
+			return nil, fmt.Errorf("%w: attachment %d availability cannot be partial (a reference resolves or it does not)", ErrInvalidInput, i)
+		}
+		out[i] = a
+	}
+	return out, nil
+}
+
+// normalizePause validates the durable pause component (class /
+// reason / lifecycle / availability — never a token). A nil input
+// yields the honest Unavailable component. When the component is
+// reported (Availability Complete), Class must be set and valid,
+// Lifecycle defaults to Active, and Reason stays content-free and
+// bounded. Actionability is never stored.
+func normalizePause(p *Pause) (Pause, error) {
+	if p == nil {
+		return Pause{Availability: CompletenessUnavailable}, nil
+	}
+	out := *p
+	if out.Availability == "" {
+		out.Availability = CompletenessComplete
+	}
+	if !out.Availability.Valid() {
+		return Pause{}, fmt.Errorf("%w: pause availability %q", ErrInvalidInput, out.Availability)
+	}
+	if out.Availability == CompletenessPartial {
+		return Pause{}, fmt.Errorf("%w: pause availability cannot be partial", ErrInvalidInput)
+	}
+	if out.Availability == CompletenessUnavailable {
+		// Honest "no pause episode recorded": no class/reason/lifecycle
+		// may be fabricated alongside it.
+		if out.Class != "" || out.Reason != "" || out.Lifecycle != "" {
+			return Pause{}, fmt.Errorf("%w: unavailable pause cannot carry class/reason/lifecycle", ErrInvalidInput)
+		}
+		return out, nil
+	}
+	if out.Class == "" {
+		return Pause{}, fmt.Errorf("%w: pause class is empty", ErrInvalidInput)
+	}
+	if !out.Class.Valid() {
+		return Pause{}, fmt.Errorf("%w: pause class %q", ErrInvalidInput, out.Class)
+	}
+	if out.Lifecycle == "" {
+		out.Lifecycle = PauseLifecycleActive
+	}
+	if !out.Lifecycle.Valid() {
+		return Pause{}, fmt.Errorf("%w: pause lifecycle %q", ErrInvalidInput, out.Lifecycle)
+	}
+	if utf8.RuneCountInString(out.Reason) > MaxPauseReasonRunes {
+		return Pause{}, fmt.Errorf("%w: pause reason exceeds %d runes", ErrInvalidInput, MaxPauseReasonRunes)
+	}
+	return out, nil
+}
+
+// upsertAppRefs applies the ORDERED App-ref upsert semantics: the
+// replacement identity is exactly (EffectiveAgentID, ServerID,
+// ResourceURI). A fed ref whose identity already exists replaces it IN
+// PLACE (position fixed by the first declaration) with the latest
+// correlation metadata; a new identity appends at the end. The
+// collection therefore never reorders after the first declaration.
+func upsertAppRefs(current []AppRef, fed []AppRef) []AppRef {
+	out := current
+	for _, ref := range fed {
+		key := appRefKey(ref)
+		replaced := false
+		for i := range out {
+			if appRefKey(out[i]) == key {
+				out[i] = ref
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, ref)
 		}
 	}
-	return nil
+	return out
+}
+
+// appRefKey is the App-ref replacement identity: exactly
+// (effective agent id, server id, resource uri).
+func appRefKey(r AppRef) string {
+	return r.EffectiveAgentID + "\x00" + r.ServerID + "\x00" + r.ResourceURI
 }
