@@ -58,6 +58,8 @@ type Factory func() (turns.Store, func())
 //   - GetTurn_NotFound_And_CrossSessionIsolation
 //   - ListTurns_NewestFirst_KeysetPaging_NoSkipNoDuplicate
 //   - ListTurns_EmptySession
+//   - ListTurns_Cursor_BindsSessionAndSnapshot
+//   - ListTurns_AppendDuringWalk_NoSkipNoDuplicate
 //   - Checkpoint_MonotonicIdempotent
 //   - Checkpoint_ConcurrentAdvances_ConvergeToMax
 //   - FenceSession_FencesAllWrites_AndSurvivesErase
@@ -376,12 +378,148 @@ func Run(t *testing.T, factory Factory) {
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		rows, next, truncated, err := s.ListTurns(ctx, id, nil, 10)
+		rows, next, info, err := s.ListTurns(ctx, id, nil, 10)
 		if err != nil {
 			t.Fatalf("list empty: %v", err)
 		}
-		if len(rows) != 0 || next != nil || truncated {
-			t.Errorf("empty session page=%d rows next=%v truncated=%v, want 0/nil/false", len(rows), next, truncated)
+		if len(rows) != 0 || next != nil || info.Truncated {
+			t.Errorf("empty session page=%d rows next=%v truncated=%v, want 0/nil/false", len(rows), next, info.Truncated)
+		}
+		if info.Snapshot != 0 {
+			t.Errorf("fresh-session snapshot=%d, want 0 (initial generation)", info.Snapshot)
+		}
+	})
+
+	t.Run("ListTurns_Cursor_BindsSessionAndSnapshot", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		id := triple("tenant-a", "user-a", "session-a")
+		other := triple("tenant-b", "user-b", "session-b")
+		for i := 1; i <= 5; i++ {
+			if _, err := s.AppendTurnIf(ctx, id, freshRow(fmt.Sprintf("run-%d", i), id)); err != nil {
+				t.Fatalf("append %d: %v", i, err)
+			}
+		}
+		page, next, info, err := s.ListTurns(ctx, id, nil, 2)
+		if err != nil {
+			t.Fatalf("page 1: %v", err)
+		}
+		if next == nil || len(page) != 2 || info.CountExact != true || info.Remaining != 3 {
+			t.Errorf("page 1 wrong: %d rows next=%v remaining=%d count_exact=%v, want 2/non-nil/3/true",
+				len(page), next != nil, info.Remaining, info.CountExact)
+		}
+		// The minted cursor binds the owning session + snapshot.
+		if next.SessionID != id.SessionID {
+			t.Errorf("cursor session=%q, want %q", next.SessionID, id.SessionID)
+		}
+		if next.Snapshot != info.Snapshot {
+			t.Errorf("cursor snapshot=%d, want page snapshot %d", next.Snapshot, info.Snapshot)
+		}
+		// A FOREIGN-SESSION cursor is rejected with its distinct error.
+		foreign := *next
+		foreign.SessionID = other.SessionID
+		if _, _, _, err := s.ListTurns(ctx, id, &foreign, 2); !errors.Is(err, turns.ErrCursorForeignSession) {
+			t.Errorf("foreign-session cursor error=%v, want ErrCursorForeignSession", err)
+		}
+		// A STALE-SNAPSHOT cursor (projection erased under the walk) is
+		// rejected with its distinct error.
+		stale := *next
+		stale.Snapshot++
+		if _, _, _, err := s.ListTurns(ctx, id, &stale, 2); !errors.Is(err, turns.ErrCursorSnapshotStale) {
+			t.Errorf("stale-snapshot cursor error=%v, want ErrCursorSnapshotStale", err)
+		}
+		// An EXPIRED cursor (boundary row never retained) is rejected
+		// with its distinct error.
+		expired := *next
+		expired.TurnID = "never-existed"
+		if _, _, _, err := s.ListTurns(ctx, id, &expired, 2); !errors.Is(err, turns.ErrCursorExpired) {
+			t.Errorf("expired cursor error=%v, want ErrCursorExpired", err)
+		}
+		// A valid cursor still pages (no skips / duplicates).
+		page2, next2, _, err := s.ListTurns(ctx, id, next, 2)
+		if err != nil {
+			t.Fatalf("page 2 with valid cursor: %v", err)
+		}
+		if len(page2) != 2 || next2 == nil {
+			t.Errorf("page 2 wrong: %d rows next=%v, want 2/non-nil", len(page2), next2 != nil)
+		}
+		// After erasure (DeleteScope), the pre-erase cursor is stale:
+		// the snapshot generation advanced.
+		if _, err := s.DeleteScope(ctx, id); err != nil {
+			t.Fatalf("DeleteScope: %v", err)
+		}
+		if _, _, _, err := s.ListTurns(ctx, id, next, 2); !errors.Is(err, turns.ErrCursorSnapshotStale) {
+			t.Errorf("post-erase cursor error=%v, want ErrCursorSnapshotStale", err)
+		}
+	})
+
+	t.Run("ListTurns_AppendDuringWalk_NoSkipNoDuplicate", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		id := triple("tenant-a", "user-a", "session-a")
+		for i := 1; i <= 8; i++ {
+			if _, err := s.AppendTurnIf(ctx, id, freshRow(fmt.Sprintf("pre-%d", i), id)); err != nil {
+				t.Fatalf("append pre-%d: %v", i, err)
+			}
+		}
+		// Page the first two pages, appending between them: a newly
+		// appended turn (higher sequence) can never satisfy the issued
+		// cursor, so the walk keeps returning exactly the pre-append
+		// rows once each.
+		page1, next, _, err := s.ListTurns(ctx, id, nil, 3)
+		if err != nil || len(page1) != 3 || next == nil {
+			t.Fatalf("page 1: %d rows next=%v err=%v, want 3/non-nil/nil", len(page1), next != nil, err)
+		}
+		if _, err := s.AppendTurnIf(ctx, id, freshRow("mid-append", id)); err != nil {
+			t.Fatalf("mid-walk append: %v", err)
+		}
+		var walked []string
+		for _, r := range page1 {
+			walked = append(walked, string(r.TurnID))
+		}
+		for next != nil {
+			rows, n2, _, err := s.ListTurns(ctx, id, next, 3)
+			if err != nil {
+				t.Fatalf("walk page: %v", err)
+			}
+			for _, r := range rows {
+				walked = append(walked, string(r.TurnID))
+			}
+			next = n2
+		}
+		if len(walked) != 8 {
+			t.Fatalf("walked %d rows, want 8 (the pre-append rows exactly once; the mid-append is NEWER and never satisfies the walk)", len(walked))
+		}
+		seen := map[string]bool{}
+		for _, tid := range walked {
+			if seen[tid] {
+				t.Errorf("duplicate %q in walk (no duplicates)", tid)
+			}
+			seen[tid] = true
+		}
+		for _, r := range walked {
+			if r == "mid-append" {
+				t.Errorf("mid-walk append %q appeared in the older walk — a newer row cannot satisfy an issued cursor", r)
+			}
+		}
+		// A fresh walk sees everything exactly once (no skips).
+		fresh := 0
+		var c *turns.Cursor
+		for {
+			rows, n2, _, err := s.ListTurns(ctx, id, c, 3)
+			if err != nil {
+				t.Fatalf("fresh walk: %v", err)
+			}
+			fresh += len(rows)
+			if n2 == nil {
+				break
+			}
+			c = n2
+		}
+		if fresh != 9 {
+			t.Errorf("fresh walk has %d rows, want 9 (8 pre + 1 mid)", fresh)
 		}
 	})
 

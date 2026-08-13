@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -53,8 +54,8 @@ func TestList_NewestFirstOrdering(t *testing.T) {
 	if page.HasMore {
 		t.Errorf("HasMore=true on a full small page")
 	}
-	if page.Truncated {
-		t.Errorf("Truncated=true without eviction")
+	if !page.Complete {
+		t.Errorf("Complete=false without eviction (PartialReason=%q)", page.PartialReason)
 	}
 }
 
@@ -171,7 +172,16 @@ func TestList_CursorRoundTrip(t *testing.T) {
 	}
 
 	// Malformed cursors fail loud — never a silent reset to page one.
-	for _, bad := range []string{"!!!", "base64-ok-but-garbage", "v2|1|run", "v1|notanint|run", "v1|1|"} {
+	for _, bad := range []string{
+		"!!!",
+		"base64-ok-but-garbage",
+		"v1|0|1|run|sess",       // version mismatch
+		"2|notanint|1|run|sess", // snapshot not an integer
+		"2|0|notanint|run|sess", // sequence not an integer
+		"2|0|1||sess",           // empty turn id
+		"2|0|1|run|",            // empty session id
+		"2|0|1|run|sess|extra",  // too many fields
+	} {
 		if _, err := DecodeCursor(bad); !errors.Is(err, ErrInvalidCursor) {
 			t.Errorf("DecodeCursor(%q) error=%v, want ErrInvalidCursor", bad, err)
 		}
@@ -181,10 +191,10 @@ func TestList_CursorRoundTrip(t *testing.T) {
 	}
 }
 
-func TestList_LimitBounds(t *testing.T) {
+func TestList_LimitBounds_AndPublicDefaults(t *testing.T) {
 	p, _ := newTestProjector(t, 0, false)
 	id := tripleA()
-	seedTurns(t, p, id, 3)
+	seedTurns(t, p, id, 30)
 
 	if _, err := p.List(context.Background(), id, ListOptions{Limit: MaxListLimit + 1}); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("over-max limit error=%v, want ErrInvalidInput", err)
@@ -192,13 +202,143 @@ func TestList_LimitBounds(t *testing.T) {
 	if _, err := p.List(context.Background(), id, ListOptions{Limit: -1}); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("negative limit error=%v, want ErrInvalidInput", err)
 	}
-	// Zero limit means the documented default.
+	// The PUBLIC defaults are pinned: default EXACTLY 20, max EXACTLY
+	// 50 (the Protocol-mandated list surface).
+	if DefaultListLimit != 20 {
+		t.Errorf("DefaultListLimit=%d, want exactly 20", DefaultListLimit)
+	}
+	if MaxListLimit != 50 {
+		t.Errorf("MaxListLimit=%d, want exactly 50", MaxListLimit)
+	}
+	// Zero limit means the documented default of 20.
 	page, err := p.List(context.Background(), id, ListOptions{})
 	if err != nil {
 		t.Fatalf("default limit: %v", err)
 	}
-	if len(page.Rows) != 3 {
-		t.Errorf("default-limit page has %d rows, want 3", len(page.Rows))
+	if len(page.Rows) != 20 {
+		t.Errorf("default-limit page has %d rows, want 20", len(page.Rows))
+	}
+	// The max limit (50) is accepted and pages the rest.
+	page2, err := p.List(context.Background(), id, ListOptions{Limit: MaxListLimit})
+	if err != nil {
+		t.Fatalf("max limit: %v", err)
+	}
+	if len(page2.Rows) != 30 {
+		t.Errorf("max-limit page has %d rows, want all 30", len(page2.Rows))
+	}
+}
+
+// TestList_PageSnapshotAndLiveResumeSurface pins the Page's snapshot
+// as-of / remaining / completeness / live-resume surface: the fields a
+// consumer composes subscribe-before-page with and a Protocol layer
+// maps onto its wire page shape.
+func TestList_PageSnapshotAndLiveResumeSurface(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	seedTurns(t, p, id, 5)
+
+	// Give the rows distinct applied event sequences so LiveResumeSeq
+	// is meaningful: the newest row reflects the highest sequence.
+	row, err := p.Get(context.Background(), id, "run-005")
+	if err != nil {
+		t.Fatalf("get newest: %v", err)
+	}
+	ans := Answer{State: AnswerStateInline, Inline: "a"}
+	if _, err := p.Update(context.Background(), id, "run-005", row.Version, Update{Answer: &ans, EventSeq: 7}); err != nil {
+		t.Fatalf("update newest: %v", err)
+	}
+
+	page, err := p.List(context.Background(), id, ListOptions{Limit: 2})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	// Snapshot as-of: the page is stamped with the read instant and
+	// the projection snapshot generation it binds to.
+	if page.AsOf.IsZero() {
+		t.Errorf("AsOf is zero — the page must carry its snapshot as-of")
+	}
+	if page.Snapshot != 0 {
+		t.Errorf("Snapshot=%d, want 0 (fresh session's initial generation)", page.Snapshot)
+	}
+	// Exact remaining: 3 older retained rows beyond the 2-row page.
+	if !page.CountExact || page.Remaining != 3 {
+		t.Errorf("Remaining=%d CountExact=%v, want 3/true", page.Remaining, page.CountExact)
+	}
+	if !page.HasMore || page.NextCursor == nil {
+		t.Errorf("HasMore=%v NextCursor=%v, want true/non-nil", page.HasMore, page.NextCursor)
+	}
+	if !page.Complete || page.PartialReason != "" {
+		t.Errorf("Complete=%v PartialReason=%q, want true/empty", page.Complete, page.PartialReason)
+	}
+	// Live-resume sequence: the newest row's applied event sequence —
+	// enough to subscribe-before-page from LiveResumeSeq+1.
+	if page.LiveResumeSeq != 7 {
+		t.Errorf("LiveResumeSeq=%d, want 7 (the newest row's applied event sequence)", page.LiveResumeSeq)
+	}
+	// The minted cursor binds the session + snapshot; an encoded
+	// round-trip preserves them.
+	dec, err := DecodeCursor(page.NextCursor.Encode())
+	if err != nil {
+		t.Fatalf("DecodeCursor: %v", err)
+	}
+	if dec.SessionID != id.SessionID || dec.Snapshot != page.Snapshot {
+		t.Errorf("decoded cursor binding wrong: %+v", dec)
+	}
+}
+
+// TestList_CursorBinding_RejectsForeignStaleExpired pins the DISTINCT
+// domain errors an opaque cursor is rejected with: a foreign-session
+// cursor, a stale-snapshot cursor (projection erased under the walk),
+// and an expired cursor (boundary row no longer retained). Each maps
+// onto its own Protocol error later; none ever silently resets to
+// page one.
+func TestList_CursorBinding_RejectsForeignStaleExpired(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	seedTurns(t, p, id, 5)
+
+	page, err := p.List(context.Background(), id, ListOptions{Limit: 2})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	// Foreign session: a cursor minted for a DIFFERENT session is
+	// rejected with its distinct error — never re-scoped.
+	foreign := *page.NextCursor
+	foreign.SessionID = "some-other-session"
+	_, err = p.List(context.Background(), id, ListOptions{Before: &foreign, Limit: 2})
+	if !errors.Is(err, ErrCursorForeignSession) {
+		t.Errorf("foreign-session cursor error=%v, want ErrCursorForeignSession", err)
+	}
+	// The distinct errors also satisfy the umbrella ErrInvalidCursor
+	// (Protocol mapping can use either).
+	if !errors.Is(err, ErrInvalidCursor) {
+		t.Errorf("ErrCursorForeignSession must wrap ErrInvalidCursor for the existing umbrella contract")
+	}
+
+	// Expired cursor: a boundary row that is not retained (never
+	// existed) on the LIVE session is rejected with its distinct error.
+	expired := *page.NextCursor
+	expired.TurnID = "never-existed"
+	_, err = p.List(context.Background(), id, ListOptions{Before: &expired, Limit: 2})
+	if !errors.Is(err, ErrCursorExpired) {
+		t.Errorf("expired cursor error=%v, want ErrCursorExpired", err)
+	}
+	if !errors.Is(err, ErrInvalidCursor) {
+		t.Errorf("ErrCursorExpired must wrap ErrInvalidCursor for the existing umbrella contract")
+	}
+
+	// Stale snapshot: erase the projection (the snapshot generation
+	// advances), then reuse the pre-erase cursor.
+	if _, err := p.Erase(context.Background(), id); err != nil {
+		t.Fatalf("Erase: %v", err)
+	}
+	_, err = p.List(context.Background(), id, ListOptions{Before: page.NextCursor, Limit: 2})
+	if !errors.Is(err, ErrCursorSnapshotStale) {
+		t.Errorf("stale-snapshot cursor error=%v, want ErrCursorSnapshotStale", err)
+	}
+	if !errors.Is(err, ErrInvalidCursor) {
+		t.Errorf("ErrCursorSnapshotStale must wrap ErrInvalidCursor for the existing umbrella contract")
 	}
 }
 
@@ -293,6 +433,70 @@ func TestList_NoSkipNoDuplicate_UnderConcurrentAppends(t *testing.T) {
 	fresh := seedFreeWalk(t, p, id)
 	if len(fresh) != appenders*turnsPerAppender {
 		t.Fatalf("fresh walk has %d turns, want %d (no skips)", len(fresh), appenders*turnsPerAppender)
+	}
+}
+
+// TestList_AppendDuringOlderPaging_NoSkipNoDuplicate pins the P5
+// guarantee explicitly: appending NEWER turns while a walk is paging
+// OLDER pages never skips or duplicates a row the walk already issued
+// a cursor for — the newly appended turn (higher sequence) can never
+// satisfy an already-issued keyset cursor, and the pre-append rows
+// each appear exactly once.
+func TestList_AppendDuringOlderPaging_NoSkipNoDuplicate(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	seedTurns(t, p, id, 8)
+
+	page1, err := p.List(context.Background(), id, ListOptions{Limit: 3})
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	if len(page1.Rows) != 3 || !page1.HasMore {
+		t.Fatalf("page 1 has %d rows (HasMore=%v), want 3/true", len(page1.Rows), page1.HasMore)
+	}
+	// Append NEWER turns mid-walk.
+	for i := 0; i < 3; i++ {
+		if _, err := appendTurn(p, id, TurnID(fmt.Sprintf("mid-%d", i))); err != nil {
+			t.Fatalf("mid-walk append: %v", err)
+		}
+	}
+
+	var walked []TurnID
+	for _, r := range page1.Rows {
+		walked = append(walked, r.TurnID)
+	}
+	cursor := page1.NextCursor
+	for cursor != nil {
+		page, err := p.List(context.Background(), id, ListOptions{Before: cursor, Limit: 3})
+		if err != nil {
+			t.Fatalf("walk page: %v", err)
+		}
+		for _, r := range page.Rows {
+			walked = append(walked, r.TurnID)
+		}
+		cursor = page.NextCursor
+	}
+
+	// The continued walk returns EXACTLY the 8 pre-append rows (the
+	// mid-walk appends are newer than every issued cursor).
+	if len(walked) != 8 {
+		t.Fatalf("walked %d rows, want 8 (the pre-append rows exactly once)", len(walked))
+	}
+	seen := map[TurnID]bool{}
+	for _, tid := range walked {
+		if seen[tid] {
+			t.Errorf("duplicate %q in the older walk (no duplicates)", tid)
+		}
+		seen[tid] = true
+		if strings.HasPrefix(string(tid), "mid-") {
+			t.Errorf("mid-walk append %q appeared in the older walk — a newer row cannot satisfy an issued cursor", tid)
+		}
+	}
+	// A FRESH walk sees everything exactly once (no skips): 8 pre +
+	// 3 mid.
+	fresh := seedFreeWalk(t, p, id)
+	if len(fresh) != 11 {
+		t.Errorf("fresh walk has %d turns, want 11 (8 pre + 3 mid)", len(fresh))
 	}
 }
 

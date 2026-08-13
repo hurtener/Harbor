@@ -46,7 +46,7 @@ import "time"
 // operations-safe READ projection (OpsTurnRow / AppOpsRef) are pinned
 // so their shapes stay deliberate.
 var opsFieldSet = map[string][]string{
-	"Append":         {"TurnID", "Query", "QueryAt", "AgentID", "AgentName", "AgentBindingSource", "Status", "StartedAt", "Activity", "Inputs", "Outputs", "Pause", "EventSeq"},
+	"Append":         {"TurnID", "TaskID", "RunID", "Query", "QueryAt", "AgentID", "AgentName", "AgentBindingSource", "Status", "StartedAt", "Activity", "Inputs", "Outputs", "Pause", "EventSeq"},
 	"Update":         {"Status", "Answer", "Usage", "Activity", "Inputs", "Outputs", "Pause", "EventSeq"},
 	"Seal":           {"Status", "FinishReason", "ErrorClass", "FinishedAt", "EventSeq"},
 	"ReasoningInput": {"Steps", "EventSeq"},
@@ -54,15 +54,16 @@ var opsFieldSet = map[string][]string{
 	"Answer":         {"State", "Inline", "Ref", "Seq", "Complete"},
 	"Usage":          {"PromptTokens", "CompletionTokens", "ReasoningTokens", "TotalTokens", "CostUSD", "Model", "Complete"},
 	"Attachment":     {"ID", "Filename", "MimeType", "SizeBytes", "SHA256", "Disposition", "Availability"},
-	"ActivityRow":    {"Tool", "Status", "Summary", "At"},
+	"ActivityRow":    {"Position", "Tool", "Status", "Summary", "At"},
 	"ReasoningStep":  {"Index", "Trace"},
 	"Reasoning":      {"Steps", "Complete", "Dropped", "Seq"},
 	"AppRef":         {"EffectiveAgentID", "ServerID", "ResourceURI", "DisplayMode", "RawHTMLTrusted", "ToolCallID", "ToolName", "Availability", "Complete"},
+	"AppRefKey":      {"EffectiveAgentID", "ServerID", "ResourceURI"},
 	"Agent":          {"ID", "Name", "BindingSource", "Complete"},
 	"Query":          {"Text", "At", "Complete"},
 	"AnswerRef":      {"ID", "MimeType", "SizeBytes", "Filename", "SHA256"},
 	"Pause":          {"Class", "Reason", "Lifecycle", "Availability"},
-	"OpsTurnRow":     {"TurnID", "SessionID", "Sequence", "TieBreaker", "Status", "Sealed", "Version", "StartedAt", "UpdatedAt", "FinishedAt", "FinishReason", "ErrorClass", "AgentID", "AgentName", "AgentBindingSource", "Usage", "Activity", "ReasoningSteps", "Inputs", "Outputs", "Apps", "Pause", "LastAppliedEventSeq"},
+	"OpsTurnRow":     {"TurnID", "TaskID", "RunID", "SessionID", "Sequence", "TieBreaker", "Status", "Sealed", "Version", "StartedAt", "UpdatedAt", "FinishedAt", "FinishReason", "ErrorClass", "AgentID", "AgentName", "AgentBindingSource", "Usage", "Activity", "ReasoningSteps", "Inputs", "Outputs", "Apps", "Pause", "LastAppliedEventSeq"},
 	"AppOpsRef":      {"EffectiveAgentID", "ServerID", "ToolName", "Availability"},
 }
 
@@ -74,9 +75,21 @@ var opsFieldSet = map[string][]string{
 // Structurally absent: transcript, reasoning traces, App correlation,
 // and pause / resume / approval tokens.
 type Append struct {
-	// TurnID is the root foreground run's task id. Mandatory and
-	// unique within the session.
+	// TurnID is the row key — the root foreground run's task id.
+	// Mandatory and unique within the session. A reserved cursor
+	// separator ("|") is rejected (it would break the opaque page
+	// cursor encoding).
 	TurnID TurnID
+	// TaskID is the AUTHORITATIVE root foreground task id when the
+	// runtime reports it separately from the row key; empty derives
+	// from TurnID (the row key IS the task id). Never erases the run
+	// id: RunID is carried independently.
+	TaskID string
+	// RunID is the ACTUAL runtime run id of the root foreground run.
+	// Empty means UNAVAILABLE (a legacy record or a runtime that did
+	// not report one) — it is never silently equated with TaskID or
+	// TurnID.
+	RunID string
 	// Query is the renderable user query (bounded by MaxQueryRunes).
 	// Empty is legitimate — the completeness state reports
 	// Unavailable for a run with no user-visible query.

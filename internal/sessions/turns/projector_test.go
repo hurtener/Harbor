@@ -94,6 +94,15 @@ func TestProjector_Append_CreatesMutableRunningRow(t *testing.T) {
 	if row.Agent.ID != "agent-1" || row.Agent.Complete != CompletenessComplete {
 		t.Errorf("Agent projection wrong: %+v", row.Agent)
 	}
+	// The authoritative task id derives from the row key when the
+	// runtime did not report one separately; the run id is honestly
+	// empty (unavailable) — never equated with the task id.
+	if row.TaskID != "run-1" {
+		t.Errorf("TaskID=%q, want run-1 (derived from TurnID)", row.TaskID)
+	}
+	if row.RunID != "" {
+		t.Errorf("RunID=%q, want empty (unavailable — never fabricated)", row.RunID)
+	}
 	// A fresh turn has no answer / usage / reasoning / app yet — honest
 	// Unavailable, never a fabricated zero.
 	if row.Answer.Complete != CompletenessUnavailable {
@@ -615,46 +624,69 @@ func TestProjector_ActivityOverflow_ExplicitLowerBound(t *testing.T) {
 // window overflows (More == true), a caller pages the FULL activity
 // through ActivityReader — including the rows the projection dropped —
 // and a non-overflowed row (More == false) never needs the reader.
+// The paging is keyset-cursor based (immutable Position ordinals), so
+// appends only ever add higher positions and an issued cursor stays
+// stable (no skips, no duplicates).
 func TestActivityReader_Contract_CompletesTheLowerBound(t *testing.T) {
-	p, _ := newTestProjector(t, 0, false)
+	// The durable-log reconstruction the runtime-wired reader serves:
+	// the fed rows with their immutable position ordinals.
+	fed := make([]ActivityRow, DefaultActivityLimit+7)
+	full := make([]ActivityRow, len(fed))
+	for i := range fed {
+		fed[i] = ActivityRow{Tool: "t", Status: ActivitySucceeded, Summary: "0.1s"}
+		full[i] = fed[i]
+		full[i].Position = i
+	}
+	reader := &recordingActivityReader{rows: full}
+	p, err := New(newTestStoreOrFail(t), WithActivityReader(reader))
+	if err != nil {
+		t.Fatalf("New with reader: %v", err)
+	}
 	id := tripleA()
 	row, err := appendTurn(p, id, "run-1")
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	fed := make([]ActivityRow, DefaultActivityLimit+7)
-	for i := range fed {
-		fed[i] = ActivityRow{Tool: "t", Status: ActivitySucceeded, Summary: "0.1s"}
-	}
 	got, err := p.Update(context.Background(), id, "run-1", row.Version, Update{Activity: fed})
 	if err != nil {
 		t.Fatalf("update activity: %v", err)
 	}
-
-	// The runtime wires a reader over the durable event log; the
-	// test-grade reader replays the fed rows.
-	reader := &recordingActivityReader{rows: fed}
 	if !got.Activity.More {
 		t.Fatalf("precondition: the overflow marker must be set")
 	}
-	var full []ActivityRow
-	cursor := 0
+	// Page the full activity oldest-first through the keyset cursor.
+	var paged []ActivityRow
+	var cursor *ActivityCursor
+	pages := 0
 	for {
-		page, hasMore, err := reader.Activity(context.Background(), id, "run-1", 10)
+		page, err := p.PageActivity(context.Background(), id, "run-1", cursor, 10)
 		if err != nil {
-			t.Fatalf("Activity: %v", err)
+			t.Fatalf("PageActivity: %v", err)
 		}
-		full = append(full, page...)
-		cursor += len(page)
-		if !hasMore {
+		pages++
+		paged = append(paged, page.Rows...)
+		if !page.HasMore {
+			if page.NextCursor != nil {
+				t.Errorf("HasMore=false but NextCursor non-nil")
+			}
 			break
 		}
-		// The recording reader is stateless per call in this test
-		// harness; page from the offset to model a real cursor.
-		reader.offset = cursor
+		if page.NextCursor == nil {
+			t.Fatalf("HasMore=true but NextCursor nil")
+		}
+		cursor = page.NextCursor
 	}
-	if len(full) != len(fed) {
-		t.Errorf("reader returned %d rows, want %d (the full activity)", len(full), len(fed))
+	if len(paged) != len(full) {
+		t.Errorf("reader returned %d rows, want %d (the full activity)", len(paged), len(full))
+	}
+	if pages != (len(full)+9)/10 {
+		t.Errorf("paged %d pages, want %d (bounded page size 10)", pages, (len(full)+9)/10)
+	}
+	// Oldest-first and no duplicates across the cursor walk.
+	for i, r := range paged {
+		if r.Position != i {
+			t.Errorf("paged row %d has Position=%d, want %d (oldest-first, no skips/dups)", i, r.Position, i)
+		}
 	}
 
 	// A non-overflowed window (More == false) never needs the reader.
@@ -665,28 +697,139 @@ func TestActivityReader_Contract_CompletesTheLowerBound(t *testing.T) {
 	if small.Activity.More || small.Activity.Dropped != 0 {
 		t.Errorf("small window must carry no lower-bound marker: %+v", small.Activity)
 	}
+
+	// The reader contract's bounded page size is enforced by
+	// PageActivity: an over-bound limit fails loud, and a projector
+	// with no wired reader refuses the call.
+	if _, err := p.PageActivity(context.Background(), id, "run-1", nil, MaxActivityPageSize+1); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("over-bound activity page limit error=%v, want ErrInvalidInput", err)
+	}
+	pNoReader, err := New(newTestStoreOrFail(t))
+	if err != nil {
+		t.Fatalf("New without reader: %v", err)
+	}
+	if _, err := pNoReader.PageActivity(context.Background(), id, "run-1", nil, 10); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("PageActivity without a wired reader error=%v, want ErrInvalidInput", err)
+	}
+}
+
+// TestActivityReader_AppendStability_NoSkipNoDuplicate pins the P3
+// append-stability guarantee: appending activity rows (higher
+// positions) while a keyset walk is in progress never skips or
+// duplicates a row the walk already issued a cursor for.
+func TestActivityReader_AppendStability_NoSkipNoDuplicate(t *testing.T) {
+	// The durable-log reconstruction the reader serves: 4 rows, then 4
+	// more appended mid-walk (positions 4..7).
+	all := make([]ActivityRow, 0, 8)
+	for i := 0; i < 4; i++ {
+		all = append(all, ActivityRow{Position: i, Tool: "t", Status: ActivitySucceeded})
+	}
+	reader := &recordingActivityReader{rows: all}
+	p2, err := New(newTestStoreOrFail(t), WithActivityReader(reader), WithActivityLimit(2), WithToolBudget(2))
+	if err != nil {
+		t.Fatalf("New with reader: %v", err)
+	}
+	id := tripleA()
+	row, err := appendTurn(p2, id, "run-1")
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	// Feed the first 4 rows: with the 2-row inline window this
+	// overflows honestly (More + Dropped) — the reader serves the full
+	// activity.
+	if _, err := p2.Update(context.Background(), id, "run-1", row.Version, Update{Activity: all}); err != nil {
+		t.Fatalf("update activity: %v", err)
+	}
+	got, err := p2.Get(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.Activity.More || got.Activity.Dropped != 2 {
+		t.Fatalf("precondition: overflow marker required (Dropped=%d), want 2", got.Activity.Dropped)
+	}
+
+	// Page the first page, then APPEND more rows (positions 4..7),
+	// then continue paging: the walk must return each pre-append row
+	// exactly once and the appended rows exactly once (they are NEWER
+	// positions — the cursor only ever moves forward).
+	first, err := p2.PageActivity(context.Background(), id, "run-1", nil, 2)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	appended := []ActivityRow{
+		{Position: 4, Tool: "t", Status: ActivitySucceeded},
+		{Position: 5, Tool: "t", Status: ActivitySucceeded},
+		{Position: 6, Tool: "t", Status: ActivitySucceeded},
+		{Position: 7, Tool: "t", Status: ActivitySucceeded},
+	}
+	all = append(all, appended...)
+	reader.rows = all
+
+	var walked []int
+	for _, r := range first.Rows {
+		walked = append(walked, r.Position)
+	}
+	cursor := first.NextCursor
+	for cursor != nil {
+		page, err := p2.PageActivity(context.Background(), id, "run-1", cursor, 2)
+		if err != nil {
+			t.Fatalf("walk page: %v", err)
+		}
+		for _, r := range page.Rows {
+			walked = append(walked, r.Position)
+		}
+		cursor = page.NextCursor
+	}
+	// Exactly 8 positions, strictly increasing (oldest-first, no skips,
+	// no duplicates).
+	if len(walked) != 8 {
+		t.Fatalf("walked %d rows, want 8", len(walked))
+	}
+	for i, pos := range walked {
+		if pos != i {
+			t.Errorf("walk position %d = %d, want %d (no skips/duplicates under append)", i, pos, i)
+		}
+	}
+}
+
+// newTestStoreOrFail builds a fresh in-memory test Store, failing the
+// test on error.
+func newTestStoreOrFail(t *testing.T) *testStore {
+	t.Helper()
+	st, err := newTestStore(0, false)
+	if err != nil {
+		t.Fatalf("newTestStore: %v", err)
+	}
+	return st
 }
 
 // recordingActivityReader is a test-grade ActivityReader over a fixed
-// row slice; offset models a paged read position.
+// row slice whose rows carry their immutable Position ordinals (the
+// durable log's reconstruction); the keyset cursor pages by Position.
 type recordingActivityReader struct {
-	rows   []ActivityRow
-	offset int
+	rows []ActivityRow
 }
 
-func (r *recordingActivityReader) Activity(_ context.Context, _ identity.Identity, _ TurnID, limit int) ([]ActivityRow, bool, error) {
-	if limit < 1 {
-		return nil, false, ErrInvalidInput
+func (r *recordingActivityReader) Activity(_ context.Context, _ identity.Identity, _ TurnID, before *ActivityCursor, limit int) ([]ActivityRow, *ActivityCursor, error) {
+	if limit < 1 || limit > MaxActivityPageSize {
+		return nil, nil, ErrInvalidInput
 	}
-	start := r.offset
+	start := 0
+	if before != nil {
+		start = before.Position + 1
+	}
 	if start >= len(r.rows) {
-		return nil, false, nil
+		return nil, nil, nil
 	}
 	end := start + limit
 	if end > len(r.rows) {
 		end = len(r.rows)
 	}
-	return r.rows[start:end], end < len(r.rows), nil
+	var next *ActivityCursor
+	if end < len(r.rows) {
+		next = &ActivityCursor{Position: r.rows[end-1].Position}
+	}
+	return r.rows[start:end], next, nil
 }
 
 func TestProjector_Checkpoint_MonotonicIdempotent(t *testing.T) {
@@ -1026,8 +1169,11 @@ func TestProjector_List_TruncatedFlag_AfterRetentionEviction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if !page.Truncated {
-		t.Errorf("Truncated=false after retention eviction, want the explicit marker")
+	if page.Complete {
+		t.Errorf("Complete=true after retention eviction, want the explicit partial marker")
+	}
+	if page.PartialReason != "retention_eviction" {
+		t.Errorf("PartialReason=%q, want %q (the Protocol-mappable stable token)", page.PartialReason, "retention_eviction")
 	}
 	if len(page.Rows) != testStoreRetentionTiny {
 		t.Errorf("retained %d rows, want %d (the retention bound)", len(page.Rows), testStoreRetentionTiny)
@@ -1396,6 +1542,14 @@ func TestProjector_OpsTurn_StructuralOmissions(t *testing.T) {
 	if ops.TurnID != "run-1" || ops.Status != StatusRunning || ops.Version != appRow.Version {
 		t.Errorf("ops lifecycle wrong: %+v", ops)
 	}
+	// The operations READ carries the distinct task/run identity too
+	// (TaskID derived from the row key here; RunID honestly empty).
+	if ops.TaskID != "run-1" {
+		t.Errorf("ops TaskID=%q, want run-1 (derived)", ops.TaskID)
+	}
+	if ops.RunID != "" {
+		t.Errorf("ops RunID=%q, want empty (unavailable — never equated with TaskID)", ops.RunID)
+	}
 	if ops.AgentID != "agent-1" || ops.AgentBindingSource != AgentBindingExplicit {
 		t.Errorf("ops agent binding wrong: %+v", ops)
 	}
@@ -1451,4 +1605,635 @@ func TestProjector_EventSeq_ZeroNeverErasesRecorded(t *testing.T) {
 	if got.LastAppliedEventSeq != 5 {
 		t.Errorf("zero EventSeq erased the recorded sequence: %d, want 5", got.LastAppliedEventSeq)
 	}
+}
+
+// TestProjector_TaskRunID_DistinctAndHonest pins the P1 contract: the
+// consumer row and the operations READ carry DISTINCT authoritative
+// TaskID and RunID fields; the row key (TurnID) may be TaskID-derived,
+// but the ACTUAL runtime run id is never erased or equated with the
+// task id, and a legacy missing run id is EXPLICIT unavailable.
+func TestProjector_TaskRunID_DistinctAndHonest(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+
+	// Runtime reports the authoritative task id AND the run id.
+	row, err := p.Append(context.Background(), id, Append{
+		TurnID: "task-001", TaskID: "task-001", RunID: "run-abc-123", Query: "q",
+	})
+	if err != nil {
+		t.Fatalf("Append with ids: %v", err)
+	}
+	if row.TurnID != "task-001" || row.TaskID != "task-001" || row.RunID != "run-abc-123" {
+		t.Errorf("row ids wrong: turn=%q task=%q run=%q", row.TurnID, row.TaskID, row.RunID)
+	}
+	// The operations READ projection carries both too (the operations
+	// surface needs them for correlation).
+	ops, err := p.OpsTurn(context.Background(), id, "task-001")
+	if err != nil {
+		t.Fatalf("OpsTurn: %v", err)
+	}
+	if ops.TaskID != "task-001" || ops.RunID != "run-abc-123" {
+		t.Errorf("ops ids wrong: task=%q run=%q", ops.TaskID, ops.RunID)
+	}
+
+	// A runtime that reports ONLY the row key: TaskID derives from
+	// TurnID, and the MISSING run id stays explicitly unavailable —
+	// never silently equated with the task id.
+	legacy, err := p.Append(context.Background(), id, Append{TurnID: "task-002", Query: "q"})
+	if err != nil {
+		t.Fatalf("Append legacy: %v", err)
+	}
+	if legacy.TaskID != "task-002" {
+		t.Errorf("TaskID=%q, want task-002 (derived from the row key)", legacy.TaskID)
+	}
+	if legacy.RunID != "" {
+		t.Errorf("RunID=%q, want empty — a legacy run id is EXPLICIT unavailable, never equated with the task id", legacy.RunID)
+	}
+	if legacy.RunID == legacy.TaskID {
+		t.Errorf("RunID must never be silently equated with TaskID")
+	}
+
+	// A runtime that reports a DIFFERENT task id from the row key:
+	// both are preserved — the row key may be TaskID-derived, and the
+	// authoritative task id is never erased.
+	split, err := p.Append(context.Background(), id, Append{TurnID: "row-key-3", TaskID: "authoritative-task-3", RunID: "run-xyz", Query: "q"})
+	if err != nil {
+		t.Fatalf("Append split: %v", err)
+	}
+	if split.TurnID != "row-key-3" || split.TaskID != "authoritative-task-3" || split.RunID != "run-xyz" {
+		t.Errorf("split ids wrong: turn=%q task=%q run=%q", split.TurnID, split.TaskID, split.RunID)
+	}
+
+	// A reserved cursor separator in the turn id is rejected at
+	// creation — it would break the row's own opaque cursor encoding.
+	if _, err := p.Append(context.Background(), id, Append{TurnID: "bad|pipe", Query: "q"}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("pipe turn id error=%v, want ErrInvalidInput", err)
+	}
+}
+
+// TestProjector_EventSequence_MonotonicIdempotent_NoOpAtOrBelow pins
+// the P2 contract: applying an observation at or below the row's
+// last-applied event sequence is a NO-OP — no version bump, no content
+// mutation, and NO lucky expected version required (a response-loss
+// replay just returns the current row). Lower / equal / out-of-order
+// cases are pinned.
+func TestProjector_EventSequence_MonotonicIdempotent_NoOpAtOrBelow(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := p.Append(context.Background(), id, Append{TurnID: "run-1", Query: "q", EventSeq: 10})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if row.LastAppliedEventSeq != 10 {
+		t.Fatalf("LastAppliedEventSeq=%d, want 10", row.LastAppliedEventSeq)
+	}
+
+	// Apply an update at seq 12.
+	ans := Answer{State: AnswerStateInline, Inline: "v1"}
+	row, err = p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &ans, EventSeq: 12})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if row.LastAppliedEventSeq != 12 || row.Answer.Seq != 12 {
+		t.Fatalf("post-update seqs wrong: row=%d answer=%d, want 12/12", row.LastAppliedEventSeq, row.Answer.Seq)
+	}
+
+	// REPLAY of the SAME observation (seq 12, equal): no-op — the row
+	// is returned unchanged with a DELIBERATELY WRONG expected version,
+	// proving a response-loss replay never needs a lucky version.
+	replayed, err := p.Update(context.Background(), id, "run-1", 999, Update{Answer: &ans, EventSeq: 12})
+	if err != nil {
+		t.Fatalf("replay update: %v", err)
+	}
+	if replayed.Version != row.Version || replayed.Answer.Inline != "v1" || replayed.LastAppliedEventSeq != 12 {
+		t.Errorf("equal-seq replay changed the row: %+v", replayed)
+	}
+
+	// OUT-OF-ORDER observation (seq 11, below the applied 12): no-op.
+	lower := Answer{State: AnswerStateInline, Inline: "MUST NOT APPLY"}
+	oops, err := p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &lower, EventSeq: 11})
+	if err != nil {
+		t.Fatalf("lower-seq update: %v", err)
+	}
+	if oops.Version != row.Version || oops.Answer.Inline != "v1" || oops.LastAppliedEventSeq != 12 {
+		t.Errorf("lower-seq observation mutated the row: %+v", oops)
+	}
+
+	// A REAL new observation (seq 13) applies normally.
+	row, err = p.Update(context.Background(), id, "run-1", oops.Version, Update{Answer: &ans, EventSeq: 13})
+	if err != nil {
+		t.Fatalf("new-seq update: %v", err)
+	}
+	if row.LastAppliedEventSeq != 13 {
+		t.Errorf("LastAppliedEventSeq=%d, want 13", row.LastAppliedEventSeq)
+	}
+
+	// The same monotonic guard applies to the SEPARATELY NAMED
+	// channels and Seal.
+	row, err = p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 0, Trace: "t"}}, EventSeq: 14})
+	if err != nil {
+		t.Fatalf("AttachReasoning: %v", err)
+	}
+	if row.LastAppliedEventSeq != 14 || row.Reasoning.Seq != 14 {
+		t.Fatalf("post-reasoning seqs wrong: row=%d reasoning=%d, want 14/14", row.LastAppliedEventSeq, row.Reasoning.Seq)
+	}
+	replayedReasoning, err := p.AttachReasoning(context.Background(), id, "run-1", 12345, ReasoningInput{Steps: []ReasoningStep{{Index: 9, Trace: "MUST NOT"}}, EventSeq: 14})
+	if err != nil {
+		t.Fatalf("replay reasoning: %v", err)
+	}
+	if replayedReasoning.Version != row.Version || len(replayedReasoning.Reasoning.Steps) != 1 || replayedReasoning.Reasoning.Steps[0].Trace != "t" {
+		t.Errorf("equal-seq reasoning replay changed the row: %+v", replayedReasoning.Reasoning)
+	}
+
+	row, err = p.AttachAppRefs(context.Background(), id, "run-1", row.Version, AppRefInput{Refs: []AppRef{{ServerID: "srv", ResourceURI: "ui://srv/app"}}, EventSeq: 15})
+	if err != nil {
+		t.Fatalf("AttachAppRefs: %v", err)
+	}
+	if row.LastAppliedEventSeq != 15 {
+		t.Fatalf("post-apprefs seq=%d, want 15", row.LastAppliedEventSeq)
+	}
+	replayedApps, err := p.AttachAppRefs(context.Background(), id, "run-1", 9999, AppRefInput{Refs: []AppRef{{ServerID: "other", ResourceURI: "ui://other/app"}}, EventSeq: 15})
+	if err != nil {
+		t.Fatalf("replay apprefs: %v", err)
+	}
+	if replayedApps.Version != row.Version || len(replayedApps.Apps) != 1 || replayedApps.Apps[0].ServerID != "srv" {
+		t.Errorf("equal-seq apprefs replay changed the row: %+v", replayedApps.Apps)
+	}
+
+	// Seal: apply at seq 16, then replay at 16 (equal) — no-op.
+	sealed, err := p.Seal(context.Background(), id, "run-1", row.Version, Seal{Status: StatusComplete, EventSeq: 16})
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if sealed.LastAppliedEventSeq != 16 {
+		t.Fatalf("post-seal seq=%d, want 16", sealed.LastAppliedEventSeq)
+	}
+	resealed, err := p.Seal(context.Background(), id, "run-1", 777, Seal{Status: StatusComplete, EventSeq: 16})
+	if err != nil {
+		t.Fatalf("re-seal: %v", err)
+	}
+	if resealed.Version != sealed.Version || resealed.Status != StatusComplete {
+		t.Errorf("equal-seq re-seal changed the sealed row: %+v", resealed)
+	}
+}
+
+// TestProjector_EventSequence_ComponentSeqNeverRegresses pins the P2
+// component-level monotonicity: Answer.Seq and Reasoning.Seq never
+// regress, even when an observation carries a lower or absent
+// sequence, and LastAppliedEventSeq is never rewound by a later
+// lower-seq observation.
+func TestProjector_EventSequence_ComponentSeqNeverRegresses(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := p.Append(context.Background(), id, Append{TurnID: "run-1", Query: "q"})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// A caller-supplied component Seq (no row-level EventSeq) anchors
+	// the answer snapshot at 50.
+	ans := Answer{State: AnswerStateInline, Inline: "v1", Seq: 50}
+	row, err = p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &ans})
+	if err != nil {
+		t.Fatalf("Update with component seq: %v", err)
+	}
+	if row.Answer.Seq != 50 {
+		t.Fatalf("Answer.Seq=%d, want 50", row.Answer.Seq)
+	}
+
+	// A later update with EventSeq 12 (> row's 0) but BELOW the
+	// component anchor 50: the whole-op applies (12 > 0) but the
+	// component Seq must NOT regress to 12.
+	ans2 := Answer{State: AnswerStateInline, Inline: "v2"}
+	row, err = p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &ans2, EventSeq: 12})
+	if err != nil {
+		t.Fatalf("Update lower event seq: %v", err)
+	}
+	if row.LastAppliedEventSeq != 12 {
+		t.Errorf("LastAppliedEventSeq=%d, want 12", row.LastAppliedEventSeq)
+	}
+	if row.Answer.Seq != 50 {
+		t.Errorf("Answer.Seq regressed to %d, want 50 (never regress)", row.Answer.Seq)
+	}
+
+	// An update with NO sequence info at all preserves the anchor.
+	row, err = p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &ans2})
+	if err != nil {
+		t.Fatalf("Update no seq: %v", err)
+	}
+	if row.Answer.Seq != 50 {
+		t.Errorf("Answer.Seq=%d after unsequenced update, want 50 (preserved)", row.Answer.Seq)
+	}
+
+	// Reasoning.Seq monotonic: attach at 20, then a lower-seq attach
+	// (10) must not regress it.
+	row, err = p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 0, Trace: "t"}}, EventSeq: 20})
+	if err != nil {
+		t.Fatalf("AttachReasoning 20: %v", err)
+	}
+	if row.Reasoning.Seq != 20 {
+		t.Fatalf("Reasoning.Seq=%d, want 20", row.Reasoning.Seq)
+	}
+	row, err = p.AttachReasoning(context.Background(), id, "run-1", row.Version, ReasoningInput{Steps: []ReasoningStep{{Index: 1, Trace: "u"}}, EventSeq: 10})
+	if err != nil {
+		t.Fatalf("AttachReasoning 10: %v", err)
+	}
+	if row.Reasoning.Seq != 20 {
+		t.Errorf("Reasoning.Seq regressed to %d, want 20 (never regress)", row.Reasoning.Seq)
+	}
+	if row.LastAppliedEventSeq != 20 {
+		t.Errorf("LastAppliedEventSeq=%d, want 20 (never regress)", row.LastAppliedEventSeq)
+	}
+}
+
+// TestProjector_EventSequence_ConcurrentAdvances_ConvergeMonotonic
+// pins the P2 concurrent case: racing observations with different
+// sequences converge to the HIGHEST applied sequence, the row version
+// reflects exactly the accepted writes, and no interleaving leaves a
+// regressed sequence. A writer that loses the version slot reloads and
+// retries; a writer whose sequence is at or below the applied one
+// no-ops.
+func TestProjector_EventSequence_ConcurrentAdvances_ConvergeMonotonic(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := p.Append(context.Background(), id, Append{TurnID: "run-1", Query: "q"})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = row // the writers race from a fresh read each attempt
+
+	start := make(chan struct{})
+	done := make(chan error, 2)
+	race := func(seq uint64, inline string) {
+		<-start
+		ans := Answer{State: AnswerStateInline, Inline: inline}
+		for attempt := 0; attempt < 5; attempt++ {
+			cur, err := p.Get(context.Background(), id, "run-1")
+			if err != nil {
+				done <- err
+				return
+			}
+			if seq > 0 && seq <= cur.LastAppliedEventSeq {
+				done <- nil // already applied (or lower): monotonic no-op
+				return
+			}
+			_, err = p.Update(context.Background(), id, "run-1", cur.Version, Update{Answer: &ans, EventSeq: seq})
+			if err == nil {
+				done <- nil
+				return
+			}
+			if errors.Is(err, ErrStaleVersion) {
+				continue // reload and retry the version slot
+			}
+			done <- err
+			return
+		}
+		done <- fmt.Errorf("update did not converge")
+	}
+	go race(30, "from-30")
+	go race(20, "from-20")
+	close(start)
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent update: %v", err)
+		}
+	}
+
+	got, err := p.Get(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.LastAppliedEventSeq != 30 {
+		t.Errorf("LastAppliedEventSeq=%d, want 30 (converges to the max)", got.LastAppliedEventSeq)
+	}
+	if got.Answer.Seq != 30 {
+		t.Errorf("Answer.Seq=%d, want 30", got.Answer.Seq)
+	}
+	if got.Answer.Inline != "from-30" {
+		t.Errorf("answer=%q, want from-30 (the highest-seq observation wins)", got.Answer.Inline)
+	}
+}
+
+// TestProjector_ToolBudget_AboveCeiling_ConstructionSucceeds pins the
+// P3 contract: a configured per-turn tool budget ABOVE the Protocol
+// inline ceiling (MaxActivityRows) NEVER fails construction — the
+// inline window is capped at the ceiling, the row overflows honestly,
+// and the named bounded ActivityReader serves the full activity.
+func TestProjector_ToolBudget_AboveCeiling_ConstructionSucceeds(t *testing.T) {
+	// Budget > ceiling with the DEFAULT inline limit: construction
+	// succeeds (the old behavior failed loud here).
+	p, err := New(newTestStoreOrFail(t), WithToolBudget(MaxActivityRows+50))
+	if err != nil {
+		t.Fatalf("New with over-ceiling budget must succeed, got: %v", err)
+	}
+	if p.activityLimit != DefaultActivityLimit {
+		t.Errorf("inline limit=%d, want the default %d (capped at the ceiling)", p.activityLimit, DefaultActivityLimit)
+	}
+	// An explicit limit at the ceiling also constructs.
+	if _, err := New(newTestStoreOrFail(t), WithToolBudget(MaxActivityRows+200), WithActivityLimit(MaxActivityRows)); err != nil {
+		t.Errorf("New with ceiling limit + over-ceiling budget must succeed: %v", err)
+	}
+	// A budget at or below the ceiling still requires inline coverage.
+	if _, err := New(newTestStoreOrFail(t), WithToolBudget(MaxActivityRows), WithActivityLimit(MaxActivityRows-1)); err == nil {
+		t.Errorf("budget == ceiling with limit below must fail loud (inline capacity must cover the budget)")
+	}
+
+	// An over-ceiling-budget turn feeds > 128 rows and overflows
+	// HONESTLY (More + Dropped + Partial); the capped window retains
+	// the newest rows and PageActivity pages the full activity through
+	// the wired reader.
+	all := make([]ActivityRow, MaxActivityRows+40)
+	for i := range all {
+		all[i] = ActivityRow{Position: i, Tool: "t", Status: ActivitySucceeded}
+	}
+	reader := &recordingActivityReader{rows: all}
+	p2, err := New(newTestStoreOrFail(t), WithToolBudget(MaxActivityRows+50), WithActivityLimit(MaxActivityRows), WithActivityReader(reader))
+	if err != nil {
+		t.Fatalf("New over-ceiling with reader: %v", err)
+	}
+	id := tripleA()
+	row, err := appendTurn(p2, id, "run-1")
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	got, err := p2.Update(context.Background(), id, "run-1", row.Version, Update{Activity: all})
+	if err != nil {
+		t.Fatalf("update over-ceiling activity: %v", err)
+	}
+	if !got.Activity.More || got.Activity.Dropped != 40 || got.Activity.Complete != CompletenessPartial {
+		t.Errorf("over-ceiling activity must overflow honestly: %+v", got.Activity)
+	}
+	if len(got.Activity.Rows) != MaxActivityRows {
+		t.Errorf("retained %d rows, want %d (the ceiling window)", len(got.Activity.Rows), MaxActivityRows)
+	}
+	// The retained window is the NEWEST rows (highest positions).
+	if got.Activity.Rows[len(got.Activity.Rows)-1].Position != len(all)-1 {
+		t.Errorf("retained window must be the newest rows: last position=%d, want %d",
+			got.Activity.Rows[len(got.Activity.Rows)-1].Position, len(all)-1)
+	}
+	// The full activity is readable through the reader (all rows).
+	var walked []ActivityRow
+	var cursor *ActivityCursor
+	for {
+		page, err := p2.PageActivity(context.Background(), id, "run-1", cursor, 64)
+		if err != nil {
+			t.Fatalf("PageActivity: %v", err)
+		}
+		walked = append(walked, page.Rows...)
+		if !page.HasMore {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	if len(walked) != len(all) {
+		t.Errorf("PageActivity returned %d rows, want %d (the full activity)", len(walked), len(all))
+	}
+}
+
+// TestProjector_AppRefs_BoundsAndControlRejection pins the P4
+// contract: the Apps collection count and every App string / URI /
+// tool field are bounded, every field is valid UTF-8, and NUL /
+// control characters are rejected loudly (no ambiguity in the typed
+// identity — the NUL-concatenation is gone).
+func TestProjector_AppRefs_BoundsAndControlRejection(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+	row, err := appendTurn(p, id, "run-1")
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	v := row.Version
+
+	// NUL / control bytes in identity and URI fields are rejected.
+	for name, ref := range map[string]AppRef{
+		"nul agent id":     {EffectiveAgentID: "agent\x00x", ServerID: "srv", ResourceURI: "ui://srv/app"},
+		"nul server id":    {ServerID: "srv\x00x", ResourceURI: "ui://srv/app"},
+		"nul resource uri": {ServerID: "srv", ResourceURI: "ui://srv\x00/app"},
+		"ctrl display":     {ServerID: "srv", ResourceURI: "ui://srv/app", DisplayMode: "inline\x1b"},
+		"del tool name":    {ServerID: "srv", ResourceURI: "ui://srv/app", ToolName: "tool\x7f"},
+	} {
+		if _, err := p.AttachAppRefs(context.Background(), id, "run-1", v, AppRefInput{Refs: []AppRef{ref}}); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%s error=%v, want ErrInvalidInput (control chars rejected)", name, err)
+		}
+	}
+	// Invalid UTF-8 is rejected.
+	badUTF8 := AppRef{ServerID: "srv", ResourceURI: "ui://srv/app", ToolName: "tool\xff\xfe"}
+	if _, err := p.AttachAppRefs(context.Background(), id, "run-1", v, AppRefInput{Refs: []AppRef{badUTF8}}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("invalid UTF-8 error=%v, want ErrInvalidInput", err)
+	}
+	// Over-bound fields are rejected.
+	over := AppRef{ServerID: "srv", ResourceURI: "ui://srv/" + strings.Repeat("a", MaxAppResourceURIRunes+1)}
+	if _, err := p.AttachAppRefs(context.Background(), id, "run-1", v, AppRefInput{Refs: []AppRef{over}}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("over-bound URI error=%v, want ErrInvalidInput", err)
+	}
+
+	// The Apps collection count is bounded: MaxAppsPerTurn distinct
+	// identities fit; one more NEW identity fails loud (never silently
+	// dropped).
+	refs := make([]AppRef, 0, MaxAppsPerTurn)
+	for i := 0; i < MaxAppsPerTurn; i++ {
+		refs = append(refs, AppRef{ServerID: "srv", ResourceURI: fmt.Sprintf("ui://srv/app-%d", i), ToolName: "t"})
+	}
+	got, err := p.AttachAppRefs(context.Background(), id, "run-1", v, AppRefInput{Refs: refs})
+	if err != nil {
+		t.Fatalf("AttachAppRefs at the bound: %v", err)
+	}
+	if len(got.Apps) != MaxAppsPerTurn {
+		t.Fatalf("apps=%d, want %d at the bound", len(got.Apps), MaxAppsPerTurn)
+	}
+	// Replacing in place at the bound is fine (no growth).
+	again := AppRef{ServerID: "srv", ResourceURI: "ui://srv/app-0", ToolName: "t-v2"}
+	if _, err := p.AttachAppRefs(context.Background(), id, "run-1", got.Version, AppRefInput{Refs: []AppRef{again}}); err != nil {
+		t.Fatalf("in-place replacement at the bound must succeed: %v", err)
+	}
+	// One NEW identity past the bound fails loud.
+	oneMore := AppRef{ServerID: "srv", ResourceURI: "ui://srv/app-overflow", ToolName: "t"}
+	if _, err := p.AttachAppRefs(context.Background(), id, "run-1", got.Version+1, AppRefInput{Refs: []AppRef{oneMore}}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("over-bound app count error=%v, want ErrInvalidInput", err)
+	}
+}
+
+// TestProjector_DeepCopy_InputSlicesNeverAliasTheStoredRow pins the P4
+// deep-copy contract: mutating a caller's input slice AFTER an append
+// / update / attach never corrupts the stored projection (D-025
+// concurrent reuse — the projection owns its slices).
+func TestProjector_DeepCopy_InputSlicesNeverAliasTheStoredRow(t *testing.T) {
+	p, _ := newTestProjector(t, 0, false)
+	id := tripleA()
+
+	activity := []ActivityRow{{Tool: "t1", Status: ActivitySucceeded}}
+	inputs := []Attachment{{ID: "in_1"}}
+	if _, err := p.Append(context.Background(), id, Append{TurnID: "run-1", Query: "q", Activity: activity, Inputs: inputs}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	// Corrupt the caller's slices after the call.
+	activity[0].Tool = "CORRUPTED"
+	inputs[0].ID = "CORRUPTED"
+	got, err := p.Get(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Activity.Rows[0].Tool != "t1" {
+		t.Errorf("append activity aliased the caller's slice: %q", got.Activity.Rows[0].Tool)
+	}
+	if got.Inputs[0].ID != "in_1" {
+		t.Errorf("append inputs aliased the caller's slice: %q", got.Inputs[0].ID)
+	}
+
+	// Update: the fed activity is deep-copied.
+	fed := []ActivityRow{{Tool: "t2", Status: ActivitySucceeded}}
+	if _, err := p.Update(context.Background(), id, "run-1", got.Version, Update{Activity: fed}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	fed[0].Tool = "CORRUPTED"
+	got, err = p.Get(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("Get 2: %v", err)
+	}
+	if got.Activity.Rows[0].Tool != "t2" {
+		t.Errorf("update activity aliased the caller's slice: %q", got.Activity.Rows[0].Tool)
+	}
+
+	// AttachReasoning: the fed steps are deep-copied.
+	steps := []ReasoningStep{{Index: 0, Trace: "think"}}
+	got, err = p.AttachReasoning(context.Background(), id, "run-1", got.Version, ReasoningInput{Steps: steps})
+	if err != nil {
+		t.Fatalf("AttachReasoning: %v", err)
+	}
+	steps[0].Trace = "CORRUPTED"
+	got, err = p.Get(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("Get 3: %v", err)
+	}
+	if got.Reasoning.Steps[0].Trace != "think" {
+		t.Errorf("reasoning aliased the caller's slice: %q", got.Reasoning.Steps[0].Trace)
+	}
+
+	// AttachAppRefs: the fed refs are deep-copied.
+	refs := []AppRef{{ServerID: "srv", ResourceURI: "ui://srv/app", ToolName: "tool"}}
+	got, err = p.AttachAppRefs(context.Background(), id, "run-1", got.Version, AppRefInput{Refs: refs})
+	if err != nil {
+		t.Fatalf("AttachAppRefs: %v", err)
+	}
+	refs[0].ToolName = "CORRUPTED"
+	got, err = p.Get(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("Get 4: %v", err)
+	}
+	if got.Apps[0].ToolName != "tool" {
+		t.Errorf("app refs aliased the caller's slice: %q", got.Apps[0].ToolName)
+	}
+}
+
+// TestProjector_Reconcile_ErasureProbeGate pins the P6 contract: an
+// in-memory-backed store loses its STORE-LOCAL fence on restart, so
+// Reconcile consults the runtime's DURABLE erasure probe BEFORE
+// rebuilding — an erased session is never rebuilt from sequence zero
+// merely because the in-memory store restarted, and the store-local
+// fence is restored for the process lifetime.
+func TestProjector_Reconcile_ErasureProbeGate(t *testing.T) {
+	probe := &fakeErasureProbe{erased: true}
+	p2, err := New(newTestStoreOrFail(t), WithErasureProbe(probe))
+	if err != nil {
+		t.Fatalf("New with probe: %v", err)
+	}
+	id := tripleA()
+
+	// The probe reports the session erased: Reconcile refuses loudly,
+	// never calls apply, and never advances a checkpoint.
+	applied := false
+	_, err = p2.Reconcile(context.Background(), id, func(ctx context.Context, id identity.Identity, from uint64) (uint64, error) {
+		applied = true
+		return 42, nil
+	})
+	if !errors.Is(err, ErrErasureFenced) {
+		t.Fatalf("Reconcile on erased session error=%v, want ErrErasureFenced", err)
+	}
+	if applied {
+		t.Errorf("apply was called on an erased session — the probe gate must run first")
+	}
+	if seq, _ := p2.Checkpoint(context.Background(), id); seq != 0 {
+		t.Errorf("checkpoint advanced on an erased session: %d, want 0 (no resurrection)", seq)
+	}
+	// The store-local fence was RESTORED for this process lifetime:
+	// subsequent writes refuse.
+	if _, err := appendTurn(p2, id, "run-1"); !errors.Is(err, ErrErasureFenced) {
+		t.Errorf("post-refusal append error=%v, want ErrErasureFenced (fence restored)", err)
+	}
+
+	// A probe reporting NOT erased rebuilds normally from the
+	// checkpoint.
+	probe.erased = false
+	p3, err := New(newTestStoreOrFail(t), WithErasureProbe(probe))
+	if err != nil {
+		t.Fatalf("New with probe 2: %v", err)
+	}
+	high, err := p3.Reconcile(context.Background(), id, func(ctx context.Context, id identity.Identity, from uint64) (uint64, error) {
+		if from != 0 {
+			t.Errorf("rebuild from=%d, want 0", from)
+		}
+		if _, err := appendTurn(p3, id, "run-1"); err != nil {
+			return 0, err
+		}
+		return 3, nil
+	})
+	if err != nil {
+		t.Fatalf("Reconcile not-erased: %v", err)
+	}
+	if high != 3 {
+		t.Errorf("high=%d, want 3", high)
+	}
+
+	// A probe FAILURE surfaces loudly (never a silent rebuild).
+	p4, err := New(newTestStoreOrFail(t), WithErasureProbe(&fakeErasureProbe{err: errors.New("probe broken")}))
+	if err != nil {
+		t.Fatalf("New with failing probe: %v", err)
+	}
+	if _, err := p4.Reconcile(context.Background(), id, func(ctx context.Context, id identity.Identity, from uint64) (uint64, error) { return 1, nil }); err == nil {
+		t.Errorf("failing probe must surface loudly")
+	}
+
+	// A nil probe (the runtime declared no durable erasure authority)
+	// rebuilds on the store-local fence alone — the HONEST availability
+	// gap (the availability contract is documented, never claimed
+	// otherwise).
+	p5, _ := newTestProjector(t, 0, false)
+	if high, err := p5.Reconcile(context.Background(), id, func(ctx context.Context, id identity.Identity, from uint64) (uint64, error) {
+		return 1, nil
+	}); err != nil || high != 1 {
+		t.Errorf("nil-probe reconcile = (%d, %v), want (1, nil) — honest gap, not an error", high, err)
+	}
+
+	// The durable driver's STORE-LOCAL fence stays permanent: an
+	// erased durable session is refused by the store itself even with a
+	// probe that lies (the local fence is authoritative for durable
+	// drivers).
+	probe.erased = false
+	p6, st6 := newTestProjector(t, 0, true) // durable backing store
+	if _, err := p6.Erase(context.Background(), id); err != nil {
+		t.Fatalf("Erase durable: %v", err)
+	}
+	_ = st6
+	probe2 := &fakeErasureProbe{erased: false}
+	p7, err := New(st6, WithErasureProbe(probe2))
+	if err != nil {
+		t.Fatalf("New durable with probe: %v", err)
+	}
+	_, err = p7.Reconcile(context.Background(), id, func(ctx context.Context, id identity.Identity, from uint64) (uint64, error) {
+		return 1, nil
+	})
+	if !errors.Is(err, ErrErasureFenced) {
+		t.Errorf("durable erased session reconcile error=%v, want ErrErasureFenced (store-local fence is permanent)", err)
+	}
+}
+
+// fakeErasureProbe is a test-grade ErasureProbe with a settable
+// answer / failure.
+type fakeErasureProbe struct {
+	erased bool
+	err    error
+}
+
+func (f *fakeErasureProbe) Erased(_ context.Context, _ identity.Identity) (bool, error) {
+	return f.erased, f.err
 }

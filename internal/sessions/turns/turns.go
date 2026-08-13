@@ -12,7 +12,10 @@
 // (kind `foreground`, no parent task) before calling Append; this
 // package is the projection core and does not re-derive that
 // selection (it deliberately has no dependency on the tasks package —
-// the turn id IS the run's task id, carried as an opaque string).
+// the row key IS the run's task id, carried as an opaque string, and
+// the row carries the AUTHORITATIVE TaskID plus the ACTUAL runtime
+// RunID as distinct fields: a legacy missing run id is explicit
+// unavailable, never silently equated with the task id).
 //
 // A turn row is a DERIVED, consumer-safe view of the run: the
 // renderable user query, the assistant answer (inline text below the
@@ -73,11 +76,21 @@
 // change, a page cursor is stable under concurrent appends — a newly
 // appended turn can never satisfy an already-issued cursor, and an
 // already-returned turn can never be returned again (no skips, no
-// duplicates). The projection is BOUNDED: each session retains only
-// the newest `MaxRetainedTurns` rows (older turns live on in the
-// durable event log and are evicted from the projection, with the
-// truncation made explicit on the page). This is a projection, not a
-// warehouse.
+// duplicates). The public page default/max are 20/50. The opaque
+// cursor BINDS its owning session and the projection snapshot
+// (as-of retention generation) it was minted against: a
+// foreign-session cursor, a stale-snapshot cursor, and an
+// expired/retention cursor are each rejected with a DISTINCT domain
+// error (ErrCursorForeignSession / ErrCursorSnapshotStale /
+// ErrCursorExpired) for Protocol mapping. Each page exposes its
+// snapshot as-of, the next older cursor, has_more, the exact
+// older-row remaining count when known, the explicit completeness /
+// partial reason, and a live-resume sequence sufficient to compose
+// subscribe-before-page. The projection is BOUNDED: each session
+// retains only the newest `MaxRetainedTurns` rows (older turns live
+// on in the durable event log and are evicted from the projection,
+// with the truncation made explicit on the page). This is a
+// projection, not a warehouse.
 //
 // # Lifecycle of a row
 //
@@ -93,15 +106,22 @@
 // # Restart, reconcile, erasure
 //
 // The projector maintains a per-session MONOTONIC, IDEMPOTENT durable
-// checkpoint of the last-applied runtime event sequence. `Reconcile`
-// replays observations past the checkpoint; re-applying an
-// already-applied observation is a no-op (appends are idempotent on
-// the turn id, updates/seals fail with a stale version the replay
-// treats as "already applied"). An IN-MEMORY-backed store reports
-// `Durable() == false`: after a process restart its projection is
-// EMPTY (rows, checkpoint, AND erasure fence gone — explicit loss,
-// never a silent claim of durability) and the runtime rebuilds it by
-// reconciling from sequence zero against the durable event log.
+// checkpoint of the last-applied runtime event sequence, and every
+// observation carries its event sequence. `Reconcile` replays
+// observations past the checkpoint; applying an observation AT OR
+// BELOW a row's last-applied sequence is a NO-OP (a response-loss
+// replay or an out-of-order feed never mutates the row and never
+// needs a lucky expected version), and the row's LastAppliedEventSeq
+// and the accumulated Answer/Reasoning snapshot sequences NEVER
+// regress. An IN-MEMORY-backed store reports `Durable() == false`:
+// after a process restart its projection is EMPTY (rows, checkpoint,
+// AND erasure fence gone — explicit loss, never a silent claim of
+// durability) and the runtime rebuilds it by reconciling from
+// sequence zero against the durable event log — a rebuild gated on
+// the runtime's DURABLE erasure probe (ErasureProbe), so an erased
+// session is never rebuilt merely because the in-memory store
+// restarted. A DURABLE driver's store-local erasure fence survives
+// restarts permanently.
 //
 // Every turn write is fenced against session erasure (right to
 // erasure, RFC §7) by a STORE-LOCAL durable session fence: `Erase`
@@ -115,7 +135,11 @@
 // arbitrary external StateStore slots, so the fence lives in the same
 // transaction as the rows it guards. This package invents no
 // cross-runtime authority — the runtime's shared erasure ledger stays
-// the erasure cascade's own coordination surface.
+// the erasure cascade's own coordination surface; where a restart
+// loses the local fence (in-memory backing), the runtime's durable
+// erasure authority is consulted via the ErasureProbe the projector
+// holds, and the honest availability gap of a nil probe is documented,
+// never silently closed.
 //
 // # Scope of this package
 //
@@ -128,8 +152,12 @@
 package turns
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"time"
+
+	"github.com/hurtener/Harbor/internal/identity"
 )
 
 // TurnID identifies one turn — the root foreground run's task id,
@@ -385,15 +413,18 @@ func (l PauseLifecycle) Valid() bool {
 // is the explicit lower-bound / partial contract (see row.go).
 const (
 	// MaxListLimit bounds one List page so no caller can turn the
-	// paged read into an accidental unbounded dump.
-	MaxListLimit = 200
+	// paged read into an accidental unbounded dump. The PUBLIC list
+	// surface default/max are 20/50 (Protocol-mandated).
+	MaxListLimit = 50
 	// DefaultListLimit is the page size used when List is called with
-	// a zero Limit.
-	DefaultListLimit = 50
+	// a zero Limit. EXACTLY 20 — the Protocol-mandated public default.
+	DefaultListLimit = 20
 	// MaxRetainedTurns is the documented default bound on the number
 	// of turn rows the projection retains per session. Older turns are
 	// evicted from the projection (they remain in the durable event
-	// log) and the eviction is surfaced as the page Truncated flag.
+	// log) and the eviction is surfaced on the page as the explicit
+	// completeness / partial reason (Complete=false,
+	// PartialReason="retention_eviction").
 	// A Store implementation is configured with its own bound; this is
 	// the default the reference shape documents.
 	MaxRetainedTurns = 200
@@ -419,18 +450,37 @@ const (
 	// DefaultToolBudget is the default runtime-configured per-turn
 	// tool-call budget the projector validates its inline limit against
 	// (WithToolBudget when none is configured). Construction fails loud
-	// when the configured limit is below the configured budget.
+	// when the configured limit is below the configured budget WHILE
+	// that budget is at or below the Protocol ceiling; a budget ABOVE
+	// the ceiling is served by the capped inline window plus the named
+	// bounded ActivityReader fallback (never a construction failure).
 	DefaultToolBudget = 16
 	// MaxAttachmentsPerSide bounds the input / output attachment
 	// metadata lists.
 	MaxAttachmentsPerSide = 32
+	// MaxAppsPerTurn bounds the turn's ORDERED MCP App reference
+	// collection. An App ref is a declaration, not a window: an over-
+	// bound feed fails loud (ErrInvalidInput) — Apps are never silently
+	// dropped or truncated.
+	MaxAppsPerTurn = 32
+	// MaxToolNameRunes bounds a tool-name field (activity rows and App
+	// refs' originating tool name).
+	MaxToolNameRunes = 256
+	// App string-field bounds (runes, post-UTF-8 validation). Every
+	// AppRef string/URI/tool field is bounded, valid UTF-8, and free of
+	// NUL / C0-control / DEL ambiguity (see projector.validateText).
+	MaxAppAgentIDRunes     = 256
+	MaxAppServerIDRunes    = 256
+	MaxAppResourceURIRunes = 2048
+	MaxAppDisplayModeRunes = 64
+	MaxAppToolCallIDRunes  = 256
 	// MaxQueryRunes bounds the renderable query text (runes,
 	// post-validation). An over-bound query fails loud.
 	MaxQueryRunes = 32 * 1024
 	// MaxInlineAnswerBytes bounds the inline answer text. An inline
 	// answer at or above the bound is refused with ErrContextLeak — the
 	// runtime must route heavy answers through the artifact store by
-	// reference (D-026 heavy-content discipline mirrored at the
+	// reference (the heavy-content discipline mirrored at the
 	// projection edge; the default matches the runtime heavy-output
 	// threshold).
 	MaxInlineAnswerBytes = 32 * 1024
@@ -438,6 +488,10 @@ const (
 	// summary (duration / error class — never raw arguments or
 	// results).
 	MaxActivitySummaryRunes = 512
+	// MaxActivityPageSize bounds one ActivityReader page. A larger
+	// limit fails loud (ErrInvalidInput) — bounded paging, never an
+	// accidental dump of a whole over-budget turn.
+	MaxActivityPageSize = MaxActivityRows
 	// MaxPauseReasonRunes bounds the pause component's content-free
 	// reason text (a short derived string — never a token, never raw
 	// approval context).
@@ -476,9 +530,13 @@ var (
 	// Append/Update).
 	ErrInvalidStatus = errors.New("turns: invalid status")
 	// ErrErasureFenced — a turn write was refused because the session's
-	// pending-erasure ledger or terminal erasure tombstone slot is
-	// present: an erasure has begun or converged and no turn write is
-	// admitted (CLAUDE.md §6 rule 5 / right to erasure).
+	// STORE-LOCAL durable erasure fence is present: an erasure has
+	// begun or converged and no turn write is admitted (CLAUDE.md §6
+	// rule 5 / right to erasure). Also raised by Reconcile when the
+	// runtime's durable erasure probe reports the session erased and
+	// the store-local fence is gone (an in-memory-backed store after a
+	// process restart) — an erased session never rebuilds from
+	// sequence zero.
 	ErrErasureFenced = errors.New("turns: session erasure in progress or converged — write refused")
 	// ErrInvalidInput — a mutation carried structurally invalid or
 	// over-bound input (empty turn id, over-bound query, invalid
@@ -487,11 +545,26 @@ var (
 	// ErrContextLeak — an inline answer met or exceeded
 	// MaxInlineAnswerBytes. Heavy answers MUST route through the
 	// artifact store by reference; an inline heavy answer is a leak
-	// and is refused loudly, never truncated (D-026).
+	// and is refused loudly, never truncated.
 	ErrContextLeak = errors.New("turns: heavy answer reached the row as raw inline bytes — route by artifact reference")
 	// ErrInvalidCursor — a List cursor was malformed, version-mismatched,
 	// or otherwise unreadable. Never silently resets to page one.
 	ErrInvalidCursor = errors.New("turns: invalid or unreadable page cursor")
+	// ErrCursorForeignSession — a List cursor was minted for a DIFFERENT
+	// session than the request's identity triple. The cursor is rejected
+	// (never silently re-scoped); distinct from ErrInvalidCursor so the
+	// Protocol layer maps it onto its own domain error.
+	ErrCursorForeignSession = fmt.Errorf("%w (foreign session)", ErrInvalidCursor)
+	// ErrCursorSnapshotStale — a List cursor's projection snapshot
+	// generation no longer matches the session's current snapshot (the
+	// projection was erased / rebuilt underneath the walk, so the
+	// cursor's as-of retention generation is gone). The caller restarts
+	// the walk from page one.
+	ErrCursorSnapshotStale = fmt.Errorf("%w (stale projection snapshot)", ErrInvalidCursor)
+	// ErrCursorExpired — a List cursor's boundary row is no longer
+	// retained (evicted past the retention bound, or never existed).
+	// The projection honestly no longer pages from that position.
+	ErrCursorExpired = fmt.Errorf("%w (boundary row no longer retained)", ErrInvalidCursor)
 	// ErrStoreClosed — any operation called after Close.
 	ErrStoreClosed = errors.New("turns: store is closed")
 	// ErrIdentityRequired — an operation carried an identity triple
@@ -510,3 +583,27 @@ type Clock interface {
 type realClock struct{}
 
 func (realClock) Now() time.Time { return time.Now() }
+
+// ErasureProbe is the runtime-side DURABLE erasure check the projector
+// consults during RESTART RECONCILIATION. An in-memory-backed store
+// (Durable() == false) loses its STORE-LOCAL erasure fence on a
+// process restart — rows, checkpoint, AND fence are all gone — so the
+// runtime's own durable erasure cascade / fence (the pending-erasure
+// ledger and terminal tombstone under the observability scope,
+// `internal/sessions`) is the ONLY authority that can still tell "this
+// session was erased" from "this session never existed". The runtime
+// wires the probe over that cascade; this package never inspects
+// external StateStore slots itself (store-local fence only — no
+// cross-runtime authority).
+//
+// A nil probe means the runtime declared no durable erasure authority:
+// Reconcile then rebuilds on the store-local fence alone, which for an
+// in-memory-backed store after a restart is an HONEST availability gap
+// (an erased session COULD be rebuilt from sequence zero — the loss is
+// explicit, never claimed otherwise). Runtimes with a durable erasure
+// cascade MUST wire the probe so that gap is closed (P6 / G4).
+type ErasureProbe interface {
+	// Erased reports whether the runtime's durable erasure cascade /
+	// fence has erased (or is in the process of erasing) the session.
+	Erased(ctx context.Context, id identity.Identity) (bool, error)
+}

@@ -29,8 +29,24 @@ import "time"
 // (identity triple, TurnID); Sequence + TieBreaker are the immutable
 // ordering keys newest-first paging pages over.
 type TurnRow struct {
-	// TurnID is the root foreground run's task id — the row key.
+	// TurnID is the row key — the root foreground run's task id (the
+	// runtime may derive it from TaskID). Unique within the session's
+	// identity triple.
 	TurnID TurnID
+	// TaskID is the AUTHORITATIVE root foreground task id of the run
+	// the row projects. Distinct from TurnID as a matter of contract
+	// honesty: the row key may be TaskID-derived, but TaskID is the
+	// authoritative task identity. Always populated on rows created by
+	// the projector (derived from TurnID when the runtime did not
+	// report one separately).
+	TaskID string
+	// RunID is the ACTUAL runtime run id of the root foreground run —
+	// the per-execution scope inside the session (identity.Quadruple's
+	// RunID), carried on the row so the projection never erases it.
+	// EMPTY means the run id is UNAVAILABLE (a legacy record, or a
+	// runtime that did not report one) — it is NEVER silently equated
+	// with TaskID or TurnID.
+	RunID string
 	// SessionID is the owning session (the triple's SessionID),
 	// denormalised onto the row for rendering.
 	SessionID string
@@ -180,7 +196,9 @@ type Answer struct {
 
 // AnswerRef is the metadata-only reference to a heavy answer routed
 // through the artifact store. Bytes are fetched by id through the
-// artifact surface; the projection carries metadata only (D-026).
+// artifact surface; the projection carries metadata only (the
+// heavy-content discipline — an inline heavy answer is refused at the
+// projection edge with ErrContextLeak).
 type AnswerRef struct {
 	// ID is the content-addressed artifact identifier.
 	ID string
@@ -333,6 +351,14 @@ type Activity struct {
 // derived string (duration, error class) bounded by
 // MaxActivitySummaryRunes.
 type ActivityRow struct {
+	// Position is the row's IMMUTABLE 0-based ordinal in the turn's
+	// cumulative tool-dispatch sequence (the feed index at the moment
+	// the row entered the projection; feeds are cumulative, so a
+	// position never changes and appends only ever add HIGHER
+	// positions). It is the keyset key the named ActivityReader pages
+	// over — oldest-first paging by ascending Position never skips or
+	// duplicates under concurrent appends.
+	Position int
 	// Tool is the invoked tool name.
 	Tool string
 	// Status is the dispatch's lifecycle.
@@ -344,11 +370,37 @@ type ActivityRow struct {
 	At time.Time
 }
 
+// AppRefKey is the COMPARABLE TYPED replacement identity of one MCP
+// App reference: exactly (effective_agent_id, server_id, resource_uri).
+// It replaces the NUL-concatenated string form, which was ambiguous
+// when a field itself contained a NUL byte: a struct of three strings
+// is comparable and therefore a safe map key, and the identity fields
+// are validated free of NUL / control bytes before they reach it.
+type AppRefKey struct {
+	// EffectiveAgentID is the agent whose context the App reference is
+	// scoped to (empty when not agent-scoped).
+	EffectiveAgentID string
+	// ServerID is the MCP server (source id) hosting the App's
+	// `ui://` document.
+	ServerID string
+	// ResourceURI is the App's `ui://` document URI.
+	ResourceURI string
+}
+
+// Key returns the comparable typed replacement identity of the App
+// reference — the map key ordered in-place replacement runs on.
+func (r AppRef) Key() AppRefKey {
+	return AppRefKey{
+		EffectiveAgentID: r.EffectiveAgentID,
+		ServerID:         r.ServerID,
+		ResourceURI:      r.ResourceURI,
+	}
+}
+
 // AppRef is one entry in the turn's ORDERED collection of interactive
 // MCP App references, with component availability. Order is
-// first-declaration order; a repeat of the identity
-// (EffectiveAgentID, ServerID, ResourceURI) replaces in place with the
-// latest correlation metadata and never moves.
+// first-declaration order; a repeat of the identity (AppRefKey) replaces
+// in place with the latest correlation metadata and never moves.
 //
 // ToolCallID is OPTIONAL correlation metadata: it lets the existing
 // identity-scoped `mcp.apps.tool_context` channel lazily deliver the
@@ -400,13 +452,14 @@ type AppRef struct {
 // through it.
 //
 // Retained: lifecycle (status / sealed / version / finish reason /
-// error class), agent binding (id / name / provenance), timing
-// (started / updated / finished), usage / cost, content-free activity
-// (tool names, statuses, summaries), component COUNTS (reasoning
-// steps, input / output attachments), App availability summaries
-// (effective agent id, server id, tool name, availability), the pause
-// class / reason / lifecycle / availability, and the row's
-// last-applied event sequence.
+// error class), the task/run identity (TaskID + RunID — the
+// operations surface needs both), agent binding (id / name /
+// provenance), timing (started / updated / finished), usage / cost,
+// content-free activity (tool names, statuses, summaries), component
+// COUNTS (reasoning steps, input / output attachments), App
+// availability summaries (effective agent id, server id, tool name,
+// availability), the pause class / reason / lifecycle / availability,
+// and the row's last-applied event sequence.
 //
 // Structurally omitted (no field can reach them): the renderable
 // query, the answer (inline and reference), reasoning traces, pause /
@@ -415,6 +468,11 @@ type AppRef struct {
 type OpsTurnRow struct {
 	// TurnID is the row key.
 	TurnID TurnID
+	// TaskID is the authoritative root foreground task id.
+	TaskID string
+	// RunID is the actual runtime run id (empty = unavailable, never
+	// equated with TaskID).
+	RunID string
 	// SessionID is the owning session, denormalised for rendering.
 	SessionID string
 	// Sequence and TieBreaker are the immutable ordering keys.

@@ -148,6 +148,8 @@ func typeByName(name string) (reflect.Type, bool) {
 		return reflect.TypeOf(Reasoning{}), true
 	case "AppRef":
 		return reflect.TypeOf(AppRef{}), true
+	case "AppRefKey":
+		return reflect.TypeOf(AppRefKey{}), true
 	case "Agent":
 		return reflect.TypeOf(Agent{}), true
 	case "Query":

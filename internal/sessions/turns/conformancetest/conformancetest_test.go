@@ -2,6 +2,7 @@ package conformancetest
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"testing"
@@ -22,6 +23,7 @@ type smokeDriver struct {
 	rows        map[smokeKey]turns.TurnRow
 	seqs        map[string]uint64
 	checkpoints map[string]uint64
+	snapshots   map[string]uint64
 	fenced      map[string]bool
 	closed      bool
 }
@@ -43,6 +45,7 @@ func newSmokeDriver() *smokeDriver {
 		rows:        map[smokeKey]turns.TurnRow{},
 		seqs:        map[string]uint64{},
 		checkpoints: map[string]uint64{},
+		snapshots:   map[string]uint64{},
 		fenced:      map[string]bool{},
 	}
 }
@@ -192,21 +195,40 @@ func (d *smokeDriver) GetTurn(ctx context.Context, id identity.Identity, turnID 
 	return row, nil
 }
 
-func (d *smokeDriver) ListTurns(ctx context.Context, id identity.Identity, before *turns.Cursor, limit int) ([]turns.TurnRow, *turns.Cursor, bool, error) {
+func (d *smokeDriver) ListTurns(ctx context.Context, id identity.Identity, before *turns.Cursor, limit int) ([]turns.TurnRow, *turns.Cursor, turns.ListPageInfo, error) {
+	var zero turns.ListPageInfo
 	if err := d.closedErr(); err != nil {
-		return nil, nil, false, err
+		return nil, nil, zero, err
 	}
 	if err := d.identityErr(id); err != nil {
-		return nil, nil, false, err
+		return nil, nil, zero, err
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, nil, false, err
+		return nil, nil, zero, err
 	}
 	if limit < 1 {
-		return nil, nil, false, turns.ErrInvalidInput
+		return nil, nil, zero, turns.ErrInvalidInput
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	sk := sessionKeyOf(id)
+	snapshot := d.snapshots[sk]
+	// Opaque-cursor BINDING: session + projection snapshot + a
+	// retained boundary row.
+	if before != nil {
+		if before.SessionID != id.SessionID {
+			return nil, nil, zero, fmt.Errorf("%w: cursor names session %q, request is %q",
+				turns.ErrCursorForeignSession, before.SessionID, id.SessionID)
+		}
+		if before.Snapshot != snapshot {
+			return nil, nil, zero, fmt.Errorf("%w: cursor snapshot %d, current %d",
+				turns.ErrCursorSnapshotStale, before.Snapshot, snapshot)
+		}
+		if _, ok := d.rows[keyOf(id, before.TurnID)]; !ok {
+			return nil, nil, zero, fmt.Errorf("%w: boundary row %q is no longer retained",
+				turns.ErrCursorExpired, before.TurnID)
+		}
+	}
 	var rows []turns.TurnRow
 	for k, row := range d.rows {
 		if k.tenant == id.TenantID && k.user == id.UserID && k.session == id.SessionID {
@@ -228,12 +250,18 @@ func (d *smokeDriver) ListTurns(ctx context.Context, id identity.Identity, befor
 		}
 		candidates = append(candidates, r)
 	}
+	info := turns.ListPageInfo{Snapshot: snapshot, Truncated: false}
 	if len(candidates) <= limit {
-		return candidates, nil, false, nil
+		info.Remaining = 0
+		info.CountExact = true
+		return candidates, nil, info, nil
 	}
 	page := candidates[:limit]
 	last := page[len(page)-1]
-	return page, &turns.Cursor{Seq: last.Sequence, TurnID: last.TurnID}, false, nil
+	info.Remaining = len(candidates) - limit
+	info.CountExact = true
+	next := &turns.Cursor{SessionID: id.SessionID, Snapshot: snapshot, Seq: last.Sequence, TurnID: last.TurnID}
+	return page, next, info, nil
 }
 
 func (d *smokeDriver) LoadCheckpoint(ctx context.Context, id identity.Identity) (uint64, error) {
@@ -298,6 +326,9 @@ func (d *smokeDriver) DeleteScope(ctx context.Context, id identity.Identity) (in
 		delete(d.seqs, sk)
 		deleted++
 	}
+	// Advance the projection SNAPSHOT generation so any cursor minted
+	// before the erase is rejected as stale.
+	d.snapshots[sk]++
 	return deleted, nil
 }
 

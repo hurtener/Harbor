@@ -46,13 +46,21 @@ import (
 //   - ListTurns pages newest-first by the immutable keys
 //     `(Sequence DESC, TurnID DESC)` with no skips or duplicates
 //     under concurrent appends, and reports the session's truncation
-//     flag (retention eviction is explicit, never silent).
+//     flag (retention eviction is explicit, never silent). The page
+//     cursor is BOUND to its owning session + the session's projection
+//     snapshot generation: a foreign-session cursor is refused with
+//     ErrCursorForeignSession, a stale-snapshot cursor (the projection
+//     was erased / rebuilt under the walk) with ErrCursorSnapshotStale,
+//     and a cursor whose boundary row is no longer retained with
+//     ErrCursorExpired — each a distinct domain error for Protocol
+//     mapping. Appends during a walk never invalidate an issued cursor.
 //   - The store enforces the retention bound configured at its
 //     construction: a session retains only its newest N rows; beyond
 //     N the oldest rows are evicted and the session's truncation flag
 //     is set. `Durable()` reports whether the backing store survives
 //     a process restart (an in-memory driver reports false — explicit
-//     restart loss; the projection then rebuilds via Reconcile).
+//     restart loss; the projection then rebuilds via Reconcile, which
+//     consults the runtime's durable erasure probe BEFORE rebuilding).
 //   - Implementations MUST be safe for N concurrent goroutines on one
 //     shared instance (the store contract's concurrent-reuse gate:
 //     no data races, no identity bleed, no cancellation cross-talk,
@@ -62,7 +70,11 @@ type Store interface {
 	// restart. An in-memory driver returns false: after a restart its
 	// projection is EMPTY (rows, checkpoints, AND erasure fences gone
 	// — explicit loss, never a silent claim of durability) and the
-	// runtime rebuilds it by reconciling from sequence zero.
+	// runtime rebuilds it by reconciling from sequence zero — a rebuild
+	// the Projector gates on the runtime's durable erasure probe
+	// (ErasureProbe) so an erased session is never rebuilt merely
+	// because the in-memory store restarted. A durable driver's
+	// STORE-LOCAL erasure fence survives restarts permanently.
 	Durable() bool
 
 	// AppendTurnIf creates the mutable row for id / TurnID, minting
@@ -112,10 +124,16 @@ type Store interface {
 	// retained rows strictly older than before (nil before = the
 	// newest page), ordered by (Sequence DESC, TurnID DESC). next is
 	// non-nil iff older rows remain (the driver fetches limit+1 to
-	// know exactly); truncated reports whether the session's retained
-	// window ever hit its bound. No skips / no duplicates under
-	// concurrent appends (immutable ordering keys).
-	ListTurns(ctx context.Context, id identity.Identity, before *Cursor, limit int) (rows []TurnRow, next *Cursor, truncated bool, err error)
+	// know exactly); info carries the page's snapshot binding and
+	// completeness. The cursor is BOUND to (session, projection
+	// snapshot): a foreign-session cursor fails with
+	// ErrCursorForeignSession, a stale-snapshot cursor (the session's
+	// snapshot generation advanced — e.g. the projection was erased /
+	// rebuilt) with ErrCursorSnapshotStale, and a cursor whose
+	// boundary row is no longer retained with ErrCursorExpired. No
+	// skips / no duplicates under concurrent appends (immutable
+	// ordering keys; appends never invalidate an issued cursor).
+	ListTurns(ctx context.Context, id identity.Identity, before *Cursor, limit int) (rows []TurnRow, next *Cursor, info ListPageInfo, err error)
 
 	// LoadCheckpoint returns the session's last-applied runtime event
 	// sequence; 0 when none was ever saved (a fresh store, an erased
@@ -144,4 +162,24 @@ type Store interface {
 	// Close releases driver resources; subsequent calls fail with
 	// ErrStoreClosed (wrapped). Idempotent.
 	Close(ctx context.Context) error
+}
+
+// ListPageInfo is the store-level per-page metadata ListTurns returns
+// alongside the rows and next cursor. The Projector maps it onto the
+// public Page's snapshot / completeness / remaining fields.
+type ListPageInfo struct {
+	// Snapshot is the session's projection snapshot generation (as-of
+	// retention generation) the page — and its minted cursors — bind
+	// to. It starts at 0 for a fresh session and advances on erasure
+	// (DeleteScope), so a cursor minted before an erase can never be
+	// confused with one minted after.
+	Snapshot uint64
+	// Remaining is the exact number of older RETAINED rows beyond the
+	// page when the driver knows it without a full scan, or -1
+	// otherwise. CountExact reports which.
+	Remaining  int
+	CountExact bool
+	// Truncated reports whether the session's retained window ever hit
+	// its bound (retention eviction is explicit, never silent).
+	Truncated bool
 }

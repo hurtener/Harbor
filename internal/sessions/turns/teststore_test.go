@@ -34,6 +34,7 @@ const (
 	turnCheckpointKind     = "turn.checkpoint"
 	turnRetentionKind      = "turn.retention"
 	turnFenceKind          = "turn.fence"
+	turnSnapshotKind       = "turn.snapshot"
 	testStoreRetentionTiny = 5 // for retention/truncation tests
 )
 
@@ -427,22 +428,47 @@ func (s *testStore) GetTurn(ctx context.Context, id identity.Identity, turnID Tu
 	return row, err
 }
 
-func (s *testStore) ListTurns(ctx context.Context, id identity.Identity, before *Cursor, limit int) ([]TurnRow, *Cursor, bool, error) {
+func (s *testStore) ListTurns(ctx context.Context, id identity.Identity, before *Cursor, limit int) ([]TurnRow, *Cursor, ListPageInfo, error) {
+	var zero ListPageInfo
 	if err := s.closedErr(); err != nil {
-		return nil, nil, false, err
+		return nil, nil, zero, err
 	}
 	if err := identity.Validate(id); err != nil {
-		return nil, nil, false, ErrIdentityRequired
+		return nil, nil, zero, ErrIdentityRequired
 	}
 	if limit < 1 {
-		return nil, nil, false, ErrInvalidInput
+		return nil, nil, zero, ErrInvalidInput
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	snapshot, err := s.loadSnapshotGen(ctx, id)
+	if err != nil {
+		return nil, nil, zero, err
+	}
+	// Opaque-cursor BINDING: the cursor is only valid for this session,
+	// against this projection snapshot, with a retained boundary row.
+	if before != nil {
+		if before.SessionID != id.SessionID {
+			return nil, nil, zero, fmt.Errorf("%w: cursor names session %q, request is %q",
+				ErrCursorForeignSession, before.SessionID, id.SessionID)
+		}
+		if before.Snapshot != snapshot {
+			return nil, nil, zero, fmt.Errorf("%w: cursor snapshot %d, current %d",
+				ErrCursorSnapshotStale, before.Snapshot, snapshot)
+		}
+		if _, _, err := s.loadRow(ctx, id, before.TurnID); err != nil {
+			if errors.Is(err, ErrTurnNotFound) {
+				return nil, nil, zero, fmt.Errorf("%w: boundary row %q is no longer retained",
+					ErrCursorExpired, before.TurnID)
+			}
+			return nil, nil, zero, err
+		}
+	}
+
 	rows, err := s.enumerate(ctx, id)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, zero, err
 	}
 	sort.Slice(rows, func(i, j int) bool { // newest first
 		if rows[i].Sequence != rows[j].Sequence {
@@ -459,15 +485,54 @@ func (s *testStore) ListTurns(ctx context.Context, id identity.Identity, before 
 	}
 	truncated, err := s.loadTruncated(ctx, id)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, zero, err
 	}
+	info := ListPageInfo{Snapshot: snapshot, Truncated: truncated}
 	if len(candidates) <= limit {
-		return candidates, nil, truncated, nil
+		info.Remaining = 0
+		info.CountExact = true
+		return candidates, nil, info, nil
 	}
 	page := candidates[:limit]
 	last := page[len(page)-1]
-	next := &Cursor{Seq: last.Sequence, TurnID: last.TurnID}
-	return page, next, truncated, nil
+	info.Remaining = len(candidates) - limit // exact: the older retained rows beyond this page
+	info.CountExact = true
+	next := &Cursor{SessionID: id.SessionID, Snapshot: snapshot, Seq: last.Sequence, TurnID: last.TurnID}
+	return page, next, info, nil
+}
+
+// loadSnapshotGen returns the session's projection snapshot generation
+// (0 when never advanced — a fresh session; the initial generation).
+// Caller holds s.mu.
+func (s *testStore) loadSnapshotGen(ctx context.Context, id identity.Identity) (uint64, error) {
+	q := identity.Quadruple{Identity: id}
+	rec, err := s.st.Load(ctx, q, turnSnapshotKind)
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if len(rec.Bytes) != 8 {
+		return 0, fmt.Errorf("turns: snapshot record malformed")
+	}
+	return binary.BigEndian.Uint64(rec.Bytes), nil
+}
+
+// bumpSnapshotGen advances the session's projection snapshot
+// generation by one (used by DeleteScope so a cursor minted before an
+// erase can never be confused with one minted after). Caller holds
+// s.mu.
+func (s *testStore) bumpSnapshotGen(ctx context.Context, id identity.Identity) error {
+	q := identity.Quadruple{Identity: id}
+	cur, err := s.loadSnapshotGen(ctx, id)
+	if err != nil {
+		return err
+	}
+	bytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(bytes, cur+1)
+	eid := state.NewEventID()
+	return s.st.Save(ctx, state.StateRecord{ID: eid, Identity: q, Kind: turnSnapshotKind, Bytes: bytes})
 }
 
 // after reports whether r is strictly older than c in the newest-first
@@ -623,6 +688,13 @@ func (s *testStore) DeleteScope(ctx context.Context, id identity.Identity) (int,
 		} else if !errors.Is(err, state.ErrNotFound) {
 			return 0, err
 		}
+	}
+	// Advance the projection SNAPSHOT generation (as-of retention
+	// generation) so any cursor minted before the erase is rejected as
+	// stale — a pre-erase cursor must never page the post-erase (or
+	// rebuilt) projection. Not counted as a deleted record.
+	if err := s.bumpSnapshotGen(ctx, id); err != nil {
+		return 0, err
 	}
 	return deleted, nil
 }

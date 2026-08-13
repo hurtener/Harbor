@@ -3,6 +3,7 @@ package turns
 import (
 	"context"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -15,7 +16,8 @@ import (
 // operations-safe read (OpsTurn), and owns the restart / reconcile /
 // erasure-fence contracts over a conformance-ready Store.
 //
-// Concurrent reuse (D-025): a constructed *Projector is immutable
+// Concurrent reuse (the mandatory concurrent-reuse contract): a
+// constructed *Projector is immutable
 // after New — it holds only the Store reference (itself safe for N
 // concurrent goroutines per the Store contract) and immutable options.
 // Every method's per-call state lives in the call's arguments and
@@ -33,12 +35,28 @@ type Projector struct {
 	// it is refused with ErrContextLeak.
 	inlineLimit int
 	// activityLimit is the configured inline activity window: it MUST
-	// cover the configured per-turn tool-call budget and is capped at
-	// the absolute Protocol ceiling MaxActivityRows.
+	// cover the configured per-turn tool-call budget while that budget
+	// is at or below the Protocol ceiling, and is capped at the
+	// absolute Protocol ceiling MaxActivityRows.
 	activityLimit int
 	// toolBudget is the runtime's configured per-turn tool-call
-	// budget; New fails loud when activityLimit < toolBudget.
+	// budget. New fails loud when activityLimit < toolBudget AND
+	// toolBudget <= MaxActivityRows; a budget ABOVE the Protocol
+	// ceiling is served by the capped inline window plus the named
+	// bounded ActivityReader fallback (activityReader) — construction
+	// never fails on an over-ceiling budget.
 	toolBudget int
+	// activityReader is the runtime-wired bounded activity-read
+	// fallback (PageActivity delegates to it). Nil when none was wired:
+	// an over-budget turn's full activity is then honestly unreadable
+	// (the row still carries the More / Dropped lower-bound marker).
+	activityReader ActivityReader
+	// probe is the runtime's durable erasure authority consulted by
+	// Reconcile when the store-local fence may have been lost (an
+	// in-memory-backed store after a process restart). Nil means the
+	// runtime declared none — an honest availability gap, never a
+	// silent claim.
+	probe ErasureProbe
 }
 
 // ProjectorOption configures New.
@@ -59,27 +77,60 @@ func WithInlineAnswerLimit(n int) ProjectorOption {
 
 // WithActivityLimit configures the inline activity window of a row
 // (default DefaultActivityLimit). New fails loud when the limit is
-// below the configured per-turn tool-call budget (WithToolBudget) —
-// inline capacity must cover the budget — or above the absolute
-// Protocol ceiling MaxActivityRows. A turn whose actual tool calls
-// exceed the window overflows honestly (More + Dropped + Partial) and
-// the full activity is read through the named bounded ActivityReader.
+// below the configured per-turn tool-call budget (WithToolBudget)
+// while that budget is at or below the Protocol ceiling — inline
+// capacity must cover the budget — or above the absolute Protocol
+// ceiling MaxActivityRows. A turn whose actual tool calls exceed the
+// window overflows honestly (More + Dropped + Partial) and the full
+// activity is read through the named bounded ActivityReader
+// (WithActivityReader).
 func WithActivityLimit(n int) ProjectorOption {
 	return func(p *Projector) { p.activityLimit = n }
 }
 
 // WithToolBudget declares the runtime's configured per-turn tool-call
 // budget (default DefaultToolBudget). New fails loud when the
-// configured inline activity limit (WithActivityLimit) is below it.
+// configured inline activity limit (WithActivityLimit) is below it —
+// UNLESS the budget exceeds the absolute Protocol ceiling
+// MaxActivityRows: then construction NEVER fails (the inline window is
+// capped at the ceiling and the row overflows honestly to the named
+// bounded ActivityReader fallback).
 func WithToolBudget(n int) ProjectorOption {
 	return func(p *Projector) { p.toolBudget = n }
+}
+
+// WithActivityReader wires the named bounded activity-read fallback
+// the row's explicit lower-bound (Activity.More) points at. It is the
+// ONLY subresource read the projection exposes (no generic subresource
+// framework). Required for over-ceiling tool budgets: when the
+// configured per-turn budget exceeds MaxActivityRows the runtime MUST
+// wire the reader so an over-budget turn's full activity stays
+// readable. PageActivity refuses loudly when none is wired.
+func WithActivityReader(r ActivityReader) ProjectorOption {
+	return func(p *Projector) { p.activityReader = r }
+}
+
+// WithErasureProbe wires the runtime's DURABLE erasure authority the
+// projector consults during restart reconciliation (Reconcile). An
+// in-memory-backed store loses its store-local fence on restart; the
+// probe (wired over the runtime's own erasure cascade — pending ledger
+// / tombstone) is what tells "erased" from "never existed" so an
+// erased session is never rebuilt from sequence zero merely because
+// the in-memory store restarted. Runtimes with a durable erasure
+// cascade MUST wire it; a nil probe is an honest availability gap.
+func WithErasureProbe(pb ErasureProbe) ProjectorOption {
+	return func(p *Projector) { p.probe = pb }
 }
 
 // New constructs a Projector over a mandatory Store. A nil store, a
 // non-positive inline-answer bound, an inline activity limit outside
 // [1, MaxActivityRows], or an inline activity limit below the
-// configured tool budget fails loud at construction — never a
-// nil-panicking or silently-defaulted projector.
+// configured tool budget (while that budget is at or below the
+// Protocol ceiling) fails loud at construction — never a nil-panicking
+// or silently-defaulted projector. A tool budget ABOVE the ceiling is
+// NOT a construction failure: the inline window is capped at the
+// ceiling, the row overflows honestly, and the full activity is read
+// through the wired ActivityReader.
 func New(store Store, opts ...ProjectorOption) (*Projector, error) {
 	if store == nil {
 		return nil, fmt.Errorf("turns: New requires a non-nil Store")
@@ -103,12 +154,17 @@ func New(store Store, opts ...ProjectorOption) (*Projector, error) {
 	if p.toolBudget < 0 {
 		return nil, fmt.Errorf("turns: New requires a non-negative tool budget, got %d", p.toolBudget)
 	}
-	if p.activityLimit < p.toolBudget {
+	if p.toolBudget <= MaxActivityRows && p.activityLimit < p.toolBudget {
 		return nil, fmt.Errorf("turns: inline activity limit %d is below the configured per-turn tool budget %d — inline capacity must cover the budget (ceiling %d)",
 			p.activityLimit, p.toolBudget, MaxActivityRows)
 	}
 	return p, nil
 }
+
+// ActivityReader returns the wired bounded activity-read fallback
+// (nil when none was wired). PageActivity refuses loudly on a nil
+// reader.
+func (p *Projector) ActivityReader() ActivityReader { return p.activityReader }
 
 // Append creates the mutable row for a root foreground run (mutation
 // DTO Append — structurally free of transcript / reasoning /
@@ -123,6 +179,13 @@ func (p *Projector) Append(ctx context.Context, id identity.Identity, a Append) 
 	}
 	if a.TurnID == "" {
 		return TurnRow{}, fmt.Errorf("%w: turn id is empty", ErrInvalidInput)
+	}
+	if strings.Contains(string(a.TurnID), "|") {
+		// The turn id rides the opaque page cursor encoding (a "|"
+		// separated field); a pipe in the id would make its own cursor
+		// undecodable. Fail loud at creation rather than mint a row
+		// whose key breaks the paging surface.
+		return TurnRow{}, fmt.Errorf("%w: turn id contains the reserved cursor separator '|'", ErrInvalidInput)
 	}
 	status := a.Status
 	if status == "" {
@@ -156,6 +219,12 @@ func (p *Projector) Append(ctx context.Context, id identity.Identity, a Append) 
 	if err != nil {
 		return TurnRow{}, err
 	}
+	taskID := a.TaskID
+	if taskID == "" {
+		// The runtime did not report the authoritative task id
+		// separately: the row key IS the task id (TaskID-derived).
+		taskID = string(a.TurnID)
+	}
 
 	now := p.clock.Now()
 	started := a.StartedAt
@@ -168,6 +237,8 @@ func (p *Projector) Append(ctx context.Context, id identity.Identity, a Append) 
 	}
 	row := TurnRow{
 		TurnID:              a.TurnID,
+		TaskID:              taskID,
+		RunID:               a.RunID, // empty = unavailable, never equated with TaskID
 		SessionID:           id.SessionID,
 		Sequence:            0, // minted by the Store
 		TieBreaker:          a.TurnID,
@@ -196,7 +267,7 @@ func (p *Projector) Append(ctx context.Context, id identity.Identity, a Append) 
 		Outputs:   outputs,
 		Apps:      nil,
 	}
-	row.Activity = clampActivity(a.Activity, p.activityLimit)
+	row.Activity = clampActivity(assignActivityPositions(a.Activity), p.activityLimit)
 	stored, err := p.store.AppendTurnIf(ctx, id, row)
 	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: append %q: %w", a.TurnID, err)
@@ -257,6 +328,16 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: update %q: %w", turnID, err)
 	}
+	// Monotonic / idempotent event-sequence application: an observation
+	// at or below the row's last-applied sequence has ALREADY been
+	// applied (a response-loss replay, or an out-of-order feed) and is a
+	// NO-OP — returned unchanged, no version bump, no content mutation,
+	// and NO version expectation required (a replay never needs a lucky
+	// expected version). The row's LastAppliedEventSeq and the
+	// accumulated Answer/Reasoning snapshot sequences never regress.
+	if u.EventSeq > 0 && u.EventSeq <= current.LastAppliedEventSeq {
+		return current, nil
+	}
 	if current.Sealed {
 		return TurnRow{}, fmt.Errorf("%w: %q", ErrTurnSealed, turnID)
 	}
@@ -268,16 +349,30 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 	if u.Answer != nil {
 		ans := *u.Answer
 		ans.Complete = answerCompleteness(ans.State) // derive the uniform honesty from the closed union
-		merged.Answer = ans
-		if u.EventSeq != 0 {
-			merged.Answer.Seq = u.EventSeq // component/version consistency anchor
+		// Component/version consistency anchor: the accumulated answer
+		// snapshot's Seq must never regress. The effective sequence is
+		// the observation's EventSeq when recorded, else the
+		// caller-supplied component Seq; when neither is recorded the
+		// prior anchor is preserved.
+		cand := u.EventSeq
+		if cand == 0 {
+			cand = ans.Seq
 		}
+		if cand > 0 && cand < current.Answer.Seq {
+			cand = current.Answer.Seq // never regress the accumulated snapshot
+		}
+		if cand > 0 {
+			ans.Seq = cand
+		} else {
+			ans.Seq = current.Answer.Seq
+		}
+		merged.Answer = ans
 	}
 	if u.Usage != nil {
 		merged.Usage = *u.Usage
 	}
 	if u.Activity != nil {
-		merged.Activity = clampActivity(u.Activity, p.activityLimit)
+		merged.Activity = clampActivity(assignActivityPositions(u.Activity), p.activityLimit)
 	}
 	if u.Inputs != nil {
 		merged.Inputs = inputs
@@ -288,8 +383,8 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 	if u.Pause != nil {
 		merged.Pause = pause
 	}
-	if u.EventSeq != 0 {
-		merged.LastAppliedEventSeq = u.EventSeq
+	if u.EventSeq > current.LastAppliedEventSeq {
+		merged.LastAppliedEventSeq = u.EventSeq // the guard above guarantees > 0 here
 	}
 	stored, err := p.store.UpdateTurnIf(ctx, id, turnID, expectedVersion, merged)
 	if err != nil {
@@ -326,6 +421,13 @@ func (p *Projector) Seal(ctx context.Context, id identity.Identity, turnID TurnI
 	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: seal %q: %w", turnID, err)
 	}
+	// Monotonic / idempotent event-sequence application: a seal
+	// observation at or below the row's last-applied sequence was
+	// already applied (replay / out-of-order) — return the row
+	// unchanged, no version bump, no version expectation required.
+	if s.EventSeq > 0 && s.EventSeq <= current.LastAppliedEventSeq {
+		return current, nil
+	}
 	if current.Sealed {
 		if current.Status == s.Status {
 			// Same-status re-seal: idempotent replay no-op.
@@ -356,8 +458,8 @@ func (p *Projector) Seal(ctx context.Context, id identity.Identity, turnID TurnI
 	sealed.ErrorClass = s.ErrorClass
 	sealed.FinishedAt = finished
 	sealed.UpdatedAt = now
-	if s.EventSeq != 0 {
-		sealed.LastAppliedEventSeq = s.EventSeq
+	if s.EventSeq > current.LastAppliedEventSeq {
+		sealed.LastAppliedEventSeq = s.EventSeq // the guard above guarantees > 0 here
 	}
 	stored, err := p.store.SealTurnIf(ctx, id, turnID, expectedVersion, sealed)
 	if err != nil {
@@ -390,14 +492,29 @@ func (p *Projector) AttachReasoning(ctx context.Context, id identity.Identity, t
 	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: attach reasoning %q: %w", turnID, err)
 	}
+	// Monotonic / idempotent event-sequence application: a reasoning
+	// observation at or below the row's last-applied sequence was
+	// already applied — no-op, no version bump, no version expectation
+	// required. Reasoning.Seq never regresses.
+	if r.EventSeq > 0 && r.EventSeq <= current.LastAppliedEventSeq {
+		return current, nil
+	}
 	if current.Sealed {
 		return TurnRow{}, fmt.Errorf("%w: %q", ErrTurnSealed, turnID)
 	}
 	merged := current
 	merged.Reasoning = clampReasoning(r.Steps)
-	if r.EventSeq != 0 {
-		merged.Reasoning.Seq = r.EventSeq // component/version consistency anchor
-		merged.LastAppliedEventSeq = r.EventSeq
+	if r.EventSeq > 0 {
+		// Component/version consistency anchor: never regress the
+		// accumulated reasoning snapshot's Seq.
+		if r.EventSeq > current.Reasoning.Seq {
+			merged.Reasoning.Seq = r.EventSeq
+		} else {
+			merged.Reasoning.Seq = current.Reasoning.Seq
+		}
+		merged.LastAppliedEventSeq = r.EventSeq // the guard above guarantees > 0 here
+	} else {
+		merged.Reasoning.Seq = current.Reasoning.Seq // no seq recorded: preserve the anchor
 	}
 	merged.UpdatedAt = p.clock.Now()
 	stored, err := p.store.UpdateTurnIf(ctx, id, turnID, expectedVersion, merged)
@@ -426,37 +543,40 @@ func (p *Projector) AttachAppRefs(ctx context.Context, id identity.Identity, tur
 	if turnID == "" {
 		return TurnRow{}, fmt.Errorf("%w: turn id is empty", ErrInvalidInput)
 	}
+	// Deep-copy the fed refs: the stored row must never alias the
+	// caller's backing array (concurrent reuse — a caller
+	// mutating its input must not corrupt the projection).
 	refs := make([]AppRef, len(a.Refs))
 	for i, ref := range a.Refs {
-		if ref.ServerID == "" || ref.ResourceURI == "" {
-			return TurnRow{}, fmt.Errorf("%w: app ref %d requires ServerID and ResourceURI", ErrInvalidInput, i)
+		normalized, err := normalizeAppRef(ref, i)
+		if err != nil {
+			return TurnRow{}, err
 		}
-		if ref.Availability == "" {
-			ref.Availability = AppAvailable
-		}
-		if !ref.Availability.Valid() {
-			return TurnRow{}, fmt.Errorf("%w: app ref %d availability %q", ErrInvalidInput, i, ref.Availability)
-		}
-		if ref.Complete == "" {
-			ref.Complete = CompletenessComplete
-		}
-		if !ref.Complete.Valid() {
-			return TurnRow{}, fmt.Errorf("%w: app ref %d completeness %q", ErrInvalidInput, i, ref.Complete)
-		}
-		refs[i] = ref
+		refs[i] = normalized
 	}
 
 	current, err := p.store.GetTurn(ctx, id, turnID)
 	if err != nil {
 		return TurnRow{}, fmt.Errorf("turns: attach app refs %q: %w", turnID, err)
 	}
+	// Monotonic / idempotent event-sequence application: an App-ref
+	// observation at or below the row's last-applied sequence was
+	// already applied — no-op, no version bump, no version expectation
+	// required.
+	if a.EventSeq > 0 && a.EventSeq <= current.LastAppliedEventSeq {
+		return current, nil
+	}
 	if current.Sealed {
 		return TurnRow{}, fmt.Errorf("%w: %q", ErrTurnSealed, turnID)
 	}
 	merged := current
 	merged.Apps = upsertAppRefs(merged.Apps, refs)
-	if a.EventSeq != 0 {
-		merged.LastAppliedEventSeq = a.EventSeq
+	if len(merged.Apps) > MaxAppsPerTurn {
+		return TurnRow{}, fmt.Errorf("%w: app ref collection exceeds %d entries — Apps are a bounded declaration, never silently dropped",
+			ErrInvalidInput, MaxAppsPerTurn)
+	}
+	if a.EventSeq > current.LastAppliedEventSeq {
+		merged.LastAppliedEventSeq = a.EventSeq // the guard above guarantees > 0 here
 	}
 	merged.UpdatedAt = p.clock.Now()
 	stored, err := p.store.UpdateTurnIf(ctx, id, turnID, expectedVersion, merged)
@@ -469,9 +589,16 @@ func (p *Projector) AttachAppRefs(ctx context.Context, id identity.Identity, tur
 // List serves one newest-first keyset page of the consumer-safe
 // projection — the backing of the future `sessions.turns.list`. Pages
 // are ordered by the immutable keys (Sequence DESC, TurnID DESC) and
-// are stable under concurrent appends (no skips, no duplicates). A
+// are stable under concurrent appends (no skips, no duplicates; a
+// newly appended turn can never satisfy an already-issued cursor). A
 // Limit above MaxListLimit fails loudly (ErrInvalidInput) — bounded
-// paging, never an accidental dump.
+// paging, never an accidental dump. The page exposes its snapshot
+// as-of (AsOf / Snapshot), the next older cursor, HasMore, the exact
+// older-row Remaining when the store knows it (CountExact), the
+// explicit completeness / partial reason, and the live-resume sequence
+// (LiveResumeSeq) a consumer composes subscribe-before-page with.
+// Foreign-session / stale-snapshot / expired cursors are rejected by
+// the store with their distinct domain errors.
 func (p *Projector) List(ctx context.Context, id identity.Identity, opts ListOptions) (Page, error) {
 	if err := validateIdentity(id); err != nil {
 		return Page{}, err
@@ -483,15 +610,31 @@ func (p *Projector) List(ctx context.Context, id identity.Identity, opts ListOpt
 	if limit < 0 || limit > MaxListLimit {
 		return Page{}, fmt.Errorf("%w: limit %d outside [1, %d]", ErrInvalidInput, limit, MaxListLimit)
 	}
-	rows, next, truncated, err := p.store.ListTurns(ctx, id, opts.Before, limit)
+	rows, next, info, err := p.store.ListTurns(ctx, id, opts.Before, limit)
 	if err != nil {
 		return Page{}, fmt.Errorf("turns: list: %w", err)
 	}
+	var liveResumeSeq uint64
+	for _, row := range rows {
+		if row.LastAppliedEventSeq > liveResumeSeq {
+			liveResumeSeq = row.LastAppliedEventSeq
+		}
+	}
+	partialReason := ""
+	if info.Truncated {
+		partialReason = "retention_eviction"
+	}
 	return Page{
-		Rows:       rows,
-		NextCursor: next,
-		HasMore:    next != nil,
-		Truncated:  truncated,
+		Rows:          rows,
+		NextCursor:    next,
+		HasMore:       next != nil,
+		AsOf:          p.clock.Now(),
+		Snapshot:      info.Snapshot,
+		Remaining:     info.Remaining,
+		CountExact:    info.CountExact,
+		Complete:      !info.Truncated,
+		PartialReason: partialReason,
+		LiveResumeSeq: liveResumeSeq,
 	}, nil
 }
 
@@ -578,12 +721,42 @@ func (p *Projector) AdvanceCheckpoint(ctx context.Context, id identity.Identity,
 // loss, never a silent claim of durability. An ERASED session stays
 // fenced: the replay's writes fail with ErrErasureFenced, so a replay
 // can never resurrect an erased session.
+//
+// THE ERASURE-PROBE GATE (P6 / G4): an in-memory-backed store loses
+// its STORE-LOCAL fence on a process restart — rows, checkpoint, AND
+// fence are gone — so the runtime's durable erasure cascade (the
+// ErasureProbe wired via WithErasureProbe) is the ONLY authority that
+// can still distinguish "this session was erased" from "this session
+// never existed". Before ANY replay, Reconcile consults the probe: a
+// session the runtime's erasure fence reports erased is NEVER rebuilt
+// from sequence zero merely because the in-memory store restarted —
+// Reconcile restores the store-local fence and refuses loudly with
+// ErrErasureFenced. A nil probe (the runtime declared no durable
+// erasure authority) is an HONEST availability gap, never a silent
+// claim: an erased session could then be rebuilt, and the runtime is
+// responsible for that posture.
 func (p *Projector) Reconcile(ctx context.Context, id identity.Identity, apply func(ctx context.Context, id identity.Identity, from uint64) (uint64, error)) (uint64, error) {
 	if err := validateIdentity(id); err != nil {
 		return 0, err
 	}
 	if apply == nil {
 		return 0, fmt.Errorf("%w: reconcile apply callback is nil", ErrInvalidInput)
+	}
+	if p.probe != nil {
+		erased, err := p.probe.Erased(ctx, id)
+		if err != nil {
+			return 0, fmt.Errorf("turns: reconcile erasure probe: %w", err)
+		}
+		if erased {
+			// The store-local fence was lost (in-memory-backed restart).
+			// Restore it so the projection stays honest for this
+			// process lifetime, then refuse the rebuild loudly — an
+			// erased session never rebuilds from sequence zero.
+			if err := p.store.FenceSession(ctx, id); err != nil {
+				return 0, fmt.Errorf("turns: reconcile: erased session refused but store-local fence restore failed: %w", err)
+			}
+			return 0, fmt.Errorf("%w: session is erased (runtime erasure fence) — rebuild from sequence zero refused", ErrErasureFenced)
+		}
 	}
 	from, err := p.store.LoadCheckpoint(ctx, id)
 	if err != nil {
@@ -628,7 +801,9 @@ func (p *Projector) Erase(ctx context.Context, id identity.Identity) (int, error
 // restart. An in-memory-backed projector reports false — its rows,
 // checkpoints, and erasure fences are GONE after a restart (explicit
 // loss) and the runtime rebuilds via Reconcile against the durable
-// event log.
+// event log, gated on the runtime's durable erasure probe
+// (WithErasureProbe) so an erased session is never rebuilt from
+// sequence zero merely because the in-memory store restarted.
 func (p *Projector) Durable() bool { return p.store.Durable() }
 
 // Close closes the backing store. Subsequent operations fail with
@@ -655,6 +830,8 @@ func validateIdentity(id identity.Identity) error {
 func projectOps(row TurnRow) OpsTurnRow {
 	out := OpsTurnRow{
 		TurnID:              row.TurnID,
+		TaskID:              row.TaskID,
+		RunID:               row.RunID,
 		SessionID:           row.SessionID,
 		Sequence:            row.Sequence,
 		TieBreaker:          row.TieBreaker,
@@ -747,18 +924,21 @@ func definiteAnswer(a Answer) bool {
 }
 
 // validateActivity validates the per-row shape of a fed activity list
-// (tool non-empty, status valid, summary bounded) against the
-// configured inline activity window. The window clamp (overflow →
-// explicit lower-bound) happens separately in clampActivity.
+// (position ordinal, tool non-empty + bounded, status valid, summary
+// bounded) against the configured inline activity window. The window
+// clamp (overflow → explicit lower-bound) happens separately in
+// clampActivity. Feeds are the CUMULATIVE activity of the turn and may
+// legitimately exceed the window by any margin (an over-budget turn,
+// or a replay of one) — overflow is the honest Partial/More/Dropped
+// contract, never a validation failure; only the tool-name bound and
+// per-row shape fail loud.
 func validateActivity(fed []ActivityRow, limit int) error {
-	if len(fed) > limit*4 {
-		// A feed 4x the window is already absurd; bound the validation
-		// walk without special-casing the overflow path.
-		return fmt.Errorf("%w: activity feed exceeds %d rows", ErrInvalidInput, limit*4)
-	}
 	for i, row := range fed {
 		if row.Tool == "" {
 			return fmt.Errorf("%w: activity row %d has an empty tool name", ErrInvalidInput, i)
+		}
+		if err := validateText(row.Tool, "activity tool", MaxToolNameRunes); err != nil {
+			return fmt.Errorf("%w: activity row %d: %v", ErrInvalidInput, i, err)
 		}
 		status := row.Status
 		if status == "" {
@@ -774,19 +954,35 @@ func validateActivity(fed []ActivityRow, limit int) error {
 	return nil
 }
 
+// assignActivityPositions stamps each fed row's IMMUTABLE position
+// ordinal (the feed index). Feeds are cumulative, so a position never
+// changes for a row's lifetime and appends only ever add HIGHER
+// positions — the keyset key the ActivityReader pages over. The row
+// is deep-copied (the stored projection never aliases the caller's
+// backing array — concurrent reuse).
+func assignActivityPositions(fed []ActivityRow) []ActivityRow {
+	out := make([]ActivityRow, len(fed))
+	for i, row := range fed {
+		row.Position = i
+		out[i] = row
+	}
+	return out
+}
+
 // clampActivity retains the LAST `limit` rows of the fed sequence
 // (the recent window) and reports the overflow as the explicit
 // lower-bound: More + Dropped, with the component Partial. An empty
 // feed is a complete empty window (the runtime fed the current
-// cumulative list and it has no rows).
+// cumulative list and it has no rows). The retained window is
+// deep-copied — it never aliases the caller's backing array.
 func clampActivity(fed []ActivityRow, limit int) Activity {
 	if len(fed) == 0 {
 		return Activity{Complete: CompletenessComplete}
 	}
 	if len(fed) <= limit {
-		return Activity{Rows: fed, Complete: CompletenessComplete}
+		return Activity{Rows: append([]ActivityRow(nil), fed...), Complete: CompletenessComplete}
 	}
-	kept := fed[len(fed)-limit:]
+	kept := append([]ActivityRow(nil), fed[len(fed)-limit:]...)
 	return Activity{
 		Rows:     kept,
 		Complete: CompletenessPartial,
@@ -821,17 +1017,18 @@ func validateReasoningSteps(steps []ReasoningStep) error {
 
 // clampReasoning retains the FIRST MaxReasoningSteps of the fed
 // sequence (the chronological order) and reports the tail drop as
-// Partial + Dropped. An empty feed marks the component Unavailable
-// (no reasoning source reported).
+// Partial + Dropped. An empty feed marks the component Unavailable.
+// The retained steps are deep-copied — the stored projection never
+// aliases the caller's backing array (concurrent reuse).
 func clampReasoning(fed []ReasoningStep) Reasoning {
 	if len(fed) == 0 {
 		return Reasoning{Complete: CompletenessUnavailable}
 	}
 	if len(fed) <= MaxReasoningSteps {
-		return Reasoning{Steps: fed, Complete: CompletenessComplete}
+		return Reasoning{Steps: append([]ReasoningStep(nil), fed...), Complete: CompletenessComplete}
 	}
 	return Reasoning{
-		Steps:    fed[:MaxReasoningSteps],
+		Steps:    append([]ReasoningStep(nil), fed[:MaxReasoningSteps]...),
 		Complete: CompletenessPartial,
 		Dropped:  len(fed) - MaxReasoningSteps,
 	}
@@ -989,32 +1186,94 @@ func normalizePause(p *Pause) (Pause, error) {
 }
 
 // upsertAppRefs applies the ORDERED App-ref upsert semantics: the
-// replacement identity is exactly (EffectiveAgentID, ServerID,
-// ResourceURI). A fed ref whose identity already exists replaces it IN
-// PLACE (position fixed by the first declaration) with the latest
-// correlation metadata; a new identity appends at the end. The
-// collection therefore never reorders after the first declaration.
+// replacement identity is exactly the comparable typed AppRefKey
+// (effective agent id, server id, resource uri). A fed ref whose
+// identity already exists replaces it IN PLACE (position fixed by the
+// first declaration) with the latest correlation metadata; a new
+// identity appends at the end. The collection therefore never reorders
+// after the first declaration. The returned slice is a deep copy —
+// the stored projection never aliases the caller's backing array and
+// never mutates the stored row's backing array in place (concurrent
+// reuse).
 func upsertAppRefs(current []AppRef, fed []AppRef) []AppRef {
-	out := current
+	out := append([]AppRef(nil), current...)
+	index := make(map[AppRefKey]int, len(out)+len(fed))
+	for i, ref := range out {
+		index[ref.Key()] = i
+	}
 	for _, ref := range fed {
-		key := appRefKey(ref)
-		replaced := false
-		for i := range out {
-			if appRefKey(out[i]) == key {
-				out[i] = ref
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
+		key := ref.Key()
+		if i, ok := index[key]; ok {
+			out[i] = ref
+		} else {
+			index[key] = len(out)
 			out = append(out, ref)
 		}
 	}
 	return out
 }
 
-// appRefKey is the App-ref replacement identity: exactly
-// (effective agent id, server id, resource uri).
-func appRefKey(r AppRef) string {
-	return r.EffectiveAgentID + "\x00" + r.ServerID + "\x00" + r.ResourceURI
+// validateText validates one free-text / identity / URI / tool field:
+// valid UTF-8, bounded in RUNES, and free of NUL / C0-control / DEL
+// bytes (0x00-0x1F, 0x7F). Control characters create identity and
+// rendering ambiguity (the NUL-concatenated App identity was
+// ambiguous exactly when a field contained a NUL byte) and are
+// rejected loudly — never silently stripped or escaped.
+func validateText(s, name string, maxRunes int) error {
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("%s is not valid UTF-8", name)
+	}
+	if utf8.RuneCountInString(s) > maxRunes {
+		return fmt.Errorf("%s exceeds %d runes", name, maxRunes)
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%s contains a NUL / control character (U+%04X) — rejected as ambiguous", name, r)
+		}
+	}
+	return nil
+}
+
+// normalizeAppRef validates ONE App reference and applies its
+// documented defaults: the identity fields (ServerID, ResourceURI) are
+// mandatory, every string / URI / tool field is valid UTF-8, bounded,
+// and free of NUL / control ambiguity, the availability and
+// completeness enums are valid (unset defaults to AppAvailable /
+// CompletenessComplete), and the collection count is bounded by
+// MaxAppsPerTurn (enforced at the upsert result in AttachAppRefs). The
+// returned ref carries the defaults applied.
+func normalizeAppRef(ref AppRef, i int) (AppRef, error) {
+	if ref.ServerID == "" || ref.ResourceURI == "" {
+		return AppRef{}, fmt.Errorf("%w: app ref %d requires ServerID and ResourceURI", ErrInvalidInput, i)
+	}
+	fields := []struct {
+		name  string
+		value string
+		max   int
+	}{
+		{"EffectiveAgentID", ref.EffectiveAgentID, MaxAppAgentIDRunes},
+		{"ServerID", ref.ServerID, MaxAppServerIDRunes},
+		{"ResourceURI", ref.ResourceURI, MaxAppResourceURIRunes},
+		{"DisplayMode", ref.DisplayMode, MaxAppDisplayModeRunes},
+		{"ToolCallID", ref.ToolCallID, MaxAppToolCallIDRunes},
+		{"ToolName", ref.ToolName, MaxToolNameRunes},
+	}
+	for _, f := range fields {
+		if err := validateText(f.value, "app ref "+f.name, f.max); err != nil {
+			return AppRef{}, fmt.Errorf("%w: app ref %d: %v", ErrInvalidInput, i, err)
+		}
+	}
+	if ref.Availability == "" {
+		ref.Availability = AppAvailable
+	}
+	if !ref.Availability.Valid() {
+		return AppRef{}, fmt.Errorf("%w: app ref %d availability %q", ErrInvalidInput, i, ref.Availability)
+	}
+	if ref.Complete == "" {
+		ref.Complete = CompletenessComplete
+	}
+	if !ref.Complete.Valid() {
+		return AppRef{}, fmt.Errorf("%w: app ref %d completeness %q", ErrInvalidInput, i, ref.Complete)
+	}
+	return ref, nil
 }

@@ -122,15 +122,13 @@ func TestProjector_ConcurrentReuse_D025(t *testing.T) {
 	}
 
 	// Everything the workers wrote is present exactly once: the main
-	// cohort's turns plus the cancel cohort's pre-cancel turns.
+	// cohort's turns plus the cancel cohort's pre-cancel turns. The
+	// total exceeds MaxListLimit (50), so the check walks every page.
 	mainTotal := workers * (invocations / workers)
 	cancelTotal := 4 * 2 // four cancel workers, two pre-cancel appends each
-	page, err := p.List(context.Background(), id, ListOptions{Limit: MaxListLimit})
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(page.Rows) != mainTotal+cancelTotal {
-		t.Errorf("listed %d rows, want %d (%d main + %d cancel)", len(page.Rows), mainTotal+cancelTotal, mainTotal, cancelTotal)
+	walked := seedFreeWalk(t, p, id)
+	if len(walked) != mainTotal+cancelTotal {
+		t.Errorf("listed %d rows, want %d (%d main + %d cancel)", len(walked), mainTotal+cancelTotal, mainTotal, cancelTotal)
 	}
 	_ = st
 }
