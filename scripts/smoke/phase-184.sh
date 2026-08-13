@@ -147,15 +147,24 @@ fi
 #     exists (so a rename is caught).
 # ----------------------------------------------------------------------------
 if [ -f "test/integration/wave_v115_tui_test.go" ]; then
-    if go test -race -count=1 -run 'TestE2E_WaveV115TUI' ./test/integration/... 2>/dev/null; then
-        ok 'phase 184: TestE2E_WaveV115TUI passes under -race'
+    # Capture the one focused invocation so a dependency-acquisition failure
+    # can be classified without rerunning the same network-bound command.
+    if focused_output="$(go test -race -count=1 -run 'TestE2E_WaveV115TUI' ./test/integration/... 2>&1)"; then
+        focused_status=0
     else
-        # Distinguish "test doesn't exist" (no-match-fails) from "test fails".
-        if ! go test -race -count=1 -run 'TestE2E_WaveV115TUI' -v ./test/integration/... 2>&1 | grep -q 'no tests to run'; then
-            fail 'phase 184: TestE2E_WaveV115TUI fails under -race'
-        else
-            skip 'phase 184: TestE2E_WaveV115TUI not yet present (no-match guard)'
-        fi
+        focused_status=$?
+    fi
+
+    # `go test` exits successfully when -run matches no tests. Keep this
+    # explicit guard fail-closed: a deleted or renamed gate is never a SKIP.
+    if printf '%s\n' "${focused_output}" | grep -Eqi '\[no tests to run\]|no tests to run'; then
+        fail 'phase 184: TestE2E_WaveV115TUI did not match any test'
+    elif [ "${focused_status}" -eq 0 ]; then
+        ok 'phase 184: TestE2E_WaveV115TUI passes under -race'
+    elif printf '%s\n' "${focused_output}" | grep -Eiq '(sum\.golang\.org|proxy\.golang\.org).*(HTTP/2 INTERNAL_ERROR|INTERNAL_ERROR|connection (reset|refused|timed out)|i/o timeout|TLS handshake timeout|network is unreachable|no such host|temporary failure in name resolution|502 Bad Gateway|503 Service Unavailable|500 Internal Server Error|EOF)'; then
+        skip 'phase 184: TestE2E_WaveV115TUI skipped (module proxy/checksum acquisition network failure)'
+    else
+        fail 'phase 184: TestE2E_WaveV115TUI fails under -race'
     fi
 else
     skip 'phase 184: wave-end E2E test file not yet present'
