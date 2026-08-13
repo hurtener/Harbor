@@ -1232,12 +1232,16 @@ func TestRenderNativeBatchStep_WholeCallClassifiedFallbackRedactsArgs(t *testing
 	}
 }
 
-// TestReplayCallArgs_SuccessAndUnclassifiedStepsKeepOriginalArgs pins
-// the compatibility leg of the args redaction: successful steps and
-// legacy unstructured failures replay the model's original args
-// byte-identical (via [safeArgs]) — redaction applies ONLY to steps
-// whose structured classified failure observation is replayed.
-func TestReplayCallArgs_SuccessAndUnclassifiedStepsKeepOriginalArgs(t *testing.T) {
+// TestReplayCallArgs_SuccessKeepsOriginalArgs_AllFailureSurfacesRedact
+// pins the args-redaction contract at the helper level: a successful
+// step (no failure surface) replays the model's original args
+// byte-identical (via [safeArgs]); ANY terminal failure surface — a
+// structured [planner.FailureRecord], a generic Error stamp (legacy
+// unstructured failure), or a structured classified observation —
+// redacts to the bounded `{}` object. The legacy unstructured failure
+// keeps its generic safe observation body, but its raw arguments never
+// reach the next prompt.
+func TestReplayCallArgs_SuccessKeepsOriginalArgs_AllFailureSurfacesRedact(t *testing.T) {
 	t.Parallel()
 	raw := json.RawMessage(`{"document_id":"doc-1"}`)
 
@@ -1248,15 +1252,29 @@ func TestReplayCallArgs_SuccessAndUnclassifiedStepsKeepOriginalArgs(t *testing.T
 	}
 
 	// Legacy unstructured failure: a generic single-key error map that
-	// is NOT classified keeps both the generic fallback semantics and
-	// its original args.
+	// is NOT classified keeps its generic body but redacts the raw args.
 	legacy := planner.Step{
 		Action:         planner.CallTool{Tool: "echo", Args: raw},
 		Error:          "tool execution failed",
 		LLMObservation: map[string]any{"error": "tool blew up"},
 	}
-	if got := string(replayCallArgs(legacy, raw)); got != `{"document_id":"doc-1"}` {
-		t.Errorf("legacy unstructured-failure args changed: %s", got)
+	if got := string(replayCallArgs(legacy, raw)); got != "{}" {
+		t.Errorf("legacy unstructured-failure args = %s, want the bounded {} object", got)
+	}
+	if body := renderNativeObservation(legacy); body != "Tool error: tool execution failed" {
+		t.Errorf("legacy unstructured-failure body changed: %q, want the generic safe fallback", body)
+	}
+
+	// A structured Failure record alone redacts too.
+	failed := planner.Step{
+		Action: planner.CallTool{Tool: "echo", Args: raw},
+		Failure: &planner.FailureRecord{
+			Code:    "schema_repair_exhausted",
+			Message: "bad shape",
+		},
+	}
+	if got := string(replayCallArgs(failed, raw)); got != "{}" {
+		t.Errorf("Failure-record args = %s, want the bounded {} object", got)
 	}
 
 	// A step carrying a structured classified failure redacts.
@@ -1266,12 +1284,307 @@ func TestReplayCallArgs_SuccessAndUnclassifiedStepsKeepOriginalArgs(t *testing.T
 	}
 }
 
+// TestRenderNativeStepPair_LegacyErrorRedactsReplayArgs asserts the
+// NATIVE single path redacts on a legacy unstructured failure: when
+// the step carries only a generic Error stamp (no classified
+// observation), the replayed assistant tool_call's arguments are
+// redacted to a bounded `{}` — the generic safe observation body stays,
+// but the raw model-authored args (which may carry secrets) never reach
+// the next prompt. Call ID, sanitized name, and the assistant/tool
+// pairing are preserved.
+func TestRenderNativeStepPair_LegacyErrorRedactsReplayArgs(t *testing.T) {
+	t.Parallel()
+	const secretSentinel = "sk-legacy-redact"
+	step := planner.Step{
+		Action:         planner.CallTool{Tool: "plain", CallID: "call_2", Args: json.RawMessage(`{"secret":"` + secretSentinel + `"}`)},
+		Error:          "tool execution failed",
+		LLMObservation: map[string]any{"error": "tool blew up"},
+	}
+	asst, toolMsg, native := renderNativeStepPair(step, planner.ReasoningReplayNever, 0)
+	if !native {
+		t.Fatal("renderNativeStepPair returned native=false for a CallTool step")
+	}
+	if len(asst.ToolCalls) != 1 {
+		t.Fatalf("assistant tool_calls = %d, want 1", len(asst.ToolCalls))
+	}
+	tc := asst.ToolCalls[0]
+	if string(tc.Args) != "{}" {
+		t.Errorf("legacy-error replay args = %s, want the bounded {} object", string(tc.Args))
+	}
+	var probe map[string]any
+	if err := json.Unmarshal(tc.Args, &probe); err != nil {
+		t.Errorf("legacy-error replay args are not valid JSON: %v", err)
+	}
+	if strings.Contains(string(tc.Args), secretSentinel) {
+		t.Errorf("legacy-error replay args leak the raw model-authored args: %s", string(tc.Args))
+	}
+	if tc.ID != "call_2" || tc.Name != "plain" {
+		t.Errorf("tool_call = {%q,%q}, want {call_2, plain}", tc.ID, tc.Name)
+	}
+	if toolMsg == nil || toolMsg.ToolCallID == nil || *toolMsg.ToolCallID != tc.ID {
+		t.Errorf("role-tool pairing lost: %+v", toolMsg)
+	}
+	// The legacy generic safe observation body is preserved.
+	if toolMsg == nil || toolMsg.Content.Text == nil || *toolMsg.Content.Text != "Tool error: tool execution failed" {
+		t.Errorf("tool body = %+v, want the generic safe fallback body", toolMsg)
+	}
+}
+
+// TestRenderNativeStepPair_FailureRecordRedactsReplayArgs asserts the
+// NATIVE single path redacts when the step carries a structured
+// [planner.FailureRecord] — the third terminal failure surface — while
+// preserving the failure body, the call ID, the sanitized name, and the
+// assistant/tool pairing.
+func TestRenderNativeStepPair_FailureRecordRedactsReplayArgs(t *testing.T) {
+	t.Parallel()
+	const secretSentinel = "sk-failure-redact"
+	step := planner.Step{
+		Action: planner.CallTool{Tool: "mcp_conflict", CallID: "call_3", Args: json.RawMessage(`{"secret":"` + secretSentinel + `"}`)},
+		Failure: &planner.FailureRecord{
+			Code:    "schema_repair_exhausted",
+			Message: "bad shape",
+		},
+	}
+	asst, toolMsg, native := renderNativeStepPair(step, planner.ReasoningReplayNever, 0)
+	if !native {
+		t.Fatal("renderNativeStepPair returned native=false for a CallTool step")
+	}
+	if len(asst.ToolCalls) != 1 {
+		t.Fatalf("assistant tool_calls = %d, want 1", len(asst.ToolCalls))
+	}
+	tc := asst.ToolCalls[0]
+	if string(tc.Args) != "{}" {
+		t.Errorf("Failure-record replay args = %s, want the bounded {} object", string(tc.Args))
+	}
+	if strings.Contains(string(tc.Args), secretSentinel) {
+		t.Errorf("Failure-record replay args leak the raw model-authored args: %s", string(tc.Args))
+	}
+	if tc.ID != "call_3" || tc.Name != "mcp_conflict" {
+		t.Errorf("tool_call = {%q,%q}, want {call_3, mcp_conflict}", tc.ID, tc.Name)
+	}
+	if toolMsg == nil || toolMsg.ToolCallID == nil || *toolMsg.ToolCallID != tc.ID {
+		t.Errorf("role-tool pairing lost: %+v", toolMsg)
+	}
+	// The failure body is preserved.
+	if toolMsg == nil || toolMsg.Content.Text == nil || !strings.Contains(*toolMsg.Content.Text, "schema_repair_exhausted") {
+		t.Errorf("tool body drops the failure record: %+v", toolMsg)
+	}
+}
+
+// TestRenderNativeParallelStep_MixedOutcomeRedactsFailedBranchOnly
+// asserts the AGGREGATE path of the parallel redaction contract: with
+// the per-branch ParallelObservation present, only the FAILED branch's
+// raw args are redacted to a bounded `{}`; successful branch args
+// replay unchanged. Call IDs, sanitized names, ordering, and the
+// N-answers pairing are preserved for both.
+func TestRenderNativeParallelStep_MixedOutcomeRedactsFailedBranchOnly(t *testing.T) {
+	t.Parallel()
+	call := planner.CallParallel{
+		Branches: []planner.CallTool{
+			{Tool: "alpha", Args: json.RawMessage(`{"secret":"sk-ok"}`), CallID: "c_a"},
+			{Tool: "beta", Args: json.RawMessage(`{"secret":"sk-boom"}`), CallID: "c_b"},
+			{Tool: "gamma", Args: json.RawMessage(`{"secret":"sk-ok2"}`), CallID: "c_c"},
+		},
+	}
+	step := planner.Step{
+		Action: call,
+		// The aggregate is deliberately out of branch order — the
+		// renderer must key by Index.
+		LLMObservation: planner.ParallelObservation{
+			Branches: []planner.ParallelBranchObservation{
+				{CallID: "c_b", Tool: "beta", Index: 1, Error: "boom"},
+				{CallID: "c_a", Tool: "alpha", Index: 0, Value: "alpha-result"},
+				{CallID: "c_c", Tool: "gamma", Index: 2, Value: "gamma-result"},
+			},
+		},
+	}
+	asst, toolMsgs := renderNativeParallelStep(step, call, planner.ReasoningReplayNever, 0)
+	if len(asst.ToolCalls) != 3 || len(toolMsgs) != 3 {
+		t.Fatalf("got %d tool_calls / %d tool msgs, want 3/3", len(asst.ToolCalls), len(toolMsgs))
+	}
+	wantIDs := []string{"c_a", "c_b", "c_c"}
+	wantNames := []string{"alpha", "beta", "gamma"}
+	wantArgs := []string{`{"secret":"sk-ok"}`, "{}", `{"secret":"sk-ok2"}`}
+	for i, tc := range asst.ToolCalls {
+		if tc.ID != wantIDs[i] || tc.Name != wantNames[i] {
+			t.Errorf("tool_call[%d] = {%q,%q}, want {%q,%q}", i, tc.ID, tc.Name, wantIDs[i], wantNames[i])
+		}
+		if string(tc.Args) != wantArgs[i] {
+			t.Errorf("branch %d args = %s, want %s", i, string(tc.Args), wantArgs[i])
+		}
+		if i == 1 && strings.Contains(string(tc.Args), "sk-boom") {
+			t.Errorf("branch %d args leak the failed branch's raw args: %s", i, string(tc.Args))
+		}
+		if toolMsgs[i].ToolCallID == nil || *toolMsgs[i].ToolCallID != tc.ID {
+			t.Errorf("tool msg[%d] ID %v does not match assistant ID %q", i, toolMsgs[i].ToolCallID, tc.ID)
+		}
+	}
+	// The failed branch's body surfaces its error; the successes carry
+	// their values.
+	if body := *toolMsgs[1].Content.Text; !strings.Contains(body, "boom") {
+		t.Errorf("beta body = %q, want the error", body)
+	}
+	if body := *toolMsgs[0].Content.Text; !strings.Contains(body, "alpha-result") {
+		t.Errorf("alpha body = %q, want the success value", body)
+	}
+}
+
+// TestRenderNativeBatchStep_MixedOutcomeRedactsFailedCallsOnly asserts
+// the AGGREGATE path of the batch redaction contract: with the
+// BatchObservation present, only FAILED tool branches, REJECTED spawns,
+// and failed progress calls redact their args to a bounded `{}`;
+// successful siblings (tool results, registered spawns, recorded
+// progress) replay their args unchanged. Ordering, IDs, names, and the
+// one-answer-per-call_id pairing are preserved.
+func TestRenderNativeBatchStep_MixedOutcomeRedactsFailedCallsOnly(t *testing.T) {
+	t.Parallel()
+	call := planner.Batch{
+		Tools: []planner.CallTool{
+			{Tool: "alpha", Args: json.RawMessage(`{"secret":"sk-t-ok"}`), CallID: "t_a"},
+			{Tool: "beta", Args: json.RawMessage(`{"secret":"sk-t-boom"}`), CallID: "t_b"},
+		},
+		Spawns: []planner.SpawnTask{
+			{Spec: planner.SpawnSpec{Query: "sub-ok"}, CallID: "s_a"},
+			{Spec: planner.SpawnSpec{Query: "sub-rejected"}, CallID: "s_b"},
+		},
+		Progress: []planner.TaskProgress{
+			{Message: "halfway", CallID: "p_a"},
+			{Message: "oops", CallID: "p_b"},
+		},
+	}
+	step := planner.Step{
+		Action: call,
+		// Both halves are deliberately shuffled — the renderer must key
+		// by Index, not slice order.
+		LLMObservation: planner.BatchObservation{
+			Tools: []planner.ParallelBranchObservation{
+				{CallID: "t_a", Tool: "alpha", Index: 0, Value: "alpha-result"},
+				{CallID: "t_b", Tool: "beta", Index: 1, Error: "beta-boom"},
+			},
+			Spawns: []planner.BatchSpawnObservation{
+				{CallID: "s_a", Index: 0, TaskID: "task-1", GroupID: "grp-1"},
+				{CallID: "s_b", Index: 1, Error: "sealed group"},
+			},
+			Progress: []planner.BatchProgressObservation{
+				{CallID: "p_a", Index: 0, Recorded: true, Emitted: true},
+				{CallID: "p_b", Index: 1, Error: "progress boom"},
+			},
+		},
+	}
+	asst, toolMsgs := renderNativeBatchStep(step, call, planner.ReasoningReplayNever, 0)
+	// 2 tools + 2 spawns + 2 progress = 6 tool_calls / 6 answers.
+	if len(asst.ToolCalls) != 6 || len(toolMsgs) != 6 {
+		t.Fatalf("got %d tool_calls / %d tool msgs, want 6/6", len(asst.ToolCalls), len(toolMsgs))
+	}
+	wantIDs := []string{"t_a", "t_b", "s_a", "s_b", "p_a", "p_b"}
+	wantNames := []string{"alpha", "beta", SpawnTaskToolName, SpawnTaskToolName, TaskProgressToolName, TaskProgressToolName}
+	// Failed calls (beta tool, rejected spawn s_b, failed progress p_b)
+	// redact to {}; successful siblings preserve their args.
+	failedIdx := map[int]bool{1: true, 3: true, 5: true}
+	for i, tc := range asst.ToolCalls {
+		if tc.ID != wantIDs[i] || tc.Name != wantNames[i] {
+			t.Errorf("tool_call[%d] = {%q,%q}, want {%q,%q}", i, tc.ID, tc.Name, wantIDs[i], wantNames[i])
+		}
+		if failedIdx[i] {
+			if string(tc.Args) != "{}" {
+				t.Errorf("call %d (failed) args = %s, want the bounded {} object", i, string(tc.Args))
+			}
+			if strings.Contains(string(tc.Args), "sk-t-boom") || strings.Contains(string(tc.Args), "sub-rejected") {
+				t.Errorf("call %d args leak the raw args: %s", i, string(tc.Args))
+			}
+		} else if string(tc.Args) == "{}" {
+			t.Errorf("call %d (successful sibling) args were redacted: %s", i, string(tc.Args))
+		}
+		if toolMsgs[i].ToolCallID == nil || *toolMsgs[i].ToolCallID != tc.ID {
+			t.Errorf("tool msg[%d] ID %v does not match assistant ID %q", i, toolMsgs[i].ToolCallID, tc.ID)
+		}
+	}
+	// Bodies: success value / tool error / registration / reject /
+	// recorded progress / progress error.
+	if body := *toolMsgs[0].Content.Text; !strings.Contains(body, "alpha-result") {
+		t.Errorf("alpha body = %q, want the success value", body)
+	}
+	if body := *toolMsgs[1].Content.Text; !strings.Contains(body, "beta-boom") {
+		t.Errorf("beta body = %q, want the tool error", body)
+	}
+	if body := *toolMsgs[2].Content.Text; !strings.Contains(body, "task-1") {
+		t.Errorf("spawn-a body = %q, want the registration outcome", body)
+	}
+	if body := *toolMsgs[3].Content.Text; !strings.Contains(body, "sealed group") {
+		t.Errorf("spawn-b body = %q, want the reject error", body)
+	}
+	if body := *toolMsgs[5].Content.Text; !strings.Contains(body, "progress boom") {
+		t.Errorf("progress-b body = %q, want the progress error", body)
+	}
+}
+
+// TestRenderNativeWholeCallLegacyErrorFallbackRedactsEveryCall asserts
+// the whole-call abort fallback with a LEGACY unstructured failure: a
+// CallParallel / Batch step carrying only a generic Error stamp and no
+// per-branch aggregate answers every call with the shared generic safe
+// body AND redacts every call's raw args to a bounded `{}` — the
+// generic body stays, the raw args never reach the next prompt.
+func TestRenderNativeWholeCallLegacyErrorFallbackRedactsEveryCall(t *testing.T) {
+	t.Parallel()
+	legacy := func(action any) planner.Step {
+		return planner.Step{
+			Action:         action,
+			Error:          "tool execution failed",
+			LLMObservation: map[string]any{"error": "tool blew up"},
+		}
+	}
+
+	// Parallel whole-call abort: every branch redacts.
+	pcall := planner.CallParallel{Branches: []planner.CallTool{
+		{Tool: "alpha", Args: json.RawMessage(`{"secret":"sk-pa"}`), CallID: "c_a"},
+		{Tool: "beta", Args: json.RawMessage(`{"secret":"sk-pb"}`), CallID: "c_b"},
+	}}
+	asst, toolMsgs := renderNativeParallelStep(legacy(pcall), pcall, planner.ReasoningReplayNever, 0)
+	if len(asst.ToolCalls) != 2 || len(toolMsgs) != 2 {
+		t.Fatalf("parallel fallback got %d tool_calls / %d tool msgs, want 2/2", len(asst.ToolCalls), len(toolMsgs))
+	}
+	for i, tc := range asst.ToolCalls {
+		if string(tc.Args) != "{}" {
+			t.Errorf("parallel fallback branch %d args = %s, want the bounded {} object", i, string(tc.Args))
+		}
+		if strings.Contains(string(tc.Args), "sk-pa") || strings.Contains(string(tc.Args), "sk-pb") {
+			t.Errorf("parallel fallback branch %d args leak the raw args: %s", i, string(tc.Args))
+		}
+		if toolMsgs[i].Content.Text == nil || *toolMsgs[i].Content.Text != "Tool error: tool execution failed" {
+			t.Errorf("parallel fallback body[%d] = %+v, want the generic safe fallback", i, toolMsgs[i].Content.Text)
+		}
+	}
+
+	// Batch whole-call abort (tools + spawns + progress): every call
+	// redacts.
+	bcall := planner.Batch{
+		Tools:    []planner.CallTool{{Tool: "alpha", Args: json.RawMessage(`{"secret":"sk-bt"}`), CallID: "t_a"}},
+		Spawns:   []planner.SpawnTask{{Spec: planner.SpawnSpec{Query: "sub-q"}, CallID: "s_a"}},
+		Progress: []planner.TaskProgress{{Message: "halfway", CallID: "p_a"}},
+	}
+	asst, toolMsgs = renderNativeBatchStep(legacy(bcall), bcall, planner.ReasoningReplayNever, 0)
+	if len(asst.ToolCalls) != 3 || len(toolMsgs) != 3 {
+		t.Fatalf("batch fallback got %d tool_calls / %d tool msgs, want 3/3", len(asst.ToolCalls), len(toolMsgs))
+	}
+	for i, tc := range asst.ToolCalls {
+		if string(tc.Args) != "{}" {
+			t.Errorf("batch fallback call %d args = %s, want the bounded {} object", i, string(tc.Args))
+		}
+		if strings.Contains(string(tc.Args), "sk-bt") || strings.Contains(string(tc.Args), "sub-q") || strings.Contains(string(tc.Args), "halfway") {
+			t.Errorf("batch fallback call %d args leak the raw args: %s", i, string(tc.Args))
+		}
+		if toolMsgs[i].Content.Text == nil || *toolMsgs[i].Content.Text != "Tool error: tool execution failed" {
+			t.Errorf("batch fallback body[%d] = %+v, want the generic safe fallback", i, toolMsgs[i].Content.Text)
+		}
+	}
+}
+
 // TestRenderNativeShapes_SuccessArgsReplayedUnchanged asserts the
 // success-path compatibility leg at the renderer level: for a
 // successful single CallTool, a CallParallel with its per-branch
 // aggregate, and a Batch with its observation aggregate, the replayed
 // assistant tool_call arguments are the model's original args —
-// redaction is scoped to classified-failure replays only.
+// redaction applies only to failed calls (see [stepFailed]).
 func TestRenderNativeShapes_SuccessArgsReplayedUnchanged(t *testing.T) {
 	t.Parallel()
 
