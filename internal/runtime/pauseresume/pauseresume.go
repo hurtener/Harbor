@@ -281,6 +281,19 @@ type Coordinator interface {
 	List(ctx context.Context, req ListRequest) (ListResponse, error)
 }
 
+// StatusForIdentity reads a private token selector without exposing whether a
+// foreign identity or run selector exists. Implementations that do not provide
+// the scoped extension are treated as not found.
+func StatusForIdentity(ctx context.Context, c Coordinator, token Token, id identity.Identity, runID string) (Status, error) {
+	scoped, ok := c.(interface {
+		StatusForIdentity(context.Context, Token, identity.Identity, string) (Status, error)
+	})
+	if !ok {
+		return Status{}, ErrPauseNotFound
+	}
+	return scoped.StatusForIdentity(ctx, token, id, runID)
+}
+
 // ListRequest is the input to Coordinator.List — the runtime-internal
 // projection of the Protocol-edge types.PauseListRequest.
 type ListRequest struct {

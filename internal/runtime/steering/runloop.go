@@ -963,6 +963,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				// prompt builder renders Step.Error as an "Observation
 				// (error)" turn) and re-plans. Same trajectory-feedback
 				// posture the dispatch-error path uses below.
+				trancheUsed++
 				rl.appendInvalidDecisionStep(spec, nerr)
 				// Log the recovery WITHOUT the error text: a projector
 				// malformed-args rejection embeds the raw tool-call args in
@@ -999,6 +1000,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			return d, nil
 
 		case planner.RequestPause:
+			// Every completed nonterminal decision consumes one tranche unit,
+			// including control decisions. Tool invocation accounting is
+			// separate and never drives this counter.
+			trancheUsed++
 			// Route the planner's RequestPause through the ONE
 			// Coordinator (CLAUDE.md §7 rule 4). This is the §13
 			// end-to-end consumer path: RequestPause -> Coordinator.Request
@@ -1028,6 +1033,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// Token — the existing pause stands.
 
 		default:
+			// Every completed nonterminal decision consumes one tranche unit,
+			// including task decisions and executor failures. Tool invocation
+			// accounting is separate and never drives this counter.
+			trancheUsed++
 			// CallTool / CallParallel / SpawnTask / AwaitTask. Note:
 			// dispatch via spec.ToolExecutor when present, then
 			// append a trajectory.Step the planner sees on its next step.
@@ -1093,10 +1102,6 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				} else {
 					observation = obs
 					llmObservation = llmObs
-					// Only successful tool-bearing decisions consume the
-					// tranche. Control decisions, Finish, SpawnTask and
-					// AwaitTask are not tool invocations.
-					trancheUsed += planner.DecisionToolCount(decision)
 					// Notify the per-run dispatch hook on a successful
 					// executor return, with the decision's true
 					// tool-invocation count — 1 for CallTool,
@@ -1119,10 +1124,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				}
 			} else {
 				// The executor-less harness is an intentional no-op
-				// executor: its tool decisions are treated as successful
-				// dispatches for tranche accounting while preserving the
-				// historical nil observation path.
-				trancheUsed += planner.DecisionToolCount(decision)
+				// executor, preserving the historical nil observation path.
 			}
 			// Append the step to the run's Trajectory so the planner
 			// sees the prior action + observation on its next step.

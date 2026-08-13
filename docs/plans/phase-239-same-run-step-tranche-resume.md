@@ -2,7 +2,7 @@
 
 ## Summary
 
-Resume a paused or interrupted run at the next same-run step tranche. Persist the tranche boundary and continuation state so resume does not replay completed steps, lose identity, or create a new run.
+Resume a paused or interrupted run at the next same-run step tranche while the original run loop remains available. Persist the tranche boundary and continuation state so in-process resume does not replay completed steps or lose identity.
 
 ## RFC anchor
 
@@ -33,6 +33,17 @@ Resume a paused or interrupted run at the next same-run step tranche. Persist th
 - Preserve identity, run/task keys, completed-step results by reference, and cancellation semantics.
 - Same-run resume is idempotent at each step tranche.
 
+### Bounded restart contract
+
+The current architecture cannot safely relaunch a frozen run in this phase.
+The durable receipt contains the trajectory and selector, but no trusted
+completion boundary or frozen planner/executor/run-context factory. `RunLoop.Run`
+receives those dependencies through its live `RunSpec`; rebuilding them from
+mutable current profile or catalog state could alter the frozen run. A fresh
+process therefore retains the receipt for inspection and returns typed
+`ErrRestartUnavailable` rather than creating a new run or falling back to
+current configuration.
+
 ## Non-goals
 
 - No second pause/resume mechanism, replay of completed steps, raw output duplication, or caller-selected run identity.
@@ -40,7 +51,7 @@ Resume a paused or interrupted run at the next same-run step tranche. Persist th
 ## Acceptance criteria
 
 - [ ] Resume continues from the last committed tranche without replaying completed steps.
-- [ ] Crash or cancellation between tranches recovers the last committed boundary deterministically.
+- [ ] Cancellation between tranches continues from the last committed boundary deterministically while the original run loop remains live; a fresh process returns typed `ErrRestartUnavailable` because no trusted frozen-run relaunch boundary exists.
 - [ ] Repeated resume is idempotent; a stale checkpoint fails loudly.
 - [ ] Identity `(tenant,user,session,run)` and authorization are checked at resume.
 - [ ] Protocol progress is bounded and carries no raw arguments/results.

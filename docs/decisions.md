@@ -12740,3 +12740,19 @@ If eviction is chosen: the sweeper is bounded and identity-scoped, races with co
 **Wire consequence.** None for the session-lifetime contract (test-only); an eviction policy MAY add a bounded retention signal to the existing `mcp.apps.tool_context` error surface but no new method. `ProtocolVersion` remains `0.1.0`; D-223/D-209 lockstep only if a wire shape is added.
 
 **Cross-references.** D-347 (the byte read + the `CodeNotFound` anticipation), D-348 (the reopened-session placeholder), D-351 (the host obligations), D-343 (deferred progressive streaming, untouched), D-286 and D-400 (the session-erasure fences that bound the session-lifetime option), D-254 (durable history read-back). RFC §6.10, §6.11, §7.3, §5.2. Briefs 14, 03. Plan: `docs/plans/phase-242-tool-context-retention.md`.
+
+---
+
+## D-417 — Same-run tranche receipts do not relaunch frozen runs across process restart
+
+**Status:** Accepted for Phase 239 (HA-57).
+
+The same-run tranche contract is exact while the original `RunLoop` remains
+alive. A durable receipt preserves the identity-scoped trajectory and private
+selector, but the current checkpoint contains no trusted relaunch boundary or
+frozen planner/executor/run-context factory. `RunLoop.Run` receives those
+dependencies in its live `RunSpec`; rebuilding them from mutable current
+profile or catalog state could alter the run and replay completed work.
+Accordingly, a fresh process exposes the receipt for inspection and returns
+the typed `ErrRestartUnavailable` result. It must not create a new run or
+accept a foreign selector.

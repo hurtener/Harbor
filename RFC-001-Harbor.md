@@ -504,6 +504,19 @@ type Trajectory struct {
 
 ### 6.3 Steering and the unified pause/resume primitive
 
+**Same-run step tranches.** A configured finite tranche charges each
+completed nonterminal planner decision exactly once, including control and
+task decisions, tool-dispatch failures, and unavailable executor paths.
+Terminal completion is not charged; tool-call accounting remains a separate
+metric. A durable receipt is a private selector scoped to the verified
+`(tenant,user,session,run)` identity and resumes the same live run without
+replay. A foreign selector is indistinguishable from a missing selector.
+Across process restart, the current Runtime retains the receipt for
+inspection but reports typed restart unavailability: the checkpoint has no
+trusted relaunch boundary and must not reconstruct a run from mutable current
+planner or catalog state. A future explicit relaunch seam may extend this
+contract without widening identity or creating a new run.
+
 Steering is a Runtime capability, surfaced over the Protocol. Planners observe `Control` signals; the Runtime owns the inbox.
 
 **Control event taxonomy (nine types — Settled):**

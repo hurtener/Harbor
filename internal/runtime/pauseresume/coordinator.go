@@ -367,6 +367,9 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		if rerr != nil {
 			return rerr
 		}
+		if !sameScope(rehydrated.identity, resumingID) || rehydrated.runID != runIDFromContext(ctx) {
+			return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
+		}
 		if rehydrated.reason == ReasonConstraintsConflict {
 			if _, tranche := TrancheExceededFromMap(rehydrated.payload); tranche {
 				rehydrated.available = false
@@ -391,7 +394,13 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 	}
 	if !sameScope(entry.identity, resumingID) {
 		c.mu.Unlock()
-		return fmt.Errorf("%w: token %q", ErrScopeMismatch, token)
+		// Tokens are private selectors. Do not let a caller distinguish a
+		// foreign receipt from a missing one.
+		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
+	}
+	if entry.runID != runIDFromContext(ctx) {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
 	}
 	// An accepted decision may be running durable continuation work outside
 	// c.mu. Its claim wins against every later decision, including terminal
@@ -553,6 +562,31 @@ func (c *coordinator) Status(ctx context.Context, token Token) (Status, error) {
 		ResumedAt: rehydrated.resumedAt,
 		Available: rehydrated.available,
 	}, nil
+}
+
+// StatusForIdentity returns a token status only for its owning identity
+// scope. A foreign token is indistinguishable from an absent token.
+func (c *coordinator) StatusForIdentity(ctx context.Context, token Token, id identity.Identity, runID string) (Status, error) {
+	if err := ctx.Err(); err != nil {
+		return Status{}, fmt.Errorf("pauseresume: scoped status cancelled: %w", err)
+	}
+	if err := identity.Validate(id); err != nil {
+		return Status{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
+	}
+	c.mu.Lock()
+	entry, ok := c.pauses[token]
+	c.mu.Unlock()
+	if !ok {
+		var err error
+		entry, err = c.rehydrate(ctx, token)
+		if err != nil {
+			return Status{}, err
+		}
+	}
+	if !sameScope(entry.identity, id) || entry.runID != runID {
+		return Status{}, fmt.Errorf("%w: token %q", ErrPauseNotFound, token)
+	}
+	return Status{State: entry.state, Reason: entry.reason, PausedAt: entry.pausedAt, ResumedAt: entry.resumedAt, Decision: entry.decision, Available: entry.available}, nil
 }
 
 // markDeletePending flags a resumed entry whose checkpoint cleanup
