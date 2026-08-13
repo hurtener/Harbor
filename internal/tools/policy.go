@@ -526,6 +526,17 @@ func ClassifyError(err error, perAttemptTimeout bool) ErrorClass {
 	if errors.Is(err, ErrToolInvalidArgs) || errors.Is(err, ErrToolNotFound) {
 		return ErrClassPermanent
 	}
+	var mcpErr *MCPToolResultError
+	if errors.As(err, &mcpErr) {
+		switch mcpErr.Class {
+		case MCPToolErrorInvalidArgument, MCPToolErrorValidation,
+			MCPToolErrorAuthorization, MCPToolErrorNotFound, MCPToolErrorConflict,
+			MCPToolErrorToolDomain:
+			return ErrClassPermanent
+		case MCPToolErrorTransient, MCPToolErrorProviderUnavailable:
+			return ErrClassTransient
+		}
+	}
 	// A downstream insufficient-scope step-up is permanent: retrying the same
 	// call with the same (shortfall) scopes can never converge. Without this
 	// case the 403-shaped error would fall through to the conservative

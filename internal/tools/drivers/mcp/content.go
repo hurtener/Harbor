@@ -417,7 +417,14 @@ func lowerCallToolResult(res *mcpsdk.CallToolResult) (MCPToolValue, error) {
 	}
 	value.Text = strings.Join(texts, "")
 	if res.IsError {
-		return value, fmt.Errorf("%w: %s", ErrMCPToolError, value.Text)
+		class, message, ok := tools.MCPResultErrorClassification(map[string]any(res.Meta), res.StructuredContent)
+		if !ok {
+			// Legacy MCP results have only IsError and human-readable content.
+			// Preserve that content in the lowered value, but never classify it
+			// by parsing its text.
+			message = value.Text
+		}
+		return value, tools.NewMCPToolResultError(class, message)
 	}
 	return value, nil
 }

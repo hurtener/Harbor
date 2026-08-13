@@ -36,10 +36,9 @@ var (
 	// ErrNotConnected — Discover / Invoke / SubscribeResource called
 	// before Connect (or after Close).
 	ErrNotConnected = errors.New("mcp: provider not connected")
-	// ErrMCPToolError — the server returned a CallToolResult with
-	// IsError == true. The wrapped message carries the rendered
-	// text body.
-	ErrMCPToolError = errors.New("mcp: server returned tool error")
+	// ErrMCPToolError is retained as a package-level compatibility alias for
+	// callers of the old driver-local sentinel.
+	ErrMCPToolError = tools.ErrMCPToolError
 	// ErrSchemaInvalid — the server-advertised InputSchema failed to
 	// compile; the descriptor is rejected at Discover time so the
 	// catalog never holds a Tool whose Validate is broken.
@@ -1229,7 +1228,12 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		p.publishAppAvailable(ctx, value.AppRef, name)
 	}
 	if lowerErr != nil {
-		return tools.ToolResult{Value: value}, lowerErr
+		result := tools.ToolResult{Value: value}
+		var typed *tools.MCPToolResultError
+		if errors.As(lowerErr, &typed) {
+			typed.Result = result
+		}
+		return result, lowerErr
 	}
 	return tools.ToolResult{Value: value}, nil
 }
