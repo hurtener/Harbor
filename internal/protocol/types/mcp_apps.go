@@ -90,6 +90,45 @@ type MCPResourceArtifactRef struct {
 	SHA256 string `json:"sha256,omitempty"`
 }
 
+// RenderAdmission is the bounded render-admission object a successful
+// OPT-IN `ui://` resource read may return. It carries ONLY the opaque
+// sealed token, its expiry metadata, and the closed availability status —
+// never the sealed claims, never key material, and never a
+// provider-local live binding. The token is opaque by construction: no
+// identity / agent / server / resource / generation component is
+// recoverable from it. A client echoes the token value back on
+// `mcp.apps.call_tool` (the request's distinct `render_admission` field);
+// the Runtime re-verifies it against the CURRENT render tuple before
+// invocation.
+type RenderAdmission struct {
+	// Token is the opaque sealed render-admission token (bounded
+	// base64url). Empty only when Availability is "unavailable".
+	Token string `json:"token,omitempty"`
+	// IssuedAt is the mint instant, RFC 3339 UTC ("unavailable" mint —
+	// never issued). Omitted when unavailable.
+	IssuedAt string `json:"issued_at,omitempty"`
+	// ExpiresAt is the admission expiry, RFC 3339 UTC. The Runtime
+	// re-verifies against its own clock at call time; a past expiry is
+	// refused with the typed `render_admission_expired` code.
+	ExpiresAt string `json:"expires_at"`
+	// Availability is the CLOSED availability status of the admission at
+	// mint: "available" (the render tuple was fully verified and the
+	// token is usable) or "unavailable" (the admission could not be
+	// minted — the caller must re-read). Omitted/false
+	// `request_render_admission` never produces this object at all.
+	Availability string `json:"availability"`
+}
+
+// Render-admission availability statuses (the closed set).
+const (
+	// RenderAdmissionAvailable — the admission was minted and its token
+	// is usable.
+	RenderAdmissionAvailable = "available"
+	// RenderAdmissionUnavailable — the admission could not be minted;
+	// the caller must re-read the resource.
+	RenderAdmissionUnavailable = "unavailable"
+)
+
 // ReadMCPResourceRequest is the `mcp.servers.read_resource` request
 // body. Identity is mandatory.
 type ReadMCPResourceRequest struct {
@@ -105,6 +144,15 @@ type ReadMCPResourceRequest struct {
 	// ResourceURI is the resource to fetch — the `ui://`-scheme URI of
 	// an MCP App's UI document for app fetches.
 	ResourceURI string `json:"resource_uri"`
+	// RequestRenderAdmission is the OPT-IN flag that asks the Runtime to
+	// mint a bounded render admission for THIS successful `ui://` read.
+	// Omitted or false preserves the current ordinary resource-read
+	// behavior byte-for-byte and mints NO callback authority — only a
+	// successful `ui://` read carrying true may return the
+	// `render_admission` object, and the mint happens only AFTER the
+	// full verified identity / reach / retirement / erasure / current
+	// exposure / exact server+resource checks pass.
+	RequestRenderAdmission bool `json:"request_render_admission,omitempty"`
 }
 
 // ReadMCPResourceResponse is the `mcp.servers.read_resource` reply.
@@ -126,6 +174,13 @@ type ReadMCPResourceResponse struct {
 	// meets or exceeds the heavy-content threshold. Nil when Content is
 	// set.
 	ArtifactRef *MCPResourceArtifactRef `json:"artifact_ref,omitempty"`
+	// RenderAdmission is the bounded render admission minted for this
+	// read, present ONLY when the request carried
+	// `request_render_admission: true` AND the read succeeded AND the
+	// admission could be minted. Nil otherwise — an omitted/false flag
+	// never mints authority, and a failed read never returns an
+	// admission.
+	RenderAdmission *RenderAdmission `json:"render_admission,omitempty"`
 	// ProtocolVersion echoes the Protocol version the Runtime answered
 	// under so a client can detect a version skew.
 	ProtocolVersion string `json:"protocol_version"`
@@ -159,6 +214,18 @@ type MCPAppCallToolRequest struct {
 	// backward-compatible clients).
 	ServerID string `json:"server_id,omitempty"`
 	Binding  string `json:"binding,omitempty"`
+	// RenderAdmission is the DISTINCT opaque render-admission authority
+	// minted by a successful opt-in `ui://` read
+	// (`request_render_admission: true`) and echoed back verbatim. It is
+	// NOT the legacy `binding` field: a request that supplies BOTH is
+	// refused as ambiguous (`render_authority_ambiguous`) — the Runtime
+	// never guesses which authority the App meant. When supplied alone,
+	// the Runtime verifies it against the CURRENT render tuple
+	// (identity / agent / server / resource URI / current descriptor
+	// generation) before invocation; an unavailable / invalid / expired
+	// / mismatched admission is refused with its exact typed code, never
+	// collapsed into a generic not-found.
+	RenderAdmission string `json:"render_admission,omitempty"`
 	// ResourceURI is host-supplied render authority, never sandbox-authored.
 	ResourceURI string `json:"resource_uri,omitempty"`
 	// Tool is the catalog tool name to invoke (the Harbor-side

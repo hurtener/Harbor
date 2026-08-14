@@ -674,6 +674,51 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigUserSkillsDeleteRequest", Response: "AgentConfigUserSkillsDeleteResponse",
 			Auth: sessionSafeNote,
 		},
+		// Two-phase verified-caller skill-package import (HA-61) —
+		// CLAIM-FREE like the sibling durable-per-user skills verbs.
+		methods.MethodAgentConfigUserSkillsImportValidate: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserSkillsImportValidate),
+			Mutates: false,
+			Request: "AgentConfigUserSkillsImportValidateRequest", Response: "AgentConfigUserSkillsImportValidateResponse",
+			Auth: sessionSafeNote,
+		},
+		methods.MethodAgentConfigUserSkillsImportCommit: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserSkillsImportCommit),
+			Mutates: true,
+			Request: "AgentConfigUserSkillsImportCommitRequest", Response: "AgentConfigUserSkillsImportCommitResponse",
+			Auth: sessionSafeNote,
+		},
+		// Read-only composition preview (HA-66) — CLAIM-FREE read of the
+		// caller's own exact triple; the admin/fleet widening is the
+		// service's audited ctx-scope decision.
+		methods.MethodAgentConfigCompositionPreview: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigCompositionPreview),
+			Mutates: false,
+			Request: "AgentConfigCompositionPreviewRequest", Response: "AgentConfigCompositionPreviewResponse",
+			Auth: sessionSafeNote,
+		},
+	}
+
+	// The session-turns read pair (HA-63/64) — routes PINNED EXPLICITLY:
+	// nested session routes are never derived generically (a generic
+	// derivation would map `sessions.turns.get` onto the non-existent
+	// `sessions.get`). The operations lane gates + audits server-side.
+	t[methods.MethodSessionTurnsList] = methodEntry{
+		Route: stream.SessionTurnsRoutePattern + "list", Mutates: false,
+		Request: "SessionTurnsListRequest", Response: "SessionTurnsListResponse",
+	}
+	t[methods.MethodSessionTurnsGet] = methodEntry{
+		Route: stream.SessionTurnsRoutePattern + "get", Mutates: false,
+		Request: "SessionTurnsGetRequest", Response: "SessionTurnsGetResponse",
+	}
+	// The one bounded administrative rollup query (HA-65). An ordinary
+	// caller's query is forced to its own verified triple; a widened
+	// fan-in is the SERVICE's audited ctx-scope decision (admin OR
+	// console:fleet) — there is no separate wire-level gate, so the row
+	// carries no rejecting cross-tenant note.
+	t[methods.MethodObservabilityQuery] = methodEntry{
+		Route: stream.ObservabilityRoutePattern, Mutates: false,
+		Request: "ObservabilityQueryRequest", Response: "ObservabilityQueryResponse",
 	}
 
 	// The nine steering controls share one wire shape; their per-control
@@ -803,12 +848,21 @@ func classify(m methods.Method) string {
 		return "auth"
 	case methods.IsGovernanceAdminMethod(m):
 		return "governance — admin"
+	case m == methods.MethodAgentConfigCompositionPreview:
+		return "agent config — composition preview (read-only)"
+	case m == methods.MethodAgentConfigUserSkillsImportValidate,
+		m == methods.MethodAgentConfigUserSkillsImportCommit:
+		return "agent config — user skills import"
 	case methods.IsAgentConfigUserMethod(m):
 		return "agent config — user"
 	case methods.IsAgentConfigSessionMethod(m):
 		return "agent config — session"
 	case methods.IsAgentConfigMethod(m):
 		return "agent config — admin"
+	case methods.IsSessionTurnsMethod(m):
+		return "sessions turns (read-only)"
+	case methods.IsObservabilityMethod(m):
+		return "observability (read-only)"
 	default:
 		return "unclassified"
 	}
@@ -827,6 +881,8 @@ var methodClusters = []struct {
 	{"Streaming events", methods.IsStreamingEventsMethod, "streaming-events"},
 	{"Tasks", methods.IsTasksMethod, "tasks"},
 	{"Sessions", methods.IsSessionsMethod, "sessions"},
+	{"Session turns", methods.IsSessionTurnsMethod, "session-turns"},
+	{"Observability", methods.IsObservabilityMethod, "observability"},
 	{"Pause snapshot", methods.IsPauseMethod, "pause-snapshot"},
 	{"Search", methods.IsSearchMethod, "search"},
 	{"Posture", methods.IsPostureMethod, "posture"},

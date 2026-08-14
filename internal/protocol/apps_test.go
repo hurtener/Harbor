@@ -62,11 +62,27 @@ type stubInvoker struct {
 	gotTool  string
 	gotAgent string
 	gotSrv   string
+	gotAuth  string
 }
 
 func (s *stubInvoker) CallTool(ctx context.Context, serverID, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	s.gotSrv = serverID
 	s.gotTool = tool
+	s.gotAgent, _ = tools.EffectiveAgentConfigFrom(ctx)
+	if s.err != nil {
+		return protocol.MCPAppToolResultRow{}, s.err
+	}
+	return s.res, nil
+}
+
+// CallToolWithBinding implements the appBindingInvoker seam (HA-56): the
+// wrapped invocation the legacy binding AND the fresh render admission
+// ride. It records the authority so tests can assert which one reached
+// the invocation.
+func (s *stubInvoker) CallToolWithBinding(ctx context.Context, serverID, authority, _ string, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	s.gotSrv = serverID
+	s.gotTool = tool
+	s.gotAuth = authority
 	s.gotAgent, _ = tools.EffectiveAgentConfigFrom(ctx)
 	if s.err != nil {
 		return protocol.MCPAppToolResultRow{}, s.err

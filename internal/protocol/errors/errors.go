@@ -208,6 +208,78 @@ const (
 	// CodeAgentRetirementConflict marks a bad retirement precondition or a
 	// replay under a different operation identity. Maps to 409.
 	CodeAgentRetirementConflict Code = "agent_retirement_conflict"
+	// CodeRenderAdmissionMissing — MCP Apps surface: an app-tool-call
+	// request carried a render-admission authority (the fresh opaque
+	// `render_admission` token) but the value was empty, or the request
+	// referenced one that was not supplied at all. Typed — never
+	// collapsed into a generic not-found: an otherwise-current App whose
+	// admission is missing must fail here, distinctly.
+	CodeRenderAdmissionMissing Code = "render_admission_missing"
+	// CodeRenderAdmissionUnavailable — MCP Apps surface: the supplied
+	// render-admission token could not be opened — invalid base64url, an
+	// oversized token, envelope tamper, or a different sealing
+	// key/replica. The token's content is unrecoverable by design; the
+	// App must re-read the resource to mint a fresh admission. Distinct
+	// from CodeRenderAdmissionInvalid (the token opened but its claims
+	// were structurally invalid).
+	CodeRenderAdmissionUnavailable Code = "render_admission_unavailable"
+	// CodeRenderAdmissionInvalid — MCP Apps surface: the supplied
+	// render-admission token opened but its sealed claims are
+	// structurally invalid — an unknown schema/version, bound violations,
+	// a malformed nonce, an absurd lifetime, or future issuance. Never
+	// an oracle about the token's content.
+	CodeRenderAdmissionInvalid Code = "render_admission_invalid"
+	// CodeRenderAdmissionExpired — MCP Apps surface: the supplied
+	// render-admission token is well-formed but its expiry is past. The
+	// App must re-read the resource to mint a fresh admission.
+	CodeRenderAdmissionExpired Code = "render_admission_expired"
+	// CodeRenderAdmissionMismatch — MCP Apps surface: the supplied
+	// render-admission token is well-formed and time-valid but does not
+	// match the requested render tuple (identity / agent / server /
+	// resource URI / current descriptor generation). The error
+	// deliberately names no dimension.
+	CodeRenderAdmissionMismatch Code = "render_admission_mismatch"
+	// CodeRenderAuthorityAmbiguous — MCP Apps surface: an app-tool-call
+	// request supplied BOTH the legacy `binding` authority and the fresh
+	// `render_admission` authority. The two are not interchangeable; a
+	// request carrying both is refused as ambiguous rather than
+	// guessing which the App meant.
+	CodeRenderAuthorityAmbiguous Code = "render_authority_ambiguous"
+	// CodeSkillImportProposalInvalid — agent-config user-skill-import
+	// surface: the echoed proposal token is unknown, consumed, foreign,
+	// or stale (oversize, malformed base64, failed authentication,
+	// unknown schema, malformed claims, or bound to different
+	// server-side inputs). Typed — the commit never treats a bad token
+	// as an ambiguous not-found and never exposes sealed claims or
+	// ledger keys.
+	CodeSkillImportProposalInvalid Code = "skill_import_proposal_invalid"
+	// CodeSkillImportProposalExpired — agent-config user-skill-import
+	// surface: the echoed proposal token's review window elapsed before
+	// the explicit commit. The caller re-runs import_validate to mint a
+	// fresh proposal.
+	CodeSkillImportProposalExpired Code = "skill_import_proposal_expired"
+	// CodeSkillImportPackageInvalid — agent-config user-skill-import
+	// surface: the referenced artifact is not a valid complete skill
+	// package (archive / path / MIME / SKILL.md / support-ref /
+	// frontmatter violations, including authority-bearing frontmatter).
+	// Distinct from a malformed request envelope — the request was well
+	// formed, the package was not.
+	CodeSkillImportPackageInvalid Code = "skill_import_package_invalid"
+	// CodeSkillImportReplaceRequired — agent-config user-skill-import
+	// surface: a different package already wins the target canonical
+	// key and the commit did not carry explicit replacement consent.
+	// The caller must re-review and commit with `replace: true`.
+	CodeSkillImportReplaceRequired Code = "skill_import_replace_required"
+	// CodeQueryBudgetExceeded — observability surface: the
+	// `observability.query` request exceeds a result budget (the window
+	// spans more buckets than the closed maximum, or the page limit
+	// exceeds the maximum). Fails loudly; never a truncated response.
+	CodeQueryBudgetExceeded Code = "query_budget_exceeded"
+	// CodeInvalidCursor — observability surface: the page cursor is
+	// malformed or was produced by a differently-shaped query (including
+	// a different identity scope). The caller must restart from the
+	// first page.
+	CodeInvalidCursor Code = "invalid_cursor"
 )
 
 // canonicalCodes is the registered set — a fixed package-level map. A
@@ -233,6 +305,18 @@ var canonicalCodes = map[Code]struct{}{
 	CodeSessionSkillReadUnstable:   {},
 	CodeAgentRetired:               {},
 	CodeAgentRetirementConflict:    {},
+	CodeRenderAdmissionMissing:     {},
+	CodeRenderAdmissionUnavailable: {},
+	CodeRenderAdmissionInvalid:     {},
+	CodeRenderAdmissionExpired:     {},
+	CodeRenderAdmissionMismatch:    {},
+	CodeRenderAuthorityAmbiguous:   {},
+	CodeSkillImportProposalInvalid: {},
+	CodeSkillImportProposalExpired: {},
+	CodeSkillImportPackageInvalid:  {},
+	CodeSkillImportReplaceRequired: {},
+	CodeQueryBudgetExceeded:        {},
+	CodeInvalidCursor:              {},
 }
 
 // IsValidCode reports whether c is one of the canonical Protocol error

@@ -52,6 +52,7 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/memory"
+	observabilityprotocol "github.com/hurtener/Harbor/internal/observability/protocol"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports/control"
@@ -63,6 +64,7 @@ import (
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
+	turnsprotocol "github.com/hurtener/Harbor/internal/sessions/turns/protocol"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
@@ -241,6 +243,27 @@ type muxConfig struct {
 	// build. Production wiring (`harbor dev` / `harbor console`) supplies it
 	// so an admin can version an agent's config (skills now) live.
 	agentConfigService *agentcfgprotocol.Service
+	// userSkillImportService feeds the two-phase verified-caller
+	// skill-package import routes (`agent_config.user.skills.import_*`).
+	// OPTIONAL: when unsupplied the routes answer 501 (the partial-build
+	// convention) — the `/v1/agent_config/*` route must be mounted first.
+	userSkillImportService *agentcfgprotocol.UserSkillImportService
+	// compositionPreviewService feeds the read-only
+	// `agent_config.composition.preview` route. OPTIONAL: when unsupplied
+	// the route answers 501 (the partial-build convention) — the
+	// `/v1/agent_config/*` route must be mounted first.
+	compositionPreviewService *agentcfgprotocol.CompositionPreviewService
+	// sessionTurnsService feeds the session-turns read handler — the two
+	// `POST /v1/sessions/turns/*` routes (`sessions.turns.list` /
+	// `sessions.turns.get`). OPTIONAL: when unsupplied the routes are NOT
+	// mounted, so the smoke script's `skip_if_404` keeps preflight green
+	// on a partial build.
+	sessionTurnsService *turnsprotocol.Service
+	// observabilityService feeds the observability handler — the
+	// `POST /v1/observability/query` route. OPTIONAL: when unsupplied the
+	// route is NOT mounted, so the smoke script's `skip_if_404` keeps
+	// preflight green on a partial build.
+	observabilityService *observabilityprotocol.Service
 }
 
 // Option configures NewMux.
@@ -735,6 +758,73 @@ func WithAgentConfigService(s *agentcfgprotocol.Service) Option {
 	}
 }
 
+// WithUserSkillImportService wires the two-phase verified-caller
+// skill-package import service (HA-61) so the
+// `agent_config.user.skills.import_validate` /
+// `agent_config.user.skills.import_commit` routes are live. OPTIONAL:
+// when unsupplied the routes answer 501 (the partial-build convention).
+// The routes require WithAgentConfigService to be mounted first.
+func WithUserSkillImportService(s *agentcfgprotocol.UserSkillImportService) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.userSkillImportService = s
+		}
+	}
+}
+
+// WithCompositionPreviewService wires the read-only composition-preview
+// service (HA-66) so the `agent_config.composition.preview` route is
+// live. OPTIONAL: when unsupplied the route answers 501 (the
+// partial-build convention). The route requires WithAgentConfigService
+// to be mounted first.
+func WithCompositionPreviewService(s *agentcfgprotocol.CompositionPreviewService) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.compositionPreviewService = s
+		}
+	}
+}
+
+// WithSessionTurnsService wires the session-turns read handler into
+// NewMux — the two `POST /v1/sessions/turns/*` routes
+// (`sessions.turns.list` / `sessions.turns.get`).
+//
+// The service is OPTIONAL so existing call-sites compile unchanged. When
+// unsupplied, the routes are NOT mounted — the smoke script's
+// `skip_if_404` keeps preflight green on a partial build. When supplied
+// AND WithValidator is set, the routes are wrapped in auth.Middleware
+// like every other transport. The operations lane gates on the verified
+// `admin` OR `console:fleet` claim inside the service (closed two-scope
+// set) and audits widened reads. A nil service is treated as
+// "WithSessionTurnsService not supplied".
+func WithSessionTurnsService(s *turnsprotocol.Service) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.sessionTurnsService = s
+		}
+	}
+}
+
+// WithObservabilityService wires the observability handler into NewMux —
+// the `POST /v1/observability/query` route (the one bounded
+// administrative rollup query).
+//
+// The service is OPTIONAL so existing call-sites compile unchanged. When
+// unsupplied, the route is NOT mounted — the smoke script's
+// `skip_if_404` keeps preflight green on a partial build. When supplied
+// AND WithValidator is set, the route is wrapped in auth.Middleware like
+// every other transport — the widening gates on the verified `admin` OR
+// `console:fleet` claim inside the service (closed two-scope set) and
+// audits widened reads. A nil service is treated as
+// "WithObservabilityService not supplied".
+func WithObservabilityService(s *observabilityprotocol.Service) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.observabilityService = s
+		}
+	}
+}
+
 // WithStateHistory wires the `state.history` windowed event-replay
 // handler into NewMux — the `POST /v1/state/history` route. bus is the
 // durable event bus the windowed read scans (it MUST implement
@@ -1134,13 +1224,53 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	// `skip_if_404` keeps preflight green on a partial build.
 	var agentConfigHandler *stream.AgentConfigHandler
 	if cfg.agentConfigService != nil {
-		ach, err := stream.NewAgentConfigHandler(cfg.agentConfigService,
+		opts := []stream.AgentConfigOption{
 			stream.WithAgentConfigLogger(cfg.logger),
-			stream.WithAgentConfigReachAuthorizer(cfg.reach))
+			stream.WithAgentConfigReachAuthorizer(cfg.reach),
+		}
+		if cfg.userSkillImportService != nil {
+			opts = append(opts, stream.WithUserSkillImportService(cfg.userSkillImportService))
+		}
+		if cfg.compositionPreviewService != nil {
+			opts = append(opts, stream.WithCompositionPreviewService(cfg.compositionPreviewService))
+		}
+		ach, err := stream.NewAgentConfigHandler(cfg.agentConfigService, opts...)
 		if err != nil {
 			return nil, fmt.Errorf("transports: build agent-config handler: %w", err)
 		}
 		agentConfigHandler = ach
+	}
+
+	// The session-turns read handler. Built only when
+	// WithSessionTurnsService supplied a non-nil service. When unsupplied
+	// the two `POST /v1/sessions/turns/*` routes are left un-mounted —
+	// the smoke `skip_if_404` keeps preflight green on a partial build.
+	var sessionTurnsHandler *stream.SessionTurnsHandler
+	if cfg.sessionTurnsService != nil {
+		sth, err := stream.NewSessionTurnsHandler(
+			cfg.sessionTurnsService,
+			stream.WithSessionTurnsLogger(cfg.logger),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("transports: build session-turns handler: %w", err)
+		}
+		sessionTurnsHandler = sth
+	}
+
+	// The observability handler. Built only when WithObservabilityService
+	// supplied a non-nil service. When unsupplied the
+	// `POST /v1/observability/query` route is left un-mounted — the smoke
+	// `skip_if_404` keeps preflight green on a partial build.
+	var observabilityHandler *stream.ObservabilityHandler
+	if cfg.observabilityService != nil {
+		oh, err := stream.NewObservabilityHandler(
+			cfg.observabilityService,
+			stream.WithObservabilityLogger(cfg.logger),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("transports: build observability handler: %w", err)
+		}
+		observabilityHandler = oh
 	}
 
 	mux := http.NewServeMux()
@@ -1233,6 +1363,16 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	if agentConfigHandler != nil {
 		mountedAgentConfig := mw(agentConfigHandler)
 		mux.Handle(stream.AgentConfigRoutePattern, mountedAgentConfig)
+	}
+
+	if sessionTurnsHandler != nil {
+		mountedSessionTurns := mw(sessionTurnsHandler)
+		mux.Handle(stream.SessionTurnsRoutePattern, mountedSessionTurns)
+	}
+
+	if observabilityHandler != nil {
+		mountedObservability := mw(observabilityHandler)
+		mux.Handle(stream.ObservabilityRoutePattern, mountedObservability)
 	}
 
 	if stateHistoryHandler != nil {

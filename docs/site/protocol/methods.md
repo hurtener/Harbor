@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 131 canonical Harbor Protocol methods, generated from the single-source registry
+The 137 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -51,6 +51,19 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `sessions.inspect` | `POST /v1/sessions/inspect` | sessions (read-only) | [`SessionsInspectRequest`](./types.md#sessionsinspectrequest) | [`SessionsInspectResponse`](./types.md#sessionsinspectresponse) | read-only |
 | `sessions.list` | `POST /v1/sessions/list` | sessions (read-only) | [`SessionsListRequest`](./types.md#sessionslistrequest) | [`SessionsListResponse`](./types.md#sessionslistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
 | `sessions.set_title` | `POST /v1/sessions/set_title` | sessions (read-only) | [`SessionsSetTitleRequest`](./types.md#sessionssettitlerequest) | [`SessionsSetTitleResponse`](./types.md#sessionssettitleresponse) | mutating; Owning-(tenant, user)-scoped, not own-session-only — the body `Identity`'s tenant/user MUST equal the verified identity, but the target `session_id` (a dedicated request field) MAY name a sibling session of the same owner. Always writes `manual` provenance; no admin / cross-tenant path. |
+
+## Session turns
+
+| Method | Route | Classification | Request | Response | Auth (beyond identity) |
+|---|---|---|---|---|---|
+| `sessions.turns.get` | `POST /v1/sessions/turns/get` | sessions turns (read-only) | [`SessionTurnsGetRequest`](./types.md#sessionturnsgetrequest) | [`SessionTurnsGetResponse`](./types.md#sessionturnsgetresponse) | read-only |
+| `sessions.turns.list` | `POST /v1/sessions/turns/list` | sessions turns (read-only) | [`SessionTurnsListRequest`](./types.md#sessionturnslistrequest) | [`SessionTurnsListResponse`](./types.md#sessionturnslistresponse) | read-only |
+
+## Observability
+
+| Method | Route | Classification | Request | Response | Auth (beyond identity) |
+|---|---|---|---|---|---|
+| `observability.query` | `POST /v1/observability/query` | observability (read-only) | [`ObservabilityQueryRequest`](./types.md#observabilityqueryrequest) | [`ObservabilityQueryResponse`](./types.md#observabilityqueryresponse) | read-only |
 
 ## Pause snapshot
 
@@ -216,6 +229,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `agent_config.agent_packs.propose` | `POST /v1/agent_config/agent_packs/propose` | agent config — admin | [`AgentConfigAgentPacksProposeRequest`](./types.md#agentconfigagentpacksproposerequest) | [`AgentConfigAgentPacksProposeResponse`](./types.md#agentconfigagentpacksproposeresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.agent_packs.remove` | `POST /v1/agent_config/agent_packs/remove` | agent config — admin | [`AgentConfigAgentPacksRemoveRequest`](./types.md#agentconfigagentpacksremoverequest) | [`AgentConfigAgentPacksRemoveResponse`](./types.md#agentconfigagentpacksremoveresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.agent_packs.upsert` | `POST /v1/agent_config/agent_packs/upsert` | agent config — admin | [`AgentConfigAgentPacksUpsertRequest`](./types.md#agentconfigagentpacksupsertrequest) | [`AgentConfigAgentPacksUpsertResponse`](./types.md#agentconfigagentpacksupsertresponse) | mutating; requires the verified `admin` scope claim |
+| `agent_config.composition.preview` | `POST /v1/agent_config/composition/preview` | agent config — composition preview (read-only) | [`AgentConfigCompositionPreviewRequest`](./types.md#agentconfigcompositionpreviewrequest) | [`AgentConfigCompositionPreviewResponse`](./types.md#agentconfigcompositionpreviewresponse) | read-only; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
 | `agent_config.diff` | `POST /v1/agent_config/diff` | agent config — admin | [`AgentConfigDiffRequest`](./types.md#agentconfigdiffrequest) | [`AgentConfigDiffResponse`](./types.md#agentconfigdiffresponse) | read-only; requires the verified `admin` scope claim |
 | `agent_config.get` | `POST /v1/agent_config/get` | agent config — admin | [`AgentConfigGetRequest`](./types.md#agentconfiggetrequest) | [`AgentConfigGetResponse`](./types.md#agentconfiggetresponse) | read-only; requires the verified `admin` scope claim |
 | `agent_config.list_revisions` | `POST /v1/agent_config/list_revisions` | agent config — admin | [`AgentConfigListRevisionsRequest`](./types.md#agentconfiglistrevisionsrequest) | [`AgentConfigListRevisionsResponse`](./types.md#agentconfiglistrevisionsresponse) | read-only; requires the verified `admin` scope claim |
@@ -247,5 +261,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `agent_config.user.rollback` | `POST /v1/agent_config/user/rollback` | agent config — user | [`AgentConfigUserRollbackRequest`](./types.md#agentconfiguserrollbackrequest) | [`AgentConfigUserRollbackResponse`](./types.md#agentconfiguserrollbackresponse) | mutating; identity-mandatory; requires the verified `agent_config:user` scope claim (NOT admin — the durable per-user variant tier) |
 | `agent_config.user.set_revision` | `POST /v1/agent_config/user/set_revision` | agent config — user | [`AgentConfigUserSetRevisionRequest`](./types.md#agentconfigusersetrevisionrequest) | [`AgentConfigUserSetRevisionResponse`](./types.md#agentconfigusersetrevisionresponse) | mutating; identity-mandatory; requires the verified `agent_config:user` scope claim (NOT admin — the durable per-user variant tier) |
 | `agent_config.user.skills.delete` | `POST /v1/agent_config/user/skills/delete` | agent config — session | [`AgentConfigUserSkillsDeleteRequest`](./types.md#agentconfiguserskillsdeleterequest) | [`AgentConfigUserSkillsDeleteResponse`](./types.md#agentconfiguserskillsdeleteresponse) | mutating; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
+| `agent_config.user.skills.import_commit` | `POST /v1/agent_config/user/skills/import_commit` | agent config — user skills import | [`AgentConfigUserSkillsImportCommitRequest`](./types.md#agentconfiguserskillsimportcommitrequest) | [`AgentConfigUserSkillsImportCommitResponse`](./types.md#agentconfiguserskillsimportcommitresponse) | mutating; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
+| `agent_config.user.skills.import_validate` | `POST /v1/agent_config/user/skills/import_validate` | agent config — user skills import | [`AgentConfigUserSkillsImportValidateRequest`](./types.md#agentconfiguserskillsimportvalidaterequest) | [`AgentConfigUserSkillsImportValidateResponse`](./types.md#agentconfiguserskillsimportvalidateresponse) | read-only; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
 | `agent_config.user.skills.list` | `POST /v1/agent_config/user/skills/list` | agent config — session | [`AgentConfigUserSkillsListRequest`](./types.md#agentconfiguserskillslistrequest) | [`AgentConfigUserSkillsListResponse`](./types.md#agentconfiguserskillslistresponse) | read-only; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
 | `agent_config.user.skills.upsert` | `POST /v1/agent_config/user/skills/upsert` | agent config — session | [`AgentConfigUserSkillsUpsertRequest`](./types.md#agentconfiguserskillsupsertrequest) | [`AgentConfigUserSkillsUpsertResponse`](./types.md#agentconfiguserskillsupsertresponse) | mutating; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |

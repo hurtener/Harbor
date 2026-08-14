@@ -1284,3 +1284,192 @@ export interface AgentConfigUserSkillsDeleteResponse {
 	revision: AgentConfigRevisionView;
 	protocol_version: string;
 }
+
+// --- Verified-caller skill-package import (HA-61). CLAIM-FREE on the same
+// ground as the durable-per-user skills verbs (a caller-owned personal
+// package cannot widen capability). Two phases:
+//   - import_validate — ZERO-WRITE parse + review, sealed into an opaque
+//     `proposal_token` (never a durable proposal id, never a ledger key).
+//   - import_commit — echo the token + reviewed hashes + replacement
+//     consent; the runtime freshly revalidates and performs THE ONE atomic
+//     package+membership write, replay-safe. ---
+
+/** `agent_config.user.skills.import_validate` request — CLAIM-FREE. */
+export interface AgentConfigUserSkillsImportValidateRequest {
+	identity: IdentityScope;
+	/** The effective agent the reviewed package would be bound to. */
+	agent_id: string;
+	/** The caller-owned immutable artifact ref (`artifacts.put` output). */
+	artifact_id: string;
+}
+
+/** One bounded entry of the normalized support-manifest review. */
+export interface AgentConfigUserSkillImportSupportSummary {
+	path: string;
+	mime: string;
+	size: number;
+	digest: string;
+}
+
+/** The closed, bounded, normalized review of one parsed package. */
+export interface AgentConfigUserSkillImportReview {
+	/** The CANONICAL package/skill name (the stored target-key identity). */
+	name: string;
+	title?: string;
+	/** The planner-visible match cue. */
+	trigger: string;
+	task_type?: string;
+	tags?: string[];
+	step_count: number;
+	/** Applicability metadata — never grants. */
+	required_tools?: string[];
+	required_ns?: string[];
+	required_tags?: string[];
+	/** Ordered normalized support manifest (empty for a resource-free package). */
+	support_files: AgentConfigUserSkillImportSupportSummary[];
+	/** Canonical stored-row content hash (user scope, effective agent, name). */
+	content_hash: string;
+	/** The versioned reviewed package hash ("v1:<64-hex>"). */
+	package_hash: string;
+}
+
+/** `agent_config.user.skills.import_validate` response — the first-phase
+ * outcome. Zero durable mutation happened; the review rides inside the token. */
+export interface AgentConfigUserSkillsImportValidateResponse {
+	/** Opaque sealed token the commit echoes. No sealed claim, commit-ledger
+	 * key, or raw artifact content is recoverable from it. */
+	proposal_token: string;
+	review: AgentConfigUserSkillImportReview;
+	/** Non-fatal review notes (applicability metadata only). */
+	warnings?: string[];
+	/** The reviewed versioned package hash (== review.package_hash). */
+	package_hash: string;
+	/** The caller's user-scope config content hash at validate time ("-" when
+	 * no active user revision). Commit requires the echo to match. */
+	expected_content_hash: string;
+	/** Bounds the review window; a commit after this is
+	 * `skill_import_proposal_expired`. */
+	expires_at: string;
+	protocol_version: string;
+}
+
+/** `agent_config.user.skills.import_commit` request — CLAIM-FREE. */
+export interface AgentConfigUserSkillsImportCommitRequest {
+	identity: IdentityScope;
+	/** Echoes the opaque proposal token from validate. */
+	proposal_token: string;
+	/** The effective agent (must equal the claims'). */
+	agent_id: string;
+	/** The reviewed canonical package/skill name (must equal the claims'). */
+	name: string;
+	/** The versioned package hash the caller reviewed (must equal the
+	 * claims'). */
+	reviewed_package_hash: string;
+	/** Echoes the expected config content hash from validate. */
+	expected_content_hash: string;
+	/** Explicit replacement consent — a different package already at the
+	 * target key is refused without it (`skill_import_replace_required`). */
+	replace?: boolean;
+}
+
+/** The wire form of the exact versioned receipt of the atomic write — the
+ * conditional-compensation handle for THIS unit/version only. */
+export interface AgentConfigUserSkillImportReceipt {
+	tenant_id: string;
+	user_id: string;
+	agent_id: string;
+	/** The canonical package / skill name of the target key. */
+	name: string;
+	/** The versioned PackageHash this receipt wrote. */
+	written_hash: string;
+	/** The package version this receipt wrote. */
+	written_version: string;
+	/** The prior winner's package hash / version ("" when absent). */
+	prior_hash?: string;
+	prior_version?: string;
+}
+
+/** The bounded installed-skill summary a commit receipt carries — never the
+ * raw package body. */
+export interface AgentConfigUserSkillInstalledSummary {
+	name: string;
+	title?: string;
+	trigger: string;
+	task_type?: string;
+	tags?: string[];
+	origin: string;
+	scope: string;
+	content_hash: string;
+}
+
+/** `agent_config.user.skills.import_commit` response — the terminal result. */
+export interface AgentConfigUserSkillsImportCommitResponse {
+	/** The exact versioned receipt of the atomic write. */
+	receipt: AgentConfigUserSkillImportReceipt;
+	/** The stored skill (user scope, effective agent, canonical name). */
+	skill: AgentConfigUserSkillInstalledSummary;
+	/** The written versioned package hash. */
+	package_hash: string;
+	/** True when the result was recognized from a prior landed commit
+	 * (response-loss replay) and no second write happened. */
+	replayed: boolean;
+	protocol_version: string;
+}
+
+// --- Read-only effective-composition preview (HA-66). CLAIM-FREE read of
+// what the strict run-start composer WOULD compose for the target triple +
+// effective boot-agent, WITHOUT materialising anything. An admin /
+// console:fleet caller may address a SAME-TENANT user only with signed
+// effective-agent reach (audited before the composition read). ---
+
+/** `agent_config.composition.preview` request. The caller's VERIFIED identity
+ * comes from ctx; the target triple may differ from the caller's only for an
+ * elevated caller, and only within the caller's tenant. */
+export interface AgentConfigCompositionPreviewRequest {
+	identity: IdentityScope;
+	/** The TARGET tenant / user / session. Omitted values resolve to the
+	 * caller's own verified triple on the ordinary path. */
+	tenant_id?: string;
+	user_id?: string;
+	session_id?: string;
+	/** The effective boot-agent whose composition is previewed. */
+	agent_id: string;
+}
+
+/** One composed effective operator-tier item. */
+export interface AgentConfigCompositionPreviewItem {
+	/** The canonical (lowercase, trimmed) operator-tier name. */
+	name: string;
+	/** The canonical attachment-free content hash. */
+	semantic_hash: string;
+	/** Strict-merge provenance: "boot" | "revision" | "both". */
+	source: string;
+	/** The composed skill summary (the boot body is retained when both). */
+	skill: AgentConfigSkillSummary;
+}
+
+/** `agent_config.composition.preview` response — the immutable,
+ * deterministic preview result. Outcome is one of available | unavailable |
+ * conflict | retired (typed, never a fabricated error); the set hashes are
+ * deterministic and never optional when the tier is non-empty. */
+export interface AgentConfigCompositionPreviewResponse {
+	outcome: string;
+	/** First (canonical-sorted) offending name when outcome is conflict. */
+	conflict_name?: string;
+	/** Deterministic set hash over the boot baseline entries only. */
+	boot_pack_set_hash?: string;
+	/** Deterministic set hash over the unique combined operator-tier items. */
+	combined_hash?: string;
+	/** Deterministic set hash over the active-revision pack items only. */
+	revision_hash?: string;
+	/** The fresh active revision id read for this preview. */
+	revision_id?: string;
+	/** The fresh active revision's content hash. */
+	content_hash?: string;
+	/** The effective items in deterministic canonical-name order. */
+	items?: AgentConfigCompositionPreviewItem[];
+	/** True when this preview was an elevated same-tenant widened read,
+	 * audited before the composition read. */
+	widened: boolean;
+	protocol_version: string;
+}

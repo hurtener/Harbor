@@ -34,6 +34,13 @@ var nonMethodRootedTypes = map[string]string{
 	// manifest-expressiveness limit, not an orphan.
 	"IdentityTierView": "map value type of GovernancePostureResponse.identity_tiers; map fields carry no ref in the manifest",
 	"RateLimitView":    "nested in IdentityTierView, which is itself only reachable through a map field",
+
+	// The value type of ObservabilityQueryRow.measures. Same
+	// manifest-expressiveness limit: a `map[string]ObservabilityMeasureValue`
+	// field emits as a bare "object" with no `ref`, so the measure-value type
+	// is reachable in reality (every row's `measures` values are exactly this
+	// type) but invisible to the ref-graph walk.
+	"ObservabilityMeasureValue": "map value type of ObservabilityQueryRow.measures; map fields carry no ref in the manifest",
 }
 
 // TestManifest_NoOrphanWireTypes fails when a canonical wire type is published

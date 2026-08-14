@@ -466,3 +466,78 @@ func TestClassifyAgentConfigError_SessionSkillResultLimit413(t *testing.T) {
 		t.Fatalf("classifyAgentConfigError = (%q, %d), want (%q, 413)", code, status, protoerrors.CodeRequestTooLarge)
 	}
 }
+
+// TestClassifyAgentConfigError_ImportTypedMappings pins the exact typed
+// wire mapping for the two-phase import sentinels: a bad / stale proposal
+// and a bad package are 400s, a missing artifact is a typed 404, a
+// missing replacement consent is a 409, and a moved config base is a 409.
+func TestClassifyAgentConfigError_ImportTypedMappings(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantCode protoerrors.Code
+		wantSt   int
+	}{
+		{"proposal invalid", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrUserSkillImportProposalInvalid), protoerrors.CodeSkillImportProposalInvalid, http.StatusBadRequest},
+		{"proposal expired", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrUserSkillImportExpired), protoerrors.CodeSkillImportProposalExpired, http.StatusBadRequest},
+		{"package invalid", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrUserSkillImportPackageInvalid), protoerrors.CodeSkillImportPackageInvalid, http.StatusBadRequest},
+		{"artifact not found", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrUserSkillImportArtifactNotFound), protoerrors.CodeNotFound, http.StatusNotFound},
+		{"replace required", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrUserSkillImportReplaceRequired), protoerrors.CodeSkillImportReplaceRequired, http.StatusConflict},
+		{"config moved", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrUserSkillImportConfigMoved), protoerrors.CodeRevisionConflict, http.StatusConflict},
+		{"concurrent winner", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrUserSkillImportConcurrentWinner), protoerrors.CodeRevisionConflict, http.StatusConflict},
+		{"identity required", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrUserSkillImportIdentityRequired), protoerrors.CodeIdentityRequired, http.StatusUnauthorized},
+		{"agent reach denied", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrUserSkillImportAgentReachDenied), protoerrors.CodeScopeMismatch, http.StatusForbidden},
+		{"session reach denied", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrUserSkillImportSessionReachDenied), protoerrors.CodeScopeMismatch, http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, status, _ := classifyAgentConfigError(methods.MethodAgentConfigUserSkillsImportCommit, tc.err)
+			if code != tc.wantCode || status != tc.wantSt {
+				t.Fatalf("classifyAgentConfigError = (%q, %d), want (%q, %d)", code, status, tc.wantCode, tc.wantSt)
+			}
+		})
+	}
+}
+
+// TestClassifyAgentConfigError_PreviewTypedMappings pins the typed wire
+// mapping for the read-only composition preview sentinels.
+func TestClassifyAgentConfigError_PreviewTypedMappings(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantCode protoerrors.Code
+		wantSt   int
+	}{
+		{"identity required", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrPreviewIdentityRequired), protoerrors.CodeIdentityRequired, http.StatusUnauthorized},
+		{"agent reach denied", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrPreviewAgentReachDenied), protoerrors.CodeScopeMismatch, http.StatusForbidden},
+		{"session reach denied", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrPreviewSessionReachDenied), protoerrors.CodeScopeMismatch, http.StatusForbidden},
+		{"misconfigured", fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrPreviewMisconfigured), protoerrors.CodeRuntimeError, http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, status, _ := classifyAgentConfigError(methods.MethodAgentConfigCompositionPreview, tc.err)
+			if code != tc.wantCode || status != tc.wantSt {
+				t.Fatalf("classifyAgentConfigError = (%q, %d), want (%q, %d)", code, status, tc.wantCode, tc.wantSt)
+			}
+		})
+	}
+}
+
+// TestClassifyAgentConfigError_BootPackOwnedPreserved re-pins the settled
+// ErrBootPackOwned 400/read-only mapping (upsert/commit/remove/rollback)
+// after the shared handler gained the import/preview routes — the
+// accepted mapping must never regress to a generic 500.
+func TestClassifyAgentConfigError_BootPackOwnedPreserved(t *testing.T) {
+	for _, m := range []methods.Method{
+		methods.MethodAgentConfigAgentPacksUpsert,
+		methods.MethodAgentConfigAgentPacksCommit,
+		methods.MethodAgentConfigAgentPacksRemove,
+		methods.MethodAgentConfigRollback,
+	} {
+		code, status, _ := classifyAgentConfigError(m, fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrBootPackOwned))
+		if code != protoerrors.CodeInvalidRequest || status != http.StatusBadRequest {
+			t.Fatalf("%s: classifyAgentConfigError(ErrBootPackOwned) = (%q, %d), want (%q, 400)",
+				m, code, status, protoerrors.CodeInvalidRequest)
+		}
+	}
+}

@@ -36,6 +36,18 @@ func TestHTTPStatus_Mapping_EveryCanonicalCode(t *testing.T) {
 		protoerrors.CodeSessionSkillReadUnstable:   http.StatusConflict,
 		protoerrors.CodeAgentRetired:               http.StatusConflict,
 		protoerrors.CodeAgentRetirementConflict:    http.StatusConflict,
+		protoerrors.CodeRenderAdmissionMissing:     http.StatusBadRequest,
+		protoerrors.CodeRenderAdmissionUnavailable: http.StatusBadRequest,
+		protoerrors.CodeRenderAdmissionInvalid:     http.StatusBadRequest,
+		protoerrors.CodeRenderAdmissionExpired:     http.StatusBadRequest,
+		protoerrors.CodeRenderAdmissionMismatch:    http.StatusBadRequest,
+		protoerrors.CodeRenderAuthorityAmbiguous:   http.StatusBadRequest,
+		protoerrors.CodeSkillImportProposalInvalid: http.StatusBadRequest,
+		protoerrors.CodeSkillImportProposalExpired: http.StatusBadRequest,
+		protoerrors.CodeSkillImportPackageInvalid:  http.StatusBadRequest,
+		protoerrors.CodeSkillImportReplaceRequired: http.StatusConflict,
+		protoerrors.CodeQueryBudgetExceeded:        http.StatusBadRequest,
+		protoerrors.CodeInvalidCursor:              http.StatusBadRequest,
 	}
 	for code, want := range cases {
 		if got := HTTPStatus(code); got != want {
@@ -70,6 +82,18 @@ func TestHTTPStatus_Mapping_ExhaustiveOverCanonicalCodes(t *testing.T) {
 		protoerrors.CodeSessionSkillReadUnstable:   {},
 		protoerrors.CodeAgentRetired:               {},
 		protoerrors.CodeAgentRetirementConflict:    {},
+		protoerrors.CodeRenderAdmissionMissing:     {},
+		protoerrors.CodeRenderAdmissionUnavailable: {},
+		protoerrors.CodeRenderAdmissionInvalid:     {},
+		protoerrors.CodeRenderAdmissionExpired:     {},
+		protoerrors.CodeRenderAdmissionMismatch:    {},
+		protoerrors.CodeRenderAuthorityAmbiguous:   {},
+		protoerrors.CodeSkillImportProposalInvalid: {},
+		protoerrors.CodeSkillImportProposalExpired: {},
+		protoerrors.CodeSkillImportPackageInvalid:  {},
+		protoerrors.CodeSkillImportReplaceRequired: {},
+		protoerrors.CodeQueryBudgetExceeded:        {},
+		protoerrors.CodeInvalidCursor:              {},
 	}
 	for code := range mapped {
 		if !protoerrors.IsValidCode(code) {

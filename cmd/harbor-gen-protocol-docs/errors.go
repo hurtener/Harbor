@@ -102,6 +102,54 @@ var errorTable = map[protoerrors.Code]errorEntry{
 		When:  "An unclassified runtime-side failure — the catch-all. Also used on the SSE surface for subscriber-limit (429) and bus-closed (503) conditions.",
 		Retry: "Yes, with backoff — the request shape is not the problem.",
 	},
+	protoerrors.CodeRenderAdmissionMissing: {
+		When:  "An `mcp.apps.call_tool` request carried a render-admission authority but the value was empty, or the request referenced one that was not supplied. The MCP Apps render admission is the HA-56 sealed authority minted only by a successful opt-in `ui://` read.",
+		Retry: "No — re-read the resource with `request_render_admission: true` and echo the returned token.",
+	},
+	protoerrors.CodeRenderAdmissionUnavailable: {
+		When:  "The supplied render-admission token could not be opened: invalid base64url, an oversized token, envelope tamper, or a different sealing key/replica. The token's content is unrecoverable by design.",
+		Retry: "Yes — re-read the resource for a fresh admission; the App itself is still current.",
+	},
+	protoerrors.CodeRenderAdmissionInvalid: {
+		When:  "The render-admission token opened but its sealed claims are structurally invalid: unknown schema/version, bound violations, a malformed nonce, an absurd lifetime, or future issuance.",
+		Retry: "No — re-read the resource for a fresh admission.",
+	},
+	protoerrors.CodeRenderAdmissionExpired: {
+		When:  "The render-admission token is well-formed but its expiry is past. The App must re-read the resource to mint a fresh admission — an otherwise-current App with an expired admission never collapses to an ambiguous not-found.",
+		Retry: "Yes — re-read the resource for a fresh admission.",
+	},
+	protoerrors.CodeRenderAdmissionMismatch: {
+		When:  "The render-admission token is well-formed and time-valid but does not match the requested render tuple (identity / agent / server / resource URI / current descriptor generation). The error names no dimension.",
+		Retry: "No — re-read the exact resource under the same identity/agent for a fresh admission.",
+	},
+	protoerrors.CodeRenderAuthorityAmbiguous: {
+		When:  "An `mcp.apps.call_tool` request supplied BOTH the legacy `binding` authority and the fresh `render_admission` authority. The two are distinct; Harbor never guesses which the App meant.",
+		Retry: "No — supply exactly one authority.",
+	},
+	protoerrors.CodeSkillImportProposalInvalid: {
+		When:  "An `agent_config.user.skills.import_commit` echoed a proposal token that is unknown, consumed, foreign, or stale (oversize, malformed base64, failed authentication, unknown schema, malformed claims, or bound to different server-side inputs).",
+		Retry: "Yes — re-run `agent_config.user.skills.import_validate` for a fresh proposal and echo it exactly.",
+	},
+	protoerrors.CodeSkillImportProposalExpired: {
+		When:  "The echoed import proposal token's review window elapsed before the explicit commit.",
+		Retry: "Yes — re-run `agent_config.user.skills.import_validate` for a fresh proposal.",
+	},
+	protoerrors.CodeSkillImportPackageInvalid: {
+		When:  "The referenced artifact is not a valid complete skill package (archive / path / MIME / SKILL.md / support-ref / frontmatter violations, including authority-bearing frontmatter). The request envelope was well formed; the package was not.",
+		Retry: "No — fix the package and re-upload, then re-validate.",
+	},
+	protoerrors.CodeSkillImportReplaceRequired: {
+		When:  "A different package already wins the target canonical key and the commit did not carry explicit replacement consent.",
+		Retry: "Yes — re-review the existing winner and commit again with `replace: true`.",
+	},
+	protoerrors.CodeQueryBudgetExceeded: {
+		When:  "An `observability.query` request exceeds a result budget: the window spans more buckets than the closed maximum, or the page limit exceeds the maximum. Fails loudly; never a truncated response.",
+		Retry: "Yes — narrow the window, coarsen the bucket, or lower the page limit.",
+	},
+	protoerrors.CodeInvalidCursor: {
+		When:  "The `observability.query` page cursor is malformed or was produced by a differently-shaped query (including a different identity scope). The query never silently restarts at an arbitrary position.",
+		Retry: "Yes — restart from the first page (no cursor).",
+	},
 }
 
 // renderErrorsPage emits errors.md: every canonical code with its HTTP

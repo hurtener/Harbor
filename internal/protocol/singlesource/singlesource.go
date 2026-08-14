@@ -164,27 +164,30 @@ var CanonicalMethods = map[string]struct{}{
 	"agent_config.session.skills.upsert":       {},
 	"agent_config.session.skills.delete":       {},
 	// User tier (the durable per-user config variant — the middle tier).
-	"agent_config.user.get":            {},
-	"agent_config.user.set_revision":   {},
-	"agent_config.user.list_revisions": {},
-	"agent_config.user.diff":           {},
-	"agent_config.user.rollback":       {},
-	"agent_config.user.skills.list":    {},
-	"agent_config.user.skills.upsert":  {},
-	"agent_config.user.skills.delete":  {},
-	"pause.list":                       {},
-	"topology.snapshot":                {},
-	"artifacts.list":                   {},
-	"artifacts.put":                    {},
-	"artifacts.get":                    {},
-	"artifacts.get_ref":                {},
-	"artifacts.delete":                 {},
-	"memory.list":                      {},
-	"memory.get":                       {},
-	"memory.health":                    {},
-	"memory.strategy_trace":            {},
-	"memory.put":                       {},
-	"memory.delete":                    {},
+	"agent_config.user.get":                    {},
+	"agent_config.user.set_revision":           {},
+	"agent_config.user.list_revisions":         {},
+	"agent_config.user.diff":                   {},
+	"agent_config.user.rollback":               {},
+	"agent_config.user.skills.list":            {},
+	"agent_config.user.skills.upsert":          {},
+	"agent_config.user.skills.delete":          {},
+	"agent_config.user.skills.import_validate": {},
+	"agent_config.user.skills.import_commit":   {},
+	"agent_config.composition.preview":         {},
+	"pause.list":                               {},
+	"topology.snapshot":                        {},
+	"artifacts.list":                           {},
+	"artifacts.put":                            {},
+	"artifacts.get":                            {},
+	"artifacts.get_ref":                        {},
+	"artifacts.delete":                         {},
+	"memory.list":                              {},
+	"memory.get":                               {},
+	"memory.health":                            {},
+	"memory.strategy_trace":                    {},
+	"memory.put":                               {},
+	"memory.delete":                            {},
 	// MCP-Connections-page cluster — twelve methods.
 	"mcp.servers.list":               {},
 	"mcp.servers.get":                {},
@@ -218,6 +221,12 @@ var CanonicalMethods = map[string]struct{}{
 	"sessions.inspect":   {},
 	"sessions.delete":    {},
 	"sessions.set_title": {},
+	// Session-turns read pair — the turn-projection surface (routes are
+	// pinned explicitly; never derived generically).
+	"sessions.turns.list": {},
+	"sessions.turns.get":  {},
+	// Observability administrative read — the one bounded rollup query.
+	"observability.query": {},
 	// Console-Playground-page cluster — one method.
 	"runs.set_overrides": {},
 	// State-snapshots cluster — one method (the windowed event-replay read).
@@ -454,6 +463,21 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigUserSkillsUpsertResponse": "types",
 	"AgentConfigUserSkillsDeleteRequest":  "types",
 	"AgentConfigUserSkillsDeleteResponse": "types",
+	// Verified-caller skill-package import wire types (HA-61) — the
+	// two-phase validate/commit family in internal/protocol/types
+	// (internal/protocol/types/agentconfig.go).
+	"AgentConfigUserSkillsImportValidateRequest":  "types",
+	"AgentConfigUserSkillsImportValidateResponse": "types",
+	"AgentConfigUserSkillImportSupportSummary":    "types",
+	"AgentConfigUserSkillImportReview":            "types",
+	"AgentConfigUserSkillsImportCommitRequest":    "types",
+	"AgentConfigUserSkillImportReceipt":           "types",
+	"AgentConfigUserSkillInstalledSummary":        "types",
+	"AgentConfigUserSkillsImportCommitResponse":   "types",
+	// Read-only composition-preview wire types (HA-66) — same home.
+	"AgentConfigCompositionPreviewRequest":  "types",
+	"AgentConfigCompositionPreviewItem":     "types",
+	"AgentConfigCompositionPreviewResponse": "types",
 	// pause-list snapshot wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"PauseListRequest":  "types",
@@ -561,6 +585,8 @@ var CanonicalWireTypes = map[string]string{
 	"ToolContextRequest":      "types",
 	"ToolContextPayload":      "types",
 	"ToolContextResponse":     "types",
+	// render-admission wire type (the HA-56 amendment) — same home.
+	"RenderAdmission": "types",
 	// Console-Tools-page wire types — all live in
 	// internal/protocol/types (internal/protocol/types/tools.go).
 	"Tool":                          "types",
@@ -684,6 +710,38 @@ var CanonicalWireTypes = map[string]string{
 	"SessionsDeleteResponse":   "types",
 	"SessionsSetTitleRequest":  "types",
 	"SessionsSetTitleResponse": "types",
+	// Session-turns wire types (HA-63/64) — the turn-projection read
+	// pair, all in internal/protocol/types/session_turns.go.
+	"SessionTurnsListRequest":   "types",
+	"SessionTurnHeader":         "types",
+	"SessionTurnsListResponse":  "types",
+	"SessionTurnsGetRequest":    "types",
+	"SessionTurnsGetResponse":   "types",
+	"SessionTurnRow":            "types",
+	"SessionTurnAgent":          "types",
+	"SessionTurnQuery":          "types",
+	"SessionTurnAnswer":         "types",
+	"SessionTurnAnswerRef":      "types",
+	"SessionTurnPause":          "types",
+	"SessionTurnAttachment":     "types",
+	"SessionTurnUsage":          "types",
+	"SessionTurnUsageMeasure":   "types",
+	"SessionTurnReasoning":      "types",
+	"SessionTurnReasoningStep":  "types",
+	"SessionTurnActivity":       "types",
+	"SessionTurnActivityTotals": "types",
+	"SessionTurnActivityRow":    "types",
+	"SessionTurnAppRef":         "types",
+	"SessionOpsTurnRow":         "types",
+	"SessionOpsAppRef":          "types",
+	// Observability wire types (HA-65) — the one bounded administrative
+	// rollup query, all in internal/protocol/types/observability.go.
+	"ObservabilityQueryFilter":   "types",
+	"ObservabilityQueryRequest":  "types",
+	"ObservabilityMeasureValue":  "types",
+	"ObservabilityQueryRow":      "types",
+	"ObservabilityQualityBlock":  "types",
+	"ObservabilityQueryResponse": "types",
 	// Console Playground-page wire types — all live
 	// in internal/protocol/types (internal/protocol/types/runs.go).
 	"RunOverrides":            "types",

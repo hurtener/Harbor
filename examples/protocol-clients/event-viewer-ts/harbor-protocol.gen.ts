@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:9343fc61734bb159bdd5004d79a7b03171148383f484e8d08281114d2216477c";
+export const WIRE_SURFACE_DIGEST = "sha256:aee6aa5c66d282f0cf00c90ebf973af65c0400aa618ef86b0d5d5de27e6e23d4";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -27,6 +27,7 @@ export type HarborMethod =
   | "agent_config.agent_packs.propose"
   | "agent_config.agent_packs.remove"
   | "agent_config.agent_packs.upsert"
+  | "agent_config.composition.preview"
   | "agent_config.diff"
   | "agent_config.get"
   | "agent_config.list_revisions"
@@ -58,6 +59,8 @@ export type HarborMethod =
   | "agent_config.user.rollback"
   | "agent_config.user.set_revision"
   | "agent_config.user.skills.delete"
+  | "agent_config.user.skills.import_commit"
+  | "agent_config.user.skills.import_validate"
   | "agent_config.user.skills.list"
   | "agent_config.user.skills.upsert"
   | "agents.deregister"
@@ -119,6 +122,7 @@ export type HarborMethod =
   | "memory.put"
   | "memory.strategy_trace"
   | "metrics.snapshot"
+  | "observability.query"
   | "pause"
   | "pause.list"
   | "prioritize"
@@ -139,6 +143,8 @@ export type HarborMethod =
   | "sessions.inspect"
   | "sessions.list"
   | "sessions.set_title"
+  | "sessions.turns.get"
+  | "sessions.turns.list"
   | "start"
   | "state.history"
   | "tasks.get"
@@ -160,10 +166,18 @@ export type HarborErrorCode =
   | "auth_rejected"
   | "identity_required"
   | "identity_scope_required"
+  | "invalid_cursor"
   | "invalid_request"
   | "not_found"
   | "payload_invalid"
   | "presign_unsupported"
+  | "query_budget_exceeded"
+  | "render_admission_expired"
+  | "render_admission_invalid"
+  | "render_admission_mismatch"
+  | "render_admission_missing"
+  | "render_admission_unavailable"
+  | "render_authority_ambiguous"
   | "request_too_large"
   | "restart_unavailable"
   | "revision_conflict"
@@ -173,6 +187,10 @@ export type HarborErrorCode =
   | "session_running"
   | "session_skill_cutover_pending"
   | "session_skill_read_unstable"
+  | "skill_import_package_invalid"
+  | "skill_import_proposal_expired"
+  | "skill_import_proposal_invalid"
+  | "skill_import_replace_required"
   | "unknown_method";
 
 /** Every canonical Harbor event-type wire string. */
@@ -470,6 +488,34 @@ export interface AgentConfigAgentPacksUpsertResponse {
   revision: AgentConfigRevisionView;
   skill: AgentConfigSkillSummary;
   hash: string;
+  protocol_version: string;
+}
+
+export interface AgentConfigCompositionPreviewItem {
+  name: string;
+  semantic_hash: string;
+  source: string;
+  skill: AgentConfigSkillSummary;
+}
+
+export interface AgentConfigCompositionPreviewRequest {
+  identity: IdentityScope;
+  tenant_id?: string;
+  user_id?: string;
+  session_id?: string;
+  agent_id: string;
+}
+
+export interface AgentConfigCompositionPreviewResponse {
+  outcome: string;
+  conflict_name?: string;
+  boot_pack_set_hash?: string;
+  combined_hash?: string;
+  revision_hash?: string;
+  revision_id?: string;
+  content_hash?: string;
+  items?: AgentConfigCompositionPreviewItem[];
+  widened: boolean;
   protocol_version: string;
 }
 
@@ -1141,6 +1187,50 @@ export interface AgentConfigUserSetRevisionResponse {
   protocol_version: string;
 }
 
+export interface AgentConfigUserSkillImportReceipt {
+  tenant_id: string;
+  user_id: string;
+  agent_id: string;
+  name: string;
+  written_hash: string;
+  written_version: string;
+  prior_hash?: string;
+  prior_version?: string;
+}
+
+export interface AgentConfigUserSkillImportReview {
+  name: string;
+  title?: string;
+  trigger: string;
+  task_type?: string;
+  tags?: string[];
+  step_count: number;
+  required_tools?: string[];
+  required_ns?: string[];
+  required_tags?: string[];
+  support_files: AgentConfigUserSkillImportSupportSummary[];
+  content_hash: string;
+  package_hash: string;
+}
+
+export interface AgentConfigUserSkillImportSupportSummary {
+  path: string;
+  mime: string;
+  size: number;
+  digest: string;
+}
+
+export interface AgentConfigUserSkillInstalledSummary {
+  name: string;
+  title?: string;
+  trigger: string;
+  task_type?: string;
+  tags?: string[];
+  origin: string;
+  scope: string;
+  content_hash: string;
+}
+
 export interface AgentConfigUserSkillsDeleteRequest {
   identity: IdentityScope;
   agent_id: string;
@@ -1150,6 +1240,40 @@ export interface AgentConfigUserSkillsDeleteRequest {
 
 export interface AgentConfigUserSkillsDeleteResponse {
   revision: AgentConfigRevisionView;
+  protocol_version: string;
+}
+
+export interface AgentConfigUserSkillsImportCommitRequest {
+  identity: IdentityScope;
+  proposal_token: string;
+  agent_id: string;
+  name: string;
+  reviewed_package_hash: string;
+  expected_content_hash: string;
+  replace?: boolean;
+}
+
+export interface AgentConfigUserSkillsImportCommitResponse {
+  receipt: AgentConfigUserSkillImportReceipt;
+  skill: AgentConfigUserSkillInstalledSummary;
+  package_hash: string;
+  replayed: boolean;
+  protocol_version: string;
+}
+
+export interface AgentConfigUserSkillsImportValidateRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  artifact_id: string;
+}
+
+export interface AgentConfigUserSkillsImportValidateResponse {
+  proposal_token: string;
+  review: AgentConfigUserSkillImportReview;
+  warnings?: string[];
+  package_hash: string;
+  expected_content_hash: string;
+  expires_at: string;
   protocol_version: string;
 }
 
@@ -1793,6 +1917,7 @@ export interface MCPAppCallToolRequest {
   agent_id?: string;
   server_id?: string;
   binding?: string;
+  render_admission?: string;
   resource_uri?: string;
   tool: string;
   arguments?: unknown;
@@ -2238,6 +2363,54 @@ export interface NamedHistogram {
   labels?: Record<string, string>;
 }
 
+export interface ObservabilityMeasureValue {
+  n: number;
+  scale: number;
+}
+
+export interface ObservabilityQualityBlock {
+  state: string;
+  watermark: number;
+  watermark_at?: string;
+  retention_start?: string;
+  retention_end?: string;
+  coverage: string;
+}
+
+export interface ObservabilityQueryFilter {
+  tenant_ids?: string[];
+  user_ids?: string[];
+  session_ids?: string[];
+  models?: string[];
+}
+
+export interface ObservabilityQueryRequest {
+  identity: IdentityScope;
+  from: string;
+  to: string;
+  bucket: string;
+  group_by?: string[];
+  filters?: ObservabilityQueryFilter;
+  measures: string[];
+  sort?: string;
+  sort_measure?: string;
+  limit: number;
+  cursor?: string;
+}
+
+export interface ObservabilityQueryResponse {
+  rows: ObservabilityQueryRow[];
+  next_cursor?: string;
+  quality: ObservabilityQualityBlock;
+  protocol_version: string;
+}
+
+export interface ObservabilityQueryRow {
+  bucket_start: string;
+  dimensions?: Record<string, string>;
+  measures: Record<string, ObservabilityMeasureValue>;
+}
+
 export interface PauseArtifactRef {
   id: string;
   mime_type?: string;
@@ -2296,6 +2469,7 @@ export interface ReadMCPResourceRequest {
   agent_id?: string;
   server_id: string;
   resource_uri: string;
+  request_render_admission?: boolean;
 }
 
 export interface ReadMCPResourceResponse {
@@ -2303,7 +2477,15 @@ export interface ReadMCPResourceResponse {
   mime_type?: string;
   content?: string;
   artifact_ref?: MCPResourceArtifactRef;
+  render_admission?: RenderAdmission;
   protocol_version: string;
+}
+
+export interface RenderAdmission {
+  token?: string;
+  issued_at?: string;
+  expires_at: string;
+  availability: string;
 }
 
 export interface RetentionHorizon {
@@ -2433,6 +2615,43 @@ export interface SessionFilter {
   query?: string;
 }
 
+export interface SessionOpsAppRef {
+  effective_agent_id?: string;
+  server_id: string;
+  tool_name?: string;
+  availability?: string;
+}
+
+export interface SessionOpsTurnRow {
+  turn_id: string;
+  task_id: string;
+  run_id?: string;
+  session_id: string;
+  sequence: number;
+  tie_breaker: string;
+  status: string;
+  sealed: boolean;
+  version: number;
+  started_at: string;
+  updated_at: string;
+  finished_at?: string;
+  finish_reason?: string;
+  error_class?: string;
+  finish_message?: string;
+  error_message?: string;
+  agent_id?: string;
+  agent_name?: string;
+  agent_binding_source?: string;
+  usage: SessionTurnUsage;
+  activity: SessionTurnActivity;
+  reasoning_steps: number;
+  inputs: number;
+  outputs: number;
+  apps?: SessionOpsAppRef[];
+  pause: SessionTurnPause;
+  last_applied_event_seq: number;
+}
+
 export interface SessionRow {
   session_id: string;
   status: string;
@@ -2453,6 +2672,200 @@ export interface SessionRow {
   title?: string;
   title_source?: string;
   counters_partial?: boolean;
+  counter_status?: string;
+}
+
+export interface SessionTurnActivity {
+  rows?: SessionTurnActivityRow[];
+  complete?: string;
+  more: boolean;
+  dropped?: number;
+  totals: SessionTurnActivityTotals;
+}
+
+export interface SessionTurnActivityRow {
+  position: number;
+  invocation_id?: string;
+  tool: string;
+  step_sequence: number;
+  batch_id?: string;
+  status: string;
+  terminal_class?: string;
+  started_at?: string;
+  finished_at?: string;
+  duration?: number;
+  attempt_count?: number;
+  retryable: boolean;
+  policy_exhausted: boolean;
+  summary?: string;
+}
+
+export interface SessionTurnActivityTotals {
+  invoked: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  retried: number;
+  policy_exhausted: number;
+}
+
+export interface SessionTurnAgent {
+  id?: string;
+  name?: string;
+  binding_source?: string;
+  complete?: string;
+}
+
+export interface SessionTurnAnswer {
+  state?: string;
+  inline?: string;
+  ref?: SessionTurnAnswerRef;
+  seq: number;
+  complete?: string;
+}
+
+export interface SessionTurnAnswerRef {
+  id: string;
+  mime_type?: string;
+  size_bytes?: number;
+  filename?: string;
+  sha256?: string;
+}
+
+export interface SessionTurnAppRef {
+  effective_agent_id?: string;
+  server_id: string;
+  resource_uri: string;
+  display_mode?: string;
+  raw_html_trusted: boolean;
+  tool_call_id?: string;
+  tool_name?: string;
+  availability?: string;
+  complete?: string;
+}
+
+export interface SessionTurnAttachment {
+  id: string;
+  filename?: string;
+  mime_type?: string;
+  size_bytes?: number;
+  sha256?: string;
+  disposition?: string;
+  availability?: string;
+}
+
+export interface SessionTurnHeader {
+  session_id: string;
+  snapshot_id: number;
+  as_of: string;
+}
+
+export interface SessionTurnPause {
+  class?: string;
+  reason?: string;
+  lifecycle?: string;
+  availability?: string;
+}
+
+export interface SessionTurnQuery {
+  text?: string;
+  at?: string;
+  complete?: string;
+}
+
+export interface SessionTurnReasoning {
+  steps?: SessionTurnReasoningStep[];
+  complete?: string;
+  dropped?: number;
+  seq: number;
+}
+
+export interface SessionTurnReasoningStep {
+  index: number;
+  kind?: string;
+}
+
+export interface SessionTurnRow {
+  turn_id: string;
+  task_id: string;
+  run_id?: string;
+  session_id: string;
+  sequence: number;
+  tie_breaker: string;
+  status: string;
+  sealed: boolean;
+  version: number;
+  last_applied_event_seq: number;
+  started_at: string;
+  updated_at: string;
+  finished_at?: string;
+  finish_reason?: string;
+  error_class?: string;
+  finish_message?: string;
+  error_message?: string;
+  agent: SessionTurnAgent;
+  query: SessionTurnQuery;
+  answer: SessionTurnAnswer;
+  pause: SessionTurnPause;
+  inputs?: SessionTurnAttachment[];
+  outputs?: SessionTurnAttachment[];
+  usage: SessionTurnUsage;
+  reasoning: SessionTurnReasoning;
+  activity: SessionTurnActivity;
+  apps?: SessionTurnAppRef[];
+}
+
+export interface SessionTurnUsage {
+  prompt_tokens: SessionTurnUsageMeasure;
+  completion_tokens: SessionTurnUsageMeasure;
+  reasoning_tokens: SessionTurnUsageMeasure;
+  cache_read_tokens: SessionTurnUsageMeasure;
+  cache_write_tokens: SessionTurnUsageMeasure;
+  total_tokens: SessionTurnUsageMeasure;
+  cost_micro_usd: SessionTurnUsageMeasure;
+  latency_ns: SessionTurnUsageMeasure;
+  model?: string;
+}
+
+export interface SessionTurnUsageMeasure {
+  state?: string;
+  value?: number;
+}
+
+export interface SessionTurnsGetRequest {
+  identity: IdentityScope;
+  session_id: string;
+  task_id: string;
+  projection?: string;
+}
+
+export interface SessionTurnsGetResponse {
+  session_id: string;
+  turn?: SessionTurnRow;
+  ops_turn?: SessionOpsTurnRow;
+  protocol_version: string;
+}
+
+export interface SessionTurnsListRequest {
+  identity: IdentityScope;
+  session_id: string;
+  older_cursor?: string;
+  limit?: number;
+  projection?: string;
+}
+
+export interface SessionTurnsListResponse {
+  header: SessionTurnHeader;
+  turns: SessionTurnRow[];
+  order: string;
+  next_older_cursor?: string;
+  has_more: boolean;
+  remaining_older_count?: number;
+  count_exact: boolean;
+  live_resume_seq: number;
+  page_completeness: string;
+  partial_reason?: string;
+  protocol_version: string;
 }
 
 export interface SessionsDeleteRequest {
@@ -2470,6 +2883,7 @@ export interface SessionsDeleteResponse {
 export interface SessionsInspectRequest {
   identity: IdentityScope;
   session_id: string;
+  projection?: string;
 }
 
 export interface SessionsInspectResponse {
@@ -2482,6 +2896,7 @@ export interface SessionsListRequest {
   identity: IdentityScope;
   filter: SessionFilter;
   sort?: string;
+  projection?: string;
   cursor?: string;
   limit?: number;
 }

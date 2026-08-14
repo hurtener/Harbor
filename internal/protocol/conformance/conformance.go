@@ -489,6 +489,18 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodeAgentRetired:               http.StatusConflict,
 	protoerrors.CodeAgentRetirementConflict:    http.StatusConflict,
 	protoerrors.CodeRestartUnavailable:         http.StatusConflict,
+	protoerrors.CodeRenderAdmissionMissing:     http.StatusBadRequest,
+	protoerrors.CodeRenderAdmissionUnavailable: http.StatusBadRequest,
+	protoerrors.CodeRenderAdmissionInvalid:     http.StatusBadRequest,
+	protoerrors.CodeRenderAdmissionExpired:     http.StatusBadRequest,
+	protoerrors.CodeRenderAdmissionMismatch:    http.StatusBadRequest,
+	protoerrors.CodeRenderAuthorityAmbiguous:   http.StatusBadRequest,
+	protoerrors.CodeSkillImportProposalInvalid: http.StatusBadRequest,
+	protoerrors.CodeSkillImportProposalExpired: http.StatusBadRequest,
+	protoerrors.CodeSkillImportPackageInvalid:  http.StatusBadRequest,
+	protoerrors.CodeSkillImportReplaceRequired: http.StatusConflict,
+	protoerrors.CodeQueryBudgetExceeded:        http.StatusBadRequest,
+	protoerrors.CodeInvalidCursor:              http.StatusBadRequest,
 }
 
 // errorCodeMatrix is the closed set of canonical Protocol error codes
@@ -548,6 +560,30 @@ var errorCodeMatrix = []protoerrors.Code{
 	protoerrors.CodeAgentRetired,
 	protoerrors.CodeAgentRetirementConflict,
 	protoerrors.CodeRestartUnavailable,
+	// MCP Apps render-admission surface — the five typed admission
+	// outcomes + the ambiguous-authority refusal, exercised end-to-end by
+	// the AppsSurface / control-transport unit tests (the generic
+	// conformance Stack has no MCP Apps surface, same posture as the
+	// artifacts codes above).
+	protoerrors.CodeRenderAdmissionMissing,
+	protoerrors.CodeRenderAdmissionUnavailable,
+	protoerrors.CodeRenderAdmissionInvalid,
+	protoerrors.CodeRenderAdmissionExpired,
+	protoerrors.CodeRenderAdmissionMismatch,
+	protoerrors.CodeRenderAuthorityAmbiguous,
+	// agent-config user-skill-import surface — the typed two-phase
+	// proposal outcomes + the invalid-package refusal, exercised
+	// end-to-end by the user-skill-import service + stream handler
+	// unit tests.
+	protoerrors.CodeSkillImportProposalInvalid,
+	protoerrors.CodeSkillImportProposalExpired,
+	protoerrors.CodeSkillImportPackageInvalid,
+	protoerrors.CodeSkillImportReplaceRequired,
+	// observability surface — the query-budget and cursor refusals,
+	// exercised end-to-end by the observability service + stream
+	// handler unit tests.
+	protoerrors.CodeQueryBudgetExceeded,
+	protoerrors.CodeInvalidCursor,
 }
 
 // methodScopeFor returns the steering scope the suite uses when
@@ -688,10 +724,10 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// The canonical list currently contains 131 methods; keep the explicit
+	// The canonical list currently contains 137 methods; keep the explicit
 	// wantSet below in lockstep with it.
-	if len(got) != 131 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 131 (including signed OAuth MCP capability registration, paired removal, and terminal retirement)", len(got))
+	if len(got) != 137 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 137 (including signed OAuth MCP capability registration, paired removal, and terminal retirement)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -837,6 +873,12 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodAgentConfigUserSkillsList:             {},
 		methods.MethodAgentConfigUserSkillsUpsert:           {},
 		methods.MethodAgentConfigUserSkillsDelete:           {},
+		methods.MethodAgentConfigUserSkillsImportValidate:   {},
+		methods.MethodAgentConfigUserSkillsImportCommit:     {},
+		methods.MethodAgentConfigCompositionPreview:         {},
+		methods.MethodSessionTurnsList:                      {},
+		methods.MethodSessionTurnsGet:                       {},
+		methods.MethodObservabilityQuery:                    {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -1063,6 +1105,29 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// clusters above.
 			if methods.IsSessionsMethod(m) {
 				t.Skip("sessions.* methods exercised by internal/sessions/protocol tests + stream sessions_handler tests + test/integration/sessions_page_test.go; conformance-suite scenario lands when the Stack wires that surface")
+			}
+			// the two `sessions.turns.*` reads route through the
+			// session-turns stream handler (POST /v1/sessions/turns/*),
+			// not the REST ControlSurface — they need a turn-projection
+			// Service the conformance Stack does not wire. Their happy
+			// paths + failure modes are exercised by
+			// internal/sessions/turns/protocol tests + the stream
+			// session_turns_handler tests; the conformance-suite scenario
+			// lands with the surface extension — same posture as the
+			// sessions / tools / flows clusters.
+			if methods.IsSessionTurnsMethod(m) {
+				t.Skip("sessions.turns.* exercised by internal/sessions/turns/protocol tests + stream session_turns_handler tests; conformance-suite scenario lands when the Stack wires that surface")
+			}
+			// `observability.query` routes through the observability
+			// stream handler (POST /v1/observability/query), not the REST
+			// ControlSurface — it needs an observability Service the
+			// conformance Stack does not wire. Its happy path + failure
+			// modes are exercised by internal/observability/protocol
+			// tests + the stream observability_handler tests; the
+			// conformance-suite scenario lands with the surface
+			// extension — same posture as the runs / sessions clusters.
+			if methods.IsObservabilityMethod(m) {
+				t.Skip("observability.query exercised by internal/observability/protocol tests + stream observability_handler tests; conformance-suite scenario lands when the Stack wires that surface")
 			}
 			// `runs.set_overrides` routes through the
 			// Console Playground-page handler (POST /v1/runs/set_overrides),
