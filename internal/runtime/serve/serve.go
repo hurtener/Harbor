@@ -497,14 +497,17 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	// shared restart-stable KEK-backed sealer and ONE eager immutable
 	// boot-pack index — resolved HERE, before readiness / listeners, so a
 	// missing authority fails the boot loud.
-	bootIdentity := resolveMCPAttachIdentity(opts.MCPDefaultIdentity)
 
 	// The ONE shared KEK-backed sealer (never a second instance over the
 	// same key): the ProviderBuilder's broker sealer when one exists,
-	// else exactly one instance from `tools.oauth_token_kek_env`. When
+	// else exactly one instance from an EXPLICITLY configured
+	// `tools.oauth_token_kek_env` — resolved consumer-independently, so
+	// HA-61 import keeps its sealer even when render admission is
+	// disabled and no broker is present. When
 	// `tools.mcp_app_render_admission.enabled` is set, an empty env
 	// name / unset-invalid KEK / construction failure fails readiness
-	// LOUD even with no OAuth provider or credential broker declared.
+	// LOUD even with no OAuth provider or credential broker declared;
+	// an explicitly configured but unresolvable env fails loud likewise.
 	sharedSealer, sealerErr := ResolveSharedKEKSealer(cfg, stack.OAuthProviderBuilder)
 	if sealerErr != nil {
 		closeAll(ctx)
@@ -526,10 +529,12 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	// `skills.boot_agent_packs` (all files read before readiness), every
 	// declared agent id validated against the one resolved boot/default
 	// agent, static required_tools validation against the WRAPPED
-	// catalog, and the pre-read durable collision check (same hash
-	// dedupes both, differing hash fails loud). Loader/composer never
-	// invokes admin pack verbs, lifecycle, SkillStore/ArtifactStore
-	// writes, or AgentConfig revisions.
+	// catalog under the configured `tools.granted_scopes` ceiling
+	// (required_tools is metadata only and grants nothing), and the
+	// pre-read durable collision check (same hash dedupes both, differing
+	// hash fails loud). Loader/composer never invokes admin pack verbs,
+	// lifecycle, SkillStore/ArtifactStore writes, or AgentConfig
+	// revisions.
 	// The agent-config registry's retirement/read seam is asserted ONCE
 	// here: the enabled v1.28 surfaces (boot baseline, render admission,
 	// import, preview) all require it, so a registry that cannot serve it
@@ -541,7 +546,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 	var bootIndex *bootpacks.Index
 	if len(cfg.Skills.BootAgentPacks) > 0 {
-		bootIndex, err = OpenBootPackIndex(ctx, cfg, toolCat)
+		bootIndex, err = OpenBootPackIndex(ctx, cfg, toolCat, artStore)
 		if err != nil {
 			closeAll(ctx)
 			return nil, err
@@ -550,7 +555,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 			closeAll(ctx)
 			return nil, vErr
 		}
-		if pErr := PreReadBootPackCollisions(ctx, bootIndex, retirementRegistry, bootIdentity.UserID); pErr != nil {
+		if pErr := PreReadBootPackCollisions(ctx, bootIndex, retirementRegistry); pErr != nil {
 			closeAll(ctx)
 			return nil, pErr
 		}
@@ -655,13 +660,17 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 
 	// The HA-66 read-only composition preview: the frozen boot index as
-	// the BootPackReader + the agent-config reader + the signed gates.
-	// Nil when no boot baseline is bound (the preview route stays 501).
+	// the BootPackReader — or the EMPTY immutable reader when no baseline
+	// is declared, so boot config removal never 501s the preview and an
+	// independently persisted active revision still appears as provenance
+	// "revision" — plus the agent-config reader + the signed gates. Nil
+	// only when the registry genuinely lacks the retirement/read seam (a
+	// mandatory seam is absent — never a stub surface).
 	var compositionPreviewService *agentcfgprotocol.CompositionPreviewService
-	if bootIndex != nil {
+	if retirementOK {
 		compositionPreviewService, err = agentcfgprotocol.NewCompositionPreviewService(
 			retirementRegistry,
-			bootIndex,
+			PreviewBootReader(bootIndex),
 			agentcfgprotocol.WithPreviewAgentReach(agentReach),
 			agentcfgprotocol.WithPreviewSessionReach(auth.NewSessionReachAuthorizer()),
 			agentcfgprotocol.WithPreviewBus(bus),

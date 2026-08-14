@@ -12,14 +12,24 @@ package devstack
 //     (never a silent fallback to the disabled surface).
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/config"
 	_ "github.com/hurtener/Harbor/internal/llm/mock" // the dev-only mock LLM driver (outside the prod aggregator)
 	_ "github.com/hurtener/Harbor/internal/planner/react"
+	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/serve"
+	"github.com/hurtener/Harbor/internal/skills"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
@@ -195,5 +205,134 @@ func TestTryAssemble_AdmissionDisabled_WithBroker_StaysUnwired(t *testing.T) {
 	}
 	if authz != nil || gate != nil {
 		t.Fatalf("WireRenderAdmission(disabled, broker sealer) = (%v, %v), want (nil, nil) — a broker sealer alone must never wire the render-admission surface", authz, gate)
+	}
+}
+
+// TestTryAssemble_AdmissionDisabled_ConfiguredKEK_WiresImportService is
+// the DEVSTACK consumer-independent-sealer regression: an explicitly
+// configured VALID `tools.oauth_token_kek_env` with the HA-56 flag OFF
+// and NO OAuth broker resolves the ONE shared sealer, so the HA-61
+// user-skill-import service is wired (the import_validate route answers
+// non-501). Sealer availability never enables the render-admission
+// surface itself — WireRenderAdmission(Enabled: false, ...) still
+// returns the nil pair — but the shared KEK is NOT a render-admission
+// toggle: HA-61 import needs it with the surface disabled.
+func TestTryAssemble_AdmissionDisabled_ConfiguredKEK_WiresImportService(t *testing.T) {
+	t.Setenv(v128KEKEnv, v128DummyKEKHex)
+	cfg := devstackV128Config(t, func(c *config.Config) {
+		c.Tools.OAuthTokenKEKEnv = v128KEKEnv
+		c.Skills = config.SkillsConfig{
+			Driver: "localdb",
+			DSN:    filepath.Join(t.TempDir(), "skills.sqlite"),
+		}
+	})
+	stack, err := TryAssemble(cfg, AssembleOpts{})
+	if err != nil {
+		if stack != nil {
+			stack.Close()
+		}
+		t.Fatalf("TryAssemble (configured KEK, admission disabled): %v", err)
+	}
+	defer stack.Close()
+
+	// The import route is WIRED: a non-501 answer proves the shared
+	// sealer resolved for HA-61 even though render admission is disabled
+	// and no OAuth broker is present. (The artifact is deliberately
+	// missing — the assertion is that the service seam answers, not that
+	// the review succeeds.)
+	body := `{"identity":{"tenant":"dev","user":"dev","session":"dev"},"agent_id":"harbor-dev-agent","artifact_id":"art-missing"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/agent_config/user/skills/import_validate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+stack.Token)
+	rec := httptest.NewRecorder()
+	stack.Handler.ServeHTTP(rec, req)
+	if rec.Code == http.StatusNotImplemented {
+		t.Fatalf("import_validate answered 501 with a configured valid shared KEK (admission disabled, no broker) — the shared sealer must resolve for HA-61 import")
+	}
+}
+
+// TestTryAssemble_NoBootPacks_PreviewAvailable is the DEVSTACK P1
+// regression: with NO boot declarations the read-only composition
+// preview stays available (never 501) — an independently persisted
+// active revision composes as provenance "revision" through the empty
+// immutable boot contribution. Boot config removal neither erases the
+// durable revision nor weakens the boot+revision collision defense.
+func TestTryAssemble_NoBootPacks_PreviewAvailable(t *testing.T) {
+	cfg := devstackV128Config(t, nil)
+	stack, err := TryAssemble(cfg, AssembleOpts{})
+	if err != nil {
+		if stack != nil {
+			stack.Close()
+		}
+		t.Fatalf("TryAssemble (no boot packs): %v", err)
+	}
+	defer stack.Close()
+
+	// Seed an independently persisted agent-scope active revision (the
+	// canonical reserved tenant-agent control-plane slot) with one pack
+	// item — the exact durable state that must appear in the preview.
+	scopeQ, err := agentcfg.AgentScope(DefaultDevTenant, stack.AgentConfigID)
+	if err != nil {
+		t.Fatalf("AgentScope: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := stack.AgentConfig.SetRevision(ctx, scopeQ, stack.AgentConfigID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+		AgentPacks: []skills.AgentPackItem{{
+			Name: "runbook", Title: "Runbook", Trigger: "when asked about the runbook",
+			Steps: []string{"do the thing", "verify the thing"},
+		}},
+	}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("SetRevision (agent scope): %v", err)
+	}
+
+	// The composition preview route must be LIVE without any boot
+	// declaration and must surface the persisted revision as provenance
+	// "revision". Driven through a REAL httptest server (the same shape
+	// the integration suite uses) so the auth middleware + transport
+	// chain is exactly the wire path.
+	srv := httptest.NewServer(stack.Handler)
+	defer srv.Close()
+	bodyBytes, err := json.Marshal(prototypes.AgentConfigCompositionPreviewRequest{
+		Identity: prototypes.IdentityScope{
+			Tenant:  "dev",
+			User:    "dev",
+			Session: "dev",
+		},
+		AgentID: "harbor-dev-agent",
+	})
+	if err != nil {
+		t.Fatalf("marshal preview request: %v", err)
+	}
+	req, err := http.NewRequest(
+		http.MethodPost,
+		srv.URL+"/v1/agent_config/composition/preview",
+		bytes.NewReader(bodyBytes),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+stack.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("preview request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read preview body: %v", err)
+	}
+	respBody := string(respBytes)
+	if resp.StatusCode == http.StatusNotImplemented {
+		t.Fatalf("composition/preview answered 501 with no boot packs declared — the preview must stay available with an empty immutable boot contribution")
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("composition/preview status = %d body=%s, want 200", resp.StatusCode, respBody)
+	}
+	if !strings.Contains(respBody, `"outcome":"available"`) {
+		t.Fatalf("composition/preview outcome not available: %s", respBody)
+	}
+	if !strings.Contains(respBody, `"source":"revision"`) {
+		t.Fatalf("composition/preview items do not carry revision provenance: %s", respBody)
+	}
+	if !strings.Contains(respBody, `"name":"runbook"`) {
+		t.Fatalf("composition/preview items do not include the persisted runbook pack: %s", respBody)
 	}
 }

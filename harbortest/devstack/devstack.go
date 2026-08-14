@@ -1062,14 +1062,13 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		// composes, so devstack exercises the exact loader/composer path
 		// (CLAUDE.md §17.6). The shared sealer / boot index / projection
 		// loops close through the stack's closer chain.
-		devIdentity := resolveDevIdentity(opts)
 		sharedSealer, sealerErr := serve.ResolveSharedKEKSealer(cfg, stack.OAuthProviderBuilder)
 		if sealerErr != nil {
 			return stack, sealerErr
 		}
 		var bootIndex *bootpacks.Index
 		if len(cfg.Skills.BootAgentPacks) > 0 {
-			bootIndex, bErr := serve.OpenBootPackIndex(ctx, cfg, stack.Catalog)
+			bootIndex, bErr := serve.OpenBootPackIndex(ctx, cfg, stack.Catalog, stack.Artifacts)
 			if bErr != nil {
 				return stack, bErr
 			}
@@ -1080,7 +1079,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			if !ok {
 				return stack, fmt.Errorf("devstack boot_agent_packs: agent-config registry does not implement the retirement/read seam")
 			}
-			if pErr := serve.PreReadBootPackCollisions(ctx, bootIndex, retReg, devIdentity.UserID); pErr != nil {
+			if pErr := serve.PreReadBootPackCollisions(ctx, bootIndex, retReg); pErr != nil {
 				return stack, pErr
 			}
 		}
@@ -1152,10 +1151,15 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			}
 		}
 		var previewService *agentcfgprotocol.CompositionPreviewService
-		if bootIndex != nil {
+		if retirementOK {
 			var pErr error
+			// The SAME preview path serve.Boot builds: the frozen boot
+			// index as the BootPackReader, or the EMPTY immutable reader
+			// when no baseline is declared — boot config removal never
+			// 501s the preview and an independently persisted active
+			// revision appears as provenance "revision".
 			previewService, pErr = agentcfgprotocol.NewCompositionPreviewService(
-				retReg, bootIndex,
+				retReg, serve.PreviewBootReader(bootIndex),
 				agentcfgprotocol.WithPreviewAgentReach(stack.AgentReach),
 				agentcfgprotocol.WithPreviewSessionReach(auth.NewSessionReachAuthorizer()),
 				agentcfgprotocol.WithPreviewBus(bus),

@@ -1262,10 +1262,26 @@ func (h *AgentConfigHandler) serveCompositionPreview(w http.ResponseWriter, r *h
 	if !h.authorizeAgent(w, r, req.AgentID) {
 		return
 	}
+	// The TARGET triple may be omitted (or repeat the caller's own) on
+	// the ordinary path: the wire contract resolves omitted values to the
+	// caller's own verified triple (AgentConfigCompositionPreviewRequest
+	// godoc). Only an elevated (admin / console:fleet) caller addresses a
+	// DIFFERENT same-tenant user, via the explicit target fields — the
+	// preview service applies the audited widening internally.
+	targetTenant, targetUser, targetSession := req.TenantID, req.UserID, req.SessionID
+	if targetTenant == "" {
+		targetTenant = wireID.Tenant
+	}
+	if targetUser == "" {
+		targetUser = wireID.User
+	}
+	if targetSession == "" {
+		targetSession = wireID.Session
+	}
 	resp, err := h.previewService.CompositionPreview(r.Context(), agentcfgprotocol.CompositionPreviewRequest{
-		TenantID:  req.TenantID,
-		UserID:    req.UserID,
-		SessionID: req.SessionID,
+		TenantID:  targetTenant,
+		UserID:    targetUser,
+		SessionID: targetSession,
 		AgentID:   req.AgentID,
 	})
 	if err != nil {

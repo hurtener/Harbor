@@ -164,26 +164,57 @@ func TestRunOnce_NotRunnable_FailsLoud(t *testing.T) {
 }
 
 // TestRunOnce_BootBaselineConfigured_FailsLoud — the HA-66 headless
-// posture: a stack whose configuration declares `skills.boot_agent_packs`
-// refuses RunOnce loud with the typed sentinel, BEFORE any runnability /
-// identity work. The boot baseline is a serve-band surface (resolved
-// boot/default agent, loader/composer/guard/preview wiring); a headless
-// one-shot run must never compose it under an invented identity and
-// never silently skip it.
+// posture: a RUNNABLE stack whose configuration declares
+// `skills.boot_agent_packs` refuses RunOnce loud with the typed
+// sentinel, AFTER the runnability checks and BEFORE any identity work.
+// The boot baseline is a serve-band surface (resolved boot/default
+// agent, loader/composer/guard/preview wiring); a headless one-shot run
+// must never compose it under an invented identity and never silently
+// skip it.
 func TestRunOnce_BootBaselineConfigured_FailsLoud(t *testing.T) {
 	ctx := context.Background()
-	// A minimal stack whose config declares one boot pack — RunOnce
-	// checks the declaration before touching the RunLoop, so the guard
-	// fires even on a zero-value stack.
-	stack := &assemble.Stack{Cfg: &config.Config{Skills: config.SkillsConfig{
-		BootAgentPacks: []config.BootAgentPackConfig{{
-			TenantID: "acme", AgentID: "boot-agent", Directory: "/tmp/boot",
-		}},
-	}}}
+	cfg := minimalCfg(t)
+	cfg.LLM.Model = "mock/echo"
+	cfg.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+		"mock/echo": {ContextWindowTokens: 100000, TokenEstimator: "chars_div_4"},
+	}
+	cfg.Skills.BootAgentPacks = []config.BootAgentPackConfig{{
+		TenantID: "acme", AgentID: "boot-agent", Directory: "/tmp/boot",
+	}}
+	stack, err := assemble.Assemble(ctx, cfg, assemble.Options{})
+	if err != nil {
+		t.Fatalf("Assemble (with boot packs): %v", err)
+	}
+	defer func() { _ = stack.Close(ctx) }()
+	if stack.RunLoop == nil || stack.Planner == nil {
+		t.Fatalf("runnable stack must have RunLoop + Planner (RunLoop=%v Planner=%v)", stack.RunLoop, stack.Planner)
+	}
 	id := identity.Identity{TenantID: "acme", UserID: "u-1", SessionID: "s-1"}
-	_, err := stack.RunOnce(ctx, "goal", id)
+	_, err = stack.RunOnce(ctx, "goal", id)
 	if !errors.Is(err, assemble.ErrBootBaselineUnsupported) {
-		t.Fatalf("RunOnce with boot_agent_packs configured: got %v, want ErrBootBaselineUnsupported", err)
+		t.Fatalf("RunOnce with boot_agent_packs configured on a runnable stack: got %v, want ErrBootBaselineUnsupported", err)
+	}
+}
+
+// TestRunOnce_ZeroValueAndNilConfig_NotRunnable is the P1 zero/partial
+// Stack posture regression: a zero-value or nil-config NON-RUNNABLE
+// stack returns the typed ErrNotRunnable (RunLoop / Planner are
+// checked FIRST), never a panic on an absent Cfg. The pre-fix order
+// dereferenced s.Cfg for the boot-pack guard before the runnability
+// checks, so a zero-value stack panicked.
+func TestRunOnce_ZeroValueAndNilConfig_NotRunnable(t *testing.T) {
+	ctx := context.Background()
+	id := identity.Identity{TenantID: "acme", UserID: "u-1", SessionID: "s-1"}
+
+	// Zero-value Stack: nil Cfg, no RunLoop, no Planner.
+	var zero assemble.Stack
+	if _, err := zero.RunOnce(ctx, "goal", id); !errors.Is(err, assemble.ErrNotRunnable) {
+		t.Fatalf("zero-value Stack RunOnce = %v, want ErrNotRunnable (never a panic)", err)
+	}
+	// Nil-config non-runnable Stack: same posture, explicit nil Cfg.
+	nilCfg := &assemble.Stack{Cfg: nil}
+	if _, err := nilCfg.RunOnce(ctx, "goal", id); !errors.Is(err, assemble.ErrNotRunnable) {
+		t.Fatalf("nil-config Stack RunOnce = %v, want ErrNotRunnable (never a panic)", err)
 	}
 }
 

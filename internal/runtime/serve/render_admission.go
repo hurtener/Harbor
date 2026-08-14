@@ -14,8 +14,11 @@
 // resolveSharedKEKSealer never constructs a second sealer over the same
 // key: when a credential broker is declared, the ProviderBuilder
 // already holds the sealer and it is reused; otherwise exactly one
-// instance is built from the env. When the render-admission surface is
-// ENABLED, an empty env name, an unset/invalid KEK, or a construction
+// instance is built from the env. Resolution is CONSUMER-INDEPENDENT:
+// an explicitly configured env resolves the shared sealer even when
+// the render-admission surface is disabled and no broker is present
+// (HA-61 import needs it), and an enabled render-admission surface
+// with an empty env name, an unset/invalid KEK, or a construction
 // failure fails readiness LOUD even when no OAuth provider or
 // credential broker is declared.
 //
@@ -108,25 +111,46 @@ type RenderAdmissionAuthorityDeps struct {
 // sealer shared by every runtime authority. It prefers the
 // ProviderBuilder's already-constructed sealer (a declared credential
 // broker) and otherwise constructs exactly one instance from the
-// operator's deployment-shared `tools.oauth_token_kek_env`. When the
-// HA-56 render-admission surface is enabled, an empty env name, an
-// unset / invalid KEK, or a construction failure fails loud — even
-// when no OAuth provider or credential broker is declared.
+// operator's deployment-shared `tools.oauth_token_kek_env`.
 //
-// When the surface is disabled and no broker sealer exists, it returns
-// (nil, nil) — no sealer is needed.
+// The resolution is CONSUMER-INDEPENDENT: an explicitly configured
+// `tools.oauth_token_kek_env` resolves the shared sealer regardless of
+// whether the HA-56 render-admission surface is enabled — HA-61 import
+// proposal tokens and signed admissions need it even when render
+// admission is disabled and no OAuth broker is present. The HA-56 flag
+// only controls whether the authority+gate pair is WIRED
+// (WireRenderAdmission); sealer availability never enables it. A
+// configured-but-unresolvable env (unset value, non-hex, wrong-length
+// KEK, or a construction failure) fails loud even when the surface is
+// disabled: the operator explicitly declared the key slot, so a broken
+// one is a boot error — never a silent (nil, nil) that 501s HA-61
+// import. When the ENABLED surface is at stake the error additionally
+// names `tools.mcp_app_render_admission.enabled`.
+//
+// When no env is configured and no broker sealer exists, it returns
+// (nil, nil) — no consumer needs a sealer — EXCEPT that an ENABLED
+// surface with no env fails readiness loud (an enabled surface with an
+// unresolvable shared KEK never falls back to the disabled surface).
 func ResolveSharedKEKSealer(cfg *config.Config, builder *toolauth.ProviderBuilder) (toolauth.Sealer, error) {
 	if builder != nil && builder.AdmissionSealer() != nil {
 		return builder.AdmissionSealer(), nil
 	}
-	if !cfg.Tools.MCPAppRenderAdmission.Enabled {
-		return nil, nil
+	if env := cfg.Tools.OAuthTokenKEKEnv; env != "" {
+		sealer, err := toolauth.NewSealerFromEnv(env)
+		if err != nil {
+			if cfg.Tools.MCPAppRenderAdmission.Enabled {
+				return nil, fmt.Errorf("tools.mcp_app_render_admission.enabled: %w", err)
+			}
+			return nil, fmt.Errorf("tools.oauth_token_kek_env: %w", err)
+		}
+		return sealer, nil
 	}
-	sealer, err := toolauth.NewSealerFromEnv(cfg.Tools.OAuthTokenKEKEnv)
-	if err != nil {
-		return nil, fmt.Errorf("tools.mcp_app_render_admission.enabled: %w", err)
+	if cfg.Tools.MCPAppRenderAdmission.Enabled {
+		// An enabled surface with NO configured env cannot resolve the
+		// shared KEK — fail readiness loud, naming the surface.
+		return nil, fmt.Errorf("tools.mcp_app_render_admission.enabled: tools.oauth_token_kek_env must be set (an enabled render-admission surface requires a resolvable shared KEK)")
 	}
-	return sealer, nil
+	return nil, nil
 }
 
 // renderAdmissionAgentConfig is the narrow desired-state read seam the
@@ -267,7 +291,13 @@ func (g *renderAdmissionGate) AuthorizeRender(ctx context.Context, serverID, res
 // half-wired pair at construction), and a missing shared KEK sealer
 // fails construction LOUD — the readiness-failure posture an enabled
 // surface with an unresolvable `tools.oauth_token_kek_env` must take,
-// never a silent fallback to the disabled surface.
+// never a silent fallback to the disabled surface. The Sessions
+// registry (the durable erasure probe) and the AgentConfig reader (the
+// retirement + current-exposure gate) are MANDATORY collaborators of
+// the enabled gate: the production gate may never treat a missing
+// erasure or retirement/current-exposure reader as permission to skip
+// that authorization check, so a nil collaborator fails construction
+// LOUD rather than building a gate that silently skips it.
 func WireRenderAdmission(deps RenderAdmissionAuthorityDeps) (protocol.RenderAdmissionAuthority, protocol.RenderAdmissionGate, error) {
 	if !deps.Enabled {
 		return nil, nil, nil
@@ -277,6 +307,12 @@ func WireRenderAdmission(deps RenderAdmissionAuthorityDeps) (protocol.RenderAdmi
 	}
 	if deps.Registry == nil {
 		return nil, nil, errors.New("render admission: MCP registry is required when the surface is enabled")
+	}
+	if deps.Sessions == nil {
+		return nil, nil, errors.New("render admission: sessions registry is required when the surface is enabled (the durable erasure check may never be skipped)")
+	}
+	if deps.AgentConfig == nil {
+		return nil, nil, errors.New("render admission: agent-config reader is required when the surface is enabled (the retirement/current-exposure checks may never be skipped)")
 	}
 	authority, err := admission.New(deps.Sealer, deps.AdmissionOptions...)
 	if err != nil {

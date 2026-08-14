@@ -213,10 +213,15 @@ func admErrIsRefused(err error) bool {
 }
 
 // TestResolveSharedKEKSealer_Matrix pins the ONE-sealer resolution:
-// the broker's already-constructed sealer wins when present; the
-// disabled surface resolves (nil, nil) with no env; the ENABLED surface
-// resolves exactly one sealer from the shared env and fails loud on an
-// empty/unset/invalid env even with no broker declared.
+// the broker's already-constructed sealer wins when present; an
+// EXPLICITLY configured env resolves the shared sealer regardless of
+// the HA-56 flag (the consumer-independent contract — HA-61 import
+// keeps its sealer when render admission is disabled and no broker is
+// present); a configured-but-unresolvable env fails loud even when
+// disabled; the ENABLED surface resolves exactly one sealer from the
+// shared env and fails loud on an empty/unset/invalid env even with no
+// broker declared; and a disabled surface with NO env configured
+// resolves (nil, nil) — no consumer needs a sealer.
 func TestResolveSharedKEKSealer_Matrix(t *testing.T) {
 	t.Setenv(admKEKEnv, admDummyKEKHex)
 	cfg := &config.Config{Tools: config.ToolsConfig{OAuthTokenKEKEnv: admKEKEnv}}
@@ -248,14 +253,31 @@ func TestResolveSharedKEKSealer_Matrix(t *testing.T) {
 		t.Fatal("ResolveSharedKEKSealer (broker) returned nil")
 	}
 
-	// (b) Disabled surface + no broker → (nil, nil), no env touched.
-	t.Setenv(admKEKEnv, "")
+	// (b) Disabled surface + no broker + explicitly configured VALID env
+	//     → the shared sealer resolves (the P1 consumer-independent
+	//     regression: HA-61 import keeps its sealer even when render
+	//     admission is disabled and no OAuth broker is present).
+	t.Setenv(admKEKEnv, admDummyKEKHex)
 	sealer, err = ResolveSharedKEKSealer(cfg, nil)
-	if err != nil || sealer != nil {
-		t.Fatalf("ResolveSharedKEKSealer (disabled) = (%v, %v), want (nil, nil)", sealer, err)
+	if err != nil {
+		t.Fatalf("ResolveSharedKEKSealer (disabled, configured valid env): %v", err)
+	}
+	if sealer == nil {
+		t.Fatal("ResolveSharedKEKSealer (disabled, configured valid env) returned nil — an explicitly configured shared KEK must resolve for HA-61 import regardless of the HA-56 flag")
 	}
 
-	// (c) Enabled surface + valid env → exactly one sealer.
+	// (c) Disabled surface + no broker + configured but UNSET env → LOUD
+	//     failure naming the env: the operator explicitly declared the
+	//     key slot, so a broken one is a boot error — never a silent
+	//     (nil, nil) that 501s HA-61 import.
+	t.Setenv(admKEKEnv, "")
+	if _, err := ResolveSharedKEKSealer(cfg, nil); err == nil {
+		t.Fatal("ResolveSharedKEKSealer (disabled, configured unset env) must fail loud")
+	} else if !strings.Contains(err.Error(), "tools.oauth_token_kek_env") {
+		t.Fatalf("disabled-configured-unset sealer error %q does not name tools.oauth_token_kek_env", err)
+	}
+
+	// (d) Enabled surface + valid env → exactly one sealer.
 	cfg.Tools.MCPAppRenderAdmission.Enabled = true
 	t.Setenv(admKEKEnv, admDummyKEKHex)
 	sealer, err = ResolveSharedKEKSealer(cfg, nil)
@@ -266,7 +288,8 @@ func TestResolveSharedKEKSealer_Matrix(t *testing.T) {
 		t.Fatal("ResolveSharedKEKSealer (enabled, valid env) returned nil")
 	}
 
-	// (d) Enabled surface + unset env → LOUD readiness failure.
+	// (e) Enabled surface + unset env → LOUD readiness failure naming the
+	//     surface.
 	t.Setenv(admKEKEnv, "")
 	if _, err := ResolveSharedKEKSealer(cfg, nil); err == nil {
 		t.Fatal("ResolveSharedKEKSealer (enabled, unset env) must fail loud")
@@ -274,18 +297,43 @@ func TestResolveSharedKEKSealer_Matrix(t *testing.T) {
 		t.Fatalf("enabled-surface sealer error %q does not name the surface", err)
 	}
 
-	// (e) Enabled surface + invalid env → LOUD readiness failure.
+	// (f) Enabled surface + invalid env → LOUD readiness failure naming
+	//     the surface.
 	t.Setenv(admKEKEnv, "not-hex!!")
 	if _, err := ResolveSharedKEKSealer(cfg, nil); err == nil {
 		t.Fatal("ResolveSharedKEKSealer (enabled, invalid env) must fail loud")
+	} else if !strings.Contains(err.Error(), "tools.mcp_app_render_admission.enabled") {
+		t.Fatalf("enabled-surface invalid-KEK error %q does not name the surface", err)
+	}
+
+	// (g) Disabled surface + NO env configured → (nil, nil): no consumer
+	//     needs a sealer, and the env is never touched.
+	cfg.Tools.MCPAppRenderAdmission.Enabled = false
+	cfg.Tools.OAuthTokenKEKEnv = ""
+	t.Setenv(admKEKEnv, "")
+	sealer, err = ResolveSharedKEKSealer(cfg, nil)
+	if err != nil || sealer != nil {
+		t.Fatalf("ResolveSharedKEKSealer (disabled, no env) = (%v, %v), want (nil, nil)", sealer, err)
+	}
+
+	// (h) Enabled surface + NO env configured → LOUD readiness failure
+	//     naming the surface (an enabled surface never falls back to the
+	//     disabled surface).
+	cfg.Tools.MCPAppRenderAdmission.Enabled = true
+	if _, err := ResolveSharedKEKSealer(cfg, nil); err == nil {
+		t.Fatal("ResolveSharedKEKSealer (enabled, no env) must fail loud")
+	} else if !strings.Contains(err.Error(), "tools.mcp_app_render_admission.enabled") {
+		t.Fatalf("enabled-no-env sealer error %q does not name the surface", err)
 	}
 }
 
 // TestWireRenderAdmission_EnabledGatePins the explicit-opt-in contract:
 // the pair is wired ONLY when Enabled is true — a nil sealer keeps the
 // surface disabled (nil, nil, nil) — while an ENABLED surface with no
-// registry or no shared sealer fails construction LOUD (the readiness
-// failure posture), never a silent fallback to the disabled surface.
+// shared sealer, no registry, no sessions registry, or no agent-config
+// reader fails construction LOUD (the readiness failure posture, and
+// the P1 "the enabled gate may never skip an authorization check"
+// rule), never a silent fallback to the disabled surface.
 func TestWireRenderAdmission_EnabledGatePins(t *testing.T) {
 	t.Setenv(admKEKEnv, admDummyKEKHex)
 	sealer, err := toolauth.NewSealerFromEnv(admKEKEnv)
@@ -316,14 +364,37 @@ func TestWireRenderAdmission_EnabledGatePins(t *testing.T) {
 		t.Fatalf("WireRenderAdmission(enabled, sealer, no registry) = (%v, %v, %v), want loud error", a, g, err)
 	}
 
-	// Enabled + full deps → the pair is wired together.
+	// Enabled + sealer + registry but no sessions registry → loud error:
+	// the enabled gate may never skip the durable erasure check.
 	reg := mcp.NewRegistry()
 	if a, g, err := WireRenderAdmission(RenderAdmissionAuthorityDeps{
 		Enabled: true, Sealer: sealer, Registry: reg,
+	}); a != nil || g != nil || err == nil {
+		t.Fatalf("WireRenderAdmission(enabled, sealer, registry, no sessions) = (%v, %v, %v), want loud error (the erasure check may never be skipped)", a, g, err)
+	} else if !strings.Contains(err.Error(), "sessions registry") {
+		t.Fatalf("enabled-no-sessions error %q does not name the sessions registry", err)
+	}
+
+	// Enabled + sealer + registry + sessions but no agent-config reader →
+	// loud error: the enabled gate may never skip the
+	// retirement/current-exposure checks.
+	f := buildAdmissionGateFixture(t)
+	if a, g, err := WireRenderAdmission(RenderAdmissionAuthorityDeps{
+		Enabled: true, Sealer: sealer, Registry: reg, Sessions: f.sessions,
+	}); a != nil || g != nil || err == nil {
+		t.Fatalf("WireRenderAdmission(enabled, sealer, registry, sessions, no agentcfg) = (%v, %v, %v), want loud error (the retirement/current-exposure checks may never be skipped)", a, g, err)
+	} else if !strings.Contains(err.Error(), "agent-config reader") {
+		t.Fatalf("enabled-no-agentcfg error %q does not name the agent-config reader", err)
+	}
+
+	// Enabled + full deps → the pair is wired together.
+	if a, g, err := WireRenderAdmission(RenderAdmissionAuthorityDeps{
+		Enabled: true, Sealer: sealer, Registry: reg,
+		Sessions: f.sessions, AgentConfig: f.agentCfg,
 	}); err != nil {
-		t.Fatalf("WireRenderAdmission(enabled, sealer, registry): %v", err)
+		t.Fatalf("WireRenderAdmission(enabled, full deps): %v", err)
 	} else if a == nil || g == nil {
-		t.Fatalf("WireRenderAdmission(enabled, sealer, registry) = (%v, %v), want both wired", a, g)
+		t.Fatalf("WireRenderAdmission(enabled, full deps) = (%v, %v), want both wired", a, g)
 	}
 }
 
