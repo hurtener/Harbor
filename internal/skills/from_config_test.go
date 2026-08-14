@@ -41,6 +41,13 @@ func TestSnapshotFromConfig_FieldParity_SkillsConfig(t *testing.T) {
 		// boot-maintenance authority consumed by session-overlay assembly. It
 		// is not SkillStore driver configuration or Directory input.
 		"SessionPersonalCutover": "consumed by runtime session-overlay cutover assembly",
+		// Phase 248 (HA-66, D-427): boot packs are node-local deployment
+		// config consumed eagerly by the boot-pack loader and runtime
+		// composition BEFORE readiness — never SkillStore state. Not a
+		// driver setting, Directory constructor input, or persisted
+		// ConfigSnapshot field; the snapshot must not project, clone, or
+		// store boot-pack data.
+		"BootAgentPacks": "eager boot-pack loader/runtime composition before readiness; node-local deployment config, not SkillStore state",
 	}
 	typ := reflect.TypeOf(config.SkillsConfig{})
 	for i := range typ.NumField() {
