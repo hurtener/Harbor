@@ -475,7 +475,7 @@ fi
 # can resolve.
 #
 # The pin is not only what a scaffolded `go.mod` requires: `cmd/harbor/root.go`
-# reports `FallbackModuleVersion + "-dev"` as `harbor --version` on the same
+# reports `FallbackModuleVersion + "-dev"` as `harbor version` on the same
 # un-stamped builds, so a stale pin also misreports the running binary.
 #
 # MODULE TAGS, NOT ARTIFACT RELEASE TAGS. Harbor's GitHub artifact releases
@@ -589,7 +589,7 @@ else
         done
         newest="${released_versions[0]}"
         if [ "${pin_index}" -lt 0 ]; then
-            fail "scaffold module pin: FallbackModuleVersion=v${pin_version} names no published release (checked against ${release_source}; newest is v${newest}) — a scaffolded go.mod would require a version the module proxy cannot resolve, and 'harbor --version' would report it"
+            fail "scaffold module pin: FallbackModuleVersion=v${pin_version} names no published release (checked against ${release_source}; newest is v${newest}) — a scaffolded go.mod would require a version the module proxy cannot resolve, and 'harbor version' would report it"
         elif [ "${pin_index}" -ge 2 ]; then
             fail "scaffold module pin: FallbackModuleVersion=v${pin_version} trails the newest published release (v${newest}, per ${release_source}) by ${pin_index} releases — bump it in cmd/harbor/scaffold/version.go and regenerate the goldens (go test ./cmd/harbor -run TestScaffold_Golden -update)"
         else
