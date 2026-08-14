@@ -333,17 +333,19 @@ func TestBuildMux_OptionalSubsystemMatrix(t *testing.T) {
 
 	cfg := config.Defaults()
 	base := MuxInput{
-		Cfg:          cfg,
-		Surface:      surface,
-		Bus:          bus,
-		Redactor:     red,
-		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Metrics:      metricsReg,
-		Tasks:        taskReg,
-		DisplayName:  "serve-test",
-		InstanceID:   "serve-test",
-		BuildVersion: "test",
-		BuildCommit:  "test",
+		Cfg:              cfg,
+		Surface:          surface,
+		Bus:              bus,
+		Redactor:         red,
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Metrics:          metricsReg,
+		Tasks:            taskReg,
+		DisplayName:      "serve-test",
+		InstanceID:       "serve-test",
+		BuildVersion:     "test",
+		BuildCommit:      "test",
+		FrameworkVersion: "v1.28.1",
+		FrameworkCommit:  "a052b0c7ef5323480b88869665e0f971b1496767",
 	}
 
 	probeMux := func(m http.Handler, path string) int {
@@ -391,6 +393,10 @@ func TestBuildMux_OptionalSubsystemMatrix(t *testing.T) {
 		}
 		if err := json.NewDecoder(rec.Body).Decode(&info); err != nil {
 			t.Fatal(err)
+		}
+		if info.FrameworkVersion != base.FrameworkVersion || info.FrameworkCommit != base.FrameworkCommit {
+			t.Fatalf("runtime.info framework identity = (%q, %q), want requested stamps (%q, %q)",
+				info.FrameworkVersion, info.FrameworkCommit, base.FrameworkVersion, base.FrameworkCommit)
 		}
 		for _, capability := range info.Capabilities {
 			if capability == types.CapStateSnapshots {

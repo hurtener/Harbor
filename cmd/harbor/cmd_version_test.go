@@ -188,13 +188,47 @@ func TestFrameworkIdentity_RequiresStampedVersionAndCommit(t *testing.T) {
 		HarborVersion, HarborCommit = origVersion, origCommit
 	})
 
-	HarborVersion, HarborCommit = "v1.28.1", "a052b0c7ef5323480b88869665e0f971b1496767"
-	if version, commit := frameworkIdentity(); version != "v1.28.1" || commit != "a052b0c7ef5323480b88869665e0f971b1496767" {
-		t.Fatalf("stamped framework identity = (%q, %q)", version, commit)
-	}
-
-	HarborCommit = "unknown"
-	if version, commit := frameworkIdentity(); version != "" || commit != "" {
-		t.Fatalf("unstamped framework identity = (%q, %q), want omitted", version, commit)
+	for _, tc := range []struct {
+		name    string
+		version string
+		commit  string
+		wantV   string
+		wantC   string
+	}{
+		{
+			name:    "canonical release stamp",
+			version: "v1.28.1",
+			commit:  "a052b0c7ef5323480b88869665e0f971b1496767",
+			wantV:   "v1.28.1",
+			wantC:   "a052b0c7ef5323480b88869665e0f971b1496767",
+		},
+		{
+			name:    "explicit dry-run stamp remains exact",
+			version: "v0.0.0-dryrun",
+			commit:  "b3d284acd8cd489f30009c8ae7cfa7c501f80f27",
+			wantV:   "v0.0.0-dryrun",
+			wantC:   "b3d284acd8cd489f30009c8ae7cfa7c501f80f27",
+		},
+		{
+			name:    "unstamped sentinel is omitted",
+			version: "v0.0.0-dev",
+			commit:  "a052b0c7ef5323480b88869665e0f971b1496767",
+			wantV:   "",
+			wantC:   "",
+		},
+		{
+			name:    "missing commit is omitted",
+			version: "v1.28.1",
+			commit:  "unknown",
+			wantV:   "",
+			wantC:   "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			HarborVersion, HarborCommit = tc.version, tc.commit
+			if version, commit := frameworkIdentity(); version != tc.wantV || commit != tc.wantC {
+				t.Fatalf("frameworkIdentity() = (%q, %q), want (%q, %q)", version, commit, tc.wantV, tc.wantC)
+			}
+		})
 	}
 }

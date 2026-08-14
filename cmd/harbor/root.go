@@ -76,15 +76,19 @@ func displayVersion() string {
 	return scaffold.FallbackModuleVersion + "-dev"
 }
 
-// frameworkIdentity returns the Harbor product provenance a runtime may expose
-// separately from its hosting binary's build metadata. Both values are either
-// present or absent: proxy installs and source builds can know a version while
-// lacking the immutable source commit, so they must not manufacture a pair.
+// frameworkIdentity returns the explicitly link-stamped Harbor product
+// provenance a runtime may expose separately from its hosting binary's build
+// metadata. Both values are either present or absent: proxy installs and
+// source builds can know a version while lacking the immutable source commit,
+// so they must not manufacture a pair. It returns the accepted stamp verbatim
+// rather than displayVersion(): presentation fallback must never turn a
+// requested release identity (including release-dryrun's synthetic stamp)
+// into a different framework_version.
 func frameworkIdentity() (version, commit string) {
-	if HarborCommit == "" || HarborCommit == "unknown" {
+	if HarborVersion == "" || HarborVersion == "v0.0.0-dev" || HarborCommit == "" || HarborCommit == "unknown" {
 		return "", ""
 	}
-	return displayVersion(), HarborCommit
+	return HarborVersion, HarborCommit
 }
 
 // releaseDisplayRE matches the version strings a binary may legitimately
