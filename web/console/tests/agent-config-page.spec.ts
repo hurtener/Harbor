@@ -3,10 +3,10 @@
 //
 // Covers the panel built against the D-121 design-system foundation
 // (the Settings single-section composition — a left sub-nav rail listing
-// the five control-plane areas, exactly one area in view at a time):
+// the seven control-plane areas, exactly one area in view at a time):
 //   (a) the `/agent-config` route serves + hydrates inside the app shell
 //       and the panel root + agent selector render;
-//   (b) the sub-nav rail lists the five areas, and selecting one swaps the
+//   (b) the sub-nav rail lists the seven areas, and selecting one swaps the
 //       single section rendered in the right pane;
 //   (c) with the admin scope claim, the write surface is live — no
 //       read-only scope banner, the Load control is enabled;
@@ -85,7 +85,7 @@ test.describe("Console agent-config control panel", () => {
     ).toBeVisible();
   });
 
-  test("the sub-nav rail lists the six areas and selecting one swaps the section", async ({
+  test("the sub-nav rail lists the seven areas and selecting one swaps the section", async ({
     page,
     runtime,
     helpers,
@@ -94,8 +94,9 @@ test.describe("Console agent-config control panel", () => {
     await helpers.seedConnection();
     await gotoPanel(page, runtime.baseURL);
 
-    // The rail (outside the async boundary) lists all six control-plane
-    // areas in display order (92i adds "Model & sampling" / llm).
+    // The rail (outside the async boundary) lists all seven control-plane
+    // areas in display order (92i adds "Model & sampling" / llm; the HA-66
+    // composition-preview consumer adds "Composition preview" / preview).
     const rail = page.locator("[data-testid='agent-config-subnav']");
     await expect(rail, "the sub-nav rail renders").toBeVisible();
     for (const area of [
@@ -103,6 +104,7 @@ test.describe("Console agent-config control panel", () => {
       "prompt",
       "llm",
       "skills",
+      "preview",
       "mcp",
       "add-connection",
     ]) {

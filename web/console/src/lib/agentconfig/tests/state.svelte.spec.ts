@@ -22,7 +22,8 @@ import {
 	DEFAULT_AGENT_ID,
 	AGENT_CONFIG_AREAS,
 	changedSectionLabels,
-	shortRevision
+	shortRevision,
+	previewSourceIsBootOnly
 } from '../state.svelte.js';
 import { ProtocolError } from '$lib/protocol/errors.js';
 import type { ProtocolClient } from '$lib/protocol/harbor.js';
@@ -51,8 +52,40 @@ const ACTIVE_REVISION = {
 	payload: {
 		prompt_layers: { base: 'You are a base.', user: 'And a user note.' },
 		tool_exposure: { paused_servers: ['github'], disabled_tools: ['github_delete'] },
-		skills: { names: ['recap'] }
+		skills: { names: ['recap'] },
+		agent_packs: [
+			{ name: 'recap', title: 'Summarise a thread', trigger: 'recap the thread', scope: 'project', origin: 'generated', semantic_hash: 'h2' }
+		]
 	}
+};
+
+/** The canonical `agent_config.composition.preview` response the fake
+ * client serves: two effective items — one boot-only, one both (a
+ * durable revision shadow + boot baseline) — plus the deterministic set
+ * hashes. */
+const CANONICAL_PREVIEW = {
+	outcome: 'available',
+	boot_pack_set_hash: 'bootpackset-hash',
+	combined_hash: 'combined-hash',
+	revision_hash: 'revision-hash',
+	revision_id: 'rev-2',
+	content_hash: 'h2',
+	items: [
+		{
+			name: 'boot-pack-skill',
+			semantic_hash: 'sema-boot',
+			source: 'boot',
+			skill: { name: 'boot-pack-skill', title: 'Boot pack skill', origin: 'boot', scope: 'operator', updated_at: '2026-08-14T00:00:00Z' }
+		},
+		{
+			name: 'recap',
+			semantic_hash: 'sema-recap',
+			source: 'both',
+			skill: { name: 'recap', title: 'Summarise a thread', trigger: 'recap the thread', origin: 'generated', scope: 'project', updated_at: '2026-08-14T00:00:00Z' }
+		}
+	],
+	widened: false,
+	protocol_version: '0.1.0'
 };
 
 function fakeClient(overrides: Record<string, unknown> = {}): ProtocolClient {
@@ -85,6 +118,8 @@ function fakeClient(overrides: Record<string, unknown> = {}): ProtocolClient {
 		setLlmParams: vi.fn(async () => ({ revision: ACTIVE_REVISION, protocol_version: '0.1.0' })),
 		skillsUpsert: vi.fn(async () => ({ revision: ACTIVE_REVISION, skill: { name: 's' }, protocol_version: '0.1.0' })),
 		skillsDelete: vi.fn(async () => ({ revision: ACTIVE_REVISION, protocol_version: '0.1.0' })),
+		compositionPreview: vi.fn(async () => CANONICAL_PREVIEW),
+		agentPacksRemove: vi.fn(async () => ({ revision: ACTIVE_REVISION, protocol_version: '0.1.0' })),
 		addMcpConnection: vi.fn(async () => ({
 			connection: { name: 'github', transport: 'stdio' },
 			state: 'auth_required',
@@ -138,15 +173,17 @@ afterEach(() => {
 });
 
 describe('AGENT_CONFIG_AREAS — the rail descriptor (single-section composition)', () => {
-	it('lists the six control-plane areas in display order with rail-matching ids', () => {
+	it('lists the seven control-plane areas in display order with rail-matching ids', () => {
 		// The panel renders these as a left sub-nav rail (the Settings
 		// single-section model); the ids must match the per-section
-		// `data-testid`s the e2e spec asserts. 92i adds "Model & sampling".
+		// `data-testid`s the e2e spec asserts. 92i adds "Model & sampling";
+		// the HA-66 composition-preview consumer adds "Composition preview".
 		expect(AGENT_CONFIG_AREAS.map((a) => a.id)).toEqual([
 			'revisions',
 			'prompt',
 			'llm',
 			'skills',
+			'preview',
 			'mcp',
 			'add-connection'
 		]);
@@ -155,6 +192,7 @@ describe('AGENT_CONFIG_AREAS — the rail descriptor (single-section composition
 			'Layered prompt',
 			'Model & sampling',
 			'Skills',
+			'Composition preview',
 			'MCP policy',
 			'Add connection'
 		]);
@@ -855,5 +893,112 @@ describe('AgentConfigPanelState — the per-connection discovery-origins editor 
 		await state.setDiscoveryOrigins('srv');
 		expect(state.discoveryError?.code).toBe('invalid_request');
 		expect(ac(client).listRevisions).toHaveBeenCalledTimes(1); // no reload on failure
+	});
+});
+
+describe('AgentConfigPanelState — read-only composition preview (D-414/D-415, HA-66)', () => {
+	it('load fans out the read-only preview and lands ready with the typed outcome verbatim', async () => {
+		seedConnection();
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		// The preview call carries ONLY the agent id — the caller's own
+		// verified triple rides the connection; no invented identity.
+		expect(ac(client).compositionPreview).toHaveBeenCalledWith(DEFAULT_AGENT_ID);
+		expect(state.previewPhase).toBe('ready');
+		expect(state.preview?.outcome).toBe('available');
+		expect(state.preview?.boot_pack_set_hash).toBe('bootpackset-hash');
+		expect(state.preview?.items?.map((i) => i.source)).toEqual(['boot', 'both']);
+		// The panel itself stays ready (the preview is an additive read).
+		expect(state.status).toBe('ready');
+	});
+
+	it('degrades independently when the preview is not wired (panel stays ready)', async () => {
+		// A runtime without the HA-66 preview wiring answers 501
+		// unknown_method; the preview area degrades on its own without
+		// sinking the revisions / prompt / model-&-sampling / MCP areas.
+		seedConnection();
+		const client = fakeClient({
+			compositionPreview: vi.fn(async () =>
+				Promise.reject(new ProtocolError('unknown_method', 'composition preview is not wired on this runtime', 501))
+			)
+		});
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		expect(state.status).toBe('ready'); // panel is usable
+		expect(state.revisions.length).toBeGreaterThan(0); // core read succeeded
+		expect(state.preview).toBeNull();
+		expect(state.previewPhase).toBe('error');
+		expect(state.previewError?.code).toBe('unknown_method');
+	});
+
+	it('typed non-available outcomes ride verbatim (never a fabricated error)', async () => {
+		seedConnection();
+		const outcomes = [
+			{ outcome: 'unavailable', wanted: 'unavailable' },
+			{ outcome: 'conflict', conflict_name: 'recap', wanted: 'conflict' },
+			{ outcome: 'retired', wanted: 'retired' }
+		];
+		for (const fixture of outcomes) {
+			const client = fakeClient({
+				compositionPreview: vi.fn(async () => ({
+					...CANONICAL_PREVIEW,
+					outcome: fixture.outcome,
+					conflict_name: fixture.conflict_name ?? undefined,
+					items: undefined,
+					boot_pack_set_hash: undefined
+				}))
+			});
+			const state = new AgentConfigPanelState();
+			await state.load(client);
+			expect(state.preview?.outcome).toBe(fixture.wanted);
+			if (fixture.conflict_name) {
+				expect(state.preview?.conflict_name).toBe('recap');
+			}
+		}
+	});
+
+	it('removePreviewShadow removes ONLY a durable revision shadow via agent_packs.remove and re-reads the preview', async () => {
+		seedConnection();
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		await state.removePreviewShadow('recap');
+		// The durable-revision-authoring verb — agent_packs.list stays the
+		// authoring surface; the preview never writes.
+		expect(ac(client).agentPacksRemove).toHaveBeenCalledWith(DEFAULT_AGENT_ID, 'recap');
+		// The remove re-reads revisions + the preview so the rendered
+		// composition reflects the new active revision.
+		expect(ac(client).compositionPreview).toHaveBeenCalledTimes(2);
+	});
+
+	it('removePreviewShadow surfaces a typed refusal loudly (never swallowed)', async () => {
+		seedConnection();
+		const client = fakeClient({
+			agentPacksRemove: vi.fn(async () =>
+				Promise.reject(new ProtocolError('boot_owned', 'boot-declared name refuses mutation', 403))
+			)
+		});
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		await state.removePreviewShadow('recap');
+		expect(state.previewRemoveError?.code).toBe('boot_owned');
+		expect(state.previewRemoveError?.message).toContain('boot-declared');
+	});
+
+	it('removePreviewShadow is admin-gated (no Protocol call without the admin claim)', async () => {
+		seedConnection('viewer');
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		await state.removePreviewShadow('recap');
+		expect(ac(client).agentPacksRemove).not.toHaveBeenCalled();
+	});
+
+	it('previewSourceIsBootOnly: boot entries are read-only; revision/both carry a durable shadow', () => {
+		expect(previewSourceIsBootOnly('boot')).toBe(true);
+		expect(previewSourceIsBootOnly('revision')).toBe(false);
+		expect(previewSourceIsBootOnly('both')).toBe(false);
+		expect(previewSourceIsBootOnly(undefined)).toBe(false);
 	});
 });

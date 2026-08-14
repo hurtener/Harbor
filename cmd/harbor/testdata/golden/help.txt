@@ -4,7 +4,8 @@ Subcommands fall into three groups:
 
   Local dev loop      init, dev, console, scaffold, validate, skill
   Production          serve, token
-  Run inspection      inspect-events, inspect-runs, inspect-topology, tui
+  Run inspection      inspect-events, inspect-runs, inspect-topology,
+                      composition-preview, tui
   Build information   version
 
 Subcommands without a real implementation yet stub-fail with a
@@ -16,20 +17,21 @@ Usage:
   harbor [command]
 
 Available Commands:
-  console          serve the Harbor Console (static build + Protocol surface)
-  dev              boot the local Runtime + Protocol server
-  help             Help about any command
-  init             drop a tiered harbor.yaml + AGENTS.md/CLAUDE.md/README.md into a directory
-  inspect-events   tail or filter the event bus of a running Runtime
-  inspect-runs     list recent runs and inspect a run's trajectory
-  inspect-topology render a run's node graph as ASCII
-  scaffold         generate a new agent skeleton from a template
-  serve            serve the headless Runtime + Protocol surface behind a production JWKS verifier
-  skill            manage the runtime skill catalog (import / rm)
-  token            self-issue JWTs harbor serve verifies (bring-your-own-issuer)
-  tui              attach the native conversation client to a Runtime
-  validate         validate config / skills / agent definitions without booting
-  version          print harbor semver, protocol version, and build hash
+  composition-preview preview the effective composition a Runtime would compose for an agent
+  console             serve the Harbor Console (static build + Protocol surface)
+  dev                 boot the local Runtime + Protocol server
+  help                Help about any command
+  init                drop a tiered harbor.yaml + AGENTS.md/CLAUDE.md/README.md into a directory
+  inspect-events      tail or filter the event bus of a running Runtime
+  inspect-runs        list recent runs and inspect a run's trajectory
+  inspect-topology    render a run's node graph as ASCII
+  scaffold            generate a new agent skeleton from a template
+  serve               serve the headless Runtime + Protocol surface behind a production JWKS verifier
+  skill               manage the runtime skill catalog (import / rm)
+  token               self-issue JWTs harbor serve verifies (bring-your-own-issuer)
+  tui                 attach the native conversation client to a Runtime
+  validate            validate config / skills / agent definitions without booting
+  version             print harbor semver, protocol version, and build hash
 
 Flags:
   -h, --help    help for harbor

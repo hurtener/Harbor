@@ -2,9 +2,10 @@
   // Harbor Console — agent-config control panel (`/agent-config`), the
   // consolidated agent-config consumer.
   //
-  // ONE panel for a selected agent that renders the five control-plane
+  // ONE panel for a selected agent that renders the seven control-plane
   // areas as self-contained carded components over the shared `ui/`
-  // inventory: revision history + diff + rollback (92a), skills (92c), MCP
+  // inventory: revision history + diff + rollback (92a), skills (92c), the
+  // read-only composition preview (D-414/D-415, HA-66), MCP
   // pause/resume + per-tool disable (92d), the layered prompt (92e), and
   // add-MCP-connection (92f). It is a pure Protocol client — every read is
   // an `agent_config.*` snapshot + the live `mcp.connection.*` stream, every
@@ -25,6 +26,7 @@
   import AgentConfigSubNavRail from '$lib/components/agentconfig/AgentConfigSubNavRail.svelte';
   import RevisionHistoryCard from '$lib/components/agentconfig/RevisionHistoryCard.svelte';
   import SkillsCard from '$lib/components/agentconfig/SkillsCard.svelte';
+  import CompositionPreviewCard from '$lib/components/agentconfig/CompositionPreviewCard.svelte';
   import McpPolicyCard from '$lib/components/agentconfig/McpPolicyCard.svelte';
   import PromptLayersCard from '$lib/components/agentconfig/PromptLayersCard.svelte';
   import LLMParamsCard from '$lib/components/agentconfig/LLMParamsCard.svelte';
@@ -160,6 +162,8 @@
             <LLMParamsCard {panel} />
           {:else if activeArea === 'skills'}
             <SkillsCard {panel} />
+          {:else if activeArea === 'preview'}
+            <CompositionPreviewCard {panel} />
           {:else if activeArea === 'mcp'}
             <McpPolicyCard {panel} />
           {:else if activeArea === 'add-connection'}

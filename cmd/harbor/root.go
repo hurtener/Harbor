@@ -87,7 +87,8 @@ Subcommands fall into three groups:
 
   Local dev loop      init, dev, console, scaffold, validate, skill
   Production          serve, token
-  Run inspection      inspect-events, inspect-runs, inspect-topology, tui
+  Run inspection      inspect-events, inspect-runs, inspect-topology,
+                      composition-preview, tui
   Build information   version
 
 Subcommands without a real implementation yet stub-fail with a
@@ -125,6 +126,7 @@ docs/plans/README.md for the implementation schedule.`,
 	root.AddCommand(newInspectEventsCmd())
 	root.AddCommand(newInspectRunsCmd())
 	root.AddCommand(newInspectTopologyCmd())
+	root.AddCommand(newCompositionPreviewCmd())
 	root.AddCommand(newTUICmd())
 
 	return root
