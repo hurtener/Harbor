@@ -85,10 +85,15 @@ type turnState struct {
 	retired bool
 	// pendingComplete records that a `task.completed` was observed but
 	// the complete seal was refused because the answer source had not
-	// converged (no answer-carrying canonical event was seen). The
-	// materializer retries the seal at the end of every materialize
-	// pass so a late-arriving answer source converges the row without
-	// any manual rebuild.
+	// converged (no answer-carrying canonical event was seen). The turn
+	// is enqueued in the materializer's bounded pending-work queue and
+	// the convergence pass REREADS the exact task snapshot under the
+	// original event identity / task id and seals only after the answer
+	// source converges — a late-arriving answer source (a record that
+	// was missing at completion and appeared later, or whose answer
+	// landed after the terminal event) converges the row without any
+	// manual rebuild and without a new canonical event. Cleared when a
+	// REAL terminal event seals the row or the row is retired.
 	pendingComplete bool
 	// activity is the FULL cumulative content-free tool-dispatch feed
 	// for the turn, oldest first. The projector's inline window is

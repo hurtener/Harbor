@@ -117,10 +117,27 @@
 // Without a wired reader, the answer component materializes as
 // Unavailable, and a task.completed whose answer has not converged
 // defers the complete seal: the row honestly stays MUTABLE (running)
-// while its sources have not converged and the materializer retries
-// the seal at the end of every pass, so a late-converging answer
-// source seals the row without any manual rebuild. A complete row is
-// never fabricated; a failed/cancelled seal needs no answer and
+// while its sources have not converged. The deferred seal is NOT
+// re-applied blindly — it is converged: every convergence pass
+// REREADS the exact task snapshot under the original event identity
+// and task id, re-runs the accepted TaskID / RunID and component
+// agreement checks, attaches the newly available bounded answer /
+// output / input data, and seals only after convergence, using the
+// projector's explicit NO-NEW-EVENT semantics (EventSeq 0 preserves
+// the row's LastAppliedEventSeq — convergence never fabricates a newer
+// canonical event sequence). The deferred turns live in a BOUNDED
+// pending-work queue served with a bounded per-pass budget in stable
+// FIFO / round-robin order, so a late-converging answer source (a task
+// record that was missing at completion and appeared later, or a
+// record whose answer landed after the terminal event) seals the row
+// without any manual rebuild and without a new event — the lost-wake
+// poll serves the queue even when the source watermark is unchanged.
+// After a durable restart, replaying a terminal event at or below the
+// checkpoint reconstructs the deferred state ONLY after reading the
+// existing exact turn and proving it is the same unsealed incomplete
+// row (a sealed row is never touched, an evicted row is never
+// resurrected, and ordinary history is not re-applied). A complete row
+// is never fabricated; a failed/cancelled seal needs no answer and
 // converges immediately. The answer-union mapping itself is
 // implemented and pinned; a future answer-carrying canonical event
 // plugs into the same path.
@@ -186,6 +203,13 @@ var ErrSourceUnavailable = errors.New("materializer: projection source unavailab
 // ProjectionCurrent.
 const defaultPageLimit = 256
 
+// defaultConvergenceBudget bounds how many deferred-complete turns ONE
+// convergence pass attempts. A large pending queue is served in stable
+// FIFO / round-robin order across passes — one pass never turns into a
+// full scan of every pending turn, and a caught-up poll tick is one
+// cheap bounded pass, never a busy loop.
+const defaultConvergenceBudget = 64
+
 // Materializer is the compiled artifact that drives the turn
 // projection from the persisted canonical event source.
 //
@@ -220,6 +244,9 @@ type Materializer struct {
 	// notification converges without a restart; wake notifications stay
 	// primary.
 	pollInterval time.Duration
+	// convergenceBudget bounds how many deferred-complete entries one
+	// convergence pass attempts (see defaultConvergenceBudget).
+	convergenceBudget int
 
 	mu sync.Mutex
 	// cursor is the materializer's in-memory global forward cursor:
@@ -231,6 +258,14 @@ type Materializer struct {
 	// sessions holds the per-session working state, keyed by the
 	// isolation triple.
 	sessions map[identity.Identity]*sessionState
+	// pending is the BOUNDED deferred-complete work queue: one entry
+	// per turn whose complete seal is deferred because its answer
+	// source has not converged. Entries are served in stable FIFO /
+	// round-robin order (an un-converged entry is re-enqueued at the
+	// tail) with a bounded per-pass budget, so the queue converges
+	// without any new canonical event and no single deferred seal
+	// starves. Guarded by mu.
+	pending []pendingWork
 	// passTouched counts sessions created or updated during the current
 	// Materialize pass (guarded by mu, which Materialize holds for the
 	// whole pass).
@@ -266,14 +301,31 @@ func WithErasureProbe(pb turns.ErasureProbe) Option {
 // converges without a restart. Wake notifications stay PRIMARY — a
 // wake triggers an immediate catch-up; the poll is the safety net,
 // never the fast path, and it never fires while the loop is already
-// catching up. A non-positive value is ignored (wake-only, the
-// default). The poll is bounded by the caller-chosen interval and is
-// stopped on every Run exit path, so cancellation stops the watcher
+// catching up. Even when the source watermark is UNCHANGED, the poll
+// still serves the bounded deferred-complete work queue: a pending
+// turn's answer source (the task record) may have converged without
+// any new canonical event. A non-positive value is ignored (wake-only,
+// the default). The poll is bounded by the caller-chosen interval and
+// is stopped on every Run exit path, so cancellation stops the watcher
 // AND the timer with no goroutine leaks.
 func WithPollInterval(d time.Duration) Option {
 	return func(m *Materializer) {
 		if d > 0 {
 			m.pollInterval = d
+		}
+	}
+}
+
+// WithConvergenceBudget bounds how many deferred-complete turns ONE
+// convergence pass attempts (default 64). A huge pending queue is
+// served in stable FIFO / round-robin order across passes — one pass
+// never turns into a full scan of every pending turn, and a caught-up
+// poll tick is one cheap bounded pass, never a busy loop. A
+// non-positive value is ignored (the default stands).
+func WithConvergenceBudget(n int) Option {
+	return func(m *Materializer) {
+		if n > 0 {
+			m.convergenceBudget = n
 		}
 	}
 }
@@ -289,10 +341,11 @@ func New(src events.ProjectionSource, proj *turns.Projector, opts ...Option) (*M
 		return nil, fmt.Errorf("materializer: New requires a non-nil *turns.Projector")
 	}
 	m := &Materializer{
-		src:       src,
-		proj:      proj,
-		pageLimit: defaultPageLimit,
-		sessions:  map[identity.Identity]*sessionState{},
+		src:               src,
+		proj:              proj,
+		pageLimit:         defaultPageLimit,
+		convergenceBudget: defaultConvergenceBudget,
+		sessions:          map[identity.Identity]*sessionState{},
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -314,7 +367,10 @@ type Result struct {
 	SessionsTouched int
 	// PendingComplete is the number of turns whose complete seal is
 	// deferred because the answer source has not converged. Such rows
-	// stay MUTABLE (running) and are retried on the next pass.
+	// stay MUTABLE (running) and are reread on the next convergence
+	// pass: each pending turn rereads its exact task snapshot under the
+	// original event identity / task id and seals once the answer
+	// source converges — without any new canonical event.
 	PendingComplete int
 	// FencedSessions is the number of sessions skipped because an
 	// erasure fence is in force.
@@ -336,14 +392,20 @@ type Result struct {
 // Materialize runs one forward catch-up pass: page the source from the
 // materializer's cursor, apply every canonical event, and continue
 // until the source reports ProjectionCurrent (or the caller's ctx
-// cancels). Deferred complete seals are retried at the end of the
-// pass. The pass is idempotent: a concurrent or restarted materializer
-// re-applying the same events converges to identical rows.
+// cancels). Deferred complete seals are converged at the end of the
+// pass: each pending turn REREADS its exact task snapshot under the
+// original event identity / task id, re-runs the accepted TaskID /
+// RunID / component agreement checks, attaches newly available bounded
+// data, and seals only after convergence (a bounded per-pass budget,
+// stable FIFO / round-robin order). The pass is idempotent: a
+// concurrent or restarted materializer re-applying the same events
+// converges to identical rows.
 //
 // Hard failures abort the pass with a wrapped error (fail loud — a
-// store failure or a source failure is never silently swallowed);
-// per-event skips that are expected (erasure fences, sealed turns,
-// unclassifiable steps) are counted, not raised.
+// store failure, a transient snapshot error, or a binding mismatch is
+// never silently swallowed); per-event skips that are expected
+// (erasure fences, sealed turns, unclassifiable steps) are counted,
+// not raised.
 func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 	var res Result
 	m.mu.Lock()
@@ -401,56 +463,22 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 		}
 	}
 
-	// Retry deferred complete seals now that the whole page has been
-	// applied: a task.completed observed in this pass whose answer
-	// source converged later in the same pass seals without waiting for
-	// the next pass.
-	for _, sess := range m.sessions {
-		if sess.fenced {
-			res.FencedSessions++
-			continue
-		}
-		for _, ts := range sess.turns {
-			if !ts.pendingComplete || ts.terminal() {
-				continue
-			}
-			row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
-				Status:       turns.StatusComplete,
-				FinishReason: turns.FinishGoal,
-				EventSeq:     sess.checkpoint,
-			})
-			if err != nil {
-				if errors.Is(err, turns.ErrSealIncomplete) {
-					res.PendingComplete++
-					continue
-				}
-				if errors.Is(err, turns.ErrTurnSealed) || errors.Is(err, turns.ErrTurnNotFound) {
-					ts.pendingComplete = false
-					continue
-				}
-				return res, fmt.Errorf("materializer: retry complete seal %s: %w", ts.taskID, err)
-			}
-			if ts.retired {
-				// The row was evicted past retention: the deferred seal
-				// is an honest terminal projection gap — retire the
-				// routing state, never resurrect.
-				ts.pendingComplete = false
-				continue
-			}
-			if !row.Sealed {
-				// The seal observation was a sequence no-op (its
-				// sequence is at or below the row's last-applied
-				// sequence): the DURABLE row is demonstrably NOT sealed.
-				// Never equate a no-op with a successful seal — the
-				// local state stays unsealed and the retry continues on
-				// the next pass.
-				res.PendingComplete++
-				continue
-			}
-			ts.sealed = true
-			ts.pendingComplete = false
-		}
+	// Converge deferred complete seals now that the whole page has been
+	// applied: a completion observed in this pass (or reconstructed
+	// during restart catch-up) whose answer source converged later in
+	// the same pass seals without waiting for the next pass. Each
+	// pending turn REREADS its exact task snapshot under the session
+	// identity / task id, re-runs the identity/task/run and component
+	// agreement checks, attaches newly available bounded data, and
+	// seals only after convergence — a deferred seal whose answer
+	// source is STILL unavailable stays honestly mutable (running) and
+	// is reread on the next pass. The pass is bounded
+	// (convergenceBudget entries) and served in stable FIFO /
+	// round-robin order.
+	if err := m.convergePending(ctx, &res); err != nil {
+		return res, err
 	}
+	res.PendingComplete = len(m.pending)
 	res.Cursor = m.cursor
 	return res, nil
 }
@@ -462,11 +490,18 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 // fast path; the poll is the bounded lost-wake safety net — a dropped
 // best-effort wake (a full or absent sink) converges without a restart
 // because the poll re-checks the source watermark on a bounded cadence.
-// The wake sink is caller-owned bounded and unsubscribed on exit, and
-// the poll timer is stopped on exit, so a cancelled Run stops the
-// watcher AND the timer goroutines with no leaks. Run returns nil on
-// clean cancellation, ErrSourceUnavailable when the source cannot
-// serve a projection, or the pass error otherwise.
+// Even when the source watermark is UNCHANGED, the loop still serves
+// the bounded deferred-complete work queue (the poll's
+// no-new-event convergence; also checked on a spurious wake): a
+// pending turn's answer source — the task record — may have converged
+// without any canonical event, and the queue is served with a bounded
+// per-pass budget in stable FIFO / round-robin order, never a full
+// scan and never a busy loop. The wake sink is caller-owned bounded and
+// unsubscribed on exit, and the poll timer is stopped on exit, so a
+// cancelled Run stops the watcher AND the timer goroutines with no
+// leaks. Run returns nil on clean cancellation, ErrSourceUnavailable
+// when the source cannot serve a projection, or the pass error
+// otherwise.
 func (m *Materializer) Run(ctx context.Context) error {
 	wake := make(chan uint64, 8)
 	watch, err := m.src.Watch(ctx, wake)
@@ -511,6 +546,15 @@ func (m *Materializer) Run(ctx context.Context) error {
 			behind := wm > m.cursor
 			m.mu.Unlock()
 			if !behind {
+				// A spurious wake (or a wake racing the poll): no new
+				// events behind the cursor, but a deferred-complete
+				// turn's answer source may have converged since the last
+				// pass — serve the bounded pending-work queue. Wakes
+				// stay the FAST PATH for new events; this is only the
+				// no-new-event convergence.
+				if err := m.convergeQueued(ctx); err != nil {
+					return err
+				}
 				continue
 			}
 			if err := catchUp(); err != nil {
@@ -520,7 +564,11 @@ func (m *Materializer) Run(ctx context.Context) error {
 			// The poll tick: compare the source watermark against the
 			// cursor and catch up only when genuinely behind — a
 			// caught-up tick is one cheap watermark read, never a full
-			// page.
+			// page. Even when the watermark is UNCHANGED the bounded
+			// pending-work queue is still served: a deferred-complete
+			// turn's answer source (the task record) may have converged
+			// without any new canonical event, so the lost-wake poll
+			// must converge it.
 			wm, err := m.src.Watermark(ctx)
 			if err != nil {
 				if errors.Is(err, events.ErrProjectionUnavailable) {
@@ -532,6 +580,9 @@ func (m *Materializer) Run(ctx context.Context) error {
 			behind := wm > m.cursor
 			m.mu.Unlock()
 			if !behind {
+				if err := m.convergeQueued(ctx); err != nil {
+					return err
+				}
 				continue
 			}
 			if err := catchUp(); err != nil {

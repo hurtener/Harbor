@@ -496,13 +496,22 @@ func (m *Materializer) applyTaskRunning(ctx context.Context, sess *sessionState,
 //
 // Without a wired reader (or for a legacy record with no answer
 // envelope) the answer stays honestly unavailable: the projector
-// refuses the complete seal (ErrSealIncomplete), turn.pendingComplete
-// records it, and the materializer retries the seal at the end of
-// every pass — the row honestly stays mutable (running) while its
-// sources have not converged; it is never fabricated as complete, and
-// a sequence no-op (the observation was already applied) is never
-// equated with a durable seal. A transient snapshot error or a binding
+// refuses the complete seal (ErrSealIncomplete), the turn is enqueued
+// in the bounded pending-work queue, and the CONVERGENCE pass rereads
+// the exact task snapshot under the original event identity / task id
+// and seals only after the answer source converges — the row honestly
+// stays mutable (running) while its sources have not converged; it is
+// never fabricated as complete, and a sequence no-op is never equated
+// with a durable seal. A transient snapshot error or a binding
 // mismatch aborts the projection without advancing the checkpoint.
+//
+// On RESTART CATCH-UP (the completion event is at or below the durable
+// checkpoint) the deferred state is reconstructed — but ONLY after
+// reading the existing exact turn and proving it is the same unsealed
+// incomplete row (same authoritative task id, not sealed, not evicted):
+// a sealed row is never touched (sealed content is never overwritten),
+// an evicted row is retired (never resurrected), ordinary history is
+// not re-applied, and the checkpoint / row sequence never regresses.
 func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
 	_, ts, ok := sess.rootTaskTurn(taskID)
@@ -510,74 +519,50 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
-		return true, nil
-	}
-	snap, err := m.readTaskSnapshot(ctx, sess.id, taskID)
-	if err != nil {
-		return false, err
-	}
-	// Run binding: the terminal read's run observations (the event
-	// envelope, the spawn-established turn binding, the snapshot) must
-	// all agree; a snapshot may fill the run only when no binding
-	// exists yet — never move an established one. Enforced BEFORE any
-	// mutation so a mismatch leaves the row untouched and the
-	// checkpoint unadvanced.
-	bound, err := bindRunID(runIDFromIdentity(ev.Identity), ts.runID, snap.RunID)
-	if err != nil {
-		return false, err
-	}
-	if bound != ts.runID {
-		ts.runID = bound
-	}
-	if snap.AnswerPresent {
-		// The answer envelope has converged: attach it (with the
-		// output attachment metadata) BEFORE the seal, so the
-		// complete seal's required answer source is present on the
-		// row. The seal below carries EventSeq 0 ON PURPOSE: the
-		// update just stamped the completion observation's sequence on
-		// the row, and a seal carrying the same sequence would be a
-		// monotonic no-op (never a seal).
-		ans := snap.Answer
-		if _, err := m.updateTurn(ctx, sess, ts, turns.Update{
-			Answer:   &ans,
-			Outputs:  snapshotOutputs(snap),
-			EventSeq: ev.Sequence,
-		}); err != nil {
+		// Restart catch-up: the completion observation already landed in
+		// a previous lifetime (its row mutation and the checkpoint write
+		// both completed). If the durable row is the SAME unsealed
+		// incomplete row — its answer source had not converged when the
+		// checkpoint advanced — reconstruct the deferred-complete state
+		// so the end-of-pass convergence rereads the snapshot and seals
+		// it. The proof is the exact row: the same authoritative task
+		// id, not sealed, not evicted. Ordinary history is NOT
+		// re-applied (only the in-memory deferred marker is
+		// reconstructed — no row write, no sequence or checkpoint
+		// regression); a sealed row is never touched; an evicted row is
+		// retired, never resurrected.
+		current, err := m.proj.Get(ctx, sess.id, turns.TurnID(taskID))
+		if err != nil {
+			if errors.Is(err, turns.ErrTurnNotFound) {
+				ts.retired = true
+				return true, nil
+			}
 			return false, err
 		}
-	}
-	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
-		Status:       turns.StatusComplete,
-		FinishReason: turns.FinishGoal,
-		EventSeq:     0, // the answer update already stamped ev.Sequence
-	})
-	if err != nil {
-		if errors.Is(err, turns.ErrSealIncomplete) {
-			// The answer source has not converged (a legacy record
-			// without an answer envelope): record the deferred seal and
-			// keep the row mutable. Not an error.
-			ts.pendingComplete = true
+		if current.Sealed {
 			return true, nil
 		}
+		if current.TaskID != "" && current.TaskID != taskID {
+			// The durable row under this turn id belongs to a DIFFERENT
+			// task — a corrupt store. Never reconstruct deferred state
+			// against it.
+			return true, nil
+		}
+		m.enqueuePending(sess, ts)
+		return true, nil
+	}
+	sealed, stillPending, err := m.completeSealProjection(ctx, sess, ts, runIDFromIdentity(ev.Identity), ev.Sequence)
+	if err != nil {
 		return false, err
 	}
-	if ts.retired {
-		// The row was evicted past retention: the seal is an honest
-		// terminal projection gap — retire the routing state, never
-		// resurrect.
-		ts.pendingComplete = false
+	if stillPending {
+		m.enqueuePending(sess, ts)
 		return true, nil
 	}
-	if !row.Sealed {
-		// The seal observation was a sequence no-op (already applied):
-		// the DURABLE row is demonstrably NOT sealed. Never equate the
-		// no-op with a successful completion — keep the deferred seal
-		// pending instead of falsely sealing the local state.
-		ts.pendingComplete = true
-		return true, nil
+	if sealed {
+		ts.sealed = true
+		m.clearPending(sess, ts)
 	}
-	ts.sealed = true
-	ts.pendingComplete = false
 	return true, nil
 }
 
@@ -661,7 +646,7 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 		// The row was evicted past retention: the seal is an honest
 		// terminal projection gap — retire the routing state, never
 		// resurrect.
-		ts.pendingComplete = false
+		m.clearPending(sess, ts)
 		return true, nil
 	}
 	if !row.Sealed {
@@ -671,7 +656,7 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 		return true, nil
 	}
 	ts.sealed = true
-	ts.pendingComplete = false
+	m.clearPending(sess, ts)
 	return true, nil
 }
 
@@ -703,7 +688,7 @@ func (m *Materializer) applyTaskCancelled(ctx context.Context, sess *sessionStat
 		// The row was evicted past retention: the seal is an honest
 		// terminal projection gap — retire the routing state, never
 		// resurrect.
-		ts.pendingComplete = false
+		m.clearPending(sess, ts)
 		return true, nil
 	}
 	if !row.Sealed {
@@ -712,7 +697,7 @@ func (m *Materializer) applyTaskCancelled(ctx context.Context, sess *sessionStat
 		return true, nil
 	}
 	ts.sealed = true
-	ts.pendingComplete = false
+	m.clearPending(sess, ts)
 	return true, nil
 }
 
