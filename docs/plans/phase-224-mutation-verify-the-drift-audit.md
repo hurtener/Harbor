@@ -82,7 +82,7 @@ Classified `PREFLIGHT_REQUIRES: static-only`: it touches no dev server, no `HARB
 
 ## The fixture corpus
 
-Mutations operate on a **constructed corpus**, never the repository. `phase-224.sh` builds a minimal tree under `$(mktemp -d "${TMPDIR:-/tmp}/harbor-phase224-XXXXXX")` containing exactly what the audit needs to pass clean: the thirteen required design files, one phase plan carrying all nine required headings plus a resolvable `RFC §3.4` and `brief 06`, one research brief, one smoke with a valid header, one operator skill, three clean Go files across `internal/` `cmd/` `sdk/`, a `cmd/harbor/scaffold/version.go`, a `CHANGELOG.md`, a `Makefile` with `drift-audit:` and a sentinel-switch `markdownlint:` target, a playground page, and a git repository carrying the accepted v1.27 > v1.26.12 > v1.26.11 local release-tag ledger — the two-component pin the grammar Harbor actually publishes (`v1.27`, newest), one back (`v1.26.12`), and two back (`v1.26.11`, a three-component form the grammar must also accept) — plus the two junk tags the guard must refuse (`v9.9.9-rc1` prerelease, `v1.27.0.1` four-component malformed), mirroring the two-/three-component mutation harness.
+Mutations operate on a **constructed corpus**, never the repository. `phase-224.sh` builds a minimal tree under `$(mktemp -d "${TMPDIR:-/tmp}/harbor-phase224-XXXXXX")` containing exactly what the audit needs to pass clean: the thirteen required design files, one phase plan carrying all nine required headings plus a resolvable `RFC §3.4` and `brief 06`, one research brief, one smoke with a valid header, one operator skill, three clean Go files across `internal/` `cmd/` `sdk/`, a `cmd/harbor/scaffold/version.go`, a `CHANGELOG.md`, a `Makefile` with `drift-audit:` and a sentinel-switch `markdownlint:` target, a playground page, and a git repository carrying the accepted v1.26.12 > v1.26.11 > v1.26.10 local MODULE-tag ledger — the three-component module pin the grammar the ledger accepts (`v1.26.12`, newest), one back (`v1.26.11`), and two back (`v1.26.10`) — plus the tags the guard must refuse (`v1.27` two-component artifact tag, `v9.9.9-rc1` prerelease, `v1.27.0.1` four-component malformed), mirroring the artifact-vs-module split the 2026-08-14 release gate corrected.
 
 Three properties of the corpus are load-bearing:
 
@@ -121,8 +121,8 @@ Three properties of the corpus are load-bearing:
 | 16 | godoc jargon | plant `// Phase 42 …` | FAIL |
 | 17 | godoc jargon, test-path anchoring | plant `// Rationale: D-999. See fixture_regression_test.go …` in a **production** file | FAIL |
 | 18 | scaffold pin — phantom release | pin `v0.0.1` (unpublished) | FAIL |
-| 19 | scaffold pin — trails by two | pin `v1.26.11` (index 2, two releases back from the `v1.27` pin across the three-component `v1.26.12`) | FAIL |
-| 20 | release ledger | delete `## [1.27]` from the fixture CHANGELOG | FAIL |
+| 19 | scaffold pin — trails by two | pin `v1.26.10` (index 2, two releases back from the `v1.26.12` pin across the three-component ledger) | FAIL |
+| 20 | release ledger | delete `## [1.26.12]` from the fixture CHANGELOG | FAIL |
 | 21 | smoke regex portability | drop in `bad-escape.sh.txt` | FAIL |
 | 22 | mktemp template portability | drop in `bad-mktemp.sh.txt` | FAIL |
 

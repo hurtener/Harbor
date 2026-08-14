@@ -48,11 +48,17 @@ import (
 var HarborVersion = "v0.0.0-dev"
 
 // displayVersion resolves the version shown on operator-facing surfaces
-// (RuntimeInfo.BuildVersion, the TUI banner). Priority mirrors the scaffold's
-// module resolution: a link-stamped release tag wins; a `go install @vX.Y[.Z]`
-// build carries its module version in build info; an un-stamped source build
-// reports the last published release with a "-dev" suffix — honest ("this
-// source is v1.27 plus local changes") instead of the meaningless v0.0.0.
+// (RuntimeInfo.BuildVersion, the TUI banner). The DISPLAY contract
+// differs deliberately from the scaffold's MODULE resolution
+// (cmd/harbor/scaffold/version.go): a release artifact's own identity
+// is its two-component GitHub tag (`v1.28`), so display accepts it;
+// the scaffold's generated `go.mod` requires a proxy-resolvable
+// three-component module version, so it does not. Priority: a
+// link-stamped release tag wins; a `go install @vX.Y[.Z]` build
+// carries its module version in build info; an un-stamped source build
+// reports the last published module release with a "-dev" suffix —
+// honest ("this source is v1.26.12 plus local changes") instead of the
+// meaningless v0.0.0.
 func displayVersion() string {
 	if releaseDisplayRE.MatchString(HarborVersion) {
 		return HarborVersion
@@ -64,14 +70,17 @@ func displayVersion() string {
 }
 
 // releaseDisplayRE matches the version strings a binary may legitimately
-// carry as its own release identity: Harbor's canonical two-component GA
+// carry as its own RELEASE identity: Harbor's canonical two-component GA
 // tags (`v1.28`), the older three-component patch form (`v1.28.0`), and
 // both with a conventional pre-release suffix (`-rc.1`, `-beta.2`). It
 // deliberately REJECTS the shapes that mean "not a release" — the
 // "v0.0.0-dev" un-stamped sentinel and the `git describe` derivatives
 // (`v1.13.0-4-gdeadbee`, `...-dirty`) — so those report the honest
 // `FallbackModuleVersion + "-dev"` rather than masquerading as a
-// release.
+// release. This regex is for DISPLAY ONLY: two-component tags are
+// artifact-release identities, not proxy-resolvable module versions,
+// and the scaffold resolver (cmd/harbor/scaffold/version.go) requires
+// three components for a module pin.
 var releaseDisplayRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+(\.[0-9]+)?(-(alpha|beta|rc)[.0-9A-Za-z-]*)?$`)
 
 // flagJSON is the global `--json` flag name; declared as a constant so

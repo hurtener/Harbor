@@ -128,6 +128,13 @@ func TestCurrentVersionInfo_MirrorsConstants(t *testing.T) {
 // dotted strings) fall back to the honest `FallbackModuleVersion +
 // "-dev"` rather than reporting the junk stamp.
 //
+// This is the DISPLAY contract only: two-component tags are accepted
+// here because they name the release ARTIFACT, but the scaffold's
+// module resolver (cmd/harbor/scaffold) requires three-component
+// proxy-resolvable module versions and falls back for `v1.28` — the
+// artifact-vs-module split is pinned on the scaffold side by
+// cmd/harbor/scaffold/version_test.go.
+//
 // The test MUTATES the package-level HarborVersion stamp to simulate
 // the release build's -ldflags -X injection, so it MUST NOT call
 // t.Parallel: the parallel tests in this package read the var, and Go

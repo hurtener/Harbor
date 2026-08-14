@@ -235,7 +235,7 @@ func TestScaffold_GoMod_RequiresAPublishedHarborVersion(t *testing.T) {
 		want          string
 	}{
 		{"release binary stamps its own version", "v1.14.2", "v1.14.2"},
-		{"two-component release binary stamps its own version", "v1.28", "v1.28"},
+		{"two-component artifact tag falls back", "v1.28", FallbackModuleVersion},
 		{"release candidate", "v2.0.0-rc.1", "v2.0.0-rc.1"},
 		{"un-stamped source build falls back", "v0.0.0-dev", FallbackModuleVersion},
 		{"git-describe derivative falls back", "v1.13.0-4-gdeadbee", FallbackModuleVersion},
