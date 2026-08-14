@@ -104,7 +104,15 @@
 // keeps the honest Unavailable posture below. The seam is invoked only
 // during event projection, never on Protocol reads, and never with a
 // widened identity; a transient snapshot error fails the projection
-// WITHOUT advancing the checkpoint.
+// WITHOUT advancing the checkpoint. Every read is BOUND to the exact
+// requested identity and event-derived task id: the record's nonempty
+// TaskID must equal the requested task id (it can never replace the
+// event's canonical task id), and its RunID must agree with the
+// event-derived / already-established turn run — a snapshot may fill
+// the run only when the event genuinely lacks one, and once a turn/run
+// binding exists no later snapshot or event can move it. A binding
+// mismatch fails the projection loudly without advancing the
+// checkpoint or mutating a turn.
 //
 // Without a wired reader, the answer component materializes as
 // Unavailable, and a task.completed whose answer has not converged

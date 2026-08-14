@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
 	"github.com/hurtener/Harbor/internal/sessions/turns/drivers/sqlite"
@@ -36,6 +37,7 @@ type fakeTaskReader struct {
 	callErr  error
 	callIDs  []string
 	callTris []identity.Identity
+	seq      []TaskSnapshot // optional call-order queue (head-first)
 }
 
 func newFakeTaskReader() *fakeTaskReader {
@@ -46,6 +48,17 @@ func (f *fakeTaskReader) set(taskID string, snap TaskSnapshot) *fakeTaskReader {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.snaps[taskID] = snap
+	return f
+}
+
+// setSeq queues snapshots returned in call order (head-first). A call
+// with an exhausted queue falls back to the per-task map. It lets a
+// test serve a DIFFERENT snapshot for the spawn read and the terminal
+// read of one task.
+func (f *fakeTaskReader) setSeq(snaps ...TaskSnapshot) *fakeTaskReader {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seq = append(f.seq, snaps...)
 	return f
 }
 
@@ -70,6 +83,11 @@ func (f *fakeTaskReader) Task(_ context.Context, id identity.Identity, taskID st
 	f.callTris = append(f.callTris, id)
 	if f.callErr != nil {
 		return TaskSnapshot{}, f.callErr
+	}
+	if len(f.seq) > 0 {
+		snap := f.seq[0]
+		f.seq = f.seq[1:]
+		return snap, nil
 	}
 	if f.missing[taskID] {
 		return TaskSnapshot{}, ErrTaskSnapshotNotFound
@@ -486,11 +504,13 @@ func TestMaterialize_TaskSnapshot_RestartByteIdentity(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestMaterialize_TaskSnapshot_TerminalFailureAgreement pins that the
-// durable turn and the task record agree on a failure: the closed
-// error class derives from the record's canonical code and the bounded
-// safe message rides the seal; the record's code is authoritative when
-// it diverges from the event's (the task record is the canonical
-// store).
+// durable turn and the task record agree on a failure: when both the
+// event and the record carry a nonempty error code they MUST agree —
+// a divergent event code is rejected loudly (ErrTerminalCodeMismatch)
+// rather than silently preferring either source — and the bounded safe
+// message rides the seal. A single nonempty observation (the record's
+// canonical code, or the event's code alone for a legacy record)
+// stands on its own.
 func TestMaterialize_TaskSnapshot_TerminalFailureAgreement(t *testing.T) {
 	t.Run("record code and message agree with the event", func(t *testing.T) {
 		h := newHarness(t, "")
@@ -512,7 +532,7 @@ func TestMaterialize_TaskSnapshot_TerminalFailureAgreement(t *testing.T) {
 			t.Errorf("failure = class %q message %q", row.ErrorClass, row.ErrorMessage)
 		}
 	})
-	t.Run("record code is canonical over a divergent event code", func(t *testing.T) {
+	t.Run("record code stands alone for a legacy event code", func(t *testing.T) {
 		h := newHarness(t, "")
 		defer h.closeStore()
 		reader := newFakeTaskReader().set("task-cn", TaskSnapshot{
@@ -523,13 +543,54 @@ func TestMaterialize_TaskSnapshot_TerminalFailureAgreement(t *testing.T) {
 		quad := testQuad(h.id, "run-cn")
 		h.src.publish(t, spawnEv(h.id, quad.RunID, "task-cn", tasks.KindForeground, ""))
 		h.src.publish(t, startedEv(h.id, "task-cn"))
-		h.src.publish(t, failedEv(h.id, "task-cn", "5xx")) // divergent event code
+		h.src.publish(t, failedEv(h.id, "task-cn", "")) // legacy event: no code reported
 		if _, err := m.Materialize(context.Background()); err != nil {
 			t.Fatalf("materialize: %v", err)
 		}
 		row := mustGetRow(t, h, "task-cn")
 		if row.ErrorClass != turns.ErrorClassTimeout || row.ErrorMessage != "record-safe message" {
 			t.Errorf("failure = class %q message %q, want the record's canonical code and message", row.ErrorClass, row.ErrorMessage)
+		}
+	})
+	t.Run("divergent event code is rejected loudly, never silently preferred", func(t *testing.T) {
+		h := newHarness(t, "")
+		defer h.closeStore()
+		reader := newFakeTaskReader().set("task-cd", TaskSnapshot{
+			FailurePresent: true, ErrorCode: "timeout", ErrorMessage: "record-safe message",
+		})
+		m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
+
+		quad := testQuad(h.id, "run-cd")
+		h.src.publish(t, spawnEv(h.id, quad.RunID, "task-cd", tasks.KindForeground, ""))
+		h.src.publish(t, startedEv(h.id, "task-cd"))
+		last := h.src.publish(t, failedEv(h.id, "task-cd", "5xx")) // divergent nonempty event code
+
+		if _, err := m.Materialize(context.Background()); !errors.Is(err, ErrTerminalCodeMismatch) {
+			t.Fatalf("divergent terminal code = %v, want ErrTerminalCodeMismatch", err)
+		}
+		// The mismatch advanced nothing and mutated nothing: the
+		// checkpoint stays at the last APPLIED event and the turn is
+		// not sealed.
+		cp, cerr := h.proj.Checkpoint(context.Background(), h.id)
+		if cerr != nil {
+			t.Fatalf("checkpoint: %v", cerr)
+		}
+		if cp != last.Sequence-1 {
+			t.Errorf("checkpoint = %d, want %d (the conflicting failure did not advance)", cp, last.Sequence-1)
+		}
+		row := mustGetRow(t, h, "task-cd")
+		if row.Sealed || row.Status != turns.StatusRunning {
+			t.Errorf("row = status %q sealed %v, want the turn untouched (running, unsealed)", row.Status, row.Sealed)
+		}
+		// Once the sources agree, the retry converges to the record's
+		// canonical code and message.
+		reader.set("task-cd", TaskSnapshot{FailurePresent: true, ErrorCode: "5xx", ErrorMessage: "record-safe message"})
+		if _, err := m.Materialize(context.Background()); err != nil {
+			t.Fatalf("retry materialize: %v", err)
+		}
+		row = mustGetRow(t, h, "task-cd")
+		if !row.Sealed || row.Status != turns.StatusFailed || row.ErrorClass != turns.ErrorClass5xx || row.ErrorMessage != "record-safe message" {
+			t.Errorf("converged failure = status %q sealed %v class %q message %q", row.Status, row.Sealed, row.ErrorClass, row.ErrorMessage)
 		}
 	})
 }
@@ -723,5 +784,408 @@ func TestMaterialize_TaskSnapshot_EventIdentityOnlyAndNeverOnProtocolReads(t *te
 	}
 	if got := reader.callCount(); got != before {
 		t.Errorf("protocol reads invoked the reader: calls %d → %d", before, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// adversarial identity / task / run binding (P1 authority repair)
+// ---------------------------------------------------------------------------
+
+// TestMaterialize_TaskSnapshot_Binding_WrongTaskIDRejected pins repair
+// requirement 1: a snapshot whose nonempty TaskID differs from the
+// requested event-derived task id is CORRUPT and fails the projection
+// loudly (ErrSnapshotTaskIDMismatch) — it can never replace the event's
+// canonical task id. The mismatch advances no checkpoint, creates no
+// row, and the reader is invoked exactly once, under the EVENT identity
+// and the EVENT-derived task id. Healed, the retry converges to exactly
+// one row under the event's canonical identity.
+func TestMaterialize_TaskSnapshot_Binding_WrongTaskIDRejected(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+	reader := newFakeTaskReader().set("task-wt", TaskSnapshot{TaskID: "task-other", RunID: "run-wt"})
+	m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
+
+	h.src.publish(t, spawnEv(h.id, "run-wt", "task-wt", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-wt"))
+
+	if _, err := m.Materialize(context.Background()); !errors.Is(err, ErrSnapshotTaskIDMismatch) {
+		t.Fatalf("foreign task id = %v, want ErrSnapshotTaskIDMismatch", err)
+	}
+	cp, err := h.proj.Checkpoint(context.Background(), h.id)
+	if err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	if cp != 0 {
+		t.Errorf("checkpoint = %d, want 0 (the refused append advanced nothing)", cp)
+	}
+	if _, err := h.proj.Get(context.Background(), h.id, "task-wt"); !errors.Is(err, turns.ErrTurnNotFound) {
+		t.Fatalf("turn = %v, want ErrTurnNotFound (the mismatch wrote nothing)", err)
+	}
+	calls := reader.calls()
+	if len(calls) != 1 || calls[0].taskID != "task-wt" || calls[0].triple != h.id {
+		t.Errorf("reader calls = %+v, want exactly one call for task-wt under %+v", calls, h.id)
+	}
+
+	// Healed, the retry converges under the event's canonical task id —
+	// the snapshot never redirected the row.
+	reader.set("task-wt", TaskSnapshot{TaskID: "task-wt", RunID: "run-wt"})
+	if _, err := m.Materialize(context.Background()); err != nil {
+		t.Fatalf("retry materialize: %v", err)
+	}
+	row := mustGetRow(t, h, "task-wt")
+	if row.TaskID != "task-wt" || row.RunID != "run-wt" {
+		t.Errorf("row identity = task %q run %q, want the event-derived canonical identity", row.TaskID, row.RunID)
+	}
+	page, err := h.proj.List(context.Background(), h.id, turns.ListOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(page.Rows) != 1 {
+		t.Errorf("rows = %d, want exactly one (no phantom row from the failed attempt)", len(page.Rows))
+	}
+}
+
+// TestMaterialize_TaskSnapshot_Binding_WrongRunIDRejected pins repair
+// requirement 2 at the binding point (spawn): when BOTH the event
+// envelope and the snapshot carry a run id and they differ, the read is
+// corrupt (ErrSnapshotRunIDMismatch) — the snapshot can never override
+// the event-derived run. The mismatch advances no checkpoint and creates
+// no row; the reader is invoked under the exact event identity + task
+// id. Healed (the snapshot now agrees), the retry converges with the
+// agreed run.
+func TestMaterialize_TaskSnapshot_Binding_WrongRunIDRejected(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+	reader := newFakeTaskReader().set("task-wr", TaskSnapshot{RunID: "run-other"})
+	m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
+
+	h.src.publish(t, spawnEv(h.id, "run-a", "task-wr", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-wr"))
+
+	if _, err := m.Materialize(context.Background()); !errors.Is(err, ErrSnapshotRunIDMismatch) {
+		t.Fatalf("divergent run id = %v, want ErrSnapshotRunIDMismatch", err)
+	}
+	cp, cerr := h.proj.Checkpoint(context.Background(), h.id)
+	if cerr != nil {
+		t.Fatalf("checkpoint: %v", cerr)
+	}
+	if cp != 0 {
+		t.Errorf("checkpoint = %d, want 0 (the refused append advanced nothing)", cp)
+	}
+	if _, err := h.proj.Get(context.Background(), h.id, "task-wr"); !errors.Is(err, turns.ErrTurnNotFound) {
+		t.Fatalf("turn = %v, want ErrTurnNotFound (the mismatch wrote nothing)", err)
+	}
+	calls := reader.calls()
+	if len(calls) != 1 || calls[0].taskID != "task-wr" || calls[0].triple != h.id {
+		t.Errorf("reader calls = %+v, want exactly one call for task-wr under %+v", calls, h.id)
+	}
+
+	reader.set("task-wr", TaskSnapshot{RunID: "run-a"})
+	if _, err := m.Materialize(context.Background()); err != nil {
+		t.Fatalf("retry materialize: %v", err)
+	}
+	row := mustGetRow(t, h, "task-wr")
+	if row.RunID != "run-a" {
+		t.Errorf("run id = %q, want the agreed run-a", row.RunID)
+	}
+}
+
+// TestMaterialize_TaskSnapshot_Binding_TerminalWrongTaskIDRejected pins
+// that the BINDING holds on EVERY read, including the completion
+// projection: a terminal snapshot reporting a foreign TaskID fails the
+// projection loudly BEFORE any answer attachment or seal — the turn
+// stays unsealed and mutable, the checkpoint does not advance past the
+// conflicting event, and the reader is always invoked with the exact
+// event identity + task id. Healed, the retry converges with the
+// record's answer.
+func TestMaterialize_TaskSnapshot_Binding_TerminalWrongTaskIDRejected(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+	reader := newFakeTaskReader().setSeq(
+		TaskSnapshot{TaskID: "task-tc", RunID: "run-tc"}, // spawn read — exact
+		TaskSnapshot{ // completed read — foreign task id
+			TaskID: "task-other", RunID: "run-tc",
+			AnswerPresent: true, Answer: turns.Answer{State: turns.AnswerStateInline, Inline: "stolen answer"},
+		},
+	)
+	m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
+
+	quad := testQuad(h.id, "run-tc")
+	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-tc", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-tc"))
+	last := h.src.publish(t, completedEv(h.id, "task-tc"))
+
+	if _, err := m.Materialize(context.Background()); !errors.Is(err, ErrSnapshotTaskIDMismatch) {
+		t.Fatalf("terminal foreign task id = %v, want ErrSnapshotTaskIDMismatch", err)
+	}
+	cp, cerr := h.proj.Checkpoint(context.Background(), h.id)
+	if cerr != nil {
+		t.Fatalf("checkpoint: %v", cerr)
+	}
+	if cp != last.Sequence-1 {
+		t.Errorf("checkpoint = %d, want %d (the conflicting completion did not advance)", cp, last.Sequence-1)
+	}
+	row := mustGetRow(t, h, "task-tc")
+	if row.Sealed || row.Status != turns.StatusRunning {
+		t.Errorf("row = status %q sealed %v, want the turn untouched (running, unsealed)", row.Status, row.Sealed)
+	}
+	if row.Answer.Complete == turns.CompletenessComplete || row.Answer.Inline != "" {
+		t.Errorf("answer = %+v, want no answer attached by the rejected completion", row.Answer)
+	}
+	if row.TaskID != "task-tc" || row.RunID != "run-tc" {
+		t.Errorf("row identity = task %q run %q, want the event-derived canonical identity", row.TaskID, row.RunID)
+	}
+	calls := reader.calls()
+	if len(calls) != 2 {
+		t.Fatalf("reader calls = %d, want 2 (spawn + completion)", len(calls))
+	}
+	for _, c := range calls {
+		if c.taskID != "task-tc" || c.triple != h.id {
+			t.Errorf("reader call = %+v, want task-tc under %+v", c, h.id)
+		}
+	}
+
+	// Healed, the retry converges to the agreed identity with the
+	// record's answer (the spawn/started re-application is a no-op; the
+	// completion re-reads from the map fallback).
+	reader.set("task-tc", TaskSnapshot{
+		TaskID: "task-tc", RunID: "run-tc",
+		AnswerPresent: true, Answer: turns.Answer{State: turns.AnswerStateInline, Inline: "converged answer"},
+	})
+	if _, err := m.Materialize(context.Background()); err != nil {
+		t.Fatalf("retry materialize: %v", err)
+	}
+	row = mustGetRow(t, h, "task-tc")
+	if !row.Sealed || row.Status != turns.StatusComplete || row.Answer.Inline != "converged answer" {
+		t.Errorf("converged row = status %q sealed %v answer %q", row.Status, row.Sealed, row.Answer.Inline)
+	}
+}
+
+// TestMaterialize_TaskSnapshot_Binding_LaterRunRebindRejected pins
+// repair requirement 2's "once a turn/run binding exists, later
+// snapshots/events cannot move it": a terminal snapshot attempting to
+// rebind the turn to a different run fails the projection loudly
+// (ErrSnapshotRunIDMismatch) BEFORE the seal — the row stays unsealed
+// under its established run, no failure classification is applied, and
+// the checkpoint does not advance past the conflicting event. Healed
+// (the record agrees with the binding), the retry converges without
+// moving the run.
+func TestMaterialize_TaskSnapshot_Binding_LaterRunRebindRejected(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+	reader := newFakeTaskReader().setSeq(
+		TaskSnapshot{TaskID: "task-rb", RunID: "run-1"}, // spawn read — establishes the binding
+		TaskSnapshot{ // failed read — attempts to MOVE the binding
+			TaskID: "task-rb", RunID: "run-2",
+			FailurePresent: true, ErrorCode: "timeout", ErrorMessage: "bounded",
+		},
+	)
+	m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
+
+	quad := testQuad(h.id, "run-1")
+	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-rb", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-rb"))
+	last := h.src.publish(t, failedEv(h.id, "task-rb", "timeout"))
+
+	if _, err := m.Materialize(context.Background()); !errors.Is(err, ErrSnapshotRunIDMismatch) {
+		t.Fatalf("run rebind = %v, want ErrSnapshotRunIDMismatch", err)
+	}
+	cp, cerr := h.proj.Checkpoint(context.Background(), h.id)
+	if cerr != nil {
+		t.Fatalf("checkpoint: %v", cerr)
+	}
+	if cp != last.Sequence-1 {
+		t.Errorf("checkpoint = %d, want %d (the conflicting failure did not advance)", cp, last.Sequence-1)
+	}
+	row := mustGetRow(t, h, "task-rb")
+	if row.Sealed || row.Status != turns.StatusRunning || row.RunID != "run-1" {
+		t.Errorf("row = status %q sealed %v run %q, want the established binding run-1 untouched", row.Status, row.Sealed, row.RunID)
+	}
+	if row.ErrorClass != "" || row.ErrorMessage != "" {
+		t.Errorf("failure = class %q message %q, want none applied by the rejected seal", row.ErrorClass, row.ErrorMessage)
+	}
+	calls := reader.calls()
+	if len(calls) != 2 {
+		t.Fatalf("reader calls = %d, want 2 (spawn + failure)", len(calls))
+	}
+	for _, c := range calls {
+		if c.taskID != "task-rb" || c.triple != h.id {
+			t.Errorf("reader call = %+v, want task-rb under %+v", c, h.id)
+		}
+	}
+
+	// Healed (the record agrees with the established binding), the
+	// retry converges without moving the run.
+	reader.set("task-rb", TaskSnapshot{
+		TaskID: "task-rb", RunID: "run-1",
+		FailurePresent: true, ErrorCode: "timeout", ErrorMessage: "bounded",
+	})
+	if _, err := m.Materialize(context.Background()); err != nil {
+		t.Fatalf("retry materialize: %v", err)
+	}
+	row = mustGetRow(t, h, "task-rb")
+	if !row.Sealed || row.Status != turns.StatusFailed || row.RunID != "run-1" ||
+		row.ErrorClass != turns.ErrorClassTimeout || row.ErrorMessage != "bounded" {
+		t.Errorf("converged row = status %q sealed %v run %q class %q message %q",
+			row.Status, row.Sealed, row.RunID, row.ErrorClass, row.ErrorMessage)
+	}
+}
+
+// TestMaterialize_TaskSnapshot_Binding_EventEnvelopeCannotMoveBinding
+// pins that a later TERMINAL EVENT whose envelope carries a run cannot
+// move the established turn/run binding either: the event-derived run
+// must agree with the spawn-established binding, or the projection
+// fails loud (ErrSnapshotRunIDMismatch) — an event, like a snapshot,
+// never silently overrides the binding.
+func TestMaterialize_TaskSnapshot_Binding_EventEnvelopeCannotMoveBinding(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+	reader := newFakeTaskReader().setSeq(
+		TaskSnapshot{TaskID: "task-ee", RunID: "run-1"}, // spawn read — establishes the binding
+		TaskSnapshot{TaskID: "task-ee", RunID: "run-1", FailurePresent: true, ErrorCode: "timeout"},
+	)
+	m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
+
+	quad := testQuad(h.id, "run-1")
+	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-ee", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-ee"))
+	// The failure event's ENVELOPE claims a different run than the
+	// established binding (the snapshot agrees with the binding).
+	h.src.publish(t, events.Event{
+		Type:     tasks.EventTypeTaskFailed,
+		Identity: testQuad(h.id, "run-999"),
+		Payload:  tasks.TaskFailedPayload{TaskID: tasks.TaskID("task-ee"), ErrorCode: "timeout"},
+	})
+
+	if _, err := m.Materialize(context.Background()); !errors.Is(err, ErrSnapshotRunIDMismatch) {
+		t.Fatalf("event-envelope rebind = %v, want ErrSnapshotRunIDMismatch", err)
+	}
+	row := mustGetRow(t, h, "task-ee")
+	if row.Sealed || row.RunID != "run-1" {
+		t.Errorf("row = sealed %v run %q, want the established binding run-1 untouched", row.Sealed, row.RunID)
+	}
+}
+
+// TestMaterialize_TaskSnapshot_Binding_ExactMatchConverges pins the
+// success path under the full binding: a snapshot whose TaskID matches
+// the event-derived task id, whose RunID agrees with the event, and
+// whose failure classification agrees with the event converges to a
+// sealed row carrying the exact canonical identity — and the reader is
+// invoked ONLY under the exact event identity + task id on every read.
+func TestMaterialize_TaskSnapshot_Binding_ExactMatchConverges(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+	reader := newFakeTaskReader().setSeq(
+		TaskSnapshot{TaskID: "task-ex", RunID: "run-ex"}, // spawn read — exact match
+		TaskSnapshot{ // failure read — exact match, agreeing code
+			TaskID: "task-ex", RunID: "run-ex",
+			FailurePresent: true, ErrorCode: "timeout", ErrorMessage: "bounded safe",
+		},
+	)
+	m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
+
+	quad := testQuad(h.id, "run-ex")
+	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-ex", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-ex"))
+	h.src.publish(t, failedEv(h.id, "task-ex", "timeout"))
+
+	if _, err := m.Materialize(context.Background()); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	row := mustGetRow(t, h, "task-ex")
+	if row.TaskID != "task-ex" || row.RunID != "run-ex" {
+		t.Errorf("row identity = task %q run %q, want the exact canonical identity", row.TaskID, row.RunID)
+	}
+	if !row.Sealed || row.Status != turns.StatusFailed || row.ErrorClass != turns.ErrorClassTimeout || row.ErrorMessage != "bounded safe" {
+		t.Errorf("row = status %q sealed %v class %q message %q", row.Status, row.Sealed, row.ErrorClass, row.ErrorMessage)
+	}
+	calls := reader.calls()
+	if len(calls) != 2 {
+		t.Fatalf("reader calls = %d, want 2 (spawn + failure)", len(calls))
+	}
+	for _, c := range calls {
+		if c.taskID != "task-ex" || c.triple != h.id {
+			t.Errorf("reader call = %+v, want task-ex under %+v", c, h.id)
+		}
+	}
+}
+
+// TestMaterialize_TaskSnapshot_Binding_MismatchAtomicity pins repair
+// requirement 3 + failure atomicity across sessions: a binding mismatch
+// in ONE session aborts the pass — the OTHER session's applied events
+// keep their durable rows and checkpoints, the offending session
+// advances nothing and mutates no turn, and the healed retry converges
+// both. The reader is invoked with each event's EXACT identity + task id
+// throughout.
+func TestMaterialize_TaskSnapshot_Binding_MismatchAtomicity(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+	other := identity.Identity{TenantID: "tenant-b", UserID: "user-b", SessionID: "sess-b"}
+	reader := newFakeTaskReader()
+	m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
+
+	// Session A's lifecycle applies cleanly first (the map serves an
+	// empty snapshot for task-ok — no binding conflict).
+	h.src.publish(t, spawnEv(h.id, "run-ok", "task-ok", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-ok"))
+	// Session B's spawn carries a corrupt snapshot (foreign task id).
+	h.src.publish(t, spawnEv(other, "run-bad", "task-bad", tasks.KindForeground, ""))
+	reader.set("task-bad", TaskSnapshot{TaskID: "task-other"})
+
+	if _, err := m.Materialize(context.Background()); !errors.Is(err, ErrSnapshotTaskIDMismatch) {
+		t.Fatalf("mismatch = %v, want ErrSnapshotTaskIDMismatch", err)
+	}
+	// Session A's projection is intact and its checkpoint advanced.
+	rowA := mustGetRow(t, h, "task-ok")
+	if rowA.Sealed || rowA.Status != turns.StatusRunning {
+		t.Errorf("session A row = status %q sealed %v, want running/unsealed", rowA.Status, rowA.Sealed)
+	}
+	cpA, err := h.proj.Checkpoint(context.Background(), h.id)
+	if err != nil {
+		t.Fatalf("checkpoint A: %v", err)
+	}
+	if cpA != 2 {
+		t.Errorf("checkpoint A = %d, want 2 (session A's events applied)", cpA)
+	}
+	// Session B advanced nothing and wrote nothing.
+	cpB, err := h.proj.Checkpoint(context.Background(), other)
+	if err != nil {
+		t.Fatalf("checkpoint B: %v", err)
+	}
+	if cpB != 0 {
+		t.Errorf("checkpoint B = %d, want 0 (the mismatch advanced nothing)", cpB)
+	}
+	if _, err := h.proj.Get(context.Background(), other, "task-bad"); !errors.Is(err, turns.ErrTurnNotFound) {
+		t.Fatalf("session B turn = %v, want ErrTurnNotFound (nothing was written)", err)
+	}
+	for _, c := range reader.calls() {
+		wantTriple := h.id
+		if c.taskID == "task-bad" {
+			wantTriple = other
+		}
+		if c.triple != wantTriple {
+			t.Errorf("reader call %q under %+v, want the event triple %+v", c.taskID, c.triple, wantTriple)
+		}
+	}
+
+	// Healed, the retry converges session B under its own identity;
+	// session A is a no-op re-application.
+	reader.set("task-bad", TaskSnapshot{TaskID: "task-bad", RunID: "run-bad"})
+	if _, err := m.Materialize(context.Background()); err != nil {
+		t.Fatalf("retry materialize: %v", err)
+	}
+	rowB, err := h.proj.Get(context.Background(), other, turns.TurnID("task-bad"))
+	if err != nil {
+		t.Fatalf("get session B: %v", err)
+	}
+	if rowB.TaskID != "task-bad" || rowB.RunID != "run-bad" {
+		t.Errorf("session B row identity = task %q run %q", rowB.TaskID, rowB.RunID)
+	}
+	cpB, err = h.proj.Checkpoint(context.Background(), other)
+	if err != nil {
+		t.Fatalf("checkpoint B (healed): %v", err)
+	}
+	if cpB != 3 {
+		t.Errorf("checkpoint B (healed) = %d, want 3", cpB)
 	}
 }

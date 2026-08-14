@@ -21,6 +21,32 @@ import (
 // task store is down, slow, or corrupt — never silently assumed away).
 var ErrTaskSnapshotNotFound = errors.New("materializer: task record not found")
 
+// ErrSnapshotTaskIDMismatch reports a CORRUPT snapshot read: the record
+// returned a nonempty TaskID that differs from the exact event-derived
+// task id the read was requested under. The materializer NEVER permits
+// a snapshot to replace the event's canonical task id — a buggy or
+// compromised reader must not cross-route content across tasks — so the
+// projection aborts loudly without advancing the checkpoint or mutating
+// a turn.
+var ErrSnapshotTaskIDMismatch = errors.New("materializer: task snapshot task id does not match the requested event-derived task id")
+
+// ErrSnapshotRunIDMismatch reports a CORRUPT snapshot read: two or more
+// distinct nonempty run observations — the event envelope's run id, the
+// turn's already established run binding, and the snapshot's run id —
+// disagree. The materializer never silently prefers one source and never
+// lets a later snapshot or event move an established turn/run binding,
+// so the projection aborts loudly without advancing the checkpoint or
+// mutating a turn.
+var ErrSnapshotRunIDMismatch = errors.New("materializer: task snapshot run id disagrees with the event-derived / established turn run id")
+
+// ErrTerminalCodeMismatch reports a terminal classification conflict: a
+// task.failed event and the canonical task record both carry a nonempty
+// error code and the codes differ. The materializer refuses to silently
+// prefer either source — the durable turn would publish an internally
+// inconsistent final row — so the projection aborts loudly without
+// advancing the checkpoint or sealing the turn.
+var ErrTerminalCodeMismatch = errors.New("materializer: terminal error code disagrees between the event and the task record")
+
 // TaskSnapshotReader is the injected, READ-ONLY seam over the runtime's
 // already-redacted canonical task records. It lets the materializer
 // converge the query / agent / input-attachment / answer / output-
@@ -50,7 +76,12 @@ var ErrTaskSnapshotNotFound = errors.New("materializer: task record not found")
 // successfully persisted task event (task.spawned / task.completed /
 // task.failed), under the EVENT's isolation triple — never on a
 // Protocol read (the projector's List / Get surface never touches it)
-// and never with a widened identity.
+// and never with a widened identity. Every read is BOUND to the exact
+// requested identity and event-derived task id: the returned snapshot's
+// nonempty TaskID must equal the requested task id, and its RunID must
+// agree with the event-derived / already-established turn run (see
+// bindRunID). A snapshot that violates the binding is CORRUPT and fails
+// the projection loudly without advancing the checkpoint.
 //
 // A nil reader (the runtime declared none) is an HONEST availability
 // gap: the query / agent / input / answer / output / failure-message
@@ -82,10 +113,20 @@ type TaskSnapshotReader interface {
 type TaskSnapshot struct {
 	// TaskID is the authoritative task id of the record when the
 	// record reports one separately from the requested id; empty means
-	// the requested id stands.
+	// the requested id stands. The BINDING is binding: when nonempty it
+	// MUST equal the event-derived task id the read was requested
+	// under. A differing nonempty value is a corrupt snapshot and fails
+	// the projection loudly (ErrSnapshotTaskIDMismatch) — a snapshot
+	// can never replace the event's canonical task id.
 	TaskID string
 	// RunID is the actual runtime run id the record executed under;
-	// empty = unavailable (never equated with TaskID).
+	// empty = unavailable (never equated with TaskID). When nonempty it
+	// MUST agree with the event-derived run id and the turn's already
+	// established run binding (see bindRunID) — a disagreement is a
+	// corrupt snapshot (ErrSnapshotRunIDMismatch) and fails the
+	// projection loudly. A snapshot may FILL the run id only when it is
+	// the sole nonempty observation; once a turn/run binding exists, no
+	// later snapshot or event can move it.
 	RunID string
 
 	// QueryPresent reports whether the record carries a renderable
@@ -167,9 +208,17 @@ func snapshotOutputs(snap TaskSnapshot) []turns.Attachment {
 // in observe.go) — never on a Protocol read. A nil reader or a missing
 // record (ErrTaskSnapshotNotFound) is the honest legacy-absence case:
 // the zero snapshot leaves every component explicitly unavailable. Any
-// other error — or a snapshot that violates the DTO contract — is a
-// transient/hard snapshot failure that aborts the projection without
-// advancing the checkpoint.
+// other error — or a snapshot that violates the DTO contract or the
+// identity/task/run BINDING — is a transient/hard snapshot failure
+// that aborts the projection without advancing the checkpoint.
+//
+// The BINDING is enforced here at the seam: the read is requested under
+// the exact event identity and event-derived task id, and a nonempty
+// returned TaskID MUST equal the requested task id — a snapshot can
+// never replace the event's canonical task id. The run-id agreement
+// (event envelope / established turn binding / snapshot) is enforced by
+// the caller via bindRunID, which knows the event-derived run and the
+// turn's existing binding.
 func (m *Materializer) readTaskSnapshot(ctx context.Context, id identity.Identity, taskID string) (TaskSnapshot, error) {
 	if m.snap == nil {
 		return TaskSnapshot{}, nil
@@ -184,7 +233,55 @@ func (m *Materializer) readTaskSnapshot(ctx context.Context, id identity.Identit
 	if err := validateTaskSnapshot(snap); err != nil {
 		return TaskSnapshot{}, err
 	}
+	if snap.TaskID != "" && snap.TaskID != taskID {
+		return TaskSnapshot{}, fmt.Errorf("%w: requested %s, record reports %s", ErrSnapshotTaskIDMismatch, taskID, snap.TaskID)
+	}
 	return snap, nil
+}
+
+// bindRunID enforces the turn/run binding contract at the seam. The
+// observations are the EVENT-derived run id (the envelope's RunID), the
+// turn's ALREADY ESTABLISHED run binding (turnState.runID, fixed at
+// spawn), and the snapshot's RunID. Every nonempty observation must
+// agree:
+//
+//   - two or more DISTINCT nonempty observations → the read is corrupt
+//     (a buggy or compromised reader cross-routing content across runs,
+//     or a later snapshot/event attempting to MOVE an established
+//     binding) and the projection fails loud (ErrSnapshotRunIDMismatch)
+//     WITHOUT advancing the checkpoint or mutating a turn;
+//   - exactly one nonempty observation → it stands (the effective run);
+//   - none → the run stays unavailable (""), never equated with a task
+//     id.
+//
+// A snapshot may FILL the run id only when it is the sole nonempty
+// observation — i.e. the canonical event genuinely lacks one and the
+// task-id/identity binding has already passed. Once a binding exists,
+// no later snapshot or event can move it.
+func bindRunID(eventRunID, boundRunID, snapRunID string) (string, error) {
+	observed := make([]string, 0, 3)
+	seen := make(map[string]struct{}, 3)
+	add := func(v string) {
+		if v == "" {
+			return
+		}
+		if _, dup := seen[v]; dup {
+			return
+		}
+		seen[v] = struct{}{}
+		observed = append(observed, v)
+	}
+	add(eventRunID)
+	add(boundRunID)
+	add(snapRunID)
+	switch len(observed) {
+	case 0:
+		return "", nil
+	case 1:
+		return observed[0], nil
+	default:
+		return "", fmt.Errorf("%w: event %q, turn binding %q, snapshot %q", ErrSnapshotRunIDMismatch, eventRunID, boundRunID, snapRunID)
+	}
 }
 
 // validateTaskSnapshot enforces the snapshot DTO contract at the seam:

@@ -340,11 +340,15 @@ func (m *Materializer) applyToSession(ctx context.Context, sess *sessionState, e
 // under the event identity and captures the authoritative TaskID +
 // RunID, the bounded renderable query + instant, the effective agent
 // binding, and the input attachment metadata onto the append. The
-// reader is invoked only while projecting this successfully persisted
-// spawn event — never on a Protocol read. A nil reader or a missing
-// record is the honest legacy gap (the components stay unavailable);
-// a transient snapshot error aborts the projection without advancing
-// the checkpoint.
+// read is BOUND: a nonempty returned TaskID must equal the event's
+// canonical task id (it can never replace it), and the run id must
+// agree between the event envelope and the record — the record may
+// FILL the run only when the event genuinely lacks one. The reader is
+// invoked only while projecting this successfully persisted spawn
+// event — never on a Protocol read. A nil reader or a missing record
+// is the honest legacy gap (the components stay unavailable); a
+// transient snapshot error or a binding mismatch aborts the projection
+// without advancing the checkpoint.
 func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
 	if taskID == "" {
@@ -385,13 +389,14 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 	if err != nil {
 		return false, err
 	}
-	snapTaskID := taskID
-	if snap.TaskID != "" {
-		snapTaskID = snap.TaskID
-	}
-	snapRunID := runID
-	if snap.RunID != "" {
-		snapRunID = snap.RunID
+	// Run binding at the turn's birth: the event envelope's run id and
+	// the record's run id must agree when both are present; the record
+	// may FILL the run only when the event genuinely lacks one. The
+	// task-id binding was already enforced inside readTaskSnapshot (the
+	// record can never replace the event's canonical task id).
+	runID, err = bindRunID(runID, "", snap.RunID)
+	if err != nil {
+		return false, err
 	}
 
 	// Transactional creation: the durable append lands BEFORE the
@@ -420,8 +425,8 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 		}
 		if _, err := m.proj.Append(ctx, sess.id, turns.Append{
 			TurnID:             turns.TurnID(taskID),
-			TaskID:             snapTaskID,
-			RunID:              snapRunID,
+			TaskID:             taskID, // the event's canonical task id — a snapshot can never replace it
+			RunID:              runID,
 			Query:              appendQuery,
 			QueryAt:            appendQueryAt,
 			AgentID:            appendAgentID,
@@ -436,7 +441,7 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 		}
 	}
 
-	ts := &turnState{taskID: taskID, runID: snapRunID}
+	ts := &turnState{taskID: taskID, runID: runID}
 	if snap.InputsPresent {
 		// Seed the in-memory input accumulator with the record's input
 		// metadata (deep-copied) so a later disposition event for the
@@ -483,8 +488,11 @@ func (m *Materializer) applyTaskRunning(ctx context.Context, sess *sessionState,
 // empty, or artifact-reference shaped) plus the output attachment
 // metadata; the definite answer is attached to the row (with the
 // outputs) and the seal lands immediately, so the task record and the
-// durable turn agree. The reader is invoked only while projecting this
-// successfully persisted completion event — never on a Protocol read.
+// durable turn agree. The read is BOUND: a nonempty returned TaskID
+// must equal the event's canonical task id, and the run id must agree
+// with the turn's established binding — a later snapshot can never move
+// it. The reader is invoked only while projecting this successfully
+// persisted completion event — never on a Protocol read.
 //
 // Without a wired reader (or for a legacy record with no answer
 // envelope) the answer stays honestly unavailable: the projector
@@ -493,8 +501,8 @@ func (m *Materializer) applyTaskRunning(ctx context.Context, sess *sessionState,
 // every pass — the row honestly stays mutable (running) while its
 // sources have not converged; it is never fabricated as complete, and
 // a sequence no-op (the observation was already applied) is never
-// equated with a durable seal. A transient snapshot error aborts the
-// projection without advancing the checkpoint.
+// equated with a durable seal. A transient snapshot error or a binding
+// mismatch aborts the projection without advancing the checkpoint.
 func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
 	_, ts, ok := sess.rootTaskTurn(taskID)
@@ -507,6 +515,19 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 	snap, err := m.readTaskSnapshot(ctx, sess.id, taskID)
 	if err != nil {
 		return false, err
+	}
+	// Run binding: the terminal read's run observations (the event
+	// envelope, the spawn-established turn binding, the snapshot) must
+	// all agree; a snapshot may fill the run only when no binding
+	// exists yet — never move an established one. Enforced BEFORE any
+	// mutation so a mismatch leaves the row untouched and the
+	// checkpoint unadvanced.
+	bound, err := bindRunID(runIDFromIdentity(ev.Identity), ts.runID, snap.RunID)
+	if err != nil {
+		return false, err
+	}
+	if bound != ts.runID {
+		ts.runID = bound
 	}
 	if snap.AnswerPresent {
 		// The answer envelope has converged: attach it (with the
@@ -570,14 +591,21 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 // reads the already-redacted canonical task record under the EVENT
 // identity and captures the canonical classified code and the bounded
 // safe message, so the task event and the durable turn agree: the
-// closed error class derives from the record's code (the event's code
-// stands in for a legacy record that lacks it) and the bounded redacted
-// message rides the seal. A nil reader / legacy record leaves the
-// message unavailable (""). The reader is invoked only while
-// projecting this successfully persisted failure event — never on a
-// Protocol read. A transient snapshot error aborts the projection
-// without advancing the checkpoint; an over-bound message is refused
-// loudly by the projector, never truncated.
+// closed error class derives from the agreed code and the bounded
+// redacted message rides the seal. The read is BOUND: a nonempty
+// returned TaskID must equal the event's canonical task id, the run id
+// must agree with the turn's established binding (a later snapshot can
+// never move it), and — when BOTH the event and the record carry a
+// nonempty error code — the codes MUST agree; a differing nonempty code
+// is a corrupt classification conflict (ErrTerminalCodeMismatch) and
+// fails the projection loudly instead of silently preferring either
+// source. A nil reader / legacy record leaves the message unavailable
+// ("") and derives the class from the event's code alone. The reader is
+// invoked only while projecting this successfully persisted failure
+// event — never on a Protocol read. A transient snapshot error, a
+// binding mismatch, or a code conflict aborts the projection without
+// advancing the checkpoint; an over-bound message is refused loudly by
+// the projector, never truncated.
 func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
 	_, ts, ok := sess.rootTaskTurn(taskID)
@@ -591,9 +619,30 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 	if err != nil {
 		return false, err
 	}
+	// Run binding: the terminal read's run observations (the event
+	// envelope, the spawn-established turn binding, the snapshot) must
+	// all agree; a snapshot may fill the run only when no binding
+	// exists yet — never move an established one. Enforced BEFORE any
+	// mutation so a mismatch leaves the row untouched and the
+	// checkpoint unadvanced.
+	bound, err := bindRunID(runIDFromIdentity(ev.Identity), ts.runID, snap.RunID)
+	if err != nil {
+		return false, err
+	}
+	if bound != ts.runID {
+		ts.runID = bound
+	}
+	// Terminal error-code agreement: the canonical event and the task
+	// record must agree on the final typed code when BOTH are present —
+	// a differing nonempty code is rejected loudly rather than silently
+	// preferring either source (the durable row would otherwise publish
+	// an internally inconsistent final classification).
 	code := fieldString(payload, "ErrorCode")
 	message := ""
 	if snap.FailurePresent {
+		if code != "" && snap.ErrorCode != "" && code != snap.ErrorCode {
+			return false, fmt.Errorf("%w: task %s: event code %q, task record code %q", ErrTerminalCodeMismatch, taskID, code, snap.ErrorCode)
+		}
 		if snap.ErrorCode != "" {
 			code = snap.ErrorCode
 		}
