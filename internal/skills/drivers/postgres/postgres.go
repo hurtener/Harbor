@@ -205,6 +205,15 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
 		}
 	}()
 
+	// Legacy-mutation fence: the installed unit's membership row is
+	// read-only from the legacy surface. Refuse BEFORE the probe so a
+	// legacy upsert can never silently overwrite (or idempotently echo)
+	// an installed key — the dedicated package-aware methods are the
+	// only mutation path for an installed key.
+	if err := d.fenceLegacyMutation(ctx, tx, id, skill.Scope, skill.AgentID, skill.Name); err != nil {
+		return err
+	}
+
 	// User-scope rows persist session-zeroed so they resolve across every
 	// session of the same (tenant, user) — the durable-by-default rung. All
 	// other scopes pin the caller's real session (unchanged). Identity was
@@ -356,6 +365,95 @@ func (d *driver) emitUpserted(ctx context.Context, id identity.Quadruple, s skil
 		Payload:    payload,
 	}); err != nil {
 		return fmt.Errorf("skills/postgres: emit skill.upserted: %w", err)
+	}
+	return nil
+}
+
+// writeSkillRow inserts or replaces one `skills` row inside `tx` under
+// the identity-scoped (tenant, user, session, scope, agent, name) key.
+// The column semantics are byte-identical to the legacy Upsert insert,
+// so the installed-package membership row (session-zeroed ScopeUser
+// agent-bound) is exactly what the legacy read surface would return.
+func (d *driver) writeSkillRow(ctx context.Context, tx *sql.Tx, tenantID, userID, storeSession string, skill skills.Skill) error {
+	now := time.Now().UTC()
+	if skill.CreatedAt.IsZero() {
+		skill.CreatedAt = now
+	}
+	skill.UpdatedAt = now
+
+	tagsJSON, err := marshalStrings(skill.Tags)
+	if err != nil {
+		return err
+	}
+	stepsJSON, err := marshalStrings(skill.Steps)
+	if err != nil {
+		return err
+	}
+	preJSON, err := marshalStrings(skill.Preconditions)
+	if err != nil {
+		return err
+	}
+	failJSON, err := marshalStrings(skill.FailureModes)
+	if err != nil {
+		return err
+	}
+	rtJSON, err := marshalStrings(skill.RequiredTools)
+	if err != nil {
+		return err
+	}
+	rnsJSON, err := marshalStrings(skill.RequiredNS)
+	if err != nil {
+		return err
+	}
+	rtgJSON, err := marshalStrings(skill.RequiredTags)
+	if err != nil {
+		return err
+	}
+	extraJSON, err := marshalExtra(skill.Extra)
+	if err != nil {
+		return err
+	}
+	tagsText := strings.Join(skill.Tags, " ")
+
+	if _, err := tx.ExecContext(ctx, `
+        INSERT INTO skills
+            (tenant_id, user_id, session_id, scope, agent_id, name, title, description, trigger_text,
+             task_type, tags_json, tags_text, steps_json, preconditions_json,
+             failure_modes_json, required_tools_json, required_ns_json,
+             required_tags_json, origin, origin_ref, scope_tenant, scope_project,
+             content_hash, created_at, updated_at, last_used, use_count, extra_json)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+        ON CONFLICT (tenant_id, user_id, session_id, scope, agent_id, name) DO UPDATE SET
+            title               = excluded.title,
+            description         = excluded.description,
+            trigger_text        = excluded.trigger_text,
+            task_type           = excluded.task_type,
+            tags_json           = excluded.tags_json,
+            tags_text           = excluded.tags_text,
+            steps_json          = excluded.steps_json,
+            preconditions_json  = excluded.preconditions_json,
+            failure_modes_json  = excluded.failure_modes_json,
+            required_tools_json = excluded.required_tools_json,
+            required_ns_json    = excluded.required_ns_json,
+            required_tags_json  = excluded.required_tags_json,
+            origin              = excluded.origin,
+            origin_ref          = excluded.origin_ref,
+            scope_tenant        = excluded.scope_tenant,
+            scope_project       = excluded.scope_project,
+            content_hash        = excluded.content_hash,
+            updated_at          = excluded.updated_at,
+            extra_json          = excluded.extra_json`,
+		tenantID, userID, storeSession, string(skill.Scope), skill.AgentID, skill.Name,
+		skill.Title, skill.Description, skill.Trigger, skill.TaskType,
+		tagsJSON, tagsText, stepsJSON, preJSON, failJSON,
+		rtJSON, rnsJSON, rtgJSON,
+		string(skill.Origin), skill.OriginRef,
+		skill.ScopeTenantID, skill.ScopeProjectID,
+		skill.ContentHash, skill.CreatedAt, skill.UpdatedAt, skill.LastUsed,
+		skill.UseCount, extraJSON,
+	); err != nil {
+		return fmt.Errorf("skills/postgres: write skill row: %w", err)
 	}
 	return nil
 }
@@ -525,6 +623,25 @@ func (d *driver) deleteAgent(ctx context.Context, id identity.Quadruple, agentID
 	if skills.ValidateIdentity(id) != nil {
 		return skills.EmitIdentityRejected(ctx, d.bus, id, "Delete")
 	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("skills/postgres: begin delete tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback() //nolint:errcheck // best-effort; the original error is the surfaced one
+		}
+	}()
+	// Legacy-mutation fence: a user-rung DeleteAgent whose (agentID,
+	// name) matches an installed package's effective-agent key is
+	// refused with ErrInstalledPackageReadOnly before any row is
+	// touched — the atomic unit can never be torn (row deleted,
+	// package left). Keys without an installed package keep the exact
+	// legacy behavior.
+	if err := d.fenceLegacyMutation(ctx, tx, id, scope, agentID, name); err != nil {
+		return err
+	}
 	// RUNG-PRECISE delete: reads union the session + user rungs, but a
 	// DESTRUCTIVE op must never cross that boundary. A ScopeUser delete
 	// targets ONLY the durable user-scope row (keyed (tenant, user), session
@@ -542,7 +659,7 @@ func (d *driver) deleteAgent(ctx context.Context, id identity.Quadruple, agentID
 		query = `DELETE FROM skills WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND scope != $4 AND agent_id = $5 AND name = $6`
 		args = []any{id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, name}
 	}
-	res, err := d.db.ExecContext(ctx, query, args...)
+	res, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("skills/postgres: Delete exec: %w", err)
 	}
@@ -553,6 +670,10 @@ func (d *driver) deleteAgent(ctx context.Context, id identity.Quadruple, agentID
 	if nRows == 0 {
 		return fmt.Errorf("%w: name=%q", skills.ErrSkillNotFound, name)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("skills/postgres: commit delete: %w", err)
+	}
+	committed = true
 	if err := d.bus.Publish(ctx, events.Event{
 		Type:       skills.EventTypeSkillDeleted,
 		Identity:   id,

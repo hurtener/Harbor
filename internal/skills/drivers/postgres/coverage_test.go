@@ -2,6 +2,8 @@ package postgres_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"testing"
 	"time"
@@ -32,6 +34,49 @@ func validCoverageSkill(name string) skills.Skill {
 	}
 }
 
+// validCoverageInstalledUnit returns a valid atomic installed unit for
+// the driver-level closed/canceled sentinel cases: canonical complete
+// package with one bounded support file, its versioned PackageHash, and
+// a self-consistent stored semantic skill on the ScopeUser rung.
+func validCoverageInstalledUnit(t *testing.T, name, agentID string) skills.InstalledPackage {
+	t.Helper()
+	now := time.Now().UTC()
+	data := []byte(`{"file": 0, "name": "` + name + `"}`)
+	pkg := skills.Package{
+		Name:    name,
+		Version: "1.0.0",
+		Skill: skills.PackageSkill{
+			Name: name, Title: "Title " + name, Trigger: "trigger:" + name,
+			TaskType: "code", Tags: []string{"alpha"}, Steps: []string{"step one"},
+		},
+		Supports: []skills.SupportFile{{
+			Path: "examples/file-00.json", Mime: "application/json",
+			Size: int64(len(data)), Digest: coverageHexDigest(data), Data: data,
+		}},
+	}
+	hash, err := skills.PackageHash(pkg)
+	if err != nil {
+		t.Fatalf("PackageHash(%q): %v", name, err)
+	}
+	skill := skills.Skill{
+		Name: name, AgentID: agentID, Title: pkg.Skill.Title,
+		Trigger: pkg.Skill.Trigger, TaskType: pkg.Skill.TaskType,
+		Tags:   append([]string(nil), pkg.Skill.Tags...),
+		Steps:  append([]string(nil), pkg.Skill.Steps...),
+		Origin: skills.OriginGenerated, OriginRef: "coverage:" + name,
+		Scope: skills.ScopeUser, CreatedAt: now, UpdatedAt: now,
+	}
+	skill.ContentHash = skills.CanonicalContentHash(skill)
+	return skills.InstalledPackage{Skill: skill, Package: pkg, PackageHash: hash}
+}
+
+// coverageHexDigest returns the lowercase hex sha256 of b — the digest
+// form the support manifest records.
+func coverageHexDigest(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
 func TestNew_RejectsUnknownRetrievalModeAndUnreachableDatabase(t *testing.T) {
 	bus := buildBus(t)
 	if _, err := postgres.New(skills.ConfigSnapshot{
@@ -55,6 +100,7 @@ func TestClosedStore_AllPublicOperationsFailClosed(t *testing.T) {
 		t.Fatalf("idempotent Close: %v", err)
 	}
 	skill := validCoverageSkill("closed")
+	unit := validCoverageInstalledUnit(t, "closed-pkg", "agent-closed")
 	cases := []struct {
 		name string
 		call func() error
@@ -66,6 +112,34 @@ func TestClosedStore_AllPublicOperationsFailClosed(t *testing.T) {
 		{name: "delete", call: func() error { return store.Delete(context.Background(), fixtureID, skill.Name, skill.Scope) }},
 		{name: "snapshot", call: func() error {
 			_, err := store.(skills.SnapshotCandidateSearcher).SearchSnapshot(context.Background(), fixtureID, skill.Name, []skills.Skill{skill}, 1)
+			return err
+		}},
+		{name: "get_installed_package", call: func() error {
+			_, err := store.GetInstalledPackage(context.Background(), fixtureID, "agent-closed", "closed-pkg")
+			return err
+		}},
+		{name: "resolve_support", call: func() error {
+			uri, err := skills.NewPackageURI(unit.PackageHash, unit.Package.Supports[0].Path)
+			if err != nil {
+				return err
+			}
+			_, err = store.ResolveSupport(context.Background(), fixtureID, "agent-closed", "closed-pkg", uri)
+			return err
+		}},
+		{name: "put_installed_package", call: func() error {
+			_, err := store.PutInstalledPackage(context.Background(), fixtureID, "agent-closed", unit,
+				skills.InstalledPackageCondition{ExpectedAbsent: true}, false)
+			return err
+		}},
+		{name: "delete_installed_package", call: func() error {
+			_, err := store.DeleteInstalledPackage(context.Background(), fixtureID, "agent-closed", "closed-pkg",
+				skills.InstalledPackageReceipt{TenantID: fixtureID.TenantID, UserID: fixtureID.UserID, AgentID: "agent-closed", Name: "closed-pkg", WrittenHash: unit.PackageHash})
+			return err
+		}},
+		{name: "restore_installed_package", call: func() error {
+			_, err := store.RestoreInstalledPackage(context.Background(), fixtureID, "agent-closed", "closed-pkg",
+				skills.InstalledPackageReceipt{TenantID: fixtureID.TenantID, UserID: fixtureID.UserID, AgentID: "agent-closed", Name: "closed-pkg", WrittenHash: unit.PackageHash, PriorHash: unit.PackageHash},
+				unit)
 			return err
 		}},
 	}
@@ -81,6 +155,7 @@ func TestCanceledContext_DatabaseOperationsFailLoudly(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	skill := validCoverageSkill("canceled")
+	unit := validCoverageInstalledUnit(t, "canceled-pkg", "agent-canceled")
 	cases := []struct {
 		name string
 		call func() error
@@ -92,6 +167,34 @@ func TestCanceledContext_DatabaseOperationsFailLoudly(t *testing.T) {
 		{name: "delete", call: func() error { return store.Delete(ctx, fixtureID, skill.Name, skill.Scope) }},
 		{name: "snapshot", call: func() error {
 			_, err := store.(skills.SnapshotCandidateSearcher).SearchSnapshot(ctx, fixtureID, skill.Name, []skills.Skill{skill}, 1)
+			return err
+		}},
+		{name: "get_installed_package", call: func() error {
+			_, err := store.GetInstalledPackage(ctx, fixtureID, "agent-canceled", "canceled-pkg")
+			return err
+		}},
+		{name: "resolve_support", call: func() error {
+			uri, err := skills.NewPackageURI(unit.PackageHash, unit.Package.Supports[0].Path)
+			if err != nil {
+				return err
+			}
+			_, err = store.ResolveSupport(ctx, fixtureID, "agent-canceled", "canceled-pkg", uri)
+			return err
+		}},
+		{name: "put_installed_package", call: func() error {
+			_, err := store.PutInstalledPackage(ctx, fixtureID, "agent-canceled", unit,
+				skills.InstalledPackageCondition{ExpectedAbsent: true}, false)
+			return err
+		}},
+		{name: "delete_installed_package", call: func() error {
+			_, err := store.DeleteInstalledPackage(ctx, fixtureID, "agent-canceled", "canceled-pkg",
+				skills.InstalledPackageReceipt{TenantID: fixtureID.TenantID, UserID: fixtureID.UserID, AgentID: "agent-canceled", Name: "canceled-pkg", WrittenHash: unit.PackageHash})
+			return err
+		}},
+		{name: "restore_installed_package", call: func() error {
+			_, err := store.RestoreInstalledPackage(ctx, fixtureID, "agent-canceled", "canceled-pkg",
+				skills.InstalledPackageReceipt{TenantID: fixtureID.TenantID, UserID: fixtureID.UserID, AgentID: "agent-canceled", Name: "canceled-pkg", WrittenHash: unit.PackageHash, PriorHash: unit.PackageHash},
+				unit)
 			return err
 		}},
 	}
