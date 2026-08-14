@@ -28,9 +28,9 @@ assert_grep_present "wrong/missing identity" \
 assert_grep_present "missing current .ui://. resource" \
     docs/plans/phase-238-app-only-callback-catalog.md \
     "amendment: negative resource-availability case is pinned"
-assert_grep_present "stale registry" \
+assert_grep_present "provider/catalog generation" \
     docs/plans/phase-238-app-only-callback-catalog.md \
-    "amendment: negative descriptor-generation case is pinned"
+    "amendment: negative provider/catalog-generation case is pinned"
 assert_grep_present "expired claim" \
     docs/plans/phase-238-app-only-callback-catalog.md \
     "amendment: negative expiry case is pinned"
@@ -136,5 +136,52 @@ assert_grep_absent "HARBOR_MCP_APP_SEALING_KEY" \
 assert_grep_absent "HARBOR_MCP_APP_SEALING_KEY" \
     examples/harbor.yaml \
     "amendment: invented literal-key env is absent from the example config"
+
+# Corrected provider/catalog-generation binding (focused amendment): the
+# admission is bound to the exact CURRENT provider/catalog generation — the
+# deterministic, replica-stable generation of the server's current discovered
+# catalog that changes on detach, replacement, and ANY successful
+# discovery/catalog/resource change even when deployment descriptor
+# configuration did not change. The existing exact registration descriptor
+# fingerprint remains a retained input but is never alone sufficient
+# authority; a process-local discovery counter is not acceptable, and a
+# replica holding a different current catalog fails closed as a generation
+# mismatch. Every owned authoritative surface carries the corrected binding.
+assert_grep_present "detach, replacement, and ANY" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: plan pins generation change on detach/replacement/discovery change"
+assert_grep_present "process-local discovery counter" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: plan pins that a process-local discovery counter is not acceptable"
+assert_grep_present "never alone sufficient authority" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: plan pins the descriptor fingerprint is never alone sufficient"
+assert_grep_present "fails closed as a generation mismatch" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: plan pins replica generation-mismatch fails closed"
+assert_grep_present "fails closed as a generation mismatch" \
+    docs/decisions.md \
+    "amendment: D-412 pins replica generation-mismatch fails closed"
+assert_grep_present "provider/catalog generation" \
+    RFC-001-Harbor.md \
+    "amendment: RFC §6.10 pins the current provider/catalog generation"
+assert_grep_present "provider/catalog generation" \
+    docs/plans/README.md \
+    "amendment: master plan pins the current provider/catalog generation"
+assert_grep_present "provider/catalog generation" \
+    docs/notes/downstream-asks.md \
+    "amendment: HA-56 register pins the current provider/catalog generation"
+assert_grep_present "provider/catalog generation" \
+    docs/glossary.md \
+    "amendment: glossary pins the current provider/catalog generation"
+assert_grep_present "provider/catalog generation" \
+    docs/skills/drive-the-playground/SKILL.md \
+    "amendment: drive-the-playground skill pins the current provider/catalog generation"
+assert_grep_present "provider/catalog generation" \
+    docs/CONFIG.md \
+    "amendment: CONFIG.md pins the current provider/catalog generation"
+assert_grep_present "fails closed as a generation mismatch" \
+    docs/CONFIG.md \
+    "amendment: CONFIG.md pins replica generation-mismatch fails closed"
 
 smoke_summary

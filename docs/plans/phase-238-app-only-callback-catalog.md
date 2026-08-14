@@ -66,11 +66,18 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
    shared-KEK admission** minted only after ALL of: verified identity, signed
    effective-agent reach, retirement, erasure, current session/agent exposure,
    exact server, exact current `ui://` resource availability, paused/disabled
-   state, and exact current registry descriptor fingerprint generation.
+   state, and the exact CURRENT provider/catalog generation — a deterministic,
+   replica-stable generation of the server's current discovered catalog that
+   changes on detach, replacement, and ANY successful discovery/catalog/
+   resource change even when deployment descriptor configuration did not
+   change (the existing exact registration descriptor fingerprint remains a
+   retained input but is never alone sufficient authority; a process-local
+   discovery counter is not acceptable, and a replica holding a different
+   current catalog fails closed as a generation mismatch).
 3. **The admission claim binds** claim schema, mint time, `(tenant, user,
-   session)`, effective agent, server, resource, and descriptor generation —
-   and carries NO raw args, secrets, provider output, callback name, or
-   general capability.
+   session)`, effective agent, server, resource, and the current
+   provider/catalog generation — and carries NO raw args, secrets, provider
+   output, callback name, or general capability.
 4. **Ordinary resource reads never mint.** Only the explicit
    admission-requesting read path mints an admission.
 5. **The callback stays absent from planner / `tools.list` / search / generic
@@ -88,7 +95,12 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
    no second authority field and no literal key. An enabled surface with an
    empty env name, a missing/unset/invalid KEK, or a sealer construction
    failure fails readiness loud, even when no OAuth provider or credential
-   broker is configured; restart/multi-replica verify against the shared KEK.
+   broker is configured; restart and multi-replica admission verification
+   succeeds only when the shared KEK AND the same current provider/catalog
+   generation are present — a replica holding a different current catalog
+   fails closed as a generation mismatch, and a process-local discovery
+   counter is not acceptable (the generation must be deterministic and
+   stable across replicas holding the same current catalog).
 9. **Pinned non-goals:** no generic capability framework, no persisted
    callback authority, no arbitrary origins, no provider exceptions, no hot
    registry, and no transcript impersonation.
@@ -103,12 +115,14 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
 2. **Negative admission cases each fail typed before render or dispatch, with
    zero callback executions:** wrong/missing identity, retired effective
    agent, erased session/agent, changed session/agent exposure, wrong server,
-   missing current `ui://` resource, paused/disabled server, stale registry
-   descriptor generation, tampered claim, and expired claim.
+   missing current `ui://` resource, paused/disabled server, stale
+   provider/catalog generation (changed by detach, replacement, or any
+   successful discovery/catalog/resource change even with unchanged
+   deployment descriptor configuration), tampered claim, and expired claim.
 3. **Claim-content pin:** the admission claim carries schema/time/triple/
-   effective-agent/server/resource/generation only; a test asserts raw args,
-   secrets, provider output, callback name, and general-capability content
-   are absent from the claim.
+   effective-agent/server/resource/current provider/catalog generation only; a
+   test asserts raw args, secrets, provider output, callback name, and
+   general-capability content are absent from the claim.
 4. **Ordinary `mcp.servers.read_resource` never mints;** only the explicit
    admission-requesting read path does — proven by a test that ordinary reads
    yield no admission.
@@ -128,11 +142,19 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
    authority field; an enabled surface with an empty env name, a
    missing/unset/invalid KEK, or a sealer construction failure fails
    readiness loud even with no OAuth provider or credential broker
-   configured; restart and multi-replica admission verification use the
-   shared KEK.
+   configured; restart and multi-replica admission verification succeeds
+   only when the shared KEK AND the same current provider/catalog generation
+   are present — a replica holding a different current catalog fails closed
+   as a generation mismatch.
 9. **N≥100 concurrent reopen/isolation under `-race`** with no cross-talk,
    and zero originating-tool rerun / callback execution on refusal across all
    negative cases.
+10. **Generation determinism:** the provider/catalog generation is
+    deterministic and stable across replicas holding the same current
+    catalog — a process-local discovery counter is rejected as a generation
+    source; a replica holding a different current catalog fails closed as a
+    generation mismatch before render or dispatch, even when the deployment
+    descriptor configuration is identical.
 
 ## Files added or changed
 
@@ -163,12 +185,12 @@ the config/example docs (`docs/CONFIG.md`, `examples/harbor.yaml`).
 - **Integration:** real MCP SDK fixtures and rendered App bridge over HTTP/stdio; identity and forced paused/denied failure.
 - **Conformance:** provider transcript matrix for all named compatibility fixtures.
 - **Concurrency / leak:** N=128 shared catalog refresh/dispatch calls with cancellation and teardown leak assertions.
-- **Amendment (v1.28):** durable reopen through the real Console App host/bridge, the negative admission matrix (identity / server / resource / generation / expiry / tamper / erasure / paused-disabled), the claim-content pin, the ordinary-read-never-mints pin, the HA-64 row metadata-only pin, and N≥100 concurrent reopen/isolation under `-race` with zero originating-tool rerun / callback execution on refusal.
+- **Amendment (v1.28):** durable reopen through the real Console App host/bridge, the negative admission matrix (identity / server / resource / catalog-generation / expiry / tamper / erasure / paused-disabled), the claim-content pin, the ordinary-read-never-mints pin, the HA-64 row metadata-only pin, and N≥100 concurrent reopen/isolation under `-race` with zero originating-tool rerun / callback execution on refusal.
 
 ## Smoke script additions
 
 - Static checks for visibility parsing, separate catalogs, host-derived identity, both transports, compatibility fixture names, and no planner callback exposure.
-- **Amendment (v1.28):** static checks pinning the fresh render-admission contract across the governance surfaces — the plan's durable-reopen / negative-matrix / N≥100 / zero-rerun acceptance, the D-412 amendment record, the RFC §6.10 amendment, the master-plan and register statuses, the glossary term, and the config/example readiness-loud consequence.
+- **Amendment (v1.28):** static checks pinning the fresh render-admission contract across the governance surfaces — the plan's durable-reopen / negative-matrix / N≥100 / zero-rerun acceptance, the D-412 amendment record, the RFC §6.10 amendment, the master-plan and register statuses, the glossary term, the provider/catalog-generation determinism and fail-closed-mismatch pins, and the config/example readiness-loud consequence.
 
 ## Coverage target
 
@@ -191,7 +213,7 @@ the config/example docs (`docs/CONFIG.md`, `examples/harbor.yaml`).
 ## Glossary additions
 
 - **App-only callback catalog** — Harbor's per-server callback lookup retained beside, but never merged into, the planner projection.
-- **Fresh render admission** — the stateless, integrity-protected, shared-KEK admission minted for an MCP App on embedded/durable reopen; never a restored live binding, never a persisted token, and never minted by ordinary resource reads. D-412.
+- **Fresh render admission** — the stateless, integrity-protected, shared-KEK admission minted for an MCP App on embedded/durable reopen; never a restored live binding, never a persisted token, never minted by ordinary resource reads, and bound to the current provider/catalog generation (deterministic and replica-stable; a process-local discovery counter is never the generation source). D-412.
 
 ## Pre-merge checklist
 
@@ -204,4 +226,4 @@ the config/example docs (`docs/CONFIG.md`, `examples/harbor.yaml`).
 - [ ] Concurrent-reuse N≥100 under `-race`
 - [ ] Real-driver/spec-derived integration with failure mode under `-race`
 - [ ] Glossary updated
-- [ ] Amendment: the fresh render-admission contract is recorded on every governance surface (D-412, RFC §6.10, master plan, register, glossary, smoke, skill, config docs) before the v1.28 implementation wave lands
+- [ ] Amendment: the fresh render-admission contract — including the current provider/catalog-generation binding with its deterministic, replica-stable, fail-closed-mismatch semantics — is recorded on every governance surface (D-412, RFC §6.10, master plan, register, glossary, smoke, skill, config docs) before the v1.28 implementation wave lands

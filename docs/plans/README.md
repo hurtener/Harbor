@@ -594,9 +594,16 @@ real two-client race under `-race`.
   reopen uses a FRESH stateless, integrity-protected, shared-KEK admission
   minted only after verified identity, signed effective-agent reach,
   retirement, erasure, current session/agent exposure, exact server, exact
-  current `ui://` resource availability, paused/disabled state, and exact
-  current registry descriptor fingerprint generation. Claims bind
-  schema/time/triple/effective-agent/server/resource/generation and carry no
+  current `ui://` resource availability, paused/disabled state, and the exact
+  CURRENT provider/catalog generation — a deterministic, replica-stable
+  generation of the server's current discovered catalog that changes on
+  detach, replacement, and ANY successful discovery/catalog/resource change
+  even when deployment descriptor configuration did not change (the existing
+  exact registration descriptor fingerprint remains a retained input but is
+  never alone sufficient authority; a process-local discovery counter is not
+  acceptable, and a replica holding a different current catalog fails closed
+  as a generation mismatch). Claims bind schema/time/triple/effective-agent/
+  server/resource/current provider/catalog generation and carry no
   raw args, secrets, provider output, callback name, or general capability.
   Ordinary resource reads never mint; only the explicit admission-requesting
   read path does. Callbacks stay absent from planner/`tools.list`/search/
@@ -610,10 +617,12 @@ real two-client race under `-race`.
   `false`) and seals with the existing `tools.oauth_token_kek_env` KEK — no
   second authority field; an enabled surface with an empty env name, a
   missing/unset/invalid KEK, or a sealer construction failure fails readiness
-  loud even with no OAuth provider or credential broker configured;
-  restart/multi-replica use the shared KEK. No generic capability framework,
-  persisted callback authority, arbitrary origins, provider exceptions, hot
-  registry, or transcript impersonation.
+  loud even with no OAuth provider or credential broker configured; restart
+  and multi-replica admission verification succeeds only when the shared KEK
+  AND the same current provider/catalog generation are present — a replica
+  holding a different current catalog fails closed as a generation mismatch.
+  No generic capability framework, persisted callback authority, arbitrary
+  origins, provider exceptions, hot registry, or transcript impersonation.
 - **Ordering:** 238 is independent of 236/237/239/240/241/242 (its App-host
   fixtures compose with 242's durable task-progress projection at wave E2E).
 - **Decision:** D-412. **Status:** Shipped (v1.27); fresh render-admission amendment Pending (v1.28).

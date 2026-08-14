@@ -1901,12 +1901,20 @@ bounded, short-lived, and for a live tool-result App only) and never a
 persisted token (durable turn rows carry metadata/component availability
 only). It is minted only after verified identity, signed effective-agent
 reach, retirement, erasure, current session/agent exposure, exact server,
-exact current `ui://` resource availability, paused/disabled state, and
-exact current registry descriptor fingerprint generation. The claim binds
-schema/time/triple/effective-agent/server/resource/generation and carries no
-raw args, secrets, provider output, callback name, or general capability;
-ordinary resource reads never mint, and unavailable/expired admissions
-answer typed `unavailable`/`expired` with fresh checks on refresh. D-412.
+exact current `ui://` resource availability, paused/disabled state, and the
+exact CURRENT provider/catalog generation — the deterministic, replica-stable
+generation of the server's current discovered catalog, which changes on
+detach, replacement, and ANY successful discovery/catalog/resource change
+even when deployment descriptor configuration did not change; the existing
+exact registration descriptor fingerprint is a retained input but is never
+alone sufficient authority, a process-local discovery counter is not
+acceptable, and a replica holding a different current catalog fails closed
+as a generation mismatch. The claim binds
+schema/time/triple/effective-agent/server/resource/current
+provider/catalog generation and carries no raw args, secrets, provider
+output, callback name, or general capability; ordinary resource reads never
+mint, and unavailable/expired admissions answer typed `unavailable`/`expired`
+with fresh checks on refresh. D-412.
 
 **Reliability classification metadata** — server-derived, non-secret event
 fields describing a tool failure's resolved class and retry accounting.

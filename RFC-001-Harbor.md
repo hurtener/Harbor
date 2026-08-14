@@ -1323,11 +1323,18 @@ integrity-protected, shared-KEK admission minted by the Runtime only after
 ALL of: verified identity, signed effective-agent reach, agent retirement,
 session/agent erasure, current session/agent exposure, exact server
 identity, exact current `ui://` resource availability, paused/disabled
-state, and exact current registry descriptor fingerprint generation. The
-admission claim binds claim schema, mint time, the `(tenant, user, session)`
-triple, effective agent, server, resource, and descriptor generation — and
-carries no raw tool arguments, secrets, provider output, callback name, or
-general capability. Ordinary resource reads never mint an admission; only
+state, and the exact CURRENT provider/catalog generation — a deterministic,
+replica-stable generation of the server's current discovered catalog that
+changes on detach, replacement, and ANY successful discovery/catalog/
+resource change even when deployment descriptor configuration did not
+change (the existing exact registration descriptor fingerprint remains a
+retained input but is never alone sufficient authority; a process-local
+discovery counter is not acceptable, and a replica holding a different
+current catalog fails closed as a generation mismatch). The admission claim
+binds claim schema, mint time, the `(tenant, user, session)` triple,
+effective agent, server, resource, and current provider/catalog generation —
+and carries no raw tool arguments, secrets, provider output, callback name,
+or general capability. Ordinary resource reads never mint an admission; only
 the explicit admission-requesting read path does. The app-only callback
 stays absent from planner context, `tools.list`, search, and generic
 resolution, and dispatches only via the same-server `ResolveAppTool` path
@@ -1344,9 +1351,12 @@ AES-256-GCM sealer — no second authority field and no literal key; an
 enabled surface with an empty env name, a missing/unset/invalid KEK, or a
 sealer construction failure fails readiness loud even when no OAuth provider
 or credential broker is configured, and restart/multi-replica deployments
-verify against the shared KEK. Pinned non-goals: no generic capability
-framework, no persisted callback authority, no arbitrary origins, no
-provider exceptions, no hot registry, and no transcript impersonation.
+verify against the shared KEK and succeed only when the same current
+provider/catalog generation is present — a replica holding a different
+current catalog fails closed as a generation mismatch. Pinned non-goals: no
+generic capability framework, no persisted callback authority, no arbitrary
+origins, no provider exceptions, no hot registry, and no transcript
+impersonation.
 
 MCP App tool-context records have an explicit session-lifetime contract by
 default: they survive session reopen and are removed by session erasure.

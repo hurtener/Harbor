@@ -1614,13 +1614,15 @@ enabled, an empty `tools.oauth_token_kek_env` name, a missing/unset/invalid
 KEK, or a sealer construction failure fails readiness **loud**, naming the
 problem, even when no OAuth provider or credential broker is configured.
 Restart and multi-replica deployments verify admissions against the shared
-KEK — a per-process ephemeral key would make one replica's admission
-unverifiable on another. The admission claim binds
-schema/time/`(tenant,user,session)`/effective-agent/server/resource/
-generation and never carries raw arguments, secrets, provider output,
-callback names, or general capabilities; ordinary resource reads never mint
-an admission, and unavailable/expired admissions answer typed
-unavailable/expired with fresh checks on refresh. There is no persisted
+KEK AND the same current provider/catalog generation — a per-process
+ephemeral key or a process-local discovery counter would make one replica's
+admission unverifiable on another, and a replica holding a different current
+catalog fails closed as a generation mismatch. The admission claim binds
+schema/time/`(tenant,user,session)`/effective-agent/server/resource/current
+provider/catalog generation and never carries raw arguments, secrets,
+provider output, callback names, or general capabilities; ordinary resource
+reads never mint an admission, and unavailable/expired admissions answer
+typed unavailable/expired with fresh checks on refresh. There is no persisted
 callback authority, no hot registry, and no transcript impersonation.
 
 Example:
