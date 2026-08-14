@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -201,5 +202,67 @@ func TestValidateInstalledPackageReceipt(t *testing.T) {
 	badHash.WrittenHash = "garbage"
 	if err := skills.ValidateInstalledPackageReceipt(badHash, pkgFixtureID, "agent-a", "receipt"); !errors.Is(err, skills.ErrInstalledPackageInvalid) {
 		t.Fatalf("malformed WrittenHash = %v, want errors.Is ErrInstalledPackageInvalid", err)
+	}
+}
+
+// TestLegacyMutationTargetsInstalledKey pins the exact shape of the
+// legacy-mutation fence predicate: only the ScopeUser rung with a
+// non-empty effective agent and name can collide with an installed
+// package's membership row (the session-zeroed
+// (tenant, user, effective-agent, name) ScopeUser row). Every other
+// legacy target shape reports false, so keys without a colliding shape
+// keep their exact legacy behavior.
+func TestLegacyMutationTargetsInstalledKey(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name            string
+		scope           skills.Scope
+		agentID, nameID string
+		want            bool
+	}{
+		{"user rung with agent", skills.ScopeUser, "agent-a", "skill-a", true},
+		{"user rung empty agent", skills.ScopeUser, "", "skill-a", false},
+		{"user rung empty name", skills.ScopeUser, "agent-a", "", false},
+		{"user rung empty both", skills.ScopeUser, "", "", false},
+		{"session rung", skills.ScopeSession, "agent-a", "skill-a", false},
+		{"project rung", skills.ScopeProject, "agent-a", "skill-a", false},
+		{"tenant rung", skills.ScopeTenant, "agent-a", "skill-a", false},
+		{"global rung", skills.ScopeGlobal, "agent-a", "skill-a", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := skills.LegacyMutationTargetsInstalledKey(tc.scope, tc.agentID, tc.nameID); got != tc.want {
+				t.Fatalf("LegacyMutationTargetsInstalledKey(%q, %q, %q) = %v, want %v",
+					tc.scope, tc.agentID, tc.nameID, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestErrInstalledPackageReadOnly_DistinctSentinel pins the fence
+// sentinel as its own typed error: it is a distinct sentinel (never
+// aliased to another installed-package error) and it surfaces through
+// errors.Is when wrapped, so callers can branch on it exactly like the
+// other installed-package sentinels.
+func TestErrInstalledPackageReadOnly_DistinctSentinel(t *testing.T) {
+	t.Parallel()
+	other := []error{
+		skills.ErrInstalledPackageNotFound,
+		skills.ErrInstalledPackageExists,
+		skills.ErrInstalledPackageConditionFailed,
+		skills.ErrInstalledPackageReplaceRequired,
+		skills.ErrInstalledPackageInvalid,
+		skills.ErrPackOverwriteRefused,
+		skills.ErrSkillNotFound,
+	}
+	for _, o := range other {
+		if skills.ErrInstalledPackageReadOnly == o {
+			t.Fatalf("ErrInstalledPackageReadOnly aliases %v", o)
+		}
+	}
+	wrapped := fmt.Errorf("fence: %w", skills.ErrInstalledPackageReadOnly)
+	if !errors.Is(wrapped, skills.ErrInstalledPackageReadOnly) {
+		t.Fatalf("errors.Is(wrapped) = false, want true (wrapped %v)", wrapped)
 	}
 }

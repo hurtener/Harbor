@@ -329,6 +329,14 @@ type SkillStore interface {
 	//     observability with `idempotent=true` payload field.
 	//   - otherwise: last-write-wins; emit `skill.upserted` with
 	//     `idempotent=false`.
+	//
+	// When the target key hosts an installed package
+	// (`LegacyMutationTargetsInstalledKey` true AND a package exists at
+	// the same (tenant, user, agent, name)), the upsert is refused with
+	// `ErrInstalledPackageReadOnly` before any state is touched — the
+	// legacy path can never silently overwrite the installed unit's
+	// membership row. Keys without an installed package keep the exact
+	// legacy conflict policy above.
 	Upsert(ctx context.Context, id identity.Quadruple, skill Skill) error
 
 	// Delete removes the named skill under the identity, at the target
@@ -347,9 +355,21 @@ type SkillStore interface {
 	//     behaviour for the session/admin/generator/CLI callers.
 	//
 	// Missing → `ErrSkillNotFound`. Emits `skill.deleted` on success.
+	// When the target key hosts an installed package (the agent-bound
+	// user-rung row the legacy surface would reach), the delete is
+	// refused with `ErrInstalledPackageReadOnly` before any row is
+	// touched — the installed unit is read-only from the legacy surface
+	// and `DeleteInstalledPackage` is its only erasure path. Keys
+	// without an installed package keep the exact legacy behavior.
 	Delete(ctx context.Context, id identity.Quadruple, name string, scope Scope) error
 
-	// DeleteAgent deletes only the requested agent binding at the exact rung.
+	// DeleteAgent deletes only the requested agent binding at the exact
+	// rung. When the target key hosts an installed package (a user-rung
+	// delete whose (agentID, name) matches an installed package's
+	// effective-agent key), the delete is refused with
+	// `ErrInstalledPackageReadOnly` before any row is touched — the
+	// atomic unit can never be torn (row deleted, package left). Keys
+	// without an installed package keep the exact legacy behavior.
 	DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope Scope) error
 
 	// DeleteSessionScope removes every legacy ScopeSession row under exactly
@@ -385,6 +405,11 @@ type SkillStore interface {
 	//   - All values are deep-copied at the store boundary: mutating an
 	//     argument or a returned unit never mutates store state (the
 	//     concurrent-reuse contract).
+	//   - The legacy mutation surface is FENCED off the installed key:
+	//     `Upsert` / `Delete` / `DeleteAgent` may never partially mutate
+	//     the unit (see `LegacyMutationTargetsInstalledKey` +
+	//     `ErrInstalledPackageReadOnly`). The dedicated methods below are
+	//     the ONLY package-aware mutation path.
 
 	// GetInstalledPackage returns the atomic installed package at the
 	// session-zeroed `(tenant, user, effective-agent, name)` key: the
@@ -620,6 +645,17 @@ var (
 	// foreign to the installed package or its canonical path is
 	// dangling (not in the manifest).
 	ErrSupportNotFound = errors.New("skills: support file not found")
+	// ErrInstalledPackageReadOnly — a legacy mutation path (Upsert /
+	// Delete / DeleteAgent) targeted the skill row of a key that hosts
+	// an installed package. The atomic installed unit is read-only from
+	// the legacy surface: the refusal happens BEFORE any package or
+	// membership row is touched, so the unit can never be torn (row
+	// deleted, package left) or silently overwritten (row replaced,
+	// package stale). The dedicated package-aware methods
+	// (PutInstalledPackage / DeleteInstalledPackage /
+	// RestoreInstalledPackage) are the only mutation path for an
+	// installed key.
+	ErrInstalledPackageReadOnly = errors.New("skills: installed package key is read-only to legacy mutations")
 )
 
 // ConfigSnapshot is the strict subset of `config.SkillsConfig` the
@@ -909,6 +945,30 @@ func StorageSessionID(id identity.Quadruple, scope Scope) string {
 // identity contract forbids an empty caller session, no NON-user row ever
 // carries it, so it uniquely marks the user rung in the read filter.
 const UserScopeStorageSession = ""
+
+// LegacyMutationTargetsInstalledKey reports whether a legacy mutation
+// path whose target row key is derived from `(scope, agentID, name)`
+// would land on an installed package's membership row — the
+// session-zeroed ScopeUser `(tenant, user, effective-agent, name)` row
+// that `PutInstalledPackage` commits alongside the package and that
+// exact-receipt compensation removes with it.
+//
+// It is true exactly when the legacy target is the ScopeUser rung with
+// a non-empty effective agent and name: the only legacy key shape that
+// can collide with an installed key (an installed package always
+// carries a non-empty effective agent, and every other scope is
+// session-pinned and never stores the membership row).
+//
+// Drivers call this at the boundary of every legacy mutation (`Upsert`
+// / `Delete` / `DeleteAgent`) and, when it reports true AND an
+// installed package exists at the same `(tenant, user, agentID, name)`
+// key, refuse with `ErrInstalledPackageReadOnly` BEFORE any row or
+// package state is read or written. Keys without an installed package
+// never refuse, so the exact legacy behavior (idempotent upserts,
+// not-found deletes, ordinary agent-bound row deletes) is preserved.
+func LegacyMutationTargetsInstalledKey(scope Scope, agentID, name string) bool {
+	return scope == ScopeUser && agentID != "" && name != ""
+}
 
 // IdentityFromCtx reads the identity `Quadruple` (or bare `Identity`)
 // from `ctx` and validates the triple. It returns the (possibly

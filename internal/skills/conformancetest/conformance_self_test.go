@@ -203,8 +203,10 @@ func resolveTruthfulFor(unit skills.InstalledPackage) func(context.Context, iden
 // the multi-step replace/compensation/erasure scenarios to a SPECIFIC
 // lie: it records package puts (a correct receipt, a correct read-back)
 // but each contract check is a truthfulness switch that defaults to
-// OFF (the lie). The legacy surface delegates to an embedded reference
-// store so the scenario's legacy assertions stay truthful.
+// OFF (the lie). The legacy surface (Upsert / Delete / DeleteAgent /
+// reads) delegates to the embedded reference store — including its
+// truthful legacy-mutation fence — so the scenario's legacy assertions
+// stay truthful unless a fence switch flips the specific lie.
 //
 //   - enforceReplace  — refuse implicit replacement (ErrInstalledPackageReplaceRequired)
 //   - enforceOrigin   — refuse generated-over-pack (ErrPackOverwriteRefused)
@@ -213,10 +215,15 @@ func resolveTruthfulFor(unit skills.InstalledPackage) func(context.Context, iden
 //   - deleteLies      — a stale receipt deletes the CURRENT winner anyway
 //   - restoreLies     — a stale receipt replaces the CURRENT winner anyway
 //   - deleteNoop      — deletion always reports (false, nil)
+//   - fenceDeleteLies — DeleteAgent bypasses the legacy-mutation fence
+//     (deletes the membership row as a plain legacy row)
+//   - fenceUpsertLies — Upsert bypasses the legacy-mutation fence
+//     (silently overwrites the membership row as a plain legacy row)
+//   - fenceTears      — DeleteAgent returns ErrInstalledPackageReadOnly
+//     AND still deletes the membership row (the torn-unit lie)
 type lyingPackageStore struct {
 	*referenceStore
 	mu               sync.Mutex
-	pkgs             map[string]skills.InstalledPackage
 	enforceReplace   bool
 	enforceOrigin    bool
 	enforceCondition bool
@@ -224,10 +231,49 @@ type lyingPackageStore struct {
 	deleteLies       bool
 	restoreLies      bool
 	deleteNoop       bool
+	fenceDeleteLies  bool
+	fenceUpsertLies  bool
+	fenceTears       bool
 }
 
 func newLyingPackageStore() *lyingPackageStore {
-	return &lyingPackageStore{referenceStore: newReferenceStore(), pkgs: map[string]skills.InstalledPackage{}}
+	return &lyingPackageStore{referenceStore: newReferenceStore()}
+}
+
+// DeleteAgent implements skills.SkillStore. By default it delegates to
+// the embedded reference store's truthful fence; the fence-lie switches
+// make it tear the membership row as a plain legacy row (returning nil,
+// or the sentinel when fenceTears is set).
+func (s *lyingPackageStore) DeleteAgent(ctx context.Context, id identity.Quadruple, agentID, name string, scope skills.Scope) error {
+	if !s.fenceDeleteLies && !s.fenceTears {
+		return s.referenceStore.DeleteAgent(ctx, id, agentID, name, scope)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := refRowKey(id, skills.StorageSessionID(id, scope), string(scope), agentID, name)
+	if _, ok := s.rows[key]; !ok {
+		return fmt.Errorf("%w: name=%q", skills.ErrSkillNotFound, name)
+	}
+	delete(s.rows, key)
+	if s.fenceTears {
+		return fmt.Errorf("%w: name=%q agent_id=%q scope=%q", skills.ErrInstalledPackageReadOnly, name, agentID, scope)
+	}
+	return nil
+}
+
+// Upsert implements skills.SkillStore. By default it delegates to the
+// embedded reference store's truthful fence; fenceUpsertLies makes it
+// silently overwrite the membership row as a plain legacy row.
+func (s *lyingPackageStore) Upsert(ctx context.Context, id identity.Quadruple, skill skills.Skill) error {
+	if !s.fenceUpsertLies {
+		return s.referenceStore.Upsert(ctx, id, skill)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session := skills.StorageSessionID(id, skill.Scope)
+	key := refRowKey(id, session, string(skill.Scope), skill.AgentID, skill.Name)
+	s.rows[key] = refDeepCopySkill(skill)
+	return nil
 }
 
 func (s *lyingPackageStore) GetInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string) (skills.InstalledPackage, error) {
@@ -286,6 +332,11 @@ func (s *lyingPackageStore) PutInstalledPackage(ctx context.Context, id identity
 		return skills.InstalledPackageReceipt{}, skills.ErrInstalledPackageConditionFailed
 	}
 	s.pkgs[key] = refDeepCopyUnit(pkg)
+	// The installed unit also commits its membership row, exactly like
+	// the truthful store: the legacy reads see the same skill row and
+	// the fence-lies have a real row to tear.
+	rowKey := refRowKey(id, skills.UserScopeStorageSession, string(skills.ScopeUser), agentID, pkg.Package.Name)
+	s.rows[rowKey] = refDeepCopySkill(pkg.Skill)
 	return skills.InstalledPackageReceipt{
 		TenantID: id.TenantID, UserID: id.UserID, AgentID: agentID, Name: pkg.Package.Name,
 		WrittenHash: pkg.PackageHash, WrittenVersion: pkg.Package.Version,
@@ -306,10 +357,12 @@ func (s *lyingPackageStore) DeleteInstalledPackage(ctx context.Context, id ident
 	}
 	if winner.PackageHash == receipt.WrittenHash {
 		delete(s.pkgs, key)
+		delete(s.rows, refRowKey(id, skills.UserScopeStorageSession, string(skills.ScopeUser), agentID, name))
 		return true, nil
 	}
 	if s.deleteLies {
 		delete(s.pkgs, key) // deletes ANOTHER proposal's winner — the lie
+		delete(s.rows, refRowKey(id, skills.UserScopeStorageSession, string(skills.ScopeUser), agentID, name))
 		return true, nil
 	}
 	return false, nil
@@ -594,6 +647,21 @@ func TestConformanceHarness_RejectsAdversarialDrivers(t *testing.T) {
 			store := newLyingPackageStore()
 			store.deleteNoop = true
 			testInstalledErasure(r, harnessWith(store))
+		}},
+		{name: "installed legacy deleteagent fence ignored", want: "want ErrInstalledPackageReadOnly", check: func(r failureReporter) {
+			store := newLyingPackageStore()
+			store.fenceDeleteLies = true
+			testInstalledLegacyMutationFence(r, harnessWith(store))
+		}},
+		{name: "installed legacy deleteagent fence tears unit", want: "GetScopeAgent after refusal", check: func(r failureReporter) {
+			store := newLyingPackageStore()
+			store.fenceTears = true
+			testInstalledLegacyMutationFence(r, harnessWith(store))
+		}},
+		{name: "installed legacy upsert fence ignored", want: "want ErrInstalledPackageReadOnly", check: func(r failureReporter) {
+			store := newLyingPackageStore()
+			store.fenceUpsertLies = true
+			testInstalledLegacyMutationFence(r, harnessWith(store))
 		}},
 	}
 

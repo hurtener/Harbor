@@ -21,6 +21,12 @@ package conformancetest
 //   - receipts are sufficient for exact conditional compensation:
 //     Delete/Restore bind to WrittenHash and never touch another
 //     proposal's winner;
+//   - the legacy mutation surface is fenced off the installed key:
+//     Upsert / Delete / DeleteAgent refuse with
+//     ErrInstalledPackageReadOnly (before any state is touched) when
+//     their target would collide with an installed package's
+//     membership row, so the unit can never be torn or silently
+//     overwritten by a legacy path;
 //   - every value is deep-copied at the boundary (concurrent-reuse
 //     contract).
 
@@ -132,6 +138,26 @@ func refCheckCtx(ctx context.Context) error {
 	}
 }
 
+// errIfInstalledKeyFenced returns the typed fail-loud refusal when a
+// legacy mutation path (Upsert / Delete / DeleteAgent) whose target row
+// key is derived from `(scope, agentID, name)` would collide with an
+// installed package's membership row at the same (tenant, user,
+// effective-agent, name) key. The check runs UNDER s.mu, so the refusal
+// and any subsequent mutation are atomic: the installed unit can never
+// be torn (row deleted, package left) or silently overwritten (row
+// replaced, package stale) by a legacy path. Keys with no installed
+// package return nil — the exact legacy behavior is preserved.
+func (s *referenceStore) errIfInstalledKeyFenced(id identity.Quadruple, scope skills.Scope, agentID, name string) error {
+	if !skills.LegacyMutationTargetsInstalledKey(scope, agentID, name) {
+		return nil
+	}
+	if _, ok := s.pkgs[refPkgKey(id, agentID, name)]; !ok {
+		return nil
+	}
+	return fmt.Errorf("%w: name=%q agent_id=%q scope=%q (legacy mutation refused; the installed unit is read-only from the legacy surface)",
+		skills.ErrInstalledPackageReadOnly, name, agentID, scope)
+}
+
 // ---- Legacy surface (implemented so the reference store satisfies the
 // full SkillStore interface; the installed-package suite relies on the
 // Upsert / Get / GetScopeAgent / Delete / DeleteSessionScope behavior
@@ -154,6 +180,13 @@ func (s *referenceStore) Upsert(ctx context.Context, id identity.Quadruple, skil
 	key := refRowKey(id, session, string(skill.Scope), skill.AgentID, skill.Name)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Legacy-mutation fence: the installed unit's membership row is
+	// read-only from the legacy surface. Refuse BEFORE the probe so a
+	// legacy upsert can never silently overwrite (or idempotently
+	// echo) an installed key.
+	if err := s.errIfInstalledKeyFenced(id, skill.Scope, skill.AgentID, skill.Name); err != nil {
+		return err
+	}
 	if existing, ok := s.rows[key]; ok {
 		if existing.Origin == skills.OriginPack && skill.Origin != skills.OriginPack {
 			return skills.ErrPackOverwriteRefused
@@ -330,6 +363,13 @@ func (s *referenceStore) Delete(ctx context.Context, id identity.Quadruple, name
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Legacy-mutation fence (defensive on the agent-less Delete: the
+	// installed membership row always carries a non-empty effective
+	// agent, so this never fires here — it pins that Delete shares the
+	// fence contract with DeleteAgent for every legacy mutation path).
+	if err := s.errIfInstalledKeyFenced(id, scope, "", name); err != nil {
+		return err
+	}
 	session := skills.StorageSessionID(id, scope)
 	key := refRowKey(id, session, string(scope), "", name)
 	if _, ok := s.rows[key]; !ok {
@@ -348,6 +388,15 @@ func (s *referenceStore) DeleteAgent(ctx context.Context, id identity.Quadruple,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Legacy-mutation fence: DeleteAgent at the ScopeUser rung with the
+	// installed package's effective agent + name targets the unit's
+	// membership row. Refuse BEFORE the row probe so the atomic unit is
+	// never torn (row deleted, package left) — the dedicated
+	// DeleteInstalledPackage / RestoreInstalledPackage methods are the
+	// only package-aware mutation path.
+	if err := s.errIfInstalledKeyFenced(id, scope, agentID, name); err != nil {
+		return err
+	}
 	key := refRowKey(id, skills.StorageSessionID(id, scope), string(scope), agentID, name)
 	if _, ok := s.rows[key]; !ok {
 		return fmt.Errorf("%w: name=%q", skills.ErrSkillNotFound, name)

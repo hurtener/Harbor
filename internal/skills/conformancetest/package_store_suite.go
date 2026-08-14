@@ -49,6 +49,7 @@ func RunInstalledPackageSuite(t *testing.T, factory func(*testing.T) Harness) {
 		{"installed_conditional_compensation", testInstalledConditionalCompensation},
 		{"installed_identity_agent_isolation", testInstalledIdentityAgentIsolation},
 		{"installed_erasure", testInstalledErasure},
+		{"installed_legacy_mutation_fence", testInstalledLegacyMutationFence},
 		{"installed_closed_sentinels", testInstalledClosedSentinels},
 	}
 	for _, s := range scenarios {
@@ -951,6 +952,123 @@ func testInstalledErasure(t failureReporter, h Harness) {
 	deleted, err = h.Store.DeleteInstalledPackage(ctx, fixtureID, agent, "erase", r)
 	if err != nil || deleted {
 		t.Fatalf("already-erased receipt: deleted=%v err=%v (want (false, nil))", deleted, err)
+	}
+}
+
+// testInstalledLegacyMutationFence pins the fail-loud legacy-mutation
+// fence around the atomic installed unit: once PutInstalledPackage
+// commits a package at the session-zeroed (tenant, user, effective-
+// agent, name) key, the legacy mutation paths that share that key —
+// DeleteAgent at the ScopeUser rung, and Upsert of a ScopeUser/agent-
+// bound row of the same name (the legacy replacement path) — are
+// refused with ErrInstalledPackageReadOnly BEFORE any state is touched.
+// After every refusal both GetInstalledPackage and the legacy scope
+// read return the exact same unit: the installed package can neither be
+// torn (membership row deleted, package left) nor silently overwritten
+// (row replaced, package stale). Keys with no installed package keep
+// their exact legacy behavior (idempotent Upsert, not-found deletes,
+// ordinary DeleteAgent of a legacy agent-bound row), and the dedicated
+// DeleteInstalledPackage remains the only way to erase the unit.
+func testInstalledLegacyMutationFence(t failureReporter, h Harness) {
+	ctx := context.Background()
+	const agent = "agent-fence"
+	unit := installedFixtureUnit(t, "fence", agent, skills.OriginGenerated, "1.0.0", 2)
+	r := putAbsent(t, h, ctx, agent, unit)
+	uri := supportURI(t, unit, unit.Package.Supports[0].Path)
+
+	assertInstalledUnitIntact(t, h, ctx, agent, "fence", unit, uri, "after install")
+
+	// 1. DeleteAgent at the ScopeUser rung shares the installed
+	// membership-row key: refused, never a partial tear.
+	if err := h.Store.DeleteAgent(ctx, fixtureID, agent, "fence", skills.ScopeUser); !errors.Is(err, skills.ErrInstalledPackageReadOnly) {
+		t.Fatalf("DeleteAgent on installed key err=%v, want ErrInstalledPackageReadOnly", err)
+	}
+	assertInstalledUnitIntact(t, h, ctx, agent, "fence", unit, uri, "after DeleteAgent refusal")
+
+	// A session-pinned DeleteAgent (any other scope) cannot reach the
+	// installed unit: no such legacy row exists, so the legacy
+	// not-found result is unchanged.
+	if err := h.Store.DeleteAgent(ctx, fixtureID, agent, "fence", skills.ScopeProject); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("session-pinned DeleteAgent err=%v, want ErrSkillNotFound (installed key has no session row)", err)
+	}
+	assertInstalledUnitIntact(t, h, ctx, agent, "fence", unit, uri, "after session-pinned DeleteAgent")
+
+	// 2. Upsert of a ScopeUser/agent-bound row of the same name — the
+	// legacy replacement path sharing the key — is refused: the unit is
+	// never silently overwritten.
+	hostile := unit.Skill
+	hostile.Description = "HOSTILE OVERWRITE"
+	hostile.ContentHash = skills.CanonicalContentHash(hostile)
+	if err := h.Store.Upsert(ctx, fixtureID, hostile); !errors.Is(err, skills.ErrInstalledPackageReadOnly) {
+		t.Fatalf("Upsert on installed key err=%v, want ErrInstalledPackageReadOnly", err)
+	}
+	assertInstalledUnitIntact(t, h, ctx, agent, "fence", unit, uri, "after Upsert refusal")
+
+	// 3. The agent-less Delete (legacy surface, agentID="") cannot
+	// reach the installed membership row: no unbound user-scope row
+	// exists, so the legacy not-found result is unchanged.
+	if err := h.Store.Delete(ctx, fixtureID, "fence", skills.ScopeUser); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("agent-less Delete err=%v, want ErrSkillNotFound (installed key has no unbound row)", err)
+	}
+	assertInstalledUnitIntact(t, h, ctx, agent, "fence", unit, uri, "after agent-less Delete")
+
+	// 4. Keys WITHOUT an installed package keep exact legacy behavior.
+	// 4a/4b. A legacy agent-bound row (non-user scope) upserts, and its
+	// exact re-upsert stays idempotent.
+	legacy := newSkill("fence-legacy")
+	legacy.AgentID = agent // ScopeProject by default
+	if err := h.Store.Upsert(ctx, fixtureID, legacy); err != nil {
+		t.Fatalf("legacy upsert (no package): %v", err)
+	}
+	if err := h.Store.Upsert(ctx, fixtureID, legacy); err != nil {
+		t.Fatalf("idempotent legacy re-upsert (no package): %v", err)
+	}
+	// 4c. Ordinary DeleteAgent of the legacy row still deletes it.
+	if err := h.Store.DeleteAgent(ctx, fixtureID, agent, "fence-legacy", legacy.Scope); err != nil {
+		t.Fatalf("legacy DeleteAgent (no package): %v", err)
+	}
+	if _, err := h.Store.GetScopeAgent(ctx, fixtureID, agent, "fence-legacy", legacy.Scope); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("legacy row survived DeleteAgent: err=%v, want ErrSkillNotFound", err)
+	}
+
+	// 5. The dedicated package-aware path remains the ONLY mutation
+	// path for the installed unit: exact-receipt erasure removes the
+	// whole unit (package + membership row + resolve surface).
+	deleted, err := h.Store.DeleteInstalledPackage(ctx, fixtureID, agent, "fence", r)
+	if err != nil || !deleted {
+		t.Fatalf("DeleteInstalledPackage after fence: deleted=%v err=%v", deleted, err)
+	}
+	if _, err := h.Store.GetInstalledPackage(ctx, fixtureID, agent, "fence"); !errors.Is(err, skills.ErrInstalledPackageNotFound) {
+		t.Fatalf("package survived dedicated erasure: err=%v, want ErrInstalledPackageNotFound", err)
+	}
+	if _, err := h.Store.GetScopeAgent(ctx, fixtureID, agent, "fence", skills.ScopeUser); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("membership row survived dedicated erasure: err=%v, want ErrSkillNotFound", err)
+	}
+}
+
+// assertInstalledUnitIntact verifies the atomic unit is byte-identical
+// after a refused legacy mutation: GetInstalledPackage returns the
+// exact `want` unit (hash, body, manifest, bytes), the legacy scope
+// read (GetScopeAgent at the ScopeUser rung) still reflects the same
+// membership row, and the support bytes still resolve. A driver that
+// tears or silently overwrites the unit fails here.
+func assertInstalledUnitIntact(t failureReporter, h Harness, ctx context.Context, agentID, name string, want skills.InstalledPackage, uri skills.PackageURI, msg string) {
+	t.Helper()
+	got, err := h.Store.GetInstalledPackage(ctx, fixtureID, agentID, name)
+	if err != nil {
+		t.Fatalf("%s: GetInstalledPackage: %v", msg, err)
+	}
+	assertUnitEqual(t, got, want, msg)
+	assertUnitConsistent(t, got, msg)
+	row, err := h.Store.GetScopeAgent(ctx, fixtureID, agentID, name, skills.ScopeUser)
+	if err != nil {
+		t.Fatalf("%s: GetScopeAgent after refusal: %v", msg, err)
+	}
+	if row.ContentHash != want.Skill.ContentHash || row.AgentID != agentID || row.Scope != skills.ScopeUser {
+		t.Fatalf("%s: legacy scope read diverged from the installed unit: %+v", msg, row)
+	}
+	if _, err := h.Store.ResolveSupport(ctx, fixtureID, agentID, name, uri); err != nil {
+		t.Fatalf("%s: ResolveSupport after refusal: %v", msg, err)
 	}
 }
 
