@@ -57,27 +57,28 @@ func hashString(version string, digest []byte) string {
 // HashVersion returns the version prefix of a versioned hash string
 // ("v1") and whether the string is structurally well-formed.
 func HashVersion(hash string) (string, bool) {
-	version, _, ok := splitHash(hash)
+	version, ok := splitHash(hash)
 	return version, ok
 }
 
-func splitHash(hash string) (version, hexPart string, ok bool) {
+func splitHash(hash string) (version string, ok bool) {
 	i := strings.IndexByte(hash, ':')
 	if i < 0 {
-		return "", "", false
+		return "", false
 	}
-	version, hexPart = hash[:i], hash[i+1:]
+	version = hash[:i]
+	hexPart := hash[i+1:]
 	// The version prefix must be `v` followed by digits (v1, v2, ...)
 	// so a hash string cannot smuggle a non-versioned segment.
 	if !validHashVersion(version) || len(hexPart) != 64 {
-		return "", "", false
+		return "", false
 	}
 	for _, r := range hexPart {
 		if !isHex(r) {
-			return "", "", false
+			return "", false
 		}
 	}
-	return version, hexPart, true
+	return version, true
 }
 
 func validHashVersion(version string) bool {
@@ -108,7 +109,7 @@ func isHex(r rune) bool {
 // ErrHashMismatch (or ErrMalformedHash for a structurally invalid
 // reference).
 func VerifyPackageHash(p Package, want string) error {
-	if _, _, ok := splitHash(want); !ok {
+	if _, ok := splitHash(want); !ok {
 		return fmt.Errorf("%w: %q", ErrMalformedHash, want)
 	}
 	got, err := PackageHash(p)

@@ -10,7 +10,7 @@ package bootpacks
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"io"
+	"hash"
 	"sort"
 	"strconv"
 
@@ -131,7 +131,7 @@ func buildBucket(entries []Entry) *bucket {
 // a pure function of the set.
 func setHash(entries []Entry) string {
 	h := sha256.New()
-	_, _ = io.WriteString(h, setHashEnvelope)
+	h.Write([]byte(setHashEnvelope))
 	for _, e := range entries {
 		writeFramed(h, skillpkg.CanonicalName(e.Skill.Name))
 		writeFramed(h, e.SemanticHash)
@@ -141,12 +141,13 @@ func setHash(entries []Entry) string {
 
 // writeFramed appends the length-prefixed framing of one field:
 // "<byte-len>:<bytes>;". The framing is unambiguous regardless of the
-// field's content.
-func writeFramed(w io.Writer, s string) {
-	_, _ = io.WriteString(w, strconv.Itoa(len(s)))
-	_, _ = io.WriteString(w, ":")
-	_, _ = io.WriteString(w, s)
-	_, _ = io.WriteString(w, ";")
+// field's content. A hash.Hash never fails to write, so the writes
+// are intentionally unchecked.
+func writeFramed(h hash.Hash, s string) {
+	h.Write([]byte(strconv.Itoa(len(s))))
+	h.Write([]byte(":"))
+	h.Write([]byte(s))
+	h.Write([]byte(";"))
 }
 
 // deepCopyEntry returns a deep copy of one entry: the Skill's slice

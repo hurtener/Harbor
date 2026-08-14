@@ -199,7 +199,7 @@ func TestRenderSkillMD_Deterministic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		again, err := RenderSkillMD(skill)
 		if err != nil {
 			t.Fatal(err)

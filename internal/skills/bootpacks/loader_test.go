@@ -447,7 +447,7 @@ func TestNew_RejectsFilesystemMatrix(t *testing.T) {
 			root := t.TempDir()
 			include := tc.setup(t, root)
 			deps := testDeps(t, nil)
-			if tc.wantErr == ErrBoundExceeded && tc.name == "aggregate bytes over bound" {
+			if errors.Is(tc.wantErr, ErrBoundExceeded) && tc.name == "aggregate bytes over bound" {
 				deps.Limits.MaxAggregateBytes = 16 // any real SKILL.md exceeds this
 			}
 			_, err := New(context.Background(), []config.BootAgentPackConfig{

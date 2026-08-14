@@ -221,7 +221,7 @@ func installedFixtureInternal(t *testing.T, name, agentID string, origin skills.
 			Tags: []string{"alpha"}, Steps: []string{"step one"},
 		},
 	}
-	for i := 0; i < nFiles; i++ {
+	for i := range nFiles {
 		pkg.Supports = append(pkg.Supports, skills.SupportFile{
 			Path:   fmt.Sprintf("examples/file-%02d.json", i),
 			Mime:   "application/json",

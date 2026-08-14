@@ -182,7 +182,7 @@ func ValidateMimeContent(mime string, data []byte) error {
 		}
 		root, err := xmlRootElement(data)
 		if err != nil {
-			return fmt.Errorf("%w: %s: %v", ErrMimeContentMismatch, mime, err)
+			return fmt.Errorf("%w: %s: %w", ErrMimeContentMismatch, mime, err)
 		}
 		if root != "svg" {
 			return fmt.Errorf("%w: %s root element is %q, want %q", ErrMimeContentMismatch, mime, root, "svg")
@@ -248,7 +248,7 @@ func validateXMLWellFormed(mime string, data []byte) error {
 				}
 				return nil
 			}
-			return fmt.Errorf("%w: %s is not well-formed XML: %v", ErrMimeContentMismatch, mime, err)
+			return fmt.Errorf("%w: %s is not well-formed XML: %w", ErrMimeContentMismatch, mime, err)
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
@@ -290,7 +290,7 @@ type binaryCheck func(data []byte) error
 
 func validateBinaryMagic(mime string, data []byte, check binaryCheck) error {
 	if err := check(data); err != nil {
-		return fmt.Errorf("%w: %s: %v", ErrMimeContentMismatch, mime, err)
+		return fmt.Errorf("%w: %s: %w", ErrMimeContentMismatch, mime, err)
 	}
 	return nil
 }

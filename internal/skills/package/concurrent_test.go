@@ -26,7 +26,7 @@ func TestConcurrentReuse_HashValidateURIParallel(t *testing.T) {
 	const n = 100
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

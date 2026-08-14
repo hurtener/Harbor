@@ -23,7 +23,7 @@ func fixtureInstalledUnit(t *testing.T, name, agentID string, nFiles int) skills
 	t.Helper()
 	now := time.Now().UTC()
 	supports := make([]skills.SupportFile, 0, nFiles)
-	for i := 0; i < nFiles; i++ {
+	for i := range nFiles {
 		data := []byte(`{"file": ` + itoa(i) + `, "name": "` + name + `"}`)
 		sum := sha256.Sum256(data)
 		supports = append(supports, skills.SupportFile{

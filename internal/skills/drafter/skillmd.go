@@ -130,7 +130,7 @@ func renderFrontmatter(s skillpkg.PackageSkill) ([]byte, error) {
 	}
 	out, err := yaml.Marshal(fm)
 	if err != nil {
-		return nil, fmt.Errorf("%w: render frontmatter: %v", ErrUnrenderableSkill, err)
+		return nil, fmt.Errorf("%w: render frontmatter: %w", ErrUnrenderableSkill, err)
 	}
 	// A column-0 `---` inside the frontmatter would be misread as the
 	// closing fence by the ingest. The serializer quotes or indents

@@ -81,13 +81,13 @@ func TestIndex_ConcurrentMixedLookups(t *testing.T) {
 	var errs atomic.Int64
 	start := make(chan struct{})
 	wg.Add(goroutines)
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		go func(g int) {
 			defer wg.Done()
 			<-start // barrier: all goroutines launch together
-			for op := 0; op < opsPerGo; op++ {
+			for op := range opsPerGo {
 				k := keys[(g+op)%len(keys)]
-				if err := verifyLookup(ix, k, wants[k], g, op); err != nil {
+				if err := verifyLookup(ix, k, wants[k]); err != nil {
 					errs.Add(1)
 					t.Errorf("goroutine %d op %d: %v", g, op, err)
 					return
@@ -130,7 +130,7 @@ func TestIndex_ConcurrentMixedLookups(t *testing.T) {
 
 // verifyLookup asserts one goroutine's snapshot of one key matches the
 // frozen truth captured before the filesystem was destroyed.
-func verifyLookup(ix *Index, k Key, w want, g, op int) error {
+func verifyLookup(ix *Index, k Key, w want) error {
 	entries, ok := ix.Lookup(k.TenantID, k.AgentID)
 	if !ok {
 		return fmt.Errorf("Lookup(%s) absent", k)

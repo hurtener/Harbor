@@ -9,8 +9,9 @@ import (
 
 // linkCount returns the hard-link count of info and whether the
 // platform reported one. On unix the Lstat/fstat identity carries the
-// nlink field; any file with nlink > 1 is a hardlinked file and is
-// rejected by the loader.
+// nlink field; any file with nlink > 1 is rejected by the loader.
+//
+//nolint:misspell // "hardlinked" is the correct term for a file with nlink > 1.
 func linkCount(info os.FileInfo) (uint64, bool) {
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {

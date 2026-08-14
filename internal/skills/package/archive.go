@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 )
 
 // archive.go — the archive validation primitives for complete skill
@@ -189,7 +190,7 @@ func ValidateArchive(b []byte, limits ArchiveLimits) ([]ArchiveEntry, error) {
 	}
 	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
 	if err != nil {
-		return nil, fmt.Errorf("%w: open: %v", ErrArchiveCorrupt, err)
+		return nil, fmt.Errorf("%w: open: %w", ErrArchiveCorrupt, err)
 	}
 	if len(zr.File) > limits.MaxEntries {
 		return nil, fmt.Errorf("%w: %d entries exceeds %d", ErrArchiveTooManyEntries, len(zr.File), limits.MaxEntries)
@@ -240,6 +241,15 @@ func ValidateArchive(b []byte, limits ArchiveLimits) ([]ArchiveEntry, error) {
 		exact[path] = struct{}{}
 		folded[key] = struct{}{}
 
+		// A zip64 header may declare sizes above int64's range; a
+		// wrapping int64 conversion would silently turn a hostile size
+		// negative and slip past the per-entry bound below, so the
+		// conversion is guarded before it can wrap. (The later
+		// exact-size check would still reject the entry, but as a
+		// confusing mismatch.)
+		if f.UncompressedSize64 > math.MaxInt64 || f.CompressedSize64 > math.MaxInt64 {
+			return nil, fmt.Errorf("%w: %q declares a size beyond the archive bound", ErrArchiveCorrupt, path)
+		}
 		size := int64(f.UncompressedSize64)
 		compressed := int64(f.CompressedSize64)
 		if size > limits.MaxEntryBytes {
@@ -258,15 +268,15 @@ func ValidateArchive(b []byte, limits ArchiveLimits) ([]ArchiveEntry, error) {
 
 		rc, err := f.Open()
 		if err != nil {
-			return nil, fmt.Errorf("%w: open %q: %v", ErrArchiveCorrupt, path, err)
+			return nil, fmt.Errorf("%w: open %q: %w", ErrArchiveCorrupt, path, err)
 		}
 		data, readErr := io.ReadAll(io.LimitReader(rc, limits.MaxEntryBytes+1))
 		closeErr := rc.Close()
 		if readErr != nil {
-			return nil, fmt.Errorf("%w: read %q: %v", ErrArchiveCorrupt, path, readErr)
+			return nil, fmt.Errorf("%w: read %q: %w", ErrArchiveCorrupt, path, readErr)
 		}
 		if closeErr != nil {
-			return nil, fmt.Errorf("%w: read %q: %v", ErrArchiveCorrupt, path, closeErr)
+			return nil, fmt.Errorf("%w: read %q: %w", ErrArchiveCorrupt, path, closeErr)
 		}
 		if int64(len(data)) != size {
 			return nil, fmt.Errorf("%w: %q decompressed to %d bytes, header claims %d", ErrArchiveCorrupt, path, len(data), size)
@@ -287,7 +297,7 @@ func ValidateArchive(b []byte, limits ArchiveLimits) ([]ArchiveEntry, error) {
 		// MIME is content truth, not an extension lookup: the bytes
 		// must satisfy the proposed MIME's bounded content check.
 		if err := ValidateMimeContent(mime, data); err != nil {
-			return nil, fmt.Errorf("%w: %q: %v", ErrArchiveMimeContentMismatch, path, err)
+			return nil, fmt.Errorf("%w: %q: %w", ErrArchiveMimeContentMismatch, path, err)
 		}
 
 		sum := sha256.Sum256(data)

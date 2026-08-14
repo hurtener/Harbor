@@ -64,7 +64,7 @@ func MaterializeSupportRefs(body string, pkg Package) (string, error) {
 		}
 		canonical, err := CanonicalizeSupportDest(pathPart)
 		if err != nil {
-			return "", fmt.Errorf("%w: %q: %v", ErrSupportRefDangling, r.Dest, err)
+			return "", fmt.Errorf("%w: %q: %w", ErrSupportRefDangling, r.Dest, err)
 		}
 		if _, ok := manifest[canonical]; !ok {
 			return "", fmt.Errorf("%w: %q canonicalizes to %q", ErrSupportRefDangling, r.Dest, canonical)
@@ -136,7 +136,7 @@ func DematerializeSupportRefs(body string, pkg Package) (string, error) {
 		}
 		u, perr := ParseURI(uriPart)
 		if perr != nil {
-			return "", fmt.Errorf("%w: %q: %v", ErrSupportRefMalformedURI, uriPart, perr)
+			return "", fmt.Errorf("%w: %q: %w", ErrSupportRefMalformedURI, uriPart, perr)
 		}
 		if u.Hash != hash {
 			return "", fmt.Errorf("%w: %q carries hash %q, want %q", ErrSupportRefForeignURI, uriPart, u.Hash, hash)

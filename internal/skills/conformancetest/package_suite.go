@@ -18,6 +18,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"io/fs"
+	"math"
 	"strings"
 	"testing"
 
@@ -177,8 +178,15 @@ func pngBytes() []byte {
 	var b bytes.Buffer
 	b.Write([]byte("\x89PNG\r\n\x1a\n"))
 	writeChunk := func(typ string, data []byte) {
+		// A PNG chunk length is a uint32 field. The fixture only ever
+		// emits a fixed 13-byte IHDR and an empty IEND, so the bound
+		// check below can never fire — it documents the conversion's
+		// upper bound (a []byte length is never negative).
+		if len(data) > math.MaxUint32 {
+			panic("png fixture chunk exceeds the uint32 PNG length bound")
+		}
 		var l [4]byte
-		binary.BigEndian.PutUint32(l[:], uint32(len(data)))
+		binary.BigEndian.PutUint32(l[:], uint32(len(data))) //nolint:gosec // G115: bounded by the check above; a []byte length is never negative and the fixture chunks are 13/0 bytes
 		b.Write(l[:])
 		b.WriteString(typ)
 		b.Write(data)

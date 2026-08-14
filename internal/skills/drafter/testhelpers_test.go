@@ -131,9 +131,6 @@ type spyWriter struct {
 	scope artifacts.ArtifactScope
 	err   error
 
-	data  [][]byte
-	opts  []artifacts.PutOpts
-	refs  []artifacts.ArtifactRef
 	calls int
 }
 
@@ -141,22 +138,15 @@ func (w *spyWriter) Write(ctx context.Context, data []byte, opts artifacts.PutOp
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.calls++
-	w.data = append(w.data, append([]byte(nil), data...))
-	w.opts = append(w.opts, opts)
 	if w.err != nil {
 		return artifacts.ArtifactRef{}, w.err
 	}
 	if w.store == nil {
 		// Pure recording spy: hand back a deterministic ref.
 		ref := artifacts.ArtifactRef{ID: "skill-draft_fixture", SizeBytes: int64(len(data))}
-		w.refs = append(w.refs, ref)
 		return ref, nil
 	}
-	ref, err := w.store.PutBytes(ctx, w.scope, data, opts)
-	if err == nil {
-		w.refs = append(w.refs, ref)
-	}
-	return ref, err
+	return w.store.PutBytes(ctx, w.scope, data, opts)
 }
 
 // writeCount returns how many Write calls happened.
@@ -164,34 +154,4 @@ func (w *spyWriter) writeCount() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.calls
-}
-
-// writtenData returns the bytes of the i-th Write.
-func (w *spyWriter) writtenData(i int) []byte {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if i < 0 || i >= len(w.data) {
-		return nil
-	}
-	return append([]byte(nil), w.data[i]...)
-}
-
-// writtenOpts returns the opts of the i-th Write.
-func (w *spyWriter) writtenOpts(i int) artifacts.PutOpts {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if i < 0 || i >= len(w.opts) {
-		return artifacts.PutOpts{}
-	}
-	return w.opts[i]
-}
-
-// writtenRef returns the ref of the i-th successful Write.
-func (w *spyWriter) writtenRef(i int) artifacts.ArtifactRef {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if i < 0 || i >= len(w.refs) {
-		return artifacts.ArtifactRef{}
-	}
-	return w.refs[i]
 }

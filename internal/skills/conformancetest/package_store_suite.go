@@ -90,7 +90,7 @@ func installedFixtureUnit(t failureReporter, name, agentID string, origin skills
 	t.Helper()
 	now := time.Now().UTC()
 	supports := make([]skills.SupportFile, 0, nFiles)
-	for i := 0; i < nFiles; i++ {
+	for i := range nFiles {
 		data := []byte(fmt.Sprintf(`{"file": %d, "name": %q}`, i, name))
 		supports = append(supports, skills.SupportFile{
 			Path:   fmt.Sprintf("examples/file-%02d.json", i),
@@ -976,14 +976,14 @@ func testInstalledLegacyMutationFence(t failureReporter, h Harness) {
 	r := putAbsent(t, h, ctx, agent, unit)
 	uri := supportURI(t, unit, unit.Package.Supports[0].Path)
 
-	assertInstalledUnitIntact(t, h, ctx, agent, "fence", unit, uri, "after install")
+	assertInstalledUnitIntact(t, h, ctx, unit, uri, "after install")
 
 	// 1. DeleteAgent at the ScopeUser rung shares the installed
 	// membership-row key: refused, never a partial tear.
 	if err := h.Store.DeleteAgent(ctx, fixtureID, agent, "fence", skills.ScopeUser); !errors.Is(err, skills.ErrInstalledPackageReadOnly) {
 		t.Fatalf("DeleteAgent on installed key err=%v, want ErrInstalledPackageReadOnly", err)
 	}
-	assertInstalledUnitIntact(t, h, ctx, agent, "fence", unit, uri, "after DeleteAgent refusal")
+	assertInstalledUnitIntact(t, h, ctx, unit, uri, "after DeleteAgent refusal")
 
 	// A session-pinned DeleteAgent (any other scope) cannot reach the
 	// installed unit: no such legacy row exists, so the legacy
@@ -991,7 +991,7 @@ func testInstalledLegacyMutationFence(t failureReporter, h Harness) {
 	if err := h.Store.DeleteAgent(ctx, fixtureID, agent, "fence", skills.ScopeProject); !errors.Is(err, skills.ErrSkillNotFound) {
 		t.Fatalf("session-pinned DeleteAgent err=%v, want ErrSkillNotFound (installed key has no session row)", err)
 	}
-	assertInstalledUnitIntact(t, h, ctx, agent, "fence", unit, uri, "after session-pinned DeleteAgent")
+	assertInstalledUnitIntact(t, h, ctx, unit, uri, "after session-pinned DeleteAgent")
 
 	// 2. Upsert of a ScopeUser/agent-bound row of the same name — the
 	// legacy replacement path sharing the key — is refused: the unit is
@@ -1002,7 +1002,7 @@ func testInstalledLegacyMutationFence(t failureReporter, h Harness) {
 	if err := h.Store.Upsert(ctx, fixtureID, hostile); !errors.Is(err, skills.ErrInstalledPackageReadOnly) {
 		t.Fatalf("Upsert on installed key err=%v, want ErrInstalledPackageReadOnly", err)
 	}
-	assertInstalledUnitIntact(t, h, ctx, agent, "fence", unit, uri, "after Upsert refusal")
+	assertInstalledUnitIntact(t, h, ctx, unit, uri, "after Upsert refusal")
 
 	// 3. The agent-less Delete (legacy surface, agentID="") cannot
 	// reach the installed membership row: no unbound user-scope row
@@ -1010,7 +1010,7 @@ func testInstalledLegacyMutationFence(t failureReporter, h Harness) {
 	if err := h.Store.Delete(ctx, fixtureID, "fence", skills.ScopeUser); !errors.Is(err, skills.ErrSkillNotFound) {
 		t.Fatalf("agent-less Delete err=%v, want ErrSkillNotFound (installed key has no unbound row)", err)
 	}
-	assertInstalledUnitIntact(t, h, ctx, agent, "fence", unit, uri, "after agent-less Delete")
+	assertInstalledUnitIntact(t, h, ctx, unit, uri, "after agent-less Delete")
 
 	// 4. Keys WITHOUT an installed package keep exact legacy behavior.
 	// 4a/4b. A legacy agent-bound row (non-user scope) upserts, and its
@@ -1050,10 +1050,15 @@ func testInstalledLegacyMutationFence(t failureReporter, h Harness) {
 // after a refused legacy mutation: GetInstalledPackage returns the
 // exact `want` unit (hash, body, manifest, bytes), the legacy scope
 // read (GetScopeAgent at the ScopeUser rung) still reflects the same
-// membership row, and the support bytes still resolve. A driver that
-// tears or silently overwrites the unit fails here.
-func assertInstalledUnitIntact(t failureReporter, h Harness, ctx context.Context, agentID, name string, want skills.InstalledPackage, uri skills.PackageURI, msg string) {
+// membership row, and the support bytes still resolve. The installed
+// unit is always the "fence" unit of the "agent-fence" agent. A driver
+// that tears or silently overwrites the unit fails here.
+func assertInstalledUnitIntact(t failureReporter, h Harness, ctx context.Context, want skills.InstalledPackage, uri skills.PackageURI, msg string) {
 	t.Helper()
+	const (
+		agentID = "agent-fence"
+		name    = "fence"
+	)
 	got, err := h.Store.GetInstalledPackage(ctx, fixtureID, agentID, name)
 	if err != nil {
 		t.Fatalf("%s: GetInstalledPackage: %v", msg, err)
@@ -1298,7 +1303,7 @@ func testInstalledConcurrentReuse(t failureReporter, h Harness) {
 		op()
 	}
 
-	for g := 0; g < scriptGoroutines; g++ {
+	for g := range scriptGoroutines {
 		wg.Add(1)
 		go func(gid int) {
 			defer wg.Done()
@@ -1308,7 +1313,7 @@ func testInstalledConcurrentReuse(t failureReporter, h Harness) {
 	// Cancellation cross-talk: 8 goroutines run a script whose context
 	// is canceled before the first operation; each must fail with
 	// context.Canceled and never touch the store.
-	for g := 0; g < 8; g++ {
+	for g := range 8 {
 		wg.Add(1)
 		go func(gid int) {
 			defer wg.Done()
@@ -1333,7 +1338,7 @@ func testInstalledConcurrentReuse(t failureReporter, h Harness) {
 	stormCtx, stormCancel := context.WithCancel(ctx)
 	defer stormCancel()
 
-	for w := 0; w < stormWriters; w++ {
+	for w := range stormWriters {
 		wg.Add(1)
 		go func(seed int) {
 			defer wg.Done()
@@ -1341,7 +1346,7 @@ func testInstalledConcurrentReuse(t failureReporter, h Harness) {
 			if seed%2 == 1 {
 				target = stormB
 			}
-			for i := 0; i < 8; i++ {
+			for range 8 {
 				cur, err := h.Store.GetInstalledPackage(stormCtx, stormID, stormAgent, stormName)
 				if err != nil {
 					if errors.Is(err, skills.ErrInstalledPackageNotFound) {
@@ -1370,11 +1375,11 @@ func testInstalledConcurrentReuse(t failureReporter, h Harness) {
 			}
 		}(w)
 	}
-	for r := 0; r < stormReaders; r++ {
+	for range stormReaders {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 8; i++ {
+			for range 8 {
 				got, err := h.Store.GetInstalledPackage(stormCtx, stormID, stormAgent, stormName)
 				if err != nil {
 					if errors.Is(err, skills.ErrInstalledPackageNotFound) {

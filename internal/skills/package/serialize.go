@@ -97,7 +97,7 @@ func CanonicalBytes(p Package) ([]byte, error) {
 	}
 	b, err := json.Marshal(wire)
 	if err != nil {
-		return nil, fmt.Errorf("%w: marshal canonical form: %v", ErrInvalidPackage, err)
+		return nil, fmt.Errorf("%w: marshal canonical form: %w", ErrInvalidPackage, err)
 	}
 	return b, nil
 }
@@ -135,13 +135,13 @@ func FromCanonicalBytes(b []byte) (Package, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&wire); err != nil {
-		return Package{}, fmt.Errorf("%w: parse canonical form: %v", ErrInvalidPackage, err)
+		return Package{}, fmt.Errorf("%w: parse canonical form: %w", ErrInvalidPackage, err)
 	}
 	if _, err := dec.Token(); err != io.EOF {
 		if err == nil {
 			return Package{}, fmt.Errorf("%w: trailing value after the canonical form", ErrInvalidPackage)
 		}
-		return Package{}, fmt.Errorf("%w: trailing content after the canonical form: %v", ErrInvalidPackage, err)
+		return Package{}, fmt.Errorf("%w: trailing content after the canonical form: %w", ErrInvalidPackage, err)
 	}
 	p := packageFromWire(wire)
 	if err := p.Validate(); err != nil {

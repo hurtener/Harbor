@@ -523,7 +523,7 @@ func CanonicalizeSupportDest(dest string) (string, error) {
 		return "", errors.New("reference escapes the package root")
 	}
 	if _, err := canonicalizePath(cleaned); err != nil {
-		return "", fmt.Errorf("not a canonical package path: %v", err)
+		return "", fmt.Errorf("not a canonical package path: %w", err)
 	}
 	return cleaned, nil
 }

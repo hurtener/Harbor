@@ -389,13 +389,7 @@ func parseSkillToPackage(ctx context.Context, skillMD []byte, pathHint string, s
 		if e.Path == skillpkg.RootSkillFileName {
 			continue
 		}
-		pkg.Supports = append(pkg.Supports, skillpkg.SupportFile{
-			Path:   e.Path,
-			Mime:   e.Mime,
-			Size:   e.Size,
-			Digest: e.Digest,
-			Data:   e.Data,
-		})
+		pkg.Supports = append(pkg.Supports, skillpkg.SupportFile(e))
 	}
 
 	// Every relative body reference must name a manifest entry.
@@ -461,7 +455,7 @@ func validatePackageSupportRefs(skill skills.Skill, manifest map[string]struct{}
 func requireManifestRef(pathPart, raw string, manifest map[string]struct{}) error {
 	canonical, err := skillpkg.CanonicalizeSupportDest(pathPart)
 	if err != nil {
-		return fmt.Errorf("%w: %q: %v", ErrPackageSupportRefMissing, raw, err)
+		return fmt.Errorf("%w: %q: %w", ErrPackageSupportRefMissing, raw, err)
 	}
 	if _, ok := manifest[canonical]; !ok {
 		return fmt.Errorf("%w: %q (canonical %q)", ErrPackageSupportRefMissing, raw, canonical)

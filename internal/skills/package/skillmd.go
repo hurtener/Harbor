@@ -145,7 +145,7 @@ func ValidateSkillMarkdown(b []byte, limits MarkdownLimits) error {
 		Trigger string `yaml:"trigger"`
 	}
 	if err := yaml.Unmarshal(raw, &fm); err != nil {
-		return fmt.Errorf("%w: %v", ErrSkillMDMalformedYAML, err)
+		return fmt.Errorf("%w: %w", ErrSkillMDMalformedYAML, err)
 	}
 	if strings.TrimSpace(fm.Trigger) == "" {
 		return ErrSkillMDMissingTrigger

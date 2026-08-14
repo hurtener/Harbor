@@ -143,7 +143,7 @@ func TestPackageValidate_Rejects(t *testing.T) {
 			p.Supports[0].Digest = strings.Repeat("0", 64)
 		}},
 		{"size mismatch", func(p *skillpkg.Package) {
-			p.Supports[0].Size = p.Supports[0].Size + 1
+			p.Supports[0].Size++
 		}},
 		{"negative size", func(p *skillpkg.Package) { p.Supports[0].Size = -1 }},
 		{"duplicate support path", func(p *skillpkg.Package) {

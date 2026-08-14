@@ -170,14 +170,14 @@ func decodeDraftModelOutput(content string) (skillpkg.PackageSkill, error) {
 	dec := json.NewDecoder(strings.NewReader(content))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&d); err != nil {
-		return skillpkg.PackageSkill{}, fmt.Errorf("%w: decode structured draft: %v", ErrMalformedModelOutput, err)
+		return skillpkg.PackageSkill{}, fmt.Errorf("%w: decode structured draft: %w", ErrMalformedModelOutput, err)
 	}
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
 			return skillpkg.PackageSkill{}, fmt.Errorf("%w: trailing JSON after the draft", ErrMalformedModelOutput)
 		}
-		return skillpkg.PackageSkill{}, fmt.Errorf("%w: trailing content: %v", ErrMalformedModelOutput, err)
+		return skillpkg.PackageSkill{}, fmt.Errorf("%w: trailing content: %w", ErrMalformedModelOutput, err)
 	}
 	if d.Refusal != "" || d.Error != "" {
 		return skillpkg.PackageSkill{}, ErrModelRefused

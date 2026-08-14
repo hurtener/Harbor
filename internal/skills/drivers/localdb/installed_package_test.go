@@ -28,7 +28,7 @@ func installedFixture(t *testing.T, name, agentID string, origin skills.Origin, 
 	t.Helper()
 	now := time.Now().UTC()
 	supports := make([]skills.SupportFile, 0, nFiles)
-	for i := 0; i < nFiles; i++ {
+	for i := range nFiles {
 		data := []byte(fmt.Sprintf(`{"file": %d, "name": %q}`, i, name))
 		sum := sha256Sum(data)
 		supports = append(supports, skills.SupportFile{
@@ -696,7 +696,7 @@ func TestInstalledPackage_ConcurrentStorm(t *testing.T) {
 		}
 	}
 
-	for g := 0; g < scriptGoroutines; g++ {
+	for g := range scriptGoroutines {
 		wg.Add(1)
 		go func(gid int) {
 			defer wg.Done()
@@ -716,7 +716,7 @@ func TestInstalledPackage_ConcurrentStorm(t *testing.T) {
 	stormA := installedFixture(t, stormName, stormAgent, skills.OriginGenerated, "1.0.0", 1)
 	stormB := installedFixture(t, stormName, stormAgent, skills.OriginGenerated, "2.0.0", 1)
 
-	for w := 0; w < stormWriters; w++ {
+	for w := range stormWriters {
 		wg.Add(1)
 		go func(seed int) {
 			defer wg.Done()
@@ -724,7 +724,7 @@ func TestInstalledPackage_ConcurrentStorm(t *testing.T) {
 			if seed%2 == 1 {
 				target = stormB
 			}
-			for i := 0; i < 6; i++ {
+			for range 6 {
 				cur, err := store.GetInstalledPackage(ctx, stormID, stormAgent, stormName)
 				if err != nil {
 					if errors.Is(err, skills.ErrInstalledPackageNotFound) {
@@ -753,11 +753,11 @@ func TestInstalledPackage_ConcurrentStorm(t *testing.T) {
 			}
 		}(w)
 	}
-	for r := 0; r < stormReaders; r++ {
+	for range stormReaders {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 6; i++ {
+			for range 6 {
 				got, err := store.GetInstalledPackage(ctx, stormID, stormAgent, stormName)
 				if err != nil {
 					if errors.Is(err, skills.ErrInstalledPackageNotFound) {

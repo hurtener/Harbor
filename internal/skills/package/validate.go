@@ -162,7 +162,7 @@ func wrapSupportPathErr(err error) error {
 	if errors.As(err, &pe) {
 		return fmt.Errorf("%w: %s", ErrInvalidSupport, pe.msg)
 	}
-	return fmt.Errorf("%w: %v", ErrInvalidSupport, err)
+	return fmt.Errorf("%w: %w", ErrInvalidSupport, err)
 }
 
 func isHexDigest(s string) bool {

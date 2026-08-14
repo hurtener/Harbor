@@ -98,7 +98,7 @@ func ParseURI(s string) (URI, error) {
 		return URI{}, fmt.Errorf("%w: missing support path", ErrMalformedURI)
 	}
 	authority, pathPart := rest[:sep], rest[sep+1:]
-	if _, _, ok := splitHash(authority); !ok {
+	if _, ok := splitHash(authority); !ok {
 		return URI{}, fmt.Errorf("%w: hash segment %q is not a versioned package hash", ErrMalformedURI, authority)
 	}
 	if pathPart == "" {
@@ -120,7 +120,7 @@ func ParseURI(s string) (URI, error) {
 // Validate checks the URI's closed shape: a versioned package hash,
 // a canonical non-root support path, and the whole-string bound.
 func (u URI) Validate() error {
-	if _, _, ok := splitHash(u.Hash); !ok {
+	if _, ok := splitHash(u.Hash); !ok {
 		return fmt.Errorf("%w: Hash %q is not a versioned package hash", ErrMalformedURI, u.Hash)
 	}
 	if _, err := canonicalizePath(u.Path); err != nil {
@@ -161,7 +161,7 @@ func encodePath(path string) string {
 
 func encodeSegment(seg string) string {
 	needs := false
-	for i := 0; i < len(seg); i++ {
+	for i := range len(seg) {
 		if !isPathChar(rune(seg[i])) {
 			needs = true
 			break
@@ -171,7 +171,7 @@ func encodeSegment(seg string) string {
 		return seg
 	}
 	var b strings.Builder
-	for i := 0; i < len(seg); i++ {
+	for i := range len(seg) {
 		c := seg[i]
 		if isPathChar(rune(c)) {
 			b.WriteByte(c)

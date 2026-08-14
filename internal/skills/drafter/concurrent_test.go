@@ -47,7 +47,7 @@ func TestCreateDraft_ConcurrentReuse_NoRaceNoBleedNoLeak(t *testing.T) {
 	}
 	outcomes := make(chan outcome, n)
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

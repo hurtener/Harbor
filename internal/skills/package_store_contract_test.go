@@ -257,7 +257,7 @@ func TestErrInstalledPackageReadOnly_DistinctSentinel(t *testing.T) {
 		skills.ErrSkillNotFound,
 	}
 	for _, o := range other {
-		if skills.ErrInstalledPackageReadOnly == o {
+		if errors.Is(o, skills.ErrInstalledPackageReadOnly) {
 			t.Fatalf("ErrInstalledPackageReadOnly aliases %v", o)
 		}
 	}

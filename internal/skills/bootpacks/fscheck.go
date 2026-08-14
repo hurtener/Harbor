@@ -34,10 +34,11 @@ func checkDirInfo(info os.FileInfo, path string) error {
 // checkRegularFile rejects a file entry that is not a single-link
 // regular file: symlinks, directories, devices, FIFOs, sockets, and
 // other specials are all rejected, and the link count must be exactly
-// 1 (a hardlinked file has nlink > 1 even when only one name lives in
-// the include directory). When the platform cannot report a link
-// count the check fails closed — the loader never accepts a file whose
-// hardlink status it cannot prove.
+// 1. When the platform cannot report a link count the check fails
+// closed — the loader never accepts a file whose hardlink status it
+// cannot prove.
+//
+//nolint:misspell // A "hardlinked" file has nlink > 1 even when only one name lives in the include directory.
 func checkRegularFile(info os.FileInfo, path string) error {
 	m := info.Mode()
 	switch {

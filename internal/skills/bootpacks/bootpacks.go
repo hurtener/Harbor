@@ -174,7 +174,7 @@ var (
 	// ErrSymlink — a directory or file in the include tree is a
 	// symlink.
 	ErrSymlink = errors.New("bootpacks: symlink rejected")
-	// ErrHardlink — a file has nlink > 1 (hardlinked) or its link
+	//nolint:misspell // ErrHardlink — a file has nlink > 1 (hardlinked) or its link
 	// count cannot be verified.
 	ErrHardlink = errors.New("bootpacks: hardlink rejected")
 	// ErrSpecialFile — a non-regular file entry (device / FIFO /
