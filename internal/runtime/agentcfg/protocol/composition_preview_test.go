@@ -5,8 +5,9 @@ package protocol_test
 // boot|revision|both provenance), the own/elevated/foreign/cross-tenant
 // authorization matrix, signed session+agent reach, retirement, the
 // before-read widened audit, no-write guarantees, two-user isolation, fresh
-// revision reads + config-removal/new-service snapshots, immutable deep
-// copies, and the agent_packs.list meaning preservation.
+// revision reads, config-removal revision retention and absent-both
+// snapshots, immutable deep copies, and the agent_packs.list meaning
+// preservation.
 
 import (
 	"context"
@@ -1075,8 +1076,9 @@ func TestCompositionPreview_TwoUsers_IsolationAndParity(t *testing.T) {
 // TestCompositionPreview_FreshRevisionRead_AndConfigRemoval proves the exact
 // active revision is read FRESH at every preview (a new durable pack revision
 // is reflected immediately) and that a NEW service snapshot over a boot index
-// without the key (config removal) or with a changed baseline reports the
-// corresponding outcomes.
+// without the key (config removal) retains the durable revision as a
+// revision-only composition, while a changed baseline perturbs the boot set
+// hash.
 func TestCompositionPreview_FreshRevisionRead_AndConfigRemoval(t *testing.T) {
 	fx := newPreviewFixture(t, standardBootIndex())
 
@@ -1112,7 +1114,10 @@ func TestCompositionPreview_FreshRevisionRead_AndConfigRemoval(t *testing.T) {
 	}
 
 	// 3. Config removal: a NEW service snapshot over a boot index that no
-	// longer declares the (tenant, agent) key → unavailable.
+	// longer declares the (tenant, agent) key. The boot baseline vanishes
+	// but the independently persisted active revision survives: the preview
+	// stays AVAILABLE, composed revision-only — the durable pack is never
+	// erased, shadowed, or rewritten by config removal.
 	removedIdx := &fakeBootIndex{byKey: map[bootpacks.Key][]bootpacks.Entry{
 		{TenantID: "t", AgentID: "agent-retired"}: {
 			previewBootEntry("alpha", "Alpha", "alpha trigger", []string{"alpha step"}),
@@ -1132,8 +1137,28 @@ func TestCompositionPreview_FreshRevisionRead_AndConfigRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("removed-key preview: %v", err)
 	}
-	if removedResp.Outcome != agentcfgprotocol.PreviewOutcomeUnavailable {
-		t.Fatalf("config-removal outcome=%q want unavailable", removedResp.Outcome)
+	removedTier, removedRev, removedSet := expectedTier(t, fx.reg, removedIdx, "t", "ua", "sa", testAgentID)
+	assertPreviewMatchesTier(t, removedResp, removedTier, removedRev, removedSet)
+	if !removedSet {
+		t.Fatal("config removal must not erase the durable active revision")
+	}
+	// Revision-only provenance: no boot entries, no boot set hash, and the
+	// revision/combined hashes ride over the SAME single revision item.
+	if len(removedResp.Items) != 1 || removedResp.Items[0].Name != "gamma" ||
+		removedResp.Items[0].Source != skills.OperatorTierSourceRevision {
+		t.Fatalf("config-removal items must be revision-only gamma: %+v", removedResp.Items)
+	}
+	if removedResp.BootPackSetHash != "" {
+		t.Errorf("config-removal boot_pack_set_hash=%q want empty (no boot baseline)", removedResp.BootPackSetHash)
+	}
+	if removedResp.RevisionHash == "" || removedResp.CombinedHash == "" {
+		t.Errorf("config-removal revision/combined hashes must be present over the revision-only tier: %+v", removedResp)
+	}
+	// The revision identity is the SAME durable revision the pre-removal
+	// snapshot read — config removal changed nothing durable.
+	if removedResp.RevisionID != second.RevisionID || removedResp.ContentHash != second.ContentHash {
+		t.Errorf("config removal must retain the durable revision: removed id=%q/%q want second id=%q/%q",
+			removedResp.RevisionID, removedResp.ContentHash, second.RevisionID, second.ContentHash)
 	}
 
 	// 4. A changed boot baseline in a new snapshot perturbs the boot set hash.
@@ -1171,6 +1196,42 @@ func TestCompositionPreview_FreshRevisionRead_AndConfigRemoval(t *testing.T) {
 	gamma := changedResp.Items[1]
 	if gamma.Name != "gamma" || gamma.Source != skills.OperatorTierSourceRevision {
 		t.Fatalf("changed-baseline gamma wrong: %+v", gamma)
+	}
+}
+
+// TestCompositionPreview_AbsentBoot_NoActiveRevision_NonOracularUnavailable
+// proves the absent-both edge: when the boot baseline does not declare the
+// (tenant, agent) key AND no active durable revision exists, there is nothing
+// to compose — the preview stays the SAME non-oracular unavailable outcome,
+// byte-identical to a foreign/missing target, and reveals no composition
+// content. The fresh revision read still runs (the durable revision is the
+// independent source of truth), but the response carries no items or hashes.
+func TestCompositionPreview_AbsentBoot_NoActiveRevision_NonOracularUnavailable(t *testing.T) {
+	fx := newPreviewFixture(t, standardBootIndex())
+
+	ctx := previewCtx(t, previewUserA, nil, nil, []string{"agent-undeclared"})
+	resp, err := fx.preview.CompositionPreview(ctx, previewReq("ua", "sa", "agent-undeclared"))
+	if err != nil {
+		t.Fatalf("absent-both preview: %v", err)
+	}
+	if resp.Outcome != agentcfgprotocol.PreviewOutcomeUnavailable {
+		t.Fatalf("absent-both outcome=%q want unavailable", resp.Outcome)
+	}
+	if len(resp.Items) != 0 || resp.BootPackSetHash != "" || resp.CombinedHash != "" || resp.RevisionHash != "" ||
+		resp.RevisionID != "" || resp.ContentHash != "" {
+		t.Errorf("absent-both response must carry no composition: %+v", resp)
+	}
+	// Non-oracular: byte-identical to the unavailable outcome a foreign
+	// triple of the same shape gets.
+	foreign, err := fx.preview.CompositionPreview(
+		previewCtx(t, previewUserA, nil, nil, []string{"agent-undeclared"}),
+		previewReq("ub", "sb", "agent-undeclared"),
+	)
+	if err != nil {
+		t.Fatalf("foreign preview: %v", err)
+	}
+	if !reflect.DeepEqual(resp, foreign) {
+		t.Fatal("absent-both and foreign targets must be byte-identical (non-oracular)")
 	}
 }
 

@@ -94,10 +94,11 @@ const (
 	// PreviewOutcomeAvailable — the composition resolved: deterministic
 	// items (possibly empty) plus the deterministic set hashes.
 	PreviewOutcomeAvailable PreviewOutcome = "available"
-	// PreviewOutcomeUnavailable — the (tenant, agent) boot key is not
-	// declared in the boot baseline, or the caller is not entitled to the
-	// target. Foreign / cross-tenant / missing are non-oracular: the
-	// response is identical, so nothing about the target is revealed.
+	// PreviewOutcomeUnavailable — there is nothing to compose for the
+	// target (no boot baseline AND no active durable revision), or the
+	// caller is not entitled to the target. Foreign / cross-tenant /
+	// missing are non-oracular: the response is identical, so nothing
+	// about the target is revealed.
 	PreviewOutcomeUnavailable PreviewOutcome = "unavailable"
 	// PreviewOutcomeConflict — the strict composer refused a typed
 	// boot/revision conflict: a canonical name whose semantic content
@@ -361,11 +362,12 @@ func (s *CompositionPreviewService) previewTarget(ctx context.Context, target id
 
 	// Boot baseline: the frozen eager index — NEVER a boot-file reread. A
 	// missing (tenant, agent) key (config removal, or an undeclared agent)
-	// is the non-oracular unavailable outcome.
-	bootEntries, ok := s.bootIndex.Lookup(target.TenantID, agentID)
-	if !ok {
-		return unavailablePreview(widened), nil
-	}
+	// is NOT terminal: the durable active revision is independently
+	// persisted and survives config removal, so the preview falls through
+	// and composes it revision-only. Only when NO boot baseline AND NO
+	// active revision exist does the target become the non-oracular
+	// unavailable outcome.
+	bootEntries, _ := s.bootIndex.Lookup(target.TenantID, agentID)
 
 	// Fresh active revision: read at every preview so a new durable pack
 	// revision is reflected immediately. The same-hash migration shadow
@@ -378,6 +380,11 @@ func (s *CompositionPreviewService) previewTarget(ctx context.Context, target id
 			return retiredPreview(widened), nil
 		}
 		return CompositionPreviewResponse{}, fmt.Errorf("composition preview: read active revision: %w", err)
+	}
+	if !set && len(bootEntries) == 0 {
+		// Nothing to compose: no boot baseline and no durable revision.
+		// Non-oracular — byte-identical to any other absent target.
+		return unavailablePreview(widened), nil
 	}
 	var revisionSkills []skills.Skill
 	if set && len(rev.Payload.AgentPacks) > 0 {
@@ -460,8 +467,8 @@ func buildPreview(tier sessionoverlay.OperatorTier, rev agentcfg.Revision, set b
 }
 
 // unavailablePreview is the NON-ORACULAR outcome: byte-identical for a
-// foreign triple, a cross-tenant target, a missing boot key, and any other
-// "nothing to preview" state.
+// foreign triple, a cross-tenant target, an absent boot baseline AND absent
+// active revision, and any other "nothing to preview" state.
 func unavailablePreview(widened bool) CompositionPreviewResponse {
 	return CompositionPreviewResponse{Outcome: PreviewOutcomeUnavailable, Widened: widened}
 }
