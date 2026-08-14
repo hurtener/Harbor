@@ -1938,11 +1938,15 @@ owned by the originating session, never grants skill membership by existing,
 and is only provenance after a commit: the installed package does not
 dereference it. D-422.
 
-**Reviewed skill-package proposal** — the durable, identity-addressed record
-created by `import_validate` and consumed exactly once by `import_commit`:
-source reference and hash, versioned `PackageHash`, ordered supporting-file
-manifest, effective agent, expected config hash, ceiling snapshot, actor,
-expiry, and state. Raw package bytes never enter it. D-422.
+**Reviewed skill-package proposal** — the bounded opaque versioned sealed
+proposal token returned by `import_validate` and consumed exactly once by
+`import_commit`: a base64url shared-KEK-sealed claims payload carrying source
+reference and hash, versioned `PackageHash`, ordered supporting-file
+manifest, effective agent, expected config hash, ceiling and policy
+snapshots + hashes, actor, issued/expiry, and schema/version. Validation
+performs ZERO writes of any kind — the proposal is sealed into the token,
+never persisted; durable idempotency state (a token-derived commit ledger)
+begins only in the commit phase. Raw package bytes never enter it. D-422.
 
 **Durable personal skill package** — the installed form of a reviewed
 `SKILL.md` package: the complete semantic body plus every supporting-file
@@ -2009,9 +2013,14 @@ tie-breaker so appending a turn while paging older history produces neither
 duplicates nor omissions; invalid, foreign, retention-expired, and
 snapshot-expired cursors have distinct typed outcomes. D-425.
 
-**Live resume cursor** — the exclusive cursor in a `sessions.turns.list`
-response that composes with `events.subscribe` for a gap-free page-to-live
-transition (subscribe-before-page with dedup by sequence, plus one
+**Live resume cursor** — the exclusive `live_resume_seq` in a
+`sessions.turns.list`
+response that seeds the page-before-subscribe snapshot-to-live handoff: the
+consumer folds the durable page and establishes bounded running/paused
+membership first, then opens the EventSource with `live_resume_seq` as the
+initial `resume_seq`; the server replays events strictly newer than that
+snapshot through the existing bounded replay source, and a browser reconnect
+`Last-Event-ID` takes precedence (one terminal event causes one
 `sessions.turns.get` terminal reconciliation), tied to the same turn version
 and `last_applied_event_sequence` as in-flight content snapshots. D-425.
 

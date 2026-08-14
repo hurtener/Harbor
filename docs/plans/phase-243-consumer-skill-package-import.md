@@ -61,19 +61,25 @@ storage and select the skill for the effective agent.
   legacy body-only `ContentHash` remains unchanged.
 - Admit ordinary same-scope `artifacts.put` output as staging input without an
   admin grant. The body-scope gate remains the sole reconciliation point.
-- Persist a durable proposal containing actor/effective-agent binding, source
-  reference, versioned `PackageHash`, supporting-file manifest hashes, expected
-  config content hash, configured-ceiling snapshot, expiry/state, and a
-  non-authoritative review projection.
-- On commit, re-resolve verified identity and effective-agent reach, recheck
+- Seal the full reviewed state into a bounded opaque versioned proposal token:
+  actor/effective-agent binding, source reference and hash, versioned
+  `PackageHash`, supporting-file manifest hashes, expected config content hash,
+  configured-ceiling snapshot, policy snapshot + hash, schema/version, and
+  expiry. Validation performs ZERO writes of any kind — no SkillStore
+  body/package write, no agent-config membership write, and no StateStore
+  proposal-ledger write; the proposal lives only in the token, never
+  persisted.
+- On commit, reauthenticate and strictly decode the sealed token,
+  re-resolve verified identity and effective-agent reach, recheck
   lifecycle, body-scope/method authority, source/package integrity, expected
   config hash, and current server-owned archive/import ceilings; force
   `ScopeUser` and the effective `AgentID`; and durably materialize the complete
   approved package plus membership. This phase adds no separate user-skill
   authoring policy.
-- Make response-loss retry, partial staging cleanup, compensation, and
-  cross-process races converge through D-411/D-398 conditional-save patterns
-  plus a mandatory conditional write on the durable package target key.
+- Make response-loss retry, compensation, and
+  cross-process races converge through a token-derived commit ledger plus one
+  mandatory conditional write on the durable package target key; durable
+  idempotency state begins only in the commit phase.
 
 ## Non-goals
 
@@ -111,16 +117,18 @@ storage and select the skill for the effective agent.
 - [ ] The production importer parses, resolves, normalizes, and validates the
       package once. Protocol code does not reimplement frontmatter, CommonMark,
       attachment discovery, validation, serialization, or content hashing.
-- [ ] Validation performs zero durable `SkillStore` body/package or agent-config
-      membership mutation. Temporary caller-scoped attachment staging is
-      allowed only under named count/byte/age limits, with a durable cleanup
-      receipt and idempotent cleanup/resume after partial upload or response
-      loss.
-- [ ] A durable identity-addressed proposal records the source artifact ID and
-      hash, versioned `PackageHash`, ordered supporting-file manifest with
+- [ ] Validation performs ZERO durable writes of any kind: no `SkillStore`
+      body/package write, no agent-config membership mutation, and no StateStore
+      proposal-ledger write — the proposal is sealed into the token, never
+      persisted. A write-counting store test refuses `Save`/`SaveIf`/
+      `DeleteIf`/`Delete` and asserts all counts zero.
+- [ ] The versioned sealed proposal-token claims record the source artifact ID
+      and hash, versioned `PackageHash`, ordered supporting-file manifest with
       per-file hashes and sizes, effective agent, expected active config hash,
-      configured-ceiling snapshot, actor, expiry, and state. Raw package bytes
-      are not duplicated into audit/events or an unbounded response.
+      configured-ceiling snapshot, policy snapshot + hash, actor, expiry, and
+      state. Raw package bytes are not duplicated into audit/events or an
+      unbounded response, and the token is a bounded opaque base64url envelope
+      (strict maximum encoded length).
 - [ ] `PackageHash` is a new versioned canonical digest distinct from legacy
       `Skill.ContentHash`. Its input covers a canonical logical semantic body
       whose support-file references are normalized package-relative logical
@@ -130,12 +138,14 @@ storage and select the skill for the effective agent.
       `skillpkg://` URI containing the hash itself. Legacy `ContentHash`
       calculation and equality remain unchanged. Review binding, replacement
       preconditions, target CAS, receipts, and idempotency use `PackageHash`.
-- [ ] Validate returns an opaque proposal ID, normalized closed review shape,
-      warnings, source/package/manifest hashes, and expected config hash. The
-      review shape is bounded and cannot be submitted back as authority.
-- [ ] Commit accepts the proposal ID, reviewed hashes, expected config hash,
-      and an explicit `replace` choice. It reloads authoritative
-      proposal/source state and refuses expiry, identity/agent mismatch, signed
+- [ ] Validate returns a bounded opaque versioned sealed proposal token, the
+      normalized closed review shape, warnings, source/package/manifest hashes,
+      expected config hash, and expiry. The review shape is bounded and cannot
+      be submitted back as authority.
+- [ ] Commit accepts the sealed proposal token, reviewed hashes, expected config
+      hash, and an explicit `replace` choice. It reauthenticates and strictly
+      decodes the token, reloads authoritative
+      source state and refuses expiry, identity/agent mismatch, signed
       reach/lifecycle denial, changed source/package/manifest/config hash, a
       package above current configured ceilings, and unapproved replacement
       before visible mutation.
@@ -167,15 +177,17 @@ storage and select the skill for the effective agent.
       package assets remain readable with byte-identical semantics; schema
       migration is additive and restart-safe.
 - [ ] Body/package and agent-config membership publish as one coordinated
-      operation using the existing process lock/compensation plus durable
-      proposal CAS and a mandatory conditional target write/fence keyed by
+      operation: the first commit's token-derived ledger slot is ABSENT
+      (validate wrote nothing), so commit creates the `committing` marker with
+      an absent-slot CAS plus one mandatory conditional target write/fence
+      keyed by
       `(tenant,user,session-zeroed ScopeUser,agent_id,name)` with expected
       prior package version/`PackageHash`. A later failure restores the exact
       previous package or deletes only the exact package version proven created
-      by this operation's receipt; another proposal's winner is never
+      by this operation's receipt; another token's winner is never
       overwritten or deleted. Ambiguity is retained and loud.
 - [ ] A commit that lands but loses its response is recognized from exact
-      proposal/package/config receipts and returns the same terminal result.
+      token/package/config receipts and returns the same terminal result.
       Competing commits/replacements have one winner across two Runtime
       processes.
 - [ ] `required_tools` and related metadata are stored as applicability
@@ -183,7 +195,8 @@ storage and select the skill for the effective agent.
       and never widen catalog visibility, approval, OAuth, or tool-exposure
       policy.
 - [ ] Unknown, expired, erased, cross-session, cross-user, cross-tenant, and
-      cross-agent proposal/source references return typed closed errors without
+      cross-agent proposal-token/source references return typed closed errors
+      without
       revealing names, paths, hashes, or existence across the authority
       boundary.
 - [ ] Canonical methods/types/errors, body-scope registration, REST transport,
@@ -201,8 +214,8 @@ storage and select the skill for the effective agent.
   runtime/`skill_get`/export consumer integration
 - `internal/skills/drivers/{localdb,postgres}/` and additive migrations
 - `internal/runtime/agentcfg/protocol/` import validation/commit and tests
-- `internal/state/` typed proposal/cleanup records using the mandatory driver
-  contract and conformance suite
+- `internal/state/` commit-phase token-derived ledger records using the
+  mandatory driver contract and conformance suite
 - `internal/protocol/{types,methods,errors,bodyscope,singlesource,transports}/`
 - `internal/protocol/client/` and `web/console/src/lib/protocol/` lockstep
 - `test/integration/user_skill_package_import_test.go`
@@ -215,8 +228,11 @@ storage and select the skill for the effective agent.
 
 - `agent_config.user.skills.import_validate`: caller-owned artifact reference,
   requested/effective agent selection, and bounded validation options in;
-  opaque proposal ID plus bounded normalized review/hashes/warnings out.
-- `agent_config.user.skills.import_commit`: proposal ID, reviewed hash set,
+  bounded opaque versioned sealed proposal token plus bounded normalized
+  review/hashes/warnings/expiry out. Validation performs ZERO writes of any
+  kind.
+- `agent_config.user.skills.import_commit`: sealed proposal token, reviewed
+  hash set,
   expected config content hash, and explicit replacement choice in; durable
   skill/config receipt out.
 - A mandatory complete-package representation behind `SkillStore`; supporting
@@ -227,7 +243,9 @@ storage and select the skill for the effective agent.
   an exact receipt usable by conditional compensation.
 - `skillpkg://<PackageHash>/<encoded-canonical-path>` plus one mandatory
   authorized, bounded resolver/read path for all package consumers.
-- Typed proposal lifecycle and cleanup receipts over `StateStore.SaveIf`; no
+- Token-derived commit ledger (the slot kind embeds SHA-256 of the
+  authenticated token bytes) over `StateStore.SaveIf`, created only in the
+  commit phase; no
   new optional driver capability.
 
 ## Test plan
@@ -237,35 +255,37 @@ storage and select the skill for the effective agent.
   from legacy `ContentHash`, and no fixed-point/self-reference; one golden
   performs logical hash computation -> URI materialization -> resolver lookup
   -> export -> re-import and proves identical logical body/manifest/hash;
-  proposal state machine; reach/lifecycle/config/ceiling rechecks; full
+  sealed-token/commit-ledger state machine (tamper/version/oversize/
+  malformed-claims/cross-identity/expiry/echo mismatches); reach/lifecycle/
+  config/ceiling rechecks; full
   origin-pair replacement matrix; target-key conditional mutation; exact-receipt
   compensation; `skillpkg://` authorization/path/read bounds; response-loss
-  convergence; cleanup receipts; required-tool non-grant; legacy compatibility.
-- **Integration:** real ArtifactStore staging + StateStore proposal ledger +
+  convergence; zero-write validate counters; required-tool non-grant; legacy
+  compatibility.
+- **Integration:** real ArtifactStore staging + StateStore commit ledger +
   SkillStore package + agent-config membership through both Protocol methods;
   restart into another session, delete/expire staging, then resolve and inject
   the complete skill. Include signed-reach/lifecycle denial, a changed
-  configured ceiling, competing proposals, and a storage failure.
+  configured ceiling, competing commits, and a storage failure.
 - **Conformance:** ArtifactStore drivers preserve bytes/metadata, SkillStore
   drivers preserve package bytes/ordering/hashes and conditional target-version
-  semantics, and StateStore drivers preserve proposal/cleanup CAS. Protocol
+  semantics, and StateStore drivers preserve commit-ledger CAS. Protocol
   integration — run across every registered driver combination — owns verified
   identity/body-scope, effective-agent reach/lifecycle, and cross-principal
   authorization assertions; driver conformance does not claim method auth.
 - **Concurrency / leak:** N>=128 mixed-identity calls on one shared importer and
-  handler set plus two-Runtime same-proposal races under `-race`; explicit
+  handler set plus two-Runtime same-token races under `-race`; explicit
   cancellation barriers and final goroutine baseline.
 - **Fuzz:** archive headers/path normalization/Unicode collisions, Markdown
-  frontmatter, manifest decoding, and proposal request decoding with bounded
-  allocations and no panics.
+  frontmatter, manifest decoding, and proposal-token request decoding with
+  bounded allocations and no panics.
 
 ## Smoke script additions
 
-- Before implementation, a pending static skeleton records this plan.
-- When implemented, validate a same-scope uploaded fixture, assert no skill is
+- Validate a same-scope uploaded fixture, assert no skill is
   visible before commit, commit exact reviewed hashes, open a new session, and
   assert the skill and supporting file remain available after staging cleanup.
-- Assert stale `PackageHash`/reach/lifecycle, cross-session proposal use,
+- Assert stale `PackageHash`/reach/lifecycle, cross-session token use,
   traversal archive, forbidden origin pair, and implicit replacement fail with
   canonical typed errors and no mutation.
 
@@ -287,8 +307,9 @@ storage and select the skill for the effective agent.
   consistently. A session artifact reference is not an acceptable substitute.
 - SkillStore and agent-config remain separate durable systems, so the guarantee
   is coordinated compensation and exact convergence, not cross-store ACID.
-- Proposal and temporary-staging retention need named ceilings and lifecycle
-  cleanup. Session erasure must remove staging/proposals without deleting an
+- The token-derived commit ledger and temporary-staging retention need named
+  ceilings and lifecycle
+  cleanup. Session erasure must remove commit-ledger state without deleting an
   already committed user skill.
 - Existing local `ImportAndStore` behavior may need to delegate to the same
   package materializer without inheriting Protocol approval semantics.

@@ -12593,7 +12593,7 @@ The classification expresses, at minimum:
 
 **Acceptance evidence (binding for the phase).** Real MCP SDK fixtures over each supported Harbor MCP transport demonstrate that typed `invalid_argument`, validation, and deterministic `tool_domain` `IsError` results make exactly one call under the default policy, with their original result content observable. A typed retryable provider/transport failure still uses the configured attempt budget and can recover; timeout and 5xx classifications retain their present policy behavior. Legacy unclassified `IsError`, missing classification, malformed classification, and an unknown future class follow the documented compatibility fallback; no test derives a class from error text. Unit coverage proves lowering, policy classification, and error wrapping; an end-to-end driver test proves the selected class reaches the retry shell without changing standard MCP result handling; the existing transient-`IsError` retry case remains as the compatibility regression fixture. §17.8: the fixtures derive from the real spec artifact, never a hand-authored fixture encoding the implementer's interpretation.
 
-**Governance amendment — planner-replay closure (HA-54; same decision, no new phase or decision).** **Status:** Pending (v1.28). A confirmed gap: the classified outcome must survive the runloop's step recording and appear in the actual next ReAct prompt. The typed class, the retry-policy outcome, the bounded provider message, and the retained bounded MCP result content are preserved through step recording; a generic `Step.Error` never masks the richer classified `LLMObservation`; legacy unstructured errors may render a generic safe fallback; and canonical task/tool events agree with the planner observation on the terminal error. Full-path acceptance (binding): `IsError` → typed classification → retry policy → runloop → the actual next ReAct prompt end to end; a permanent class invokes exactly once; a typed deterministic failure in the `revision_conflict` shape is permanent for the unchanged invocation and carries the current revision in its bounded message for reread/retry; a retryable provider failure uses the configured policy. Raw arguments, secrets, and unbounded output never enter the observation or the prompt. Acceptance and test ownership: the runloop step-recording surface (`internal/runtime/steering/runloop.go`), the ReAct renderer (`internal/planner/react/prompt.go`), and the full-path replay test (`test/integration/mcp_failure_replay_test.go`).
+**Governance amendment — planner-replay closure (HA-54; same decision, no new phase or decision).** **Status:** Shipped (v1.28). A confirmed gap: the classified outcome must survive the runloop's step recording and appear in the actual next ReAct prompt. The typed class, the retry-policy outcome, the bounded provider message, and the retained bounded MCP result content are preserved through step recording; a generic `Step.Error` never masks the richer classified `LLMObservation`; legacy unstructured errors may render a generic safe fallback; and canonical task/tool events agree with the planner observation on the terminal error. Full-path acceptance (binding): `IsError` → typed classification → retry policy → runloop → the actual next ReAct prompt end to end; a permanent class invokes exactly once; a typed deterministic failure in the `revision_conflict` shape is permanent for the unchanged invocation and carries the current revision in its bounded message for reread/retry; a retryable provider failure uses the configured policy. Raw arguments, secrets, and unbounded output never enter the observation or the prompt. Acceptance and test ownership: the runloop step-recording surface (`internal/runtime/steering/runloop.go`), the ReAct renderer (`internal/planner/react/prompt.go`), and the full-path replay test (`test/integration/mcp_failure_replay_test.go`). The amendment shipped with the v1.28 wave: runloop step recording preserves the classified observation, the ReAct renderer surfaces it in the next prompt with raw arguments redacted on every failed-replay shape, and the full-path replay test proves the end-to-end contract.
 
 **Non-goals.** No per-server retry-policy override, no redefinition of MCP's `isError` boolean, and no consumer-specific exception — Harbor provides one reusable typed reliability seam for every MCP server.
 
@@ -12629,7 +12629,7 @@ The control plane offers an elevated operator mutation path that stores the pack
 
 **Date:** 2026-08-13
 
-**Status:** Accepted for Phase 238 (HA-56); corrected by the 2026-08-14 fresh render-admission amendment (Pending v1.28).
+**Status:** Accepted for Phase 238 (HA-56); corrected by the 2026-08-14 fresh render-admission amendment (Shipped v1.28).
 
 **Decision.** At MCP discovery, preserve the provider-authored `_meta.ui.visibility: ["app"]` classification and construct an internal, per-MCP-server **App dispatch catalog** alongside the ordinary planner/model projection. An app-only entry must be absent from planner context, generic `tools/list`, planner search/resolve, and ordinary model tool invocation; it must remain callable only by the rendered App associated with the same host-derived server identity through a host/App dispatch surface. No string prefix or remembered global tool name may select another server's callback.
 
@@ -12650,6 +12650,27 @@ Dynamic attach, reconnect, and catalog refresh must rebuild both views from one 
 **Wire consequence.** The phase may choose an additive wire shape, `ProtocolVersion` remains `0.1.0`, and any additive shape triggers the full D-223/D-209 lockstep. The host-derived server identity must reach the dispatch check; it is never App-supplied.
 
 **Amendment (2026-08-14) — corrected fresh render-admission contract (HA-56 stays phase 238 / D-412; no new HA, phase, or decision).** A verification review corrected the render-admission half of the shipped contract above; the original app-only callback catalog history is preserved verbatim. A rendered MCP App has exactly two render paths. The LIVE path — the App mounted while the originating tool-result App is in-process — may use a bounded, short-lived, provider-local binding as a compatibility convenience; that binding is never durable and is never restored. Embedded/durable reopen — the App remounted from a reopened session's durable turns — instead uses a FRESH stateless, integrity-protected, shared-KEK admission minted by the Runtime only after ALL of: verified identity, signed effective-agent reach, agent retirement, session/agent erasure, current session/agent exposure, exact server identity, exact current `ui://` resource availability, paused/disabled state, and the exact CURRENT provider/catalog generation — a deterministic, replica-stable generation of the server's current discovered catalog that changes on detach, replacement, and ANY successful discovery/catalog/resource change even when deployment descriptor configuration did not change (the existing exact registration descriptor fingerprint remains a retained input but is never alone sufficient authority; a process-local discovery counter is not acceptable, and a replica holding a different current catalog fails closed as a generation mismatch). The admission claim binds claim schema, mint time, the `(tenant, user, session)` triple, effective agent, server, resource, and current provider/catalog generation — and carries NO raw tool arguments, secrets, provider output, callback name, or general capability. Ordinary resource reads never mint an admission; only the explicit admission-requesting read path does. The app-only callback stays absent from planner context, `tools.list`, search, and generic resolution, and dispatches only via the same-server `ResolveAppTool` path followed by the existing approval/OAuth/policy/redaction/retry/audit gates. Durable turn rows (the HA-64 / D-425 projection) retain metadata and component availability only — never an admission token; `mcp.apps.tool_context` replay is unchanged and never reruns the originating tool. Unavailable and expired admissions answer typed unavailable/expired, and refresh re-runs every fresh check — nothing is silently extended. Production and devstack share ONE implementation and one immutable shared sealer instance; the surface is enabled by `tools.mcp_app_render_admission.enabled` (default `false`) and seals with the existing `tools.oauth_token_kek_env` KEK-backed AES-256-GCM sealer — no second authority field and no literal key; an enabled surface with an empty env name, a missing/unset/invalid KEK, or a sealer construction failure fails readiness loud even when no OAuth provider or credential broker is configured, and restart/multi-replica deployments verify against the shared KEK and succeed only when the same current provider/catalog generation is present — a replica holding a different current catalog fails closed as a generation mismatch. Pinned non-goals: no generic capability framework, no persisted callback authority, no arbitrary origins, no provider exceptions, no hot registry, and no transcript impersonation. The focused phase-238 smoke and the v1.28 implementation wave's integration tests cover durable reopen through a real Console consumer and the negative identity/server/resource/generation/expiry/tamper/erasure/paused-disabled cases, including N≥100 isolation and zero originating-tool rerun / callback execution on refusal.
+
+**Amendment shipped (v1.28) — binding reopen order and posture.** The exact
+reopen order is: the durable App reference from the reopened session's turn
+rows, a successful `mcp.apps.tool_context` replay (a failed / unavailable /
+evicted / foreign replay mints no authority), the current `ui://` read
+explicitly requesting one fresh admission (`request_render_admission: true` —
+the only minting read; ordinary and AppBridge-secondary resource reads never
+mint), the iframe/AppBridge mount, and then same-server app-only callback
+dispatch through the existing wrapped invocation (the distinct
+admission-aware AppsAccessor path) echoing the fresh admission as the
+distinct `render_admission` authority. The fresh admission is distinct from,
+never aliases, and never coexists with the legacy live binding; neither is
+persisted or restored. The surface is STRICTLY opt-in: sealer availability
+alone never enables render admission — even when an OAuth broker already
+supplies the shared KEK, the surface stays off until
+`tools.mcp_app_render_admission.enabled` is explicitly `true` and readiness
+passes. Every mint and every verify reads the reach-admitted effective agent
+stamped in the request context — never a fixed boot/default fallback.
+Unavailable and expired admissions answer typed `render_admission_unavailable`
+/ `render_admission_expired` (an otherwise-current App never collapses to
+`not_found`), and refresh re-runs the full fresh check list.
 
 **Cross-references.** D-173 (the bridge-proxied sandbox posture this stays inside), D-227 (the original MCP-Apps host obligations; `visibility` enforcement deferred there), D-351 (the re-landed host obligations, the typed not-found, and the bounded-guarantee bar), D-408 (runtime-authored effective-agent admission on data-plane callbacks), D-343 (deferred progressive streaming, untouched), D-062 (no primitive without its consumer), D-061 (the Console is a Protocol client). RFC §6.4, §6.10, §7.3, §5.2, §7. Briefs 03, 14. Plan: `docs/plans/phase-238-app-only-callback-catalog.md`.
 
@@ -12842,7 +12863,9 @@ the generated wire manifest does not.
 
 **Date:** 2026-08-13
 
-**Status:** Accepted for Phase 243 (HA-61).
+**Status:** Accepted for Phase 243 (HA-61). Shipped (v1.28): the stateless
+sealed-token validate contract below supersedes the earlier durable
+proposal-ledger wording — validation performs ZERO writes of any kind.
 
 **Decision.** A Protocol caller may install a complete reviewed `SKILL.md`
 package as a durable personal user skill through two identity-mandatory
@@ -12850,13 +12873,21 @@ methods — `agent_config.user.skills.import_validate` and
 `agent_config.user.skills.import_commit` — where the caller-owned
 `artifacts.put` output is bounded staging input and only an explicit commit
 materializes the exact reviewed body and supporting files. Validation invokes
-the ONE existing importer/validator and performs zero durable skill or
-membership mutation; it returns an opaque proposal ID plus a bounded
-normalized review, warnings, and hashes. Commit re-derives identity and signed
+the ONE existing importer/validator and performs ZERO writes of any kind —
+no SkillStore body/package write, no agent-config membership write, and no
+StateStore proposal-ledger write; it returns a bounded opaque versioned
+sealed proposal token (base64url of the shared-KEK-sealed claims: artifact
+id/hash/size, package + content hashes, canonical name, review + warnings,
+expected config hash, policy snapshot + hash, ceilings, schema/version, exact
+actor triple + agent, issued/expiry) plus a bounded normalized review,
+warnings, and hashes. Commit reauthenticates and strictly decodes the token,
+re-derives identity and signed
 effective-agent reach, rechecks lifecycle/policy/ceilings, forces
 `ScopeUser`/owner and the effective `AgentID` server-side, and atomically
-materializes the approved package plus membership with durable proposal CAS
-and a mandatory conditional target write; response-loss retry converges on
+materializes the approved package plus membership with ONE conditional
+package write (never a second legacy membership write), serialized through a
+token-derived commit ledger with an absent-slot CAS; durable idempotency
+state begins only in the commit phase. Response-loss retry converges on
 exact receipts and competing commits have one winner across processes.
 The attachment-lifetime refinement is binding: the installed form COPIES the
 reviewed supporting-file manifest/content into the durable personal-skill
@@ -12895,7 +12926,7 @@ is a skill body, not an analytics store. RFC §6.7, §6.10, §6.11, §5.2, §5.5
 
 **Date:** 2026-08-13
 
-**Status:** Accepted for Phase 244 (HA-62).
+**Status:** Accepted for Phase 244 (HA-62). Shipped (v1.28).
 
 **Decision.** A stock/config-declarable Harbor tool, provisionally
 `skill_create_draft`, disabled by default and enabled per Agent by operator
@@ -12944,7 +12975,7 @@ reuse). RFC §6.4, §6.5, §6.7, §6.10, §6.13, §6.15, §5.2, §5.5. Plan:
 
 **Date:** 2026-08-13
 
-**Status:** Accepted for Phase 245 (HA-63).
+**Status:** Accepted for Phase 245 (HA-63). Shipped (v1.28).
 
 **Decision.** Both `sessions.list` and `sessions.inspect` accept an additive
 `projection` selector (spelling not load-bearing; `"full"` default,
@@ -13000,7 +13031,9 @@ erasure), D-409 (session reach), D-397 (agent reach), D-313/D-349
 
 **Date:** 2026-08-13
 
-**Status:** Accepted for Phase 246 (HA-64).
+**Status:** Accepted for Phase 246 (HA-64). Shipped (v1.28): the accepted
+snapshot-to-live handoff is page-before-subscribe (below), not the earlier
+provisional subscribe-before-page wording.
 
 **Decision.** Add a dedicated, runtime-owned conversation read model —
 `sessions.turns.list` (stable tail pages) and `sessions.turns.get` (one
@@ -13041,12 +13074,23 @@ Per-component exact/partial/unavailable state plus projection version,
 `last_applied_event_sequence`, retention horizon, and mutable-versus-
 terminal-sealed state are explicit; `complete`, `partial`, `rebuilding`,
 `retention_gap`, `evicted`, and `unavailable` are distinguishable, and a
-missing/stale projection never triggers an unbounded synchronous event
-rebuild during chat open. The list response's exclusive live resume cursor
-composes with `events.subscribe` under the settled contract
-(subscribe-before-page with dedup by sequence and one `sessions.turns.get`
-terminal reconciliation). Chat open is two reads: one Phase 245 lifecycle
-read plus one turn-page read. Consumer-versus-operator is a hard boundary:
+  missing/stale projection never triggers an unbounded synchronous event
+  rebuild during chat open. The list response's exclusive live resume cursor
+  composes with `events.subscribe` under the settled page-before-subscribe
+  snapshot-to-live handoff: the Console performs the lifecycle-only inspect
+  plus one `sessions.turns.list`, folds the durable page and establishes
+  bounded running/paused membership, then opens the EventSource with
+  `live_resume_seq` as the initial `resume_seq`; the server replays events
+  strictly newer than that snapshot through the existing bounded replay
+  source, and a browser reconnect `Last-Event-ID` takes precedence. One
+  terminal event causes one `sessions.turns.get`
+  terminal reconciliation. A page retry clears stale live membership but
+  rebuilds it from freshly read authoritative running/pending/paused rows
+  even when their bubbles are already rendered — it never duplicates
+  bubbles/KPIs or re-admits a terminal row, and a freshly read terminal
+  durable row converges the existing bubble from that row rather than leaving
+  the prior partial snapshot frozen. Chat open is two reads: one Phase 245 lifecycle
+  read plus one turn-page read. Consumer-versus-operator is a hard boundary:
 the `conversation` consumer surface returns query, answer/ref,
 consumer-safe reasoning/activity, own pause state, App refs, and compact
 totals; it must not return raw args/results/events, credentials, the system
@@ -13095,7 +13139,7 @@ Plan: `docs/plans/phase-246-durable-conversation-turns.md`.
 
 **Date:** 2026-08-13
 
-**Status:** Accepted for Phase 247 (HA-65).
+**Status:** Accepted for Phase 247 (HA-65). Shipped (v1.28).
 
 **Decision.** Add a first-class durable observability rollup projection behind
 its own typed interface and §4.4 driver seam with in-memory, SQLite, and
@@ -13204,7 +13248,7 @@ Plan: `docs/plans/phase-247-observability-rollups.md`.
 
 **Date:** 2026-08-13
 
-**Status:** Accepted for Phase 248 (HA-66).
+**Status:** Accepted for Phase 248 (HA-66). Shipped (v1.28).
 
 **Decision.** A runtime serving its resolved boot/default agent may declare a
 resource-free operator skill baseline directly in boot configuration, so the

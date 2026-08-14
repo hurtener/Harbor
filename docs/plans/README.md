@@ -379,19 +379,19 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |233c | Bifrost reasoning fidelity (HA-51, D-402): raw observed reasoning is byte-exact and authoritative; details-only blocks coalesce by stable identity without whitespace rewriting, with live/planner/task/durable-history/Console parity | Bifrost LLM driver + planner/task/history + Console | §6.2, §6.5, §6.8, §6.13 | 33, 83e, 83m, 165 | 85–90% | Shipped (v1.26) |
 |234 | Agent-config retirement (D-399/D-400/D-401): terminal CAS tombstone, immutable history, exact pre-retirement hash and operation identity, deterministic paged owner-scoped cleanup after tombstone, four-slot session-write freeze, signed OAuth pair cleanup, and explicit/default new-run refusal; `agents.deregister` remains fleet-only | agentcfg + runtime projection/serve + Protocol/Console lockstep | §5.5, §6.11, §6.13, §6.16 | 232, 233, 233a, 233b | 85–90% | Shipped (v1.26) |
 |235 | Agent authority/lifecycle wave E2E + v1.26 checkpoint: real SQLite/Postgres composition of signed OAuth capability registration, session records, erasure, retirement, and byte-exact reasoning durability; two-runtime write races, N≥10 mixed-identity stress, read-only §17.5 audit and corrective gate before release | test/integration + scripts/smoke + release docs | §4, §5.5, §6.2, §6.4, §6.5, §6.8, §6.9, §6.11, §6.13, §6.16, §9 | 232, 233, 233a, 233b, 233c, 234 | inherited floors | Shipped (v1.26) |
-|236 | Typed MCP errors (HA-54) | tools/mcp + tools/policy + runtime/steering + planner/react | §6.4, §6.5, §6.13 | 26b, 28 | measured floors | Shipped (v1.27); planner-replay amendment Pending (v1.28) |
+|236 | Typed MCP errors (HA-54) | tools/mcp + tools/policy + runtime/steering + planner/react | §6.4, §6.5, §6.13 | 26b, 28 | measured floors | Shipped (v1.27); planner-replay amendment Shipped (v1.28) |
 |237 | Agent-owned skills and governed authoring (HA-55) | skills + agentcfg + serve | §6.7, §6.16, §6.11, §5.2 | 201, 221, 233, 233a | measured floors | Shipped (v1.27) |
-|238 | App-only callback catalog (HA-56) | tools/mcp + mcpconsole + protocol | §6.4, §7.3, §5.2, §7 | 207, 204, 109k, 109l | measured floors | Shipped (v1.27); fresh render-admission amendment Pending (v1.28) |
+|238 | App-only callback catalog (HA-56) | tools/mcp + mcpconsole + protocol | §6.4, §7.3, §5.2, §7 | 207, 204, 109k, 109l | measured floors | Shipped (v1.27); fresh render-admission amendment Shipped (v1.28) |
 |239 | Same-run step-tranche resume (HA-57) | runtime + tasks + protocol | §3.3, §6.8, §6.11, §7 | 176, 193, 233 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |240 | Governed virtual child profiles (HA-58) | runtime + agentcfg + protocol | §5.5, §6.16, §7 | 237, 239 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |241 | Virtual-child artifact/output forwarding (HA-59) | artifacts + tasks + runtime + protocol | §6.8, §6.10, §6.11, §7 | 17, 146, 239, 240 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |242 | Durable task-progress projection (HA-60) | tasks + state + protocol | §6.8, §6.10, §6.11, §7 | 239, 241 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
-|243 | Verified-caller two-phase skill-package import (HA-61, D-422): validate/commit workflow installing a complete `SKILL.md` package as a durable personal user skill from a caller-owned artifact; one importer/validator, versioned `PackageHash`, durable proposal CAS, mandatory `skillpkg://` resolver, forced `ScopeUser`/effective-agent commit, cross-process one-winner compensation | skills + agentcfg protocol + state + protocol | §6.7, §6.10, §6.11, §5.2, §5.5, §9 | 40, 202, 205, 209, 221, 226, 232, 233, 233a, 237 | 85–90% (target) | Pending |
-|244 | Draft-only personal-skill proposer tool (HA-62, D-423): `skill_create_draft` ordinary disabled-by-default tool producing a caller-scoped `SKILL.md` draft artifact via the governed authoring path's safety-wrapped LLM adapter; shared semantic DTO/validator/serializer/`PackageHash` with 243; zero mutation authority; install only through 243 validate/commit | skills + tools + agentcfg + artifacts | §6.4, §6.5, §6.7, §6.10, §6.13, §6.15, §5.2, §5.5 | 26, 40, 41, 202, 205, 209, 232, 237, 243 | 90–95% (target) | Pending |
-|245 | Lifecycle-only session catalog and inspection projection (HA-63, D-424): additive `projection: "lifecycle"` selector on the existing `sessions.list`/`sessions.inspect`; full remains the default; ZERO enrichment on the lifecycle path (bounded by page size, before/after restart); closed counter availability `current|partial|not_requested|unavailable` — lifecycle counters marked `not_requested`, never merely absent and never zero-as-not-computed; `unavailable` means enrichment/projection unavailable; `partial` remains lower-bound; full exact at `current`; omitted selector defaults full; counter filters/sorts paired with lifecycle fail as a typed invalid request | sessions/protocol + protocol + console | §6.9, §6.13, §5.2, §5.5, §7, §9 | 130, 163, 174, 177, 205, 232 | 85–90% (target) | Pending |
-|246 | Durable tail-paged conversation turns (HA-64, D-425): `sessions.turns.list`/`.get` as the two named public methods; dedicated runtime-owned projection with idempotent sequence checkpoints, indexed keyset tail paging (work ∝ page size), root-foreground-turn rows, renderable answer/reasoning/Activity/usage/App content with per-component availability, Activity inline at least the configured budget (a named activity method is not a v1.28 method or acceptance; any future named fallback is a deferred follow-up), restart/erasure fences, two-read chat open with 245; Protocol-only consumer; no generic projection framework/warehouse/impersonation authority/operator analytics/live-cursor redesign/overflow analytics | turns projection + sessions/protocol + protocol + console | §6.2, §6.8, §6.9, §6.10, §6.13, §6.16, §5.2, §5.5, §7, §9 | 130, 162, 204, 205, 232, 242, 245 | 85–90% (target) | Pending |
-|247 | Durable observability rollups (HA-65, D-426): indexed triad projection of best-effort aggregates over successfully persisted canonical events (never billing-exact); existing local durable sequence, no outbox/new canonical event ID/active-active exactly-once, fail-loud LLM publication unchanged and projection failures best-effort; fixed UTC minute storage buckets (query may coarsen) with exactly the authoritative tenant/user/session/model dimensions (no agent_id even conditionally), existing source-backed measures only (`llm.cost.recorded` successful completions, exact cost, prompt/completion/reasoning/cache-read/cache-write/total tokens, latency count/sum/min/max, task completed/failed/cancelled), attempts/failed calls/retry-downgrade/task-spawned/user-message counts unsupported/unavailable; current/catching_up/unavailable + watermark/retention quality; projection-backed session counters with honest fallback; erasure fence; ONE bounded Protocol query `observability.query` and minimal Console consumer; narrow D-296 amendment (general TSDB + identity-labelled OTel metrics still rejected) | observability rollup + events + sessions enricher + protocol + console | §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9 | 36a, 57, 120, 130, 163, 171, 174, 205 | 85–90% (target) | Pending |
-|248 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent (HA-66, D-427): config-file-relative strict eager immutable loader before readiness (config-file-relative root, never CWD; one relative include directory with one case-sensitive top-level regular UTF-8 `SKILL.md`, resource-free; traversal/recursive discovery/symlink/hardlink/special/duplicates/canonical-name collisions rejected under declaration/item/file/aggregate bounds; eager copy before readiness, restart-only); no loader persistence/admin verbs/config revisions/lifecycle materialization; exact tenant+boot-agent binding with no invented boot identity; boot baseline merged with the agent's active durable revision into ONE combined operator tier FIRST (same canonical name + same semantic hash dedupes `source=both`; differing hash fails; exactly 256 unique combined items), every declared tenant-agent active revision pre-read before readiness with run-start conflict defense retained, then applied LAST over base/user/session; boot-owned mutation/remove guards (upsert/proposal commits replay-prepared-publish/rollback-activation reject even equal hash; removal may delete an actual legacy durable revision shadow; boot-only remove is typed read-only refusal; `agent_packs.list` durable-revision authoring only; config removal next-deployment-only, legacy durable revision remains, in-flight snapshots retain bytes/hash); deterministic set hash in run snapshot/preview (`boot|revision|both` + `boot_pack_set_hash`); headless `RunOnce` explicitly unsupported and fail-loud; single prod/devstack path; ONE shared strict effective-composition resolver + preview (completes D-414 on the boot base) with read-only Protocol path, clients/manifest/docs, minimal Console+CLI consumers (D-415), config docs/example, operator skill, smoke; exact postgres + `${SKILLS_DSN}` + `boot_agent_packs` schema; `EnsureBootAgentLifecycle` separate and unchanged (may write a revision) | skills + config + runtime/serve + devstack | §6.7, §6.16, §5.2, §5.5, §7, §9 | 2, 40, 232, 237, 240 | 85–90% (target) | Pending |
+|243 | Verified-caller two-phase skill-package import (HA-61, D-422): validate/commit workflow installing a complete `SKILL.md` package as a durable personal user skill from a caller-owned artifact; one importer/validator, versioned `PackageHash`, stateless sealed proposal token (validate performs ZERO writes — no proposal-ledger write; commit reauthenticates/re-resolves/revalidates and may begin durable idempotency state only in the commit phase), mandatory `skillpkg://` resolver, forced `ScopeUser`/effective-agent commit, cross-process one-winner compensation | skills + agentcfg protocol + state + protocol | §6.7, §6.10, §6.11, §5.2, §5.5, §9 | 40, 202, 205, 209, 221, 226, 232, 233, 233a, 237 | 85–90% (target) | Shipped (v1.28) |
+|244 | Draft-only personal-skill proposer tool (HA-62, D-423): `skill_create_draft` ordinary disabled-by-default tool producing a caller-scoped `SKILL.md` draft artifact via the governed authoring path's safety-wrapped LLM adapter; shared semantic DTO/validator/serializer/`PackageHash` with 243; zero mutation authority; install only through 243 validate/commit | skills + tools + agentcfg + artifacts | §6.4, §6.5, §6.7, §6.10, §6.13, §6.15, §5.2, §5.5 | 26, 40, 41, 202, 205, 209, 232, 237, 243 | 90–95% (target) | Shipped (v1.28) |
+|245 | Lifecycle-only session catalog and inspection projection (HA-63, D-424): additive `projection: "lifecycle"` selector on the existing `sessions.list`/`sessions.inspect`; full remains the default; ZERO enrichment on the lifecycle path (bounded by page size, before/after restart); closed counter availability `current|partial|not_requested|unavailable` — lifecycle counters marked `not_requested`, never merely absent and never zero-as-not-computed; `unavailable` means enrichment/projection unavailable; `partial` remains lower-bound; full exact at `current`; omitted selector defaults full; counter filters/sorts paired with lifecycle fail as a typed invalid request | sessions/protocol + protocol + console | §6.9, §6.13, §5.2, §5.5, §7, §9 | 130, 163, 174, 177, 205, 232 | 85–90% (target) | Shipped (v1.28) |
+|246 | Durable tail-paged conversation turns (HA-64, D-425): `sessions.turns.list`/`.get` as the two named public methods; dedicated runtime-owned projection with idempotent sequence checkpoints, indexed keyset tail paging (work ∝ page size), root-foreground-turn rows, renderable answer/reasoning/Activity/usage/App content with per-component availability, Activity inline at least the configured budget (a named activity method is not a v1.28 method or acceptance; any future named fallback is a deferred follow-up), restart/erasure fences, two-read chat open with 245; Protocol-only consumer; no generic projection framework/warehouse/impersonation authority/operator analytics/live-cursor redesign/overflow analytics; page-before-subscribe snapshot-to-live handoff (fold the durable page and establish bounded running/paused membership BEFORE opening the SSE stream with `live_resume_seq` as the initial `resume_seq`; server replays events strictly newer than the snapshot; browser reconnect `Last-Event-ID` takes precedence; one terminal event causes one `sessions.turns.get`; a page retry clears stale live membership and rebuilds it from freshly read authoritative running/pending/paused rows without duplicating bubbles or re-admitting a terminal row) | turns projection + sessions/protocol + protocol + console | §6.2, §6.8, §6.9, §6.10, §6.13, §6.16, §5.2, §5.5, §7, §9 | 130, 162, 204, 205, 232, 242, 245 | 85–90% (target) | Shipped (v1.28) |
+|247 | Durable observability rollups (HA-65, D-426): indexed triad projection of best-effort aggregates over successfully persisted canonical events (never billing-exact); existing local durable sequence, no outbox/new canonical event ID/active-active exactly-once, fail-loud LLM publication unchanged and projection failures best-effort; fixed UTC minute storage buckets (query may coarsen) with exactly the authoritative tenant/user/session/model dimensions (no agent_id even conditionally), existing source-backed measures only (`llm.cost.recorded` successful completions, exact cost, prompt/completion/reasoning/cache-read/cache-write/total tokens, latency count/sum/min/max, task completed/failed/cancelled), attempts/failed calls/retry-downgrade/task-spawned/user-message counts unsupported/unavailable; current/catching_up/unavailable + watermark/retention quality; projection-backed session counters with honest fallback; erasure fence; ONE bounded Protocol query `observability.query` and minimal Console consumer; narrow D-296 amendment (general TSDB + identity-labelled OTel metrics still rejected) | observability rollup + events + sessions enricher + protocol + console | §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9 | 36a, 57, 120, 130, 163, 171, 174, 205 | 85–90% (target) | Shipped (v1.28) |
+|248 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent (HA-66, D-427): config-file-relative strict eager immutable loader before readiness (config-file-relative root, never CWD; one relative include directory with one case-sensitive top-level regular UTF-8 `SKILL.md`, resource-free; traversal/recursive discovery/symlink/hardlink/special/duplicates/canonical-name collisions rejected under declaration/item/file/aggregate bounds; eager copy before readiness, restart-only); no loader persistence/admin verbs/config revisions/lifecycle materialization; exact tenant+boot-agent binding with no invented boot identity; boot baseline merged with the agent's active durable revision into ONE combined operator tier FIRST (same canonical name + same semantic hash dedupes `source=both`; differing hash fails; exactly 256 unique combined items), every declared tenant-agent active revision pre-read before readiness with run-start conflict defense retained, then applied LAST over base/user/session; boot-owned mutation/remove guards (upsert/proposal commits replay-prepared-publish/rollback-activation reject even equal hash; removal may delete an actual legacy durable revision shadow; boot-only remove is typed read-only refusal; `agent_packs.list` durable-revision authoring only; config removal next-deployment-only, legacy durable revision remains, in-flight snapshots retain bytes/hash); deterministic set hash in run snapshot/preview (`boot|revision|both` + `boot_pack_set_hash`); headless `RunOnce` explicitly unsupported and fail-loud; single prod/devstack path; ONE shared strict effective-composition resolver + preview (completes D-414 on the boot base) with read-only Protocol path, clients/manifest/docs, minimal Console+CLI consumers (D-415), config docs/example, operator skill, smoke; exact postgres + `${SKILLS_DSN}` + `boot_agent_packs` schema; `EnsureBootAgentLifecycle` separate and unchanged (may write a revision) | skills + config + runtime/serve + devstack | §6.7, §6.16, §5.2, §5.5, §7, §9 | 2, 40, 232, 237, 240 | 85–90% (target) | Shipped (v1.28) |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -521,7 +521,7 @@ real two-client race under `-race`.
   result's bounded message/content and structured content are preserved for
   the planner/model and App paths. Classification metadata is control
   information — never a route to raw tool arguments or results. A confirmed
-  planner-replay gap is addressed by a Pending (v1.28) governance amendment:
+  planner-replay gap is addressed by a governance amendment shipped in v1.28:
   the typed class, retry-policy outcome,
   bounded provider message, and retained bounded MCP result content survive
   runloop step recording and appear in the actual next ReAct prompt, and the
@@ -530,7 +530,7 @@ real two-client race under `-race`.
   task/tool events agree with the planner observation on the terminal error.
   Non-goals: no per-server policy override, no redefinition of MCP `isError`,
   no consumer-specific exception. §17.8 fixtures derive from the real spec.
-- **Planner-replay acceptance (governance amendment, Pending (v1.28); HA-54
+- **Planner-replay acceptance (governance amendment, Shipped (v1.28); HA-54
   stays phase 236 / D-410, no new phase or decision):** the full-path test
   proves `IsError` →
   typed classification → retry policy → runloop → the actual next ReAct
@@ -540,7 +540,7 @@ real two-client race under `-race`.
   arguments or secrets never reach the observation or the prompt.
 - **Ordering:** 236 gates 239 (its classification-observability consumer).
   Independent of 237/238/240/241/242.
-- **Decision:** D-410. **Status:** Shipped (v1.27); planner-replay amendment Pending (v1.28).
+- **Decision:** D-410. **Status:** Shipped (v1.27); planner-replay amendment Shipped (v1.28).
 
 ### Phase 237 — Agent-owned skills and governed authoring (HA-55)
 
@@ -586,7 +586,7 @@ real two-client race under `-race`.
   discovered snapshot for HTTP and stdio, with no stale callback surviving
   replacement or detach. Non-goals: no authorization shortcut, no
   ordinary-caller exposure, no provider-specific exceptions.
-- **Fresh render-admission acceptance (governance amendment, Pending (v1.28);
+- **Fresh render-admission acceptance (governance amendment, Shipped (v1.28);
   HA-56 stays phase 238 / D-412, no new phase or decision):** the corrected
   render-admission contract is authoritative for the v1.28 wave. The live
   provider-local binding is a bounded, short-lived compatibility path for a
@@ -602,7 +602,16 @@ real two-client race under `-race`.
   exact registration descriptor fingerprint remains a retained input but is
   never alone sufficient authority; a process-local discovery counter is not
   acceptable, and a replica holding a different current catalog fails closed
-  as a generation mismatch). Claims bind schema/time/triple/effective-agent/
+  as a generation mismatch). The exact reopen order is: the durable App
+  reference from the reopened session's turn rows, a successful
+  `mcp.apps.tool_context` replay (a failed/unavailable/evicted/foreign replay
+  mints no authority), the current `ui://` read explicitly requesting one
+  fresh admission (`request_render_admission: true` — the only minting read;
+  ordinary and AppBridge-secondary resource reads never mint), the
+  iframe/AppBridge mount, and then same-server app-only callback dispatch
+  through the existing wrapped invocation (`ResolveAppTool` + approval/OAuth/
+  policy/redaction/retry/audit) echoing the fresh admission as the distinct
+  `render_admission` authority. Claims bind schema/time/triple/effective-agent/
   server/resource/current provider/catalog generation and carry no
   raw args, secrets, provider output, callback name, or general capability.
   Ordinary resource reads never mint; only the explicit admission-requesting
@@ -625,7 +634,7 @@ real two-client race under `-race`.
   origins, provider exceptions, hot registry, or transcript impersonation.
 - **Ordering:** 238 is independent of 236/237/239/240/241/242 (its App-host
   fixtures compose with 242's durable task-progress projection at wave E2E).
-- **Decision:** D-412. **Status:** Shipped (v1.27); fresh render-admission amendment Pending (v1.28).
+- **Decision:** D-412. **Status:** Shipped (v1.27); fresh render-admission amendment Shipped (v1.28).
 
 ### Phase 239 — Same-run step-tranche resume (HA-57)
 
@@ -685,23 +694,34 @@ real two-client race under `-race`.
 ### Phase 243 — Verified-caller two-phase skill-package import (HA-61)
 
 - **Subsystem:** skills (package representation + importer), agent-config
-  Protocol service, StateStore proposal/cleanup records, Protocol/Console
+  Protocol service, commit-phase durable idempotency records, Protocol/Console
   lockstep, and the persistence triad.
 - **RFC:** §6.7, §6.10, §6.11, §5.2, §5.5, §9. **Deps:** 40, 202, 205, 209,
   221, 226, 232, 233, 233a, and 237.
 - **What it delivers:** D-422 — `agent_config.user.skills.import_validate`
   and `import_commit` install a reviewed complete `SKILL.md` package as a
   durable personal user skill. The production importer/validator is the one
-  validator; a versioned `PackageHash` binds the review; commit forces
-  `ScopeUser` + effective agent, materializes supporting files into the
-  durable package (never the staging session's artifacts), and converges
-  cross-process races through durable proposal CAS plus a mandatory
-  conditional target write. The installed package is addressed by immutable
+  validator; a versioned `PackageHash` binds the review. Validation is
+  STATELESS: it performs all reads/checks and ZERO writes — including zero
+  proposal-ledger writes — and returns a bounded opaque versioned sealed
+  proposal token (base64url of the shared-KEK-sealed claims: artifact
+  id/hash/size, package + content hashes, canonical name, review + warnings,
+  expected config hash, policy snapshot + hash, ceilings, schema/version,
+  exact actor triple + agent, issued/expiry). Commit reauthenticates,
+  re-resolves, and revalidates the token against every identity/reach/
+  retirement/artifact/importer/config/policy/ceiling/boot check before its
+  first mutation, forces `ScopeUser` + effective agent, materializes
+  supporting files into the durable package (never the staging session's
+  artifacts), and may begin durable idempotency state only in the commit
+  phase (a token-derived commit marker with absent-slot CAS plus one
+  mandatory conditional target write; response-loss retries load the
+  token-derived ledger and resume/replay; competing commits have one winner).
+  The installed package is addressed by immutable
   `skillpkg://<PackageHash>/<path>` references behind one mandatory
   authorized resolver.
 - **Ordering:** depends on the skill/store/config/authority foundations
   (40, 202, 205, 209, 221, 226, 232, 233, 233a, 237); gates Phase 244.
-- **Decision:** D-422. **Status:** Pending.
+- **Decision:** D-422. **Status:** Shipped (v1.28).
 
 ### Phase 244 — Draft-only personal-skill proposer tool (HA-62)
 
@@ -718,7 +738,7 @@ real two-client race under `-race`.
   exclusively Phase 243 validate/commit.
 - **Ordering:** depends on 243 (the only install path); independent of
   245–247.
-- **Decision:** D-423. **Status:** Pending.
+- **Decision:** D-423. **Status:** Shipped (v1.28).
 
 ### Phase 245 — Lifecycle-only session catalog and inspection projection (HA-63)
 
@@ -742,7 +762,7 @@ real two-client race under `-race`.
   honesty (163), erasure (130), the projection-completeness gate (177),
   body-scope (205), and signed agent reach (232); gates Phase 246's two-read
   chat open.
-- **Decision:** D-424. **Status:** Pending.
+- **Decision:** D-424. **Status:** Shipped (v1.28).
 
 ### Phase 246 — Durable tail-paged conversation turns (HA-64)
 
@@ -763,13 +783,25 @@ real two-client race under `-race`.
   method is not a v1.28 method or acceptance — if the Protocol response
   ceiling forces the exact attachment contract, a future named fallback is
   recorded as a deferred follow-up. Chat open is two reads (one 245
-  lifecycle read + one turn page). No generic projection framework,
+  lifecycle read + one turn page), then the snapshot-to-live handoff is
+  page-before-subscribe: the Console performs the lifecycle-only inspect
+  plus one `sessions.turns.list`, folds the durable page and establishes
+  bounded running/paused membership, then opens the EventSource with
+  `live_resume_seq` as the initial `resume_seq`; the server replays events
+  strictly newer than that snapshot through the existing bounded replay
+  source, and a browser reconnect `Last-Event-ID` takes precedence. One
+  terminal event causes one `sessions.turns.get`. A page retry clears stale
+  live membership but rebuilds it from freshly read authoritative
+  running/pending/paused rows even when their bubbles are already rendered;
+  it never duplicates bubbles/KPIs or re-admits a terminal row, and a
+  freshly read terminal durable row converges the existing bubble from that
+  row. No generic projection framework,
   warehouse, impersonation authority, operator analytics, live-cursor
   redesign, or overflow analytics ships.
 - **Ordering:** depends on 245 (the two-read chat open) plus the
   projection/erasure/authority foundations; the minimal Console chat-open
   consumer lands in the same wave.
-- **Decision:** D-425. **Status:** Pending.
+- **Decision:** D-425. **Status:** Shipped (v1.28).
 
 ### Phase 247 — Durable observability rollups (HA-65)
 
@@ -802,7 +834,7 @@ real two-client race under `-race`.
   observability foundation (120), erasure (130), retention horizons (163),
   aggregate parity (171), the session enricher seam (174), and body-scope
   (205); gates no later phase in this wave.
-- **Decision:** D-426. **Status:** Pending.
+- **Decision:** D-426. **Status:** Shipped (v1.28).
 
 ### Phase 248 — Boot-declared resource-free operator skill baseline (HA-66)
 
@@ -842,7 +874,12 @@ real two-client race under `-race`.
   (`boot|revision|both` source marker + `boot_pack_set_hash`); headless
   `RunOnce` explicitly unsupported and fail-loud when `boot_agent_packs` is
   configured; the
-  single prod/devstack loader path. Because D-414's preview is
+  single prod/devstack loader path. The shipped run path is the eager index
+  opened before readiness handed to the run-loop driver, an exact
+  `(tenant, effective-boot-agent)` run-start membership lookup that binds the
+  frozen boot entries into the snapshot, and the concrete resolver's strict
+  combined operator tier frozen into the run snapshot with the boot set hash,
+  the combined hash, and per-item `boot|revision|both` provenance. Because D-414's preview is
   absent/incomplete on the boot base,
   the phase delivers ONE shared strict effective-composition resolver +
   preview that
@@ -859,7 +896,7 @@ real two-client race under `-race`.
 - **Ordering:** depends on the config loader (2), the skills importer (40),
   signed agent reach (232), operator skill packs (237), and the composition
   preview (240); gates no later phase in this wave.
-- **Decision:** D-427. **Status:** Pending.
+- **Decision:** D-427. **Status:** Shipped (v1.28).
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 

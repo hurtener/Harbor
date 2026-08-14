@@ -44,7 +44,7 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
 - [ ] Mixed identity/agent-reach concurrent tests prove no cross-talk.
 - [ ] Compatibility transcripts cover supported metadata variants and rendered App behavior.
 
-## Governance amendment — corrected fresh render-admission contract (Pending v1.28)
+## Governance amendment — corrected fresh render-admission contract (Shipped v1.28)
 
 > This section is the authoritative correction to the render-admission half of
 > the shipped contract. It is a governance amendment only: **HA-56 stays phase
@@ -53,9 +53,16 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
 > verbatim. The amendment is recorded in D-412, RFC §6.10 (the callback and
 > tool-context contracts section), the master-plan detail block and index row,
 > the HA-56 register entry, the glossary, this plan, the operator skill, and
-> the config/example docs. Implementation lands in the v1.28 release wave under
-> the exclusive release-doc owner; this amendment owns only the governance
-> surfaces.
+> the config/example docs. The amendment's implementation ships in the v1.28
+> release wave: the sealed render-admission authority core
+> (`internal/mcpconsole/admission`), the wire surface
+> (`request_render_admission` opt-in on `mcp.servers.read_resource`, the
+> distinct `render_admission` field on `mcp.apps.call_tool`, the typed
+> unavailable/invalid/expired/mismatch codes), the current provider/catalog
+> generation binding, the serve-band readiness-loud composition
+> (`tools.mcp_app_render_admission.enabled` + `tools.oauth_token_kek_env`),
+> and the real Console embedded/reopened consumer (the distinct
+> admission-aware AppsAccessor path).
 
 **The corrected contract.**
 
@@ -111,7 +118,18 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
    remount an App through the fresh admission path using the real Console
    App host/bridge, not a unit-level stand-in; the live provider-local
    binding path is separately exercised for a live tool-result App and proven
-   bounded (expires with the live App) and never restored.
+   bounded (expires with the live App) and never restored. The exact reopen
+   order is binding: the durable App reference from the reopened session's
+   turn rows, a successful `mcp.apps.tool_context` replay (a failed /
+   unavailable / evicted / foreign replay mints no authority), the current
+   `ui://` read explicitly requesting one fresh admission
+   (`request_render_admission: true` — the only minting read; ordinary and
+   AppBridge-secondary resource reads never mint), the iframe/AppBridge
+   mount, and then same-server app-only callback dispatch through the
+   existing wrapped invocation (the distinct admission-aware AppsAccessor
+   path) echoing the fresh admission as the distinct `render_admission`
+   authority. The fresh admission is distinct from, never aliases, and never
+   coexists with the legacy live binding; neither is persisted or restored.
 2. **Negative admission cases each fail typed before render or dispatch, with
    zero callback executions:** wrong/missing identity, retired effective
    agent, erased session/agent, changed session/agent exposure, wrong server,
@@ -165,14 +183,19 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
 - `test/integration/mcp_app_callback_catalog_test.go`
 - `docs/glossary.md`, `RFC-001-Harbor.md`, `CHANGELOG.md`, `scripts/smoke/phase-238.sh`
 
-**Governance-amendment (v1.28) surfaces only** — this amendment changes no
-implementation, no Protocol generated output, no Console source, no
-`CHANGELOG.md`, and no HA-61–HA-66 phase plans/smokes. It touches: the D-412
+**Governance-amendment (v1.28) implementation surfaces.** The amendment was
+recorded on the governance surfaces first — the D-412
 decision entry, RFC §6.10, the master-plan detail block + index row
 (`docs/plans/README.md`), the HA-56 register entry
 (`docs/notes/downstream-asks.md`), this plan, the glossary, the focused
 `scripts/smoke/phase-238.sh`, the `drive-the-playground` operator skill, and
-the config/example docs (`docs/CONFIG.md`, `examples/harbor.yaml`).
+the config/example docs (`docs/CONFIG.md`, `examples/harbor.yaml`) — and the
+implementation landed in the same v1.28 wave: the sealed render-admission
+authority core, the additive wire surface (minted only by the explicit
+admission-requesting read), the current provider/catalog generation binding,
+the serve-band readiness-loud composition, and the real Console
+embedded/reopened consumer. HA-56 stays phase 238 / D-412 with no new phase,
+decision, or HA.
 
 ## Public API surface
 
@@ -226,4 +249,4 @@ the config/example docs (`docs/CONFIG.md`, `examples/harbor.yaml`).
 - [ ] Concurrent-reuse N≥100 under `-race`
 - [ ] Real-driver/spec-derived integration with failure mode under `-race`
 - [ ] Glossary updated
-- [ ] Amendment: the fresh render-admission contract — including the current provider/catalog-generation binding with its deterministic, replica-stable, fail-closed-mismatch semantics — is recorded on every governance surface (D-412, RFC §6.10, master plan, register, glossary, smoke, skill, config docs) before the v1.28 implementation wave lands
+- [ ] Amendment: the fresh render-admission contract — including the current provider/catalog-generation binding with its deterministic, replica-stable, fail-closed-mismatch semantics — is recorded on every governance surface (D-412, RFC §6.10, master plan, register, glossary, smoke, skill, config docs) and its implementation (sealed authority core, additive wire, generation binding, readiness-loud composition, real Console consumer) ships in the v1.28 wave

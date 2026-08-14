@@ -1001,7 +1001,7 @@ tools:
   #   display_modes: [inline, fullscreen, pip]
 
   # mcp_app_render_admission — (D-412 fresh render-admission amendment,
-  # Pending v1.28) the durable-reopen MCP App render-admission surface.
+  # Shipped v1.28) the durable-reopen MCP App render-admission surface.
   #
   #   enabled — default `false`; opt in to the fresh stateless,
   #   integrity-protected render admissions minted on embedded/durable reopen

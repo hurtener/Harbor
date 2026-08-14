@@ -28,29 +28,30 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-41 | App→host `tools/call` server-namespace confinement | web/console (MCP Apps host) | High (security) | Small | Shipped — phase 207 / D-351 (items 1–2); item 3 (`_meta.ui.visibility`) still Filed |
 | HA-42 | Progressive `tool-input-partial` streaming into a rendered App | internal/llm + internal/protocol + web/console | Low | Large | Deferred — reserved as D-343 |
 | HA-51 | Bifrost reasoning byte fidelity | internal/llm + planner + tasks + Console | Release blocker | Contained | Shipped (v1.26) — phase 233c / D-402 |
-| HA-54 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Shipped (v1.27) — phase 236 / D-410; planner-replay amendment Pending (v1.28) |
+| HA-54 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Shipped (v1.27) — phase 236 / D-410; planner-replay amendment Shipped (v1.28) |
 | HA-55 | Operator-managed per-agent skill packs across authenticated users | internal/skills + runtime/agentcfg + runtime/serve | High | Medium | Planned — phase 237 / D-411 |
-| HA-56 | Per-server MCP App callback catalog outside planner projection | internal/tools/drivers/mcp + internal/tools + internal/mcpconsole + protocol | High | Medium | Shipped (v1.27) — phase 238 / D-412; fresh render-admission amendment Pending (v1.28) |
+| HA-56 | Per-server MCP App callback catalog outside planner projection | internal/tools/drivers/mcp + internal/tools + internal/mcpconsole + protocol | High | Medium | Shipped (v1.27) — phase 238 / D-412; fresh render-admission amendment Shipped (v1.28) |
 | HA-57 | Finite same-run step-tranche receipts/resume of the original live run | runtime + tasks + protocol | High | Contained | Shipped — phase 239 / D-418 |
 | HA-58 | Governed read-only virtual child profiles derived from a parent | runtime + agentcfg + protocol | High | Medium | Shipped — phase 240 / D-419 |
 | HA-59 | Virtual-child execution artifacts and bounded output forwarding by reference | artifacts + tasks + runtime + protocol | Medium | Medium | Shipped — phase 241 / D-420 |
 | HA-60 | Durable identity-scoped task-progress projection | tasks + state + protocol | Medium | Contained | Shipped — phase 242 / D-421 |
-| HA-61 | Verified-caller two-phase `SKILL.md` package import into durable personal skills | skills + agentcfg protocol + state + protocol | High | Contained-to-medium | Planned — phase 243 / D-422 |
-| HA-62 | Draft-only personal-skill proposer as an ordinary runtime tool | skills + tools + agentcfg + artifacts | High | Contained | Planned — phase 244 / D-423 |
-| HA-63 | Lifecycle-only session catalog and inspection projection | sessions/protocol + protocol + console | High | Contained | Planned — phase 245 / D-424 |
-| HA-64 | Durable tail-paged conversation turns | turns projection + sessions/protocol + protocol + console | High | Large | Planned — phase 246 / D-425 |
-| HA-65 | Persistent queryable observability rollups without raw-event scans | observability rollup + events + sessions + protocol + console | High | Large | Planned — phase 247 / D-426 |
-| HA-66 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent | skills + config + runtime/serve + devstack | Medium | Contained | Planned — phase 248 / D-427 |
+| HA-61 | Verified-caller two-phase `SKILL.md` package import into durable personal skills | skills + agentcfg protocol + state + protocol | High | Contained-to-medium | Shipped (v1.28) — phase 243 / D-422 |
+| HA-62 | Draft-only personal-skill proposer as an ordinary runtime tool | skills + tools + agentcfg + artifacts | High | Contained | Shipped (v1.28) — phase 244 / D-423 |
+| HA-63 | Lifecycle-only session catalog and inspection projection | sessions/protocol + protocol + console | High | Contained | Shipped (v1.28) — phase 245 / D-424 |
+| HA-64 | Durable tail-paged conversation turns | turns projection + sessions/protocol + protocol + console | High | Large | Shipped (v1.28) — phase 246 / D-425 |
+| HA-65 | Persistent queryable observability rollups without raw-event scans | observability rollup + events + sessions + protocol + console | High | Large | Shipped (v1.28) — phase 247 / D-426 |
+| HA-66 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent | skills + config + runtime/serve + devstack | Medium | Contained | Shipped (v1.28) — phase 248 / D-427 |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
 is a separate MCP transport/reliability report; HA-55 is a separate runtime
 skills projection report; and HA-56 is a separate MCP App host/catalog
 report. HA-52 and HA-53 are already allocated in the shared register and are
-not available for Harbor-local filings. HA-54, HA-55, and HA-56 are now
-**Planned** in the v1.27 wave — phase 236 / D-410, phase 237 / D-411, and
-phase 238 / D-412 respectively (master-plan index rows and detail blocks
-carry the mapping). **HA-57 through HA-60 are Harbor-internal filings**,
+not available for Harbor-local filings. HA-54, HA-55, and HA-56 were filed
+as the v1.27 wave's registrations — phase 236 / D-410, phase 237 / D-411,
+and phase 238 / D-412 respectively (master-plan index rows and detail blocks
+carry the mapping), with HA-54's planner-replay amendment and HA-56's fresh
+render-admission amendment shipped in v1.28. **HA-57 through HA-60 are Harbor-internal filings**,
 raised by the wave's own reliability/verification review rather than by an
 outside consumer, and are shipped in the same wave (phase 239 / D-418,
 phase 240 / D-419, phase 241 / D-420, phase 242 / D-421). The entries are
@@ -60,9 +61,9 @@ the v1.28 filings** — personal-skill package import and draft authoring,
 chat-open latency (lifecycle-only session projection and durable tail-paged
 conversation turns), administrative observability (rebuildable rollup
 projection), and the boot-declared operator skill baseline — each
-**Planned** as phase 243 / D-422, phase 244 / D-423, phase 245 / D-424,
+**Shipped (v1.28)** as phase 243 / D-422, phase 244 / D-423, phase 245 / D-424,
 phase 246 / D-425, phase 247 / D-426, and phase 248 / D-427, and each
-**framework-framed**: they name Harbor-side surfaces that are absent or
+**framework-framed**: they name Harbor-side surfaces that were absent or
 read-shape-mismatched against the Protocol surface.
 
 ---
@@ -179,10 +180,10 @@ are available.
 **Priority:** High (host interoperability and least-privilege discovery).
 **Size:** medium (MCP discovery/catalog representation, App host dispatch
 surface, Protocol/transport parity, and integration fixtures).
-**State:** Shipped (v1.27) — phase 238 / D-412; the fresh render-admission governance amendment below is Pending (v1.28).
+**State:** Shipped (v1.27) — phase 238 / D-412; the fresh render-admission governance amendment below is Shipped (v1.28).
 
-**Governance amendment — corrected fresh render-admission contract (Pending (v1.28)).** A
-verification review corrected the render-admission half of the shipped
+**Governance amendment — corrected fresh render-admission contract (Shipped
+v1.28).** A verification review corrected the render-admission half of the shipped
 contract; the original app-only callback catalog history is preserved. A
 rendered MCP App has exactly two render paths: the LIVE path may use a
 bounded, short-lived, provider-local binding for a live tool-result App
@@ -198,7 +199,18 @@ descriptor configuration did not change (the existing exact registration
 descriptor fingerprint remains a retained input but is never alone
 sufficient authority; a process-local discovery counter is not acceptable,
 and a replica holding a different current catalog fails closed as a
-generation mismatch). Claims bind schema/time/triple/effective-agent/server/
+generation mismatch). The exact reopen order is: the durable App reference
+from the reopened session's turn rows, a successful `mcp.apps.tool_context`
+replay (a failed / unavailable / evicted / foreign replay mints no
+authority), the current `ui://` read explicitly requesting one fresh
+admission (`request_render_admission: true` — the only minting read;
+ordinary and AppBridge-secondary resource reads never mint), the
+iframe/AppBridge mount, and then same-server app-only callback dispatch
+through the existing wrapped invocation (the distinct admission-aware
+AppsAccessor path) echoing the fresh admission as the distinct
+`render_admission` authority. The fresh admission is distinct from, never
+aliases, and never coexists with the legacy live binding; neither is
+persisted or restored. Claims bind schema/time/triple/effective-agent/server/
 resource/current provider/catalog generation and carry no raw args, secrets,
 provider output, callback name, or general capability. Ordinary resource reads never mint;
 only the explicit admission-requesting read path does. Callbacks stay absent
@@ -207,7 +219,11 @@ same-server `ResolveAppTool` + existing approval/OAuth/policy/redaction/
 retry/audit. HA-64 rows retain metadata/component availability only, no
 token; `mcp.apps.tool_context` replay is unchanged and never reruns the
 originating tool. Typed unavailable/expired is explicit and refresh requires
-fresh checks. Production/devstack share one implementation and one immutable
+fresh checks. The surface is strictly opt-in — sealer availability alone
+never enables render admission, even when an OAuth broker already supplies
+the shared KEK — and every mint/verify reads the reach-admitted effective
+agent stamped in the request context, never a fixed boot/default fallback.
+Production/devstack share one implementation and one immutable
 shared sealer; the surface is enabled by
 `tools.mcp_app_render_admission.enabled` (default `false`) and seals with the
 existing `tools.oauth_token_kek_env` KEK — no second authority field; an
@@ -431,9 +447,10 @@ The two things it needs, per D-343 and confirmed in-tree:
 **Priority:** High (functional correctness and avoidable downstream load).
 **Size:** contained (typed transport contract plus policy/transport tests; no
 new tool protocol method).
-**State:** Shipped (v1.27) — phase 236 / D-410; the planner-replay governance amendment below is Pending (v1.28).
+**State:** Shipped (v1.27) — phase 236 / D-410; the planner-replay governance amendment below is Shipped (v1.28).
 
-**Governance amendment — confirmed planner-replay gap (Pending (v1.28)).** A verification
+**Governance amendment — confirmed planner-replay gap (Shipped
+v1.28).** A verification
 review confirmed that the classified outcome must survive the runloop's step
 recording and reach the actual next ReAct prompt: the typed class,
 retry-policy outcome, bounded provider message, and retained bounded MCP
@@ -646,7 +663,7 @@ projection.
 ## HA-61 — verified-caller `SKILL.md` package import needs a two-phase validate/commit path
 
 **Priority:** High (verified-caller skill authoring). **Size:** contained-to-medium.
-**State:** Planned — phase 243 / D-422 (framework-framed filing).
+**State:** Shipped (v1.28) — phase 243 / D-422 (framework-framed filing).
 
 **What the verified caller sees.** Harbor already ships `artifacts.put`, the
 path-safe `internal/skills/importer` pipeline, and the claim-free
@@ -669,16 +686,21 @@ ref plus the effective `agent_id` (neither tenant nor user is selectable
 authority), applies the ONE existing importer/validator with archive
 entry-count, expanded-byte, per-file and total-size ceilings and the path/
 type/compression-bomb rejections, and returns the closed normalized review
-plus bounded warnings and hashes — with zero user-skill mutation. Commit
-echoes the proposal and reviewed hashes, re-derives identity and effective
+plus bounded warnings and hashes — performing ZERO writes of any kind
+(no proposal-ledger write): the full reviewed state is sealed into a bounded
+opaque versioned proposal token. Commit
+echoes the sealed token and reviewed hashes, re-derives identity and effective
 Agent reach, rechecks policy and ceilings, re-resolves the exact immutable
 artifact, forces `ScopeUser`/caller ownership server-side, and atomically
-records the skill body plus membership; a moved revision, expired proposal,
+records the skill body plus membership in ONE conditional package write;
+a moved revision, expired token,
 changed package, unapproved replacement, lost reach, or policy revocation
-fails before visible mutation, and response-loss retry is idempotent by
-proposal id. Supporting files become caller-scoped artifact references
-through the existing artifact store; partial upload or membership failure
-must compensate or leave a durable resumable operation, never a visible skill
+fails before visible mutation, and response-loss retry is idempotent through
+a token-derived commit ledger (durable idempotency state begins only in the
+commit phase). Supporting files are copied into the durable package
+representation (addressed by immutable `skillpkg://` references), never
+dereferenced from the staging session's artifacts; a failed commit
+compensates through the exact receipt, never a visible skill
 pointing at missing content.
 
 **Required acceptance.**
@@ -707,7 +729,7 @@ implementation uses only its own interface and runtime vocabulary.
 ## HA-62 — draft-only personal-skill authoring needs an ordinary runtime tool
 
 **Priority:** High (skill authoring UX). **Size:** contained.
-**State:** Planned — phase 244 / D-423, depends on 243 (framework-framed
+**State:** Shipped (v1.28) — phase 244 / D-423, depends on 243 (framework-framed
 filing).
 
 **What the verified caller sees.** D-411's `agent_config.agent_packs.propose` is an
@@ -761,7 +783,7 @@ tool surface inside a verified run.
 ## HA-63 — session catalog and inspection need a lifecycle-only projection
 
 **Priority:** High (chat-open latency). **Size:** contained. **State:**
-Planned — phase 245 / D-424 (framework-framed filing). Linked dependency:
+Shipped (v1.28) — phase 245 / D-424 (framework-framed filing). Linked dependency:
 HA-64; both are required for the complete chat-open acceptance below.
 
 **What the verified caller sees.** Opening a chat catalog or resolving one known
@@ -812,7 +834,7 @@ full projection behavior remains compatible and explicitly selectable.
 ## HA-64 — durable tail-paged conversation turns are needed for chat open
 
 **Priority:** High (chat-open latency and replay correctness). **Size:** large.
-**State:** Planned — phase 246 / D-425 (framework-framed filing). Linked
+**State:** Shipped (v1.28) — phase 246 / D-425 (framework-framed filing). Linked
 dependency: HA-63.
 
 **What the verified caller sees.** Harbor has authoritative task rows/results and
@@ -868,9 +890,13 @@ sequence checkpoints, reconciles after interruption, survives restart on
 durable drivers, and is erased/fenced with its session. `complete`,
 `partial`, `rebuilding`, `retention_gap`, `evicted`, and `unavailable` are
 distinguishable, and a missing/stale projection never triggers an unbounded
-synchronous event rebuild during chat open. The list response's exclusive
-live cursor composes with `events.subscribe` for a gap-free page-to-live
-transition (subscribe-before-page with dedup by sequence and one
+synchronous event rebuild during chat open. The snapshot-to-live handoff is
+page-before-subscribe: the consumer folds the durable page and establishes
+bounded running/paused membership FIRST, then opens the EventSource with
+`live_resume_seq` as the initial `resume_seq`; the server replays events
+strictly newer than that snapshot through the existing bounded replay source,
+and a browser reconnect `Last-Event-ID` takes precedence (one terminal event
+causes one
 `sessions.turns.get` terminal reconciliation). Consumer versus operator is a
 hard boundary: the `conversation` projection returns query, answer/
 ref, consumer-safe reasoning/activity, own pause state, App refs, and compact
@@ -917,7 +943,7 @@ remain separate. No shadow transcript or summary store is introduced.
 ## HA-65 — administrative observability queries need a rebuildable rollup projection
 
 **Priority:** High (confirmed operational scalability gap). **Size:** large.
-**State:** Planned — phase 247 / D-426 (framework-framed filing).
+**State:** Shipped (v1.28) — phase 247 / D-426 (framework-framed filing).
 
 **What the verified caller sees.** An active session can exceed Harbor's bounded
 10,000-event session-counter scan. At that point `sessions.list` and
@@ -1019,7 +1045,7 @@ projection or remains an honest fallback.
 ## HA-66 — the resolved boot/default agent needs a boot-declared resource-free operator skill baseline
 
 **Priority:** Medium (operator deployment posture). **Size:** contained.
-**State:** Planned — phase 248 / D-427 (Harbor-internal filing).
+**State:** Shipped (v1.28) — phase 248 / D-427 (Harbor-internal filing).
 
 **What the operator sees.** Harbor's operator skill tier (D-411) is durable
 and per-agent, and D-414's composition preview reads that durable state. But
@@ -1064,7 +1090,13 @@ removes boot only on the next deployment; a legacy durable revision remains;
 in-flight snapshots retain captured bytes and hash. A deterministic set hash
 over the normalized baseline entries
 rides the run snapshot and the composition preview so an operator can verify
-exactly what the boot agent composes. Production and devstack use the single
+exactly what the boot agent composes. The shipped run path is: the eager
+immutable index opened before readiness is handed to the run-loop driver, an
+exact `(tenant, effective-boot-agent)` run-start membership lookup binds the
+frozen boot entries into the run snapshot, and the concrete resolver's
+strict combined operator tier is frozen into the snapshot with the boot set
+hash, the combined hash, and per-item `boot|revision|both` provenance.
+Production and devstack use the single
 loader path. Headless `RunOnce` is explicitly unsupported and fails loud when
 `boot_agent_packs` is configured. Because
 D-414's preview is absent/incomplete on this base, the phase delivers ONE

@@ -1048,12 +1048,16 @@ package as a durable personal user skill through a two-phase,
 identity-mandatory import family — `agent_config.user.skills.import_validate`
 and `agent_config.user.skills.import_commit` (D-422). A caller-owned
 `artifacts.put` output is bounded staging input; validation invokes the ONE
-existing importer/validator, performs zero durable skill or membership
-mutation, and returns an opaque proposal ID plus a bounded normalized review
-and hashes; commit re-derives identity and signed effective-agent reach,
+existing importer/validator, performs ZERO writes of any kind — no SkillStore
+body/package write, no agent-config membership write, and no StateStore
+proposal-ledger write — and returns a bounded opaque versioned sealed
+proposal token plus a bounded normalized review
+and hashes; commit re-authenticates and strictly decodes the token,
+re-derives identity and signed effective-agent reach,
 rechecks policy and ceilings, forces `ScopeUser`/owner and the effective
 `AgentID` server-side, and atomically materializes the approved package plus
-membership. The installed form is a **durable personal skill package** whose
+membership (durable idempotency state begins only in the commit phase, via a
+token-derived commit ledger and one conditional package write). The installed form is a **durable personal skill package** whose
 supporting files are copied into the package representation and addressed by
 immutable `skillpkg://<PackageHash>/<encoded-canonical-path>` references
 behind one mandatory authorized resolver — later sessions never dereference
@@ -1290,8 +1294,17 @@ when the verified caller satisfies the pause's resume/approval/control
 tier), and durable ordered MCP App references whose replacement identity is
 exactly `(effective_agent_id, server_id, resource_uri)`. The list response's
 exclusive live resume cursor composes with `events.subscribe` for a
-gap-free page-to-live transition (subscribe-before-page with dedup by
-sequence and one `sessions.turns.get` terminal reconciliation). Chat open is
+gap-free page-to-live transition under the settled page-before-subscribe
+handoff: the consumer folds the durable page and establishes bounded
+running/paused membership FIRST, then opens the stream with
+`live_resume_seq` as the initial `resume_seq`; the server replays events
+strictly newer than that snapshot through the existing bounded replay source,
+and a browser reconnect `Last-Event-ID` takes precedence (one terminal event
+causes one `sessions.turns.get` terminal reconciliation; a page retry clears
+stale live membership and rebuilds it from freshly read authoritative
+running/pending/paused rows without duplicating bubbles or re-admitting a
+terminal row, and a freshly read terminal durable row converges the existing
+bubble from that row). Chat open is
 two reads: one lifecycle read plus one turn-page read. The consumer
 `conversation` surface returns query, answer/ref, consumer-safe reasoning/
 activity, own pause state, App refs, and compact totals; it must never return
@@ -1313,7 +1326,7 @@ audit gates. Refresh, reconnect, replacement, and detach rebuild both views
 from one server snapshot.
 
 **Fresh render-admission contract (Settled — D-412 amendment; HA-56 stays
-phase 238 / D-412, Pending v1.28).** A rendered MCP App has exactly two
+phase 238 / D-412, Shipped v1.28).** A rendered MCP App has exactly two
 render paths. The LIVE path — the App mounted while the originating
 tool-result App is in-process — may use a bounded, short-lived,
 provider-local binding as a compatibility convenience; that binding is never
@@ -1330,12 +1343,26 @@ resource change even when deployment descriptor configuration did not
 change (the existing exact registration descriptor fingerprint remains a
 retained input but is never alone sufficient authority; a process-local
 discovery counter is not acceptable, and a replica holding a different
-current catalog fails closed as a generation mismatch). The admission claim
+current catalog fails closed as a generation mismatch). The exact reopen
+order is: the durable App reference from the reopened session's turn rows, a
+successful `mcp.apps.tool_context` replay (a failed / unavailable / evicted /
+foreign replay mints no authority), the current `ui://` read explicitly
+requesting one fresh admission (`request_render_admission: true` — the only
+minting read; ordinary and AppBridge-secondary resource reads never mint),
+the iframe/AppBridge mount, and then same-server app-only callback dispatch
+through the existing wrapped invocation echoing the fresh admission as the
+distinct `render_admission` authority. The fresh admission is distinct from,
+never aliases, and never coexists with the legacy live binding; neither is
+persisted or restored. The admission claim
 binds claim schema, mint time, the `(tenant, user, session)` triple,
 effective agent, server, resource, and current provider/catalog generation —
 and carries no raw tool arguments, secrets, provider output, callback name,
 or general capability. Ordinary resource reads never mint an admission; only
-the explicit admission-requesting read path does. The app-only callback
+the explicit admission-requesting read path does. The surface is STRICTLY
+opt-in — sealer availability alone never enables render admission, even when
+an OAuth broker already supplies the shared KEK — and every mint/verify reads
+the reach-admitted effective agent stamped in the request context, never a
+fixed boot/default fallback. The app-only callback
 stays absent from planner context, `tools.list`, search, and generic
 resolution, and dispatches only via the same-server `ResolveAppTool` path
 followed by the existing approval/OAuth/policy/redaction/retry/audit gates.

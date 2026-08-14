@@ -84,9 +84,13 @@ history.
 - No operator analytics surface: the `operations` admin/fleet projection is
   deliberately NOT built here; no transcript content is exposed to admin/fleet
   observation, and no content-read/impersonation authority is created.
-- No live-cursor redesign of `events.subscribe`: the page-to-live handoff
-  composes with the existing subscribe contract (subscribe-before-page with
-  dedup by sequence, or an accepted cursor), never a new streaming primitive.
+- No live-cursor redesign of `events.subscribe`: the page-to-live handoff is
+  page-before-subscribe — the consumer folds the durable turn page and
+  establishes bounded running/paused membership FIRST, then opens the
+  EventSource with the page's `live_resume_seq` as the initial `resume_seq`;
+  the server replays events strictly newer than that snapshot through the
+  existing bounded replay source, and a browser reconnect `Last-Event-ID`
+  takes precedence. Never a new streaming primitive.
 - No overflow analytics: no unbounded overflow store, no per-request
   unbounded aggregation; the compact totals carry a declared cardinality cap
   plus an overflow bucket.
@@ -198,10 +202,18 @@ history.
       applied. `complete`, `partial`, `rebuilding`, `retention_gap`,
       `evicted`, and `unavailable` are distinguishable; a missing/stale
       projection never triggers an unbounded synchronous event rebuild during
-      chat open. The list response's exclusive live cursor composes with
-      `events.subscribe` for a gap-free page-to-live transition
-      (subscribe-before-page with dedup by sequence, and one `sessions.turns.get`
-      terminal reconciliation, per the settled contract).
+      chat open. The snapshot-to-live handoff is page-before-subscribe: the
+      list response's exclusive `live_resume_seq` becomes the initial
+      `resume_seq` of the EventSource opened AFTER the durable page is folded
+      and bounded running/paused membership is established; the server replays
+      events strictly newer than that snapshot through the existing bounded
+      replay source, and a browser reconnect `Last-Event-ID` takes precedence
+      (one terminal event causes one `sessions.turns.get`
+      terminal reconciliation; a page retry clears stale live membership but
+      rebuilds it from freshly read authoritative running/pending/paused rows
+      without duplicating bubbles/KPIs or re-admitting a terminal row, and a
+      freshly read terminal durable row converges the existing bubble from
+      that row).
 - [ ] Two-read chat open: once the owning runtime is selected, a persisted
       session with more than 100,000 events, at least 10,000 turns, and one
       turn with more than 100 tool calls reopens its latest 20 turns —
@@ -290,8 +302,12 @@ history.
   lifecycle read + one turn-page read; restart and reopen parity
   (renderable skeletons, answers, Activity, usage, terminal cause, App refs
   identical before/after); forced applier failure, retention gap, eviction,
-  and rebuilding states; cross-identity non-oracular denial; page-to-live
-  handoff with `events.subscribe` (subscribe-before-page + dedup + one
+  and rebuilding states; cross-identity non-oracular denial; the
+  page-before-subscribe snapshot-to-live handoff with `events.subscribe`
+  (fold the durable page, establish bounded membership, open the stream with
+  `live_resume_seq` as the initial `resume_seq`; the server replays events
+  strictly newer than the snapshot; reconnect `Last-Event-ID` takes
+  precedence; one terminal event triggers one
   `sessions.turns.get`); N>=100 concurrent mixed identities under `-race`;
   erasure removes the projection and rebuild does not resurrect it.
 - **Conformance:** every registered projection/state driver passes the turn
@@ -334,8 +350,11 @@ history.
   drivers can index and page consistently; the keyset anchor needs an
   immutable per-turn tie-breaker that survives re-open and erasure fences.
 - Incremental application and live streaming compose at the boundary; the
-  exact subscribe-before-page vs accepted-cursor contract must be pinned
-  against the shipped `events.subscribe` before implementation.
+  page-before-subscribe snapshot-to-live handoff (fold the durable page and
+  establish bounded membership BEFORE opening the stream, `live_resume_seq`
+  as the initial `resume_seq`, server replay of events strictly newer than
+  the snapshot, reconnect `Last-Event-ID` precedence) must be pinned against
+  the shipped `events.subscribe` before implementation.
 - Terminal sealing requires all source authorities (task result, events,
   App-context) to have converged; the seal rule and the rebuilding state must
   be explicit so a partially-applied turn is never presented as complete.

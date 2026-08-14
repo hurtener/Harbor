@@ -4,7 +4,7 @@
 
 Define Harbor's transport-neutral typed MCP error contract. Permanent errors stop the unchanged call after one invocation; retryable service errors retain the configured retry budget.
 
-Governance amendment (HA-54 planner-replay gap; Pending (v1.28)): the classified outcome must survive the runloop's step recording and appear in the actual next ReAct prompt; a generic step error never masks the classified observation.
+Governance amendment (HA-54 planner-replay gap; Shipped (v1.28)): the classified outcome must survive the runloop's step recording and appear in the actual next ReAct prompt; a generic step error never masks the classified observation.
 
 ## RFC anchor
 
@@ -60,7 +60,7 @@ Governance amendment (HA-54 planner-replay gap; Pending (v1.28)): the classified
 - `docs/glossary.md`, `RFC-001-Harbor.md`, `CHANGELOG.md`
 - `scripts/smoke/phase-236.sh`
 
-Governance amendment (HA-54 planner-replay gap; Pending (v1.28)) — file/test ownership:
+Governance amendment (HA-54 planner-replay gap; Shipped (v1.28)) — file/test ownership:
 
 - `internal/runtime/steering/runloop.go` — step recording MUST preserve the
   classified observation; a generic `Step.Error` must never mask it.

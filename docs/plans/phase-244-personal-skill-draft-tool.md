@@ -158,8 +158,9 @@ durable skill, configuration, membership, or publication authority.
   validation / deterministic serialization / `PackageHash` adapter only
 - `internal/skills/authoring/` reusable safety-wrapped LLM adapter/prompt/
   decoder factored from governed authoring without carrying persistence
-- `internal/runtime/agentcfg/protocol/` keeps the distinct D-411 and D-422
-  durable proposal ledgers and consumes the factored LLM adapter where needed
+- `internal/runtime/agentcfg/protocol/` keeps the distinct D-411 operator-pack
+  proposal ledger and the D-422 commit-phase token-derived ledger and consumes
+  the factored LLM adapter where needed
 - `internal/skills/tools/` draft tool registration, schema, and tests
 - `internal/skills/` Phase 243 package validation/serialization surface
 - `internal/tools/` only where standard builtin registration/config requires it
@@ -180,7 +181,8 @@ durable skill, configuration, membership, or publication authority.
 - Shared canonical semantic skill DTO, validation, deterministic serializer,
   and versioned `PackageHash` consumed by structured `skill_propose`, governed
   authoring, Phase 243 import, and this tool. LLM adapters/prompts/decoders and
-  the D-411/D-422 durable proposal ledgers remain separate.
+  the D-411 operator-pack proposal ledger / D-422 commit-phase token-derived
+  ledger remain separate.
 - One additive per-agent configuration flag/policy entry using the existing
   tool enablement mechanism; default is disabled.
 

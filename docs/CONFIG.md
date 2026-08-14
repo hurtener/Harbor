@@ -1639,7 +1639,7 @@ fullscreen-tab and side-by-side (pip) layouts.
 
 Default: nil (resolves to `[inline]`). Restart-required.
 
-**Fresh render-admission consequence (D-412 amendment, Pending v1.28).** The
+**Fresh render-admission consequence (D-412 amendment, Shipped v1.28).** The
 durable-reopen MCP App admission surface mints stateless,
 integrity-protected render admissions sealed with the deployment's existing
 shared KEK authority — the `tools.oauth_token_kek_env`-backed AES-256-GCM
