@@ -159,10 +159,11 @@ type Page struct {
 	// LiveResumeSeq is the durable event-log sequence of the newest
 	// observation reflected in this page — the maximum LastAppliedEventSeq
 	// across the page's rows (0 when no row recorded one). It is
-	// enough live-resume sequence to compose subscribe-before-page: a
-	// consumer pages the NEWEST page, then subscribes to the session's
-	// event stream from LiveResumeSeq+1 and processes events from
-	// there — nothing the page reflects is re-processed, and nothing
-	// applied after the read is missed.
+	// the exclusive live-resume cursor for the page-before-subscribe
+	// handoff: the consumer folds the NEWEST page (establishing bounded
+	// membership) first, then subscribes from live_resume_seq; the
+	// server replays events strictly newer than the snapshot — nothing
+	// the page reflects is re-processed, and nothing applied after the
+	// read is missed.
 	LiveResumeSeq uint64
 }

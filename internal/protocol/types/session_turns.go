@@ -101,9 +101,11 @@ type SessionTurnsListResponse struct {
 	CountExact bool `json:"count_exact"`
 	// LiveResumeSeq is the durable event-log sequence of the newest
 	// observation reflected in this page — the exclusive live-resume
-	// cursor. A consumer subscribes to the session's event stream from
-	// LiveResumeSeq+1 (subscribe-before-page) for a gap-free
-	// page-to-live handoff.
+	// cursor. The snapshot-to-live handoff is page-before-subscribe: a
+	// consumer folds the durable page (establishing bounded running/
+	// paused membership) first, then subscribes from live_resume_seq;
+	// the server replays events strictly newer than the snapshot, and a
+	// browser reconnect Last-Event-ID takes precedence.
 	LiveResumeSeq uint64 `json:"live_resume_seq"`
 	// PageCompleteness is the explicit page completeness: "complete", or
 	// "partial" (retention eviction — older turns exist in the durable

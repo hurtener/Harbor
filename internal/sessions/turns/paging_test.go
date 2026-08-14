@@ -230,8 +230,8 @@ func TestList_LimitBounds_AndPublicDefaults(t *testing.T) {
 
 // TestList_PageSnapshotAndLiveResumeSurface pins the Page's snapshot
 // as-of / remaining / completeness / live-resume surface: the fields a
-// consumer composes subscribe-before-page with and a Protocol layer
-// maps onto its wire page shape.
+// consumer folds the durable page (page-before-subscribe) with and a
+// Protocol layer maps onto its wire page shape.
 func TestList_PageSnapshotAndLiveResumeSurface(t *testing.T) {
 	p, _ := newTestProjector(t, 0, false)
 	id := tripleA()
@@ -271,7 +271,9 @@ func TestList_PageSnapshotAndLiveResumeSurface(t *testing.T) {
 		t.Errorf("Complete=%v PartialReason=%q, want true/empty", page.Complete, page.PartialReason)
 	}
 	// Live-resume sequence: the newest row's applied event sequence —
-	// enough to subscribe-before-page from LiveResumeSeq+1.
+	// the live-resume cursor the consumer subscribes from after folding
+	// the durable page; the server replays only events strictly newer
+	// than the snapshot.
 	if page.LiveResumeSeq != 7 {
 		t.Errorf("LiveResumeSeq=%d, want 7 (the newest row's applied event sequence)", page.LiveResumeSeq)
 	}

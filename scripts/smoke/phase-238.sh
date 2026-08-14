@@ -69,7 +69,7 @@ assert_grep_present "no new HA, phase, or decision" \
 assert_grep_present "corrected fresh render-admission contract" \
     docs/decisions.md \
     "amendment: D-412 amendment record exists"
-assert_grep_present "fresh render-admission amendment (Shipped v1.28)" \
+assert_grep_present "fresh render-admission amendment \(Shipped v1\.28\)" \
     docs/decisions.md \
     "amendment: D-412 amendment is marked Shipped v1.28"
 assert_grep_present "no transcript impersonation" \

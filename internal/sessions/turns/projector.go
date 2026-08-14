@@ -658,7 +658,10 @@ func (p *Projector) AttachAppRefs(ctx context.Context, id identity.Identity, tur
 // as-of (AsOf / Snapshot), the next older cursor, HasMore, the exact
 // older-row Remaining when the store knows it (CountExact), the
 // explicit completeness / partial reason, and the live-resume sequence
-// (LiveResumeSeq) a consumer composes subscribe-before-page with.
+// (LiveResumeSeq) for the page-before-subscribe handoff: the consumer
+// folds the durable page (establishing bounded membership) first,
+// then subscribes from live_resume_seq, and the server replays
+// events strictly newer than the snapshot.
 // Foreign-session / stale-snapshot / expired cursors are rejected by
 // the store with their distinct domain errors.
 func (p *Projector) List(ctx context.Context, id identity.Identity, opts ListOptions) (Page, error) {
