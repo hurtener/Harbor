@@ -170,6 +170,24 @@ Validation: non-empty.
 
 ---
 
+## Observability
+
+### observability.rollups.driver
+
+Driver for the durable observability rollup projection. Default:
+empty — the `observability.rollups.*` block is left unwired (the
+rollup query/projector is not built). Validation: when set, `inmem` /
+`sqlite` / `postgres`. Restart-required.
+
+### observability.rollups.dsn
+
+Driver connection string for the rollup projection. Default: empty.
+Validation: required when `driver` is `sqlite` or `postgres`; unused
+for `inmem`. SQLite: file path. Postgres: libpq URL. Secret: redacted
+in audit logs. Restart-required.
+
+---
+
 ## State
 
 ### state.driver
@@ -840,6 +858,26 @@ Validation: > 0.
 
 Background sweeper period. Default: `15m`. Validation: > 0 AND <=
 `idle_ttl`.
+
+### sessions.turns.driver
+
+Driver for the durable conversation-turn projection. Default: empty —
+the `sessions.turns.*` block is left unwired (the projection is not
+built). Validation: when set, `inmem` / `sqlite` / `postgres`.
+Restart-required.
+
+### sessions.turns.dsn
+
+Driver connection string for the conversation-turn projection.
+Default: empty. Validation: required when `driver` is `sqlite` or
+`postgres`; unused for `inmem`. SQLite: file path. Postgres: libpq
+URL. Secret: redacted in audit logs. Restart-required.
+
+### sessions.turns.retention
+
+Number of newest-turn rows the projection retains per session.
+Default: `0` — zero or negative selects the projection's documented
+default. Restart-required.
 
 ---
 
@@ -1635,6 +1673,29 @@ tools:
     enabled: true   # default false; when enabled, tools.oauth_token_kek_env
                     # must name a valid 32-byte hex KEK or readiness fails loud
 ```
+
+### tools.mcp_app_render_admission.enabled
+
+Opt-in toggle for the MCP App render-admission surface. Default:
+`false` (the surface is off; existing deployments are unaffected).
+Restart-required.
+
+When `true`, the runtime mints stateless, integrity-protected render
+admissions sealed with the deployment's EXISTING shared
+`tools.oauth_token_kek_env` AES-256-GCM key-encryption authority — the
+same sealer the OAuth token path already uses. There is no second
+secret or config key.
+
+Enabling the surface makes readiness fail LOUD — naming the problem —
+when `tools.oauth_token_kek_env` names an empty env var, when the KEK
+is missing, unset, or invalid, or when the sealer cannot be
+constructed, even when no OAuth provider or credential broker is
+configured.
+
+Only the explicit current `ui://` admission-requesting read, after a
+successful identity-scoped tool-context replay, mints an admission.
+Ordinary resource reads never mint; AppBridge secondary reads and
+failed / unavailable / foreign replays mint no authority.
 
 ### tools.mcp_artifact_egress_max_bytes
 
