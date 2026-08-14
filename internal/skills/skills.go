@@ -36,6 +36,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 )
 
 // Origin is the provenance of a skill — the pack import path or the
@@ -359,6 +360,110 @@ type SkillStore interface {
 	// interrupted cascade can retry to convergence without widening identity.
 	DeleteSessionScope(ctx context.Context, id identity.Quadruple) error
 
+	// ---- Complete installed-package contract ----
+	//
+	// Every method below is MANDATORY on every SkillStore — package
+	// persistence is never optional and there is no `Supports*` capability
+	// ceremony (AGENTS.md §4.4). The five methods form one contract for the
+	// durable installed form of a complete skill package, keyed at the
+	// session-zeroed `(tenant, user, effective-agent, name)` target:
+	//
+	//   - Identity is mandatory exactly as on the rest of the surface: the
+	//     full `(tenant, user, session)` triple is validated at the boundary
+	//     (empty component → wrapped `ErrIdentityRequired` + the existing
+	//     `skill.identity_rejected` emit when the driver has a bus), then the
+	//     STORED session component is zeroed (`UserScopeStorageSession`) —
+	//     installed packages ride the durable ScopeUser rung, so every
+	//     session of the same (tenant, user) resolves the same package.
+	//   - The stored atomic unit (`InstalledPackage`) is self-contained:
+	//     canonical semantic skill + versioned `PackageHash` + ordered
+	//     normalized support manifest with bounded immutable support bytes.
+	//     Source/staging artifacts are never a dependency of any read.
+	//   - Each mutation is ONE transaction per package: a reader never sees
+	//     the skill body without every support byte and never sees a partial
+	//     replacement; a failed conditional write leaves no partial state.
+	//   - All values are deep-copied at the store boundary: mutating an
+	//     argument or a returned unit never mutates store state (the
+	//     concurrent-reuse contract).
+
+	// GetInstalledPackage returns the atomic installed package at the
+	// session-zeroed `(tenant, user, effective-agent, name)` key: the
+	// canonical stored skill, the versioned `PackageHash`, and the ordered
+	// support manifest with its bounded immutable support bytes. Missing →
+	// `ErrInstalledPackageNotFound`. The returned value is a deep copy.
+	GetInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string) (InstalledPackage, error)
+
+	// ResolveSupport resolves ONE support file of the installed package at
+	// the session-zeroed `(tenant, user, effective-agent, name)` key by its
+	// exact immutable reference `skillpkg://<PackageHash>/<encoded-canonical-
+	// support-path>`. The URI's hash MUST equal the installed package's
+	// `PackageHash` and its canonical path MUST name a manifest entry; a
+	// foreign-hash or dangling-path URI fails with `ErrSupportNotFound`
+	// (never resolved against a different package, never guessed). The
+	// returned entry carries the bounded immutable support bytes; the value
+	// is a deep copy.
+	ResolveSupport(ctx context.Context, id identity.Quadruple, agentID, name string, uri PackageURI) (SupportFile, error)
+
+	// PutInstalledPackage conditionally installs or replaces the atomic
+	// package at the session-zeroed `(tenant, user, effective-agent, name)`
+	// key — the durable user-scope installed-package target. The caller's
+	// triple is validated in full first; the stored session component is
+	// ALWAYS zeroed (the ScopeUser rung), and `agentID` (the effective
+	// agent — selection metadata, never an isolation principal) MUST equal
+	// `pkg.Skill.AgentID`. Neither tenant, user, nor scope is selectable
+	// from package metadata or request fields; `pkg.Skill.Scope` MUST be
+	// ScopeUser.
+	//
+	// The write is CONDITIONAL (`cond` — the exact prior-state predicate):
+	// `cond.ExpectedAbsent` requires the key to have no winner
+	// (present winner → `ErrInstalledPackageExists`); a non-absent
+	// condition requires the winner to match `ExpectedHash` exactly and
+	// (when non-empty) `ExpectedVersion` (mismatch or absent winner →
+	// `ErrInstalledPackageConditionFailed`). A matched condition against a
+	// present winner requires `replace == true` explicitly
+	// (`ErrInstalledPackageReplaceRequired` otherwise) and then the
+	// origin-precedence gate applies: generated input never overwrites an
+	// `OriginPack` winner (`ErrPackOverwriteRefused` — the existing pack
+	// protection, reused), while pack input replaces generated or pack only
+	// when explicit replace is requested. Refused pairs leave the exact
+	// prior winner untouched.
+	//
+	// Idempotent exact replay: when the current winner's PackageHash equals
+	// the incoming package's PackageHash, the put is a no-op success (a
+	// response-loss retry converges on the same terminal state) and the
+	// returned receipt names the installed version as written.
+	//
+	// A successful write returns an exact `InstalledPackageReceipt`
+	// sufficient for exact conditional compensation: `DeleteInstalledPackage`
+	// and `RestoreInstalledPackage` bind to the receipt's `WrittenHash`, so
+	// compensation restores or deletes ONLY the version this receipt wrote,
+	// never another proposal's winner.
+	PutInstalledPackage(ctx context.Context, id identity.Quadruple, agentID string, pkg InstalledPackage, cond InstalledPackageCondition, replace bool) (InstalledPackageReceipt, error)
+
+	// DeleteInstalledPackage is the exact conditional-delete compensation
+	// primitive: it deletes the atomic installed package ONLY when the
+	// receipt's written version is still the winner. Returns (true, nil)
+	// when the receipt's version was current and has been deleted;
+	// (false, nil) when the winner is a DIFFERENT version or the key is
+	// absent — a receipt NEVER deletes another proposal's winner, and an
+	// already-compensated receipt is a normal concurrent-state outcome.
+	// Receipt/key/identity mismatches fail loudly.
+	DeleteInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string, receipt InstalledPackageReceipt) (bool, error)
+
+	// RestoreInstalledPackage is the exact conditional-restore compensation
+	// primitive: it restores `prior` over the current winner ONLY when the
+	// receipt's written version is still the winner. Returns (true, nil)
+	// when the receipt's version was current and has been replaced by
+	// `prior`; (false, nil) when the winner is a DIFFERENT version or the
+	// key is absent — a receipt NEVER replaces another proposal's winner.
+	// `prior` is the exact package the receipt's write displaced (the
+	// durable proposal plan holds it; the store validated it as the winner
+	// before the write). The restore is exact-receipt compensation: it does
+	// NOT re-apply the origin-precedence gate, because it can only ever
+	// replace the version the receipt itself wrote. Receipt/key/identity
+	// mismatches and an invalid `prior` fail loudly.
+	RestoreInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string, receipt InstalledPackageReceipt, prior InstalledPackage) (bool, error)
+
 	// Close releases the driver's resources. Subsequent method
 	// calls return `ErrStoreClosed`. Close is idempotent.
 	Close(ctx context.Context) error
@@ -367,6 +472,111 @@ type SkillStore interface {
 // AgentSelectableSkillStore is retained as a source-compatible alias. Agent
 // selection is mandatory on SkillStore; it is not an optional capability.
 type AgentSelectableSkillStore = SkillStore
+
+// InstalledPackage is the atomic durable unit of the complete
+// installed-package contract: the canonical semantic skill PLUS the
+// versioned `PackageHash` PLUS the ordered normalized support manifest
+// with bounded immutable support bytes. It is what
+// `PutInstalledPackage` commits and `GetInstalledPackage` returns.
+//
+// A committed package is self-contained: the installed form
+// COPIES the reviewed supporting-file content into durable package
+// storage, so later sessions never dereference the source/staging
+// artifacts the package was validated from. Source and staging
+// artifacts are provenance only — they are not dependencies of any
+// read on this unit.
+//
+// Field invariants (enforced by `ValidateInstalledPackage` and
+// re-checked at every store boundary):
+//
+//   - `Skill` is the stored semantic skill: `Origin` ∈ {pack, generated},
+//     `Scope` MUST be ScopeUser (the contract forces the durable
+//     user-scope rung — no selectable scope), `AgentID` is the effective
+//     agent (selection metadata, never an isolation principal) and is
+//     bound to the target key by the put, and `ContentHash` is the
+//     canonical stored-row content hash of the skill as stored.
+//   - `Package` is the canonical complete package DTO: `Package.Skill`
+//     is the logical (pre-materialization) content and `Supports` is
+//     the ordered manifest; every manifest entry carries its bounded
+//     immutable support bytes in the installed form (nil `Data` is
+//     rejected — a manifest without bytes would force a later read to
+//     dereference staging).
+//   - `PackageHash` is the versioned content identity of `Package`
+//     ("v1:<64-hex>"): the replacement precondition, the receipt
+//     identity, and the `skillpkg://` authority of every support URI
+//     the stored body materializes.
+type InstalledPackage struct {
+	// Skill is the canonical stored semantic skill.
+	Skill Skill
+	// Package is the canonical complete package (logical content +
+	// ordered support manifest with bounded immutable bytes).
+	Package Package
+	// PackageHash is the versioned content hash of Package ("v1:<64-hex>").
+	PackageHash string
+}
+
+// InstalledPackageCondition is the exact prior-state predicate of a
+// conditional package put — the conditional-save analogue on the
+// durable package target key. EXACTLY ONE of the absent / hash forms
+// is valid:
+//
+//   - `ExpectedAbsent == true`: the target key must have no installed
+//     package. `ExpectedHash` / `ExpectedVersion` MUST be empty.
+//   - `ExpectedAbsent == false`: `ExpectedHash` MUST be a versioned
+//     PackageHash the current winner must match exactly.
+//     `ExpectedVersion`, when non-empty, is an additional exact
+//     constraint on the winner's package Version.
+//
+// The condition is what makes the package write a compare-and-swap: a
+// winner that does not match the predicate is never touched and the
+// put fails with `ErrInstalledPackageConditionFailed` (or
+// `ErrInstalledPackageExists` when `ExpectedAbsent` is set and a
+// winner is present). An invalid condition fails closed with
+// `ErrInstalledPackageInvalid` before any store state is read.
+type InstalledPackageCondition struct {
+	// ExpectedAbsent requires the target key to have no installed package.
+	ExpectedAbsent bool
+	// ExpectedHash is the versioned PackageHash the current winner MUST
+	// have (required when ExpectedAbsent is false).
+	ExpectedHash string
+	// ExpectedVersion is the package Version the current winner MUST have;
+	// empty matches any version.
+	ExpectedVersion string
+}
+
+// InstalledPackageReceipt is the exact, replayable record of ONE
+// successful conditional package write. It names the exact target key
+// (`TenantID` / `UserID` / `AgentID` / `Name`), the exact version
+// written (`WrittenHash` / `WrittenVersion`), and the prior winner the
+// write displaced (`PriorHash` / `PriorVersion` — empty when the key
+// was absent before the write).
+//
+// It is sufficient for exact conditional compensation:
+// `DeleteInstalledPackage` and `RestoreInstalledPackage` bind to
+// `WrittenHash`, so a compensation restores or deletes ONLY the
+// version this receipt wrote and NEVER another proposal's winner (a
+// receipt whose version is no longer current is a no-op, never a
+// mutation). `PriorHash` / `PriorVersion` are the store's observed
+// prior state, which the durable proposal plan reconciles against.
+type InstalledPackageReceipt struct {
+	// TenantID / UserID pin the receipt to the exact owner triple
+	// (user-scope rung; the stored session is always zeroed).
+	TenantID string
+	UserID   string
+	// AgentID is the effective agent of the target key.
+	AgentID string
+	// Name is the canonical package / skill name of the target key.
+	Name string
+	// WrittenHash is the versioned PackageHash this receipt wrote.
+	WrittenHash string
+	// WrittenVersion is the package Version this receipt wrote.
+	WrittenVersion string
+	// PriorHash is the prior winner's PackageHash ("" when absent before
+	// the write).
+	PriorHash string
+	// PriorVersion is the prior winner's package Version ("" when absent).
+	PriorVersion string
+}
 
 // Sentinel errors. Compare via `errors.Is`.
 var (
@@ -388,6 +598,28 @@ var (
 	// least one empty `(tenant, user, session)` component. The
 	// store also emits `skill.identity_rejected` on the bus.
 	ErrIdentityRequired = errors.New("skills: identity triple incomplete")
+	// ErrInstalledPackageNotFound — GetInstalledPackage /
+	// ResolveSupport / conditional compensation observed an absent
+	// installed-package target key.
+	ErrInstalledPackageNotFound = errors.New("skills: installed package not found")
+	// ErrInstalledPackageExists — a conditional put with
+	// `ExpectedAbsent` observed a present winner.
+	ErrInstalledPackageExists = errors.New("skills: installed package already exists")
+	// ErrInstalledPackageConditionFailed — the current winner does
+	// not match the condition's expected prior hash/version (or a
+	// non-absent condition found no winner). No write was applied.
+	ErrInstalledPackageConditionFailed = errors.New("skills: installed package condition failed")
+	// ErrInstalledPackageReplaceRequired — the condition matched a
+	// present winner but the put did not explicitly request replace.
+	ErrInstalledPackageReplaceRequired = errors.New("skills: installed package replacement not explicitly requested")
+	// ErrInstalledPackageInvalid — the atomic unit, condition, or
+	// receipt failed closed-shape validation (or the effective-agent /
+	// scope / key binding was inconsistent).
+	ErrInstalledPackageInvalid = errors.New("skills: invalid installed package")
+	// ErrSupportNotFound — resolve-by-URI failed: the URI's hash is
+	// foreign to the installed package or its canonical path is
+	// dangling (not in the manifest).
+	ErrSupportNotFound = errors.New("skills: support file not found")
 )
 
 // ConfigSnapshot is the strict subset of `config.SkillsConfig` the
@@ -551,6 +783,102 @@ func registeredNames() string {
 func ValidateIdentity(q identity.Quadruple) error {
 	if err := identity.Validate(q.Identity); err != nil {
 		return fmt.Errorf("%w: %w", ErrIdentityRequired, err)
+	}
+	return nil
+}
+
+// ValidateInstalledPackageCondition validates the closed shape of a
+// conditional package-put predicate: exactly one of the absent / hash
+// forms is set, and a non-empty ExpectedHash is a structurally valid
+// versioned PackageHash. An invalid condition is a caller bug and
+// fails closed with `ErrInstalledPackageInvalid` before any store
+// state is read.
+func ValidateInstalledPackageCondition(cond InstalledPackageCondition) error {
+	switch {
+	case cond.ExpectedAbsent && (cond.ExpectedHash != "" || cond.ExpectedVersion != ""):
+		return fmt.Errorf("%w: ExpectedAbsent is mutually exclusive with ExpectedHash/ExpectedVersion", ErrInstalledPackageInvalid)
+	case !cond.ExpectedAbsent && cond.ExpectedHash == "":
+		return fmt.Errorf("%w: a non-absent condition requires ExpectedHash (the versioned PackageHash the winner must match)", ErrInstalledPackageInvalid)
+	}
+	if cond.ExpectedHash != "" {
+		if _, ok := skillpkg.HashVersion(cond.ExpectedHash); !ok {
+			return fmt.Errorf("%w: ExpectedHash %q is not a versioned PackageHash", ErrInstalledPackageInvalid, cond.ExpectedHash)
+		}
+	}
+	return nil
+}
+
+// ValidateInstalledPackage validates the closed shape of the atomic
+// installed-package unit. Drivers call this at the boundary so a
+// caller's bad payload surfaces at `PutInstalledPackage` /
+// `RestoreInstalledPackage` rather than later via a corrupt row.
+//
+// Checks, all fail-loud:
+//
+//   - `Skill.Validate()` — canonical stored skill (mandatory name /
+//     trigger / steps, origin ∈ {pack, generated}, valid scope);
+//   - `Package.Validate()` — canonical complete package (closed shape,
+//     ordered manifest, per-entry bounds, MIME allowlist);
+//   - `Skill.Scope` is ScopeUser — the contract FORCES the durable
+//     user-scope rung; no other scope is representable;
+//   - `Skill.Name` equals `Package.Name` — the target-key name is a
+//     single identity shared by the row and the package envelope;
+//   - `PackageHash` equals the versioned content hash of `Package`
+//     (`ErrHashMismatch` when the caller's hash lies about the bytes);
+//   - `Skill.ContentHash` equals `CanonicalContentHash(Skill)` — the
+//     canonical semantic skill is self-consistent;
+//   - every manifest entry carries its bounded immutable support bytes
+//     (a nil `Data` is rejected — the installed form must never
+//     dereference staging).
+func ValidateInstalledPackage(pkg InstalledPackage) error {
+	if err := pkg.Skill.Validate(); err != nil {
+		return fmt.Errorf("%w: skill: %w", ErrInstalledPackageInvalid, err)
+	}
+	if err := pkg.Package.Validate(); err != nil {
+		return fmt.Errorf("%w: package: %w", ErrInstalledPackageInvalid, err)
+	}
+	if pkg.Skill.Scope != ScopeUser {
+		return fmt.Errorf("%w: Skill.Scope=%q (the installed-package contract forces ScopeUser)", ErrInstalledPackageInvalid, pkg.Skill.Scope)
+	}
+	if pkg.Skill.Name != pkg.Package.Name {
+		return fmt.Errorf("%w: Skill.Name %q != Package.Name %q (the target-key name is a single identity)", ErrInstalledPackageInvalid, pkg.Skill.Name, pkg.Package.Name)
+	}
+	if err := VerifyPackageHash(pkg.Package, pkg.PackageHash); err != nil {
+		return fmt.Errorf("%w: %w", ErrInstalledPackageInvalid, err)
+	}
+	if want := CanonicalContentHash(pkg.Skill); pkg.Skill.ContentHash != want {
+		return fmt.Errorf("%w: Skill.ContentHash %q != canonical %q", ErrInstalledPackageInvalid, pkg.Skill.ContentHash, want)
+	}
+	for _, f := range pkg.Package.Supports {
+		if f.Data == nil {
+			return fmt.Errorf("%w: support %q carries no bytes (the installed form requires bounded immutable support bytes; a nil Data would force a staging dereference)", ErrInstalledPackageInvalid, f.Path)
+		}
+	}
+	return nil
+}
+
+// ValidateInstalledPackageReceipt validates the closed shape of a
+// compensation receipt AND binds it to the exact target key the caller
+// supplies: the caller's triple must be complete (wrapped
+// `ErrIdentityRequired`), the receipt's `(TenantID, UserID, AgentID,
+// Name)` must equal `(id, agentID, name)` exactly (wrapped
+// `ErrInstalledPackageInvalid` — a receipt never applies to a foreign
+// key), and `WrittenHash` must be a structurally valid versioned
+// PackageHash.
+func ValidateInstalledPackageReceipt(receipt InstalledPackageReceipt, id identity.Quadruple, agentID, name string) error {
+	if err := identity.Validate(id.Identity); err != nil {
+		return fmt.Errorf("%w: %w", ErrIdentityRequired, err)
+	}
+	if receipt.AgentID == "" || receipt.Name == "" {
+		return fmt.Errorf("%w: receipt AgentID/Name must be non-empty", ErrInstalledPackageInvalid)
+	}
+	if receipt.TenantID != id.TenantID || receipt.UserID != id.UserID || receipt.AgentID != agentID || receipt.Name != name {
+		return fmt.Errorf("%w: receipt key (%s/%s/%s/%s) does not match target (%s/%s/%s/%s)",
+			ErrInstalledPackageInvalid, receipt.TenantID, receipt.UserID, receipt.AgentID, receipt.Name,
+			id.TenantID, id.UserID, agentID, name)
+	}
+	if _, ok := skillpkg.HashVersion(receipt.WrittenHash); !ok {
+		return fmt.Errorf("%w: receipt WrittenHash %q is not a versioned PackageHash", ErrInstalledPackageInvalid, receipt.WrittenHash)
 	}
 	return nil
 }

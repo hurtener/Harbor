@@ -74,6 +74,22 @@ func (stubStore) Delete(context.Context, identity.Quadruple, string, skills.Scop
 func (stubStore) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }
 func (stubStore) Close(context.Context) error                                  { return nil }
 
+func (stubStore) GetInstalledPackage(context.Context, identity.Quadruple, string, string) (skills.InstalledPackage, error) {
+	return skills.InstalledPackage{}, skills.ErrInstalledPackageNotFound
+}
+func (stubStore) ResolveSupport(context.Context, identity.Quadruple, string, string, skills.PackageURI) (skills.SupportFile, error) {
+	return skills.SupportFile{}, skills.ErrSupportNotFound
+}
+func (stubStore) PutInstalledPackage(context.Context, identity.Quadruple, string, skills.InstalledPackage, skills.InstalledPackageCondition, bool) (skills.InstalledPackageReceipt, error) {
+	return skills.InstalledPackageReceipt{}, skills.ErrInstalledPackageInvalid
+}
+func (stubStore) DeleteInstalledPackage(context.Context, identity.Quadruple, string, string, skills.InstalledPackageReceipt) (bool, error) {
+	return false, nil
+}
+func (stubStore) RestoreInstalledPackage(context.Context, identity.Quadruple, string, string, skills.InstalledPackageReceipt, skills.InstalledPackage) (bool, error) {
+	return false, nil
+}
+
 func validSkill() skills.Skill {
 	return skills.Skill{
 		Name:    "demo",

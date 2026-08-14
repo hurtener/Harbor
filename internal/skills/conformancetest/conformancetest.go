@@ -154,6 +154,14 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 		defer h.Cleanup()
 		testAgentCompatibility(t, h)
 	})
+
+	// The complete installed-package contract is MANDATORY on
+	// every driver: the atomic installed unit, the session-zeroed
+	// (tenant, user, effective-agent, name) target key, conditional
+	// put/replace with explicit-replace + origin precedence, exact-
+	// receipt conditional compensation, erasure, identity/agent
+	// isolation, and N>=100 mixed concurrent reuse.
+	RunInstalledPackageSuite(t, factory)
 }
 
 func testAgentBinding(t failureReporter, h Harness) {
@@ -358,6 +366,11 @@ func testOrdering(t failureReporter, h Harness) {
 func testIdentityRejection(t failureReporter, h Harness) {
 	ctx := context.Background()
 	bad := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u"}} // missing session
+	unit := installedFixtureUnit(t, "x", "agent-x", skills.OriginGenerated, "1.0.0", 1)
+	uri := supportURI(t, unit, unit.Package.Supports[0].Path)
+	receipt := skills.InstalledPackageReceipt{
+		TenantID: bad.TenantID, UserID: bad.UserID, AgentID: "agent-x", Name: "x", WrittenHash: unit.PackageHash,
+	}
 	cases := []struct {
 		name string
 		fn   func() error
@@ -372,6 +385,26 @@ func testIdentityRejection(t failureReporter, h Harness) {
 			return err
 		}},
 		{"Delete", func() error { return h.Store.Delete(ctx, bad, "x", skills.ScopeSession) }},
+		{"GetInstalledPackage", func() error {
+			_, err := h.Store.GetInstalledPackage(ctx, bad, "agent-x", "x")
+			return err
+		}},
+		{"ResolveSupport", func() error {
+			_, err := h.Store.ResolveSupport(ctx, bad, "agent-x", "x", uri)
+			return err
+		}},
+		{"PutInstalledPackage", func() error {
+			_, err := h.Store.PutInstalledPackage(ctx, bad, "agent-x", unit, skills.InstalledPackageCondition{ExpectedAbsent: true}, false)
+			return err
+		}},
+		{"DeleteInstalledPackage", func() error {
+			_, err := h.Store.DeleteInstalledPackage(ctx, bad, "agent-x", "x", receipt)
+			return err
+		}},
+		{"RestoreInstalledPackage", func() error {
+			_, err := h.Store.RestoreInstalledPackage(ctx, bad, "agent-x", "x", receipt, unit)
+			return err
+		}},
 	}
 	for _, c := range cases {
 		err := c.fn()
