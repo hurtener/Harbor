@@ -57,7 +57,7 @@ var HarborVersion = "v0.0.0-dev"
 // link-stamped release tag wins; a `go install @vX.Y[.Z]` build
 // carries its module version in build info; an un-stamped source build
 // reports the last published module release with a "-dev" suffix —
-// honest ("this source is v1.26.12 plus local changes") instead of the
+// honest ("this source is v1.28.0 plus local changes") instead of the
 // meaningless v0.0.0.
 func displayVersion() string {
 	if releaseDisplayRE.MatchString(HarborVersion) {

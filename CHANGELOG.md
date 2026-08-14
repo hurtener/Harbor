@@ -17,7 +17,7 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-## [1.28] — 2026-08-14
+## [1.28.0] — 2026-08-14
 
 ### Fixed
 
@@ -103,7 +103,7 @@ Two versions move independently in Harbor (RFC §5.3):
   `RunOnce` is explicitly unsupported and fails loud when the baseline is
   configured (D-427).
 
-## [1.27] — 2026-08-13
+## [1.27.0] — 2026-08-13
 
 ### Added
 
@@ -4541,8 +4541,8 @@ grouped by subsystem.
   Release.
 
 [Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28...HEAD
-[1.28]: https://github.com/hurtener/Harbor/compare/v1.27...v1.28
-[1.27]: https://github.com/hurtener/Harbor/compare/v1.26.12...v1.27
+[1.28.0]: https://github.com/hurtener/Harbor/compare/v1.27.0...v1.28.0
+[1.27.0]: https://github.com/hurtener/Harbor/compare/v1.26.12...v1.27.0
 [1.26.12]: https://github.com/hurtener/Harbor/compare/v1.26.11...v1.26.12
 [1.26.11]: https://github.com/hurtener/Harbor/compare/v1.26.10...v1.26.11
 [1.26.10]: https://github.com/hurtener/Harbor/compare/v1.26.9...v1.26.10

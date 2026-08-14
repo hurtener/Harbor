@@ -26,11 +26,10 @@ import (
 // leave behind without the pin noticing.
 //
 // MODULE TAGS, NOT ARTIFACT RELEASE TAGS: Harbor's GitHub artifact
-// releases are tagged two-component (`v1.27`, `v1.28`), and the runtime
-// display layers accept those stamps. The Go module proxy does NOT —
-// it resolves only canonical three-component module tags, the newest of
-// which is `v1.26.12` until a canonical three-component module tag for
-// a newer release exists. A two-component release string is therefore
+// releases include the historical two-component tags (`v1.27`, `v1.28`),
+// and the runtime display layers accept those stamps. The Go module proxy
+// requires canonical three-component module tags; v1.28 now also ships as
+// `v1.28.0` for that purpose. A two-component release string is therefore
 // never a valid scaffold module pin; only a proxy-resolvable
 // three-component version is. `cmd/harbor/root.go` documents the other
 // half of the split (artifact tags ARE accepted for runtime display).
@@ -39,7 +38,7 @@ import (
 // binary always resolves to it), so a bump regenerates them:
 //
 //	go test ./cmd/harbor -run TestScaffold_Golden -update
-const FallbackModuleVersion = "v1.26.12"
+const FallbackModuleVersion = "v1.28.0"
 
 // releaseVersionRE matches the version strings that name a real,
 // proxy-resolvable Harbor MODULE version: the canonical three-component

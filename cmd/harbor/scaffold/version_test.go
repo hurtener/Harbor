@@ -18,7 +18,7 @@ func TestReleaseVersionRE_AcceptsThreeComponentModuleVersions(t *testing.T) {
 	t.Parallel()
 	for _, v := range []string{
 		"v1.28.0",      // three-component patch form
-		"v1.26.12",     // the current three-component fallback pin
+		"v1.26.12",     // historical three-component patch form
 		"v1.28.0-rc.1", // prerelease on three components
 		"v2.0.0-rc.1",  // major prerelease
 		"v1.0.0-alpha.2",
