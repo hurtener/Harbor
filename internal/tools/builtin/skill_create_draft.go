@@ -9,16 +9,17 @@ package builtin
 // thin registration carrier that adapts the drafter lane to the
 // ordinary tool catalog and policy shell.
 //
-// DISABLED BY DEFAULT. This carrier is NOT wired into the builtin
-// registry map: `skill_create_draft` is absent from `KnownNames()`
-// and `tools.built_in` cannot enable it until the composition owner
-// explicitly threads an `llm.LLMClient` onto the registry context and
-// registers the carrier. Until then the tool is invisible to the
-// planner and unreachable by name — the acceptance contract is that
-// the tool is opt-in per agent through the ordinary tool policy, with
-// policy, approval, governance, rate/cost limits, deadline,
-// cancellation, redaction, and audit wrappers identical to every other
-// ordinary tool.
+// DISABLED BY DEFAULT. The carrier IS wired into the builtin registry
+// map, so `skill_create_draft` is present in `KnownNames()` and an
+// operator enables it by listing it in `tools.built_in`, exactly like
+// every other built-in. It stays off by default only because the
+// recommended/default configs do not list it. Registration pulls the
+// assembly's COMPOSED LLM client from the registry context; listing the
+// tool on a runtime without a usable LLM fails the boot loud rather
+// than silently skipping. Once enabled it is opt-in per agent through
+// the ordinary tool policy, with policy, approval, governance,
+// rate/cost limits, deadline, cancellation, redaction, and audit
+// wrappers identical to every other ordinary tool.
 //
 // Zero mutation authority. The registered body writes exactly ONE
 // immutable artifact through the drafter's narrow write-only seam
@@ -53,17 +54,20 @@ type SkillCreateDraftArgs = drafter.Args
 type SkillCreateDraftResult = drafter.Result
 
 // RegisterSkillCreateDraft installs the `skill_create_draft` ordinary
-// tool onto the catalog. It is the composition owner's explicit
-// opt-in entry point — nothing calls it implicitly, so the tool stays
-// disabled until wired.
+// tool onto the catalog. The builtin registry's `skill_create_draft`
+// entry invokes it when the operator lists the tool in
+// `tools.built_in` — the ordinary opt-in every built-in shares — so
+// the tool stays disabled by default because the recommended/default
+// configs do not list it.
 //
 // The client is the assembly's composed LLM client (safety net,
-// corrections, retry, governance already wrapped); this package never
-// chooses a provider or a credential. The catalog and store come from
-// the registry context. A nil client or catalog fails the
-// registration loudly (wiring-shaped); a nil ArtifactStore fails at
-// invoke time with an operator-readable message (store-shaped), mirror
-// of the other store-backed built-ins.
+// corrections, retry, governance already wrapped); the registry
+// supplies it from the context, and this package never chooses a
+// provider or a credential. The catalog and store come from the
+// registry context. A nil client or catalog fails the registration
+// loudly (wiring-shaped); a nil ArtifactStore fails at invoke time
+// with an operator-readable message (store-shaped), mirror of the
+// other store-backed built-ins.
 func RegisterSkillCreateDraft(rc RegistryContext, client llm.LLMClient) error {
 	if rc.Catalog == nil {
 		return fmt.Errorf("skill_create_draft: RegistryContext.Catalog is required")

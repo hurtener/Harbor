@@ -20,12 +20,13 @@ import (
 // skill_create_draft_test.go — the registration boundary and the
 // ordinary-tool behaviour of the draft-only skill tool.
 //
-// The boundary contract: `skill_create_draft` is DISABLED BY DEFAULT.
-// It is absent from KnownNames() and unreachable through the
-// `tools.built_in` registry until the composition owner explicitly
-// wires the registration carrier — so a default build never surfaces
-// it to the planner, and enabling it is an ordinary per-agent
-// operator decision.
+// The boundary contract: `skill_create_draft` is a known built-in in
+// `KnownNames()` and an operator enables it by listing it in
+// `tools.built_in`, exactly like every other built-in. It is DISABLED
+// BY DEFAULT only because the recommended/default configs do not list
+// it — a default build never surfaces it to the planner — and
+// registering it without the assembly's composed LLM client fails the
+// boot loud rather than silently skipping.
 
 // scriptedClient is a minimal scripted LLM client for the builtin
 // tests.

@@ -506,14 +506,15 @@ from forensic events:
   bounded `{intent, feedback?}` into ONE caller-scoped immutable `SKILL.md`
   draft artifact — an artifact ref plus its versioned `package_hash`, a
   bounded summary/warnings, and an explicit `state: "draft"` /
-  `installed: false`. It is a local draft/proposal with no approval, storage,
-  or authority grant: no skill-store upsert, membership/revision write, or
-  operator-pack proposal/publication; identity comes exclusively from the run
-  context (`persist`/`publish`-shaped input is rejected), and declared
-  required tools are metadata only. Installing a draft is the LATER explicit
-  HA-61 path: `agent_config.user.skills.import_validate` the artifact ref,
-  review, then `import_commit` — the runtime reauthenticates and revalidates
-  before the one conditional install.
+  `installed: false`. It persists exactly that one immutable caller-scoped
+  ArtifactStore draft and has zero skill-install/config/pack/membership/
+  authority mutation: no approval path, no skill-store upsert,
+  membership/revision write, or operator-pack proposal/publication; identity
+  comes exclusively from the run context (`persist`/`publish`-shaped input is
+  rejected), and declared required tools are metadata only. Installing a draft
+  is the LATER explicit HA-61 path: `agent_config.user.skills.import_validate`
+  the artifact ref, review, then `import_commit` — the runtime reauthenticates
+  and revalidates before the one conditional install.
 - **Composition preview (HA-66 / D-427).** `agent_config.composition.preview`
   (`POST /v1/agent_config/composition/preview`, claim-free for your own
   triple) reports the effective skill composition a run would compose for
