@@ -225,6 +225,16 @@ func (m *Materializer) applyEvent(ctx context.Context, ev events.Event) (applied
 	if sess.fenced {
 		return false, true, nil
 	}
+	if ev.Sequence <= sess.memSeq {
+		// Same-instance re-application guard: an event at or below the
+		// session's in-memory incorporated sequence was already FULLY
+		// applied to this instance's accumulators (and, when it was
+		// above the durable checkpoint at the time, to the store) — a
+		// page retry after a mid-page failure re-pages the same events
+		// and re-deriving them would double-count the accumulators.
+		// This instance has already incorporated them: no-op.
+		return true, false, nil
+	}
 
 	applied, err = m.applyToSession(ctx, sess, ev, payload)
 	if err != nil {
@@ -239,6 +249,12 @@ func (m *Materializer) applyEvent(ctx context.Context, ev events.Event) (applied
 	}
 	if applied {
 		m.passTouched++
+		// The event is now fully incorporated into this instance's
+		// in-memory state: advance the in-memory mirror so a
+		// same-instance page retry never re-derives it (restart
+		// catch-up re-derives events into a FRESH instance, whose
+		// memSeq starts at zero).
+		sess.memSeq = ev.Sequence
 		// The session's state is now ahead of its durable checkpoint
 		// (state-only restart catch-up at or below the checkpoint never
 		// reaches here): advance the mirror and the store checkpoint
@@ -345,26 +361,26 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 		return false, nil
 	}
 
+	// Transactional creation: the durable append lands BEFORE the
+	// turn's in-memory state is registered, so a failed append (a
+	// mid-page store error) leaves no phantom routing entry — the retry
+	// re-attempts the append cleanly instead of seeing an "already
+	// exists" skip.
+	if ev.Sequence > sess.checkpoint {
+		if _, err := m.proj.Append(ctx, sess.id, turns.Append{
+			TurnID:    turns.TurnID(taskID),
+			TaskID:    taskID,
+			RunID:     runID,
+			Status:    turns.StatusPending,
+			StartedAt: ev.OccurredAt,
+			EventSeq:  ev.Sequence,
+		}); err != nil {
+			return false, fmt.Errorf("materializer: append turn %s: %w", taskID, err)
+		}
+	}
+
 	ts := &turnState{taskID: taskID, runID: runID}
 	sess.turns[turns.TurnID(taskID)] = ts
-
-	if ev.Sequence <= sess.checkpoint {
-		// Restart catch-up: the row already exists (durable store);
-		// the state entry is enough.
-		return true, nil
-	}
-
-	_, err := m.proj.Append(ctx, sess.id, turns.Append{
-		TurnID:    turns.TurnID(taskID),
-		TaskID:    taskID,
-		RunID:     runID,
-		Status:    turns.StatusPending,
-		StartedAt: ev.OccurredAt,
-		EventSeq:  ev.Sequence,
-	})
-	if err != nil {
-		return false, fmt.Errorf("materializer: append turn %s: %w", taskID, err)
-	}
 	return true, nil
 }
 
@@ -375,7 +391,7 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 func (m *Materializer) applyTaskRunning(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
 	_, ts, ok := sess.taskTurn(taskID)
-	if !ok || ts.sealed {
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
@@ -393,25 +409,29 @@ func (m *Materializer) applyTaskRunning(ctx context.Context, sess *sessionState,
 }
 
 // applyTaskCompleted folds a successful terminal into a COMPLETE seal.
-// The projector refuses a complete seal until the answer component is
-// in a definite state; because no canonical event currently carries the
-// final answer content (the runtime persists answers on the task
-// record, which a projection never reads), the seal is deferred —
-// turn.pendingComplete records it and the materializer retries it at
-// the end of every pass, so a late-converging answer source seals the
-// row without any manual rebuild. The row honestly stays mutable
-// (running) while its sources have not converged; it is never
-// fabricated as complete.
+// Only the ROOT foreground task's own completion may seal (or
+// defer-seal) the turn: a child/background task's completion never
+// touches the root lifecycle. The projector refuses a complete seal
+// until the answer component is in a definite state; because no
+// canonical event currently carries the final answer content (the
+// runtime persists answers on the task record, which a projection
+// never reads), the seal is deferred — turn.pendingComplete records it
+// and the materializer retries it at the end of every pass, so a
+// late-converging answer source seals the row without any manual
+// rebuild. The row honestly stays mutable (running) while its sources
+// have not converged; it is never fabricated as complete, and a
+// sequence no-op (the observation was already applied) is never
+// equated with a durable seal.
 func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
-	_, ts, ok := sess.taskTurn(taskID)
-	if !ok || ts.sealed {
+	_, ts, ok := sess.rootTaskTurn(taskID)
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
 		return true, nil
 	}
-	_, err := m.sealTurn(ctx, sess, ts, turns.Seal{
+	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
 		Status:       turns.StatusComplete,
 		FinishReason: turns.FinishGoal,
 		EventSeq:     ev.Sequence,
@@ -425,6 +445,21 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 		}
 		return false, err
 	}
+	if ts.retired {
+		// The row was evicted past retention: the seal is an honest
+		// terminal projection gap — retire the routing state, never
+		// resurrect.
+		ts.pendingComplete = false
+		return true, nil
+	}
+	if !row.Sealed {
+		// The seal observation was a sequence no-op (already applied):
+		// the DURABLE row is demonstrably NOT sealed. Never equate the
+		// no-op with a successful completion — keep the deferred seal
+		// pending instead of falsely sealing the local state.
+		ts.pendingComplete = true
+		return true, nil
+	}
 	ts.sealed = true
 	ts.pendingComplete = false
 	return true, nil
@@ -432,18 +467,20 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 
 // applyTaskFailed folds a terminal failure into a FAILED seal with the
 // closed content-free error class derived from the task's error code.
-// The redacted consumer-safe error message is not carried by the event
-// — it stays unavailable ("").
+// Only the ROOT foreground task's own failure seals the turn — a
+// child/background task's failure never seals (or otherwise mutates)
+// the root lifecycle. The redacted consumer-safe error message is not
+// carried by the event — it stays unavailable ("").
 func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
-	_, ts, ok := sess.taskTurn(taskID)
-	if !ok || ts.sealed {
+	_, ts, ok := sess.rootTaskTurn(taskID)
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
 		return true, nil
 	}
-	_, err := m.sealTurn(ctx, sess, ts, turns.Seal{
+	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
 		Status:     turns.StatusFailed,
 		ErrorClass: mapTaskErrorClass(fieldString(payload, "ErrorCode")),
 		EventSeq:   ev.Sequence,
@@ -451,32 +488,59 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 	if err != nil {
 		return false, err
 	}
+	if ts.retired {
+		// The row was evicted past retention: the seal is an honest
+		// terminal projection gap — retire the routing state, never
+		// resurrect.
+		ts.pendingComplete = false
+		return true, nil
+	}
+	if !row.Sealed {
+		// A sequence no-op: the durable row is not sealed. Leave the
+		// local state unsealed (the row stays mutable); never fabricate
+		// a seal.
+		return true, nil
+	}
 	ts.sealed = true
 	ts.pendingComplete = false
 	return true, nil
 }
 
-// applyTaskCancelled folds a cancellation into a CANCELLED seal. The
+// applyTaskCancelled folds a cancellation into a CANCELLED seal. Only
+// the ROOT foreground task's own cancellation seals the turn — a
+// child/background task's cancellation never seals the root. The
 // operator/cascade reason string is not surfaced (the payload's Reason
 // is caller-controlled short text with the same SafePayload contract as
 // session-closed reasons; the projection carries the closed finish
 // reason only).
 func (m *Materializer) applyTaskCancelled(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
-	_, ts, ok := sess.taskTurn(taskID)
-	if !ok || ts.sealed {
+	_, ts, ok := sess.rootTaskTurn(taskID)
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
 		return true, nil
 	}
-	_, err := m.sealTurn(ctx, sess, ts, turns.Seal{
+	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
 		Status:       turns.StatusCancelled,
 		FinishReason: turns.FinishCancelled,
 		EventSeq:     ev.Sequence,
 	})
 	if err != nil {
 		return false, err
+	}
+	if ts.retired {
+		// The row was evicted past retention: the seal is an honest
+		// terminal projection gap — retire the routing state, never
+		// resurrect.
+		ts.pendingComplete = false
+		return true, nil
+	}
+	if !row.Sealed {
+		// A sequence no-op: the durable row is not sealed. Leave the
+		// local state unsealed; never fabricate a seal.
+		return true, nil
 	}
 	ts.sealed = true
 	ts.pendingComplete = false
@@ -519,7 +583,7 @@ func mapTaskErrorClass(code string) turns.ErrorClass {
 func (m *Materializer) applyInputDisposition(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "task_id")
 	_, ts, ok := sess.taskTurn(taskID)
-	if !ok || ts.sealed {
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	artifactID := fieldString(payload, "artifact_id")
@@ -531,28 +595,44 @@ func (m *Materializer) applyInputDisposition(ctx context.Context, sess *sessionS
 			return true, nil // already listed; nothing to do
 		}
 	}
-	ts.inputs = append(ts.inputs, turns.Attachment{
+	// Transactional update: the candidate feed commits to memory only
+	// after the durable write succeeds, so a mid-page failure never
+	// double-lists (or silently drops) an attachment on retry.
+	newInputs := append(append([]turns.Attachment(nil), ts.inputs...), turns.Attachment{
 		ID:           artifactID,
 		MimeType:     fieldString(payload, "mime"),
 		Disposition:  fieldString(payload, "disposition"),
 		Availability: turns.CompletenessComplete,
 	})
 	if ev.Sequence <= sess.checkpoint {
+		ts.inputs = newInputs
 		return true, nil
 	}
 	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
-		Inputs:   ts.inputs,
+		Inputs:   newInputs,
 		EventSeq: ev.Sequence,
 	})
 	if err != nil {
 		return false, err
 	}
+	ts.inputs = newInputs
 	return true, nil
 }
 
 // ---------------------------------------------------------------------------
 // derived reasoning
 // ---------------------------------------------------------------------------
+
+// maxReasoningFeed bounds the materializer's in-memory reasoning feed
+// at the projector's per-observation feed-acceptance bound
+// (turns.MaxReasoningSteps*4 — see turns validateReasoningSteps), so
+// the cumulative feed never grows unbounded and never fails the
+// projector's validation. The feed keeps the chronological HEAD: the
+// projector retains the FIRST turns.MaxReasoningSteps of what it is
+// fed and reports the tail drop honestly as Partial + Dropped, so an
+// over-bound trajectory stays Partial and converging instead of
+// hard-failing the pass.
+const maxReasoningFeed = turns.MaxReasoningSteps * 4
 
 // reasoningKindFor maps the planner decision shape name onto the
 // CLOSED derived reasoning kind set. Shapes without a safe derivative
@@ -574,30 +654,49 @@ func reasoningKindFor(decisionKind string) (turns.ReasoningKind, bool) {
 // applyPlannerDecision derives ONE consumer-safe reasoning step from a
 // planner decision event. The raw provider thinking the payload may
 // carry (ReasoningTrace) is structurally absent from the row — only the
-// closed kind and the chronological index are derived. The full ordered
-// reasoning feed is retained in state and attached wholesale so the
-// component's ordering and snapshot stay stable across restarts.
+// closed kind and the chronological index are derived. The bounded
+// ordered reasoning feed (clamped at maxReasoningFeed, keeping the
+// chronological head the projector retains) is retained in state and
+// attached wholesale so the component's ordering and snapshot stay
+// stable across restarts; beyond the bound the new step is dropped
+// honestly (the row already reports Partial + Dropped) and the event
+// still applies — the feed never grows unbounded and never fails.
 func (m *Materializer) applyPlannerDecision(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
-	if !ok || ts.sealed {
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	kind, ok := reasoningKindFor(fieldString(payload, "DecisionKind"))
 	if !ok {
 		return false, nil
 	}
-	ts.reasoning = append(ts.reasoning, turns.ReasoningStep{Index: ts.nextReasoningIndex, Kind: kind})
-	ts.nextReasoningIndex++
+	if len(ts.reasoning) >= maxReasoningFeed {
+		// The feed is at the projector's acceptance bound: the new step
+		// is beyond the retained chronological head and is dropped
+		// honestly (the component is already Partial + Dropped at the
+		// projector). The event is still applied so the checkpoint and
+		// cursor keep advancing — never a feed failure, never unbounded
+		// growth.
+		return true, nil
+	}
+	// Transactional update: the candidate feed commits to memory only
+	// after the durable attach succeeds, so a mid-page failure never
+	// double-attaches a step on retry.
+	newReasoning := append(append([]turns.ReasoningStep(nil), ts.reasoning...), turns.ReasoningStep{Index: ts.nextReasoningIndex, Kind: kind})
 	if ev.Sequence <= sess.checkpoint {
+		ts.reasoning = newReasoning
+		ts.nextReasoningIndex++
 		return true, nil
 	}
 	_, err := m.attachReasoning(ctx, sess, ts, turns.ReasoningInput{
-		Steps:    ts.reasoning,
+		Steps:    newReasoning,
 		EventSeq: ev.Sequence,
 	})
 	if err != nil {
 		return false, err
 	}
+	ts.reasoning = newReasoning
+	ts.nextReasoningIndex++
 	return true, nil
 }
 
@@ -613,7 +712,7 @@ func (m *Materializer) applyPlannerDecision(ctx context.Context, sess *sessionSt
 // full cumulative feed.
 func (m *Materializer) applyToolInvoked(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
-	if !ok || ts.sealed {
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	toolName := fieldString(payload, "ToolName")
@@ -624,22 +723,27 @@ func (m *Materializer) applyToolInvoked(ctx context.Context, sess *sessionState,
 	if t, ok := fieldTime(payload, "StartedAt"); ok {
 		started = t
 	}
-	ts.activity = append(ts.activity, turns.ActivityRow{
+	// Transactional update: the candidate feed commits to memory only
+	// after the durable write succeeds, so a mid-page failure never
+	// double-inserts a dispatch row on retry.
+	newActivity := append(append([]turns.ActivityRow(nil), ts.activity...), turns.ActivityRow{
 		Tool:         toolName,
 		StepSequence: ev.Sequence,
 		Status:       turns.ActivityInvoked,
 		StartedAt:    started,
 	})
 	if ev.Sequence <= sess.checkpoint {
+		ts.activity = newActivity
 		return true, nil
 	}
 	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
-		Activity: ts.activity,
+		Activity: newActivity,
 		EventSeq: ev.Sequence,
 	})
 	if err != nil {
 		return false, err
 	}
+	ts.activity = newActivity
 	return true, nil
 }
 
@@ -653,7 +757,7 @@ func (m *Materializer) applyToolInvoked(ctx context.Context, sess *sessionState,
 // RetentionGap signal, never silently hidden).
 func (m *Materializer) applyToolCompleted(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
-	if !ok || ts.sealed {
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	toolName := fieldString(payload, "ToolName")
@@ -661,20 +765,26 @@ func (m *Materializer) applyToolCompleted(ctx context.Context, sess *sessionStat
 	if idx < 0 {
 		return false, nil
 	}
-	ts.activity[idx].Status = turns.ActivitySucceeded
-	ts.activity[idx].FinishedAt = ev.OccurredAt
-	ts.activity[idx].Duration = time.Duration(fieldInt64(payload, "DurationMS")) * time.Millisecond
-	ts.activity[idx].AttemptCount = int(fieldInt64(payload, "Attempts"))
+	// Transactional update: mutate a COPY of the feed and commit it to
+	// memory only after the durable write succeeds, so a mid-page
+	// failure never half-applies a terminal transition on retry.
+	newActivity := append([]turns.ActivityRow(nil), ts.activity...)
+	newActivity[idx].Status = turns.ActivitySucceeded
+	newActivity[idx].FinishedAt = ev.OccurredAt
+	newActivity[idx].Duration = time.Duration(fieldInt64(payload, "DurationMS")) * time.Millisecond
+	newActivity[idx].AttemptCount = int(fieldInt64(payload, "Attempts"))
 	if ev.Sequence <= sess.checkpoint {
+		ts.activity = newActivity
 		return true, nil
 	}
 	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
-		Activity: ts.activity,
+		Activity: newActivity,
 		EventSeq: ev.Sequence,
 	})
 	if err != nil {
 		return false, err
 	}
+	ts.activity = newActivity
 	return true, nil
 }
 
@@ -684,7 +794,7 @@ func (m *Materializer) applyToolCompleted(ctx context.Context, sess *sessionStat
 // and never reaches the row.
 func (m *Materializer) applyToolFailed(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
-	if !ok || ts.sealed {
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	toolName := fieldString(payload, "ToolName")
@@ -696,20 +806,26 @@ func (m *Materializer) applyToolFailed(ctx context.Context, sess *sessionState, 
 	if class == "" {
 		class = "unclassified"
 	}
-	ts.activity[idx].Status = turns.ActivityFailed
-	ts.activity[idx].FinishedAt = ev.OccurredAt
-	ts.activity[idx].AttemptCount = int(fieldInt64(payload, "Attempts"))
-	ts.activity[idx].Summary = "failed: " + class
+	// Transactional update: mutate a COPY of the feed and commit it to
+	// memory only after the durable write succeeds, so a mid-page
+	// failure never half-applies a terminal transition on retry.
+	newActivity := append([]turns.ActivityRow(nil), ts.activity...)
+	newActivity[idx].Status = turns.ActivityFailed
+	newActivity[idx].FinishedAt = ev.OccurredAt
+	newActivity[idx].AttemptCount = int(fieldInt64(payload, "Attempts"))
+	newActivity[idx].Summary = "failed: " + class
 	if ev.Sequence <= sess.checkpoint {
+		ts.activity = newActivity
 		return true, nil
 	}
 	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
-		Activity: ts.activity,
+		Activity: newActivity,
 		EventSeq: ev.Sequence,
 	})
 	if err != nil {
 		return false, err
 	}
+	ts.activity = newActivity
 	return true, nil
 }
 
@@ -719,7 +835,7 @@ func (m *Materializer) applyToolFailed(ctx context.Context, sess *sessionState, 
 // the closed last error class in the summary.
 func (m *Materializer) applyToolPolicyExhausted(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
-	if !ok || ts.sealed {
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	toolName := fieldString(payload, "ToolName")
@@ -731,21 +847,27 @@ func (m *Materializer) applyToolPolicyExhausted(ctx context.Context, sess *sessi
 	if class == "" {
 		class = "unclassified"
 	}
-	ts.activity[idx].Status = turns.ActivityPolicyExhausted
-	ts.activity[idx].PolicyExhausted = true
-	ts.activity[idx].FinishedAt = ev.OccurredAt
-	ts.activity[idx].AttemptCount = int(fieldInt64(payload, "Attempts"))
-	ts.activity[idx].Summary = "policy_exhausted: " + class
+	// Transactional update: mutate a COPY of the feed and commit it to
+	// memory only after the durable write succeeds, so a mid-page
+	// failure never half-applies a terminal transition on retry.
+	newActivity := append([]turns.ActivityRow(nil), ts.activity...)
+	newActivity[idx].Status = turns.ActivityPolicyExhausted
+	newActivity[idx].PolicyExhausted = true
+	newActivity[idx].FinishedAt = ev.OccurredAt
+	newActivity[idx].AttemptCount = int(fieldInt64(payload, "Attempts"))
+	newActivity[idx].Summary = "policy_exhausted: " + class
 	if ev.Sequence <= sess.checkpoint {
+		ts.activity = newActivity
 		return true, nil
 	}
 	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
-		Activity: ts.activity,
+		Activity: newActivity,
 		EventSeq: ev.Sequence,
 	})
 	if err != nil {
 		return false, err
 	}
+	ts.activity = newActivity
 	return true, nil
 }
 
@@ -778,7 +900,7 @@ func findInFlight(rows []turns.ActivityRow, tool string) int {
 // the tool_call_id rides as correlation metadata only.
 func (m *Materializer) applyAppAvailable(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
-	if !ok || ts.sealed {
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	serverID := fieldString(payload, "ServerID")
@@ -837,7 +959,7 @@ func pauseClassFor(reason string) (turns.PauseClass, bool) {
 // component and actionability is never stored).
 func (m *Materializer) applyPauseRequested(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
-	if !ok || ts.sealed {
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	class, ok := pauseClassFor(fieldString(payload, "Reason"))
@@ -868,7 +990,7 @@ func (m *Materializer) applyPauseRequested(ctx context.Context, sess *sessionSta
 // explicitly (a resume never leaves an active episode behind).
 func (m *Materializer) applyPauseResumed(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
-	if !ok || ts.sealed {
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
@@ -889,6 +1011,58 @@ func (m *Materializer) applyPauseResumed(ctx context.Context, sess *sessionState
 // usage
 // ---------------------------------------------------------------------------
 
+// accumulateUsage derives the cumulative usage CANDIDATE from the
+// current accumulator and one per-call llm.cost.recorded payload
+// (the payload's usage / cost field maps and the reported model).
+// Updated measures receive FRESH value pointers; the caller commits
+// the candidate to the in-memory accumulator only after the durable
+// write succeeds, so a mid-page failure can never double-accumulate a
+// per-call snapshot on retry.
+func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string) turns.Usage {
+	next := cur
+	addMeasure := func(prev turns.UsageMeasure, delta int64) turns.UsageMeasure {
+		if delta <= 0 {
+			return prev
+		}
+		acc := int64(0)
+		if prev.Value != nil {
+			acc = *prev.Value
+		}
+		acc += delta
+		return turns.UsageMeasure{State: turns.UsageExact, Value: &acc}
+	}
+	next.PromptTokens = addMeasure(next.PromptTokens, fieldInt64(usage, "PromptTokens"))
+	next.CompletionTokens = addMeasure(next.CompletionTokens, fieldInt64(usage, "CompletionTokens"))
+	next.ReasoningTokens = addMeasure(next.ReasoningTokens, fieldInt64(usage, "ReasoningTokens"))
+	next.CacheReadTokens = addMeasure(next.CacheReadTokens, fieldInt64(usage, "CacheReadTokens"))
+	next.CacheWriteTokens = addMeasure(next.CacheWriteTokens, fieldInt64(usage, "CacheWriteTokens"))
+	next.TotalTokens = addMeasure(next.TotalTokens, fieldInt64(usage, "TotalTokens"))
+	next.LatencyNS = addMeasure(next.LatencyNS, fieldInt64(usage, "LatencyMS")*int64(time.Millisecond))
+
+	// Cost: the float64 USD per-call total is converted to integer
+	// micro-dollars by rounding and accumulated as integers; the measure
+	// is honestly ESTIMATED (the source is approximate).
+	totalUSD := 0.0
+	if v, ok := cost["TotalCost"]; ok {
+		if f, ok := v.(float64); ok {
+			totalUSD = f
+		}
+	}
+	if totalUSD > 0 {
+		micro := int64(math.Round(totalUSD * 1e6))
+		acc := int64(0)
+		if next.CostMicroUSD.Value != nil {
+			acc = *next.CostMicroUSD.Value
+		}
+		acc += micro
+		next.CostMicroUSD = turns.UsageMeasure{State: turns.UsageEstimated, Value: &acc}
+	}
+	if model != "" {
+		next.Model = model
+	}
+	return next
+}
+
 // applyCostRecorded folds the per-call llm.cost.recorded event into the
 // owning turn's CUMULATIVE per-measure usage accumulator. The payload's
 // Usage is a per-call snapshot (provider cache accounting included);
@@ -903,61 +1077,27 @@ func (m *Materializer) applyPauseResumed(ctx context.Context, sess *sessionState
 // in float64); latency is accumulated as exact integer nanoseconds.
 func (m *Materializer) applyCostRecorded(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
-	if !ok || ts.sealed {
+	if !ok || ts.terminal() {
 		return false, nil
 	}
 	usage := fieldNested(payload, "Usage")
 	cost := fieldNested(payload, "Cost")
-	addMeasure := func(cur turns.UsageMeasure, delta int64) turns.UsageMeasure {
-		if delta <= 0 {
-			return cur
-		}
-		acc := int64(0)
-		if cur.Value != nil {
-			acc = *cur.Value
-		}
-		acc += delta
-		return turns.UsageMeasure{State: turns.UsageExact, Value: &acc}
-	}
-	ts.usage.PromptTokens = addMeasure(ts.usage.PromptTokens, fieldInt64(usage, "PromptTokens"))
-	ts.usage.CompletionTokens = addMeasure(ts.usage.CompletionTokens, fieldInt64(usage, "CompletionTokens"))
-	ts.usage.ReasoningTokens = addMeasure(ts.usage.ReasoningTokens, fieldInt64(usage, "ReasoningTokens"))
-	ts.usage.CacheReadTokens = addMeasure(ts.usage.CacheReadTokens, fieldInt64(usage, "CacheReadTokens"))
-	ts.usage.CacheWriteTokens = addMeasure(ts.usage.CacheWriteTokens, fieldInt64(usage, "CacheWriteTokens"))
-	ts.usage.TotalTokens = addMeasure(ts.usage.TotalTokens, fieldInt64(usage, "TotalTokens"))
-	ts.usage.LatencyNS = addMeasure(ts.usage.LatencyNS, fieldInt64(usage, "LatencyMS")*int64(time.Millisecond))
-
-	// Cost: the float64 USD per-call total is converted to integer
-	// micro-dollars by rounding and accumulated as integers; the measure
-	// is honestly ESTIMATED (the source is approximate).
-	totalUSD := 0.0
-	if v, ok := cost["TotalCost"]; ok {
-		if f, ok := v.(float64); ok {
-			totalUSD = f
-		}
-	}
-	if totalUSD > 0 {
-		micro := int64(math.Round(totalUSD * 1e6))
-		acc := int64(0)
-		if ts.usage.CostMicroUSD.Value != nil {
-			acc = *ts.usage.CostMicroUSD.Value
-		}
-		acc += micro
-		ts.usage.CostMicroUSD = turns.UsageMeasure{State: turns.UsageEstimated, Value: &acc}
-	}
-	if model := fieldString(payload, "Model"); model != "" {
-		ts.usage.Model = model
-	}
+	// Transactional update: the candidate rollup commits to memory only
+	// after the durable write succeeds, so a mid-page failure never
+	// double-counts a per-call snapshot on retry.
+	candidate := accumulateUsage(ts.usage, usage, cost, fieldString(payload, "Model"))
 	if ev.Sequence <= sess.checkpoint {
+		ts.usage = candidate
 		return true, nil
 	}
 	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
-		Usage:    &ts.usage,
+		Usage:    &candidate,
 		EventSeq: ev.Sequence,
 	})
 	if err != nil {
 		return false, err
 	}
+	ts.usage = candidate
 	return true, nil
 }
 
@@ -969,12 +1109,20 @@ func (m *Materializer) applyCostRecorded(ctx context.Context, sess *sessionState
 // expected version is read fresh from the store each attempt so a
 // concurrent write (another materializer replica) is reconciled by
 // retry; the projector's monotonic EventSeq guard makes an
-// already-applied observation a no-op with no version expectation.
+// already-applied observation a no-op with no version expectation. A
+// row the store no longer retains (evicted past retention) is an
+// HONEST TERMINAL PROJECTION GAP: the turn's routing state is retired
+// and the event is skipped (nil error, no write) — never a hard pass
+// failure, never a resurrected row, never a wedged cursor.
 func (m *Materializer) updateTurn(ctx context.Context, sess *sessionState, ts *turnState, u turns.Update) (turns.TurnRow, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		current, err := m.proj.Get(ctx, sess.id, turns.TurnID(ts.taskID))
 		if err != nil {
+			if errors.Is(err, turns.ErrTurnNotFound) {
+				ts.retired = true
+				return turns.TurnRow{}, nil
+			}
 			return turns.TurnRow{}, err
 		}
 		if current.Sealed {
@@ -990,10 +1138,10 @@ func (m *Materializer) updateTurn(ctx context.Context, sess *sessionState, ts *t
 			continue
 		}
 		if errors.Is(err, turns.ErrTurnNotFound) {
-			// The row was evicted past retention or never retained: the
-			// turn is no longer projected. Its remaining events are
-			// skipped; this is not an error.
-			return turns.TurnRow{}, err
+			// Evicted between the read and the write (or the read raced
+			// a retention pass): same honest terminal-gap handling.
+			ts.retired = true
+			return turns.TurnRow{}, nil
 		}
 		if errors.Is(err, turns.ErrTurnSealed) {
 			ts.sealed = true
@@ -1005,12 +1153,18 @@ func (m *Materializer) updateTurn(ctx context.Context, sess *sessionState, ts *t
 }
 
 // sealTurn applies one Seal observation. Same retry/guard semantics as
-// updateTurn.
+// updateTurn, including the honest terminal-gap handling: a row the
+// store no longer retains retires the turn's routing state and skips
+// (never a hard pass failure, never a resurrected row).
 func (m *Materializer) sealTurn(ctx context.Context, sess *sessionState, ts *turnState, s turns.Seal) (turns.TurnRow, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		current, err := m.proj.Get(ctx, sess.id, turns.TurnID(ts.taskID))
 		if err != nil {
+			if errors.Is(err, turns.ErrTurnNotFound) {
+				ts.retired = true
+				return turns.TurnRow{}, nil
+			}
 			return turns.TurnRow{}, err
 		}
 		if current.Sealed {
@@ -1025,18 +1179,27 @@ func (m *Materializer) sealTurn(ctx context.Context, sess *sessionState, ts *tur
 			lastErr = err
 			continue
 		}
+		if errors.Is(err, turns.ErrTurnNotFound) {
+			ts.retired = true
+			return turns.TurnRow{}, nil
+		}
 		return turns.TurnRow{}, err
 	}
 	return turns.TurnRow{}, fmt.Errorf("materializer: seal %s: %w", ts.taskID, lastErr)
 }
 
 // attachReasoning applies one AttachReasoning observation (replay-safe
-// like updateTurn).
+// like updateTurn, with the same honest terminal-gap handling for an
+// evicted row).
 func (m *Materializer) attachReasoning(ctx context.Context, sess *sessionState, ts *turnState, r turns.ReasoningInput) (turns.TurnRow, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		current, err := m.proj.Get(ctx, sess.id, turns.TurnID(ts.taskID))
 		if err != nil {
+			if errors.Is(err, turns.ErrTurnNotFound) {
+				ts.retired = true
+				return turns.TurnRow{}, nil
+			}
 			return turns.TurnRow{}, err
 		}
 		if current.Sealed {
@@ -1052,7 +1215,8 @@ func (m *Materializer) attachReasoning(ctx context.Context, sess *sessionState, 
 			continue
 		}
 		if errors.Is(err, turns.ErrTurnNotFound) {
-			return turns.TurnRow{}, err
+			ts.retired = true
+			return turns.TurnRow{}, nil
 		}
 		return turns.TurnRow{}, err
 	}
@@ -1060,12 +1224,17 @@ func (m *Materializer) attachReasoning(ctx context.Context, sess *sessionState, 
 }
 
 // attachAppRefs applies one AttachAppRefs observation (replay-safe like
-// updateTurn).
+// updateTurn, with the same honest terminal-gap handling for an
+// evicted row).
 func (m *Materializer) attachAppRefs(ctx context.Context, sess *sessionState, ts *turnState, a turns.AppRefInput) (turns.TurnRow, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		current, err := m.proj.Get(ctx, sess.id, turns.TurnID(ts.taskID))
 		if err != nil {
+			if errors.Is(err, turns.ErrTurnNotFound) {
+				ts.retired = true
+				return turns.TurnRow{}, nil
+			}
 			return turns.TurnRow{}, err
 		}
 		if current.Sealed {
@@ -1081,7 +1250,8 @@ func (m *Materializer) attachAppRefs(ctx context.Context, sess *sessionState, ts
 			continue
 		}
 		if errors.Is(err, turns.ErrTurnNotFound) {
-			return turns.TurnRow{}, err
+			ts.retired = true
+			return turns.TurnRow{}, nil
 		}
 		return turns.TurnRow{}, err
 	}

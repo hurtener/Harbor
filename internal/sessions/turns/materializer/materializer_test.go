@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -953,6 +954,326 @@ type staticProbe struct{ erased bool }
 
 func (p staticProbe) Erased(context.Context, identity.Identity) (bool, error) {
 	return p.erased, nil
+}
+
+// ---------------------------------------------------------------------------
+// independent-review P1 regressions
+// ---------------------------------------------------------------------------
+
+// TestMaterialize_ChildAndBackgroundTerminalsNeverSealRoot pins the
+// root-foreground terminal invariant (P1 #1): a CHILD task's (or a
+// standalone BACKGROUND task's) task.failed / task.cancelled NEVER
+// seals the root foreground turn — the root converges only through its
+// OWN terminal lifecycle. The child/background task never becomes a
+// row either.
+func TestMaterialize_ChildAndBackgroundTerminalsNeverSealRoot(t *testing.T) {
+	cases := []struct {
+		name     string
+		isChild  bool
+		terminal func(h *harness) events.Event
+	}{
+		{"child failed", true, func(h *harness) events.Event { return failedEv(h.id, "task-child", "timeout") }},
+		{"child cancelled", true, func(h *harness) events.Event { return cancelledEv(h.id, "task-child") }},
+		{"background failed", false, func(h *harness) events.Event { return failedEv(h.id, "task-bg", "timeout") }},
+		{"background cancelled", false, func(h *harness) events.Event { return cancelledEv(h.id, "task-bg") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, "")
+			defer h.closeStore()
+			m := h.newMaterializer(t)
+
+			parentQuad := testQuad(h.id, "run-parent")
+			h.src.publish(t, spawnEv(h.id, parentQuad.RunID, "task-parent", tasks.KindForeground, ""))
+			h.src.publish(t, startedEv(h.id, "task-parent"))
+			childID := "task-child"
+			if tc.isChild {
+				childQuad := testQuad(h.id, "run-child")
+				h.src.publish(t, spawnEv(h.id, childQuad.RunID, "task-child", tasks.KindBackground, "task-parent"))
+				h.src.publish(t, startedEv(h.id, "task-child"))
+			} else {
+				childID = "task-bg"
+				bgQuad := testQuad(h.id, "run-bg")
+				h.src.publish(t, spawnEv(h.id, bgQuad.RunID, "task-bg", tasks.KindBackground, ""))
+				h.src.publish(t, startedEv(h.id, "task-bg"))
+			}
+			// The child/background task's terminal must NOT seal the root.
+			h.src.publish(t, tc.terminal(h))
+
+			if _, err := m.Materialize(context.Background()); err != nil {
+				t.Fatalf("materialize: %v", err)
+			}
+			// The root turn is untouched: still mutable running.
+			row := mustGetRow(t, h, "task-parent")
+			if row.Sealed || row.Status != turns.StatusRunning {
+				t.Fatalf("child/background terminal touched the root: status=%q sealed=%v", row.Status, row.Sealed)
+			}
+			// The child/background task never became a row.
+			if _, err := h.proj.Get(context.Background(), h.id, turns.TurnID(childID)); !errors.Is(err, turns.ErrTurnNotFound) {
+				t.Fatalf("child/background turn = %v, want ErrTurnNotFound", err)
+			}
+			// The root's OWN terminal still seals it.
+			h.src.publish(t, failedEv(h.id, "task-parent", "timeout"))
+			if _, err := m.Materialize(context.Background()); err != nil {
+				t.Fatalf("materialize (root terminal): %v", err)
+			}
+			row = mustGetRow(t, h, "task-parent")
+			if !row.Sealed || row.Status != turns.StatusFailed {
+				t.Fatalf("root's own terminal did not seal: status=%q sealed=%v", row.Status, row.Sealed)
+			}
+		})
+	}
+}
+
+// failNthUpdate wraps a turns.Store and injects ONE deterministic
+// failure into the Nth UpdateTurnIf call (1-based), then delegates to
+// the real driver — the mid-page-failure injection point for the
+// transactional-retry test.
+type failNthUpdate struct {
+	turns.Store
+	mu    sync.Mutex
+	n     int // the UpdateTurnIf call number to fail (1-based)
+	calls int
+}
+
+func (f *failNthUpdate) UpdateTurnIf(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow) (turns.TurnRow, error) {
+	f.mu.Lock()
+	f.calls++
+	fail := f.calls == f.n
+	f.mu.Unlock()
+	if fail {
+		return turns.TurnRow{}, errors.New("injected store write failure")
+	}
+	return f.Store.UpdateTurnIf(ctx, id, turnID, expectedVersion, row)
+}
+
+// TestMaterialize_MidPageFailureRetryIsTransactional pins the
+// transactional event application across the complete page (P1 #2): a
+// mid-page write failure aborts the pass loudly, and the SAME-instance
+// retry re-pages from the cursor and converges to EXACTLY ONE of each
+// accumulated observation — no duplicated activity / reasoning / apps /
+// usage, no phantom turn — because the in-memory accumulators commit
+// only after the durable write succeeds and already-incorporated events
+// are no-ops.
+func TestMaterialize_MidPageFailureRetryIsTransactional(t *testing.T) {
+	real, err := sqlite.New(sqlite.Config{DSN: ":memory:"})
+	if err != nil {
+		t.Fatalf("open sqlite turns store: %v", err)
+	}
+	wrapped := &failNthUpdate{Store: real, n: 3} // the toolInvoked update
+	proj, err := turns.New(wrapped)
+	if err != nil {
+		_ = real.Close(context.Background())
+		t.Fatalf("new projector: %v", err)
+	}
+	h := &harness{
+		id:    identity.Identity{TenantID: "tenant-a", UserID: "user-a", SessionID: "sess-a"},
+		store: wrapped,
+		proj:  proj,
+		src:   &fakeSource{},
+		closeStore: func() {
+			_ = proj.Close(context.Background())
+		},
+	}
+	defer h.closeStore()
+	m := h.newMaterializer(t)
+
+	quad := testQuad(h.id, "run-tx")
+	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-tx", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-tx"))
+	h.src.publish(t, decisionEv(h.id, quad.RunID, "CallTool"))
+	h.src.publish(t, toolInvokedEv(h.id, quad.RunID, "tx.tool", time.Now())) // UpdateTurnIf #3 → injected failure
+	h.src.publish(t, costRecordedEv(h.id, quad.RunID, "model-x", llm.Usage{
+		PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, LatencyMS: 120,
+	}, 0.25))
+	h.src.publish(t, appAvailableEv(h.id, quad.RunID, "agent-a", "srv-1", "ui://one"))
+	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "tx.tool", 1, 5))
+	last := h.src.publish(t, failedEv(h.id, "task-tx", "timeout"))
+
+	// Pass 1 fails loud at the injected write — never a silent partial
+	// application.
+	if _, err := m.Materialize(context.Background()); err == nil {
+		t.Fatal("first pass must fail loud at the injected write")
+	}
+
+	// The same-instance retry converges with EXACTLY ONE of each
+	// observation: no duplicated activity/reasoning/apps/usage, no
+	// phantom turn, no error.
+	res, err := m.Materialize(context.Background())
+	if err != nil {
+		t.Fatalf("retry materialize: %v", err)
+	}
+	if res.Cursor != last.Sequence {
+		t.Errorf("cursor = %d, want %d (the retry advanced past the whole page)", res.Cursor, last.Sequence)
+	}
+	row := mustGetRow(t, h, "task-tx")
+	if !row.Sealed || row.Status != turns.StatusFailed {
+		t.Fatalf("converged row = status %q sealed %v", row.Status, row.Sealed)
+	}
+	if len(row.Activity.Rows) != 1 || row.Activity.Rows[0].Status != turns.ActivitySucceeded {
+		t.Fatalf("activity = %+v, want exactly one succeeded dispatch", row.Activity.Rows)
+	}
+	if row.Activity.Totals.Invoked != 0 || row.Activity.Totals.Succeeded != 1 {
+		t.Errorf("activity totals = %+v, want invoked=0 succeeded=1", row.Activity.Totals)
+	}
+	if len(row.Reasoning.Steps) != 1 {
+		t.Fatalf("reasoning = %+v, want exactly one step", row.Reasoning.Steps)
+	}
+	if len(row.Apps) != 1 || row.Apps[0].ResourceURI != "ui://one" {
+		t.Fatalf("apps = %+v, want exactly one ref", row.Apps)
+	}
+	if row.Usage.PromptTokens.State != turns.UsageExact || usageValue(t, row.Usage.PromptTokens) != 100 {
+		t.Fatalf("prompt tokens = %+v, want 100 (no double accumulation)", row.Usage.PromptTokens)
+	}
+	if row.Usage.TotalTokens.State != turns.UsageExact || usageValue(t, row.Usage.TotalTokens) != 150 {
+		t.Errorf("total tokens = %+v, want 150", row.Usage.TotalTokens)
+	}
+	page, err := h.proj.List(context.Background(), h.id, turns.ListOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(page.Rows) != 1 || string(page.Rows[0].TurnID) != "task-tx" {
+		t.Fatalf("rows = %+v, want exactly the one turn (no phantom rows)", page.Rows)
+	}
+}
+
+// TestMaterialize_EvictedTurnRetiresAndPassContinues pins the honest
+// per-turn terminal projection gap (P1 #3): once a turn's durable row
+// is evicted past the store's retention bound, every later event routed
+// to it RETIRES the turn's routing state (skipped, never resurrected,
+// never a hard pass failure) and the pass keeps advancing — later
+// events for other turns in the same session and other sessions still
+// materialize, and the cursor never wedges.
+func TestMaterialize_EvictedTurnRetiresAndPassContinues(t *testing.T) {
+	store, err := sqlite.New(sqlite.Config{DSN: ":memory:", Retention: 1})
+	if err != nil {
+		t.Fatalf("open sqlite turns store: %v", err)
+	}
+	proj, err := turns.New(store)
+	if err != nil {
+		_ = store.Close(context.Background())
+		t.Fatalf("new projector: %v", err)
+	}
+	h := &harness{
+		id:    identity.Identity{TenantID: "tenant-a", UserID: "user-a", SessionID: "sess-a"},
+		store: store,
+		proj:  proj,
+		src:   &fakeSource{},
+		closeStore: func() {
+			_ = proj.Close(context.Background())
+		},
+	}
+	defer h.closeStore()
+	m := h.newMaterializer(t)
+
+	// Turn 1 becomes mutable (running), then turn 2's append evicts
+	// turn 1's row (retention bound is 1 newest row per session).
+	quad1 := testQuad(h.id, "run-1")
+	quad2 := testQuad(h.id, "run-2")
+	h.src.publish(t, spawnEv(h.id, quad1.RunID, "task-1", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-1"))
+	h.src.publish(t, toolInvokedEv(h.id, quad1.RunID, "one.tool", time.Now()))
+	h.src.publish(t, spawnEv(h.id, quad2.RunID, "task-2", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-2"))
+	// A late event for the EVICTED turn 1: with the honest gap handling
+	// the turn is retired and the pass continues; without it the pass
+	// would wedge on ErrTurnNotFound.
+	h.src.publish(t, toolInvokedEv(h.id, quad1.RunID, "late.tool", time.Now()))
+	// Turn 2's own terminal seal still lands in the same pass.
+	last := h.src.publish(t, failedEv(h.id, "task-2", "timeout"))
+
+	res, err := m.Materialize(context.Background())
+	if err != nil {
+		t.Fatalf("materialize: %v (an evicted turn must never wedge the pass)", err)
+	}
+	if res.Cursor != last.Sequence {
+		t.Errorf("cursor = %d, want %d (the pass advanced past the evicted turn)", res.Cursor, last.Sequence)
+	}
+	// Turn 2 converged sealed.
+	row2 := mustGetRow(t, h, "task-2")
+	if !row2.Sealed || row2.Status != turns.StatusFailed {
+		t.Fatalf("turn 2 = status %q sealed %v (later events must continue)", row2.Status, row2.Sealed)
+	}
+	// Turn 1 is NOT resurrected: the retired gap stays a gap.
+	if _, err := h.proj.Get(context.Background(), h.id, "task-1"); !errors.Is(err, turns.ErrTurnNotFound) {
+		t.Fatalf("evicted turn 1 = %v, want ErrTurnNotFound (no resurrection)", err)
+	}
+
+	// A LATER SESSION's lifecycle still materializes on the same
+	// materializer (the eviction never wedged the global cursor).
+	other := identity.Identity{TenantID: "tenant-b", UserID: "user-b", SessionID: "sess-b"}
+	oq := testQuad(other, "run-3")
+	h.src.publish(t, spawnEv(other, oq.RunID, "task-3", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(other, "task-3"))
+	h.src.publish(t, failedEv(other, "task-3", "timeout"))
+	if _, err := m.Materialize(context.Background()); err != nil {
+		t.Fatalf("materialize (later session): %v", err)
+	}
+	row3, err := h.proj.Get(context.Background(), other, "task-3")
+	if err != nil {
+		t.Fatalf("later-session turn: %v", err)
+	}
+	if !row3.Sealed || row3.Status != turns.StatusFailed {
+		t.Fatalf("later-session turn = status %q sealed %v", row3.Status, row3.Sealed)
+	}
+}
+
+// TestMaterialize_DeferredCompleteRetryNoOpDoesNotFalseSeal pins the
+// deferred-complete retry contract (P1 #4): when the retried seal's
+// EventSeq (the session checkpoint) is at or below the row's
+// last-applied sequence, the projector treats it as an already-applied
+// NO-OP and returns the row UNCHANGED — the retry must never equate
+// that no-op with a successful seal. The local state stays unsealed and
+// pending, and the row stays mutable until a REAL terminal event seals
+// it.
+func TestMaterialize_DeferredCompleteRetryNoOpDoesNotFalseSeal(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+	m := h.newMaterializer(t)
+
+	quad := testQuad(h.id, "run-fs")
+	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-fs", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-fs"))
+	// task.completed without an answer source: the seal is deferred
+	// (the row honestly stays mutable running).
+	h.src.publish(t, completedEv(h.id, "task-fs"))
+	// Later run-scoped events advance the ROW's last-applied sequence
+	// to the session checkpoint — exactly the shape that makes the
+	// end-of-pass retry a sequence no-op.
+	h.src.publish(t, toolInvokedEv(h.id, quad.RunID, "fs.tool", time.Now()))
+	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "fs.tool", 1, 5))
+
+	res, err := m.Materialize(context.Background())
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if res.PendingComplete != 1 {
+		t.Errorf("pending complete = %d, want 1 (the deferred seal stays pending)", res.PendingComplete)
+	}
+	row := mustGetRow(t, h, "task-fs")
+	if row.Sealed || row.Status != turns.StatusRunning {
+		t.Fatalf("row = status %q sealed %v (a no-op retry must NOT false-seal)", row.Status, row.Sealed)
+	}
+
+	// A second pass without new events: still pending, still no seal.
+	if _, err := m.Materialize(context.Background()); err != nil {
+		t.Fatalf("re-materialize: %v", err)
+	}
+	row = mustGetRow(t, h, "task-fs")
+	if row.Sealed || row.Status != turns.StatusRunning {
+		t.Fatalf("row after no-op retry = status %q sealed %v", row.Status, row.Sealed)
+	}
+
+	// A REAL terminal event for the root still seals the row (the local
+	// state was never falsely marked sealed).
+	h.src.publish(t, failedEv(h.id, "task-fs", "timeout"))
+	if _, err := m.Materialize(context.Background()); err != nil {
+		t.Fatalf("materialize (real terminal): %v", err)
+	}
+	row = mustGetRow(t, h, "task-fs")
+	if !row.Sealed || row.Status != turns.StatusFailed {
+		t.Fatalf("real terminal did not seal: status=%q sealed=%v", row.Status, row.Sealed)
+	}
 }
 
 // ---------------------------------------------------------------------------

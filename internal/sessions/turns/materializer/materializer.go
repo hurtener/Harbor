@@ -53,8 +53,12 @@
 //     the pause episode); task.completed → a COMPLETE seal whose
 //     answer source must have converged (see below); task.failed →
 //     a FAILED seal with the closed content-free error class;
-//     task.cancelled → a CANCELLED seal. task.paused is not the live
-//     pause path and is omitted by the explicit relationship rule.
+//     task.cancelled → a CANCELLED seal. Only the ROOT foreground
+//     task's OWN terminal lifecycle seals its turn: a child /
+//     background task's terminal events fold bounded activity (through
+//     their run-scoped events) but NEVER seal the root. task.paused is
+//     not the live pause path and is omitted by the explicit
+//     relationship rule.
 //   - planner.decision → one DERIVED consumer-safe reasoning step
 //     (closed kind + chronological index). Raw provider thinking is
 //     structurally absent from the projection.
@@ -111,12 +115,20 @@
 // zero: row mutations at or below the checkpoint are no-ops (cheap
 // reads), the in-memory accumulators rebuild deterministically from
 // the events, and the pass continues past the checkpoint — restart
-// catch-up is idempotent and converging. An ERASED session is skipped
-// permanently: the store-local durable erasure fence refuses every
-// write (ErrErasureFenced), the durable event source itself excludes
-// fenced sessions, and the optional runtime ErasureProbe (wired like
-// the projector's own) refuses to re-materialize an erased session
-// from sequence zero on a restarted in-memory store.
+// catch-up is idempotent and converging. Within one instance the
+// session state also tracks the sequence of the last event fully
+// incorporated into its accumulators, so a page retry after a
+// mid-page failure never re-derives already-applied events (event
+// application is transactional: the accumulators commit only after the
+// durable write succeeds). A turn whose durable row was EVICTED past
+// retention is an honest per-turn terminal projection gap: its routing
+// state is retired and the pass keeps advancing without resurrecting
+// it. An ERASED session is skipped permanently: the store-local
+// durable erasure fence refuses every write (ErrErasureFenced), the
+// durable event source itself excludes fenced sessions, and the
+// optional runtime ErasureProbe (wired like the projector's own)
+// refuses to re-materialize an erased session from sequence zero on a
+// restarted in-memory store.
 //
 // # Source honesty
 //
@@ -345,10 +357,10 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 			continue
 		}
 		for _, ts := range sess.turns {
-			if !ts.pendingComplete || ts.sealed {
+			if !ts.pendingComplete || ts.terminal() {
 				continue
 			}
-			_, err := m.sealTurn(ctx, sess, ts, turns.Seal{
+			row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
 				Status:       turns.StatusComplete,
 				FinishReason: turns.FinishGoal,
 				EventSeq:     sess.checkpoint,
@@ -363,6 +375,23 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 					continue
 				}
 				return res, fmt.Errorf("materializer: retry complete seal %s: %w", ts.taskID, err)
+			}
+			if ts.retired {
+				// The row was evicted past retention: the deferred seal
+				// is an honest terminal projection gap — retire the
+				// routing state, never resurrect.
+				ts.pendingComplete = false
+				continue
+			}
+			if !row.Sealed {
+				// The seal observation was a sequence no-op (its
+				// sequence is at or below the row's last-applied
+				// sequence): the DURABLE row is demonstrably NOT sealed.
+				// Never equate a no-op with a successful seal — the
+				// local state stays unsealed and the retry continues on
+				// the next pass.
+				res.PendingComplete++
+				continue
 			}
 			ts.sealed = true
 			ts.pendingComplete = false

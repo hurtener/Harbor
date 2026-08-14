@@ -11,7 +11,7 @@ import (
 // state. It is NOT a second durable store and NOT a warehouse: the
 // projector Store remains the authoritative row source; this state
 // exists only to preserve the materializer's own derived accumulators
-// (the FULL cumulative activity / reasoning / usage / input feeds —
+// (the cumulative activity / bounded reasoning / usage / input feeds —
 // which the row cannot retain past its bounded windows) and the
 // run/task routing index, across the events of one materializer
 // lifetime. After a process restart the state is rebuilt by re-paging
@@ -29,6 +29,20 @@ type sessionState struct {
 	// already landed in a previous lifetime) — restart catch-up is
 	// cheap and idempotent.
 	checkpoint uint64
+	// memSeq is the sequence of the last event FULLY incorporated into
+	// THIS instance's in-memory state (the accumulators AND the durable
+	// rows, or — during restart catch-up — the durable rows that
+	// already landed in a previous lifetime). It starts at 0 for every
+	// instance and advances in lockstep with the checkpoint after every
+	// applied event, so a same-instance page retry (a mid-page failure
+	// aborted the pass and the caller re-ran Materialize) never
+	// re-derives already-incorporated events into the accumulators —
+	// re-application at or below memSeq is a no-op. The checkpoint
+	// alone cannot serve this role: restart catch-up deliberately
+	// re-derives events at or below the DURABLE checkpoint into the
+	// (fresh, empty) accumulators, which is exactly what memSeq tracks
+	// as already done.
+	memSeq uint64
 	// fenced marks the session as permanently fenced (an erasure has
 	// converged): every further event for it is skipped without
 	// touching the store. The fence is never lifted.
@@ -62,6 +76,13 @@ type turnState struct {
 	// possible, so later events for the turn are skipped (the turn has
 	// converged; the projector refuses writes to sealed rows).
 	sealed bool
+	// retired marks the turn as an HONEST TERMINAL PROJECTION GAP: the
+	// durable row was evicted past retention (or never retained), so
+	// every further write/read for it is refused with ErrTurnNotFound.
+	// The turn's routing state is retired (later events are skipped,
+	// never resurrected) and the materializer keeps advancing — a
+	// single evicted row never wedges the pass or the cursor.
+	retired bool
 	// pendingComplete records that a `task.completed` was observed but
 	// the complete seal was refused because the answer source had not
 	// converged (no answer-carrying canonical event was seen). The
@@ -79,8 +100,15 @@ type turnState struct {
 	// usage is the cumulative per-measure usage accumulator fed to the
 	// projector wholesale on every usage-affecting update.
 	usage turns.Usage
-	// reasoning is the FULL ordered derived reasoning feed (index +
-	// closed kind), fed wholesale on every planner-decision attach.
+	// reasoning is the BOUNDED ordered derived reasoning feed (index +
+	// closed kind), fed wholesale on every planner-decision attach. The
+	// feed is clamped at the projector's per-observation feed-acceptance
+	// bound (maxReasoningFeed) keeping the chronological HEAD — the
+	// projector retains the first turns.MaxReasoningSteps of what it is
+	// fed and reports the tail drop honestly as Partial + Dropped, so a
+	// long trajectory never grows the accumulator unboundedly and never
+	// fails the feed (a >MaxReasoningSteps*4 feed would be refused by
+	// the projector's validation).
 	reasoning []turns.ReasoningStep
 	// nextReasoningIndex is the next chronological reasoning index to
 	// stamp (strictly increasing, gap-tolerant).
@@ -157,6 +185,37 @@ func (s *sessionState) taskTurn(taskID string) (turns.TurnID, *turnState, bool) 
 	}
 	return "", nil, false
 }
+
+// rootTaskTurn resolves the turn a TERMINAL task lifecycle event may
+// seal, but ONLY when the named task is the root foreground task of
+// the materialized turn itself. Child / background tasks NEVER seal
+// the root: their terminal events fold bounded activity (through their
+// run-scoped events only) and must leave the root's lifecycle
+// untouched — only the root foreground task's OWN terminal lifecycle
+// seals its turn. A root background task (no parent, no turn) is
+// likewise never a seal target.
+func (s *sessionState) rootTaskTurn(taskID string) (turns.TurnID, *turnState, bool) {
+	parent, hasParent := s.tasks[taskID]
+	if !hasParent {
+		return "", nil, false
+	}
+	if parent != "" {
+		// A child / background task: never the root — its terminal
+		// lifecycle must not seal the root turn.
+		return "", nil, false
+	}
+	ts, ok := s.turns[turns.TurnID(taskID)]
+	if !ok {
+		return "", nil, false
+	}
+	return turns.TurnID(taskID), ts, true
+}
+
+// terminal reports whether the turn can accept no further mutation:
+// durably sealed, or retired (the durable row was evicted / never
+// retained — an honest terminal projection gap that is never
+// resurrected).
+func (ts *turnState) terminal() bool { return ts.sealed || ts.retired }
 
 // splitIdentity validates the envelope triple and returns the session
 // identity plus a presence flag. The materializer never fabricates an

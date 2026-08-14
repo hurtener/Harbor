@@ -189,6 +189,58 @@ func TestMaterialize_CumulativeUsageAccumulates(t *testing.T) {
 	}
 }
 
+// TestMaterialize_ReasoningOverflowClampsAndContinues pins the bounded
+// reasoning contract (independent-review P1 #5): a trajectory with more
+// than turns.MaxReasoningSteps*4 derived steps never fails the feed and
+// never grows the accumulator unboundedly — the feed clamps at the
+// projector's per-observation acceptance bound, the row reports Partial
+// + Dropped honestly, and the pass keeps advancing (later activity and
+// the terminal seal still apply; the cursor never wedges).
+func TestMaterialize_ReasoningOverflowClampsAndContinues(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+	m := h.newMaterializer(t)
+
+	quad := testQuad(h.id, "run-of")
+	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-of", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-of"))
+	steps := turns.MaxReasoningSteps*4 + 20 // > the projector's 128-step feed-acceptance bound
+	for i := 0; i < steps; i++ {
+		h.src.publish(t, decisionEv(h.id, quad.RunID, "CallTool"))
+	}
+	// Events AFTER the overflow still apply (the pass never wedges).
+	h.src.publish(t, toolInvokedEv(h.id, quad.RunID, "post.tool", time.Now()))
+	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "post.tool", 1, 5))
+	last := h.src.publish(t, failedEv(h.id, "task-of", "timeout"))
+
+	res, err := m.Materialize(context.Background())
+	if err != nil {
+		t.Fatalf("materialize: %v (an over-bound reasoning feed must never hard-fail the pass)", err)
+	}
+	if res.Cursor != last.Sequence {
+		t.Errorf("cursor = %d, want %d", res.Cursor, last.Sequence)
+	}
+	row := mustGetRow(t, h, "task-of")
+	// The projector retained the FIRST turns.MaxReasoningSteps of the
+	// clamped feed and reported the tail drop honestly as Partial.
+	if len(row.Reasoning.Steps) != turns.MaxReasoningSteps {
+		t.Fatalf("reasoning steps = %d, want %d retained", len(row.Reasoning.Steps), turns.MaxReasoningSteps)
+	}
+	if row.Reasoning.Complete != turns.CompletenessPartial ||
+		row.Reasoning.Dropped != maxReasoningFeed-turns.MaxReasoningSteps {
+		t.Errorf("reasoning = complete %q dropped %d, want partial with %d dropped",
+			row.Reasoning.Complete, row.Reasoning.Dropped, maxReasoningFeed-turns.MaxReasoningSteps)
+	}
+	// The post-overflow activity still applied and the turn converged.
+	if len(row.Activity.Rows) != 1 || row.Activity.Rows[0].Tool != "post.tool" ||
+		row.Activity.Rows[0].Status != turns.ActivitySucceeded {
+		t.Errorf("activity = %+v, want the post-overflow dispatch succeeded", row.Activity.Rows)
+	}
+	if !row.Sealed || row.Status != turns.StatusFailed {
+		t.Fatalf("terminal = status %q sealed %v (cursor progress continued)", row.Status, row.Sealed)
+	}
+}
+
 // TestMaterialize_InputDispositionDedupAndEdgeSkips pins the input
 // attachment dedup (a replay can never double-list) and the edge skips:
 // a duplicate disposition is a no-op, an empty artifact id is omitted,
