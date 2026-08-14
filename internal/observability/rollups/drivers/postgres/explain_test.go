@@ -53,8 +53,23 @@ func TestQuery_Explain_IndexedAccess(t *testing.T) {
 			})
 		}
 	}
-	if err := d.ApplyBatch(ctx, rollups.Batch{Checkpoint: seq, Deltas: deltas}); err != nil {
-		t.Fatalf("seed ApplyBatch: %v", err)
+	// One ApplyBatch over all 40_000 deltas would emit a bind parameter
+	// per row column — 20 per upserted row (5 key + 15 measure) and 5 per
+	// key in the read pass — blowing past PostgreSQL's 65_535-parameter
+	// ceiling before the EXPLAIN assertions ever run. Seed in deterministic
+	// bounded batches instead: seedBatchMax keeps the binding upsert
+	// statement at 20 × 2_000 = 40_000 parameters. The batches are disjoint
+	// and carry strictly monotonic checkpoints (the cumulative delta count,
+	// final = 40_000), so every delta is applied exactly once and the final
+	// table cardinality and tenant/window distribution are identical to the
+	// single-batch seed.
+	const seedBatchMax = 2000
+	for start := 0; start < len(deltas); start += seedBatchMax {
+		end := min(start+seedBatchMax, len(deltas))
+		ckpt := uint64(end)
+		if err := d.ApplyBatch(ctx, rollups.Batch{Checkpoint: ckpt, Deltas: deltas[start:end]}); err != nil {
+			t.Fatalf("seed ApplyBatch (checkpoint=%d, deltas=%d): %v", ckpt, end-start, err)
+		}
 	}
 	if _, err := d.db.ExecContext(ctx, "ANALYZE rollup_rows"); err != nil {
 		t.Fatalf("ANALYZE: %v", err)
