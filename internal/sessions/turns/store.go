@@ -170,10 +170,10 @@ type Store interface {
 	// DeleteScope removes every retained turn row and the checkpoint
 	// under id (the erasure cascade's projection leg). Idempotent: an
 	// absent scope returns (0, nil). The erasure FENCE is NOT removed
-	// — the caller (Projector.Erase) sets it via FenceSession before
-	// calling DeleteScope, and this method deliberately never clears
-	// it, so an erased session stays fenced. This method only clears
-	// this projection's own records.
+	// — the caller (the runtime's erasure cascade or Projector.Erase)
+	// sets it via FenceSession before calling DeleteScope, and this
+	// method deliberately never clears it, so an erased session stays
+	// fenced. This method only clears this projection's own records.
 	DeleteScope(ctx context.Context, id identity.Identity) (int, error)
 
 	// Close releases driver resources; subsequent calls fail with

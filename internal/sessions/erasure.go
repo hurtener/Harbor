@@ -59,18 +59,42 @@ const erasureLedgerKindPrefix = "session.erasure.pending."
 // retained information about deleted data (RFC §7 right-to-erasure).
 const erasureTombstoneKindPrefix = "session.erasure.tombstone."
 
-// ProjectionFencer is the narrow erasure seam the runtime-owned durable
-// projections (the HA-64 conversation-turn store and the HA-65
-// observability rollup store) implement. The erasure cascade calls
-// FenceSession BEFORE any destructive step so the projection rows are
-// erased AND permanently fenced in the same transaction — a late
-// event for the erased triple is refused forever (the fence outlives
-// replay and restart; no replay resurrection). The interface keeps the
-// cascade decoupled from the projection packages (CLAUDE.md §4.4).
+// ProjectionFencer is the fence-only erasure seam the HA-65
+// observability rollup projection store implements: FenceSession erases
+// the triple's rows AND permanently fences it in one transaction, so a
+// late event for the erased triple is refused forever (the fence
+// outlives replay and restart; no replay resurrection). The HA-64
+// conversation-turn store does NOT satisfy this seam alone — its
+// FenceSession persists the permanent fence without erasing existing
+// rows — so the cascade drives it through TurnsProjectionEraser
+// instead (fence, then row/checkpoint DeleteScope). The interface keeps
+// the cascade decoupled from the projection packages (CLAUDE.md §4.4).
 type ProjectionFencer interface {
 	// FenceSession erases every row for the session triple and fences
 	// the triple PERMANENTLY (idempotent).
 	FenceSession(ctx context.Context, id identity.Identity) error
+}
+
+// TurnsProjectionEraser is the HA-64 conversation-turn projection's
+// erasure seam: the permanent FenceSession PLUS the row/checkpoint
+// DeleteScope. The HA-64 turn-store drivers deliberately do NOT erase
+// existing rows inside FenceSession — FenceSession only persists the
+// permanent store-local fence, and reads (GetTurn / ListTurns /
+// LoadCheckpoint) are NOT fenced, so fenced-but-not-deleted rows stay
+// readable through sessions.turns.list/get by an otherwise still-valid
+// exact-session identity. The cascade therefore calls FenceSession then
+// DeleteScope in that strict order: fence first (every subsequent write
+// is refused from that instant), delete second (the retained rows and
+// checkpoint go while the permanent fence survives — no resurrection
+// after replay or restart). A concrete *turns.Store satisfies this
+// interface; the cascade stays decoupled from the turns package
+// (CLAUDE.md §4.4).
+type TurnsProjectionEraser interface {
+	ProjectionFencer
+	// DeleteScope removes every retained turn row and the session
+	// checkpoint under id while PRESERVING the permanent fence set by
+	// FenceSession. Idempotent: an absent scope returns (0, nil).
+	DeleteScope(ctx context.Context, id identity.Identity) (int, error)
 }
 
 // CascadeEraser performs the ordered, fail-loud, idempotent session
@@ -224,11 +248,15 @@ type CascadeEraser struct {
 	logger   *slog.Logger
 
 	// turnsProjection / rollupsProjection are the OPTIONAL runtime-owned
-	// durable projection fencers (HA-64 turns, HA-65 rollups). When
-	// wired, the cascade fences (erases rows + sets the permanent
-	// projection-local fence) BEFORE any destructive step so no late
-	// event can resurrect the erased session's projection rows.
-	turnsProjection   ProjectionFencer
+	// durable projection erasure seams (HA-64 turns, HA-65 rollups).
+	// When wired, the cascade fences BEFORE any destructive step so no
+	// late event can resurrect the erased session's projection rows.
+	// The HA-64 turns seam additionally runs the row/checkpoint
+	// DeleteScope immediately after its FenceSession (the HA-64 fence
+	// persists without erasing rows; DeleteScope erases them while the
+	// permanent fence survives). The HA-65 rollup seam erases rows AND
+	// fences in FenceSession alone.
+	turnsProjection   TurnsProjectionEraser
 	rollupsProjection ProjectionFencer
 
 	// eraseLocks stripes a fixed-size array of mutexes over the
@@ -264,11 +292,15 @@ type CascadeEraserDeps struct {
 	Logger    *slog.Logger
 
 	// TurnsProjection / RollupsProjection are the OPTIONAL HA-64 / HA-65
-	// durable projection fencers. When wired the cascade fences them
-	// immediately after the event-bus fence and before any destructive
-	// step, so the projection rows are erased + permanently fenced and a
-	// late event for the erased triple is refused forever.
-	TurnsProjection   ProjectionFencer
+	// durable projection erasure seams. When wired the cascade fences
+	// them immediately after the event-bus fence and before any
+	// destructive step, so the projection rows are erased + permanently
+	// fenced and a late event for the erased triple is refused forever.
+	// TurnsProjection requires the row/checkpoint erasure seam
+	// (FenceSession then DeleteScope — the HA-64 turn-store fence does
+	// not erase existing rows); RollupsProjection's FenceSession alone
+	// erases rows and fences in one transaction.
+	TurnsProjection   TurnsProjectionEraser
 	RollupsProjection ProjectionFencer
 }
 
@@ -510,19 +542,31 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 		return zero, fmt.Errorf("sessions: erase fence: %w", err)
 	}
 
-	// 2a. Fence the runtime-owned durable projections (HA-64 turns /
-	//     HA-65 rollups) when they are wired: FenceSession erases the
-	//     triple's projection rows AND sets the PERMANENT projection-local
-	//     fence in one transaction, so a late event for the erased triple
-	//     is refused forever (no replay resurrection). It runs after the
+	// 2a. Fence + erase the runtime-owned durable projections (HA-64
+	//     turns / HA-65 rollups) when they are wired. It runs after the
 	//     bus fence and BEFORE any destructive step; a present-but-failing
-	//     fence capability fails the whole cascade loud right here —
+	//     fence/erase capability fails the whole cascade loud right here —
 	//     nothing has been deleted yet, so this is retry-safe. The fences
 	//     are never removed by the erasure itself: an erased session stays
-	//     fenced across replay and restart.
+	//     fenced across replay and restart (no replay resurrection).
+	//
+	//     The HA-64 turns seam is FENCE-FIRST, DELETE-SECOND: its
+	//     FenceSession persists the PERMANENT store-local fence but — by
+	//     design — does not erase existing turn rows (reads are not
+	//     fenced), so the row/checkpoint DeleteScope runs immediately
+	//     after it. Fencing first means every subsequent write is refused
+	//     from that instant; deleting second erases the retained rows and
+	//     checkpoint while the permanent fence survives. A DeleteScope
+	//     failure fails the WHOLE cascade loud and does NOT undo the
+	//     already-permanent fence; a re-invoke re-runs the pair to
+	//     convergence (both idempotent). The HA-65 rollup seam erases
+	//     rows AND fences in FenceSession alone.
 	if e.turnsProjection != nil {
 		if err := e.turnsProjection.FenceSession(ctx, id); err != nil {
 			return zero, fmt.Errorf("sessions: erase turns projection fence: %w", err)
+		}
+		if _, err := e.turnsProjection.DeleteScope(ctx, id); err != nil {
+			return zero, fmt.Errorf("sessions: erase turns projection scope: %w", err)
 		}
 	}
 	if e.rollupsProjection != nil {
