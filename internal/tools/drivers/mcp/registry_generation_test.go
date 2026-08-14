@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -414,5 +416,282 @@ func TestCurrentGenerationFor_FailsClosedOnNonCanonicalAndEmpty(t *testing.T) {
 	bad[0].Tool.Examples[0].Args = map[string]any{"fn": func() {}}
 	if got := currentGenerationFor(bad); got != "" {
 		t.Fatalf("non-canonically encodable descriptor yielded %q, want empty (unknown, fail closed)", got)
+	}
+}
+
+// TestCurrentGenerationFor_RetryOnNilVsExplicitEmptyDistinct pins the
+// behaviorally meaningful ToolPolicy.RetryOn distinction the digest must
+// preserve: a nil RetryOn (zero value) INHERITS the default retry
+// allowlist ([transient, timeout, 5xx]) at dispatch, while a non-nil
+// EMPTY RetryOn means "retry on nothing" (one attempt only). Encoding
+// only the sorted set members would collapse the two policies into one
+// generation; the nil-vs-explicit presence marker keeps them distinct,
+// while sorting a non-empty set's members stays order-independent.
+func TestCurrentGenerationFor_RetryOnNilVsExplicitEmptyDistinct(t *testing.T) {
+	nilRetry := genBaseSet()
+	nilRetry[0].Tool.Policy.RetryOn = nil
+	explicitEmpty := genBaseSet()
+	explicitEmpty[0].Tool.Policy.RetryOn = []tools.ErrorClass{}
+	explicitSet := genBaseSet()
+	explicitSet[0].Tool.Policy.RetryOn = []tools.ErrorClass{tools.ErrClassTransient, tools.ErrClassTimeout}
+
+	genNil := currentGenerationFor(nilRetry)
+	genEmpty := currentGenerationFor(explicitEmpty)
+	genSet := currentGenerationFor(explicitSet)
+	if genNil == "" || genEmpty == "" || genSet == "" {
+		t.Fatal("all three RetryOn shapes must produce a known generation")
+	}
+	if genNil == genEmpty {
+		t.Fatalf("nil RetryOn (inherit defaults) and explicit empty RetryOn (retry nothing) collapsed into one generation %q", genNil)
+	}
+	if genEmpty == genSet {
+		t.Fatalf("explicit empty RetryOn collapsed with an explicit non-empty RetryOn set (both %q)", genEmpty)
+	}
+	// Reversed member order of the same set must NOT move the generation
+	// (the set members stay sorted); the nil/empty distinction above is
+	// carried by the presence marker, not by member order.
+	reversed := genBaseSet()
+	reversed[0].Tool.Policy.RetryOn = []tools.ErrorClass{tools.ErrClassTimeout, tools.ErrClassTransient}
+	if got := currentGenerationFor(reversed); got == "" || got != genSet {
+		t.Fatalf("reordering RetryOn members moved the generation (got %q, want %q)", got, genSet)
+	}
+	// The same distinction survives the REAL registry path — the MCP
+	// driver projects a non-nil empty RetryOn for max_attempts=1 and a
+	// nil RetryOn when the server declares no retry override.
+	reg1 := NewRegistry()
+	stageAppServer(t, reg1, "srv-a", nilRetry)
+	reg2 := NewRegistry()
+	stageAppServer(t, reg2, "srv-a", explicitEmpty)
+	g1, ok1 := reg1.CurrentGeneration("srv-a")
+	g2, ok2 := reg2.CurrentGeneration("srv-a")
+	if !ok1 || !ok2 || g1 == "" || g2 == "" {
+		t.Fatalf("registry path must establish both generations (g1=%q ok1=%v g2=%q ok2=%v)", g1, ok1, g2, ok2)
+	}
+	if g1 == g2 {
+		t.Fatalf("nil vs explicit-empty RetryOn collapsed through the registry (%q == %q)", g1, g2)
+	}
+}
+
+// TestCurrentGenerationFor_InvalidUTF8SchemasFailClosed proves non-UTF-8
+// schema bytes are rejected BEFORE any JSON token decoding: the JSON
+// decoder replacement-normalizes invalid bytes to U+FFFD instead of
+// failing, so without the UTF-8 gate two DISTINCT corrupt documents
+// (e.g. a pattern carrying \xff vs \xfe) would collapse into ONE
+// authoritative generation. Both must instead fail the whole generation
+// closed — never converge, never hash as authoritative state.
+func TestCurrentGenerationFor_InvalidUTF8SchemasFailClosed(t *testing.T) {
+	distinct := []string{
+		"\xff", // a bare invalid byte, not a JSON document at all
+		`{"type":"object","properties":{"x":{"type":"string","pattern":"a\xffb"}}}`,
+		`{"type":"object","properties":{"x":{"type":"string","pattern":"a\xfeb"}}}`, // a DIFFERENT invalid byte
+	}
+	for _, raw := range distinct {
+		if _, err := canonicalJSONSchema(json.RawMessage(raw)); err == nil {
+			t.Errorf("canonicalJSONSchema(%q) succeeded, want an error", raw)
+		}
+	}
+	for _, raw := range distinct {
+		descs := genBaseSet()
+		descs[0].Tool.ArgsSchema = json.RawMessage(raw)
+		if got := currentGenerationFor(descs); got != "" {
+			t.Errorf("invalid-UTF-8 ArgsSchema %q yielded %q, want empty (unknown, fail closed)", raw, got)
+		}
+		descs = genBaseSet()
+		descs[0].Tool.OutSchema = json.RawMessage(raw)
+		if got := currentGenerationFor(descs); got != "" {
+			t.Errorf("invalid-UTF-8 OutSchema %q yielded %q, want empty (unknown, fail closed)", raw, got)
+		}
+	}
+	// The U+FFFD replacement character, when it appears as VALID UTF-8
+	// inside a string, is still just a character — but the two INVALID
+	// byte sequences that the decoder would normalize onto it fail
+	// closed, so they can never converge onto one authoritative digest.
+	replacement := genBaseSet()
+	replacement[0].Tool.ArgsSchema = json.RawMessage(`{"type":"object","properties":{"x":{"type":"string","pattern":"a\ufffdb"}}}`)
+	if got := currentGenerationFor(replacement); got == "" {
+		t.Fatal("a valid-UTF-8 U+FFFD literal inside a string is a legitimate (if odd) character — the schema must still hash")
+	}
+}
+
+// TestCurrentGenerationFor_AbsentOptionalSchemaIsStableExplicitAbsence
+// pins the prior semantic-JSON fix for the REAL MCP shape: a tool that
+// declares no output schema (OutSchema absent — outputSchema is OPTIONAL
+// on the MCP wire) must hash as a stable explicit absence —
+// deterministically, replica-stably, and distinct from a declared schema —
+// exactly like an absent input schema, and never fail closed. Malformed
+// non-empty schema bytes still fail the whole generation closed: absent
+// is stable, malformed is unknown, never a collapse.
+func TestCurrentGenerationFor_AbsentOptionalSchemaIsStableExplicitAbsence(t *testing.T) {
+	absentOut := genBaseSet()
+	absentOut[0].Tool.OutSchema = nil // absent optional output schema (real MCP: outputSchema is optional)
+	absentOutAlt := genBaseSet()
+	absentOutAlt[0].Tool.OutSchema = json.RawMessage("") // the MCP driver's encoding of "no schema declared"
+	g1, g2 := currentGenerationFor(absentOut), currentGenerationFor(absentOutAlt)
+	if g1 == "" || g1 != g2 {
+		t.Fatalf("absent OutSchema must be a stable explicit-absence marker (gen1=%q gen2=%q)", g1, g2)
+	}
+	// Absent OutSchema + present ArgsSchema differs from BOTH schemas
+	// absent, and from a declared OutSchema.
+	bothAbsent := genBaseSet()
+	bothAbsent[0].Tool.ArgsSchema = nil
+	bothAbsent[0].Tool.OutSchema = nil
+	declared := currentGenerationFor(genBaseSet())
+	if declared == "" || declared == g1 {
+		t.Fatal("a declared OutSchema must hash differently from the absent-schema marker")
+	}
+	if got := currentGenerationFor(bothAbsent); got == "" || got == g1 {
+		t.Fatalf("both-absent must be its own stable marker, got %q", got)
+	}
+	// The mirror case: absent INPUT schema with a declared output schema.
+	absentIn := genBaseSet()
+	absentIn[0].Tool.ArgsSchema = nil
+	if got := currentGenerationFor(absentIn); got == "" || got == g1 {
+		t.Fatalf("absent ArgsSchema + present OutSchema must be a distinct stable marker, got %q", got)
+	}
+	// Malformed non-empty OutSchema still fails closed — absence is
+	// stable, malformed is unknown.
+	for _, raw := range []string{`{"type":"object",`, `{"a":1,"a":2}`} {
+		descs := genBaseSet()
+		descs[0].Tool.OutSchema = json.RawMessage(raw)
+		if got := currentGenerationFor(descs); got != "" {
+			t.Errorf("malformed OutSchema %q yielded %q, want empty (unknown, fail closed)", raw, got)
+		}
+	}
+}
+
+// TestRegistry_ResolveAppToolAtGeneration_ExactGenerationAtomic pins the
+// atomic compare+resolve seam: the descriptor is returned ONLY when the
+// server's current generation exactly equals the expected one, compared
+// under the SAME registry read lock as the lookup. A refresh/replacement
+// between an earlier generation read and this call — simulated by reading
+// gen1, replacing the server (gen1 → gen2), then resolving with gen1 —
+// fails typed (ErrGenerationMismatch) and never returns (never executes)
+// the new row. Resolving with the NEW generation returns the NEW
+// descriptor; a name miss within the exact generation stays a plain
+// not-found.
+func TestRegistry_ResolveAppToolAtGeneration_ExactGenerationAtomic(t *testing.T) {
+	reg := NewRegistry()
+	v1Calls := new(atomic.Int64)
+	v2Calls := new(atomic.Int64)
+	v1 := tools.ToolDescriptor{
+		Tool: tools.Tool{Name: "srv-a_cb", Source: "srv-a", Transport: tools.TransportMCP, AppOnly: true},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			v1Calls.Add(1)
+			return tools.ToolResult{Value: map[string]any{"ok": "v1"}}, nil
+		},
+	}
+	v2 := tools.ToolDescriptor{
+		Tool: tools.Tool{Name: "srv-a_cb-v2", Source: "srv-a", Transport: tools.TransportMCP, AppOnly: true},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			v2Calls.Add(1)
+			return tools.ToolResult{Value: map[string]any{"ok": "v2"}}, nil
+		},
+	}
+	stageAppServer(t, reg, "srv-a", []tools.ToolDescriptor{v1})
+	gen1, ok := reg.CurrentGeneration("srv-a")
+	if !ok || gen1 == "" {
+		t.Fatalf("v1 registration did not establish a generation (gen1=%q ok=%v)", gen1, ok)
+	}
+
+	// Resolve under the exact generation succeeds.
+	d, ok, err := reg.ResolveAppToolAtGeneration("srv-a", "srv-a_cb", gen1)
+	if err != nil || !ok || d.Tool.Name != "srv-a_cb" {
+		t.Fatalf("exact-generation resolve failed (d=%+v ok=%v err=%v)", d.Tool, ok, err)
+	}
+
+	// Replace with v2 (a different callback name → the generation moves).
+	stageAppServer(t, reg, "srv-a", []tools.ToolDescriptor{v2})
+	gen2, ok := reg.CurrentGeneration("srv-a")
+	if !ok || gen2 == gen1 {
+		t.Fatalf("replacement did not move the generation (gen1=%q gen2=%q ok=%v)", gen1, gen2, ok)
+	}
+
+	// A caller holding gen1 (the accessor after its generation read) that
+	// reaches the atomic compare+resolve after the replacement fails typed
+	// and returns no descriptor — the NEW row can never be executed.
+	_, ok, err = reg.ResolveAppToolAtGeneration("srv-a", "srv-a_cb-v2", gen1)
+	if err == nil || !errors.Is(err, ErrGenerationMismatch) {
+		t.Fatalf("stale-generation resolve err = %v, want a wrapped %v", err, ErrGenerationMismatch)
+	}
+	if ok {
+		t.Fatal("stale-generation resolve must not return a descriptor")
+	}
+	if got := v2Calls.Load(); got != 0 {
+		t.Errorf("v2 invocations = %d, want 0 (the new row must never execute under a stale generation)", got)
+	}
+
+	// The NEW generation resolves the NEW descriptor.
+	d, ok, err = reg.ResolveAppToolAtGeneration("srv-a", "srv-a_cb-v2", gen2)
+	if err != nil || !ok || d.Tool.Name != "srv-a_cb-v2" {
+		t.Fatalf("current-generation resolve of the new row failed (d=%+v ok=%v err=%v)", d.Tool, ok, err)
+	}
+	if _, err := d.Invoke(context.Background(), json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("invoke new row: %v", err)
+	}
+	if got := v2Calls.Load(); got != 1 {
+		t.Errorf("v2 invocations = %d, want exactly 1 (the new row executes only when resolved under its own generation)", got)
+	}
+
+	// A name the exact generation does not hold stays a plain not-found
+	// (no error, ok=false) — distinct from the generation-mismatch refusal.
+	_, ok, err = reg.ResolveAppToolAtGeneration("srv-a", "srv-a_cb", gen2)
+	if err != nil || ok {
+		t.Fatalf("name-miss under the exact generation must be a plain not-found (ok=%v err=%v)", ok, err)
+	}
+
+	// An absent server refuses typed (no current generation to compare) —
+	// a mismatch-family refusal, never a resolution.
+	_, ok, err = reg.ResolveAppToolAtGeneration("absent-srv", "x", gen2)
+	if err == nil || !errors.Is(err, ErrGenerationMismatch) || ok {
+		t.Fatalf("absent-server resolve must refuse with ErrGenerationMismatch (ok=%v err=%v)", ok, err)
+	}
+}
+
+// TestRegistry_ResolveAppToolAtGeneration_ConcurrentIsolation runs N
+// concurrent atomic compare+resolve calls against ONE shared Registry
+// under -race: the compare+resolve holds one read lock, so concurrent
+// exact-generation readers never observe a torn generation/descriptor
+// pairing — every success resolves a descriptor whose generation matched
+// at the same instant, and every refusal is a typed mismatch.
+func TestRegistry_ResolveAppToolAtGeneration_ConcurrentIsolation(t *testing.T) {
+	reg := NewRegistry()
+	stageAppServer(t, reg, "srv-a", []tools.ToolDescriptor{
+		appDesc("srv-a_cb", "srv-a", true),
+	})
+	gen, ok := reg.CurrentGeneration("srv-a")
+	if !ok || gen == "" {
+		t.Fatalf("no generation established: %q", gen)
+	}
+	const n = 128
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	refusals := new(atomic.Int64)
+	hits := new(atomic.Int64)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, ok, err := reg.ResolveAppToolAtGeneration("srv-a", "srv-a_cb", gen)
+			switch {
+			case err != nil:
+				if !errors.Is(err, ErrGenerationMismatch) {
+					t.Errorf("unexpected resolve error: %v", err)
+				}
+				refusals.Add(1)
+			case ok:
+				hits.Add(1)
+			default:
+				t.Errorf("plain not-found under a current generation")
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := hits.Load(); got != n {
+		t.Errorf("successful exact-generation resolves = %d, want %d (an unchanged generation must never refuse)", got, n)
+	}
+	if got := refusals.Load(); got != 0 {
+		t.Errorf("typed refusals = %d, want 0 under an unchanged generation", got)
 	}
 }

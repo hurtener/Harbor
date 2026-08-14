@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -257,6 +258,14 @@ var (
 	// ErrDiscoveryStale means a refresh completed for a server generation that
 	// is no longer current. Callers may retry against the replacement.
 	ErrDiscoveryStale = errors.New("mcp: discovery result is stale")
+	// ErrGenerationMismatch is the typed outcome of
+	// ResolveAppToolAtGeneration when the server's CURRENT
+	// provider/catalog generation cannot be established as the exact
+	// expected one — the server is absent, has no established current
+	// generation, or was refreshed/replaced between an earlier generation
+	// read and the atomic compare+resolve. It is a refusal (the render
+	// admission is stale), never a resolution of a newer-generation row.
+	ErrGenerationMismatch = errors.New("mcp: app-only resolution raced a catalog generation change")
 )
 
 // DiscoveryStaleError is the bounded, retryable outcome for a refresh whose
@@ -707,10 +716,11 @@ func partitionAppOnly(descs []tools.ToolDescriptor) map[string]tools.ToolDescrip
 // differs only in whitespace or object-key order hashes identically,
 // while a meaningful schema change — and array-order changes — still
 // moves the generation. A schema that is not a single canonical JSON
-// document (invalid JSON, trailing data, duplicate object members at any
-// nesting depth, a non-finite literal, or a number with no exact
-// canonical decimal form) fails the row, so the whole generation becomes
-// unknown: raw invalid bytes are never hashed as authoritative state.
+// document (invalid JSON, non-UTF-8 bytes, trailing data, duplicate
+// object members at any nesting depth, a non-finite literal, or a number
+// with no exact canonical decimal form) fails the row, so the whole
+// generation becomes unknown: raw invalid bytes are never hashed as
+// authoritative state.
 // Empty schema bytes — the MCP driver's encoding of "no schema
 // declared" — are preserved as the fixed empty marker instead of being
 // rejected. Example Args maps are marshalled with encoding/json's
@@ -841,6 +851,20 @@ func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
 	writeInt(int64(t.Policy.BackoffBase))
 	writeFloat(t.Policy.BackoffMult)
 	writeInt(int64(t.Policy.BackoffMax))
+	// RetryOn has a behaviorally meaningful nil-versus-explicit-empty
+	// distinction that the digest MUST preserve: a nil RetryOn (zero
+	// value) inherits the default retry allowlist ([transient, timeout,
+	// 5xx]) at dispatch, while a non-nil empty slice means "retry on
+	// nothing" (one attempt only). Encoding only the sorted members would
+	// collapse the two policies into one generation, so a presence marker
+	// rides ahead of the sorted member list. Sorting the members of a
+	// non-empty set stays order-independent — the marker is what keeps the
+	// two policies distinct.
+	if t.Policy.RetryOn == nil {
+		writeField("nil")
+	} else {
+		writeField("explicit")
+	}
 	retryOn := make([]string, len(t.Policy.RetryOn))
 	for i, class := range t.Policy.RetryOn {
 		retryOn[i] = string(class)
@@ -866,9 +890,18 @@ func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
 // nil) — canonicalize to the empty string: a legitimate semantic state,
 // not a JSON document, so schema-free tools keep a deterministic
 // replica-stable row without failing closed.
+//
+// Non-empty bytes that are not valid UTF-8 are rejected BEFORE any JSON
+// token decoding: encoding/json replacement-normalizes invalid bytes to
+// U+FFFD instead of failing, so without the UTF-8 gate two distinct
+// corrupt documents would collapse into one authoritative generation.
+// The gate makes each corrupt document fail the row closed instead.
 func canonicalJSONSchema(raw json.RawMessage) (string, error) {
 	if len(raw) == 0 {
 		return "", nil
+	}
+	if !utf8.Valid(raw) {
+		return "", errors.New("schema bytes are not valid UTF-8")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	// Preserve number literals verbatim so canonicalJSONNumber can reduce
@@ -1113,6 +1146,45 @@ func (r *Registry) ResolveAppTool(serverID, toolName string) (tools.ToolDescript
 	}
 	d, ok := e.appOnly[toolName]
 	return d, ok
+}
+
+// ResolveAppToolAtGeneration resolves an app-only callback from the named
+// server's App dispatch catalog ONLY when the server's CURRENT generation
+// exactly equals expectedGeneration. The generation compare and the
+// descriptor lookup happen under ONE registry read lock, so a
+// refresh/replacement between an earlier CurrentGeneration read and this
+// call cannot splice a descriptor from a newer generation — the exact
+// compare+resolve the admission-aware AppsAccessor performs after
+// verifying the call-local render-admission proof (HA-56 TOCTOU
+// correction).
+//
+// Outcomes are typed:
+//
+//   - (descriptor, true, nil): the server's current generation equals
+//     expectedGeneration and it holds an app-only callback under
+//     toolName — resolved under the exact expected generation.
+//   - ("", false, error wrapping ErrGenerationMismatch): the server is
+//     absent, has no established current generation, or its current
+//     generation differs from expectedGeneration. A refusal — the
+//     admission is stale — never a resolution of the new row.
+//   - ("", false, nil): the server's current generation equals
+//     expectedGeneration, but the server does not hold an app-only
+//     callback under toolName (a plain not-found within the exact
+//     generation).
+func (r *Registry) ResolveAppToolAtGeneration(serverID, toolName, expectedGeneration string) (tools.ToolDescriptor, bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.servers[serverID]
+	if !ok || e.currentGeneration == "" {
+		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: server %q has no current provider/catalog generation to compare",
+			ErrGenerationMismatch, serverID)
+	}
+	if e.currentGeneration != expectedGeneration {
+		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: server %q current generation changed while resolving (current %q != expected %q)",
+			ErrGenerationMismatch, serverID, e.currentGeneration, expectedGeneration)
+	}
+	d, ok := e.appOnly[toolName]
+	return d, ok, nil
 }
 
 // CurrentGeneration returns the deterministic current provider/catalog

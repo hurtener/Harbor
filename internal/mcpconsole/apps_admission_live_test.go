@@ -757,3 +757,209 @@ func TestAdmissionPath_DirectCall_NoIdentity_FailsClosed(t *testing.T) {
 		t.Errorf("wrapped invocations = %d, want 0", got)
 	}
 }
+
+// --- TOCTOU correction (P1): generation is bound into the proof --------
+
+// racingAdmissionInvoker wraps the REAL AppsAccessor and runs a hook
+// immediately before delegating an admission-verified call — the
+// deterministic synchronization point that forces a catalog generation
+// change AFTER the surface's sealed verification / proof mint and BEFORE
+// the accessor's atomic compare+resolve. Embedding the accessor promotes
+// every other seam, so the surface sees a fully functional invoker.
+type racingAdmissionInvoker struct {
+	*mcpconsole.AppsAccessor
+	beforeAdmitted func()
+}
+
+func (r *racingAdmissionInvoker) CallToolAdmitted(ctx context.Context, serverID, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	if r.beforeAdmitted != nil {
+		r.beforeAdmitted()
+	}
+	return r.AppsAccessor.CallToolAdmitted(ctx, serverID, resourceURI, tool, args)
+}
+
+// buildRacingAdmissionSurface wires the REAL registry + accessor behind a
+// racing invoker whose hook fires between the surface's sealed
+// verification / proof mint and the accessor's atomic compare+resolve. It
+// stages the counted descriptor set and returns the racing surface, the
+// v1 execution counter, the registry, and the accessor. The mint surface
+// and the racing surface share ONE authority instance, so a token minted
+// through either verifies through the other. No sleeps — the hook is the
+// synchronization point.
+func buildRacingAdmissionSurface(t *testing.T, reg *mcp.Registry, providerID string, descs []tools.ToolDescriptor, hook func()) (*protocol.AppsSurface, *atomic.Int64, *mcp.Registry, *mcpconsole.AppsAccessor) {
+	t.Helper()
+	authz := newAdmissionAuthority(t)
+	_, calls, reg, acc := buildAdmissionSurface(t, reg, providerID, descs, authz, nil)
+	race := &racingAdmissionInvoker{AppsAccessor: acc, beforeAdmitted: hook}
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource:                 acc,
+		Invoker:                  race,
+		ToolContext:              acc,
+		AgentResolver:            &admissionAgentResolver{},
+		AgentReach:               allowAdmissionReach{},
+		RenderAdmissionAuthority: &admissionAuthoritySeam{auth: authz},
+		RenderAdmissionGate:      &realAdmissionGate{acc: acc},
+	})
+	if err != nil {
+		t.Fatalf("NewAppsSurface (racing): %v", err)
+	}
+	return s, calls, reg, acc
+}
+
+// TestAdmissionPath_UnchangedGeneration_SucceedsExactlyOnce drives the
+// FULL corrected path (surface verify → proof mint → accessor
+// current-generation re-read → atomic compare+resolve) through the racing
+// invoker with its hook a NO-OP: the generation is unchanged between
+// verification and resolution, so the call succeeds and the wrapped
+// descriptor executes EXACTLY ONCE.
+func TestAdmissionPath_UnchangedGeneration_SucceedsExactlyOnce(t *testing.T) {
+	reg := mcp.NewRegistry()
+	descs := []tools.ToolDescriptor{
+		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
+		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
+	}
+	s, calls, _, _ := buildRacingAdmissionSurface(t, reg, "srv-a", descs, nil)
+
+	// Mint through the real surface path (binds the current generation).
+	resp, err := s.Dispatch(admissionVerifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+		Identity: admissionID(), ServerID: "srv-a", ResourceURI: "ui://srv-a/app.html",
+		RequestRenderAdmission: true,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch(read_resource): %v", err)
+	}
+	out := resp.(*types.ReadMCPResourceResponse)
+	if out.RenderAdmission == nil || out.RenderAdmission.Token == "" {
+		t.Fatalf("opt-in read returned no bounded admission: %+v", out.RenderAdmission)
+	}
+	resp2, err := s.Dispatch(admissionVerifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: admissionID(), ServerID: "srv-a", Tool: "srv-a_cb",
+		ResourceURI: "ui://srv-a/app.html", RenderAdmission: out.RenderAdmission.Token,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch(call_tool): %v", err)
+	}
+	ct := resp2.(*types.MCPAppCallToolResponse)
+	if ct.Tool != "srv-a_cb" {
+		t.Errorf("echoed tool = %q, want srv-a_cb", ct.Tool)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("wrapped descriptor invocations = %d, want exactly 1", got)
+	}
+}
+
+// TestAdmissionPath_GenerationChangeAfterProofMint_ZeroExecutions is the
+// deterministic TOCTOU regression: the surface verifies the sealed
+// admission and mints the call-local proof for generation G1; the racing
+// fake then forces a catalog generation change (a replacement: G1 → G2)
+// BEFORE the accessor's atomic compare+resolve. The accessor re-reads the
+// current generation (G2), the proof binds G1 → the call is refused
+// scope-level, and BOTH the old row's descriptor and the new row's
+// descriptor execute ZERO callbacks. No sleeps — the fake's hook is the
+// synchronization point.
+func TestAdmissionPath_GenerationChangeAfterProofMint_ZeroExecutions(t *testing.T) {
+	reg := mcp.NewRegistry()
+	descs := []tools.ToolDescriptor{
+		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
+		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
+	}
+	v2Calls := new(atomic.Int64)
+	s, calls, reg, _ := buildRacingAdmissionSurface(t, reg, "srv-a", descs, func() {
+		// Force the catalog generation change AFTER the surface's sealed
+		// verification / proof mint, BEFORE the accessor's atomic
+		// compare+resolve.
+		stageAdmissionServer(t, reg, "srv-a", []tools.ToolDescriptor{
+			admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
+			admissionAppDesc("srv-a_cb-v2", "srv-a", v2Calls),
+		})
+	})
+
+	gen1, _ := reg.CurrentGeneration("srv-a")
+	// Mint through the real surface path (binds G1).
+	resp, err := s.Dispatch(admissionVerifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+		Identity: admissionID(), ServerID: "srv-a", ResourceURI: "ui://srv-a/app.html",
+		RequestRenderAdmission: true,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch(read_resource): %v", err)
+	}
+	out := resp.(*types.ReadMCPResourceResponse)
+	if out.RenderAdmission == nil || out.RenderAdmission.Token == "" {
+		t.Fatalf("opt-in read returned no bounded admission: %+v", out.RenderAdmission)
+	}
+	// The call races the replacement: the hook fires between the surface's
+	// verify/proof-mint and the accessor's atomic compare+resolve.
+	_, err = s.Dispatch(admissionVerifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: admissionID(), ServerID: "srv-a", Tool: "srv-a_cb",
+		ResourceURI: "ui://srv-a/app.html", RenderAdmission: out.RenderAdmission.Token,
+	})
+	var perr *protoerrors.Error
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %v, want *protoerrors.Error", err)
+	}
+	if perr.Code != protoerrors.CodeScopeMismatch {
+		t.Errorf("code = %q, want %q (stale admission raced a generation change → scope refusal)",
+			perr.Code, protoerrors.CodeScopeMismatch)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("v1 wrapped invocations = %d, want 0 (the old row must never execute)", got)
+	}
+	if got := v2Calls.Load(); got != 0 {
+		t.Errorf("v2 wrapped invocations = %d, want 0 (the new row must never execute)", got)
+	}
+	// The hook DID move the generation — the refusal is a generation
+	// mismatch, not a no-op call.
+	gen2, ok := reg.CurrentGeneration("srv-a")
+	if !ok || gen2 == gen1 {
+		t.Fatalf("replacement did not move the generation (gen1=%q gen2=%q ok=%v)", gen1, gen2, ok)
+	}
+}
+
+// TestAdmissionPath_DetachAfterProofMint_ZeroExecutions proves the detach
+// leg of the same race: the server is deregistered AFTER the surface
+// verified the sealed admission / minted the proof and BEFORE the
+// accessor's resolve. The accessor's current-generation read fails closed
+// (absent server → no current generation) → a typed scope refusal, zero
+// callbacks — non-oracular, never a not-found, never a fallback to legacy
+// binding or ordinary resolution.
+func TestAdmissionPath_DetachAfterProofMint_ZeroExecutions(t *testing.T) {
+	reg := mcp.NewRegistry()
+	descs := []tools.ToolDescriptor{
+		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
+		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
+	}
+	s, calls, reg, _ := buildRacingAdmissionSurface(t, reg, "srv-a", descs, func() {
+		if err := reg.Deregister(admissionVerifiedCtx(t), "srv-a", authsealer.Owner{}); err != nil {
+			t.Errorf("Deregister: %v", err)
+		}
+	})
+
+	resp, err := s.Dispatch(admissionVerifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+		Identity: admissionID(), ServerID: "srv-a", ResourceURI: "ui://srv-a/app.html",
+		RequestRenderAdmission: true,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch(read_resource): %v", err)
+	}
+	out := resp.(*types.ReadMCPResourceResponse)
+	if out.RenderAdmission == nil || out.RenderAdmission.Token == "" {
+		t.Fatalf("opt-in read returned no bounded admission: %+v", out.RenderAdmission)
+	}
+	// The call races the detach: the hook deregisters between the surface's
+	// verify/proof-mint and the accessor's current-generation re-read.
+	_, err = s.Dispatch(admissionVerifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: admissionID(), ServerID: "srv-a", Tool: "srv-a_cb",
+		ResourceURI: "ui://srv-a/app.html", RenderAdmission: out.RenderAdmission.Token,
+	})
+	var perr *protoerrors.Error
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %v, want *protoerrors.Error", err)
+	}
+	if perr.Code != protoerrors.CodeScopeMismatch {
+		t.Errorf("code = %q, want %q (detach raced the call → scope refusal)",
+			perr.Code, protoerrors.CodeScopeMismatch)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("wrapped invocations = %d, want 0 (detach must execute zero callbacks)", got)
+	}
+}

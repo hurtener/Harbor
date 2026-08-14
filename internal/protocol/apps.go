@@ -272,14 +272,18 @@ type AppToolAdmissionInvoker interface {
 	// verified a fresh render admission for the exact tuple AND minted
 	// the unforgeable call-local proof (CheckRenderAdmissionProof). The
 	// implementation MUST verify the proof against the exact tuple this
-	// call names — identity from ctx, the effective agent, serverID, and
-	// resourceURI — BEFORE any resolution, exposure gate, or invocation;
-	// a direct call without the proof, or with a proof for a different
-	// tuple, is refused with zero callbacks. serverID is the HOST-DERIVED
-	// server identity (authoritative runtime context, never parsed from
-	// the tool name); resourceURI is the EXACT resource URI the admission
-	// binds. The implementation resolves only through that server's App
-	// dispatch catalog.
+	// call names — identity from ctx, the effective agent, serverID, the
+	// resourceURI, AND the exact CURRENT provider/catalog generation (the
+	// proof binds the generation the surface verified; the accessor
+	// re-reads the current generation and refuses when it changed) —
+	// BEFORE any resolution, exposure gate, or invocation; a direct call
+	// without the proof, or with a proof for a different tuple or a stale
+	// generation, is refused with zero callbacks. serverID is the
+	// HOST-DERIVED server identity (authoritative runtime context, never
+	// parsed from the tool name); resourceURI is the EXACT resource URI
+	// the admission binds. The implementation resolves only through that
+	// server's App dispatch catalog, atomically under the exact verified
+	// generation.
 	CallToolAdmitted(ctx context.Context, serverID, resourceURI, tool string, args json.RawMessage) (MCPAppToolResultRow, error)
 }
 
@@ -290,8 +294,9 @@ type appBindingInvoker interface {
 // renderAdmissionProof is the unforgeable CALL-LOCAL proof that a sealed
 // render admission was opened AND the exact fresh authorization /
 // current-generation verification succeeded. It binds the exact verified
-// identity triple, the effective agent, the host server id, and the
-// exact resource URI.
+// identity triple, the effective agent, the host server id, the exact
+// resource URI, and the EXACT current provider/catalog generation the
+// sealed token was verified against.
 //
 // # Method selection is not an authority
 //
@@ -303,6 +308,15 @@ type appBindingInvoker interface {
 // immediately after verifyRenderAdmission succeeded. The proof rides
 // ctx — never the wire, never persisted, never a generic capability
 // framework, never a provider-local binding fallback.
+//
+// # The generation is part of the proof (TOCTOU correction)
+//
+// The proof binds the generation verifyRenderAdmission actually verified,
+// and the admission-aware accessor re-reads the CURRENT generation before
+// resolving and refuses when the two disagree. A refresh/replacement
+// between verification and resolution therefore cannot verify an old
+// generation and execute a descriptor from the new one: the stale proof
+// fails the accessor's re-check with zero callbacks.
 type renderAdmissionProof struct {
 	tenantID    string
 	userID      string
@@ -310,6 +324,7 @@ type renderAdmissionProof struct {
 	agentID     string
 	serverID    string
 	resourceURI string
+	generation  string
 }
 
 // renderAdmissionProofKey is the unexported context key the call-local
@@ -331,16 +346,20 @@ func withRenderAdmissionProof(ctx context.Context, p renderAdmissionProof) conte
 // CheckRenderAdmissionProof reports whether ctx carries a call-local
 // render-admission proof binding EXACTLY the supplied tuple — the
 // verified tenant/user/session identity, the effective agent, the host
-// server id, and the exact resource URI.
+// server id, the exact resource URI, and the exact current
+// provider/catalog generation.
 //
 // This is the NARROW exported checker the admission-aware invocation
 // seam (mcpconsole.AppsAccessor.CallToolAdmitted) verifies BEFORE any
 // resolution, paused/disabled exposure check, or invocation. Because the
 // proof can only be minted by this package after a full verification, a
 // direct call that did not ride the surface's verified path — no proof,
-// or a proof for a different server / resource / identity / agent — is
-// refused here and executes zero callbacks.
-func CheckRenderAdmissionProof(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI string) bool {
+// or a proof for a different server / resource / identity / agent /
+// generation — is refused here and executes zero callbacks. The
+// generation component closes the HA-56 TOCTOU window: the accessor
+// passes the CURRENT generation it just read, so a proof minted against
+// an older generation (a refresh/replacement raced the call) fails here.
+func CheckRenderAdmissionProof(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI, generation string) bool {
 	p, ok := ctx.Value(renderAdmissionProofCtxKey).(renderAdmissionProof)
 	if !ok {
 		return false
@@ -350,7 +369,8 @@ func CheckRenderAdmissionProof(ctx context.Context, id identity.Identity, agentI
 		p.sessionID == id.SessionID &&
 		p.agentID == agentID &&
 		p.serverID == serverID &&
-		p.resourceURI == resourceURI
+		p.resourceURI == resourceURI &&
+		p.generation == generation
 }
 
 // AppsDeps bundles the runtime-side seams an AppsSurface reads through.
@@ -693,15 +713,21 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 				"method %q: resource_uri is required for a render-admission-backed call", string(method))
 		}
-		if perr := s.verifyRenderAdmission(idCtx, id, effectiveID, r.ServerID, r.ResourceURI, r.RenderAdmission); perr != nil {
-			return nil, perr
-		}
 		// The sealed admission has been opened and the exact fresh
 		// authorization / current-generation verification succeeded —
 		// ONLY now is the unforgeable call-local proof minted. It binds
 		// the exact verified identity / effective agent / server /
-		// resource URI and is the ONLY authority the admission-aware
-		// invoker seam accepts (method selection is not an authority).
+		// resource URI AND the exact current generation the token was
+		// verified against, and is the ONLY authority the admission-aware
+		// invoker seam accepts (method selection is not an authority). The
+		// accessor re-reads the CURRENT generation before resolving and
+		// refuses when it no longer equals the proof's — a refresh /
+		// replacement between verification and resolution can never
+		// execute a descriptor from a newer generation.
+		generation, perr := s.verifyRenderAdmission(idCtx, id, effectiveID, r.ServerID, r.ResourceURI, r.RenderAdmission)
+		if perr != nil {
+			return nil, perr
+		}
 		idCtx = withRenderAdmissionProof(idCtx, renderAdmissionProof{
 			tenantID:    id.TenantID,
 			userID:      id.UserID,
@@ -709,6 +735,7 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 			agentID:     effectiveID,
 			serverID:    r.ServerID,
 			resourceURI: r.ResourceURI,
+			generation:  generation,
 		})
 	}
 	var res MCPAppToolResultRow
@@ -858,10 +885,16 @@ func projectArtifactRow(row *MCPResourceArtifactRow) *types.MCPResourceArtifactR
 // an otherwise-current App with a refused / unavailable / invalid /
 // expired / mismatched admission fails here, never as an ambiguous
 // not-found.
-func (s *AppsSurface) verifyRenderAdmission(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI, token string) *protoerrors.Error {
+//
+// On success it returns the EXACT current generation the sealed token was
+// verified against. The caller binds that generation into the call-local
+// proof (renderAdmissionProof.generation), so the admission-aware
+// accessor can re-read the current generation before resolving and refuse
+// a proof whose generation went stale — the HA-56 TOCTOU correction.
+func (s *AppsSurface) verifyRenderAdmission(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI, token string) (string, *protoerrors.Error) {
 	method := methods.MethodMCPAppsCallTool
 	if s.admissionAuthority == nil || s.admissionGate == nil {
-		return protoerrors.Newf(protoerrors.CodeRuntimeError,
+		return "", protoerrors.Newf(protoerrors.CodeRuntimeError,
 			"method %q: render-admission authority is not wired on this runtime", string(method))
 	}
 	if token == "" {
@@ -869,7 +902,7 @@ func (s *AppsSurface) verifyRenderAdmission(ctx context.Context, id identity.Ide
 		// render-admission-backed call when a NON-EMPTY token was
 		// supplied, so this answers a direct seam misuse, never an
 		// ordinary request.
-		return protoerrors.Newf(protoerrors.CodeRenderAdmissionMissing,
+		return "", protoerrors.Newf(protoerrors.CodeRenderAdmissionMissing,
 			"method %q: no render-admission token supplied", string(method))
 	}
 	generation, err := s.admissionGate.AuthorizeRender(ctx, serverID, resourceURI)
@@ -878,17 +911,17 @@ func (s *AppsSurface) verifyRenderAdmission(ctx context.Context, id identity.Ide
 			// The CURRENT render-admission conditions refuse the tuple
 			// (erasure / exposure / exact server+resource / paused /
 			// disabled). A scope-level refusal, never a not-found.
-			return protoerrors.Newf(protoerrors.CodeScopeMismatch,
+			return "", protoerrors.Newf(protoerrors.CodeScopeMismatch,
 				"method %q: the current render-admission conditions refuse this render tuple", string(method))
 		}
-		return protoerrors.Newf(protoerrors.CodeRuntimeError,
+		return "", protoerrors.Newf(protoerrors.CodeRuntimeError,
 			"method %q: render-admission authorization failed: %v", string(method), err)
 	}
 	if generation == "" {
 		// An otherwise-current App whose current generation cannot be
 		// established is refused typed (the admission binds a generation,
 		// and there is none to bind) — never a collapse into not-found.
-		return protoerrors.Newf(protoerrors.CodeRenderAdmissionUnavailable,
+		return "", protoerrors.Newf(protoerrors.CodeRenderAdmissionUnavailable,
 			"method %q: the current provider/catalog generation for the render tuple is not resolvable", string(method))
 	}
 	if _, err := s.admissionAuthority.Verify(ctx, admission.RenderTuple{
@@ -898,9 +931,9 @@ func (s *AppsSurface) verifyRenderAdmission(ctx context.Context, id identity.Ide
 		ResourceURI:           resourceURI,
 		DescriptorFingerprint: generation,
 	}, token); err != nil {
-		return mapRenderAdmissionError(string(method), err)
+		return "", mapRenderAdmissionError(string(method), err)
 	}
-	return nil
+	return generation, nil
 }
 
 // mapRenderAdmissionError maps an admission-authority error onto its

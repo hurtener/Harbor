@@ -688,11 +688,13 @@ func TestAppsSurface_CallTool_ExpiredThroughSurface(t *testing.T) {
 // unforgeable call-local proof ONLY on the render-admission-backed path
 // and ONLY after the sealed admission was opened and the fresh
 // verification succeeded, and the proof binds the EXACT verified tuple —
-// identity, effective agent, server, and resource URI. The
-// admission-aware seam receives a ctx whose proof verifies for that
-// tuple and for no other, so the accessor's re-check (which refuses any
-// direct no-proof / mismatched-proof call) has something exact to hold
-// against.
+// identity, effective agent, server, resource URI, and the exact current
+// generation the token was verified against (the gate returns "gen-1").
+// The admission-aware seam receives a ctx whose proof verifies for that
+// tuple and for no other — including no other generation — so the
+// accessor's re-check (which refuses any direct no-proof /
+// mismatched-proof call, and any proof whose generation went stale) has
+// something exact to hold against.
 func TestAppsSurface_CallTool_MintsExactCallLocalProof(t *testing.T) {
 	authz := newFakeAdmissionAuthority(t)
 	inv := &stubInvoker{}
@@ -731,38 +733,45 @@ func TestAppsSurface_CallTool_MintsExactCallLocalProof(t *testing.T) {
 		t.Fatal("admission-aware seam did not receive a ctx (proof cannot be checked)")
 	}
 	exact := identity.Identity{TenantID: "t-1", UserID: "u-1", SessionID: "s-1"}
-	if !protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, appsDefaultAgentID, "srv", "ui://app/main.html") {
+	if !protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, appsDefaultAgentID, "srv", "ui://app/main.html", "gen-1") {
 		t.Fatal("the seam's ctx does not carry a proof for the exact verified tuple")
 	}
 	// Every other tuple is refused by the proof — the exact server /
-	// resource / identity / agent re-check the accessor performs.
+	// resource / identity / agent / generation re-check the accessor
+	// performs.
 	mismatches := []struct {
 		name string
 		ok   func() bool
 	}{
 		{"foreign tenant", func() bool {
 			return protocol.CheckRenderAdmissionProof(inv.admittedCtx,
-				identity.Identity{TenantID: "t-9", UserID: "u-1", SessionID: "s-1"}, appsDefaultAgentID, "srv", "ui://app/main.html")
+				identity.Identity{TenantID: "t-9", UserID: "u-1", SessionID: "s-1"}, appsDefaultAgentID, "srv", "ui://app/main.html", "gen-1")
 		}},
 		{"foreign user", func() bool {
 			return protocol.CheckRenderAdmissionProof(inv.admittedCtx,
-				identity.Identity{TenantID: "t-1", UserID: "u-9", SessionID: "s-1"}, appsDefaultAgentID, "srv", "ui://app/main.html")
+				identity.Identity{TenantID: "t-1", UserID: "u-9", SessionID: "s-1"}, appsDefaultAgentID, "srv", "ui://app/main.html", "gen-1")
 		}},
 		{"foreign session", func() bool {
 			return protocol.CheckRenderAdmissionProof(inv.admittedCtx,
-				identity.Identity{TenantID: "t-1", UserID: "u-1", SessionID: "s-9"}, appsDefaultAgentID, "srv", "ui://app/main.html")
+				identity.Identity{TenantID: "t-1", UserID: "u-1", SessionID: "s-9"}, appsDefaultAgentID, "srv", "ui://app/main.html", "gen-1")
 		}},
 		{"foreign agent", func() bool {
-			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, "other-agent", "srv", "ui://app/main.html")
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, "other-agent", "srv", "ui://app/main.html", "gen-1")
 		}},
 		{"foreign server", func() bool {
-			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, appsDefaultAgentID, "other-srv", "ui://app/main.html")
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, appsDefaultAgentID, "other-srv", "ui://app/main.html", "gen-1")
 		}},
 		{"foreign resource", func() bool {
-			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, appsDefaultAgentID, "srv", "ui://other/main.html")
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, appsDefaultAgentID, "srv", "ui://other/main.html", "gen-1")
 		}},
 		{"empty identity", func() bool {
-			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, identity.Identity{}, appsDefaultAgentID, "srv", "ui://app/main.html")
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, identity.Identity{}, appsDefaultAgentID, "srv", "ui://app/main.html", "gen-1")
+		}},
+		{"foreign generation", func() bool {
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, appsDefaultAgentID, "srv", "ui://app/main.html", "gen-2")
+		}},
+		{"empty generation", func() bool {
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, appsDefaultAgentID, "srv", "ui://app/main.html", "")
 		}},
 	}
 	for _, tc := range mismatches {
@@ -794,7 +803,7 @@ func TestAppsSurface_CallTool_OrdinaryPathCarriesNoProof(t *testing.T) {
 	if gotCtx == nil {
 		t.Fatal("no-admission call did not reach any invoker seam")
 	}
-	if protocol.CheckRenderAdmissionProof(gotCtx, exact, appsDefaultAgentID, "srv", "ui://app/main.html") {
+	if protocol.CheckRenderAdmissionProof(gotCtx, exact, appsDefaultAgentID, "srv", "ui://app/main.html", "gen-1") {
 		t.Fatal("an ordinary (no-admission) call must carry NO call-local proof")
 	}
 }
