@@ -26,16 +26,22 @@ func TestPostgres_Indexes_QueriesUseIndexScans(t *testing.T) {
 	baseDSN := requireDSN(t)
 	dsn := freshSchema(t, baseDSN)
 
-	s, err := postgres.New(postgres.Config{DSN: dsn})
+	// Seed enough rows for the planner to prefer the indexes, then
+	// ANALYZE so the planner's cost estimates are real.
+	const n = 5000
+
+	// The fixture raises the retention bound from the documented default
+	// (200) to n so the complete seeded dataset — including the keyset
+	// boundary row run-01000 — survives seeding; the default bound for
+	// production callers is untouched (postgres.New keeps it when
+	// Retention <= 0).
+	s, err := postgres.New(postgres.Config{DSN: dsn, Retention: n})
 	if err != nil {
 		t.Fatalf("postgres.New: %v", err)
 	}
 	defer func() { _ = s.Close(context.Background()) }()
 	ctx := context.Background()
 
-	// Seed enough rows for the planner to prefer the indexes, then
-	// ANALYZE so the planner's cost estimates are real.
-	const n = 5000
 	for i := range n {
 		row := freshRow(fmt.Sprintf("run-%05d", i))
 		row.Agent = turns.Agent{ID: "agent-main", Complete: turns.CompletenessComplete}
