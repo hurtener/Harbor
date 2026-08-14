@@ -17,6 +17,14 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Durable conversation-turn projection no longer stalls behind incompatible
+  optional failure metadata on a historical task record. Persisted lifecycle
+  events remain canonical; disagreeing snapshot failure metadata and
+  over-bound optional terminal messages are represented as unavailable while
+  identity, task, and run binding conflicts remain fail-closed (D-425).
+
 ## [1.28.1] — 2026-08-14
 
 ### Fixed

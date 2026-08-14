@@ -513,14 +513,9 @@ func TestMaterialize_TaskSnapshot_RestartByteIdentity(t *testing.T) {
 // terminal event/error agreement
 // ---------------------------------------------------------------------------
 
-// TestMaterialize_TaskSnapshot_TerminalFailureAgreement pins that the
-// durable turn and the task record agree on a failure: when both the
-// event and the record carry a nonempty error code they MUST agree —
-// a divergent event code is rejected loudly (ErrTerminalCodeMismatch)
-// rather than silently preferring either source — and the bounded safe
-// message rides the seal. A single nonempty observation (the record's
-// canonical code, or the event's code alone for a legacy record)
-// stands on its own.
+// TestMaterialize_TaskSnapshot_TerminalFailureAgreement pins the normal
+// compatible cases: the bounded safe message rides the seal, and a task
+// record may fill the code only when a legacy lifecycle event omitted it.
 func TestMaterialize_TaskSnapshot_TerminalFailureAgreement(t *testing.T) {
 	t.Run("record code and message agree with the event", func(t *testing.T) {
 		h := newHarness(t, "")
@@ -562,45 +557,86 @@ func TestMaterialize_TaskSnapshot_TerminalFailureAgreement(t *testing.T) {
 			t.Errorf("failure = class %q message %q, want the record's canonical code and message", row.ErrorClass, row.ErrorMessage)
 		}
 	})
-	t.Run("divergent event code is rejected loudly, never silently preferred", func(t *testing.T) {
+}
+
+// TestMaterialize_TaskSnapshot_LegacyFailureMetadataCannotStallProjection
+// reproduces the two production fleet records that wedged the global turn
+// projector. In both cases the lifecycle event still seals the historical
+// turn, its optional incompatible snapshot metadata is honestly unavailable,
+// and a later fresh turn in the same persisted stream is projected in the
+// SAME pass (checkpoint reaches the final event).
+func TestMaterialize_TaskSnapshot_LegacyFailureMetadataCannotStallProjection(t *testing.T) {
+	t.Run("runtime_restarted event wins over cancelled task record", func(t *testing.T) {
 		h := newHarness(t, "")
 		defer h.closeStore()
-		reader := newFakeTaskReader().set("task-cd", TaskSnapshot{
-			FailurePresent: true, ErrorCode: "timeout", ErrorMessage: "record-safe message",
+		reader := newFakeTaskReader().set("task-legacy-code", TaskSnapshot{
+			FailurePresent: true,
+			ErrorCode:      "cancelled",
+			ErrorMessage:   "snapshot classification disagrees",
 		})
 		m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
 
-		quad := testQuad(h.id, "run-cd")
-		h.src.publish(t, spawnEv(h.id, quad.RunID, "task-cd", tasks.KindForeground, ""))
-		h.src.publish(t, startedEv(h.id, "task-cd"))
-		last := h.src.publish(t, failedEv(h.id, "task-cd", "5xx")) // divergent nonempty event code
+		h.src.publish(t, spawnEv(h.id, "run-legacy-code", "task-legacy-code", tasks.KindForeground, ""))
+		h.src.publish(t, startedEv(h.id, "task-legacy-code"))
+		h.src.publish(t, failedEv(h.id, "task-legacy-code", "runtime_restarted"))
+		h.src.publish(t, spawnEv(h.id, "run-fresh-after-code", "task-fresh-after-code", tasks.KindForeground, ""))
+		h.src.publish(t, startedEv(h.id, "task-fresh-after-code"))
+		last := h.src.publish(t, failedEv(h.id, "task-fresh-after-code", "timeout"))
 
-		if _, err := m.Materialize(context.Background()); !errors.Is(err, ErrTerminalCodeMismatch) {
-			t.Fatalf("divergent terminal code = %v, want ErrTerminalCodeMismatch", err)
-		}
-		// The mismatch advanced nothing and mutated nothing: the
-		// checkpoint stays at the last APPLIED event and the turn is
-		// not sealed.
-		cp, cerr := h.proj.Checkpoint(context.Background(), h.id)
-		if cerr != nil {
-			t.Fatalf("checkpoint: %v", cerr)
-		}
-		if cp != last.Sequence-1 {
-			t.Errorf("checkpoint = %d, want %d (the conflicting failure did not advance)", cp, last.Sequence-1)
-		}
-		row := mustGetRow(t, h, "task-cd")
-		if row.Sealed || row.Status != turns.StatusRunning {
-			t.Errorf("row = status %q sealed %v, want the turn untouched (running, unsealed)", row.Status, row.Sealed)
-		}
-		// Once the sources agree, the retry converges to the record's
-		// canonical code and message.
-		reader.set("task-cd", TaskSnapshot{FailurePresent: true, ErrorCode: "5xx", ErrorMessage: "record-safe message"})
 		if _, err := m.Materialize(context.Background()); err != nil {
-			t.Fatalf("retry materialize: %v", err)
+			t.Fatalf("materialize legacy code disagreement: %v", err)
 		}
-		row = mustGetRow(t, h, "task-cd")
-		if !row.Sealed || row.Status != turns.StatusFailed || row.ErrorClass != turns.ErrorClass5xx || row.ErrorMessage != "record-safe message" {
-			t.Errorf("converged failure = status %q sealed %v class %q message %q", row.Status, row.Sealed, row.ErrorClass, row.ErrorMessage)
+		legacy := mustGetRow(t, h, "task-legacy-code")
+		if !legacy.Sealed || legacy.Status != turns.StatusFailed || legacy.ErrorClass != turns.ErrorClassUnclassified || legacy.ErrorMessage != "" {
+			t.Errorf("legacy row = status %q sealed %v class %q message %q, want event-derived failed/unclassified with unavailable snapshot message", legacy.Status, legacy.Sealed, legacy.ErrorClass, legacy.ErrorMessage)
+		}
+		fresh := mustGetRow(t, h, "task-fresh-after-code")
+		if !fresh.Sealed || fresh.ErrorClass != turns.ErrorClassTimeout {
+			t.Errorf("following fresh row = sealed %v class %q, want true/timeout", fresh.Sealed, fresh.ErrorClass)
+		}
+		cp, err := h.proj.Checkpoint(context.Background(), h.id)
+		if err != nil {
+			t.Fatalf("checkpoint: %v", err)
+		}
+		if cp != last.Sequence {
+			t.Errorf("checkpoint = %d, want final event %d", cp, last.Sequence)
+		}
+	})
+
+	t.Run("513-rune optional message becomes unavailable", func(t *testing.T) {
+		h := newHarness(t, "")
+		defer h.closeStore()
+		reader := newFakeTaskReader().set("task-legacy-message", TaskSnapshot{
+			FailurePresent: true,
+			ErrorCode:      "timeout",
+			ErrorMessage:   strings.Repeat("m", turns.MaxTerminalMessageRunes+1),
+		})
+		m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
+
+		h.src.publish(t, spawnEv(h.id, "run-legacy-message", "task-legacy-message", tasks.KindForeground, ""))
+		h.src.publish(t, startedEv(h.id, "task-legacy-message"))
+		h.src.publish(t, failedEv(h.id, "task-legacy-message", "timeout"))
+		h.src.publish(t, spawnEv(h.id, "run-fresh-after-message", "task-fresh-after-message", tasks.KindForeground, ""))
+		h.src.publish(t, startedEv(h.id, "task-fresh-after-message"))
+		last := h.src.publish(t, failedEv(h.id, "task-fresh-after-message", "5xx"))
+
+		if _, err := m.Materialize(context.Background()); err != nil {
+			t.Fatalf("materialize over-bound legacy message: %v", err)
+		}
+		legacy := mustGetRow(t, h, "task-legacy-message")
+		if !legacy.Sealed || legacy.ErrorClass != turns.ErrorClassTimeout || legacy.ErrorMessage != "" {
+			t.Errorf("legacy row = sealed %v class %q message %q, want true/timeout/unavailable message", legacy.Sealed, legacy.ErrorClass, legacy.ErrorMessage)
+		}
+		fresh := mustGetRow(t, h, "task-fresh-after-message")
+		if !fresh.Sealed || fresh.ErrorClass != turns.ErrorClass5xx {
+			t.Errorf("following fresh row = sealed %v class %q, want true/5xx", fresh.Sealed, fresh.ErrorClass)
+		}
+		cp, err := h.proj.Checkpoint(context.Background(), h.id)
+		if err != nil {
+			t.Fatalf("checkpoint: %v", err)
+		}
+		if cp != last.Sequence {
+			t.Errorf("checkpoint = %d, want final event %d", cp, last.Sequence)
 		}
 	})
 }
@@ -610,10 +646,11 @@ func TestMaterialize_TaskSnapshot_TerminalFailureAgreement(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestMaterialize_TaskSnapshot_BoundsFailLoudly pins the never-clamp
-// contract at the seam: an over-bound query, inline answer, terminal
-// message, or attachment id is REFUSED loudly by the projector (the
+// contract at the seam: an over-bound query, inline answer, or attachment
+// id is REFUSED loudly by the projector (the
 // pass fails and the offending event does NOT advance the checkpoint)
-// — never truncated, never silently omitted.
+// — never truncated, never silently omitted. Optional task-record terminal
+// messages have the explicit legacy-tolerance contract pinned above.
 func TestMaterialize_TaskSnapshot_BoundsFailLoudly(t *testing.T) {
 	t.Run("over-bound query", func(t *testing.T) {
 		h := newHarness(t, "")
@@ -656,29 +693,6 @@ func TestMaterialize_TaskSnapshot_BoundsFailLoudly(t *testing.T) {
 		}
 		if cp != 2 {
 			t.Errorf("checkpoint = %d, want 2 (the refused completion did not advance)", cp)
-		}
-	})
-	t.Run("over-bound failure message", func(t *testing.T) {
-		h := newHarness(t, "")
-		defer h.closeStore()
-		reader := newFakeTaskReader().set("task-bm", TaskSnapshot{
-			FailurePresent: true, ErrorMessage: strings.Repeat("m", turns.MaxTerminalMessageRunes+1),
-		})
-		m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
-		quad := testQuad(h.id, "run-bm")
-		h.src.publish(t, spawnEv(h.id, quad.RunID, "task-bm", tasks.KindForeground, ""))
-		h.src.publish(t, startedEv(h.id, "task-bm"))
-		h.src.publish(t, failedEv(h.id, "task-bm", "timeout"))
-		_, err := m.Materialize(context.Background())
-		if err == nil || !errors.Is(err, turns.ErrInvalidInput) {
-			t.Fatalf("over-bound failure message = %v, want ErrInvalidInput", err)
-		}
-		cp, cerr := h.proj.Checkpoint(context.Background(), h.id)
-		if cerr != nil {
-			t.Fatalf("checkpoint: %v", cerr)
-		}
-		if cp != 2 {
-			t.Errorf("checkpoint = %d, want 2 (the refused seal did not advance)", cp)
 		}
 	})
 	t.Run("over-bound attachment id", func(t *testing.T) {

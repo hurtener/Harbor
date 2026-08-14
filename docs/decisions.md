@@ -13109,6 +13109,21 @@ authority is created: admin/fleet observation implies no transcript access.
 No generic projection framework, projection warehouse, live-cursor redesign,
 or overflow analytics store ships.
 
+**Amendment (2026-08-14) — legacy terminal metadata cannot veto the
+canonical lifecycle event.** The persisted task lifecycle event is canonical
+for terminal status and its nonempty failure code. A task-record snapshot may
+fill a code only when a legacy event omitted one; if both carry nonempty,
+different codes, the snapshot's whole optional failure-metadata group becomes
+unavailable and the event-derived closed class stands. An optional historical
+terminal message over the projection bound likewise becomes unavailable
+instead of stopping the session projector. This is omission, never truncation
+or reinterpretation. Identity, task-id, and run-id disagreement remains a
+fail-closed projection error, as do transient task-store failures and every
+non-optional corrupt snapshot shape. The amendment makes D-425's existing
+per-component `unavailable` state operational at the legacy task-record seam:
+one incompatible record cannot prevent later sessions and fresh turns from
+advancing.
+
 **Required acceptance (binding for the phase).** Once the owning runtime is
 selected, a persisted session with more than 100,000 events, at least 10,000
 turns, and one turn with more than 100 tool calls reopens its latest 20 turns
