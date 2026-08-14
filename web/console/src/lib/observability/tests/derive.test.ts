@@ -22,9 +22,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   COST_SCALE_MICROS,
-  DAY_MS,
   DEFAULT_OBSERVABILITY_MEASURES,
-  HOUR_MS,
   MINUTE_MS,
   OBSERVABILITY_BUCKETS,
   OBSERVABILITY_DIMENSIONS,
