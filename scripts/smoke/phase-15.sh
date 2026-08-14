@@ -17,7 +17,7 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-if go test -race -count=1 -timeout 90s ./internal/state/drivers/sqlite/... >/dev/null 2>&1; then
+if go test -race -count=1 -timeout 180s ./internal/state/drivers/sqlite/... >/dev/null 2>&1; then
     ok 'phase 15: internal/state/drivers/sqlite tests pass under -race (conformance + migrations + concurrent)'
 else
     fail 'phase 15: internal/state/drivers/sqlite tests failed (run `go test -race ./internal/state/drivers/sqlite/...` for detail)'

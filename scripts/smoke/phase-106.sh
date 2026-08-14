@@ -40,8 +40,9 @@ fi
 ID_HEADERS=(
   -H "X-Harbor-Tenant: dev"
   -H "X-Harbor-User: dev"
-  -H "X-Harbor-Session: dev"
+  -H "X-Harbor-Session: phase106-smoke-$$"
 )
+SESSION_ID="phase106-smoke-$$"
 
 START_RESP="$(curl -sS -X POST "$(api_url /v1/control/start)" \
   -H "Authorization: Bearer ${TOKEN}" \
@@ -100,7 +101,7 @@ for i in $(seq 1 30); do
     -H "Authorization: Bearer ${TOKEN}" \
     "${ID_HEADERS[@]}" \
     -H "Content-Type: application/json" \
-    -d "{\"session_id\":\"dev\",\"task_id\":\"${TASK_ID}\"}")"
+    -d "{\"session_id\":\"${SESSION_ID}\",\"task_id\":\"${TASK_ID}\"}")"
   TURN_TASK_ID="$(echo "${TURN_DETAIL}" | jq -r '.turn.task_id // empty')"
   ANSWER_STATE="$(echo "${TURN_DETAIL}" | jq -r '.turn.answer.state // empty')"
   ANSWER="$(echo "${TURN_DETAIL}" | jq -r '.turn.answer.inline // empty')"

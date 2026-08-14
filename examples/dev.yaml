@@ -169,6 +169,11 @@ sessions:
   idle_ttl: 24h
   hard_cap: 720h
   sweep_interval: 15m
+  # The dev stack exercises the shipped durable-turn Protocol surface. The
+  # in-memory driver keeps local development zero-config while ensuring the
+  # Playground's normal two-read path is available in preflight.
+  turns:
+    driver: inmem
 
 # Phase 111c (D-200) — pause lifecycle. 0 = pauses never expire (the
 # default; the sweeper is not started). Set e.g. `max_park_duration:
