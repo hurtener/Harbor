@@ -74,7 +74,7 @@ import (
 const htConsoleBand = 64 * 1024
 
 type htRig struct {
-	mux      *http.ServeMux
+	mux      http.Handler
 	memory   memory.MemoryStore
 	coord    pauseresume.Coordinator
 	artifact artifacts.ArtifactStore
