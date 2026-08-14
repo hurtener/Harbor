@@ -267,8 +267,7 @@ D-427 is the phase authority.
 
 ## Smoke script additions
 
-- Before implementation, a pending static skeleton records this plan.
-- When implemented, boot a runtime with a declared baseline and assert the
+- Boot a runtime with a declared baseline and assert the
   resolved boot agent's composition preview includes the baseline entries and
   reports `boot|revision|both` plus `boot_pack_set_hash`; assert a
   non-default agent and a foreign tenant do not compose it; assert a

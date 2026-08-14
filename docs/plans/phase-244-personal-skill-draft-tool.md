@@ -211,8 +211,7 @@ durable skill, configuration, membership, or publication authority.
 
 ## Smoke script additions
 
-- Before implementation, a pending static skeleton records this plan.
-- When implemented, prove the tool is disabled by default, enable it through
+- Prove the tool is disabled by default, enable it through
   normal agent policy, create a draft, assert the returned ref is caller-scoped
   and no user skill/membership exists, then validate it through Phase 243.
 - Assert authority-shaped input, cross-user access, refused/malformed output,

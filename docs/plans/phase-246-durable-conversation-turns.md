@@ -328,8 +328,7 @@ history.
 
 ## Smoke script additions
 
-- Before implementation, a pending static skeleton records this plan.
-- When implemented, open a durable session's chat in two reads (lifecycle +
+- Open a durable session's chat in two reads (lifecycle +
   turn page) and assert the newest 20 turns render without a per-turn
   `tasks.get` / `events.list`; assert paging older history has no skip/duplicate
   while a new turn starts; assert inline Activity returns ordered entries

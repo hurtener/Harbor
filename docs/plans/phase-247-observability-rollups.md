@@ -268,8 +268,7 @@ identity-labelled OTel metrics remain rejected.
 
 ## Smoke script additions
 
-- Before implementation, a pending static skeleton records this plan.
-- When implemented, produce a >10,000-event durable session, run the one
+- Produce a >10,000-event durable session, run the one
   administrative query `observability.query`, and assert projection-backed
   totals without
   `counters_partial` and without read-time scans; assert a stale/unavailable

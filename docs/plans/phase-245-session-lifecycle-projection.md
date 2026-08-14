@@ -196,8 +196,7 @@ silently switching to the expensive projection.
 
 ## Smoke script additions
 
-- Before implementation, a pending static skeleton records this plan.
-- When implemented, list a durable session with the lifecycle selector and
+- List a durable session with the lifecycle selector and
   assert the response carries lifecycle fields with counter fields marked
   `not_requested` under the closed availability state; assert a
   `cost_desc` sort or `cost_above_cents` filter with the lifecycle selector
