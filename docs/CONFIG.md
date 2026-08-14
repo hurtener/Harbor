@@ -789,7 +789,13 @@ and never shared through the store: boot packs stay per-node, so
 Postgres never converges them.
 
 Headless `RunOnce` against a boot-pack agent is unsupported and fails
-loud — it never silently runs without the packs.
+loud — it never silently runs without the packs. Production `harbor serve`
+and the devstack resolve the SAME loader/composer path: the devstack's
+synthetic boot agent opens the same eager index before its run-loop driver
+and composes the baseline exactly like a production boot agent, and the
+run-start skill snapshot binds the frozen entries through the exact
+`(tenant, effective-boot-agent)` membership lookup with the boot set hash,
+the combined hash, and per-item `boot|revision|both` provenance.
 
 ```yaml
 skills:

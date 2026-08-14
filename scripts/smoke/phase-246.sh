@@ -35,6 +35,7 @@ assert_grep_present "erased/fenced" docs/plans/phase-246-durable-conversation-tu
 # fold-then-subscribe, never the stale subscribe-before-page wording. Pin the
 # exact sentences on every owned surface.
 assert_grep_present "page-before-subscribe" docs/plans/phase-246-durable-conversation-turns.md "plan pins the page-before-subscribe handoff"
+assert_grep_present "lost-wake poll" docs/plans/phase-246-durable-conversation-turns.md "bounded durable late task-record/answer convergence (lost-wake poll) is pinned"
 assert_grep_present "page-before-subscribe" docs/plans/README.md "master plan pins the page-before-subscribe handoff"
 assert_grep_present "page-before-subscribe" docs/decisions.md "D-425 pins the page-before-subscribe handoff"
 assert_grep_present "page-before-subscribe" docs/glossary.md "glossary pins the page-before-subscribe handoff"

@@ -1021,7 +1021,13 @@ removes the boot baseline only on the next deployment; a legacy durable
 revision remains, and in-flight snapshots retain their captured bytes and
 hash. The baseline contributes a **deterministic set hash** over its
 normalized entries to the run snapshot and to the composition preview, so
-an operator can verify exactly what the boot agent composes. Production and
+an operator can verify exactly what the boot agent composes. The shipped
+run path is: the eager immutable index opened before readiness is handed to
+the run-loop driver, an exact `(tenant, effective-boot-agent)` run-start
+membership lookup binds the frozen boot entries into the run snapshot, and
+the concrete resolver's strict combined operator tier is frozen into the
+snapshot with the boot set hash, the combined hash, and per-item
+`boot|revision|both` provenance. Production and
 devstack use the **single loader path** — the devstack's synthetic boot
 agent resolves the same loader, never a second implementation. Headless
 `RunOnce` is explicitly **unsupported** and fails loud when

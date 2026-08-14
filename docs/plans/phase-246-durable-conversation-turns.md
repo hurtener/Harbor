@@ -199,7 +199,13 @@ history.
       restart on durable drivers, and is erased/fenced with its session.
       In-memory restart loss remains explicit. In-flight rows carry a version
       and are mutable; terminal rows seal only after all required sources are
-      applied. `complete`, `partial`, `rebuilding`, `retention_gap`,
+      applied — late task-record/answer convergence is BOUNDED (a bounded
+      deferred-complete queue with a convergence budget and a lost-wake poll,
+      never a blocking read) and DURABLE across an unchanged event watermark
+      and restart (the durable unsealed row is re-read and re-converged);
+      terminal completeness is never claimed from a one-time event read, and
+      an unavailable/pending component stays in its explicit availability
+      state, never hidden. `complete`, `partial`, `rebuilding`, `retention_gap`,
       `evicted`, and `unavailable` are distinguishable; a missing/stale
       projection never triggers an unbounded synchronous event rebuild during
       chat open. The snapshot-to-live handoff is page-before-subscribe: the

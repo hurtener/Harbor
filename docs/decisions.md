@@ -13049,7 +13049,14 @@ projection is derived from
 Harbor's task, result, event, and App-context authority; incrementally
 materialized with idempotent sequence checkpoints; restart-survivable on
 durable drivers; and erased/fenced with its session (in-memory restart loss
-remains explicit). Paging is an opaque snapshot/keyset cursor anchored with
+remains explicit). Terminal rows seal only after all required sources are
+applied, and late task-record/answer convergence is BOUNDED (a bounded
+deferred-complete queue with a convergence budget and a lost-wake poll,
+never a blocking read) and DURABLE across an unchanged event watermark and
+restart (the durable unsealed row is re-read and re-converged) — terminal
+completeness is never claimed from a one-time event read, and an
+unavailable/pending component stays in its explicit availability state,
+never hidden. Paging is an opaque snapshot/keyset cursor anchored with
 an immutable task/turn tie-breaker: work is proportional to page size,
 independent of total event/turn cardinality, with a bounded constant number
 of storage operations, no full task enumeration, no request-path raw event
