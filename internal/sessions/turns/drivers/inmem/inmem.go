@@ -27,7 +27,7 @@
 //     (answer reference, per-measure usage values, attachment / app /
 //     reasoning / activity slices) so caller memory never reaches (or
 //     escapes) durable state and a caller mutating a returned row can
-//     never corrupt the stored row (the concurrent-reuse gate, D-025).
+//     never corrupt the stored row (the concurrent-reuse gate).
 //   - The erasure FENCE is store-local and durable-in-driver: it is
 //     retained for the life of the store (never removed by
 //     DeleteScope, never cleared by Close) so an erased session stays
@@ -48,7 +48,8 @@ import (
 )
 
 // Option configures a new in-memory Store. Options apply at
-// construction only; a Store is immutable thereafter (D-025).
+// construction only; a Store is immutable thereafter (the
+// concurrent-reuse contract).
 type Option func(*options)
 
 type options struct {
