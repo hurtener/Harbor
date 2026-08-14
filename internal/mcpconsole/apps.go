@@ -301,7 +301,23 @@ func (a *AppsAccessor) CallToolWithBinding(ctx context.Context, serverID, bindin
 // CallToolAdmitted implements protocol.AppToolAdmissionInvoker — the
 // distinct, narrow admission-verified invocation seam (HA-56). The
 // AppsSurface calls it ONLY after verifying a fresh render admission for
-// the exact (identity, agent, server, resource) tuple.
+// the exact (identity, agent, server, resource) tuple and minting the
+// unforgeable call-local proof.
+//
+// # The call-local proof is the authority — never method selection
+//
+// This exported method must not reach ResolveAppTool merely because an
+// internal caller invoked it with a fully verified identity /
+// effective-agent context. The accessor therefore verifies the call-local
+// proof (protocol.CheckRenderAdmissionProof) against the EXACT tuple this
+// call names — identity from ctx, the effective agent, serverID, and
+// resourceURI — BEFORE any resolution, before the paused/disabled
+// exposure gate, and before any invocation. A direct call with no proof,
+// or a proof that does not bind the exact tuple, is refused here with
+// zero callbacks. The proof can only be minted by the Protocol surface
+// after it opened the sealed admission AND re-verified the current
+// render tuple, so a call that did not ride the surface's verified path
+// can never resolve an app-only callback.
 //
 // Unlike CallTool / CallToolWithBinding, this path resolves the named
 // tool EXCLUSIVELY through its own server's App dispatch catalog
@@ -314,10 +330,32 @@ func (a *AppsAccessor) CallToolWithBinding(ctx context.Context, serverID, bindin
 //
 // A host-derived server identity is MANDATORY: an empty server never
 // falls through to ordinary/global resolution.
-func (a *AppsAccessor) CallToolAdmitted(ctx context.Context, serverID, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+func (a *AppsAccessor) CallToolAdmitted(ctx context.Context, serverID, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	if serverID == "" {
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %w: %q",
 			protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool)
+	}
+	// Identity is mandatory (AGENTS.md §6 rule 9): the proof binds the
+	// exact verified triple, and a call with no identity has nothing to
+	// bind a proof against — fail closed before any resolution.
+	id, ok := identity.From(ctx)
+	if !ok {
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("mcpconsole: admission-verified app call: %w", mcp.ErrIdentityMissing)
+	}
+	agentID, ok := tools.EffectiveAgentConfigFrom(ctx)
+	if !ok {
+		// Compatibility for direct pre-v1.26.11 embedders, mirroring
+		// gateToolExposure: production Protocol dispatch always seats the
+		// reach-admitted effective agent.
+		agentID = a.agentID
+	}
+	if !protocol.CheckRenderAdmissionProof(ctx, id, agentID, serverID, resourceURI) {
+		// The proof is missing or binds a different tuple. A scope-level
+		// refusal (ErrAccessorScopeDenied → CodeScopeMismatch at the wire
+		// edge), never a not-found: the target may exist, but this call
+		// is not authorized to reach it.
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: mcpconsole: render-admission call-local proof is missing or does not bind the exact (identity, agent, server %q, resource %q) tuple",
+			protocol.ErrAccessorScopeDenied, serverID, resourceURI)
 	}
 	desc, ok := a.reg.ResolveAppTool(serverID, tool)
 	if !ok {

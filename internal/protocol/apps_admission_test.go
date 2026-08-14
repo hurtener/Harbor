@@ -682,3 +682,119 @@ func TestAppsSurface_CallTool_ExpiredThroughSurface(t *testing.T) {
 		t.Errorf("admission-aware invocations = %d, want 0", inv.admittedCalls)
 	}
 }
+
+// TestAppsSurface_CallTool_MintsExactCallLocalProof proves the
+// method-selection-is-not-authority fix: the surface mints the
+// unforgeable call-local proof ONLY on the render-admission-backed path
+// and ONLY after the sealed admission was opened and the fresh
+// verification succeeded, and the proof binds the EXACT verified tuple —
+// identity, effective agent, server, and resource URI. The
+// admission-aware seam receives a ctx whose proof verifies for that
+// tuple and for no other, so the accessor's re-check (which refuses any
+// direct no-proof / mismatched-proof call) has something exact to hold
+// against.
+func TestAppsSurface_CallTool_MintsExactCallLocalProof(t *testing.T) {
+	authz := newFakeAdmissionAuthority(t)
+	inv := &stubInvoker{}
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource:                 &stubResourceReader{},
+		Invoker:                  inv,
+		ToolContext:              &stubToolContextReader{},
+		AgentResolver:            &stubAppsAgentResolver{},
+		AgentReach:               allowAppsAgentReach{},
+		RenderAdmissionAuthority: authz,
+		RenderAdmissionGate:      &fixedGenerationGate{gen: "gen-1"},
+	})
+	if err != nil {
+		t.Fatalf("NewAppsSurface: %v", err)
+	}
+	tok, err := authz.auth.Mint(context.Background(), admission.RenderTuple{
+		Identity:              identity.Identity{TenantID: "t-1", UserID: "u-1", SessionID: "s-1"},
+		AgentID:               appsDefaultAgentID,
+		ServerID:              "srv",
+		ResourceURI:           "ui://app/main.html",
+		DescriptorFingerprint: "gen-1",
+	})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity:        appsID(),
+		ServerID:        "srv",
+		Tool:            "srv_tool",
+		ResourceURI:     "ui://app/main.html",
+		RenderAdmission: tok.Value,
+	}); err != nil {
+		t.Fatalf("Dispatch(call_tool): %v", err)
+	}
+	if inv.admittedCtx == nil {
+		t.Fatal("admission-aware seam did not receive a ctx (proof cannot be checked)")
+	}
+	exact := identity.Identity{TenantID: "t-1", UserID: "u-1", SessionID: "s-1"}
+	if !protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, appsDefaultAgentID, "srv", "ui://app/main.html") {
+		t.Fatal("the seam's ctx does not carry a proof for the exact verified tuple")
+	}
+	// Every other tuple is refused by the proof — the exact server /
+	// resource / identity / agent re-check the accessor performs.
+	mismatches := []struct {
+		name string
+		ok   func() bool
+	}{
+		{"foreign tenant", func() bool {
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx,
+				identity.Identity{TenantID: "t-9", UserID: "u-1", SessionID: "s-1"}, appsDefaultAgentID, "srv", "ui://app/main.html")
+		}},
+		{"foreign user", func() bool {
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx,
+				identity.Identity{TenantID: "t-1", UserID: "u-9", SessionID: "s-1"}, appsDefaultAgentID, "srv", "ui://app/main.html")
+		}},
+		{"foreign session", func() bool {
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx,
+				identity.Identity{TenantID: "t-1", UserID: "u-1", SessionID: "s-9"}, appsDefaultAgentID, "srv", "ui://app/main.html")
+		}},
+		{"foreign agent", func() bool {
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, "other-agent", "srv", "ui://app/main.html")
+		}},
+		{"foreign server", func() bool {
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, appsDefaultAgentID, "other-srv", "ui://app/main.html")
+		}},
+		{"foreign resource", func() bool {
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, exact, appsDefaultAgentID, "srv", "ui://other/main.html")
+		}},
+		{"empty identity", func() bool {
+			return protocol.CheckRenderAdmissionProof(inv.admittedCtx, identity.Identity{}, appsDefaultAgentID, "srv", "ui://app/main.html")
+		}},
+	}
+	for _, tc := range mismatches {
+		if tc.ok() {
+			t.Errorf("%s: a mismatched tuple must not verify against the minted proof", tc.name)
+		}
+	}
+}
+
+// TestAppsSurface_CallTool_OrdinaryPathCarriesNoProof proves the proof
+// is minted ONLY on the render-admission-backed path: an ordinary
+// (no-admission) call reaches the invoker with NO proof — whichever
+// non-admission seam the invoker implements (ordinary or legacy
+// binding) — so no other call, and no later direct admission-aware call,
+// can borrow one.
+func TestAppsSurface_CallTool_OrdinaryPathCarriesNoProof(t *testing.T) {
+	inv := &stubInvoker{}
+	s := newAppsSurface(t, &stubResourceReader{}, inv)
+	if _, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: appsID(), ServerID: "srv", Tool: "srv_tool", ResourceURI: "ui://app/main.html",
+	}); err != nil {
+		t.Fatalf("Dispatch(call_tool): %v", err)
+	}
+	exact := identity.Identity{TenantID: "t-1", UserID: "u-1", SessionID: "s-1"}
+	gotCtx := inv.callCtx
+	if gotCtx == nil {
+		gotCtx = inv.bindingCtx
+	}
+	if gotCtx == nil {
+		t.Fatal("no-admission call did not reach any invoker seam")
+	}
+	if protocol.CheckRenderAdmissionProof(gotCtx, exact, appsDefaultAgentID, "srv", "ui://app/main.html") {
+		t.Fatal("an ordinary (no-admission) call must carry NO call-local proof")
+	}
+}

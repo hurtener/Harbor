@@ -269,15 +269,88 @@ type AppToolInvoker interface {
 // legacy-binding invocation path.
 type AppToolAdmissionInvoker interface {
 	// CallToolAdmitted invokes an app-only tool after the surface
-	// verified a fresh render admission for the exact tuple. serverID is
-	// the HOST-DERIVED server identity (authoritative runtime context,
-	// never parsed from the tool name); the implementation resolves only
-	// through that server's App dispatch catalog.
-	CallToolAdmitted(ctx context.Context, serverID, tool string, args json.RawMessage) (MCPAppToolResultRow, error)
+	// verified a fresh render admission for the exact tuple AND minted
+	// the unforgeable call-local proof (CheckRenderAdmissionProof). The
+	// implementation MUST verify the proof against the exact tuple this
+	// call names — identity from ctx, the effective agent, serverID, and
+	// resourceURI — BEFORE any resolution, exposure gate, or invocation;
+	// a direct call without the proof, or with a proof for a different
+	// tuple, is refused with zero callbacks. serverID is the HOST-DERIVED
+	// server identity (authoritative runtime context, never parsed from
+	// the tool name); resourceURI is the EXACT resource URI the admission
+	// binds. The implementation resolves only through that server's App
+	// dispatch catalog.
+	CallToolAdmitted(ctx context.Context, serverID, resourceURI, tool string, args json.RawMessage) (MCPAppToolResultRow, error)
 }
 
 type appBindingInvoker interface {
 	CallToolWithBinding(context.Context, string, string, string, string, json.RawMessage) (MCPAppToolResultRow, error)
+}
+
+// renderAdmissionProof is the unforgeable CALL-LOCAL proof that a sealed
+// render admission was opened AND the exact fresh authorization /
+// current-generation verification succeeded. It binds the exact verified
+// identity triple, the effective agent, the host server id, and the
+// exact resource URI.
+//
+// # Method selection is not an authority
+//
+// An exported admission-aware accessor must not reach ResolveAppTool
+// merely because it was called with a fully verified identity /
+// effective-agent context — the call-local proof is the authority, not
+// the method being named. Only the AppsSurface mints this proof (the
+// setter is private to package protocol), and it mints it exactly once,
+// immediately after verifyRenderAdmission succeeded. The proof rides
+// ctx — never the wire, never persisted, never a generic capability
+// framework, never a provider-local binding fallback.
+type renderAdmissionProof struct {
+	tenantID    string
+	userID      string
+	sessionID   string
+	agentID     string
+	serverID    string
+	resourceURI string
+}
+
+// renderAdmissionProofKey is the unexported context key the call-local
+// proof rides under. Only package protocol can seat a proof (and only
+// handleCallTool does, after verification); every other package can only
+// CHECK it via CheckRenderAdmissionProof.
+type renderAdmissionProofKey int
+
+const renderAdmissionProofCtxKey renderAdmissionProofKey = iota
+
+// withRenderAdmissionProof seats the proof on ctx. PRIVATE to package
+// protocol: it is minted ONLY in handleCallTool, and ONLY after the
+// sealed admission was opened and the fresh authorization / current
+// generation verification succeeded.
+func withRenderAdmissionProof(ctx context.Context, p renderAdmissionProof) context.Context {
+	return context.WithValue(ctx, renderAdmissionProofCtxKey, p)
+}
+
+// CheckRenderAdmissionProof reports whether ctx carries a call-local
+// render-admission proof binding EXACTLY the supplied tuple — the
+// verified tenant/user/session identity, the effective agent, the host
+// server id, and the exact resource URI.
+//
+// This is the NARROW exported checker the admission-aware invocation
+// seam (mcpconsole.AppsAccessor.CallToolAdmitted) verifies BEFORE any
+// resolution, paused/disabled exposure check, or invocation. Because the
+// proof can only be minted by this package after a full verification, a
+// direct call that did not ride the surface's verified path — no proof,
+// or a proof for a different server / resource / identity / agent — is
+// refused here and executes zero callbacks.
+func CheckRenderAdmissionProof(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI string) bool {
+	p, ok := ctx.Value(renderAdmissionProofCtxKey).(renderAdmissionProof)
+	if !ok {
+		return false
+	}
+	return p.tenantID == id.TenantID &&
+		p.userID == id.UserID &&
+		p.sessionID == id.SessionID &&
+		p.agentID == agentID &&
+		p.serverID == serverID &&
+		p.resourceURI == resourceURI
 }
 
 // AppsDeps bundles the runtime-side seams an AppsSurface reads through.
@@ -623,6 +696,20 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 		if perr := s.verifyRenderAdmission(idCtx, id, effectiveID, r.ServerID, r.ResourceURI, r.RenderAdmission); perr != nil {
 			return nil, perr
 		}
+		// The sealed admission has been opened and the exact fresh
+		// authorization / current-generation verification succeeded —
+		// ONLY now is the unforgeable call-local proof minted. It binds
+		// the exact verified identity / effective agent / server /
+		// resource URI and is the ONLY authority the admission-aware
+		// invoker seam accepts (method selection is not an authority).
+		idCtx = withRenderAdmissionProof(idCtx, renderAdmissionProof{
+			tenantID:    id.TenantID,
+			userID:      id.UserID,
+			sessionID:   id.SessionID,
+			agentID:     effectiveID,
+			serverID:    r.ServerID,
+			resourceURI: r.ResourceURI,
+		})
 	}
 	var res MCPAppToolResultRow
 	if r.RenderAdmission != "" {
@@ -633,7 +720,7 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
 				"method %q: render-admission authority is wired but the admission-aware invoker seam is not — refusing rather than falling back to the legacy binding path", string(method))
 		}
-		res, err = adm.CallToolAdmitted(idCtx, r.ServerID, r.Tool, r.Arguments)
+		res, err = adm.CallToolAdmitted(idCtx, r.ServerID, r.ResourceURI, r.Tool, r.Arguments)
 	} else if bound, ok := s.invoker.(appBindingInvoker); ok {
 		// Legacy live binding path — unchanged and separate.
 		res, err = bound.CallToolWithBinding(idCtx, r.ServerID, r.Binding, r.ResourceURI, r.Tool, r.Arguments)

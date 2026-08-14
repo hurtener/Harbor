@@ -1,14 +1,17 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -672,38 +675,165 @@ func partitionAppOnly(descs []tools.ToolDescriptor) map[string]tools.ToolDescrip
 
 // currentGenerationFor computes the deterministic current
 // provider/catalog generation fingerprint for a canonical descriptor
-// set: a content digest over the sorted per-descriptor classification
-// rows (name, form, app-only flag, source, transport, description).
+// set: a SHA-256 digest over the canonical encoding of every STABLE
+// semantic field of every current tools.Tool descriptor.
 //
-// Content-derived — two replicas holding the SAME canonical current
-// descriptor set produce the SAME fingerprint, and any successful
-// discovery change to the resources / app-only / ordinary catalog rows
-// changes it, even when the deployment registration descriptor did not.
-// It is NEVER a process-local counter. An empty or nil set yields ""
-// (unknown — fail closed: a render admission never binds an empty
-// generation).
+// # Covered fields — every stable semantic field that can affect
+// ordinary / app-only / resource / prompt catalog meaning
+//
+// name, description, ArgsSchema and OutSchema, SideEffects, Tags,
+// AuthScopes, CostHint, LatencyHint, SafetyNotes, Loading, Examples (in
+// order, each with its canonical JSON Args, Description, and Tags),
+// Source, Transport, Policy (TimeoutMS, MaxRetries, BackoffBase,
+// BackoffMult, BackoffMax, RetryOn, Validate), HandlesMIME, Form, and
+// AppOnly.
+//
+// # Excluded
+//
+// The descriptor's Invoke and Validate function values (process code,
+// not catalog meaning), secrets, timestamps, process-local counters,
+// and mutable runtime stats — none of which live on Tool or are hashed.
+//
+// # Honest canonicalization
+//
+// Set-like fields (Tags, AuthScopes, HandlesMIME, Policy.RetryOn,
+// example Tags) are sorted before encoding, so element ORDER never
+// changes the generation. Order-bearing fields (the Examples list) keep
+// their order. JSON (ArgsSchema / OutSchema) is encoded BYTE-FAITHFUL
+// with a length prefix — never re-parsed or re-emitted — so
+// invalid/non-canonical JSON cannot be coerced into a form that collides
+// with different bytes, and replicas carrying identical bytes hash
+// identically. Example Args maps are marshalled with encoding/json's
+// deterministic key-sorted form (a nil map encodes as the empty map:
+// both mean "no args"). Descriptors are sorted by their canonical row
+// bytes, so discovery ORDER never changes the generation.
+//
+// Identical semantic catalogs across replicas hash identically; changing
+// any covered semantic field changes the generation. The digest is NEVER
+// a process-local counter. An empty/nil set, or a set containing a
+// descriptor whose stable fields cannot be canonically encoded (e.g.
+// non-serializable example args), yields "" — unknown, fail closed: a
+// render admission never binds an empty generation, and a
+// non-canonically determinable catalog is refused rather than guessed.
 func currentGenerationFor(descs []tools.ToolDescriptor) string {
 	if len(descs) == 0 {
 		return ""
 	}
-	rows := make([]string, 0, len(descs))
+	rows := make([][]byte, 0, len(descs))
 	for _, d := range descs {
-		rows = append(rows, strings.Join([]string{
-			d.Tool.Name,
-			string(d.Tool.Form),
-			strconv.FormatBool(d.Tool.AppOnly),
-			string(d.Tool.Source),
-			string(d.Tool.Transport),
-			d.Tool.Description,
-		}, "\x00"))
+		row, err := canonicalDescriptorRow(d)
+		if err != nil {
+			// A descriptor whose stable fields cannot be canonically
+			// encoded is not deterministically classifiable: unknown,
+			// fail closed (the admission gate refuses the tuple).
+			return ""
+		}
+		rows = append(rows, row)
 	}
-	sort.Strings(rows)
+	sort.Slice(rows, func(i, j int) bool { return bytes.Compare(rows[i], rows[j]) < 0 })
 	h := sha256.New()
 	for _, row := range rows {
-		io.WriteString(h, row)
-		h.Write([]byte{0})
+		var lenBuf [8]byte
+		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(row)))
+		h.Write(lenBuf[:])
+		io.WriteString(h, string(row))
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// canonicalDescriptorRow encodes the stable semantic fields of ONE
+// tools.ToolDescriptor into a self-delimiting byte row. Every field is
+// length-prefixed (big-endian), so no value bytes — including NULs and
+// JSON — can fuse with a neighbour or alias a different field. The
+// descriptor's Invoke / Validate function values are deliberately not
+// encoded: they are process code, not catalog meaning.
+//
+// The row is a pure function of the Tool's stable fields: two replicas
+// with identical semantic content produce identical bytes, and changing
+// any covered field changes the bytes. An error means the descriptor's
+// stable fields cannot be canonically encoded (e.g. a non-serializable
+// example args map) — the caller treats the catalog as non-determinable.
+func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
+	t := d.Tool
+	var buf bytes.Buffer
+	// Every write below targets *bytes.Buffer (or the sha256 in
+	// currentGenerationFor), which never fails; the bare calls match the
+	// registry's established digest pattern.
+	writeField := func(s string) {
+		var lenBuf [8]byte
+		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(s)))
+		buf.Write(lenBuf[:])
+		buf.WriteString(s)
+	}
+	writeInt := func(v int64) {
+		var fieldBuf [8]byte
+		binary.BigEndian.PutUint64(fieldBuf[:], uint64(v))
+		buf.Write(fieldBuf[:])
+	}
+	writeFloat := func(f float64) {
+		var fieldBuf [8]byte
+		binary.BigEndian.PutUint64(fieldBuf[:], math.Float64bits(f))
+		buf.Write(fieldBuf[:])
+	}
+	writeSorted := func(values []string) {
+		writeInt(int64(len(values)))
+		sorted := append([]string(nil), values...)
+		sort.Strings(sorted)
+		for _, v := range sorted {
+			writeField(v)
+		}
+	}
+
+	writeField(t.Name)
+	writeField(t.Description)
+	writeField(string(t.ArgsSchema)) // byte-faithful; never re-parsed
+	writeField(string(t.OutSchema))  // byte-faithful; never re-parsed
+	writeField(string(t.SideEffects))
+	writeSorted(t.Tags)
+	writeSorted(t.AuthScopes)
+	writeField(t.CostHint)
+	writeInt(int64(t.LatencyHint))
+	writeField(t.SafetyNotes)
+	writeField(string(t.Loading))
+	// Examples are order-bearing (the planner sees them in order), so
+	// they keep their order.
+	writeInt(int64(len(t.Examples)))
+	for _, ex := range t.Examples {
+		writeField(ex.Description)
+		writeSorted(ex.Tags)
+		args := ex.Args
+		if args == nil {
+			// nil and the empty map are semantically the same "no args".
+			args = map[string]any{}
+		}
+		argsJSON, err := json.Marshal(args) // deterministic: encoding/json sorts map keys
+		if err != nil {
+			return nil, err
+		}
+		writeField(string(argsJSON))
+	}
+	writeField(string(t.Source))
+	writeField(string(t.Transport))
+	// Policy — the reliability shell, a stable semantic field family.
+	writeInt(int64(t.Policy.TimeoutMS))
+	writeInt(int64(t.Policy.MaxRetries))
+	writeInt(int64(t.Policy.BackoffBase))
+	writeFloat(t.Policy.BackoffMult)
+	writeInt(int64(t.Policy.BackoffMax))
+	retryOn := make([]string, len(t.Policy.RetryOn))
+	for i, class := range t.Policy.RetryOn {
+		retryOn[i] = string(class)
+	}
+	writeSorted(retryOn)
+	writeField(string(t.Policy.Validate))
+	writeSorted(t.HandlesMIME)
+	writeField(string(t.Form))
+	if t.AppOnly {
+		writeField("1")
+	} else {
+		writeField("0")
+	}
+	return buf.Bytes(), nil
 }
 
 // ResolveAppTool resolves an app-only callback from the named server's App

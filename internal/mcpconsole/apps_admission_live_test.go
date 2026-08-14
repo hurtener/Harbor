@@ -675,3 +675,85 @@ func TestAdmissionPath_UnwiredFreshGate_FailsLoudZeroExecutions(t *testing.T) {
 		t.Fatalf("ordinary read broke on the disabled surface: %v", err)
 	}
 }
+
+// --- method-selection-is-not-authority (P1): the call-local proof --------
+
+// directAdmissionCtx seats the exact context a direct internal caller
+// would hold: a fully verified identity triple AND a reach-admitted
+// effective agent — the context the old code accepted. The call-local
+// proof is deliberately NOT minted, because only the Protocol surface can
+// mint it.
+func directAdmissionCtx(t *testing.T) context.Context {
+	t.Helper()
+	return tools.WithEffectiveAgentConfig(admissionVerifiedCtx(t), appsAdmissionAgentID)
+}
+
+// TestAdmissionPath_DirectCall_NoProof_RefusedZeroExecutions proves the
+// P1 fix: the exported admission-aware method is NOT an authority. An
+// internal caller invoking AppsAccessor.CallToolAdmitted directly with a
+// fully verified identity / effective-agent context but NO call-local
+// proof is refused BEFORE any resolution or invocation — the named
+// app-only callback resolves on the server, yet executes zero callbacks.
+func TestAdmissionPath_DirectCall_NoProof_RefusedZeroExecutions(t *testing.T) {
+	reg := mcp.NewRegistry()
+	descs := []tools.ToolDescriptor{
+		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
+		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
+	}
+	s, calls, _, acc := buildAdmissionSurface(t, reg, "srv-a", descs, nil, nil)
+	_ = s
+
+	_, err := acc.CallToolAdmitted(directAdmissionCtx(t), "srv-a", "ui://srv-a/app.html", "srv-a_cb", json.RawMessage(`{}`))
+	if !errors.Is(err, protocol.ErrAccessorScopeDenied) {
+		t.Fatalf("direct no-proof call err = %v, want a wrapped %v", err, protocol.ErrAccessorScopeDenied)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("wrapped invocations = %d, want 0 (no proof must execute zero callbacks)", got)
+	}
+}
+
+// TestAdmissionPath_DirectCall_NoProof_RefusalPrecedesResolveAppTool
+// proves the refusal happens BEFORE ResolveAppTool: a call naming an
+// ABSENT server answers the proof refusal (scope denied), never the
+// not-found a ResolveAppTool miss would produce — resolution was never
+// reached, so the server's existence is neither consulted nor revealed.
+func TestAdmissionPath_DirectCall_NoProof_RefusalPrecedesResolveAppTool(t *testing.T) {
+	reg := mcp.NewRegistry()
+	descs := []tools.ToolDescriptor{
+		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
+		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
+	}
+	s, calls, _, acc := buildAdmissionSurface(t, reg, "srv-a", descs, nil, nil)
+	_ = s
+
+	_, err := acc.CallToolAdmitted(directAdmissionCtx(t), "absent-srv", "ui://absent-srv/app.html", "absent_cb", json.RawMessage(`{}`))
+	if !errors.Is(err, protocol.ErrAccessorScopeDenied) {
+		t.Fatalf("absent-server direct call err = %v, want the proof refusal (%v) — proves the refusal precedes ResolveAppTool",
+			err, protocol.ErrAccessorScopeDenied)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("wrapped invocations = %d, want 0", got)
+	}
+}
+
+// TestAdmissionPath_DirectCall_NoIdentity_FailsClosed proves the accessor
+// also fails closed on a missing identity (nothing to bind the proof
+// against), with zero executions — before any resolution.
+func TestAdmissionPath_DirectCall_NoIdentity_FailsClosed(t *testing.T) {
+	reg := mcp.NewRegistry()
+	descs := []tools.ToolDescriptor{
+		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
+		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
+	}
+	s, calls, _, acc := buildAdmissionSurface(t, reg, "srv-a", descs, nil, nil)
+	_ = s
+
+	ctx := tools.WithEffectiveAgentConfig(context.Background(), appsAdmissionAgentID)
+	_, err := acc.CallToolAdmitted(ctx, "srv-a", "ui://srv-a/app.html", "srv-a_cb", json.RawMessage(`{}`))
+	if !errors.Is(err, mcp.ErrIdentityMissing) {
+		t.Fatalf("identity-less direct call err = %v, want a wrapped %v", err, mcp.ErrIdentityMissing)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("wrapped invocations = %d, want 0", got)
+	}
+}
