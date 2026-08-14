@@ -69,9 +69,9 @@ assert_grep_present "no new HA, phase, or decision" \
 assert_grep_present "corrected fresh render-admission contract" \
     docs/decisions.md \
     "amendment: D-412 amendment record exists"
-assert_grep_present "Pending v1.28" \
+assert_grep_present "fresh render-admission amendment (Shipped v1.28)" \
     docs/decisions.md \
-    "amendment: D-412 amendment is marked Pending v1.28"
+    "amendment: D-412 amendment is marked Shipped v1.28"
 assert_grep_present "no transcript impersonation" \
     docs/decisions.md \
     "amendment: transcript-impersonation non-goal is pinned"
@@ -82,12 +82,38 @@ assert_grep_present "Fresh render-admission contract" \
     "amendment: RFC §6.10 records the fresh render-admission contract"
 
 # Master plan + register: status flips on both surfaces.
-assert_grep_present "fresh render-admission amendment Pending \(v1.28\)" \
+assert_grep_present "fresh render-admission amendment Shipped \(v1.28\)" \
     docs/plans/README.md \
-    "amendment: master-plan index row + detail block mark the amendment Pending (v1.28)"
-assert_grep_present "fresh render-admission amendment Pending \(v1.28\)" \
+    "amendment: master-plan index row + detail block mark the amendment Shipped (v1.28)"
+assert_grep_present "fresh render-admission amendment Shipped \(v1.28\)" \
     docs/notes/downstream-asks.md \
-    "amendment: HA-56 register row marks the amendment Pending (v1.28)"
+    "amendment: HA-56 register row marks the amendment Shipped (v1.28)"
+
+# The binding reopen order: durable App reference -> tool-context replay ->
+# admission-requesting read -> mount -> same-server wrapped callback. The
+# fresh admission is distinct from, never aliases, never coexists with the
+# legacy live binding; neither is persisted or restored.
+assert_grep_present "exact reopen order" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: plan pins the exact reopen order"
+assert_grep_present "replay mints no authority" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: failed/unavailable/evicted/foreign replay mints no authority"
+assert_grep_present "never aliases" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: fresh admission never aliases the legacy live binding"
+assert_grep_present "neither is persisted or restored" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: neither admission nor live binding is persisted or restored"
+assert_grep_present "distinct admission-aware AppsAccessor path" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: the distinct admission-aware AppsAccessor path is pinned"
+assert_grep_present "STRICTLY opt-in" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: strictly opt-in (sealer availability alone never enables)"
+assert_grep_present "reach-admitted effective agent" \
+    RFC-001-Harbor.md \
+    "amendment: RFC pins the reach-admitted effective agent read on every mint/verify"
 
 # Glossary: the new term lands beside the retained App dispatch catalog entry.
 assert_grep_present "Fresh render admission" \

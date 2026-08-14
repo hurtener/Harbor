@@ -118,16 +118,16 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
    remount an App through the fresh admission path using the real Console
    App host/bridge, not a unit-level stand-in; the live provider-local
    binding path is separately exercised for a live tool-result App and proven
-   bounded (expires with the live App) and never restored. The exact reopen
-   order is binding: the durable App reference from the reopened session's
-   turn rows, a successful `mcp.apps.tool_context` replay (a failed /
-   unavailable / evicted / foreign replay mints no authority), the current
-   `ui://` read explicitly requesting one fresh admission
+   bounded (expires with the live App) and never restored. The exact reopen order is binding:
+   the durable App reference from the reopened session's turn rows, a
+   successful `mcp.apps.tool_context` replay (a failed / unavailable /
+   evicted / foreign replay mints no authority), the current `ui://` read
+   explicitly requesting one fresh admission
    (`request_render_admission: true` — the only minting read; ordinary and
    AppBridge-secondary resource reads never mint), the iframe/AppBridge
    mount, and then same-server app-only callback dispatch through the
-   existing wrapped invocation (the distinct admission-aware AppsAccessor
-   path) echoing the fresh admission as the distinct `render_admission`
+   existing wrapped invocation (the distinct admission-aware AppsAccessor path)
+   echoing the fresh admission as the distinct `render_admission`
    authority. The fresh admission is distinct from, never aliases, and never
    coexists with the legacy live binding; neither is persisted or restored.
 2. **Negative admission cases each fail typed before render or dispatch, with
@@ -155,6 +155,10 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
    typed `unavailable`/`expired`; refresh re-runs the full fresh check list.
 8. **One implementation:** production and devstack resolve the same
    implementation and one immutable shared sealer instance; the surface is
+   STRICTLY opt-in (sealer availability alone never enables it, even when an
+   OAuth broker already supplies the shared KEK) and every mint/verify reads
+   the reach-admitted effective agent stamped in the request context, never
+   a fixed boot/default fallback; it is
    enabled by `tools.mcp_app_render_admission.enabled` (default `false`) and
    seals with the existing `tools.oauth_token_kek_env` KEK — no second
    authority field; an enabled surface with an empty env name, a

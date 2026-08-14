@@ -440,6 +440,74 @@ The verb **always** writes `title_source: "manual"` — `auto` provenance is not
 - **`memory.list` / `memory.health`** — the always-empty `has_ttl_expiring` facet and the two `expiring_in_1h` aggregate fields are **removed** from the wire (V1 memory has no TTL); `filter.agent_ids` loud-rejects with `invalid_request`/400 (a V1 record carries no producer identity), never a false-empty page.
 - **`tools.list` / `tools.metrics` / `tools.content_stats`** — a runtime that advertises the `tool_annotations` capability (negotiate via `Accepts(tool_annotations)`) serves REAL per-tool annotations: `filter.oauth_statuses` / `filter.approval_policies` narrow to real rows, the annotator-backed aggregates (`active` / `pending_approval` / `awaiting_oauth`) carry real counts (no `aggregates_partial`), `tools.metrics` returns real error-rate gauges + invocation/failure counts over the window, and `tools.content_stats` returns a real result-size histogram (D-314). The admin `tools.set_approval_policy` / `tools.revoke_oauth` methods persist through `tools/approval` / `tools/auth` with audit (they no longer return `admin_unsupported`). A runtime that does NOT advertise `tool_annotations` (a headless catalog stack) loud-rejects `filter.oauth_statuses` / `filter.approval_policies` with `invalid_request` and returns `aggregates_partial: true` with those counters zeroed — render them "unavailable," never a real-looking 0; only `aggregates.total` is authoritative in that state.
 
+## 4d. Reopening a chat — durable turns and the two-read open (v1.28)
+
+`state.history` (above) is still the raw-event drill-down. To **reopen a
+chat** — render the current conversation from durable data — the v1.28
+surface gives you a dedicated projection instead of reconstructing turns
+from forensic events:
+
+- **Lifecycle-only session read (HA-63 / D-424).** `sessions.list` /
+  `sessions.inspect` accept an additive `projection: "lifecycle"` selector:
+  session id, status, title/source, authoritative timestamps, duration where
+  derivable, and the honestly representable agent id — with ZERO counter
+  enrichment (work bounded by page size before and after restart). Counter
+  fields use the closed availability state `current | partial |
+  not_requested | unavailable`; the lifecycle shape marks them
+  `not_requested` (never merely absent, never zero-as-not-computed). A
+  counter filter/sort (`cost_above_cents`, `cost_desc`, …) paired with the
+  lifecycle selector fails `invalid_request` — it never silently switches to
+  the expensive projection. The full projection remains the default when the
+  selector is omitted.
+- **Durable turn pages (HA-64 / D-425).** `sessions.turns.list` returns one
+  newest-first keyset page of the caller's exact session's root foreground
+  turns (opaque `older_cursor`, `limit` default 20 / max 50) with
+  renderable answer (inline or by artifact reference, or
+  `empty`/`evicted`/`unavailable`), consumer-safe reasoning, ordered tool
+  Activity (never arguments/results), usage, intervention metadata (the
+  action token only for a caller satisfying the pause's tier), and ordered
+  durable MCP App references. `sessions.turns.get` is the one
+  `(session, task)` terminal reconciliation read. Both are exact-session:
+  a foreign session answers typed `not_found` (non-oracular).
+- **Page-before-subscribe live handoff.** Chat open is two reads — one
+  `projection: "lifecycle"` inspect plus one `sessions.turns.list` page —
+  then the SSE subscription: open the EventSource with the page's
+  `live_resume_seq` as the initial `resume_seq` (`GET /v1/events?resume_seq=…`),
+  so the server replays events strictly newer than the snapshot through the
+  existing bounded replay path; a browser reconnect's `Last-Event-ID` header
+  takes precedence. One terminal event for a rendered running/paused turn
+  triggers exactly one `sessions.turns.get`, which replaces the bubble with
+  the sealed row. On page retry, rebuild the live membership from a freshly
+  read `sessions.turns.list` (never duplicate bubbles or re-admit a terminal
+  row).
+- **Administrative observability (HA-65 / D-426).** The one bounded
+  administrative query is `observability.query` (`POST /v1/observability/
+  query`): mandatory time window, a closed `group_by` set (tenant / user /
+  session / model), existing source-backed measures only (successful
+  completions, exact cost, tokens, latency count/sum/min/max, task
+  completed/failed/cancelled), fixed UTC minute buckets (may coarsen), and a
+  mandatory freshness block (`current` / `catching_up` / `unavailable` +
+  watermark) on every response — never zero as a substitute for
+  unavailable. Widening to other tenants/users requires the verified
+  `admin`/`console:fleet` scope and emits one `audit.admin_scope_used`.
+- **User-skill package import (HA-61 / D-422).** A caller may install a
+  reviewed `SKILL.md` package as a durable personal skill through
+  `agent_config.user.skills.import_validate` (returns a bounded opaque
+  sealed `proposal_token` plus the normalized review/hashes/expiry — it
+  performs ZERO writes) and `agent_config.user.skills.import_commit` (echo
+  the token and reviewed hashes; the runtime reauthenticates and
+  revalidates, forces your scope + the effective agent, and installs the
+  package in one conditional write). A stale/foreign/expired token answers
+  the typed `skill_import_proposal_*` refusal; `replace: true` is required
+  to replace an existing package.
+- **Composition preview (HA-66 / D-427).** `agent_config.composition.preview`
+  (`POST /v1/agent_config/composition/preview`, claim-free for your own
+  triple) reports the effective skill composition a run would compose for
+  the named agent: per-item `boot|revision|both` provenance, the
+  per-package semantic hash, and the deterministic `boot_pack_set_hash`.
+  The same strict resolver feeds boot preflight, run, and preview — the
+  preview never mutates.
+
 ## 5. Pause + steer + resume
 
 The unified pause/resume primitive (RFC §3.3) is one wire choreography for every cause — HITL approval, tool-side OAuth, operator pause. The steering verbs share one route shape, `POST /v1/control/{method}`, with the run id and your steering scope in the body's `identity`:

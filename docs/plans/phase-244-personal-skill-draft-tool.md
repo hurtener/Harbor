@@ -6,7 +6,8 @@ Add `skill_create_draft` as an ordinary, disabled-by-default runtime tool that
 turns bounded natural-language intent and optional feedback into a reviewable
 caller-scoped `SKILL.md` artifact. It uses the governed authoring path's
 safety-wrapped LLM adapter while sharing Phase 243's canonical semantic skill
-DTO, validator, deterministic serializer, and `PackageHash`; it has no
+DTO, validator, deterministic serializer, and `PackageHash`; it has
+zero mutation authority — no
 durable skill, configuration, membership, or publication authority.
 
 ## RFC anchor

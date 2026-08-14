@@ -1938,9 +1938,10 @@ owned by the originating session, never grants skill membership by existing,
 and is only provenance after a commit: the installed package does not
 dereference it. D-422.
 
-**Reviewed skill-package proposal** — the bounded opaque versioned sealed
-proposal token returned by `import_validate` and consumed exactly once by
-`import_commit`: a base64url shared-KEK-sealed claims payload carrying source
+**Reviewed skill-package proposal** — the bounded opaque versioned
+sealed proposal token returned by `import_validate` and consumed exactly
+once by `import_commit`: a base64url shared-KEK-sealed claims payload
+carrying source
 reference and hash, versioned `PackageHash`, ordered supporting-file
 manifest, effective agent, expected config hash, ceiling and policy
 snapshots + hashes, actor, issued/expiry, and schema/version. Validation
@@ -1979,9 +1980,9 @@ through explicit Phase 243 validate/commit. D-423.
 
 **`skill_create_draft`** — the ordinary, disabled-by-default runtime tool
 that turns bounded intent and optional feedback into a personal skill draft
-via the governed authoring path's safety-wrapped LLM adapter. Zero mutation
-authority; authority comes only from the verified run context and effective
-agent. D-423.
+via the governed authoring path's safety-wrapped LLM adapter. It has
+zero mutation authority; authority comes only from the verified run context
+and effective agent. D-423.
 
 **Session lifecycle projection** — the `projection: "lifecycle"` selector on
 `sessions.list` / `sessions.inspect` returning session lifecycle metadata

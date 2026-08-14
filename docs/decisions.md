@@ -13032,8 +13032,8 @@ erasure), D-409 (session reach), D-397 (agent reach), D-313/D-349
 **Date:** 2026-08-13
 
 **Status:** Accepted for Phase 246 (HA-64). Shipped (v1.28): the accepted
-snapshot-to-live handoff is page-before-subscribe (below), not the earlier
-provisional subscribe-before-page wording.
+snapshot-to-live handoff is page-before-subscribe (below), which supersedes
+the earlier provisional ordering.
 
 **Decision.** Add a dedicated, runtime-owned conversation read model —
 `sessions.turns.list` (stable tail pages) and `sessions.turns.get` (one
