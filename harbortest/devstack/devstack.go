@@ -750,6 +750,38 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 	var attacher agentcfgprotocol.ConnectionAttacher
 	var agentResolver protocol.AgentResolver
 
+	// The HA-66 boot baseline — the SAME eager loader/composer production
+	// serve.Boot runs (CLAUDE.md §17.6 parity). The immutable index is
+	// opened, validated and collision-pre-read HERE — before the run-loop
+	// driver is constructed — so the SAME frozen pointer feeds the driver's
+	// run-start boot baseline, the composition preview, and the boot-ownership
+	// wiring. The block previously sat in the transport/mux section AFTER the
+	// driver; the guard below is the transport section's original condition,
+	// so a transports-skipped stack keeps the no-baseline (nil) shape and
+	// task processing never starts before the index is open.
+	var bootIndex *bootpacks.Index
+	if !opts.SkipTransports && !opts.SkipSteering && len(cfg.Skills.BootAgentPacks) > 0 {
+		var bErr error
+		// Assign the OUTER variable (plain `=`, mirroring serve.Boot) — a
+		// short-declaration `:=` here would shadow it with a block-local copy
+		// and leave every later consumer (driver, preview, ownership) holding
+		// a typed-nil index.
+		bootIndex, bErr = serve.OpenBootPackIndex(ctx, cfg, stack.Catalog, stack.Artifacts)
+		if bErr != nil {
+			return stack, bErr
+		}
+		if vErr := serve.ValidateBootAgentPacksForAgent(cfg, stack.AgentConfigID); vErr != nil {
+			return stack, vErr
+		}
+		retReg, ok := stack.AgentConfig.(agentcfg.RetirementRegistry)
+		if !ok {
+			return stack, fmt.Errorf("devstack boot_agent_packs: agent-config registry does not implement the retirement/read seam")
+		}
+		if pErr := serve.PreReadBootPackCollisions(ctx, bootIndex, retReg); pErr != nil {
+			return stack, pErr
+		}
+	}
+
 	// Steering surface + run-loop driver. Skip-aware: the Mux phase
 	// below depends on the surface, so SkipSteering implies
 	// SkipTransports even if the caller did not set both flags.
@@ -913,6 +945,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				RunSnapshots:             runSnapshots,
 				AgentReachAdmissions:     agentReachAdmissions,
 				SessionOverlay:           stack.SessionOverlay,
+				BootPackReader:           bootIndex,
 				RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 				ConnectionDetacher:       devDetacher,
 				ConnectionReattacher:     devReattacher,
@@ -1065,23 +1098,6 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		sharedSealer, sealerErr := serve.ResolveSharedKEKSealer(cfg, stack.OAuthProviderBuilder)
 		if sealerErr != nil {
 			return stack, sealerErr
-		}
-		var bootIndex *bootpacks.Index
-		if len(cfg.Skills.BootAgentPacks) > 0 {
-			bootIndex, bErr := serve.OpenBootPackIndex(ctx, cfg, stack.Catalog, stack.Artifacts)
-			if bErr != nil {
-				return stack, bErr
-			}
-			if vErr := serve.ValidateBootAgentPacksForAgent(cfg, stack.AgentConfigID); vErr != nil {
-				return stack, vErr
-			}
-			retReg, ok := stack.AgentConfig.(agentcfg.RetirementRegistry)
-			if !ok {
-				return stack, fmt.Errorf("devstack boot_agent_packs: agent-config registry does not implement the retirement/read seam")
-			}
-			if pErr := serve.PreReadBootPackCollisions(ctx, bootIndex, retReg); pErr != nil {
-				return stack, pErr
-			}
 		}
 		turnsProj, turnsSvc, turnsCloser, tErr := serve.OpenTurnsProjection(ctx, cfg, serve.TurnsProjectionDeps{
 			Bus: bus, Sessions: stack.Sessions, Tasks: stack.Tasks, Artifacts: stack.Artifacts, Logger: lg,

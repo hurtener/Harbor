@@ -96,6 +96,7 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
+	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
@@ -253,6 +254,15 @@ type RunLoopDriverOptions struct {
 	// config only). The SAME store the session-safe Protocol verbs write into.
 	SessionOverlay sessionoverlay.Store
 
+	// BootPackReader is the eager immutable boot-pack baseline reader (the
+	// HA-66 index opened before driver construction). It is the SAME frozen
+	// surface the composition preview reads; the driver looks up the
+	// effective agent's exact (tenant, agent) key at run start and binds the
+	// frozen entries into the run's skill-snapshot membership. OPTIONAL — a
+	// nil reader means "no boot baseline" (the pre-HA-66 shape: the composed
+	// operator tier's boot set hash stays absent and no baseline composes).
+	BootPackReader agentcfgprotocol.BootPackReader
+
 	// runCompletionHook is the static `runtime.hooks.run_completion`
 	// projection (nil when unset). At run start the driver resolves the
 	// effective hook via the shared projection (agent-config over this yaml
@@ -394,6 +404,10 @@ type RunLoopDriver struct {
 	// over the admin agent config (nil = none).
 	sessionOverlay sessionoverlay.Store
 
+	// bootPackReader is the eager immutable boot-pack baseline reader
+	// (nil = no boot baseline — the pre-HA-66 shape).
+	bootPackReader agentcfgprotocol.BootPackReader
+
 	// runCompletionHook is the static run-completion hook default (from
 	// `runtime.hooks.run_completion`); nil when unset. The driver resolves
 	// the effective hook per run via the shared projection.
@@ -511,6 +525,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		runSnapshots:             opts.RunSnapshots,
 		agentReachAdmissions:     opts.AgentReachAdmissions,
 		sessionOverlay:           opts.SessionOverlay,
+		bootPackReader:           opts.BootPackReader,
 		runCompletionHook:        opts.RunCompletionHook,
 		connectionDetacher:       opts.ConnectionDetacher,
 		connectionReattacher:     opts.ConnectionReattacher,
@@ -532,6 +547,14 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 // share one Store.
 func (d *RunLoopDriver) SessionOverridesStore() *runsprotocol.Store {
 	return d.sessionOverrides
+}
+
+// BootPackReader returns the eager immutable boot-pack baseline reader the
+// driver was constructed with (nil when no boot baseline is wired). Exposed
+// so a caller can assert the driver shares ONE frozen index with the
+// composition preview and boot-ownership wiring.
+func (d *RunLoopDriver) BootPackReader() agentcfgprotocol.BootPackReader {
+	return d.bootPackReader
 }
 
 // Start opens the admin-scoped subscription and launches the
@@ -766,10 +789,12 @@ func (d *RunLoopDriver) projectAgentConfigSkills(ctx context.Context, agentID st
 }
 
 // captureRunSkillSnapshot resolves the selected agent's AGENT/USER membership
-// once, builds the fence-stable composite resolver once, and binds that reader
-// to the exact run quadruple. A driver with no skill snapshot dependencies is
-// the valid no-skills subsystem shape; partial wiring is rejected by
-// NewRunLoopDriver.
+// plus the HA-66 boot baseline for the agent's exact (tenant, effective-agent)
+// key, builds the fence-stable composite resolver once, and binds that reader
+// to the exact run quadruple — with the deterministic operator-tier hashes and
+// per-item provenance from the concrete resolver's exact run-start tier. A
+// driver with no skill snapshot dependencies is the valid no-skills subsystem
+// shape; partial wiring is rejected by NewRunLoopDriver.
 func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAgentID string, q identity.Quadruple, profile *virtualagent.Profile) (skills.RunSkillReaderSnapshot, bool, error) {
 	if d.skillStore == nil {
 		return skills.RunSkillReaderSnapshot{}, false, nil
@@ -778,7 +803,19 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 	if err != nil {
 		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("capture membership: %w", err)
 	}
-	var resolver skills.SkillReader
+	// The HA-66 boot baseline: the eager immutable index lookup for the EXACT
+	// (tenant, effective agent) pair. A nil reader (no boot declarations) or
+	// a miss (the key is absent from the frozen index — including a config
+	// removal between deployments) leaves membership.Boot nil: no identity is
+	// invented and there is no fallback to the boot agent id on a miss, so
+	// the composed tier's boot set hash stays absent. The index's Lookup
+	// already returns deep copies of the frozen entries.
+	if d.bootPackReader != nil {
+		if bootEntries, ok := d.bootPackReader.Lookup(q.TenantID, effectiveAgentID); ok {
+			membership.Boot = bootEntries
+		}
+	}
+	var resolver *sessionoverlay.SessionSkillResolver
 	resolver, err = sessionoverlay.NewSessionSkillResolver(ctx, sessionoverlay.SessionSkillResolverConfig{
 		Run:        q,
 		AgentID:    effectiveAgentID,
@@ -790,16 +827,35 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 	if err != nil {
 		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("build resolver: %w", err)
 	}
+	// The effective operator tier (boot baseline + active durable revision
+	// through the strict composer) is read from the CONCRETE resolver BEFORE
+	// any virtual allowlist wrapper: the deterministic hashes and per-item
+	// provenance must come from the exact run-start tier, never from a
+	// filtered view.
+	tier, err := resolver.OperatorTier(ctx, q)
+	if err != nil {
+		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("read operator tier: %w", err)
+	}
+	var reader skills.SkillReader = resolver
 	if profile != nil && profile.Overlay.Skills != nil {
-		resolver, err = skills.NewAllowlistReader(resolver, *profile.Overlay.Skills)
+		reader, err = skills.NewAllowlistReader(reader, *profile.Overlay.Skills)
 		if err != nil {
 			return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("bind virtual skill allowlist: %w", err)
 		}
 	}
-	snapshot, err := skills.NewRunSkillReaderSnapshot(q, effectiveAgentID, resolver)
+	snapshot, err := skills.NewRunSkillReaderSnapshot(q, effectiveAgentID, reader)
 	if err != nil {
 		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("bind run reader: %w", err)
 	}
+	// Bind the deterministic boot baseline set hash, the combined operator
+	// tier set hash, and one source marker per canonical tier item into the
+	// snapshot. The virtual allowlist wrapper above never erases this
+	// provenance — it is a pure reader filter.
+	sources := make(map[string]skills.OperatorTierSource, tier.Len())
+	for _, item := range tier.Items() {
+		sources[item.Skill.Name] = item.Source
+	}
+	snapshot = snapshot.WithOperatorTier(tier.BootPackSetHash(), tier.CombinedHash(), sources)
 	return snapshot, true, nil
 }
 

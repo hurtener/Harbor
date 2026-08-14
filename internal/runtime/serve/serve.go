@@ -884,6 +884,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		RunSnapshots:             runSnapshots,
 		AgentReachAdmissions:     agentReachAdmissions,
 		SessionOverlay:           sessionOverlayStore,
+		BootPackReader:           bootIndex,
 		RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 		ConnectionDetacher:       mcpDetacher,
 		ConnectionReattacher:     mcpReattacher,
