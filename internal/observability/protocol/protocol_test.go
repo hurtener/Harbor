@@ -1205,3 +1205,65 @@ func TestQuery_ElevatedWideningAxesAudited(t *testing.T) {
 		})
 	}
 }
+
+func TestQuery_ElevatedTenantAuditTargetPayloads(t *testing.T) {
+	cases := []struct {
+		name       string
+		tenantIDs  []string
+		wantTenant string // the EXACT target_tenant audit spelling
+		wantCost   int64  // the exact fanned-in cost micros the read returns
+	}{
+		// An elided tenant axis FOLDS to the caller's own tenant: the read
+		// never leaves the caller's tenant, so the payload records it.
+		{"omitted tenant folds to actor tenant", nil, caller.TenantID, 123456 + 999},
+		// A single named foreign tenant is spelled out verbatim.
+		{"one foreign tenant exact", []string{"tenant-b"}, "tenant-b", 7777},
+		// A multi-tenant read fans in ACROSS the tenant axis: the blank
+		// canonical spelling records the fan-in, never a fold to the actor —
+		// folding would make the audit look narrower than the actual read.
+		{"multi-tenant fan-in stays blank", []string{"tenant-a", "tenant-b"}, "", 123456 + 999 + 7777},
+		// An explicit empty member is a PRESENT (non-elided) filter form
+		// whose canonical audit spelling is blank: folding it to the actor
+		// tenant would misrepresent the read.
+		{"explicit empty member stays blank", []string{""}, "", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, rollups.StateCurrent)
+			seedStandardRows(t, h)
+
+			admin := scopedCtx(t, caller, protocolauth.ScopeAdmin)
+			req := baseRequest()
+			req.Filters = protocol.Filters{TenantIDs: tc.tenantIDs} // elided user/session widen
+			resp, err := h.svc.Query(admin, req)
+			if err != nil {
+				t.Fatalf("Query: %v", err)
+			}
+			if got := sum(t, resp, rollups.MeasureLLMCostMicros); got != tc.wantCost {
+				t.Fatalf("fanned-in cost = %d, want %d", got, tc.wantCost)
+			}
+
+			got := h.rec.snapshot()
+			if len(got) != 1 {
+				t.Fatalf("audit events = %d, want exactly 1: %+v", len(got), got)
+			}
+			ev := got[0]
+			if ev.Type != events.EventTypeAdminScopeUsed {
+				t.Fatalf("audit event type = %q, want %q", ev.Type, events.EventTypeAdminScopeUsed)
+			}
+			if ev.Identity.Identity != caller {
+				t.Fatalf("audit envelope identity = %+v, want the verified actor %+v", ev.Identity.Identity, caller)
+			}
+			payload, ok := ev.Payload.(events.AdminScopeUsedPayload)
+			if !ok {
+				t.Fatalf("audit payload = %T, want AdminScopeUsedPayload", ev.Payload)
+			}
+			// The elided user/session axes are the canonical wildcard
+			// spelling in every case; the tenant axis carries the case's
+			// exact spelling (fold, verbatim tenant, or blank fan-in).
+			if payload.Tenant != tc.wantTenant || payload.User != "" || payload.Session != "" {
+				t.Fatalf("audit payload = %+v, want tenant=%q user=\"\" session=\"\"", payload, tc.wantTenant)
+			}
+		})
+	}
+}

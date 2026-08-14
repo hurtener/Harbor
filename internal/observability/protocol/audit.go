@@ -15,9 +15,14 @@ import (
 //
 // Target semantics (mirroring the established widened-read audit shape):
 //
-//   - Tenant elision is NOT a wildcard: an empty tenant filter reads the
+//   - Tenant elision is NOT a wildcard: an ELIDED tenant filter reads the
 //     caller's own tenant (the fold), so the payload records the caller's
 //     tenant there.
+//   - A PRESENT tenant filter is recorded verbatim: a single tenant is
+//     spelled out, and a form whose canonical audit spelling is the blank
+//     fan-in (a multi-tenant set, or an explicit empty member) stays BLANK —
+//     the read fans in across the axis, and recording only the caller's
+//     tenant would make it look narrower than it was.
 //   - User / session elision IS the canonical wildcard fan-in spelling: a
 //     blank component records that the read fanned in across the axis,
 //     and recording only the first member of a multi-principal read would
@@ -31,7 +36,7 @@ import (
 // audit (CLAUDE.md §13 — the admin action is never fully silent).
 func (s *Service) emitAdminAudit(ctx context.Context, actor identity.Identity, f Filters) error {
 	tenant := singleScopeValue(f.TenantIDs)
-	if tenant == "" {
+	if len(f.TenantIDs) == 0 {
 		tenant = actor.TenantID
 	}
 	user := singleScopeValue(f.UserIDs)
